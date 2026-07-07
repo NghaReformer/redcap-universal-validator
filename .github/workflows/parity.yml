@@ -1,0 +1,26 @@
+name: parity
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  js-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: JS engine vs fixture
+        run: node tests/parity_js.cjs
+
+  php-parity:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.1'
+      - name: PHP port vs fixture
+        run: php tests/parity_php.php

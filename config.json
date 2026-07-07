@@ -1,0 +1,104 @@
+{
+  "name": "Universal ID Validator",
+  "namespace": "INSPIRE\\UniversalValidator",
+  "description": "Real-time, check-character-aware validation of participant and specimen IDs on REDCap data-entry forms and surveys. Validates single-ID fields and pooled fields (several IDs in one box), catches typos as they are typed, and can optionally block saving on an invalid ID. Uses the same verified ISO/IEC 7064 engine as the QR/ID generator; no JavaScript Injector required.",
+  "documentation": "README.md",
+  "authors": [
+    {
+      "name": "CHPR",
+      "email": "nghan@chprhealth.org",
+      "institution": "Bamenda Center for Health Promotion and Research (CHPR)"
+    }
+  ],
+  "framework-version": 9,
+
+  "permissions": [
+    "redcap_data_entry_form_top",
+    "redcap_survey_page_top",
+    "redcap_save_record"
+  ],
+
+  "project-settings": [
+    {
+      "key": "intro",
+      "name": "<b>Universal ID Validator</b><br>Add one rule per group of fields. Each rule picks the check-character method the IDs were minted with, which fields it applies to, and what happens on an invalid ID. Leave a rule's advanced boxes blank to use the defaults.",
+      "type": "descriptive"
+    },
+    {
+      "key": "rules",
+      "name": "Validation rule",
+      "type": "sub_settings",
+      "repeatable": true,
+      "sub_settings": [
+        {
+          "key": "rule-type",
+          "name": "Field type",
+          "type": "radio",
+          "choices": [
+            { "value": "single", "name": "Single ID (one participant ID per field)" },
+            { "value": "pooled", "name": "Pooled (several IDs jammed into one field)" }
+          ]
+        },
+        {
+          "key": "fields",
+          "name": "Field(s) this rule validates",
+          "type": "field-list",
+          "repeatable": true
+        },
+        {
+          "key": "algorithm",
+          "name": "Check-character method (must match how the IDs were minted)",
+          "type": "dropdown",
+          "choices": [
+            { "value": "iso7064_mod37_36", "name": "ISO 7064 Mod 37,36 — letters+digits, 1 char (DEFAULT)" },
+            { "value": "iso7064_mod11_10", "name": "ISO 7064 Mod 11,10 — digits, 1 char" },
+            { "value": "iso7064_mod97_10", "name": "ISO 7064 Mod 97,10 — digits, 2 chars" },
+            { "value": "iso7064_mod11_2", "name": "ISO 7064 Mod 11,2 — digits, check 0-9 or X" },
+            { "value": "iso7064_mod37_2", "name": "ISO 7064 Mod 37,2 — letters+digits, check incl. *" },
+            { "value": "iso7064_letters1", "name": "Letters-only — 1 letter check" },
+            { "value": "iso7064_letters2", "name": "Letters-only — 2 letter check (A-F)" },
+            { "value": "damm", "name": "Damm — digits, 1 char" },
+            { "value": "verhoeff", "name": "Verhoeff — digits, 1 char" },
+            { "value": "luhn", "name": "Luhn — digits, 1 char" },
+            { "value": "none", "name": "No check character — format/regex only" }
+          ]
+        },
+        {
+          "key": "source",
+          "name": "What the check runs over (single fields)",
+          "type": "dropdown",
+          "choices": [
+            { "value": "normalized_id", "name": "Whole ID (default)" },
+            { "value": "digits_only", "name": "Digits only" },
+            { "value": "sequence_only", "name": "Trailing number only" }
+          ]
+        },
+        {
+          "key": "pattern",
+          "name": "Optional format pattern (regex for ONE ID). Required if method is 'No check character'.",
+          "type": "text"
+        },
+        {
+          "key": "strip",
+          "name": "Separators to ignore before checking (default: - / space _ | \\ )",
+          "type": "text"
+        },
+        {
+          "key": "expected-count",
+          "name": "Expected number of IDs in a pooled field (optional; warns if different)",
+          "type": "text"
+        },
+        {
+          "key": "block-save",
+          "name": "On an invalid ID",
+          "type": "dropdown",
+          "choices": [
+            { "value": "off", "name": "Informational — show a message only (default)" },
+            { "value": "confirm", "name": "Advisory — warn and ask before saving" },
+            { "value": "hard", "name": "Compulsory — block saving until fixed" }
+          ]
+        }
+      ]
+    }
+  ]
+}

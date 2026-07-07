@@ -1,0 +1,6100 @@
+{
+ "generated_by": "playground/gen_check_fixture.py",
+ "source": "qrcode_generation/check_characters.py",
+ "seed": 20260701,
+ "algorithms": [
+  {
+   "name": "damm",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_letters1",
+   "input_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "check_alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_letters2",
+   "input_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "check_alphabet": "ABCDEF",
+   "n_check_chars": 2
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789X",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "input_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "check_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ*",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "input_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "check_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "n_check_chars": 1
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789",
+   "n_check_chars": 2
+  },
+  {
+   "name": "luhn",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789",
+   "n_check_chars": 1
+  },
+  {
+   "name": "none",
+   "input_alphabet": "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+   "check_alphabet": "",
+   "n_check_chars": 0
+  },
+  {
+   "name": "verhoeff",
+   "input_alphabet": "0123456789",
+   "check_alphabet": "0123456789",
+   "n_check_chars": 1
+  }
+ ],
+ "compute": [
+  {
+   "name": "damm",
+   "payload": "572",
+   "check": "4"
+  },
+  {
+   "name": "damm",
+   "payload": "123456",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "8",
+   "check": "4"
+  },
+  {
+   "name": "damm",
+   "payload": "7",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "02",
+   "check": "1"
+  },
+  {
+   "name": "damm",
+   "payload": "99",
+   "check": "9"
+  },
+  {
+   "name": "damm",
+   "payload": "29",
+   "check": "3"
+  },
+  {
+   "name": "damm",
+   "payload": "720",
+   "check": "5"
+  },
+  {
+   "name": "damm",
+   "payload": "379",
+   "check": "2"
+  },
+  {
+   "name": "damm",
+   "payload": "444",
+   "check": "8"
+  },
+  {
+   "name": "damm",
+   "payload": "5968",
+   "check": "0"
+  },
+  {
+   "name": "damm",
+   "payload": "7466",
+   "check": "1"
+  },
+  {
+   "name": "damm",
+   "payload": "1586",
+   "check": "8"
+  },
+  {
+   "name": "damm",
+   "payload": "94424",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "02916",
+   "check": "2"
+  },
+  {
+   "name": "damm",
+   "payload": "84306",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "026929",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "836998",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "256697",
+   "check": "9"
+  },
+  {
+   "name": "damm",
+   "payload": "1232809",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "3731012",
+   "check": "0"
+  },
+  {
+   "name": "damm",
+   "payload": "8483861",
+   "check": "0"
+  },
+  {
+   "name": "damm",
+   "payload": "42837060",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "57862627",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "58554786",
+   "check": "0"
+  },
+  {
+   "name": "damm",
+   "payload": "702606625",
+   "check": "1"
+  },
+  {
+   "name": "damm",
+   "payload": "218703788",
+   "check": "3"
+  },
+  {
+   "name": "damm",
+   "payload": "159228160",
+   "check": "5"
+  },
+  {
+   "name": "damm",
+   "payload": "0165002806",
+   "check": "0"
+  },
+  {
+   "name": "damm",
+   "payload": "9148203818",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "9950884592",
+   "check": "6"
+  },
+  {
+   "name": "damm",
+   "payload": "584361553917",
+   "check": "8"
+  },
+  {
+   "name": "damm",
+   "payload": "184934502689",
+   "check": "2"
+  },
+  {
+   "name": "damm",
+   "payload": "752744634753",
+   "check": "7"
+  },
+  {
+   "name": "damm",
+   "payload": "821971300141889",
+   "check": "1"
+  },
+  {
+   "name": "damm",
+   "payload": "936195404725522",
+   "check": "4"
+  },
+  {
+   "name": "damm",
+   "payload": "864355861684384",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "0ABCD12345",
+   "check": "N"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "TBABC00001",
+   "check": "E"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "B",
+   "check": "F"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "D",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "L",
+   "check": "M"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "16",
+   "check": "L"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "CV",
+   "check": "V"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "V5",
+   "check": "Y"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "AZE",
+   "check": "O"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "LN5",
+   "check": "V"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "BMM",
+   "check": "R"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "84R1",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "2WXV",
+   "check": "N"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "19SL",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "PM25M",
+   "check": "P"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "KY8JX",
+   "check": "R"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "JB5T3",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "N2HMDR",
+   "check": "N"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "3P9FJ2",
+   "check": "F"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "FSETM9",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "NKY4DM9",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "NHEKQ9P",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "56UHRMP",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "Y2RW4NZ7",
+   "check": "H"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "QQXI2MBN",
+   "check": "J"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "WTB8DPIY",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "03F6HPQ5M",
+   "check": "P"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "2JH46VCZ2",
+   "check": "S"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "8W70YH9XM",
+   "check": "K"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "B5DZ16XA7E",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "AGCZK7LYFO",
+   "check": "Y"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "JV7L0NNQGZ",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "SPVQ729AKUPU",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "XB2DZLHCBA8W",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "CL8K52D67ALD",
+   "check": "M"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "0STD9IUCO2HD4LF",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "FDJPHB134F2R8K2",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_letters1",
+   "payload": "X8VBCVKLEJ0QVIX",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "0ABCD12345",
+   "check": "DC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "TBABC00001",
+   "check": "DA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "2",
+   "check": "FD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "1",
+   "check": "FF"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "W",
+   "check": "BE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "TD",
+   "check": "BA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "RI",
+   "check": "AE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "O6",
+   "check": "AD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "QBH",
+   "check": "BE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "TKN",
+   "check": "BC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "G8G",
+   "check": "EC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "A1TX",
+   "check": "DA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "OFOC",
+   "check": "AB"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "672F",
+   "check": "FC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "RM1XM",
+   "check": "DD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "DBQ8N",
+   "check": "EF"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "7RTVI",
+   "check": "FE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "3BSDS9",
+   "check": "CA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "Y09UP4",
+   "check": "DD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "XKESYG",
+   "check": "DB"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "JLN5K87",
+   "check": "AE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "HI3BP1Y",
+   "check": "FE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "C3W2UJM",
+   "check": "EF"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "N4NG8Q8K",
+   "check": "ED"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "B6KUXG9O",
+   "check": "BC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "VLUOZDSR",
+   "check": "AB"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "DJJ0QN9D0",
+   "check": "CA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "FQR8R8UK0",
+   "check": "CD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "UB43IN86I",
+   "check": "DB"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "R0ZAPLFQVO",
+   "check": "BE"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "3FYOLLY1JE",
+   "check": "BD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "EH6YB16U1W",
+   "check": "EF"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "1TZ3JJSZ7MRB",
+   "check": "ED"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "J1RRVS7UYX43",
+   "check": "FC"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "F79NQZ2IZXUX",
+   "check": "BA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "JRXLPGWGFVYOS5G",
+   "check": "BD"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "576Y2DMHE2YYOGT",
+   "check": "FA"
+  },
+  {
+   "name": "iso7064_letters2",
+   "payload": "6642IHVHFXN4WRJ",
+   "check": "CA"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "079",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "0",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "4",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "2",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "08",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "05",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "964",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "502",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "051",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "3926",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "0851",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "9619",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "72789",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "16070",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "63416",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "275254",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "740472",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "202544",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "4776600",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "6972694",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "2531275",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "34287644",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "47315916",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "64147216",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "167014462",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "291955826",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "113809329",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "0906207352",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "3559936053",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "6075815483",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "793682958466",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "356985680627",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "955874639565",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "146778511093489",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "555372693619515",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_10",
+   "payload": "992759773704206",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "079",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "0",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "1",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "4",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "5",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "03",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "47",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "416",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "104",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "250",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "3470",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "4652",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "9216",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "39667",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "95372",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "62488",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "011045",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "637086",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "677292",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "1889026",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "9126334",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "2961960",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "64715376",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "63649059",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "68071617",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "874109127",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "887474584",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "526670171",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "1689828713",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "3150236134",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "1866712458",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "015548748539",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "950030908835",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "898298513449",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "699499272001226",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "613290574036913",
+   "check": "6"
+  },
+  {
+   "name": "iso7064_mod11_2",
+   "payload": "077191385864284",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "0",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "1",
+   "check": "*"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "2",
+   "check": "Y"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "10",
+   "check": "Y"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "Z",
+   "check": "5"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "AA",
+   "check": "F"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "A0",
+   "check": "Z"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "00",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "S",
+   "check": "J"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "T",
+   "check": "H"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "5",
+   "check": "S"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "8W",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "AU",
+   "check": "C"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "LF",
+   "check": "Z"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "U7X",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "2MH",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "TM0",
+   "check": "E"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "4FTZ",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "WIXY",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "JGFC",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "3R9I5",
+   "check": "M"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "ETDS1",
+   "check": "I"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "7P714",
+   "check": "C"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "JVO62S",
+   "check": "Z"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "UV6POE",
+   "check": "*"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "6367RR",
+   "check": "L"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "KN201EB",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "XQ4CY56",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "T7WBES8",
+   "check": "P"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "KK2UA6PY",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "4D9PCJAE",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "KQWFTJ5H",
+   "check": "A"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "7ADE713NN",
+   "check": "Y"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "QQK1EIGO1",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "5012JSAXJ",
+   "check": "N"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "UTZ22PZRET",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "CWAC4IK5GJ",
+   "check": "G"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "YGWFBEUWA7",
+   "check": "W"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "DBKNAR7F3DOK",
+   "check": "T"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "L1N21OM9GXMW",
+   "check": "S"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "VJML426E1LXB",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "4QCOU25YHXXFKCI",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "OMC4D2TC03DXVVO",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_mod37_2",
+   "payload": "CFKF5LAZE6NNPG7",
+   "check": "4"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "0",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "ABC123",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "0ABCD12345",
+   "check": "K"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "A",
+   "check": "H"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "F",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "1",
+   "check": "Z"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "BE",
+   "check": "2"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "TH",
+   "check": "X"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "DX",
+   "check": "S"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "6GQ",
+   "check": "J"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "B7P",
+   "check": "H"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "GT1",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "YB0V",
+   "check": "0"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "GO43",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "EBCX",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "VNK6U",
+   "check": "Z"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "EXYLS",
+   "check": "P"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "JJJN4",
+   "check": "K"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "D69H1Z",
+   "check": "I"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "RYPRU7",
+   "check": "8"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "DRNI70",
+   "check": "A"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "AJ8EFKB",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "DQEHUW5",
+   "check": "9"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "CT0FE4I",
+   "check": "7"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "OAF0L996",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "NW03HAIT",
+   "check": "1"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "I17798BI",
+   "check": "I"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "WJKRMW6KF",
+   "check": "B"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "V228PEPF5",
+   "check": "E"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "UTGKOMKVZ",
+   "check": "3"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "TWBY2V3NVO",
+   "check": "A"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "HDCOTBY812",
+   "check": "J"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "1Z30AJRRR5",
+   "check": "L"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "HQYMS38258Z0",
+   "check": "R"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "8PCL06MGMP3G",
+   "check": "A"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "GZ5TL2WG7N9B",
+   "check": "V"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "FXWBR4IQUSVVB9U",
+   "check": "I"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "1TG81PZ1FXNEBNE",
+   "check": "O"
+  },
+  {
+   "name": "iso7064_mod37_36",
+   "payload": "JXSMVMT6O5W1A9C",
+   "check": "J"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "1",
+   "check": "95"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "0",
+   "check": "98"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "1234567890",
+   "check": "92"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "4",
+   "check": "86"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "7",
+   "check": "77"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "34",
+   "check": "93"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "18",
+   "check": "44"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "68",
+   "check": "88"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "614",
+   "check": "02"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "424",
+   "check": "87"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "161",
+   "check": "03"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "0418",
+   "check": "08"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "4158",
+   "check": "40"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "6930",
+   "check": "66"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "43026",
+   "check": "30"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "68367",
+   "check": "55"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "27465",
+   "check": "56"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "476951",
+   "check": "92"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "710667",
+   "check": "60"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "646427",
+   "check": "41"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "0409666",
+   "check": "90"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "7030171",
+   "check": "04"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "3837417",
+   "check": "98"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "72834885",
+   "check": "68"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "64388287",
+   "check": "67"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "34316679",
+   "check": "41"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "794135552",
+   "check": "63"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "844024900",
+   "check": "12"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "024806294",
+   "check": "04"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "7164767878",
+   "check": "87"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "0528353117",
+   "check": "93"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "4572981296",
+   "check": "77"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "830310539800",
+   "check": "50"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "093903110711",
+   "check": "11"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "243642410944",
+   "check": "75"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "515241212752884",
+   "check": "09"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "784562504154780",
+   "check": "77"
+  },
+  {
+   "name": "iso7064_mod97_10",
+   "payload": "351149470524203",
+   "check": "59"
+  },
+  {
+   "name": "luhn",
+   "payload": "7992739871",
+   "check": "3"
+  },
+  {
+   "name": "luhn",
+   "payload": "123456",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "8",
+   "check": "3"
+  },
+  {
+   "name": "luhn",
+   "payload": "2",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "3",
+   "check": "4"
+  },
+  {
+   "name": "luhn",
+   "payload": "84",
+   "check": "4"
+  },
+  {
+   "name": "luhn",
+   "payload": "49",
+   "check": "7"
+  },
+  {
+   "name": "luhn",
+   "payload": "09",
+   "check": "1"
+  },
+  {
+   "name": "luhn",
+   "payload": "111",
+   "check": "5"
+  },
+  {
+   "name": "luhn",
+   "payload": "803",
+   "check": "7"
+  },
+  {
+   "name": "luhn",
+   "payload": "469",
+   "check": "7"
+  },
+  {
+   "name": "luhn",
+   "payload": "4524",
+   "check": "5"
+  },
+  {
+   "name": "luhn",
+   "payload": "6628",
+   "check": "2"
+  },
+  {
+   "name": "luhn",
+   "payload": "9220",
+   "check": "5"
+  },
+  {
+   "name": "luhn",
+   "payload": "14556",
+   "check": "5"
+  },
+  {
+   "name": "luhn",
+   "payload": "70184",
+   "check": "7"
+  },
+  {
+   "name": "luhn",
+   "payload": "00177",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "508493",
+   "check": "4"
+  },
+  {
+   "name": "luhn",
+   "payload": "425803",
+   "check": "4"
+  },
+  {
+   "name": "luhn",
+   "payload": "345168",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "2411775",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "1947768",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "8577012",
+   "check": "1"
+  },
+  {
+   "name": "luhn",
+   "payload": "41737889",
+   "check": "0"
+  },
+  {
+   "name": "luhn",
+   "payload": "04640470",
+   "check": "3"
+  },
+  {
+   "name": "luhn",
+   "payload": "96818686",
+   "check": "6"
+  },
+  {
+   "name": "luhn",
+   "payload": "151211695",
+   "check": "3"
+  },
+  {
+   "name": "luhn",
+   "payload": "274446813",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "079474349",
+   "check": "2"
+  },
+  {
+   "name": "luhn",
+   "payload": "0140281639",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "2714138050",
+   "check": "4"
+  },
+  {
+   "name": "luhn",
+   "payload": "6222109859",
+   "check": "3"
+  },
+  {
+   "name": "luhn",
+   "payload": "689482544567",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "792094589926",
+   "check": "0"
+  },
+  {
+   "name": "luhn",
+   "payload": "720538042113",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "202550527475451",
+   "check": "9"
+  },
+  {
+   "name": "luhn",
+   "payload": "929566925016808",
+   "check": "2"
+  },
+  {
+   "name": "luhn",
+   "payload": "529453123291301",
+   "check": "0"
+  },
+  {
+   "name": "none",
+   "payload": "0ABC00001",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "I",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "E",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "8",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "RJ",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "WQ",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "OV",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "URT",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "7W7",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "JN1",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "ZYD3",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "67QS",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "NEB8",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "CBQ5O",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "E0XDY",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "MW7AH",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "FUIEJ9",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "1FI0GH",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "VGXXSH",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "6WU1ZXA",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "D2XJF2C",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "DZK9C1O",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "WO12626V",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "4CXNH3LL",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "X5X24UXP",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "ENRTG2GE8",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "U1DKU0ALV",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "2SOD1BJPP",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "A1X3FAX355",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "ALLMIS18MY",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "86JV1HNDND",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "5ACNQNYI71DG",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "0BGUVK9696SE",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "PSIWNE35YIFK",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "ITVLSJ4CYYIJWM2",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "QIKY8C9UZVV6G05",
+   "check": ""
+  },
+  {
+   "name": "none",
+   "payload": "9XJABK1AG5O7XH9",
+   "check": ""
+  },
+  {
+   "name": "verhoeff",
+   "payload": "123456",
+   "check": "8"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "12000009",
+   "check": "9"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "9",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "5",
+   "check": "8"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "1",
+   "check": "5"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "39",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "43",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "97",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "177",
+   "check": "5"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "970",
+   "check": "9"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "368",
+   "check": "9"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "3682",
+   "check": "7"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "1811",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "5201",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "01788",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "15471",
+   "check": "5"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "55284",
+   "check": "6"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "021978",
+   "check": "6"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "527463",
+   "check": "0"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "207945",
+   "check": "8"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "0707463",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "8834597",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "9202796",
+   "check": "0"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "22927353",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "34577850",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "14188922",
+   "check": "8"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "540573423",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "748688685",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "849776124",
+   "check": "5"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "7081226181",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "0229747548",
+   "check": "7"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "3953358188",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "506171529742",
+   "check": "1"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "572757464135",
+   "check": "9"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "661154841960",
+   "check": "2"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "843223879688351",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "565056858211637",
+   "check": "3"
+  },
+  {
+   "name": "verhoeff",
+   "payload": "391830965512744",
+   "check": "9"
+  }
+ ],
+ "normalize": [
+  {
+   "value": "fc1-0001",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "FC10001"
+  },
+  {
+   "value": "ZRC1/0002",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "ZRC10002"
+  },
+  {
+   "value": "VLB–0001",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "VLB0001"
+  },
+  {
+   "value": "VLB—0001",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "VLB0001"
+  },
+  {
+   "value": "VLB−0001",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "VLB0001"
+  },
+  {
+   "value": "TBABC 002 397",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "TBABC002397"
+  },
+  {
+   "value": "fc1-0001",
+   "rules": {
+    "strip_delimiters": "",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": "0123456789"
+   },
+   "result": "10001"
+  },
+  {
+   "value": "fc1-0001",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": false,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "fc10001"
+  },
+  {
+   "value": "  0abc00001w  ",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "0ABC00001W"
+  },
+  {
+   "value": "TB२3",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "TB२3"
+  },
+  {
+   "value": "AB-٠١C",
+   "rules": {
+    "strip_delimiters": "-/ ",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "AB٠١C"
+  },
+  {
+   "value": "x１y",
+   "rules": {
+    "strip_delimiters": "-/ _|\\",
+    "uppercase": true,
+    "unify_unicode_dashes": true,
+    "keep_only": null
+   },
+   "result": "X１Y"
+  }
+ ],
+ "scheme_ops": [
+  {
+   "op": "append",
+   "scheme": "inspire_default",
+   "id": "0ABC00001",
+   "result": "0ABC00001W"
+  },
+  {
+   "op": "append",
+   "scheme": "inspire_default",
+   "id": "FC1-0001",
+   "result": "FC1-0001Q"
+  },
+  {
+   "op": "append",
+   "scheme": "inspire_default",
+   "id": "TBABC00001",
+   "result": "TBABC00001I"
+  },
+  {
+   "op": "append",
+   "scheme": "inspire_default",
+   "id": "0ABCD12345",
+   "result": "0ABCD12345K"
+  },
+  {
+   "op": "validate",
+   "scheme": "inspire_default",
+   "id": "0ABC00001W",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "none",
+   "id": "0ABC00001W",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "inspire_default",
+   "id": "0ABC00001X",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "scheme": "none",
+   "id": "0ABC00001X",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "inspire_default",
+   "id": "FC1-0001",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "scheme": "none",
+   "id": "FC1-0001",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "inspire_default",
+   "id": "TBABC-002397",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "none",
+   "id": "TBABC-002397",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "scheme": "inspire_default",
+   "id": "literally anything",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "scheme": "none",
+   "id": "literally anything",
+   "result": true
+  },
+  {
+   "op": "append",
+   "scheme": "none",
+   "id": "FC1-0001",
+   "result": "FC1-0001"
+  },
+  {
+   "op": "append",
+   "scheme": "none",
+   "id": "anything",
+   "result": "anything"
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002397"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TBABC-002397",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TBABC002097",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0ABC00001",
+   "result": "0ABC00001W"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0ABC00001W",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0AZC00001W",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "FC1-0001",
+   "result": "FC1-0001Q"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "FC1-0001Q",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "FC11001Q",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002397"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "tbabc 002397",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TBABC002097",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "VLB–0001",
+   "result": "VLB–00015"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "VLB–00015",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "VLZ00015",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00029"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "ZRC1/00029",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "ZRC101029",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD12345K"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0ABCD12345K",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "0ABCZ12345K",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002397"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TB_ABC_002397",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "TBABC000397",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017775"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "9CTR-017775",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append",
+   "id": "9CTR010775",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TBABC-00239",
+   "result": "TBABC-00239-7"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TBABC-00239-7",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TBABC000397",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ABC00001",
+   "result": "0ABC00001-W"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ABC00001-W",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ZBC00001W",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "FC1-0001",
+   "result": "FC1-0001-Q"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "FC1-0001-Q",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "FC10000Q",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "tbabc 00239",
+   "result": "tbabc 00239-7"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "tbabc 00239-7",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TZABC002397",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "VLB–0001",
+   "result": "VLB–0001-5"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "VLB–0001-5",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "VZB00015",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/0002-9"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "ZRC1/0002-9",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "ZRC100129",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ABCD12345",
+   "result": "0ABCD12345-K"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ABCD12345-K",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "0ABCD12045K",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_00239-7"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "TB_ABC_00239-7",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "ZBABC002397",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "9CTR-01777",
+   "result": "9CTR-01777-5"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "9CTR-01777-5",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36|normalized_id|append_after_delimiter",
+   "id": "9CTR010775",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-00239O"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TBABC-00239O",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TBABC10239O",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0ABC00001",
+   "result": "0ABC00001H"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0ABC00001H",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0AZC00001H",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "FC1-0001",
+   "result": "FC1-0001F"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "FC1-0001F",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "FC00001F",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 00239O"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "tbabc 00239O",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TBABC01239O",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "VLB–0001",
+   "result": "VLB–0001B"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "VLB–0001B",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "VLZ0001B",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/0002E"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "ZRC1/0002E",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "ZRC10000E",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD12345N"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0ABCD12345N",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0ABCD12340N",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_00239O"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TB_ABC_00239O",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "TBABC10239O",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-01777A"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "9CTR-01777A",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1|normalized_id|append",
+   "id": "0CTR01777A",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TBABC-00239",
+   "result": "TBABC-00239-BB"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TBABC-00239-BB",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TBABC10239BB",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABC00001",
+   "result": "0ABC00001-FC"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABC00001-FC",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABZ00001FC",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "FC1-0001",
+   "result": "FC1-0001-EC"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "FC1-0001-EC",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "FC00001EC",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "tbabc 00239",
+   "result": "tbabc 00239-BB"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "tbabc 00239-BB",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TBABC00209BB",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "VLB–0001",
+   "result": "VLB–0001-AF"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "VLB–0001-AF",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "VLZ0001AF",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/0002-BD"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "ZRC1/0002-BD",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "ZRC10000BD",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABCD12345",
+   "result": "0ABCD12345-DC"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABCD12345-DC",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "0ABCD12045DC",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_00239-BB"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TB_ABC_00239-BB",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "TZABC00239BB",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "9CTR-01777",
+   "result": "9CTR-01777-AF"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "9CTR-01777-AF",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append_after_delimiter",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2|normalized_id|append_after_delimiter",
+   "id": "9CTR01077AF",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TBABC-002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TZABC002396",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC000017"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ABC000017",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ZBC000017",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-00010"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "FC1-00010",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "FZ100010",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "tbabc 002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TBABC002096",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–00013"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "VLB–00013",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "VLB01013",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00028"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "ZRC1/00028",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "ZRC100008",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD123455"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ABCD123455",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "0ABCD123055",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TB_ABC_002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "TZABC002396",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017772"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "9CTR-017772",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10|digits_only|append",
+   "id": "9CZR017772",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-0023960"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "TBABC-0023960",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "TBABC0123960",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC0000195"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "0ABC0000195",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "1ABC0000195",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-000168"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "FC1-000168",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "FC1010168",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 0023960"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "tbabc 0023960",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "ZBABC0023960",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–000195"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "VLB–000195",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "VLB010195",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/000265"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "ZRC1/000265",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "ZRC1001265",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD1234520"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "0ABCD1234520",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "0ABCZ1234520",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_0023960"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "TB_ABC_0023960",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "ZBABC0023960",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-0177797"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "9CTR-0177797",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10|digits_only|append",
+   "id": "9CZR0177797",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "damm",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "damm",
+   "id": "12345671",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "damm",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "damm",
+   "id": "10345671",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1",
+   "id": "0ABCD12345N",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters1",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters1",
+   "id": "0AZCD12345N",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2",
+   "id": "0ABCD12345DC",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_letters2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_letters2",
+   "id": "0ABCD12305DC",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10",
+   "id": "12345672",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_10",
+   "id": "12305672",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_2",
+   "id": "12345672",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod11_2",
+   "id": "12305672",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_2",
+   "id": "0ABCD12345H",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_2",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_2",
+   "id": "0AZCD12345H",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36",
+   "id": "0ABCD12345K",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod37_36",
+   "id": "0ABCD12305K",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10",
+   "id": "123456751",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod97_10",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "iso7064_mod97_10",
+   "id": "103456751",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "luhn",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "luhn",
+   "id": "12345674",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "luhn",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "luhn",
+   "id": "12345074",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "verhoeff",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "verhoeff",
+   "id": "12345679",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "verhoeff",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "verhoeff",
+   "id": "02345679",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|digits_only",
+   "id": "TBABC-00२3977",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|normalized_id",
+   "id": "TBABC-00२3977",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|digits_only",
+   "id": "TB२3ABC9",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|normalized_id",
+   "id": "TB२3ABC9",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|digits_only",
+   "id": "AB٠١C5",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|normalized_id",
+   "id": "AB٠١C5",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|digits_only",
+   "id": "１２３3",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|normalized_id",
+   "id": "１２３3",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|digits_only",
+   "id": "TBABC0023977",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod37_36",
+    "source": "normalized_id",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|normalized_id",
+   "id": "TBABC0023977",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "sequence_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|sequence_only",
+   "id": "AB123२56",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "sequence_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|sequence_only",
+   "id": "TBABC-002397",
+   "result": false
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "iso7064_mod11_10",
+    "source": "sequence_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "unicode|sequence_only",
+   "id": "SITE-42X",
+   "result": false
+  }
+ ]
+}
