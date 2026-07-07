@@ -197,6 +197,14 @@ class UniversalValidator extends AbstractExternalModule
             // (intval("abc") == 0 used to disable the check quietly) — UV-008.
             $errors = [];
 
+            // A catastrophic-backtracking pattern is rejected on BOTH sides: the
+            // client already refuses it, and flagging it here as a config error
+            // makes the server skip the rule too (instead of compiling and running
+            // it, which risked false invalid-ID logs on PCRE backtrack limits).
+            if (!empty($s['pattern']) && CheckCharacter::riskyPattern($s['pattern'])) {
+                $errors[] = 'The format pattern looks catastrophically backtracking (nested or adjacent unbounded quantifiers, e.g. (a+)+). Rewrite it without nested quantifiers.';
+            }
+
             if (isset($s['expected-count']) && trim((string) $s['expected-count']) !== '') {
                 $ec = trim((string) $s['expected-count']);
                 if (ctype_digit($ec) && (int) $ec > 0) $rule['expectedIds'] = (int) $ec;

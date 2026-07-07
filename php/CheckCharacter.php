@@ -179,21 +179,47 @@ class CheckCharacter
     }
 
     /**
+     * Conservative catastrophic-backtracking detector — the PHP twin of the
+     * browser's QRID_riskyPattern (js/engine.js). Rejects the common exponential
+     * shapes (nested / adjacent unbounded quantifiers) so the server never
+     * compiles or runs a pattern the browser already refuses at config time. Keep
+     * in exact sync with the JS version; tests/risky_php.php and
+     * tests/risky_js.cjs assert the two agree on a shared pattern list.
+     */
+    public static function riskyPattern($src)
+    {
+        $s = preg_replace('/\\\\./', '', (string) $src);                    // ignore escaped chars
+        // Whitespace is an explicit ASCII class, NOT \s: PCRE \s (no /u) and JS \s
+        // classify Unicode whitespace differently, which would diverge. Bounded
+        // quantifiers ({n,m}/{n,}) count as the "repeating" token so nested bounded
+        // quantifiers are caught too. Keep BYTE-IDENTICAL to QRID_riskyPattern (js).
+        if (preg_match('/[+*][ \t\n\r\f]*[+*]/', $s)) return true;                                        // a++  a*+ ...
+        if (preg_match('/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/', $s)) return true; // (…a+…)+  (…{1,20}…){1,20}
+        if (preg_match('/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/', $s)) return true;                  // [0-9]+* style
+        return false;
+    }
+
+    /**
      * Test a value against a project ID regex (JavaScript-authored, anchored).
      * The value is normalized the way the browser tests format — uppercase +
-     * unified dashes, separators KEPT. Returns true when the regex cannot be
-     * compiled server-side (JS/PCRE dialect gap) so the server never raises a
-     * format error the client would not; the client surfaces the config error.
+     * unified dashes, separators KEPT. Returns true (i.e. "do not raise a format
+     * error the client would not") when the pattern is catastrophic, when the
+     * regex cannot be compiled server-side (JS/PCRE dialect gap), or when the PCRE
+     * engine itself fails at match time (backtrack/recursion limit) — a PCRE
+     * failure is not a real format mismatch and must never be logged as one.
      */
     public static function matchesPattern($value, $pattern)
     {
         if ($pattern === null || $pattern === '') return true;
+        if (self::riskyPattern($pattern)) return true;      // never run a catastrophic pattern
         $norm = trim(self::normalize($value, '', true, true, null));
         $body = preg_replace('/^\^/', '', (string) $pattern);
         $body = preg_replace('/\$$/', '', $body);
         $re = self::compilePattern($body);
         if ($re === null) return true;
-        return @preg_match($re, $norm) === 1;
+        $m = @preg_match($re, $norm);
+        if ($m === false || preg_last_error() !== PREG_NO_ERROR) return true; // engine error, not a format miss
+        return $m === 1;
     }
 
     /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
@@ -209,9 +235,22 @@ class CheckCharacter
         return (@preg_match($re, '') === false) ? null : $re;
     }
 
+    /**
+     * True iff $t matches the compiled pattern. On a PCRE ENGINE failure
+     * (backtrack/recursion limit — possible for a catastrophic pattern the
+     * heuristic missed) it flags the run so the whole pooled field bails to
+     * "unconfigurable" instead of silently dropping the window into a false
+     * junk / invalid-ID verdict. Mirrors the preg_last_error guard in
+     * matchesPattern() for the single-field path.
+     */
     private static function patTest($re, $t)
     {
-        return @preg_match($re, $t) === 1;
+        $m = @preg_match($re, $t);
+        if ($m === false || preg_last_error() !== PREG_NO_ERROR) {
+            self::$pooledPcreError = true;
+            return false;
+        }
+        return $m === 1;
     }
 
     /**
@@ -239,6 +278,10 @@ class CheckCharacter
     // Behavior is frozen against tests/pooled_fixture.json, recomputed by BOTH
     // runtimes in CI, so the server parser can never drift from the browser one.
 
+    /** Set true when a PCRE engine failure occurs during a pooled parse, so the
+     *  whole field bails to "unconfigurable" rather than emitting a false verdict. */
+    private static $pooledPcreError = false;
+
     private static function isPosInt($x)
     {
         if (is_int($x)) return $x > 0;
@@ -258,6 +301,7 @@ class CheckCharacter
         $checkMode = ($algo !== 'none');
         $regexOnly = (!$checkMode && $pattern !== null);
         if (!$checkMode && !$regexOnly) return null; // nothing to validate
+        if ($pattern !== null && self::riskyPattern($pattern)) return null; // catastrophic -> unconfigurable
 
         $re = null;
         if ($pattern !== null) {
@@ -413,7 +457,11 @@ class CheckCharacter
     {
         $st = self::pooledState($cfg);
         if ($st === null) return null;
-        return self::pooledSegments($st, (string) $raw);
+        self::$pooledPcreError = false;
+        $segs = self::pooledSegments($st, (string) $raw);
+        // A PCRE engine failure during segmentation makes the result untrustworthy;
+        // treat the field as unconfigurable (no verdict) rather than log a false one.
+        return self::$pooledPcreError ? null : $segs;
     }
 
     /** Server-side pooled verdict mirroring the browser render() problem checks. */

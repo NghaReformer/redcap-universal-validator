@@ -21,6 +21,8 @@ jobs:
             || (echo "pooled_fixture.json is stale — re-run node tests/gen_pooled_fixture.cjs and commit"; exit 1)
       - name: JS pooled parser vs fixture
         run: node tests/pooled_js.cjs
+      - name: JS risky-pattern heuristic
+        run: node tests/risky_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
@@ -38,3 +40,5 @@ jobs:
         run: php tests/parity_php.php
       - name: PHP pooled parser vs fixture
         run: php tests/pooled_php.php
+      - name: PHP risky-pattern heuristic + server behavior
+        run: php tests/risky_php.php

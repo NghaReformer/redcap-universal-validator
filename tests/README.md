@@ -10,6 +10,8 @@ node tests/parity_js.cjs      # JS engine  vs check_fixture.json
 php  tests/parity_php.php      # PHP port   vs check_fixture.json (needs mbstring)
 node tests/pooled_js.cjs      # JS pooled parser vs pooled_fixture.json
 php  tests/pooled_php.php      # PHP pooled parser vs pooled_fixture.json
+node tests/risky_js.cjs       # JS risky-pattern heuristic vs risky_patterns.json
+php  tests/risky_php.php       # PHP risky-pattern heuristic + server behavior
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract
@@ -41,6 +43,20 @@ parser change:
 ```bash
 node tests/gen_pooled_fixture.cjs   # rewrites pooled_fixture.json; commit the diff
 ```
+
+## `risky_patterns.json` — the ReDoS-gate contract
+
+`riskyPattern` exists in both runtimes (`QRCheck.riskyPattern` in JS,
+`CheckCharacter::riskyPattern` in PHP) and must agree, or a catastrophic
+`idPattern` the browser blocks could still run on the server. `risky_js.cjs` and
+`risky_php.php` assert both classify the shared `risky` / `safe` list identically;
+`risky_php.php` additionally proves the server path returns a fast, non-invalid
+verdict for a catastrophic pattern — both a heuristic-caught one and a
+heuristic-missed one that only the pooled PCRE-error guard stops. The heuristic
+targets nested/adjacent quantifiers, unbounded (`+` `*`) and bounded
+(`{n,m}`/`{n,}`), and is a conservative subset: it does not catch alternation- or
+optional-overlap ReDoS (e.g. `(a|a?)+`), which the pooled path instead defuses at
+match time by bailing to "unconfigurable" on a PCRE backtrack-limit error.
 
 ## CI
 

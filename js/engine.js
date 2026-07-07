@@ -542,13 +542,23 @@ function QRID_escapeHtml(t){
    keystroke. Combined with the input-length caps below, this bounds ReDoS. */
 function QRID_riskyPattern(src){
   var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
-  if(/[+*]\s*[+*]/.test(s)) return true;                   /* a++  a*+  a*?* ...   */
-  if(/\([^()]*[*+][^()]*\)\s*[*+{?]/.test(s)) return true; /* (…a+…)+  (…a*…)*     */
-  if(/\[[^\]]*\]\s*[*+]\s*[*+{]/.test(s)) return true;     /* [0-9]+*  style       */
+  /* Whitespace is an explicit ASCII class, NOT \s: JS \s matches Unicode
+     whitespace but PCRE \s (no /u) does not, so \s would classify differently
+     across runtimes. The group checks accept a bounded quantifier ({n,m}/{n,})
+     as the "repeating" token too, so nested bounded quantifiers like
+     ([0-9]{1,20}){1,20} are caught, not only +/* nesting. Keep BYTE-IDENTICAL to
+     CheckCharacter::riskyPattern (php); tests/risky_*.{cjs,php} assert parity. */
+  if(/[+*][ \t\n\r\f]*[+*]/.test(s)) return true;                                        /* a++  a*+ ...             */
+  if(/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/.test(s)) return true; /* (…a+…)+  (…{1,20}…){1,20} */
+  if(/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/.test(s)) return true;                  /* [0-9]+* style            */
   return false;
 }
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
 var QRID_MAX_POOLED_LEN = 8192;   /* pooled field: cap total scanned length        */
+/* Expose the risky-pattern predicate so the cross-runtime regression test
+   (tests/risky_js.cjs) can assert it agrees with the PHP twin,
+   CheckCharacter::riskyPattern. */
+if (typeof globalThis !== "undefined" && globalThis.QRCheck) globalThis.QRCheck.riskyPattern = QRID_riskyPattern;
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
 window.QRIDSingleInit = function(QRID_CONFIG){
   "use strict";

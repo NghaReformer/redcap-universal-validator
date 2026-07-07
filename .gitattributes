@@ -1,0 +1,13 @@
+# The repository is text-only and must be LF everywhere. Without this, Windows
+# checkouts re-apply CRLF and every file shows as modified / trips whitespace
+# checks (fix-validation review P3). `eol=lf` forces LF on checkout regardless of
+# the user's core.autocrlf setting.
+* text=auto eol=lf
+
+# Explicit, so intent is obvious for the file types actually present.
+*.php  text eol=lf
+*.js   text eol=lf
+*.cjs  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf

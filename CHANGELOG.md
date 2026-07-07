@@ -34,6 +34,24 @@ Configuration & tests
   `pooled_fixture.json` freezes the pooled parser across both runtimes, and CI adds
   `php -l` and a fixture-staleness check.
 
+Follow-up (fix-validation review, `reports/fix-validation-review-2026-07-07.md`)
+- **P2:** the server now mirrors the browser's catastrophic-pattern gate.
+  `CheckCharacter::riskyPattern()` (the byte-identical PHP twin of
+  `QRID_riskyPattern`) is checked in `getRules()`, so a risky pattern is a config
+  error on both sides; `matchesPattern()` and the pooled `patTest()` treat a PCRE
+  engine failure (backtrack/recursion limit) as "not a real (non-)match" — the
+  pooled path bails to *unconfigurable* rather than logging a false invalid-ID;
+  and `pooledState()` rejects risky patterns. An adversarial review of that fix
+  then found two gaps, also closed here: the heuristic now catches **bounded**
+  nested quantifiers (`([0-9]{1,20}){1,20}`), not only `+`/`*`, and both runtimes
+  use an explicit ASCII whitespace class instead of `\s` (JS `\s` matches Unicode
+  whitespace, PCRE `\s` does not — a silent parity gap). New `risky_js.cjs` /
+  `risky_php.php` lock the two heuristics to one shared list; a differential over
+  thousands of generated patterns (including Unicode whitespace and bounded
+  quantifiers) shows zero divergence.
+- **P3:** added `.gitattributes` (`* text=auto eol=lf`) so checkouts stop showing
+  phantom CRLF churn.
+
 ## 0.1.0 — scaffold
 
 Initial standalone REDCap external module extracted from the JavaScript-Injector
