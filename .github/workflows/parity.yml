@@ -12,8 +12,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: JS engine vs fixture
+      - name: JS engine vs fixture (compute + normalize + scheme_ops)
         run: node tests/parity_js.cjs
+      - name: Pooled fixture is up to date
+        run: |
+          node tests/gen_pooled_fixture.cjs
+          git diff --exit-code tests/pooled_fixture.json \
+            || (echo "pooled_fixture.json is stale — re-run node tests/gen_pooled_fixture.cjs and commit"; exit 1)
+      - name: JS pooled parser vs fixture
+        run: node tests/pooled_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
@@ -22,5 +29,12 @@ jobs:
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.1'
-      - name: PHP port vs fixture
+          extensions: mbstring
+      - name: PHP syntax check
+        run: |
+          php -l php/CheckCharacter.php
+          php -l UniversalValidator.php
+      - name: PHP port vs fixture (compute + normalize + scheme_ops)
         run: php tests/parity_php.php
+      - name: PHP pooled parser vs fixture
+        run: php tests/pooled_php.php

@@ -12,6 +12,11 @@
   ],
   "framework-version": 9,
 
+  "compatibility": {
+    "php-version-min": "7.4.0",
+    "redcap-version-min": "13.7.0"
+  },
+
   "permissions": [
     "redcap_data_entry_form_top",
     "redcap_survey_page_top",
@@ -23,6 +28,17 @@
       "key": "intro",
       "name": "<b>Universal ID Validator</b><br>Add one rule per group of fields. Each rule picks the check-character method the IDs were minted with, which fields it applies to, and what happens on an invalid ID. Leave a rule's advanced boxes blank to use the defaults.",
       "type": "descriptive"
+    },
+    {
+      "key": "log-values",
+      "name": "How to log invalid IDs caught on the server (API / import / JavaScript-off)",
+      "type": "dropdown",
+      "choices": [
+        { "value": "hashed", "name": "Store a SHA-256 hash of the value (default — correlates repeats without storing the ID)" },
+        { "value": "none", "name": "Log the event but not the value" },
+        { "value": "raw", "name": "Store the raw value (only if your data-governance policy allows identifiers in module logs)" },
+        { "value": "off", "name": "Do not log server-side detections at all" }
+      ]
     },
     {
       "key": "rules",
@@ -59,13 +75,13 @@
             { "value": "iso7064_letters2", "name": "Letters-only — 2 letter check (A-F)" },
             { "value": "damm", "name": "Damm — digits, 1 char" },
             { "value": "verhoeff", "name": "Verhoeff — digits, 1 char" },
-            { "value": "luhn", "name": "Luhn — digits, 1 char" },
+            { "value": "luhn", "name": "Luhn — digits, 1 char (weakest; compatibility only)" },
             { "value": "none", "name": "No check character — format/regex only" }
           ]
         },
         {
           "key": "source",
-          "name": "What the check runs over (single fields)",
+          "name": "What the check runs over",
           "type": "dropdown",
           "choices": [
             { "value": "normalized_id", "name": "Whole ID (default)" },
@@ -75,7 +91,7 @@
         },
         {
           "key": "pattern",
-          "name": "Optional format pattern (regex for ONE ID). Required if method is 'No check character'.",
+          "name": "Optional format pattern (regex for ONE ID). Required if method is 'No check character'. JavaScript regex; avoid nested quantifiers like (a+)+.",
           "type": "text"
         },
         {
@@ -84,18 +100,43 @@
           "type": "text"
         },
         {
+          "key": "keep-chars",
+          "name": "Pooled only: extra characters to keep when splitting a pooled field (rarely needed)",
+          "type": "text",
+          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+        },
+        {
+          "key": "id-lengths",
+          "name": "Pooled only: exact ID length(s), comma-separated (e.g. 10 or 10, 12). Overrides the min/max range below.",
+          "type": "text",
+          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+        },
+        {
+          "key": "id-min-len",
+          "name": "Pooled only: minimum ID length (default 8). Used only if exact lengths are blank.",
+          "type": "text",
+          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+        },
+        {
+          "key": "id-max-len",
+          "name": "Pooled only: maximum ID length (default 14; must be less than 2× the minimum).",
+          "type": "text",
+          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+        },
+        {
           "key": "expected-count",
-          "name": "Expected number of IDs in a pooled field (optional; warns if different)",
-          "type": "text"
+          "name": "Pooled only: expected number of IDs in the field (optional; warns if different). Positive whole number.",
+          "type": "text",
+          "branchingLogic": { "field": "rule-type", "value": "pooled" }
         },
         {
           "key": "block-save",
-          "name": "On an invalid ID",
+          "name": "On an invalid ID (client-side; the server always logs — see above)",
           "type": "dropdown",
           "choices": [
             { "value": "off", "name": "Informational — show a message only (default)" },
             { "value": "confirm", "name": "Advisory — warn and ask before saving" },
-            { "value": "hard", "name": "Compulsory — block saving until fixed" }
+            { "value": "hard", "name": "Compulsory — block the browser save until fixed" }
           ]
         }
       ]

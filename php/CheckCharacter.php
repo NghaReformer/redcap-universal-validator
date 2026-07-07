@@ -55,7 +55,15 @@ class CheckCharacter
 
     // -- normalization + source extraction (mirror check_characters.py) ------
 
-    /** Unicode dash folding + uppercase + delimiter strip. */
+    /**
+     * Unicode dash folding + uppercase + delimiter strip.
+     *
+     * Multibyte-safe throughout so the server verdict matches the browser
+     * engine (js/engine.js), which normalizes with Unicode-aware primitives
+     * (String.toUpperCase, Array.from, /\p{Nd}/u). Uses mb_strtoupper for case
+     * folding and code-point splitting for strip/keep_only so a non-ASCII
+     * character is never mangled into raw bytes.
+     */
     public static function normalize($value, $strip = "-/ _|\\", $uppercase = true, $unifyDashes = true, $keepOnly = null)
     {
         $s = (string) $value;
@@ -67,27 +75,37 @@ class CheckCharacter
             );
         }
         if ($uppercase) {
-            $s = strtoupper($s);
+            $s = mb_strtoupper($s, 'UTF-8');
         }
         if ($strip !== null && $strip !== '') {
-            $s = str_replace(str_split($strip), '', $s);
+            // Split the strip set by code point (not byte) so a multibyte
+            // delimiter is removed as a whole character, never byte-by-byte.
+            $stripChars = preg_split('//u', $strip, -1, PREG_SPLIT_NO_EMPTY);
+            if ($stripChars) $s = str_replace($stripChars, '', $s);
         }
         if ($keepOnly !== null) {
-            $keep = str_split($keepOnly);
+            $keep = array_flip(preg_split('//u', $keepOnly, -1, PREG_SPLIT_NO_EMPTY) ?: []);
             $out = '';
-            foreach (str_split($s) as $ch) {
-                if (in_array($ch, $keep, true)) $out .= $ch;
+            foreach (preg_split('//u', $s, -1, PREG_SPLIT_NO_EMPTY) ?: [] as $ch) {
+                if (isset($keep[$ch])) $out .= $ch;
             }
             $s = $out;
         }
         return $s;
     }
 
-    /** Extract the substring the algorithm runs over. */
+    /**
+     * Extract the substring the algorithm runs over.
+     *
+     * Unicode-aware (\p{Nd}) to mirror the browser engine: a non-ASCII decimal
+     * digit is KEPT here, then rejected downstream by the ASCII algorithm
+     * alphabet — exactly as the JS side behaves. ASCII \d/\D would silently
+     * strip such a character and flip the verdict, breaking client/server parity.
+     */
     public static function applySource($norm, $source)
     {
-        if ($source === 'digits_only')   return preg_replace('/\D/', '', $norm);
-        if ($source === 'sequence_only') return preg_match('/(\d+)\D*$/', $norm, $m) ? $m[1] : '';
+        if ($source === 'digits_only')   return preg_replace('/[^\p{Nd}]/u', '', $norm);
+        if ($source === 'sequence_only') return preg_match('/(\p{Nd}+)\P{Nd}*$/u', $norm, $m) ? $m[1] : '';
         return $norm; // normalized_id (default)
     }
 
@@ -103,15 +121,325 @@ class CheckCharacter
             $norm = self::normalize($fullRaw, $strip);
             $n = self::nCheckChars($algo);
             if ($n <= 0) return true;
-            if (strlen($norm) <= $n) return false;
-            $body  = substr($norm, 0, strlen($norm) - $n);
-            $check = substr($norm, strlen($norm) - $n);
+            // Code-point (not byte) length/slicing so peeling the check
+            // character(s) matches the browser engine on multibyte input.
+            $len = mb_strlen($norm, 'UTF-8');
+            if ($len <= $n) return false;
+            $body  = mb_substr($norm, 0, $len - $n, 'UTF-8');
+            $check = mb_substr($norm, $len - $n, null, 'UTF-8');
             $payload = self::applySource($body, $source);
             if ($payload === '') return false;
             return self::compute($algo, $payload) === $check;
         } catch (\Throwable $e) {
             return false; // out-of-alphabet character etc. -> not valid
         }
+    }
+
+    /**
+     * Mint an ID: append the computed check character(s) to the RAW value.
+     * Mirrors the browser engine's appendCheck (QRCheck.appendCheck): the check
+     * is computed over the normalized payload but appended to the raw string so
+     * any separators the user typed are preserved. When placement is
+     * "append_after_delimiter" the check is separated from the body by $delimiter,
+     * exactly as the JS side does. Used by the parity harness to verify the
+     * append/validate scheme operations, not by the runtime guard.
+     */
+    public static function appendCheck($algo, $source, $strip, $raw, $placement = 'append', $delimiter = '-')
+    {
+        if ($algo === 'none') return (string) $raw;
+        $norm = self::normalize($raw, $strip);
+        $payload = self::applySource($norm, $source);
+        if ($payload === '') {
+            throw new \InvalidArgumentException('ID normalizes to empty; nothing to compute a check over');
+        }
+        $chk = self::compute($algo, $payload);
+        if ($chk === '') return (string) $raw;
+        if ($placement === 'append_after_delimiter') return (string) $raw . $delimiter . $chk;
+        return (string) $raw . $chk;
+    }
+
+    // -- server-side rule validation (mirror the browser rule semantics) -----
+
+    /** The check alphabet an algorithm emits into (mirrors the JS registry). */
+    public static function checkAlphabet($name)
+    {
+        switch ($name) {
+            case 'iso7064_mod11_2':  return self::DIGITS . 'X';
+            case 'iso7064_mod37_2':  return self::ALNUM36 . '*';
+            case 'iso7064_mod97_10': return self::DIGITS;
+            case 'iso7064_mod11_10': return self::DIGITS;
+            case 'iso7064_mod37_36': return self::ALNUM36;
+            case 'iso7064_letters1': return self::LETTERS26;
+            case 'iso7064_letters2': return 'ABCDEF';
+            case 'damm':             return self::DIGITS;
+            case 'verhoeff':         return self::DIGITS;
+            case 'luhn':             return self::DIGITS;
+            default:                 return '';
+        }
+    }
+
+    /**
+     * Test a value against a project ID regex (JavaScript-authored, anchored).
+     * The value is normalized the way the browser tests format — uppercase +
+     * unified dashes, separators KEPT. Returns true when the regex cannot be
+     * compiled server-side (JS/PCRE dialect gap) so the server never raises a
+     * format error the client would not; the client surfaces the config error.
+     */
+    public static function matchesPattern($value, $pattern)
+    {
+        if ($pattern === null || $pattern === '') return true;
+        $norm = trim(self::normalize($value, '', true, true, null));
+        $body = preg_replace('/^\^/', '', (string) $pattern);
+        $body = preg_replace('/\$$/', '', $body);
+        $re = self::compilePattern($body);
+        if ($re === null) return true;
+        return @preg_match($re, $norm) === 1;
+    }
+
+    /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
+    private static function compilePattern($body)
+    {
+        $delims = ['/', '#', '~', '!', '@', '%', ';', ':', '|', '='];
+        $d = null;
+        foreach ($delims as $cand) {
+            if (strpos($body, $cand) === false) { $d = $cand; break; }
+        }
+        if ($d === null) { $d = '/'; $body = str_replace('/', '\\/', $body); }
+        $re = $d . '^(?:' . $body . ')$' . $d . 'u';
+        return (@preg_match($re, '') === false) ? null : $re;
+    }
+
+    private static function patTest($re, $t)
+    {
+        return @preg_match($re, $t) === 1;
+    }
+
+    /**
+     * Server-side single-field validation mirroring the client's rule order:
+     * format (idPattern) first, then check character. Returns ['ok', 'reason'].
+     */
+    public static function validateSingleField($algo, $source, $strip, $pattern, $value)
+    {
+        $hasPattern = ($pattern !== null && $pattern !== '');
+        if ($hasPattern && !self::matchesPattern($value, $pattern)) {
+            return ['ok' => false, 'reason' => 'format'];
+        }
+        if ($algo !== 'none') {
+            if (!self::validateId($algo, $source, $strip, $value)) {
+                return ['ok' => false, 'reason' => 'check-character'];
+            }
+            return ['ok' => true, 'reason' => 'valid'];
+        }
+        // algorithm "none": format-only if a pattern is set, otherwise nothing to check.
+        return ['ok' => true, 'reason' => $hasPattern ? 'valid' : 'no-op'];
+    }
+
+    // -- server-side pooled parser (faithful port of QRIDPooledInit) ---------
+    //
+    // Behavior is frozen against tests/pooled_fixture.json, recomputed by BOTH
+    // runtimes in CI, so the server parser can never drift from the browser one.
+
+    private static function isPosInt($x)
+    {
+        if (is_int($x)) return $x > 0;
+        if (is_string($x)) return ctype_digit($x) && (int) $x > 0;
+        return is_numeric($x) && $x > 0 && floor($x) == $x;
+    }
+
+    /** Resolve LENS / KEEP / regex from a pooled rule config, or null if unsafe. */
+    private static function pooledState(array $cfg)
+    {
+        $ALPHA  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+        $algo   = (isset($cfg['algorithm']) && $cfg['algorithm'] !== '') ? $cfg['algorithm'] : 'iso7064_mod37_36';
+        $source = (isset($cfg['source']) && $cfg['source'] !== '') ? $cfg['source'] : 'normalized_id';
+        $strip  = (array_key_exists('strip', $cfg) && $cfg['strip'] !== null) ? $cfg['strip'] : '';
+        $pattern = (isset($cfg['idPattern']) && $cfg['idPattern'] !== '') ? $cfg['idPattern'] : null;
+
+        $checkMode = ($algo !== 'none');
+        $regexOnly = (!$checkMode && $pattern !== null);
+        if (!$checkMode && !$regexOnly) return null; // nothing to validate
+
+        $re = null;
+        if ($pattern !== null) {
+            $body = preg_replace('/^\^/', '', (string) $pattern);
+            $body = preg_replace('/\$$/', '', $body);
+            $re = self::compilePattern($body);
+            if ($re === null) return null; // cannot segment safely
+        }
+
+        $nCheck = $checkMode ? self::nCheckChars($algo) : 0;
+
+        $LENS = [];
+        $minLen = (isset($cfg['idMinLen']) && $cfg['idMinLen'] !== null && $cfg['idMinLen'] !== '') ? (int) $cfg['idMinLen'] : 8;
+        $maxLen = (isset($cfg['idMaxLen']) && $cfg['idMaxLen'] !== null && $cfg['idMaxLen'] !== '') ? (int) $cfg['idMaxLen'] : 14;
+        if (isset($cfg['idLengths']) && $cfg['idLengths'] !== null) {
+            $lens = $cfg['idLengths'];
+            if (!is_array($lens) || !count($lens)) return null;
+            foreach ($lens as $L) if (!self::isPosInt($L)) return null;
+            $lens = array_values(array_unique(array_map('intval', $lens)));
+            sort($lens);
+            $set = array_flip($lens);
+            foreach ($lens as $a) foreach ($lens as $b) if (isset($set[$a + $b])) return null; // sum-swallow
+            $LENS = $lens;
+            $minLen = $lens[0];
+            $maxLen = $lens[count($lens) - 1];
+        } else {
+            if (!self::isPosInt($minLen) || !self::isPosInt($maxLen)) return null;
+            if ($maxLen < $minLen) return null;
+            if ($maxLen >= 2 * $minLen) return null;
+            $minLen = max($minLen, $nCheck + 1);
+            for ($L = $minLen; $L <= $maxLen; $L++) $LENS[] = $L;
+        }
+
+        $KEEP = $ALPHA . (isset($cfg['keepChars']) ? (string) $cfg['keepChars'] : '');
+        if ($checkMode) {
+            $CA = self::checkAlphabet($algo);
+            for ($i = 0; $i < strlen($CA); $i++) {
+                if (strpos($KEEP, $CA[$i]) === false) $KEEP .= $CA[$i];
+            }
+        }
+        if ($pattern !== null) {
+            $pat = (string) $pattern; $meta = '\\^$.|?*+()[]{}';
+            for ($i = 0; $i < strlen($pat); $i++) {
+                $pc = $pat[$i];
+                if ($pc === '\\') {
+                    $i++;
+                    if ($i < strlen($pat)) {
+                        $pc = $pat[$i];
+                        if (strpos($meta, $pc) !== false && strpos($KEEP, $pc) === false) $KEEP .= $pc;
+                    }
+                    continue;
+                }
+                if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($KEEP, $pc) === false) {
+                    $KEEP .= $pc;
+                }
+            }
+        }
+
+        return [
+            'algo' => $algo, 'source' => $source, 'strip' => $strip,
+            'checkMode' => $checkMode, 'regexOnly' => $regexOnly, 'nCheck' => $nCheck,
+            'minLen' => $minLen, 'maxLen' => $maxLen, 'LENS' => $LENS, 'KEEP' => $KEEP, 're' => $re,
+        ];
+    }
+
+    private static function pooledVerifies(array $st, $t)
+    {
+        if ($st['re'] !== null && !self::patTest($st['re'], $t)) return false;
+        if ($st['regexOnly']) return true;
+        return self::validateId($st['algo'], $st['source'], $st['strip'], $t);
+    }
+
+    private static function pooledBetter(array $a, array $b)
+    {
+        if ($a['tok'] !== $b['tok']) return $a['tok'] > $b['tok'];
+        if ($a['runs'] !== $b['runs']) return $a['runs'] < $b['runs'];
+        if ($a['maxL'] !== $b['maxL']) return $a['maxL'] < $b['maxL'];
+        return $a['chars'] > $b['chars'];
+    }
+
+    private static function pooledSegments(array $st, $raw)
+    {
+        $s = self::normalize($raw, '', true, true, $st['KEEP']); // clean(): keep only KEEP chars
+        $N = strlen($s);
+        $LENS = $st['LENS'];
+        $sc = array_fill(0, $N + 1, null);
+        $sc[$N] = ['tok' => 0, 'maxL' => 0, 'runs' => 0, 'chars' => 0, 'startsJunk' => false, 'move' => -1];
+        for ($i = $N - 1; $i >= 0; $i--) {
+            $c = $sc[$i + 1];
+            $best = [
+                'tok' => $c['tok'], 'maxL' => $c['maxL'],
+                'runs' => $c['runs'] + ($c['startsJunk'] ? 0 : 1),
+                'chars' => $c['chars'] + 1, 'startsJunk' => true, 'move' => 0,
+            ];
+            foreach ($LENS as $L) {
+                if ($L > $N - $i) break;
+                if (!self::pooledVerifies($st, substr($s, $i, $L))) continue;
+                $ch = $sc[$i + $L];
+                $cand = [
+                    'tok' => $ch['tok'] + 1, 'maxL' => ($L > $ch['maxL'] ? $L : $ch['maxL']),
+                    'runs' => $ch['runs'], 'chars' => $ch['chars'], 'startsJunk' => false, 'move' => $L,
+                ];
+                if (self::pooledBetter($cand, $best)) $best = $cand;
+            }
+            $sc[$i] = $best;
+        }
+        $segs = []; $pos = 0; $junk = '';
+        while ($pos < $N) {
+            $m = $sc[$pos]['move'];
+            if ($m > 0) {
+                if ($junk !== '') { $segs[] = ['type' => 'junk', 'text' => $junk]; $junk = ''; }
+                $segs[] = ['type' => 'id', 'id' => substr($s, $pos, $m), 'valid' => true];
+                $pos += $m;
+            } else {
+                $junk .= $s[$pos]; $pos++;
+            }
+        }
+        if ($junk !== '') $segs[] = ['type' => 'junk', 'text' => $junk];
+
+        // re-scan junk for well-formed-but-wrong-check members (check + pattern only)
+        if ($st['re'] !== null && $st['checkMode']) {
+            $out = [];
+            foreach ($segs as $seg) {
+                if ($seg['type'] !== 'junk') { $out[] = $seg; continue; }
+                $rest = $seg['text']; $buf = '';
+                while (strlen($rest)) {
+                    $hit = '';
+                    $lim2 = min($st['maxLen'], strlen($rest));
+                    for ($L2 = $st['minLen']; $L2 <= $lim2 && $hit === ''; $L2++) {
+                        if (self::patTest($st['re'], substr($rest, 0, $L2))) $hit = substr($rest, 0, $L2);
+                    }
+                    if ($hit !== '') {
+                        if ($buf !== '') { $out[] = ['type' => 'junk', 'text' => $buf]; $buf = ''; }
+                        $out[] = ['type' => 'id', 'id' => $hit, 'valid' => false];
+                        $rest = substr($rest, strlen($hit));
+                    } else {
+                        $buf .= $rest[0]; $rest = substr($rest, 1);
+                    }
+                }
+                if ($buf !== '') $out[] = ['type' => 'junk', 'text' => $buf];
+            }
+            $segs = $out;
+        }
+        return $segs;
+    }
+
+    /**
+     * Segment a pooled field into members + junk. Returns a list of
+     *   ['type'=>'id','id'=>..,'valid'=>bool]  or  ['type'=>'junk','text'=>..]
+     * or null when the config is unsafe (client shows a config error instead).
+     */
+    public static function pooledParse(array $cfg, $raw)
+    {
+        $st = self::pooledState($cfg);
+        if ($st === null) return null;
+        return self::pooledSegments($st, (string) $raw);
+    }
+
+    /** Server-side pooled verdict mirroring the browser render() problem checks. */
+    public static function validatePooledField(array $cfg, $raw)
+    {
+        $segs = self::pooledParse($cfg, $raw);
+        if ($segs === null) return ['ok' => true, 'reason' => 'unconfigurable', 'count' => 0];
+        $ids = 0; $junk = 0; $bad = 0; $dups = 0; $seen = [];
+        foreach ($segs as $seg) {
+            if ($seg['type'] === 'id') {
+                $ids++;
+                if (!$seg['valid']) $bad++;
+                if (isset($seen[$seg['id']])) $dups++;
+                $seen[$seg['id']] = true;
+            } else {
+                $junk++;
+            }
+        }
+        $problems = [];
+        if (!$ids) $problems[] = 'no-id';
+        if ($bad)  $problems[] = 'check-character';
+        if ($junk) $problems[] = 'junk';
+        if ($dups) $problems[] = 'duplicate';
+        $expected = (isset($cfg['expectedIds']) && $cfg['expectedIds']) ? (int) $cfg['expectedIds'] : null;
+        if ($expected && $ids !== $expected) $problems[] = 'count';
+        return ['ok' => count($problems) === 0, 'reason' => implode(';', $problems), 'count' => $ids];
     }
 
     // -- engines ------------------------------------------------------------

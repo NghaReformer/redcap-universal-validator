@@ -1,0 +1,216 @@
+{
+  "generated_by": "tests/gen_pooled_fixture.cjs",
+  "note": "Frozen browser pooled-parser output; recomputed by pooled_js.cjs and pooled_php.php.",
+  "cases": [
+    {
+      "label": "clean pool of three",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0000H0ABC0001F0DEF00093",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0001F",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0DEF00093",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "pool with trailing junk",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0000H0ABC0001FZZ",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0001F",
+          "valid": true
+        },
+        {
+          "type": "junk",
+          "text": "ZZ"
+        }
+      ]
+    },
+    {
+      "label": "pool with a duplicate",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0000H0ABC0001F0ABC0000H",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0001F",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "space/comma separated",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0000H, 0ABC0001F 0DEF00093",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0001F",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0DEF00093",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "single member only",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0001F",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0001F",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "all junk (no member)",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "ZZZZZZZZ",
+      "segs": [
+        {
+          "type": "junk",
+          "text": "ZZZZZZZZ"
+        }
+      ]
+    },
+    {
+      "label": "check+pattern with a bad member",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idPattern": "[0-9A-Z]{9}",
+        "idLengths": [
+          9
+        ]
+      },
+      "input": "0ABC0000H0ABC0001X0DEF00093",
+      "segs": [
+        {
+          "type": "id",
+          "id": "0ABC0000H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "0ABC0001X",
+          "valid": false
+        },
+        {
+          "type": "id",
+          "id": "0DEF00093",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "regex-only pool",
+      "config": {
+        "algorithm": "none",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idPattern": "FC[0-9]{4}",
+        "idMinLen": 6,
+        "idMaxLen": 6
+      },
+      "input": "FC0001FC0002XY",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC0001",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "FC0002",
+          "valid": true
+        },
+        {
+          "type": "junk",
+          "text": "XY"
+        }
+      ]
+    }
+  ]
+}

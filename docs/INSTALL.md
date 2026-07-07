@@ -31,10 +31,18 @@ fields:
 - **Check-character method** — must match how the IDs were minted. The generator's
   default is *ISO 7064 Mod 37,36*. Choose *No check character* for legacy IDs that
   carry no check digit (then set a format pattern).
-- **On an invalid ID** — *Informational*, *Advisory*, or *Compulsory* (block save).
+- **On an invalid ID** — *Informational*, *Advisory*, or *Compulsory*. *Compulsory*
+  blocks the save **in the browser**; API and data-import writes cannot be blocked
+  from this hook, but they are validated and logged server-side (see below).
 - **Advanced (optional)** — payload source (whole ID / digits only / trailing
-  number), a format regex, separators to ignore, and the expected pool size for
-  pooled fields.
+  number), a format regex (avoid nested quantifiers such as `(a+)+`), and
+  separators to ignore. For *Pooled* rules only: exact ID length(s) or a min/max
+  range, extra characters to keep, and the expected pool size.
+
+There is also one project-level setting, **How to log invalid IDs caught on the
+server**: store a SHA-256 hash of the value (default), log without the value, log
+the raw value, or don't log server detections at all. Pick the option your
+data-governance policy allows before turning the module loose on real IDs.
 
 Save. Open any record with those fields and type an ID — you'll see the live
 verdict. A field listed in more than one rule shows a configuration error instead
@@ -52,6 +60,10 @@ of running two conflicting validators; give each field exactly one rule.
 
 - The module injects its own JavaScript; the JavaScript Injector module is **not**
   required and should not also carry an ID-check script for the same fields.
-- The server-side check (for API/import bypasses) logs invalid IDs to the module
-  log. It fires after the write, so treat it as detection/audit; the *Compulsory*
-  client block is what prevents a human form save.
+- The server-side check (for API/import/JavaScript-off paths) validates the saved
+  value with the same rules as the client — single and pooled fields, check
+  character, format pattern, and regex-only — and logs any invalid ID to the
+  module log. It fires after the write, so treat it as detection/audit; the
+  *Compulsory* client block is what prevents a human form save.
+- Requires REDCap 13.7+ and PHP 7.4+ with the `mbstring` extension (declared in
+  `config.json`).

@@ -4,12 +4,30 @@
 
     integrations/redcap/redcap_combined_id_check.js
 
-**The only change from upstream** is the configuration source. Upstream declares
-a hardcoded `QRID_COMBINED_CONFIG` literal (edited by hand for the JavaScript
-Injector). Here that one object is read from `window.INSPIRE_VALIDATOR_CONFIG`,
-which `UniversalValidator.php` injects from the module's settings. Every
-algorithm, factory, and dispatcher line below the config is byte-identical to the
-verified upstream.
+## Intentional deviations from upstream
+
+The **verified engine core** (the `QRCheck` IIFE — every algorithm, ISO/IEC 7064
+factory, and the check-character registry) is byte-identical to upstream and is
+proven so by `tests/parity_js.cjs`. The changes are confined to the config source
+and the field-facing UI layer:
+
+1. **Config source.** Upstream declares a hardcoded `QRID_COMBINED_CONFIG` literal
+   (edited by hand for the JavaScript Injector). Here it is read from
+   `window.INSPIRE_VALIDATOR_CONFIG`, which `UniversalValidator.php` injects from
+   the module's settings.
+2. **Security hardening of the UI layer** (the two field factories and the
+   dispatcher, below the engine core):
+   - All config-derived text (regex class bodies, config-error messages) is
+     HTML-escaped before it reaches `innerHTML` — closes a DOM-XSS path (UV-002).
+   - A catastrophic-backtracking check rejects nested/adjacent unbounded
+     quantifiers in `idPattern` at config time, and per-field input-length caps
+     bound the work — mitigates ReDoS (UV-006).
+   - The `MutationObserver` is disconnected when a field never appears, instead of
+     observing the whole page for the life of the tab (UV-007).
+
+These deviations touch presentation and safety only, never the check-character
+math, so parity with the Python source is unaffected. Upstreaming them is
+encouraged.
 
 ## The cross-repo fixture contract
 
@@ -31,8 +49,11 @@ contract, and CI enforces it.
 2. Copy the refreshed `playground/check_fixture.json` to `tests/check_fixture.json`
    here.
 3. Copy `integrations/redcap/redcap_combined_id_check.js` to `js/engine.js`, then
-   re-apply the one change: replace the hardcoded `var QRID_COMBINED_CONFIG = {…};`
-   block with a read from `window.INSPIRE_VALIDATOR_CONFIG` (see the header comment
-   in the current `engine.js`).
-4. Run `node tests/parity_js.cjs` and `php tests/parity_php.php` — both must be
-   green before committing.
+   re-apply the deviations listed above: the `window.INSPIRE_VALIDATOR_CONFIG`
+   config source, plus the UI-layer security hardening (config-derived HTML
+   escaping, the `idPattern` ReDoS check, input-length caps, and the
+   `MutationObserver` disconnect). Diff against the previous `engine.js` to port
+   them forward; the engine core below the config should apply cleanly.
+4. Run `node tests/parity_js.cjs`, `php tests/parity_php.php`, and both pooled
+   tests — all must be green before committing. If the pooled parser changed,
+   regenerate `tests/pooled_fixture.json` with `node tests/gen_pooled_fixture.cjs`.

@@ -529,6 +529,26 @@ var QRID_COMBINED_CONFIG = (typeof window !== "undefined" && window.INSPIRE_VALI
     normalize, applySource, computeCheck, appendCheck, preparePayload, validateIdCheck,
   };
 })();
+/* ---- shared safety helpers (module addition — NOT part of the vendored core;
+   see js/README.md "intentional deviations"). Used by both factories. ---- */
+function QRID_escapeHtml(t){
+  return String(t)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+/* Conservative catastrophic-backtracking detector. Not a proof of safety — it
+   rejects the common exponential shapes (nested / adjacent unbounded quantifiers)
+   at CONFIG time so a bad project regex can never be compiled and run per
+   keystroke. Combined with the input-length caps below, this bounds ReDoS. */
+function QRID_riskyPattern(src){
+  var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
+  if(/[+*]\s*[+*]/.test(s)) return true;                   /* a++  a*+  a*?* ...   */
+  if(/\([^()]*[*+][^()]*\)\s*[*+{?]/.test(s)) return true; /* (…a+…)+  (…a*…)*     */
+  if(/\[[^\]]*\]\s*[*+]\s*[*+{]/.test(s)) return true;     /* [0-9]+*  style       */
+  return false;
+}
+var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
+var QRID_MAX_POOLED_LEN = 8192;   /* pooled field: cap total scanned length        */
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
 window.QRIDSingleInit = function(QRID_CONFIG){
   "use strict";
@@ -548,6 +568,9 @@ window.QRIDSingleInit = function(QRID_CONFIG){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
         "regex — use ^ and $ instead (anchors are optional anyway).";
+    } else if(QRID_riskyPattern(rawPatS)){
+      configError = "idPattern looks catastrophically backtracking (nested or adjacent " +
+        "unbounded quantifiers, e.g. (a+)+). Rewrite it without nested quantifiers.";
     } else try {
       var p = rawPatS.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + p + ")$");
@@ -691,7 +714,7 @@ window.QRIDSingleInit = function(QRID_CONFIG){
       if(norm.length <= nCheck) return "";
       var expected = Q.ALGORITHMS[algoName].compute(norm.slice(0, -nCheck));
       return ' If everything before the last ' + (nCheck > 1 ? nCheck + ' characters' : 'character') +
-        ' is correct, the ID should end in <b style="font-family:monospace">' + expected + "</b>." +
+        ' is correct, the ID should end in <b style="font-family:monospace">' + QRID_escapeHtml(expected) + "</b>." +
         " Otherwise the typo is earlier in the ID.";
     } catch(e){ return ""; }
   }
@@ -705,7 +728,9 @@ window.QRIDSingleInit = function(QRID_CONFIG){
         if(atoms){
           var w = walkPattern(normR);
           if(w.state === "partial"){
-            var rem = remainingText(w.atomIdx, w.needed);
+            /* rem is built from the configured pattern (atom .desc, which may
+               echo a raw [class] body) — escape before it reaches innerHTML. */
+            var rem = QRID_escapeHtml(remainingText(w.atomIdx, w.needed));
             if(!isFinal) return { ok: "info",
               html: "&#8230; format OK so far &mdash; remaining: <b>" + rem + "</b>." };
             return { ok: false,
@@ -713,8 +738,8 @@ window.QRIDSingleInit = function(QRID_CONFIG){
           }
           if(w.state === "mismatch"){
             return { ok: false, html: "&#10007; FORMAT error at character " + (w.pos + 1) +
-              ": expected " + w.expected + ", got <b style=\"font-family:monospace\">" +
-              String(w.got).replace(/&/g, "&amp;").replace(/</g, "&lt;") + "</b>." +
+              ": expected " + QRID_escapeHtml(w.expected) + ", got <b style=\"font-family:monospace\">" +
+              QRID_escapeHtml(w.got) + "</b>." +
               (CHECK_MODE ? " (The check character is only tested once the format is right.)" : "") };
           }
         }
@@ -802,12 +827,18 @@ window.QRIDSingleInit = function(QRID_CONFIG){
     input.parentNode.insertBefore(msg, input.nextSibling);
     if(configError){
       styleMsg(msg, "err");
-      msg.innerHTML = "&#9888; ID-check configuration error: " + configError;
+      msg.innerHTML = "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
       return true;
     }
     function check(isFinal){
       var v = (input.value || "").trim();
       if(!v){ msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false; return; }
+      if(v.length > QRID_MAX_SINGLE_LEN){
+        styleMsg(msg, false);
+        msg.innerHTML = "&#10007; This value is too long for an ID field (over " +
+          QRID_MAX_SINGLE_LEN + " characters) — validation skipped.";
+        input.style.outline = "2px solid #c62828"; input.__qridInvalid = true; return;
+      }
       var r = verdict(v, !!isFinal);
       styleMsg(msg, r.ok);
       input.style.outline = (r.ok === true) ? "2px solid #2e9e44"
@@ -832,18 +863,21 @@ window.QRIDSingleInit = function(QRID_CONFIG){
   });
   function boot(){
     var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
     function sweep(){
       pending = pending.filter(function(f){ return !attach(f); });
-      return pending.length === 0;
+      if(pending.length === 0){ stop(); return true; }
+      return false;
     }
     if(sweep()) return;
     var tries = 0;
     var timer = setInterval(function(){                 /* REDCap builds the form progressively */
       tries++;
-      if(sweep() || tries >= 20) clearInterval(timer);
+      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
     }, 500);
     if(typeof MutationObserver !== "undefined" && document.body){
-      var mo = new MutationObserver(function(){ if(sweep()) mo.disconnect(); });
+      mo = new MutationObserver(function(){ sweep(); });
       mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
     }
   }
@@ -870,6 +904,9 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
         "regex — use ^ and $ instead (anchors are optional anyway).";
+    } else if(QRID_riskyPattern(rawPatP)){
+      configError = "idPattern looks catastrophically backtracking (nested or adjacent " +
+        "unbounded quantifiers, e.g. (a+)+). Rewrite it without nested quantifiers.";
     } else try {
       var _p = rawPatP.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + _p + ")$");
@@ -1083,6 +1120,13 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   function render(msg, input){
     var v = (input.value || "").trim();
     if(!v){ msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false; return; }
+    if(v.length > QRID_MAX_POOLED_LEN){
+      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+        "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
+      msg.innerHTML = "&#10007; This field is too long to scan (over " + QRID_MAX_POOLED_LEN +
+        " characters) — split the pool into smaller entries.";
+      input.style.outline = "2px solid #c62828"; input.__qridInvalid = true; return;
+    }
     var segs = parse(v);
     var ids = segs.filter(function(x){ return x.type === "id"; });
     var junkSegs = segs.filter(function(x){ return x.type === "junk"; });
@@ -1178,7 +1222,7 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     if(configError){
       msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
         "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-      msg.innerHTML = "&#9888; ID-check configuration error: " + configError;
+      msg.innerHTML = "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
       return true;
     }
     function check(){ render(msg, input); }
@@ -1191,18 +1235,21 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   function boot(){
     var pending = (QRID_MULTI_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
     function sweep(){
       pending = pending.filter(function(f){ return !attach(f); });
-      return pending.length === 0;
+      if(pending.length === 0){ stop(); return true; }
+      return false;
     }
     if(sweep()) return;
     var tries = 0;
     var timer = setInterval(function(){                 /* REDCap builds the form progressively */
       tries++;
-      if(sweep() || tries >= 20) clearInterval(timer);
+      if(sweep() || tries >= 20){ clearInterval(timer); stop(); }  /* give up -> disconnect */
     }, 500);
     if(typeof MutationObserver !== "undefined" && document.body){
-      var mo = new MutationObserver(function(){ if(sweep()) mo.disconnect(); });
+      mo = new MutationObserver(function(){ sweep(); });
       mo.observe(document.body, { childList: true, subtree: true });   /* late-rendered fields */
     }
   }
@@ -1222,6 +1269,10 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
       cfg[k] = (rule[k] !== undefined) ? rule[k] : C[k];
     }
     cfg.fields = rule.fields || [];
+    /* a rule the server flagged as mis-configured (e.g. a non-integer expected
+       count or bad id-lengths) surfaces as a field-level config error, never as
+       silent wrong validation. */
+    if(rule.configError) cfg.configErrorOverride = rule.configError;
     return cfg;
   }
   var rules = (C.rules || []).slice();

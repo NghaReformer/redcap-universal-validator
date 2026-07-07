@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.2.0 — adversarial-review hardening
+
+Addresses the findings in `reports/adversarial-review-2026-07-07.md`.
+
+Security
+- **UV-001:** the client config is embedded as inert JSON in a
+  `<script type="application/json">` block and parsed with `JSON.parse`, hex-escaped
+  (`JSON_HEX_TAG|HEX_AMP|HEX_APOS|HEX_QUOT`, no `JSON_UNESCAPED_SLASHES`). A project
+  setting can no longer break out of the inline script (stored XSS).
+- **UV-002:** all config-derived text (regex class bodies, config-error messages)
+  is HTML-escaped before it reaches `innerHTML` in the client (DOM XSS).
+- **UV-006:** `idPattern` is rejected at config time if it has nested/adjacent
+  unbounded quantifiers, and per-field input-length caps bound the work (ReDoS).
+
+Server-side coverage
+- **UV-003:** `redcap_save_record` now mirrors the full client rule set — single
+  and pooled fields, check character, format pattern, and regex-only.
+- **UV-004:** server reads the exact saved event and repeat instance instead of the
+  first matching value (fixes longitudinal / repeating-instrument audits).
+- **UV-005:** invalid-ID logging no longer stores raw identifiers by default; the
+  new **log-values** setting chooses hash (default) / none / raw / off.
+- **UV-007:** server reads all fields in one `getData` call; the client
+  `MutationObserver` is disconnected when a field never appears.
+
+Configuration & tests
+- **UV-008:** exposes exact ID length(s), min/max, and keep-chars for pooled rules;
+  `expected-count` and lengths are strictly validated (a bad value is a visible
+  config error, not silent coercion). Adds a `compatibility` block.
+- **UV-009:** PHP normalization is multibyte-safe (`mb_strtoupper`, code-point
+  splitting, `\p{Nd}` source extraction) so client and server agree on Unicode.
+- **UV-010:** parity tests now cover `normalize` and `scheme_ops` (643 rows), a new
+  `pooled_fixture.json` freezes the pooled parser across both runtimes, and CI adds
+  `php -l` and a fixture-staleness check.
+
 ## 0.1.0 — scaffold
 
 Initial standalone REDCap external module extracted from the JavaScript-Injector
