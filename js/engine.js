@@ -1,10 +1,20 @@
 /* engine.js — vendored from the qrcode_generation repo:
    integrations/redcap/redcap_combined_id_check.js
-   THE ONLY CHANGE from upstream: the config object is read from
-   window.INSPIRE_VALIDATOR_CONFIG (injected by the REDCap module) instead of a
-   hardcoded literal. Every algorithm / factory / dispatch line below is identical
-   to the verified upstream and is checked against tests/check_fixture.json by
-   tests/parity_js.cjs. Re-vendor with tools described in js/README.md. */
+
+   DEVIATIONS FROM UPSTREAM (full list + rationale in js/README.md, which is the
+   authoritative provenance record — keep the two in sync):
+     1. Config source: read from window.INSPIRE_VALIDATOR_CONFIG (injected by
+        UniversalValidator.php) instead of a hardcoded literal.
+     2. UI-layer security hardening: HTML-escaping of config-derived text,
+        catastrophic-regex (ReDoS) rejection at config time, per-field input
+        length caps, and MutationObserver cleanup.
+     3. Test/namespace hooks: QRCheck.riskyPattern and the single public
+        namespace window.INSPIREUniversalValidator (see the dispatcher).
+   The ENGINE CORE — the QRCheck IIFE with every algorithm and ISO/IEC 7064
+   factory — is byte-identical to the verified upstream and is proven against
+   tests/check_fixture.json by tests/parity_js.cjs on every push. When
+   re-vendoring, port the deviations forward (see js/README.md) or the hardening
+   is silently lost. */
 
 /* ============================================================
    QR STUDY-ID REAL-TIME CHECK for REDCap  (COMBINED: single + pooled fields)
@@ -1316,4 +1326,21 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
       window.QRIDSingleInit(cfg);
     }
   });
+  /* ---- single public namespace (module deviation; REDCap JS guidance) -------
+     Everything this module exposes, reachable through ONE global. The individual
+     globals (QRCheck, QRIDSingleInit, QRIDPooledInit, QRIDValidators, QRIDMulti,
+     QRID_COMBINED_CONFIG, __QRIDGuard) are the upstream / JavaScript-Injector
+     contract and remain as DEPRECATED aliases for back-compat only — new code and
+     tests should go through window.INSPIREUniversalValidator. The lazy members
+     use getters because validators/guard are populated asynchronously as fields
+     attach. */
+  window.INSPIREUniversalValidator = {
+    config: C,
+    engine: (typeof globalThis !== "undefined" && globalThis.QRCheck) ? globalThis.QRCheck : window.QRCheck,
+    singleInit: window.QRIDSingleInit,
+    pooledInit: window.QRIDPooledInit,
+    get validators(){ return window.QRIDValidators || {}; },
+    get guard(){ return window.__QRIDGuard || null; },
+    get lastPooled(){ return window.QRIDMulti || null; }
+  };
 })();

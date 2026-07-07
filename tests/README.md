@@ -60,7 +60,7 @@ match time by bailing to "unconfigurable" on a PCRE backtrack-limit error.
 
 ## CI
 
-`.github/workflows/parity.yml` runs all four tests on every push and pull request
+`.github/workflows/parity.yml` runs all six tests on every push and pull request
 (Node 20, PHP 8.1 with mbstring), `php -l`-lints the PHP, and checks that
 `pooled_fixture.json` is regenerated. Green CI means this module's client and
 server engines agree with each other and with the ID generator.

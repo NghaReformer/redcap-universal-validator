@@ -40,9 +40,13 @@ fields:
   range, extra characters to keep, and the expected pool size.
 
 There is also one project-level setting, **How to log invalid IDs caught on the
-server**: store a SHA-256 hash of the value (default), log without the value, log
-the raw value, or don't log server detections at all. Pick the option your
-data-governance policy allows before turning the module loose on real IDs.
+server**. Every mode except *off* logs field, instrument, event, and instance;
+the modes differ in how the invalid value and the record ID are stored:
+*hashed* (default) stores a SHA-256 of the value with the raw record ID so staff
+can fix the record; *strict* stores no value and hashes the record ID too (for
+sites where record IDs are themselves identifying); *raw* stores both readable;
+*off* logs nothing. Pick the option your data-governance policy allows before
+turning the module loose on real IDs.
 
 Save. Open any record with those fields and type an ID — you'll see the live
 verdict. A field listed in more than one rule shows a configuration error instead
@@ -66,4 +70,6 @@ of running two conflicting validators; give each field exactly one rule.
   module log. It fires after the write, so treat it as detection/audit; the
   *Compulsory* client block is what prevents a human form save.
 - Requires REDCap 13.7+ and PHP 7.4+ with the `mbstring` extension (declared in
-  `config.json`).
+  `config.json`; External Module Framework version 14).
+- After installing or upgrading, run the manual integration checklist in
+  [`TESTING.md`](TESTING.md) on a test project.

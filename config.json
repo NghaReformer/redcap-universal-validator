@@ -10,18 +10,12 @@
       "institution": "Bamenda Center for Health Promotion and Research (CHPR)"
     }
   ],
-  "framework-version": 9,
+  "framework-version": 14,
 
   "compatibility": {
     "php-version-min": "7.4.0",
     "redcap-version-min": "13.7.0"
   },
-
-  "permissions": [
-    "redcap_data_entry_form_top",
-    "redcap_survey_page_top",
-    "redcap_save_record"
-  ],
 
   "project-settings": [
     {
@@ -31,12 +25,12 @@
     },
     {
       "key": "log-values",
-      "name": "How to log invalid IDs caught on the server (API / import / JavaScript-off)",
+      "name": "How to log invalid IDs caught on the server (API / import / JavaScript-off). Every mode except 'off' logs field, instrument, event and instance; the modes differ in how the invalid VALUE and the RECORD ID are stored.",
       "type": "dropdown",
       "choices": [
-        { "value": "hashed", "name": "Store a SHA-256 hash of the value (default — correlates repeats without storing the ID)" },
-        { "value": "none", "name": "Log the event but not the value" },
-        { "value": "raw", "name": "Store the raw value (only if your data-governance policy allows identifiers in module logs)" },
+        { "value": "hashed", "name": "Hashed value + raw record ID (default — correlates repeats without storing the invalid ID; the record ID stays readable so staff can fix the record)" },
+        { "value": "none", "name": "Strict: no value, record ID hashed (minimal-identifier mode for sites where record IDs are themselves identifying)" },
+        { "value": "raw", "name": "Raw value + raw record ID (only if your data-governance policy allows identifiers in module logs)" },
         { "value": "off", "name": "Do not log server-side detections at all" }
       ]
     },
@@ -102,32 +96,27 @@
         {
           "key": "keep-chars",
           "name": "Pooled only: extra characters to keep when splitting a pooled field (rarely needed)",
-          "type": "text",
-          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+          "type": "text"
         },
         {
           "key": "id-lengths",
           "name": "Pooled only: exact ID length(s), comma-separated (e.g. 10 or 10, 12). Overrides the min/max range below.",
-          "type": "text",
-          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+          "type": "text"
         },
         {
           "key": "id-min-len",
           "name": "Pooled only: minimum ID length (default 8). Used only if exact lengths are blank.",
-          "type": "text",
-          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+          "type": "text"
         },
         {
           "key": "id-max-len",
           "name": "Pooled only: maximum ID length (default 14; must be less than 2× the minimum).",
-          "type": "text",
-          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+          "type": "text"
         },
         {
           "key": "expected-count",
           "name": "Pooled only: expected number of IDs in the field (optional; warns if different). Positive whole number.",
-          "type": "text",
-          "branchingLogic": { "field": "rule-type", "value": "pooled" }
+          "type": "text"
         },
         {
           "key": "block-save",

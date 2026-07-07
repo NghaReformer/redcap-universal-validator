@@ -64,8 +64,11 @@ check-character primitive, but the full runtime path the module actually uses:
 - `tests/pooled_js.cjs` / `tests/pooled_php.php` — recompute the pooled-field
   parser for every case in `tests/pooled_fixture.json` (frozen from the verified
   browser parser), so the server pooled auditor can never drift from the client.
+- `tests/risky_js.cjs` / `tests/risky_php.php` — lock the catastrophic-regex
+  (ReDoS) gate to one shared pattern list in both runtimes, and prove the server
+  never turns a PCRE engine failure into a false invalid-ID log.
 
-CI runs all four on every push, checks the pooled fixture is regenerated, and
+CI runs all six on every push, checks the pooled fixture is regenerated, and
 `php -l`-lints the PHP (`.github/workflows/parity.yml`). If either engine drifts,
 CI fails. See [`tests/README.md`](tests/README.md).
 
@@ -80,12 +83,17 @@ node tests/parity_js.cjs      # JS engine vs fixture (compute + normalize + sche
 php  tests/parity_php.php      # PHP port vs fixture (PHP 8.x, needs mbstring)
 node tests/pooled_js.cjs      # JS pooled parser vs pooled_fixture.json
 php  tests/pooled_php.php      # PHP pooled parser vs pooled_fixture.json
+node tests/risky_js.cjs       # JS ReDoS gate vs risky_patterns.json
+php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
 ```
 
-`js/engine.js` is vendored from the `qrcode_generation` repo with a single
-documented change; see [`js/README.md`](js/README.md) for how to re-vendor and how
-the cross-repo fixture contract keeps the two repos in sync.
+`js/engine.js` is vendored from the `qrcode_generation` repo with a set of
+documented deviations (config source, UI-layer security hardening, and the
+`INSPIREUniversalValidator` namespace); see [`js/README.md`](js/README.md) for the
+authoritative list, how to re-vendor without losing them, and how the cross-repo
+fixture contract keeps the two repos in sync. There is also a manual REDCap test
+checklist in [`docs/TESTING.md`](docs/TESTING.md).
 
 ## Where this fits
 

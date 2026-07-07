@@ -24,6 +24,14 @@ and the field-facing UI layer:
      bound the work — mitigates ReDoS (UV-006).
    - The `MutationObserver` is disconnected when a field never appears, instead of
      observing the whole page for the life of the tab (UV-007).
+3. **Namespace and test hooks.** `QRCheck.riskyPattern` is exposed for the
+   cross-runtime ReDoS-gate tests, and the dispatcher publishes ONE public
+   namespace, `window.INSPIREUniversalValidator` (config, engine, factories,
+   validators, guard), per REDCap's external-module JavaScript guidance. The
+   individual upstream globals (`QRCheck`, `QRIDSingleInit`, `QRIDPooledInit`,
+   `QRIDValidators`, `QRIDMulti`, `QRID_COMBINED_CONFIG`, `__QRIDGuard`) remain as
+   deprecated aliases because they are the upstream / JavaScript-Injector
+   contract; new code should use the namespace.
 
 These deviations touch presentation and safety only, never the check-character
 math, so parity with the Python source is unaffected. Upstreaming them is

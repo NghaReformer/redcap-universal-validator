@@ -103,9 +103,14 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Record an invalid value found on the server (API / import / JS-off path).
-     * Raw identifiers are NOT stored by default: the "log-values" project setting
-     * chooses none / SHA-256 hash (default) / raw, so audit logs don't quietly
-     * accumulate participant/specimen identifiers (UV-005).
+     * The "log-values" project setting controls how much identifying material the
+     * entry carries (UV-005 + final-review record-ID finding):
+     *   hashed (default) — value as SHA-256, record ID raw (staff can fix the record)
+     *   none   (strict)  — value omitted AND record ID as SHA-256, for sites where
+     *                      record IDs are themselves participant identifiers
+     *   raw              — value and record ID raw (explicit opt-in)
+     *   off              — no server-side detection logging at all
+     * Field / instrument / event / instance are logged in every mode except off.
      */
     private function logInvalid($record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason)
     {
@@ -113,7 +118,6 @@ class UniversalValidator extends AbstractExternalModule
         if ($mode === null || $mode === '') $mode = 'hashed';
         if ($mode === 'off') return; // logging disabled entirely
         $entry = [
-            'record'     => (string) $record,
             'field'      => (string) $field,
             'type'       => (string) $type,
             'algorithm'  => (string) $algo,
@@ -122,6 +126,11 @@ class UniversalValidator extends AbstractExternalModule
             'event_id'   => (string) $event_id,
             'instance'   => (string) ($repeat_instance ?: 1),
         ];
+        if ($mode === 'none') {
+            $entry['record_sha256'] = hash('sha256', (string) $record);
+        } else {
+            $entry['record'] = (string) $record;
+        }
         if ($mode === 'raw') {
             $entry['value'] = $value;
         } elseif ($mode !== 'none') {

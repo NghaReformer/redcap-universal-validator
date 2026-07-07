@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.3.0 — REDCap-standards conformance
+
+Addresses `reports/final-adversarial-review-2026-07-07.md` (no runtime bugs; five
+conformance/maintainability findings, all closed).
+
+- **Framework:** `framework-version` 9 → 14 (the version REDCap 13.7.0, our
+  declared floor, supports) and the pre-framework-12 hook `permissions` block is
+  removed, per the official docs.
+- **Settings UI:** `branchingLogic` removed from the repeatable `sub_settings`
+  (the official docs warn of known issues with that combination); the pooled-only
+  settings are labeled "Pooled only:" instead.
+- **Privacy:** the `none` log mode is now a true minimal-identifier mode — it
+  hashes the record ID as well as omitting the value (record IDs can themselves be
+  identifying at some sites). `hashed`/`raw` keep the raw record ID so staff can
+  fix the record; setting text and docs now state exactly what each mode stores.
+- **JavaScript:** one public namespace, `window.INSPIREUniversalValidator`
+  (config, engine, factories, validators, guard), per REDCap JS guidance; the
+  individual upstream globals remain as deprecated aliases for the
+  JavaScript-Injector contract.
+- **Docs:** the stale `engine.js` provenance header now points to `js/README.md`'s
+  authoritative deviation list (a future re-vendor must not silently drop the
+  hardening); README/tests README count the current six-test CI matrix; new
+  `docs/TESTING.md` manual REDCap integration checklist (classic, longitudinal,
+  repeating, survey, API/import, log modes, security spot-checks).
+
 ## 0.2.0 — adversarial-review hardening
 
 Addresses the findings in `reports/adversarial-review-2026-07-07.md`.
