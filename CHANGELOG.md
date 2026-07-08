@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.0 — bulk configuration + repositioning
+
+Driven by first live-REDCap field testing: configuring many fields one picker
+click at a time doesn't scale, and the module under-sold what it validates.
+
+- **`@UVALIDATE` field annotations** — a second configuration channel. Tag fields
+  in the Online Designer's Action Tags box or the `field_annotation` column of
+  the data dictionary CSV (bulk setup = one spreadsheet column + one upload).
+  Forms: bare tag (default check), `@UVALIDATE=<algorithm>`, or full-rule JSON
+  (`type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`, `idLengths`,
+  `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `note`). Malformed tags,
+  unknown keys, catastrophic patterns, and tags on non-text fields all surface as
+  per-field configuration errors, never silent no-ops. Identically-tagged fields
+  are grouped into one rule. Parsing lives in the new `php/AnnotationRules.php`
+  (pure, no REDCap dependency) with 30 unit checks in `tests/annotation_php.php`,
+  wired into CI.
+- **Fast entry** — each dialog rule gets a text box for comma/space-separated
+  field names, merged with the field pickers. Names are checked against the data
+  dictionary; misspellings show a configuration error naming the bad field.
+- **Rule labels** — an optional per-rule note so a project with many rules stays
+  readable ("Specimen IDs", "Legacy screening codes").
+- **Repositioning** — renamed to *Universal Field Validator — IDs, codes &
+  patterns*: check-character IDs remain the flagship, and the regex side (any
+  structured value, no administrator-added validation types needed) is now
+  first-class in the name, description, README, and dialog labels.
+- Configure-dialog copy rewritten around "one rule, many fields" (the field
+  picker's + button, fast entry, annotations).
+
 ## 0.3.0 — REDCap-standards conformance
 
 Addresses `reports/final-adversarial-review-2026-07-07.md` (no runtime bugs; five

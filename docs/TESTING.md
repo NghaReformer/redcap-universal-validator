@@ -17,6 +17,26 @@ before tagging a release.
       clear enough, since `branchingLogic` is deliberately not used inside the
       repeatable sub-settings).
 
+## Configuration channels
+
+- [ ] One rule, many fields: add 3+ fields to a single rule with the picker's
+      **+** button — all get the same live validation.
+- [ ] Fast entry: type two more field names (comma-separated) into the rule's
+      fast-entry box — they validate too; a misspelled name shows a configuration
+      error naming it under the rule's fields.
+- [ ] `@UVALIDATE` bare tag in a field's Action Tags box → default check runs on
+      that field with no module-dialog rule.
+- [ ] `@UVALIDATE=verhoeff` → that algorithm runs.
+- [ ] `@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}","blockSave":"hard"}`
+      → regex-only validation with hard block.
+- [ ] Bulk: download the data dictionary, put a tag in `field_annotation` for
+      several rows, upload → all tagged fields validate after one upload.
+- [ ] A malformed tag (`@UVALIDATE={"algoritm":"damm"}`) → configuration error
+      under that field naming the bad key.
+- [ ] A field both tagged AND in a dialog rule → duplicate-rule configuration
+      error (not two validators).
+- [ ] Tag on a radio/calc field → "only works on Text or Notes fields" error.
+
 ## Data-entry form (classic project)
 
 - [ ] Type a correct minted ID → green "verified" message.

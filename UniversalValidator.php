@@ -17,9 +17,13 @@ namespace INSPIRE\UniversalValidator;
 use ExternalModules\AbstractExternalModule;
 
 require_once __DIR__ . '/php/CheckCharacter.php';
+require_once __DIR__ . '/php/AnnotationRules.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
+    /** Per-request data dictionary cache (field name => metadata row), or null. */
+    private $dd = false;
+
     /** The engine's default settings; each rule may override any of them. */
     private function defaults()
     {
@@ -175,12 +179,27 @@ class UniversalValidator extends AbstractExternalModule
         ]);
     }
 
-    /** Translate the repeatable "rules" project settings into engine rules. */
+    /**
+     * All active rules, from BOTH configuration channels:
+     *   1. the repeatable "rules" project settings (module Configure dialog),
+     *   2. @UVALIDATE field annotations (Online Designer / data dictionary CSV).
+     * A field claimed by more than one rule gets a duplicate-rule config error on
+     * the client, so the two channels cannot silently fight over a field.
+     */
     private function getRules()
+    {
+        $out = $this->getSettingRules();
+        foreach ($this->getAnnotationRules() as $r) $out[] = $r;
+        return $out;
+    }
+
+    /** Translate the repeatable "rules" project settings into engine rules. */
+    private function getSettingRules()
     {
         $out = [];
         $subs = $this->getSubSettings('rules');
         if (!is_array($subs)) return $out;
+        $known = $this->projectFieldNames();
 
         foreach ($subs as $s) {
             $fields = $s['fields'] ?? [];
@@ -188,6 +207,30 @@ class UniversalValidator extends AbstractExternalModule
             $fields = array_values(array_filter($fields, function ($f) {
                 return $f !== null && $f !== '';
             }));
+
+            // Fast entry: comma/space-separated field names typed into one box —
+            // the quick way to put many fields under one rule. Merged with (and
+            // deduplicated against) the field pickers.
+            $csvErrors = [];
+            if (!empty($s['fields-csv'])) {
+                $extra = preg_split('/[,;\s]+/', trim((string) $s['fields-csv']), -1, PREG_SPLIT_NO_EMPTY);
+                foreach ($extra as $f) {
+                    $f = strtolower($f);
+                    if (!preg_match('/^[a-z][a-z0-9_]*$/', $f)) {
+                        $csvErrors[] = 'fast-entry name "' . $f . '" is not a valid REDCap field name.';
+                        continue;
+                    }
+                    if (!in_array($f, $fields, true)) $fields[] = $f;
+                }
+            }
+            if ($known !== null) {
+                $bad = array_values(array_diff($fields, $known));
+                if ($bad) {
+                    $csvErrors[] = 'field(s) not in this project: ' . implode(', ', $bad)
+                        . ' — check spelling against the data dictionary.';
+                    $fields = array_values(array_intersect($fields, $known));
+                }
+            }
             if (!$fields) continue;
 
             $rule = [
@@ -204,7 +247,7 @@ class UniversalValidator extends AbstractExternalModule
             // Strict validation of the numeric controls: a bad value becomes a
             // visible per-rule config error instead of being silently coerced
             // (intval("abc") == 0 used to disable the check quietly) — UV-008.
-            $errors = [];
+            $errors = $csvErrors;
 
             // A catastrophic-backtracking pattern is rejected on BOTH sides: the
             // client already refuses it, and flagging it here as a config error
@@ -244,6 +287,56 @@ class UniversalValidator extends AbstractExternalModule
             $out[] = $rule;
         }
         return $out;
+    }
+
+    /**
+     * Rules declared as @UVALIDATE field annotations. Parsing and validation live
+     * in AnnotationRules (pure, unit-tested); this is only the REDCap glue. Tags
+     * on non-text fields become a visible config error rather than a silent no-op.
+     */
+    private function getAnnotationRules()
+    {
+        $dd = $this->dataDictionary();
+        if (!$dd) return [];
+        $perField = [];
+        foreach ($dd as $name => $meta) {
+            $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
+            if ($ann === '' || stripos($ann, AnnotationRules::TAG) === false) continue;
+            $frag = AnnotationRules::parseField($ann);
+            if ($frag === null) continue; // e.g. @UVALIDATED — a different tag
+            $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+            if (!in_array($ftype, ['text', 'notes'], true)) {
+                $frag = ['error' => 'this tag only works on Text or Notes fields (this field is "'
+                    . $ftype . '").'];
+            }
+            $perField[$name] = $frag;
+        }
+        return $perField ? AnnotationRules::group($perField) : [];
+    }
+
+    /** Data dictionary for the current project (cached per request), or null. */
+    private function dataDictionary()
+    {
+        if ($this->dd !== false) return $this->dd;
+        $this->dd = null;
+        try {
+            $pid = $this->getProjectId();
+            if ($pid) {
+                $dd = \REDCap::getDataDictionary($pid, 'array');
+                if (is_array($dd) && $dd) $this->dd = $dd;
+            }
+        } catch (\Throwable $e) {
+            // outside project context (or dictionary unavailable): no annotation
+            // rules and no field-name checking, never a fatal error
+        }
+        return $this->dd;
+    }
+
+    /** Field names of the current project, or null when the dictionary is unavailable. */
+    private function projectFieldNames()
+    {
+        $dd = $this->dataDictionary();
+        return $dd ? array_keys($dd) : null;
     }
 
     // -- server-side value read --------------------------------------------

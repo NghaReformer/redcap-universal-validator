@@ -35,6 +35,7 @@ jobs:
       - name: PHP syntax check
         run: |
           php -l php/CheckCharacter.php
+          php -l php/AnnotationRules.php
           php -l UniversalValidator.php
       - name: PHP port vs fixture (compute + normalize + scheme_ops)
         run: php tests/parity_php.php
@@ -42,3 +43,5 @@ jobs:
         run: php tests/pooled_php.php
       - name: PHP risky-pattern heuristic + server behavior
         run: php tests/risky_php.php
+      - name: PHP @UVALIDATE annotation parser
+        run: php tests/annotation_php.php

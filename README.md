@@ -1,35 +1,72 @@
-# Universal ID Validator (REDCap external module)
+# Universal Field Validator — IDs, codes & patterns (REDCap external module)
 
-Real-time, check-character-aware validation of participant and specimen IDs on
-REDCap data-entry forms and surveys. It catches mistyped and mis-scanned IDs as
-they are entered, validates both single-ID fields and pooled fields (several IDs
-in one box), and can block saving when an ID is wrong — configured entirely
-through REDCap's settings screen, with no code pasting and no JavaScript Injector.
+Live, as-you-type validation for any REDCap field with a structure. A mistyped
+participant ID costs hours of reconciliation later; this module catches it while
+the person who typed it is still looking at the field.
 
-It uses the same verified ISO/IEC 7064 engine as the QR/ID generator, so an ID
-minted by the generator validates identically here, in Excel, and in the browser.
+Two validation families, one engine:
+
+- **Check-character IDs** (the flagship): participant and specimen IDs minted
+  with ISO 7064, Damm, Verhoeff, or Luhn check characters. Recomputing the check
+  catches virtually every typo and mis-scan — including the ones a regex can
+  never see, like a `3` typed as an `8`.
+- **Any structured value** (regex): study codes, lab numbers, device serials,
+  legacy IDs, or anything else with a fixed shape. In stock REDCap a custom
+  regex validation type has to be added server-wide by an administrator; here a
+  project designer sets a pattern per rule, and typists get progressive
+  "what's still missing" guidance instead of a bare error.
+
+Configured entirely through REDCap's settings screen or field annotations — no
+code pasting, no JavaScript Injector. IDs minted by the companion QR/ID generator
+validate identically here, in Excel, and in the browser (same verified engine).
 
 ## What it does
 
-- **Single-ID fields** — recomputes the check character and shows a green
-  "verified" or red "typo?" message under the field. When the format is wrong it
-  says so separately from a check-character mismatch, so the person knows which
-  kind of error they made.
+- **Single-value fields** — recomputes the check character and/or tests the
+  format, with a green "verified" or red "typo?" message under the field. Format
+  errors and check-character errors are reported separately, so the person knows
+  which kind of mistake they made and where.
 - **Pooled fields** — splits a box holding several IDs (space/comma-separated, or
   jammed together with no separator) into individual IDs at the boundaries where
   the check character verifies, then shows one chip per member with warnings for
   leftover junk, duplicates, and wrong pool size.
-- **Configurable enforcement per field** — each rule is *informational* (message
-  only), *advisory* (warn and confirm before saving), or *compulsory* (block the
+- **Configurable enforcement per rule** — *informational* (message only),
+  *advisory* (warn and confirm before saving), or *compulsory* (block the
   browser save until fixed). *Compulsory* blocks human form saves in the browser;
   it cannot stop an API or data-import write (see the safety net below).
 - **Server-side safety net** — `redcap_save_record` re-checks the saved value on
   the server with the **same** rule semantics as the client — single and pooled
   fields, check character, format pattern, and regex-only — and logs any invalid
-  ID that arrives via the API, data import, or with JavaScript disabled. It fires
-  *after* the write, so treat it as detection/audit, not a hard reject. Raw
+  value that arrives via the API, data import, or with JavaScript disabled. It
+  fires *after* the write, so treat it as detection/audit, not a hard reject. Raw
   identifiers are not stored in the log by default (a hash is), configurable per
   project.
+
+## Three ways to configure (pick per rule — they mix freely)
+
+One rule = one kind of validation, applied to any number of fields:
+
+1. **The settings dialog** — pick fields with the field picker (click its `+` to
+   add more fields to the same rule) and choose the method and enforcement.
+2. **Fast entry** — type field names into the rule's fast-entry box, separated by
+   commas or spaces. Unknown names show a configuration error instead of failing
+   silently.
+3. **`@UVALIDATE` field annotations** — tag fields where you already design them:
+   the Action Tags box in the Online Designer, or the `field_annotation` column
+   of the data dictionary CSV. Tagging 50 fields is one spreadsheet column and
+   one upload:
+
+   ```text
+   @UVALIDATE                                            default check (ISO 7064 Mod 37,36)
+   @UVALIDATE=verhoeff                                   pick the algorithm
+   @UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}","blockSave":"hard"}
+   @UVALIDATE={"type":"pooled","expectedIds":3}          pooled field, warn unless 3 IDs
+   ```
+
+   JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
+   `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `note`. A
+   malformed tag shows a configuration error under that field — never a silent
+   no-op. Fields with identical tags are grouped into one rule automatically.
 
 ## Methods supported
 

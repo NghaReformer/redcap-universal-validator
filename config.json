@@ -1,7 +1,7 @@
 {
-  "name": "Universal ID Validator",
+  "name": "Universal Field Validator — IDs, codes & patterns",
   "namespace": "INSPIRE\\UniversalValidator",
-  "description": "Real-time, check-character-aware validation of participant and specimen IDs on REDCap data-entry forms and surveys. Validates single-ID fields and pooled fields (several IDs in one box), catches typos as they are typed, and can optionally block saving on an invalid ID. Uses the same verified ISO/IEC 7064 engine as the QR/ID generator; no JavaScript Injector required.",
+  "description": "Live, as-you-type validation for any field with a structure. Built for participant and specimen IDs with check characters (ISO 7064, Damm, Verhoeff, Luhn — catches virtually every typo and mis-scan, in single fields or pooled several-IDs-in-one-box fields), and equally at home validating ANY text field against a regex — study codes, lab numbers, device serials, legacy IDs — with progressive what's-still-missing guidance while typing, and no administrator-added validation types needed. Per-rule enforcement (message / confirm / block save), a server-side audit of API and import writes, and three ways to configure: the settings dialog (a rule can cover many fields), fast field-name entry, or @UVALIDATE field annotations for bulk setup straight from the data dictionary. No JavaScript Injector required.",
   "documentation": "README.md",
   "authors": [
     {
@@ -20,7 +20,7 @@
   "project-settings": [
     {
       "key": "intro",
-      "name": "<b>Universal ID Validator</b><br>Add one rule per group of fields. Each rule picks the check-character method the IDs were minted with, which fields it applies to, and what happens on an invalid ID. Leave a rule's advanced boxes blank to use the defaults.",
+      "name": "<b>Universal Field Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Leave a rule's advanced boxes blank to use the defaults.",
       "type": "descriptive"
     },
     {
@@ -41,23 +41,33 @@
       "repeatable": true,
       "sub_settings": [
         {
+          "key": "rule-note",
+          "name": "Rule label (optional — your own name for this rule, e.g. 'Specimen IDs' or 'Legacy screening codes')",
+          "type": "text"
+        },
+        {
           "key": "rule-type",
           "name": "Field type",
           "type": "radio",
           "choices": [
-            { "value": "single", "name": "Single ID (one participant ID per field)" },
+            { "value": "single", "name": "Single value (one ID/code per field)" },
             { "value": "pooled", "name": "Pooled (several IDs jammed into one field)" }
           ]
         },
         {
           "key": "fields",
-          "name": "Field(s) this rule validates",
+          "name": "Field(s) this rule validates — click + to add more fields to this same rule",
           "type": "field-list",
           "repeatable": true
         },
         {
+          "key": "fields-csv",
+          "name": "Fast entry (optional): more field names for this rule, separated by commas or spaces. Merged with the pickers above; unknown names show a configuration error.",
+          "type": "text"
+        },
+        {
           "key": "algorithm",
-          "name": "Check-character method (must match how the IDs were minted)",
+          "name": "Check-character method — must match how the IDs were minted. Validating a plain format/code with no check character? Pick 'No check character' and set the format pattern below.",
           "type": "dropdown",
           "choices": [
             { "value": "iso7064_mod37_36", "name": "ISO 7064 Mod 37,36 — letters+digits, 1 char (DEFAULT)" },
