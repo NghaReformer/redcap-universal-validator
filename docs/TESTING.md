@@ -68,11 +68,28 @@ before tagging a release.
 
 ## Server-side safety net (API / import / JS-off)
 
-- [ ] Import an invalid ID via Data Import Tool → a module log entry appears
-      (Control Center → External Modules → view logs, or the project's module
-      logs) with reason `check-character` / `format` / pooled reasons.
-- [ ] Write an invalid ID via the API → same.
-- [ ] Save a form with JavaScript disabled → same.
+> **Verify this on your instance — do not assume it.** During live testing on
+> REDCap 17.0.6, a Data Import Tool import of invalid IDs produced **no** module
+> log entry, meaning the `redcap_save_record` hook did not audit that import path
+> on that build. Whether it fires for imports/API depends on your REDCap version.
+> Run the checks below and confirm the expected log entries actually appear at
+> **Control Center → External Modules → View Logs** (module `universal_validator`)
+> or by querying `redcap_external_modules_log`. If nothing appears:
+> - a `uvalidate-audit-error` entry means the hook fired but the audit hit an
+>   error (the message says where) — report it;
+> - *no* entry at all means the hook did not fire for that path on your version —
+>   treat import/API coverage as unavailable and rely on the client block plus a
+>   periodic Data-Quality/export check instead.
+
+- [ ] Save a data-entry **form** with an invalid ID (rule set to *Informational*
+      so the save completes) → a `invalid-id-saved` log entry appears with reason
+      `check-character` / `format` / pooled reasons. (This is the baseline: if
+      even a form save does not log, the hook is not registering.)
+- [ ] Import an invalid ID via **Data Import Tool** → check for the same entry.
+- [ ] Write an invalid ID via the **API** → check for the same entry.
+- [ ] Save a form with **JavaScript disabled** → check for the same entry.
+- [ ] Confirm an `@UVALIDATE`-tagged field is audited on the server too (not only
+      dialog-rule fields) by importing an invalid value into a tagged field.
 - [ ] `log-values` modes behave as documented: `hashed` (default) stores
       `value_sha256` + raw `record`; `none` stores `record_sha256` and no value;
       `raw` stores both raw; `off` stores nothing.

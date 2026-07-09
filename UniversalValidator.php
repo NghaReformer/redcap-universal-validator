@@ -46,12 +46,12 @@ class UniversalValidator extends AbstractExternalModule
 
     public function redcap_data_entry_form_top($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance = 1)
     {
-        $this->injectClient();
+        $this->injectClient($project_id);
     }
 
     public function redcap_survey_page_top($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
     {
-        $this->injectClient();
+        $this->injectClient($project_id);
     }
 
     /**
@@ -65,42 +65,63 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash = null, $response_id = null, $repeat_instance = 1)
     {
-        $rules = $this->getRules();
-        if (!$rules) return;
+        // The whole audit is wrapped so a surprise (unexpected getData shape,
+        // framework quirk in an import/API/cron context) becomes a VISIBLE log
+        // entry instead of a silent no-op — the exact failure mode that makes a
+        // "nothing happened" audit impossible to trust or debug.
+        try {
+            // $project_id comes straight from the hook and is reliable in every
+            // save context (form, survey, API, import, cron); $this->getProjectId()
+            // is NOT (it can be null on import/API), so thread it explicitly.
+            $rules = $this->getRules($project_id);
+            if (!$rules) return;
 
-        // Read every configured field for this exact record/event/instance in ONE
-        // getData call instead of one call per field (UV-007).
-        $fields = [];
-        foreach ($rules as $r) {
-            foreach ($r['fields'] as $f) $fields[$f] = true;
-        }
-        $values = $this->readValues($project_id, $record, array_keys($fields), $event_id, $instrument, $repeat_instance);
+            // Read every configured field for this exact record/event/instance in ONE
+            // getData call instead of one call per field (UV-007).
+            $fields = [];
+            foreach ($rules as $r) {
+                foreach ($r['fields'] as $f) $fields[$f] = true;
+            }
+            $values = $this->readValues($project_id, $record, array_keys($fields), $event_id, $instrument, $repeat_instance);
 
-        foreach ($rules as $rule) {
-            if (!empty($rule['configError'])) continue; // misconfigured -> client shows the error
-            $algo    = $rule['algorithm'] ?? 'iso7064_mod37_36';
-            $source  = $rule['source'] ?? 'normalized_id';
-            $strip   = $rule['strip'] ?? "-/ _|\\";
-            $pattern = $rule['idPattern'] ?? null;
-            $type    = $rule['type'] ?? 'single';
-            foreach ($rule['fields'] as $field) {
-                $value = $values[$field] ?? null;
-                if ($value === null || $value === '') continue;
-                if ($type === 'pooled') {
-                    $res = CheckCharacter::validatePooledField([
-                        'algorithm'   => $algo, 'source' => $source, 'strip' => $strip,
-                        'idPattern'   => $pattern, 'keepChars' => $rule['keepChars'] ?? '',
-                        'idLengths'   => $rule['idLengths'] ?? null,
-                        'idMinLen'    => $rule['idMinLen'] ?? null,
-                        'idMaxLen'    => $rule['idMaxLen'] ?? null,
-                        'expectedIds' => $rule['expectedIds'] ?? null,
-                    ], $value);
-                } else {
-                    $res = CheckCharacter::validateSingleField($algo, $source, $strip, $pattern, $value);
+            foreach ($rules as $rule) {
+                if (!empty($rule['configError'])) continue; // misconfigured -> client shows the error
+                $algo    = $rule['algorithm'] ?? 'iso7064_mod37_36';
+                $source  = $rule['source'] ?? 'normalized_id';
+                $strip   = $rule['strip'] ?? "-/ _|\\";
+                $pattern = $rule['idPattern'] ?? null;
+                $type    = $rule['type'] ?? 'single';
+                foreach ($rule['fields'] as $field) {
+                    $value = $values[$field] ?? null;
+                    if ($value === null || $value === '') continue;
+                    if ($type === 'pooled') {
+                        $res = CheckCharacter::validatePooledField([
+                            'algorithm'   => $algo, 'source' => $source, 'strip' => $strip,
+                            'idPattern'   => $pattern, 'keepChars' => $rule['keepChars'] ?? '',
+                            'idLengths'   => $rule['idLengths'] ?? null,
+                            'idMinLen'    => $rule['idMinLen'] ?? null,
+                            'idMaxLen'    => $rule['idMaxLen'] ?? null,
+                            'expectedIds' => $rule['expectedIds'] ?? null,
+                        ], $value);
+                    } else {
+                        $res = CheckCharacter::validateSingleField($algo, $source, $strip, $pattern, $value);
+                    }
+                    if (empty($res['ok'])) {
+                        $this->logInvalid($record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $res['reason'] ?? '');
+                    }
                 }
-                if (empty($res['ok'])) {
-                    $this->logInvalid($record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $res['reason'] ?? '');
-                }
+            }
+        } catch (\Throwable $e) {
+            // Never let an audit failure abort the save or vanish without a trace.
+            try {
+                $this->log('uvalidate-audit-error', [
+                    'record'     => (string) $record,
+                    'instrument' => (string) $instrument,
+                    'error'      => $e->getMessage(),
+                    'where'      => basename($e->getFile()) . ':' . $e->getLine(),
+                ]);
+            } catch (\Throwable $ignored) {
+                // logging itself failed — nothing more we can safely do
             }
         }
     }
@@ -145,9 +166,9 @@ class UniversalValidator extends AbstractExternalModule
 
     // -- client injection ---------------------------------------------------
 
-    private function injectClient()
+    private function injectClient($pid = null)
     {
-        $config = $this->buildClientConfig();
+        $config = $this->buildClientConfig($pid);
         if (empty($config['rules'])) return; // nothing configured for this project
         $engineUrl = $this->getUrl('js/engine.js');
         // Embed the config as INERT JSON (not executable JS) and parse it on the
@@ -170,12 +191,12 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** Build the engine's QRID_COMBINED_CONFIG object from module settings. */
-    private function buildClientConfig()
+    private function buildClientConfig($pid = null)
     {
         return array_merge($this->defaults(), [
             'singleFields' => [],
             'pooledFields' => [],
-            'rules'        => $this->getRules(),
+            'rules'        => $this->getRules($pid),
         ]);
     }
 
@@ -186,20 +207,20 @@ class UniversalValidator extends AbstractExternalModule
      * A field claimed by more than one rule gets a duplicate-rule config error on
      * the client, so the two channels cannot silently fight over a field.
      */
-    private function getRules()
+    private function getRules($pid = null)
     {
-        $out = $this->getSettingRules();
-        foreach ($this->getAnnotationRules() as $r) $out[] = $r;
+        $out = $this->getSettingRules($pid);
+        foreach ($this->getAnnotationRules($pid) as $r) $out[] = $r;
         return $out;
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
-    private function getSettingRules()
+    private function getSettingRules($pid = null)
     {
         $out = [];
         $subs = $this->getSubSettings('rules');
         if (!is_array($subs)) return $out;
-        $known = $this->projectFieldNames();
+        $known = $this->projectFieldNames($pid);
 
         foreach ($subs as $s) {
             $fields = $s['fields'] ?? [];
@@ -294,9 +315,9 @@ class UniversalValidator extends AbstractExternalModule
      * in AnnotationRules (pure, unit-tested); this is only the REDCap glue. Tags
      * on non-text fields become a visible config error rather than a silent no-op.
      */
-    private function getAnnotationRules()
+    private function getAnnotationRules($pid = null)
     {
-        $dd = $this->dataDictionary();
+        $dd = $this->dataDictionary($pid);
         if (!$dd) return [];
         $perField = [];
         foreach ($dd as $name => $meta) {
@@ -314,13 +335,19 @@ class UniversalValidator extends AbstractExternalModule
         return $perField ? AnnotationRules::group($perField) : [];
     }
 
-    /** Data dictionary for the current project (cached per request), or null. */
-    private function dataDictionary()
+    /**
+     * Data dictionary for the project (cached per request), or null. Prefers an
+     * explicitly passed $pid (the hook's project_id) over $this->getProjectId(),
+     * which is unreliable in import/API/cron save contexts — without this, the
+     * dictionary silently fails to load there and every @UVALIDATE rule is dropped
+     * from the server-side audit.
+     */
+    private function dataDictionary($pid = null)
     {
         if ($this->dd !== false) return $this->dd;
         $this->dd = null;
         try {
-            $pid = $this->getProjectId();
+            if (!$pid) $pid = $this->getProjectId();
             if ($pid) {
                 $dd = \REDCap::getDataDictionary($pid, 'array');
                 if (is_array($dd) && $dd) $this->dd = $dd;
@@ -332,10 +359,10 @@ class UniversalValidator extends AbstractExternalModule
         return $this->dd;
     }
 
-    /** Field names of the current project, or null when the dictionary is unavailable. */
-    private function projectFieldNames()
+    /** Field names of the project, or null when the dictionary is unavailable. */
+    private function projectFieldNames($pid = null)
     {
-        $dd = $this->dataDictionary();
+        $dd = $this->dataDictionary($pid);
         return $dd ? array_keys($dd) : null;
     }
 
@@ -394,8 +421,12 @@ class UniversalValidator extends AbstractExternalModule
                 $val = $rec[$event_id][$f];
             }
 
-            // non-repeating, classic single-event project (no event filter)
-            if ($val === null && !$event_id) {
+            // Fallback: scan every non-repeating event node for the field. Runs
+            // whenever the scoped lookup above did not resolve — classic projects
+            // with no event filter, but ALSO any context where getData keyed the
+            // event differently than the hook's event_id, so a real value is never
+            // missed just because the event key did not match.
+            if ($val === null) {
                 foreach ($rec as $k => $node) {
                     if ($k === 'repeat_instances') continue;
                     if (is_array($node) && array_key_exists($f, $node)) { $val = $node[$f]; break; }

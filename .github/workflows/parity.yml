@@ -45,3 +45,5 @@ jobs:
         run: php tests/risky_php.php
       - name: PHP @UVALIDATE annotation parser
         run: php tests/annotation_php.php
+      - name: PHP server-side audit (redcap_save_record) path
+        run: php tests/hook_php.php

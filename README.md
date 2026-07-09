@@ -34,13 +34,18 @@ validate identically here, in Excel, and in the browser (same verified engine).
   *advisory* (warn and confirm before saving), or *compulsory* (block the
   browser save until fixed). *Compulsory* blocks human form saves in the browser;
   it cannot stop an API or data-import write (see the safety net below).
-- **Server-side safety net** — `redcap_save_record` re-checks the saved value on
-  the server with the **same** rule semantics as the client — single and pooled
-  fields, check character, format pattern, and regex-only — and logs any invalid
-  value that arrives via the API, data import, or with JavaScript disabled. It
-  fires *after* the write, so treat it as detection/audit, not a hard reject. Raw
-  identifiers are not stored in the log by default (a hash is), configurable per
-  project.
+- **Server-side safety net** — a `redcap_save_record` hook re-checks the saved
+  value on the server with the **same** rule semantics as the client (single and
+  pooled fields, check character, format pattern, regex-only) and logs any invalid
+  value to the module log. It fires *after* the write, so treat it as
+  detection/audit, not a hard reject; the client *Compulsory* block is the primary
+  control for human form entry. **Coverage caveat:** whether this hook fires for
+  **Data Import Tool** and **API** writes depends on your REDCap version and how
+  those imports are performed — do not assume import/API writes are audited until
+  you have verified it on your own instance (the step is in
+  [`docs/TESTING.md`](docs/TESTING.md), and a `uvalidate-audit-error` log entry
+  now surfaces any hook failure instead of failing silently). Raw identifiers are
+  not stored in the log by default (a hash is), configurable per project.
 
 ## Three ways to configure (pick per rule — they mix freely)
 
