@@ -565,10 +565,38 @@ function QRID_riskyPattern(src){
 }
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
 var QRID_MAX_POOLED_LEN = 8192;   /* pooled field: cap total scanned length        */
+/* Show a configuration error that has no field widget to sit under — a rule whose
+   fields were all mis-typed / not on the form, or an @UVALIDATE tag on a non-text
+   field (dropdown, radio, calc) where there is no <input>/<textarea> — in a single
+   page-level notice, so it is never silently lost. Deduplicated by message. */
+function QRID_configErrorNotice(message){
+  if(typeof document === "undefined" || !document.body) return;
+  var box = document.getElementById("uvalidate-config-errors");
+  if(!box){
+    box = document.createElement("div");
+    box.id = "uvalidate-config-errors";
+    box.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:4px;font-family:inherit;" +
+      "font-size:13px;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828;";
+    box.innerHTML = "<b>&#9888; Universal Field Validator — configuration error(s):</b>";
+    var host = document.getElementById("form") || document.querySelector("form");
+    if(host && host.parentNode) host.parentNode.insertBefore(box, host);
+    else document.body.insertBefore(box, document.body.firstChild);
+  }
+  var seen = box.getAttribute("data-msgs") || "";
+  if(seen.indexOf("" + message + "") >= 0) return;       /* already shown */
+  box.setAttribute("data-msgs", seen + "" + message + "");
+  var line = document.createElement("div");
+  line.style.marginTop = "4px";
+  line.innerHTML = "&bull; " + QRID_escapeHtml(message);
+  box.appendChild(line);
+}
 /* Expose the risky-pattern predicate so the cross-runtime regression test
    (tests/risky_js.cjs) can assert it agrees with the PHP twin,
    CheckCharacter::riskyPattern. */
-if (typeof globalThis !== "undefined" && globalThis.QRCheck) globalThis.QRCheck.riskyPattern = QRID_riskyPattern;
+if (typeof globalThis !== "undefined" && globalThis.QRCheck) {
+  globalThis.QRCheck.riskyPattern = QRID_riskyPattern;
+  globalThis.QRCheck.configErrorNotice = QRID_configErrorNotice; // exposed for tests/config_notice_js.cjs
+}
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
 window.QRIDSingleInit = function(QRID_CONFIG){
   "use strict";
@@ -839,7 +867,13 @@ window.QRIDSingleInit = function(QRID_CONFIG){
   }
   function attach(fieldName){
     var input = findField(fieldName);
-    if(!input) return false;
+    if(!input){
+      /* A config error with no text input to sit under — a non-text field
+         (dropdown/radio/calc) or a mis-typed field name not on the form — must
+         still be visible, so surface it in the page-level notice. */
+      if(configError){ QRID_configErrorNotice(configError); return true; }
+      return false;
+    }
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = document.createElement("div");
@@ -1233,7 +1267,13 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   function attach(fieldName){
     var input = findField(fieldName);
-    if(!input) return false;
+    if(!input){
+      /* A config error with no text input to sit under — a non-text field
+         (dropdown/radio/calc) or a mis-typed field name not on the form — must
+         still be visible, so surface it in the page-level notice. */
+      if(configError){ QRID_configErrorNotice(configError); return true; }
+      return false;
+    }
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = document.createElement("div");

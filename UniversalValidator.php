@@ -244,6 +244,10 @@ class UniversalValidator extends AbstractExternalModule
                     if (!in_array($f, $fields, true)) $fields[] = $f;
                 }
             }
+            // Every field the admin referenced (pickers + valid-format fast-entry
+            // names), captured BEFORE pruning to known fields so an all-invalid
+            // rule can still surface its error instead of vanishing silently.
+            $referenced = $fields;
             if ($known !== null) {
                 $bad = array_values(array_diff($fields, $known));
                 if ($bad) {
@@ -252,7 +256,20 @@ class UniversalValidator extends AbstractExternalModule
                     $fields = array_values(array_intersect($fields, $known));
                 }
             }
-            if (!$fields) continue;
+            if (!$fields) {
+                // No valid field survived. Do NOT silently drop the rule — if the
+                // admin typed field names that were all unknown/mis-typed, emit a
+                // config-error rule so the mistake is visible (the client renders
+                // it as a page-level notice when the named fields aren't present).
+                if ($csvErrors) {
+                    $out[] = [
+                        'type'        => 'single',
+                        'fields'      => $referenced ?: ['(unknown field)'],
+                        'configError' => implode(' ', $csvErrors),
+                    ];
+                }
+                continue;
+            }
 
             $rule = [
                 'type'   => !empty($s['rule-type']) ? $s['rule-type'] : 'single',

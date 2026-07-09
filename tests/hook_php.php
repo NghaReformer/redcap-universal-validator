@@ -132,6 +132,32 @@ namespace {
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     check('all-valid save -> no invalid-id logs', count(invalidLogs($m)) === 0);
 
+    // ---- 7) fast-entry rule with ONLY unknown field names is NOT silently
+    //         dropped — it surfaces a config-error rule in the injected config. ----
+    $csvRule = [[
+        'rule-type' => 'single', 'fields' => [], 'fields-csv' => 'studyid specimenid',
+        'algorithm' => 'iso7064_mod37_36', 'source' => '', 'pattern' => '', 'strip' => '',
+        'keep-chars' => '', 'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+        'expected-count' => '', 'block-save' => 'off',
+    ]];
+    $dd = ['study_id' => ['field_type' => 'text', 'field_annotation' => ''],
+           'specimen_id' => ['field_type' => 'text', 'field_annotation' => '']];
+    $m = newModule($csvRule, $dd, [], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    $errRule = null;
+    if ($cfg && isset($cfg['rules'])) {
+        foreach ($cfg['rules'] as $r) { if (!empty($r['configError'])) { $errRule = $r; break; } }
+    }
+    check('all-invalid fast-entry emits a config-error rule (not silently dropped)', $errRule !== null);
+    check('config-error rule keeps the typed field names', $errRule && $errRule['fields'] === ['studyid', 'specimenid']);
+    check('config error names the unknown fields', $errRule && strpos($errRule['configError'], 'not in this project') !== false);
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

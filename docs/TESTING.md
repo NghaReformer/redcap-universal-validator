@@ -24,6 +24,10 @@ before tagging a release.
 - [ ] Fast entry: type two more field names (comma-separated) into the rule's
       fast-entry box — they validate too; a misspelled name shows a configuration
       error naming it under the rule's fields.
+- [ ] Fast entry, ALL names wrong (no picker field): a rule whose fast-entry box
+      contains only mis-typed names must NOT vanish silently — a page-level
+      "configuration error(s)" notice appears at the top of the form naming the
+      unknown fields.
 - [ ] `@UVALIDATE` bare tag in a field's Action Tags box → default check runs on
       that field with no module-dialog rule.
 - [ ] `@UVALIDATE=verhoeff` → that algorithm runs.
@@ -35,7 +39,11 @@ before tagging a release.
       under that field naming the bad key.
 - [ ] A field both tagged AND in a dialog rule → duplicate-rule configuration
       error (not two validators).
-- [ ] Tag on a radio/calc field → "only works on Text or Notes fields" error.
+- [ ] Tag on a radio/dropdown/calc field → the "only works on Text or Notes
+      fields" error appears in the top-of-form configuration-error notice (there
+      is no text input under a non-text field to attach it to).
+- [ ] `@UVALIDATE` appears in the Online Designer's **Action Tags** popup with its
+      description (declared in `config.json` `action-tags`).
 
 ## Data-entry form (classic project)
 

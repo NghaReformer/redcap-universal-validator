@@ -23,6 +23,8 @@ jobs:
         run: node tests/pooled_js.cjs
       - name: JS risky-pattern heuristic
         run: node tests/risky_js.cjs
+      - name: JS config-error notice
+        run: node tests/config_notice_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
