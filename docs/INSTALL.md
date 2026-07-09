@@ -57,8 +57,9 @@ dictionary once.
 JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
 `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `note`. Use
 double quotes inside the JSON. A malformed tag (typo'd key, unknown algorithm,
-bad JSON) shows a configuration error under that field. Fields with identical
-tags are grouped into one rule automatically. Tags work on Text and Notes fields.
+bad JSON) — or a tag on a non-Text/Notes field — shows a configuration error in a
+notice at the top of the form. Fields with identical tags are grouped into one
+rule automatically. Tags work on Text and Notes fields.
 
 ### Shared rule options
 - **On an invalid ID** — *Informational*, *Advisory*, or *Compulsory*. *Compulsory*

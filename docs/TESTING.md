@@ -35,8 +35,9 @@ before tagging a release.
       → regex-only validation with hard block.
 - [ ] Bulk: download the data dictionary, put a tag in `field_annotation` for
       several rows, upload → all tagged fields validate after one upload.
-- [ ] A malformed tag (`@UVALIDATE={"algoritm":"damm"}`) → configuration error
-      under that field naming the bad key.
+- [ ] A malformed tag (`@UVALIDATE={"algoritm":"damm"}`) → configuration error in
+      the top-of-form notice naming the bad key (all configuration errors collect
+      in that one notice, whatever field type they came from).
 - [ ] A field both tagged AND in a dialog rule → duplicate-rule configuration
       error (not two validators).
 - [ ] Tag on a radio/dropdown/calc field → the "only works on Text or Notes
@@ -56,9 +57,9 @@ before tagging a release.
 - [ ] `blockSave = hard`: saving with an invalid ID is blocked, focus moves to the
       field. `confirm`: a Save-anyway dialog appears. `off`: message only.
 - [ ] A field listed in two rules shows the duplicate-rule configuration error
-      instead of two validators.
+      (in the top-of-form notice) instead of two validators.
 - [ ] A catastrophic regex (e.g. `(a+)+`) in the pattern box shows a configuration
-      error under the field; the form stays responsive.
+      error in the top-of-form notice; the form stays responsive.
 
 ## Survey
 

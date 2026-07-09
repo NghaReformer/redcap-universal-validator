@@ -867,13 +867,7 @@ window.QRIDSingleInit = function(QRID_CONFIG){
   }
   function attach(fieldName){
     var input = findField(fieldName);
-    if(!input){
-      /* A config error with no text input to sit under — a non-text field
-         (dropdown/radio/calc) or a mis-typed field name not on the form — must
-         still be visible, so surface it in the page-level notice. */
-      if(configError){ QRID_configErrorNotice(configError); return true; }
-      return false;
-    }
+    if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = document.createElement("div");
@@ -916,6 +910,7 @@ window.QRIDSingleInit = function(QRID_CONFIG){
       test: function(v, isFinal){ return configError ? null : verdict(v, isFinal !== false); } };
   });
   function boot(){
+    if(configError){ QRID_configErrorNotice(configError); return; }  /* config error -> page notice once; nothing to validate, so never disarm retry */
     var pending = (QRID_CONFIG.fields || []).slice();
     var mo = null;
     function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
@@ -1267,13 +1262,7 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   function attach(fieldName){
     var input = findField(fieldName);
-    if(!input){
-      /* A config error with no text input to sit under — a non-text field
-         (dropdown/radio/calc) or a mis-typed field name not on the form — must
-         still be visible, so surface it in the page-level notice. */
-      if(configError){ QRID_configErrorNotice(configError); return true; }
-      return false;
-    }
+    if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = document.createElement("div");
@@ -1294,6 +1283,7 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     return true;
   }
   function boot(){
+    if(configError){ QRID_configErrorNotice(configError); return; }  /* config error -> page notice once; nothing to validate, so never disarm retry */
     var pending = (QRID_MULTI_CONFIG.fields || []).slice();
     var mo = null;
     function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
@@ -1343,6 +1333,9 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
      the error box before any real validator can claim the field. */
   var counts = {};
   rules.forEach(function(rule){
+    if(rule.configError) return;  /* config-error rules validate nothing and often
+      carry placeholder / shared field names — keep them out of duplicate detection
+      so two mis-configured rules can't collapse into one bogus "duplicate" error. */
     (rule.fields || []).forEach(function(f){ counts[f] = (counts[f] || 0) + 1; });
   });
   var dupFields = [];
@@ -1354,7 +1347,10 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
-    cfg.fields = (rule.fields || []).filter(function(f){ return counts[f] === 1; });
+    /* config-error rules keep their fields as-is (their message is shown once in
+       the page notice by the factory's boot); live rules drop duplicate fields. */
+    cfg.fields = rule.configError ? (rule.fields || [])
+               : (rule.fields || []).filter(function(f){ return counts[f] === 1; });
     if(!cfg.fields.length) return;
     if(rule.type === "pooled"){
       window.QRIDPooledInit(cfg);
