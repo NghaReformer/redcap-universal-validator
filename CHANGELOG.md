@@ -2,8 +2,8 @@
 
 ## 0.5.0 — predeployment-review hardening
 
-Addresses `reports/predeployment-review-2026-07-12.md` (4 blockers, 7 high, 11
-medium, 4 low). Every code-addressable finding is fixed here; the remaining
+Addresses `reports/predeployment-adversarial-review-2026-07-12.md` (4 blockers,
+7 high, 11 medium, 4 low). Every code-addressable finding is fixed here; the remaining
 release-gate items (public SemVer release, REDCap security scan, live
 REDCap/browser/screen-reader matrix) are people-work, tracked as explicit
 blockers at the top of `docs/TESTING.md`.
