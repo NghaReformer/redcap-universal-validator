@@ -6,6 +6,35 @@ not a live REDCap. This checklist is the integration pass to run on a real REDCa
 instance (≥ 13.7.0) after installing or upgrading the module. Check every box
 before tagging a release.
 
+## Release gate — REDCap Repo submission blockers
+
+None of the items below can be produced by this repository's CI; each one must
+be done by a person with the release candidate, and the submission is blocked
+until all are done and recorded (date, versions, who ran it):
+
+- [ ] **Public repository + SemVer release.** The GitHub repository is public,
+      the release commit carries an annotated `vX.Y.Z` tag matching
+      `CHANGELOG.md`, and the release archive downloads anonymously. The CI
+      `package` job proves the archive shape; a person must prove the public
+      URL.
+- [ ] **REDCap security scan.** Install the release candidate on the latest
+      REDCap, run *Control Center → External Modules → Manage → Module Security
+      Scanning*, resolve every real finding, and record the scan output,
+      REDCap version, and date. The Repo does not approve modules without a
+      current pass.
+- [ ] **This checklist executed end-to-end** on a current standard REDCap and
+      on the oldest supported LTS, in Chrome, Firefox, and Edge or Safari —
+      including the accessibility section with at least one real screen reader.
+- [ ] **Performance spot-check** on a large project (1,000+ records, 10+
+      configured fields): form save latency and module log growth stay
+      acceptable.
+
+Known limitation to disclose at submission: validation messages are English
+only. The module does not yet use the framework's JavaScript Module Object /
+`tt()` translation plumbing, so Multi-Language Management cannot translate its
+strings; MLM language switching must not break validation (re-check the form
+after switching), it only leaves the messages untranslated.
+
 ## Install / framework
 
 - [ ] Module enables from Control Center without errors on the target REDCap
@@ -100,15 +129,50 @@ before tagging a release.
 - [ ] Confirm an `@UVALIDATE`-tagged field is audited on the server too (not only
       dialog-rule fields) by importing an invalid value into a tagged field.
 - [ ] `log-values` modes behave as documented: `hashed` (default) stores
-      `value_sha256` + raw `record`; `none` stores `record_sha256` and no value;
-      `raw` stores both raw; `off` stores nothing.
+      `value_hmac` + raw `record`; `none` stores `record_hmac` and no value;
+      `raw` stores both raw; `off` stores no detections. The two hash fields are
+      keyed HMACs — the same value gives the same hash within one project and a
+      different hash in another project.
+- [ ] Audit scope: save an **unrelated instrument** on a record whose validated
+      field (on another form) still holds an old invalid value → NO new log
+      entry (the audit is scoped to the saved instrument).
+- [ ] Force an audit error (e.g. break a rule mid-test) in `none` mode → the
+      `uvalidate-audit-error` entry carries `record_hmac`, never a raw record
+      id; in `off` mode it carries no record identifier at all.
 - [ ] A valid ID via any path produces NO log entry.
+
+## Accessibility (screen reader + zoom)
+
+Run with NVDA or JAWS on Windows (VoiceOver on macOS/Safari if available). The
+DOM contract is covered by `tests/a11y_dom_js.cjs`; this section verifies what
+assistive technology actually announces.
+
+- [ ] Type an invalid ID, pause → the verdict is announced without moving focus
+      (the message region is `role=status`/`aria-live=polite`).
+- [ ] The announcement follows the field: focus the input → the screen reader
+      reads the current validation message via `aria-describedby`.
+- [ ] An invalid field reports "invalid" state (`aria-invalid=true`); fixing the
+      value clears it.
+- [ ] *Compulsory* block: the dialog is announced, names the field by its
+      visible LABEL (not the variable name), and focus lands on the field after
+      dismissing.
+- [ ] Keyboard only: complete an entry + blocked save + fix + save round trip
+      without a mouse.
+- [ ] 200% and 400% zoom: messages and chips wrap without loss; nothing needs
+      horizontal scrolling on a data-entry form.
+- [ ] Pooled chips: junk/duplicate/invalid chips are distinguishable by their
+      text marks alone (not color alone).
 
 ## Security spot-checks
 
 - [ ] Put `</script><script>alert(1)</script>` in a rule's pattern/strip boxes →
-      no alert anywhere; the string appears fully escaped in the page source.
+      the settings save is rejected or the string appears fully escaped in the
+      page source; no alert anywhere.
 - [ ] Put `[<img src=x onerror=alert(1)>]+` as a pattern → the validation message
       under the field shows the text escaped, no alert.
+- [ ] Put `(a|aa)+` as a pattern → rejected at settings-save time with a
+      catastrophic-pattern message; the form stays responsive.
+- [ ] Configure a pooled rule with lengths `100`–`199` → rejected at save time
+      (the work caps allow at most 64-character IDs).
 - [ ] Run REDCap's built-in External Module security scan (Control Center) and
       review its findings.

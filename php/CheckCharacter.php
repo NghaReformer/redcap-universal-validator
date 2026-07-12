@@ -22,6 +22,21 @@ class CheckCharacter
     const LETTERS26 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     const ALNUM36   = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+    // Hard caps that bound the pooled parser's work per keystroke (client) and
+    // per save (server). A rule beyond them is a config error at settings-save
+    // time and "unconfigurable" at runtime — never silently expensive. The JS
+    // engine mirrors these as literals (js/engine.js, QRID_MAX_* block); keep
+    // the two in sync.
+    const MAX_ID_LEN      = 64;   // longest single ID/member the parser will consider
+    const MAX_LEN_CHOICES = 32;   // most candidate lengths a pooled rule may declare
+    const MAX_EXPECTED_IDS = 9999;
+    const MAX_KEEP_CHARS  = 64;
+    const MAX_POOLED_LEN  = 4096; // absolute pooled scan cap (client QRID_MAX_POOLED_LEN)
+    // One pooled parse costs about (scanned length) x |LENS| x (member length)
+    // char-ops; this budget bounds the product for every legal config, so an
+    // expensive rule shrinks its scan cap instead of stalling the save hook.
+    const POOLED_WORK_BUDGET = 2000000;
+
     /** Number of check characters an algorithm appends. */
     public static function nCheckChars($name)
     {
@@ -180,22 +195,41 @@ class CheckCharacter
 
     /**
      * Conservative catastrophic-backtracking detector — the PHP twin of the
-     * browser's QRID_riskyPattern (js/engine.js). Rejects the common exponential
-     * shapes (nested / adjacent unbounded quantifiers) so the server never
-     * compiles or runs a pattern the browser already refuses at config time. Keep
-     * in exact sync with the JS version; tests/risky_php.php and
+     * browser's QRID_riskyPattern (js/engine.js). Rejects, at config time, the
+     * exponential shapes: nested quantifiers AND any repetition of a group that
+     * can match the same text more than one way (alternation, optionals, or
+     * inner quantifiers) — (a|aa)+, (a?)+ and ((a)|(aa))+ are refused, not only
+     * (a+)+. Inner groups are collapsed layer by layer so nesting cannot hide
+     * the shape. Still a heuristic, not a safety proof: it over-rejects (any
+     * repeated alternation is refused even when the branches are disjoint) and
+     * the match-time PCRE-error guard remains the server backstop. Keep in
+     * exact sync with the JS version; tests/risky_php.php and
      * tests/risky_js.cjs assert the two agree on a shared pattern list.
      */
     public static function riskyPattern($src)
     {
+        if (mb_strlen((string) $src, 'UTF-8') > 512) return true;           // absurd pattern source
         $s = preg_replace('/\\\\./', '', (string) $src);                    // ignore escaped chars
+        $s = preg_replace('/\(\?(<?[=!]|:)/', '(', $s);                     // (?: (?= (?! (?<= (?<! -> plain (
         // Whitespace is an explicit ASCII class, NOT \s: PCRE \s (no /u) and JS \s
         // classify Unicode whitespace differently, which would diverge. Bounded
         // quantifiers ({n,m}/{n,}) count as the "repeating" token so nested bounded
         // quantifiers are caught too. Keep BYTE-IDENTICAL to QRID_riskyPattern (js).
-        if (preg_match('/[+*][ \t\n\r\f]*[+*]/', $s)) return true;                                        // a++  a*+ ...
-        if (preg_match('/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/', $s)) return true; // (…a+…)+  (…{1,20}…){1,20}
-        if (preg_match('/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/', $s)) return true;                  // [0-9]+* style
+        for (;;) {
+            if (preg_match('/[+*][ \t\n\r\f]*[*+{]/', $s)) return true;                                        // a++  a*+  a*{2} ...
+            if (preg_match('/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/', $s)) return true; // (…a+…)+  (…{1,20}…){1,20}
+            if (preg_match('/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/', $s)) return true;                  // [0-9]+* style
+            // Collapse every innermost group: a body that can match more than one
+            // way (alternation, optional, variable-length content) becomes a
+            // variable-length token X*; a fixed body becomes the single token A.
+            // A repetition of a variable token is then caught by the rules above
+            // on the next pass — (a|aa)+ -> X*+ -> rule 1.
+            $t = preg_replace_callback('/\(([^()]*)\)/', function ($m) {
+                return (preg_match('/[|?*+]/', $m[1]) || preg_match('/\{[0-9]+,[0-9]*\}/', $m[1])) ? 'X*' : 'A';
+            }, $s);
+            if ($t === $s) break;
+            $s = $t;
+        }
         return false;
     }
 
@@ -213,6 +247,13 @@ class CheckCharacter
         if ($pattern === null || $pattern === '') return true;
         if (self::riskyPattern($pattern)) return true;      // never run a catastrophic pattern
         $norm = trim(self::normalize($value, '', true, true, null));
+        // JS RegExp (UTF-16 code units) and PCRE /u (code points) count a
+        // non-ASCII character differently — e.g. an astral emoji is two units
+        // to the browser and one to PCRE, so "." patterns flip verdicts. The
+        // proven parity subset is printable ASCII; outside it the server must
+        // fail OPEN (no format log) rather than risk logging a mismatch the
+        // client never showed (COR-004).
+        if (preg_match('/[^\x20-\x7E]/', $norm)) return true;
         $body = preg_replace('/^\^/', '', (string) $pattern);
         $body = preg_replace('/\$$/', '', $body);
         $re = self::compilePattern($body);
@@ -220,6 +261,14 @@ class CheckCharacter
         $m = @preg_match($re, $norm);
         if ($m === false || preg_last_error() !== PREG_NO_ERROR) return true; // engine error, not a format miss
         return $m === 1;
+    }
+
+    /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
+    public static function patternCompiles($pattern)
+    {
+        $body = preg_replace('/^\^/', '', (string) $pattern);
+        $body = preg_replace('/\$$/', '', $body);
+        return self::compilePattern($body) !== null;
     }
 
     /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
@@ -331,11 +380,22 @@ class CheckCharacter
             if (!self::isPosInt($minLen) || !self::isPosInt($maxLen)) return null;
             if ($maxLen < $minLen) return null;
             if ($maxLen >= 2 * $minLen) return null;
+            if ($maxLen > self::MAX_ID_LEN) return null; // BEFORE the range loop: no huge allocation
             $minLen = max($minLen, $nCheck + 1);
             for ($L = $minLen; $L <= $maxLen; $L++) $LENS[] = $L;
         }
+        // Hard work bounds: parsing tests every candidate length at every
+        // position, so unbounded lengths turn one keystroke/save into seconds
+        // of regex + check-character work (PER-002). Beyond the caps the rule
+        // is unconfigurable (and rejected at settings-save time upstream).
+        if ($maxLen > self::MAX_ID_LEN || count($LENS) > self::MAX_LEN_CHOICES) return null;
 
-        $KEEP = $ALPHA . (isset($cfg['keepChars']) ? (string) $cfg['keepChars'] : '');
+        $keepCfg = isset($cfg['keepChars']) ? (string) $cfg['keepChars'] : '';
+        // Non-ASCII keep characters would make the byte-indexed splitter below
+        // disagree with the browser's UTF-16 one; the audited subset is ASCII.
+        if (strlen($keepCfg) > self::MAX_KEEP_CHARS || preg_match('/[^\x20-\x7E]/', $keepCfg)) return null;
+
+        $KEEP = $ALPHA . $keepCfg;
         if ($checkMode) {
             $CA = self::checkAlphabet($algo);
             for ($i = 0; $i < strlen($CA); $i++) {
@@ -453,10 +513,23 @@ class CheckCharacter
      *   ['type'=>'id','id'=>..,'valid'=>bool]  or  ['type'=>'junk','text'=>..]
      * or null when the config is unsafe (client shows a config error instead).
      */
+    /** Per-rule scan cap — the PHP twin of the client's SCAN_CAP formula. */
+    public static function pooledScanCap(array $st)
+    {
+        $lens = count($st['LENS']) ?: 1;
+        $max  = $st['maxLen'] ?: 1;
+        $cap  = (int) floor(self::POOLED_WORK_BUDGET / ($lens * $max));
+        if ($cap < 256) $cap = 256;
+        return min(self::MAX_POOLED_LEN, $cap);
+    }
+
     public static function pooledParse(array $cfg, $raw)
     {
         $st = self::pooledState($cfg);
         if ($st === null) return null;
+        // Over-budget input: no verdict at all, never a slow parse — the client
+        // bails identically at the same cap, so the runtimes cannot disagree.
+        if (mb_strlen((string) $raw, 'UTF-8') > self::pooledScanCap($st)) return null;
         self::$pooledPcreError = false;
         $segs = self::pooledSegments($st, (string) $raw);
         // A PCRE engine failure during segmentation makes the result untrustworthy;

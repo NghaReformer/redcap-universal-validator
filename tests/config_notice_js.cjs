@@ -42,8 +42,7 @@ form.id = 'form';
 document.body.appendChild(form);
 
 require(path.join(__dirname, '..', 'js', 'engine.js'));
-global.window.QRCheck = global.QRCheck;
-const notice = global.QRCheck.configErrorNotice;
+const notice = global.window.INSPIREUniversalValidator.configErrorNotice;
 
 let n = 0, fail = 0;
 function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' + label); } }

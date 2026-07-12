@@ -32,20 +32,37 @@ validate identically here, in Excel, and in the browser (same verified engine).
   leftover junk, duplicates, and wrong pool size.
 - **Configurable enforcement per rule** — *informational* (message only),
   *advisory* (warn and confirm before saving), or *compulsory* (block the
-  browser save until fixed). *Compulsory* blocks human form saves in the browser;
-  it cannot stop an API or data-import write (see the safety net below).
+  **browser** form/survey save until fixed). *Compulsory* blocks human form
+  saves in the browser; it cannot stop an API or data-import write (see the
+  safety net below), and it never traps a read-only field the user cannot fix.
 - **Server-side safety net** — a `redcap_save_record` hook re-checks the saved
   value on the server with the **same** rule semantics as the client (single and
   pooled fields, check character, format pattern, regex-only) and logs any invalid
-  value to the module log. It fires *after* the write, so treat it as
-  detection/audit, not a hard reject; the client *Compulsory* block is the primary
-  control for human form entry. **Coverage caveat:** whether this hook fires for
-  **Data Import Tool** and **API** writes depends on your REDCap version and how
-  those imports are performed — do not assume import/API writes are audited until
-  you have verified it on your own instance (the step is in
-  [`docs/TESTING.md`](docs/TESTING.md), and a `uvalidate-audit-error` log entry
-  now surfaces any hook failure instead of failing silently). Raw identifiers are
-  not stored in the log by default (a hash is), configurable per project.
+  value to the module log, scoped to the instrument that was actually saved. It
+  fires *after* the write, so treat it as detection/audit, not a hard reject; the
+  client *Compulsory* block is the primary control for human form entry.
+  **Coverage caveat:** whether this hook fires for **Data Import Tool** and
+  **API** writes depends on your REDCap version and how those imports are
+  performed — do not assume import/API writes are audited until you have verified
+  it on your own instance (the step is in [`docs/TESTING.md`](docs/TESTING.md)).
+  A rule the server cannot evaluate leaves a `uvalidate-unconfigurable` entry
+  and a hook failure leaves a `uvalidate-audit-error` entry, so neither can pass
+  silently. Raw identifiers are not stored in the log by default — a keyed,
+  project-scoped hash is (HMAC-SHA-256 with a module-held secret), configurable
+  per project down to logging nothing. A keyed hash is pseudonymization, not
+  anonymity: treat the module log as identifying data in access and retention
+  policies. Format-pattern audits cover printable-ASCII values; other values are
+  left to the client and the check-character math, because JavaScript and PCRE
+  regex semantics are only proven to agree on that subset.
+- **Save-time settings validation** — an invalid rule (unknown algorithm,
+  catastrophic or non-compiling regex, unsafe pooled lengths, unsupported field
+  types) is rejected when the Configure dialog is saved, with a message naming
+  the rule, instead of surfacing later on a data-entry form.
+- **Accessible by construction** — validation messages are polite live regions
+  tied to their inputs with `aria-describedby`/`aria-invalid`, save-block
+  dialogs name fields by their visible label, and every state pairs color with
+  a text mark. Screen-reader behavior still needs the manual pass in
+  [`docs/TESTING.md`](docs/TESTING.md) before a release is called accessible.
 
 ## Three ways to configure (pick per rule — they mix freely)
 
@@ -102,17 +119,30 @@ check-character primitive, but the full runtime path the module actually uses:
   across all three sections: `compute` (the primitive, 420 rows across 11
   algorithms), `normalize` (Unicode dash folding / case / strip), and
   `scheme_ops` (append + validate = normalize → source → compute → compare). 643
-  rows total. **Currently: 0 mismatches (JS).**
+  rows total.
 - `tests/pooled_js.cjs` / `tests/pooled_php.php` — recompute the pooled-field
   parser for every case in `tests/pooled_fixture.json` (frozen from the verified
   browser parser), so the server pooled auditor can never drift from the client.
 - `tests/risky_js.cjs` / `tests/risky_php.php` — lock the catastrophic-regex
-  (ReDoS) gate to one shared pattern list in both runtimes, and prove the server
-  never turns a PCRE engine failure into a false invalid-ID log.
+  (ReDoS) gate to one shared pattern list in both runtimes (nested quantifiers
+  AND repeated alternation/optional groups such as `(a|aa)+`), and prove the
+  server never turns a PCRE engine failure into a false invalid-ID log.
+- `tests/annotation_php.php` — the `@UVALIDATE` parser and the shared rule
+  validator (`checkFragment`) used by every configuration channel.
+- `tests/hook_php.php` — the whole `redcap_save_record` audit path against a
+  framework mock that refuses settings reads without an explicit project id:
+  privacy modes on success AND exception paths, event/instrument scoping,
+  repeat instances, duplicate-field skips, per-rule isolation, keyed hashing,
+  and the save-time `validateSettings` gate.
+- `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
+  messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
+  debounce, the read-only exemption, and survey muting of technical detail.
 
-CI runs all six on every push, checks the pooled fixture is regenerated, and
-`php -l`-lints the PHP (`.github/workflows/parity.yml`). If either engine drifts,
-CI fails. See [`tests/README.md`](tests/README.md).
+CI (`.github/workflows/parity.yml`) runs the JS suite on Node 20, the PHP suite
+on PHP 7.4, 8.1 and 8.3 (the declared floor is exercised, not just stated),
+`php -l`-lints the PHP, checks the pooled fixture is regenerated, and builds a
+release-shaped package to verify its layout. If either engine drifts, CI fails.
+See [`tests/README.md`](tests/README.md).
 
 ## Install
 
@@ -122,11 +152,16 @@ See [`docs/INSTALL.md`](docs/INSTALL.md).
 
 ```bash
 node tests/parity_js.cjs      # JS engine vs fixture (compute + normalize + scheme_ops)
-php  tests/parity_php.php      # PHP port vs fixture (PHP 8.x, needs mbstring)
+php  tests/parity_php.php      # PHP port vs fixture (PHP 7.4+, needs mbstring + ctype)
 node tests/pooled_js.cjs      # JS pooled parser vs pooled_fixture.json
 php  tests/pooled_php.php      # PHP pooled parser vs pooled_fixture.json
 node tests/risky_js.cjs       # JS ReDoS gate vs risky_patterns.json
 php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
+php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
+php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
+node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
+node tests/config_notice_js.cjs     # page-level config-error notice
+node tests/dispatch_notice_js.cjs   # dispatcher config-error routing
 node tests/gen_pooled_fixture.cjs   # regenerate pooled_fixture.json after a parser change
 ```
 

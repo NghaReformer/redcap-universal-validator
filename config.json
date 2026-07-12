@@ -1,7 +1,7 @@
 {
   "name": "Universal Field Validator — IDs, codes & patterns",
   "namespace": "INSPIRE\\UniversalValidator",
-  "description": "Live, as-you-type validation for any field with a structure. Built for participant and specimen IDs with check characters (ISO 7064, Damm, Verhoeff, Luhn — catches virtually every typo and mis-scan, in single fields or pooled several-IDs-in-one-box fields), and equally at home validating ANY text field against a regex — study codes, lab numbers, device serials, legacy IDs — with progressive what's-still-missing guidance while typing, and no administrator-added validation types needed. Per-rule enforcement (message / confirm / block save), a server-side audit of API and import writes, and three ways to configure: the settings dialog (a rule can cover many fields), fast field-name entry, or @UVALIDATE field annotations for bulk setup straight from the data dictionary. No JavaScript Injector required.",
+  "description": "Live, as-you-type validation for Text/Notes fields with a structure: participant and specimen IDs minted with check characters (ISO 7064, Damm, Verhoeff, Luhn — single fields or pooled several-IDs-in-one-box fields), or any regex-shaped code with progressive what's-still-missing guidance while typing. Enforcement happens in the BROWSER, per rule: message, confirm, or block the form/survey save. A post-save hook additionally logs invalid values to the module log as a best-effort audit wherever REDCap fires redcap_save_record — verify on your own instance whether that covers API and Data Import writes before relying on it (see the documentation). Three ways to configure: the settings dialog (one rule, many fields), fast field-name entry, or @UVALIDATE field annotations for bulk setup from the data dictionary.",
   "documentation": "README.md",
   "authors": [
     {
@@ -32,14 +32,19 @@
     },
     {
       "key": "log-values",
-      "name": "How to log invalid IDs caught on the server (API / import / JavaScript-off). Every mode except 'off' logs field, instrument, event and instance; the modes differ in how the invalid VALUE and the RECORD ID are stored.",
+      "name": "How to log invalid values caught by the post-save audit. Every mode except 'off' logs field, instrument, event and instance; the modes differ in how the invalid VALUE and the RECORD ID are stored. 'Hashed' is a keyed, project-scoped HMAC (module-held secret) — that is pseudonymization, not anonymity: treat the module log as identifying data for access and retention purposes.",
       "type": "dropdown",
       "choices": [
-        { "value": "hashed", "name": "Hashed value + raw record ID (default — correlates repeats without storing the invalid ID; the record ID stays readable so staff can fix the record)" },
-        { "value": "none", "name": "Strict: no value, record ID hashed (minimal-identifier mode for sites where record IDs are themselves identifying)" },
+        { "value": "hashed", "name": "Keyed hash of the value + raw record ID (default — correlates repeats within this project without storing the value; the record ID stays readable so staff can fix the record)" },
+        { "value": "none", "name": "Strict: no value, record ID as keyed hash (minimal-identifier mode for sites where record IDs are themselves identifying)" },
         { "value": "raw", "name": "Raw value + raw record ID (only if your data-governance policy allows identifiers in module logs)" },
-        { "value": "off", "name": "Do not log server-side detections at all" }
+        { "value": "off", "name": "Do not log detections at all (audit ERRORS are still logged, without any record identifier)" }
       ]
+    },
+    {
+      "key": "debug-log",
+      "name": "Debug: include exception messages in audit-error log entries. Leave OFF in production — exception text can quote data values.",
+      "type": "checkbox"
     },
     {
       "key": "rules",
@@ -102,7 +107,7 @@
         },
         {
           "key": "pattern",
-          "name": "Optional format pattern (regex for ONE ID). Required if method is 'No check character'. JavaScript regex; avoid nested quantifiers like (a+)+.",
+          "name": "Optional format pattern (regex for ONE ID; printable ASCII; tested against the UPPERCASED, dash-unified value). Required if method is 'No check character'. JavaScript regex syntax; nested quantifiers and repeated alternation/optional groups — (a+)+, (a|aa)+ — are rejected as catastrophic at save time.",
           "type": "text"
         },
         {
@@ -112,12 +117,12 @@
         },
         {
           "key": "keep-chars",
-          "name": "Pooled only: extra characters to keep when splitting a pooled field (rarely needed)",
+          "name": "Pooled only: extra characters to keep when splitting a pooled field (rarely needed; printable ASCII, up to 64)",
           "type": "text"
         },
         {
           "key": "id-lengths",
-          "name": "Pooled only: exact ID length(s), comma-separated (e.g. 10 or 10, 12). Overrides the min/max range below.",
+          "name": "Pooled only: exact ID length(s), comma-separated (e.g. 10 or 10, 12; up to 32 values, each up to 64). Overrides the min/max range below.",
           "type": "text"
         },
         {
@@ -127,22 +132,22 @@
         },
         {
           "key": "id-max-len",
-          "name": "Pooled only: maximum ID length (default 14; must be less than 2× the minimum).",
+          "name": "Pooled only: maximum ID length (default 14; must be less than 2× the minimum; up to 64).",
           "type": "text"
         },
         {
           "key": "expected-count",
-          "name": "Pooled only: expected number of IDs in the field (optional; warns if different). Positive whole number.",
+          "name": "Pooled only: expected number of IDs in the field (optional; warns if different). Positive whole number up to 9999.",
           "type": "text"
         },
         {
           "key": "block-save",
-          "name": "On an invalid ID (client-side; the server always logs — see above)",
+          "name": "On an invalid value (all three are BROWSER behaviors; API and import writes cannot be blocked — they are only logged per the audit-log setting above)",
           "type": "dropdown",
           "choices": [
             { "value": "off", "name": "Informational — show a message only (default)" },
-            { "value": "confirm", "name": "Advisory — warn and ask before saving" },
-            { "value": "hard", "name": "Compulsory — block the browser save until fixed" }
+            { "value": "confirm", "name": "Advisory — warn and ask before the browser saves" },
+            { "value": "hard", "name": "Compulsory — block the browser form/survey save until fixed (never blocks API/import writes; skipped on read-only fields)" }
           ]
         }
       ]

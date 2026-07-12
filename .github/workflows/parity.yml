@@ -4,12 +4,16 @@ on:
   push:
   pull_request:
 
+# Nothing in CI writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   js-parity:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
       - name: JS engine vs fixture (compute + normalize + scheme_ops)
@@ -27,15 +31,23 @@ jobs:
         run: node tests/config_notice_js.cjs
       - name: JS dispatcher config-error routing
         run: node tests/dispatch_notice_js.cjs
+      - name: JS field DOM contract (a11y, debounce, survey muting, readonly)
+        run: node tests/a11y_dom_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # the declared php-version-min (7.4) through current, so the floor is
+        # actually exercised, not just declared
+        php: ['7.4', '8.1', '8.3']
     steps:
-      - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: shivammathur/setup-php@bf6b4fbd49ca58e4608c9c89fba0b8d90bd2a39f # 2.35.5
         with:
-          php-version: '8.1'
-          extensions: mbstring
+          php-version: '${{ matrix.php }}'
+          extensions: mbstring, ctype
       - name: PHP syntax check
         run: |
           php -l php/CheckCharacter.php
@@ -51,3 +63,31 @@ jobs:
         run: php tests/annotation_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Build and verify the release-shaped archive
+        run: |
+          set -e
+          VERSION=$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)
+          test -n "$VERSION" || { echo "could not read the version from CHANGELOG.md"; exit 1; }
+          DIR="universal_validator_v${VERSION}"
+          git archive --prefix="${DIR}/" -o "${DIR}.zip" HEAD
+          unzip -q "${DIR}.zip" -d /tmp/pkg
+          cd "/tmp/pkg/${DIR}"
+          echo "--- package contents ---"
+          find . -type f | sort
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php; do
+            test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
+          done
+          for d in .github reports; do
+            test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }
+          done
+          python3 -m json.tool config.json > /dev/null
+          grep -qF 'INSPIRE\\UniversalValidator' config.json \
+            || { echo "config.json namespace mismatch"; exit 1; }
+          grep -qF 'namespace INSPIRE\UniversalValidator;' UniversalValidator.php \
+            || { echo "module class namespace mismatch"; exit 1; }
+          echo "package ${DIR}.zip OK"

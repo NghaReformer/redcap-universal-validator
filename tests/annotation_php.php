@@ -70,6 +70,45 @@ check('bad type -> error', isset($r['error']));
 $r = AnnotationRules::parseField('@UVALIDATE={"source":"digits_only","blockSave":"confirm"}');
 check('source + blockSave pass through', !isset($r['error']) && $r['source'] === 'digits_only');
 
+// ---- checkFragment: the one semantic validator shared by all channels ----
+function fragErrors($frag) { return AnnotationRules::checkFragment($frag); }
+check('sound single fragment -> no errors', fragErrors(['algorithm' => 'damm']) === []);
+check('sound pooled fragment -> no errors',
+    fragErrors(['type' => 'pooled', 'idLengths' => [10, 12], 'expectedIds' => 3]) === []);
+check('unknown algorithm rejected', count(fragErrors(['algorithm' => 'bogus'])) === 1);
+check('bad type rejected', count(fragErrors(['type' => 'multi'])) === 1);
+check('none without pattern rejected', count(fragErrors(['algorithm' => 'none'])) === 1);
+check('repeated-alternation pattern rejected with backtracking message',
+    strpos(implode(' ', fragErrors(['idPattern' => '(a|aa)+'])), 'backtracking') !== false);
+check('non-ASCII pattern rejected (parity subset)',
+    strpos(implode(' ', fragErrors(['idPattern' => "FC[0-9]{4}\u{2013}"])), 'ASCII') !== false);
+check('Python \\A anchor rejected',
+    strpos(implode(' ', fragErrors(['idPattern' => '\\AFC[0-9]{4}'])), 'JavaScript regex') !== false);
+check('Python (?P<name>) group rejected',
+    count(fragErrors(['idPattern' => '(?P<x>FC)[0-9]{4}'])) === 1);
+check('uncompilable pattern rejected',
+    strpos(implode(' ', fragErrors(['idPattern' => 'FC[0-9'])), 'compile') !== false);
+check('non-ASCII strip rejected', count(fragErrors(['strip' => "-\u{2013}"])) === 1);
+check('overlong keepChars rejected', count(fragErrors(['keepChars' => str_repeat('-', 65)])) === 1);
+check('ID length beyond the cap rejected',
+    strpos(implode(' ', fragErrors(['idLengths' => [100]])), '64') !== false);
+check('too many exact lengths rejected', count(fragErrors(['idLengths' => range(1, 40)])) >= 1);
+check('idMaxLen beyond the cap rejected', count(fragErrors(['idMaxLen' => 200])) >= 1);
+check('expectedIds beyond the cap rejected', count(fragErrors(['expectedIds' => 100000])) === 1);
+check('pooled sum-swallow lengths rejected',
+    strpos(implode(' ', fragErrors(['type' => 'pooled', 'idLengths' => [8, 16]])), 'swallow') !== false);
+check('pooled max >= 2*min rejected',
+    strpos(implode(' ', fragErrors(['type' => 'pooled', 'idMinLen' => 8, 'idMaxLen' => 16])), 'LESS than 2 x') !== false);
+check('pooled max < min rejected',
+    count(fragErrors(['type' => 'pooled', 'idMinLen' => 10, 'idMaxLen' => 9])) === 1);
+check('single rule ignores pooled range relationship',
+    fragErrors(['idMinLen' => 8, 'idMaxLen' => 16]) === []);
+check('pooled defaults (8..14) pass the relationship check',
+    fragErrors(['type' => 'pooled']) === []);
+check('annotation JSON path uses checkFragment (pooled unsafe lengths -> error)',
+    ($r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","idLengths":[8,16]}'))
+    && isset($r['error']) && strpos($r['error'], 'swallow') !== false);
+
 // ---- group ----
 $rules = AnnotationRules::group([
     'pid_1' => ['algorithm' => 'damm'],

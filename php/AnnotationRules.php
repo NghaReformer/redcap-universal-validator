@@ -132,49 +132,28 @@ class AnnotationRules
         return self::validateConfig($cfg);
     }
 
-    /** Validate a decoded JSON config; return a clean engine-key fragment or ['error'=>...]. */
+    /**
+     * Validate a decoded JSON config; return a clean engine-key fragment or
+     * ['error'=>...]. Structural/type checks (is it a string, a whole number, a
+     * known key) live here; ALL semantic rule validation is delegated to
+     * checkFragment(), the one validator shared with the settings dialog.
+     */
     private static function validateConfig(array $cfg)
     {
         $out = [];
 
-        if (isset($cfg['type'])) {
-            if (!in_array($cfg['type'], ['single', 'pooled'], true)) {
-                return ['error' => '"type" must be "single" or "pooled".'];
+        foreach (['type', 'algorithm', 'source', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
             }
-            $out['type'] = $cfg['type'];
-        }
-        $algo = $cfg['algorithm'] ?? 'iso7064_mod37_36';
-        if (!in_array($algo, self::ALGORITHMS, true)) {
-            return ['error' => 'unknown check algorithm "' . $algo . '" — valid: '
-                . implode(', ', self::ALGORITHMS) . '.'];
-        }
-        if (isset($cfg['algorithm'])) $out['algorithm'] = $algo;
-
-        if (isset($cfg['source'])) {
-            if (!in_array($cfg['source'], ['normalized_id', 'digits_only', 'sequence_only'], true)) {
-                return ['error' => '"source" must be normalized_id, digits_only or sequence_only.'];
-            }
-            $out['source'] = $cfg['source'];
-        }
-        if (isset($cfg['blockSave'])) {
-            if (!in_array($cfg['blockSave'], ['off', 'confirm', 'hard'], true)) {
-                return ['error' => '"blockSave" must be off, confirm or hard.'];
-            }
-            $out['blockSave'] = $cfg['blockSave'];
         }
 
         if (isset($cfg['pattern'])) {
             if (!is_string($cfg['pattern']) || $cfg['pattern'] === '') {
                 return ['error' => '"pattern" must be a non-empty regex string.'];
             }
-            if (CheckCharacter::riskyPattern($cfg['pattern'])) {
-                return ['error' => '"pattern" looks catastrophically backtracking (nested or adjacent '
-                    . 'quantifiers, e.g. (a+)+) — rewrite it without nested quantifiers.'];
-            }
             $out['idPattern'] = $cfg['pattern'];
-        }
-        if ($algo === 'none' && !isset($out['idPattern'])) {
-            return ['error' => 'algorithm "none" validates format only, so a "pattern" is required.'];
         }
 
         foreach (['strip', 'keepChars', 'note'] as $k) {
@@ -207,7 +186,131 @@ class AnnotationRules
                 $out[$k] = (int) $cfg[$k];
             }
         }
+        $errors = self::checkFragment($out);
+        if ($errors) return ['error' => implode(' ', $errors)];
         return $out;
+    }
+
+    /**
+     * Shared semantic validation for one rule fragment (engine keys). Used by
+     * ALL configuration channels — @UVALIDATE annotations, the settings dialog
+     * (settingRowToRule), and the save-time validateSettings() gate — so a rule
+     * one channel accepts can never be one another channel (or the runtime
+     * pooled parser) rejects. Returns a list of error strings, [] when sound.
+     */
+    public static function checkFragment(array $frag)
+    {
+        $errors = [];
+        $type = isset($frag['type']) && $frag['type'] !== '' ? $frag['type'] : 'single';
+        $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
+
+        if (!in_array($type, ['single', 'pooled'], true)) {
+            $errors[] = '"type" must be "single" or "pooled".';
+        }
+        if (!in_array($algo, self::ALGORITHMS, true)) {
+            $errors[] = 'unknown check algorithm "' . $algo . '" — valid: '
+                . implode(', ', self::ALGORITHMS) . '.';
+        }
+        if (isset($frag['source'])
+            && !in_array($frag['source'], ['normalized_id', 'digits_only', 'sequence_only'], true)) {
+            $errors[] = '"source" must be normalized_id, digits_only or sequence_only.';
+        }
+        if (isset($frag['blockSave'])
+            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
+            $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+
+        $pattern = isset($frag['idPattern']) ? $frag['idPattern'] : null;
+        if ($pattern !== null && $pattern !== '') {
+            if (!is_string($pattern)) {
+                $errors[] = 'the format pattern must be a regex string.';
+            } elseif (preg_match('/[^\x20-\x7E]/', $pattern)) {
+                // The client (JS RegExp, UTF-16) and server (PCRE /u, code
+                // points) are only proven to agree on printable ASCII.
+                $errors[] = 'the format pattern must contain printable ASCII only — '
+                    . 'the browser and server regex engines are only guaranteed to agree on that subset.';
+            } elseif (preg_match('/\\\\[AZ]/', $pattern)) {
+                $errors[] = 'the format pattern uses Python-only \A or \Z anchors — patterns are '
+                    . 'JavaScript regex; use ^ and $ instead (anchors are optional anyway).';
+            } elseif (strpos($pattern, '(?P<') !== false) {
+                $errors[] = 'the format pattern uses Python-only (?P<name>...) groups, '
+                    . 'which JavaScript cannot compile.';
+            } elseif (CheckCharacter::riskyPattern($pattern)) {
+                $errors[] = 'the format pattern looks catastrophically backtracking (nested '
+                    . 'quantifiers or a repeated alternation/optional group, e.g. (a+)+ or (a|aa)+) '
+                    . '— rewrite it without repeating an ambiguous group.';
+            } elseif (!CheckCharacter::patternCompiles($pattern)) {
+                $errors[] = 'the format pattern does not compile as a regex — check the syntax.';
+            }
+        }
+        if ($algo === 'none' && ($pattern === null || $pattern === '')) {
+            $errors[] = 'algorithm "none" validates format only, so a format pattern is required.';
+        }
+
+        foreach (['strip' => 'strip', 'keepChars' => 'keepChars'] as $k => $label) {
+            if (isset($frag[$k]) && is_string($frag[$k]) && preg_match('/[^\x20-\x7E]/', $frag[$k])) {
+                $errors[] = '"' . $label . '" must contain printable ASCII characters only '
+                    . '(Unicode dashes in VALUES are unified automatically before checking).';
+            }
+        }
+        if (isset($frag['keepChars']) && is_string($frag['keepChars'])
+            && strlen($frag['keepChars']) > CheckCharacter::MAX_KEEP_CHARS) {
+            $errors[] = '"keepChars" is limited to ' . CheckCharacter::MAX_KEEP_CHARS . ' characters.';
+        }
+
+        // Length caps bound the pooled parser's per-keystroke/per-save work.
+        $lens = isset($frag['idLengths']) && is_array($frag['idLengths']) ? $frag['idLengths'] : null;
+        if ($lens) {
+            if (count($lens) > CheckCharacter::MAX_LEN_CHOICES) {
+                $errors[] = 'at most ' . CheckCharacter::MAX_LEN_CHOICES . ' exact ID lengths are supported.';
+            }
+            foreach ($lens as $L) {
+                if (self::posInt($L) && (int) $L > CheckCharacter::MAX_ID_LEN) {
+                    $errors[] = 'ID lengths above ' . CheckCharacter::MAX_ID_LEN . ' characters are not supported.';
+                    break;
+                }
+            }
+        }
+        foreach (['idMinLen', 'idMaxLen'] as $k) {
+            if (isset($frag[$k]) && self::posInt($frag[$k]) && (int) $frag[$k] > CheckCharacter::MAX_ID_LEN) {
+                $errors[] = '"' . $k . '" is limited to ' . CheckCharacter::MAX_ID_LEN . '.';
+            }
+        }
+        if (isset($frag['expectedIds']) && self::posInt($frag['expectedIds'])
+            && (int) $frag['expectedIds'] > CheckCharacter::MAX_EXPECTED_IDS) {
+            $errors[] = '"expectedIds" is limited to ' . CheckCharacter::MAX_EXPECTED_IDS . '.';
+        }
+
+        // Pooled-only structural safety (mirrors the pooled parser's own gates,
+        // so a rule that passes here can never be "unconfigurable" at runtime).
+        if ($type === 'pooled' && !$errors) {
+            if ($lens) {
+                $ints = array_values(array_unique(array_map('intval', $lens)));
+                sort($ints);
+                $set = array_flip($ints);
+                foreach ($ints as $a) {
+                    foreach ($ints as $b) {
+                        if (isset($set[$a + $b])) {
+                            $errors[] = 'ID lengths ' . implode(', ', $ints) . ' are unsafe: '
+                                . ($a + $b) . ' = ' . $a . ' + ' . $b . ', so one "member" could swallow '
+                                . 'two real ones. Split such projects into separate fields/rules.';
+                            break 2;
+                        }
+                    }
+                }
+            } else {
+                $min = isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8;
+                $max = isset($frag['idMaxLen']) && self::posInt($frag['idMaxLen']) ? (int) $frag['idMaxLen'] : 14;
+                if ($max < $min) {
+                    $errors[] = 'the maximum ID length (' . $max . ') is smaller than the minimum (' . $min . ').';
+                } elseif ($max >= 2 * $min) {
+                    $errors[] = 'the maximum ID length (' . $max . ') must be LESS than 2 x the minimum ('
+                        . (2 * $min) . ') so one "member" can never swallow two real ones. Narrow the '
+                        . 'range, or set exact ID length(s) instead.';
+                }
+            }
+        }
+        return $errors;
     }
 
     public static function posInt($v)

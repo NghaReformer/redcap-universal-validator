@@ -12,26 +12,42 @@ proven so by `tests/parity_js.cjs`. The changes are confined to the config sourc
 and the field-facing UI layer:
 
 1. **Config source.** Upstream declares a hardcoded `QRID_COMBINED_CONFIG` literal
-   (edited by hand for the JavaScript Injector). Here it is read from
-   `window.INSPIRE_VALIDATOR_CONFIG`, which `UniversalValidator.php` injects from
-   the module's settings.
-2. **Security hardening of the UI layer** (the two field factories and the
-   dispatcher, below the engine core):
+   (edited by hand for the JavaScript Injector). Here the engine parses the inert
+   `<script type="application/json" id="inspire-validator-config">` node that
+   `UniversalValidator.php` emits (no executable config script, no config
+   global); `window.INSPIRE_VALIDATOR_CONFIG` remains as a fallback for the Node
+   test harnesses. The config carries a `context` flag (`form`/`survey`).
+2. **Security and performance hardening of the UI layer** (everything below the
+   engine core):
    - All config-derived text (regex class bodies, config-error messages) is
      HTML-escaped before it reaches `innerHTML` — closes a DOM-XSS path (UV-002).
-   - A catastrophic-backtracking check rejects nested/adjacent unbounded
-     quantifiers in `idPattern` at config time, and per-field input-length caps
-     bound the work — mitigates ReDoS (UV-006).
+   - The catastrophic-backtracking gate rejects nested quantifiers AND repeated
+     alternation/optional groups (`(a+)+`, `(a|aa)+`, `(a?)+`, nested variants)
+     by collapsing inner groups layer by layer, plus a 512-code-point pattern
+     cap. Byte-identical twin of `CheckCharacter::riskyPattern` (php), locked by
+     `tests/risky_*` (SEC-001/UV-006).
+   - Per-field input caps, hard rule caps (ID length ≤ 64, ≤ 32 candidate
+     lengths, keepChars ≤ 64 printable ASCII, expectedIds ≤ 9999), a per-rule
+     pooled work budget that shrinks the scan cap for expensive configs, and
+     debounced keystroke validation (PER-002).
    - The `MutationObserver` is disconnected when a field never appears, instead of
      observing the whole page for the life of the tab (UV-007).
-3. **Namespace and test hooks.** `QRCheck.riskyPattern` is exposed for the
-   cross-runtime ReDoS-gate tests, and the dispatcher publishes ONE public
-   namespace, `window.INSPIREUniversalValidator` (config, engine, factories,
-   validators, guard), per REDCap's external-module JavaScript guidance. The
-   individual upstream globals (`QRCheck`, `QRIDSingleInit`, `QRIDPooledInit`,
-   `QRIDValidators`, `QRIDMulti`, `QRID_COMBINED_CONFIG`, `__QRIDGuard`) remain as
-   deprecated aliases because they are the upstream / JavaScript-Injector
-   contract; new code should use the namespace.
+3. **Accessibility layer.** Validation messages render in polite live regions
+   (`role=status`, `aria-live=polite`, stable ids) wired to their inputs with
+   `aria-describedby`; inputs carry `aria-invalid`; save-block dialogs name
+   fields by their visible label and focus the field; read-only/disabled fields
+   never arm the save blocker; chip/message colors meet WCAG 2.2 AA contrast
+   with non-color marks (A11Y-001/002, UX-003). Config errors attach to their
+   field when it is on the page and fall back to one page-level notice;
+   surveys show a generic line instead of technical detail (UX-001).
+4. **Single public namespace.** All module-authored code lives in one IIFE and
+   publishes exactly ONE global, `window.INSPIREUniversalValidator` (config,
+   engine, riskyPattern, configErrorNotice, factories, validators, guard,
+   lastPooled). The legacy upstream globals (`QRCheck`, `QRIDSingleInit`,
+   `QRIDPooledInit`, `QRIDValidators`, `QRIDMulti`, `QRID_COMBINED_CONFIG`,
+   `__QRIDGuard`) are NOT published — the core's own `QRCheck` global is
+   captured as `.engine` and deleted after load. This module never shipped with
+   those globals, so there is no consumer to break.
 
 These deviations touch presentation and safety only, never the check-character
 math, so parity with the Python source is unaffected. Upstreaming them is
@@ -57,11 +73,11 @@ contract, and CI enforces it.
 2. Copy the refreshed `playground/check_fixture.json` to `tests/check_fixture.json`
    here.
 3. Copy `integrations/redcap/redcap_combined_id_check.js` to `js/engine.js`, then
-   re-apply the deviations listed above: the `window.INSPIRE_VALIDATOR_CONFIG`
-   config source, plus the UI-layer security hardening (config-derived HTML
-   escaping, the `idPattern` ReDoS check, input-length caps, and the
-   `MutationObserver` disconnect). Diff against the previous `engine.js` to port
-   them forward; the engine core below the config should apply cleanly.
+   re-apply the deviations listed above: ONLY the engine core (the `QRCheck`
+   IIFE) comes from upstream — everything below it (the UI module IIFE with the
+   config reader, hardening, accessibility layer, factories, dispatcher, and
+   namespace) is module-authored. Diff against the previous `engine.js` to port
+   the core forward; the UI module should apply cleanly.
 4. Run `node tests/parity_js.cjs`, `php tests/parity_php.php`, and both pooled
    tests — all must be green before committing. If the pooled parser changed,
    regenerate `tests/pooled_fixture.json` with `node tests/gen_pooled_fixture.cjs`.

@@ -24,9 +24,8 @@ global.document = {
   body: { addEventListener() {} },
 };
 require(path.join(__dirname, '..', 'js', 'engine.js'));
-global.window.QRCheck = global.QRCheck;                 // browser has window === globalThis
-
-const Q = global.QRCheck;
+const NS = global.window.INSPIREUniversalValidator;
+const Q = NS.engine;
 const mod37 = 'iso7064_mod37_36';
 // makeScheme() computes the .active flag appendCheck needs — a raw literal would
 // be treated as inactive and mint no check character.
@@ -35,9 +34,8 @@ const MINT = Q.makeScheme({ algorithm: mod37, source: 'normalized_id', placement
 const app = (id) => Q.appendCheck(id, MINT);
 
 function parseWith(config, input) {
-  global.window.QRIDMulti = null;
-  window.QRIDPooledInit(Object.assign({ fields: [] }, config));
-  return window.QRIDMulti.parse(input);
+  NS.pooledInit(Object.assign({ fields: [] }, config));
+  return NS.lastPooled.parse(input);
 }
 
 // ---- representative valid members (minted, so they carry real check chars) ----

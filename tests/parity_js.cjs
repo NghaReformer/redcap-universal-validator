@@ -30,11 +30,16 @@ global.document = {
 
 require(path.join(__dirname, '..', 'js', 'engine.js'));
 
-// The engine assigns to G = globalThis (which is `window` in a browser). In Node
-// that is `global`, so read it there.
-const Q = global.QRCheck || (global.window && global.window.QRCheck);
+// Everything is published under the ONE public namespace; the legacy QRCheck
+// global is retired at load.
+const NS = global.window && global.window.INSPIREUniversalValidator;
+const Q = NS && NS.engine;
 if (!Q || !Q.ALGORITHMS) {
-  console.error('engine.js did not expose QRCheck.ALGORITHMS');
+  console.error('engine.js did not expose INSPIREUniversalValidator.engine');
+  process.exit(1);
+}
+if (global.QRCheck !== undefined) {
+  console.error('legacy global QRCheck survived loading — single-namespace contract broken');
   process.exit(1);
 }
 

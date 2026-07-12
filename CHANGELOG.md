@@ -1,5 +1,119 @@
 # Changelog
 
+## 0.5.0 — predeployment-review hardening
+
+Addresses `reports/predeployment-review-2026-07-12.md` (4 blockers, 7 high, 11
+medium, 4 low). Every code-addressable finding is fixed here; the remaining
+release-gate items (public SemVer release, REDCap security scan, live
+REDCap/browser/screen-reader matrix) are people-work, tracked as explicit
+blockers at the top of `docs/TESTING.md`.
+
+Security and privacy
+- **SEC-001:** the ReDoS gate now catches repeated alternation/optional groups
+  (`(a|aa)+`, `(a?)+`, `((a)|(aa))+`, non-capturing/lookahead variants) by
+  collapsing inner groups layer by layer, extends the adjacent-quantifier rule
+  to `*{`/`+{`, and caps the pattern source at 512 code points. Both runtimes
+  stay byte-identical (14,399-pattern differential: zero divergence). The
+  pre-fix gate passed `(a|aa)+`, which froze a browser tab on 43 characters.
+- **SEC-002:** every settings read on the audit path now carries the hook's
+  explicit `$project_id` (`getSubSettings('rules', $pid)`,
+  `getProjectSetting('log-values', $pid)`); the hook-test mocks now REFUSE to
+  return settings without a resolvable pid, so a regression fails the suite.
+- **SEC-003:** the audit-error path honors the project's log-privacy mode:
+  keyed record hash in `none`, no record identifier at all in `off`, and the
+  exception MESSAGE (which can quote data) only with the new `debug-log`
+  project setting on. Previously a raw record id leaked in every mode.
+- **SEC-004:** logged identifiers are keyed, project-scoped HMAC-SHA-256
+  (module-held secret in a system setting) instead of plain SHA-256 — no
+  offline enumeration, no cross-project linking; settings copy now says
+  pseudonymization, not anonymity. Log keys renamed `value_hmac`/`record_hmac`.
+- **SEC-005 (partial):** instrument scoping (below) removes the main duplicate
+  source — unrelated-instrument saves re-logging an old invalid value. Full
+  cross-save deduplication remains future work.
+
+Correctness
+- **COR-001:** with an event id supplied, the audit reads ONLY that event's
+  node — the whole-record fallback that could validate (and log) another
+  event's value now runs only when the hook supplies no event id at all.
+- **COR-002:** `validateSettings()` rejects invalid rules at save time with a
+  message naming the rule; one shared validator (`AnnotationRules::checkFragment`)
+  serves the dialog, annotations, and the save gate; each rule is audited in
+  isolation (one failure cannot abort the rest); rules the server cannot
+  evaluate log `uvalidate-unconfigurable` instead of passing silently.
+- **COR-003:** non-Text/Notes fields are rejected by the dialog channel too
+  (config error naming the field and its type), matching the annotation channel.
+- **COR-004:** the client/server regex parity subset is now explicit: patterns,
+  strip, and keepChars must be printable ASCII (enforced at save time), and the
+  server format audit fails open on non-ASCII values instead of risking a
+  verdict the browser never showed. Python-only `(?P<...)` is rejected with
+  `\A`/`\Z`; patterns must compile in PCRE at save time.
+- **COR-005:** field-keyed registries use prototype-free objects, so a field
+  named `constructor` can no longer corrupt duplicate detection.
+- The single-field factory no longer lets an absent `source`/`strip` override
+  scheme defaults with `undefined` (crashed on minimal configs).
+
+Performance
+- **PER-001:** the audit is scoped to the saved instrument (conservatively
+  auditing everything when the instrument or dictionary is unknown, e.g. some
+  import/API contexts); fields claimed by two rules are skipped exactly like
+  the client; an unrelated-instrument save now reads no data at all.
+- **PER-002:** hard rule caps (ID length ≤ 64, ≤ 32 candidate lengths,
+  keepChars ≤ 64, expectedIds ≤ 9999) plus a per-rule pooled work budget that
+  shrinks the scan cap for expensive configs (identical formula in both
+  runtimes; over-cap input gets "too long to scan", never a slow parse), and
+  keystroke validation is debounced (150 ms; change/blur immediate). The
+  review's 100–199-length config (9.25 s per parse) is now a save-time
+  rejection; the worst still-legal config parses in ~100 ms at its cap.
+  Huge min/max values no longer allocate a giant candidate array (browser or
+  server); the pooled input cap dropped 8192 → 4096.
+
+Accessibility and UX
+- **A11Y-001:** messages are polite live regions (`role=status`,
+  `aria-live=polite`, stable ids) wired via `aria-describedby`; inputs carry
+  `aria-invalid`; block dialogs name fields by their visible label and focus
+  the field. New `tests/a11y_dom_js.cjs` locks the DOM contract; live
+  screen-reader verification added to `docs/TESTING.md`.
+- **A11Y-002:** pooled junk-chip text darkened `#b26a00` → `#8a5500` on
+  `#fbf6e8` (3.93:1 → 5.75:1, WCAG 2.2 AA for normal text).
+- **UX-001:** configuration errors attach to their field when it is on the
+  page, fall back to one page-level notice otherwise, and surveys show a
+  generic "checking unavailable" line instead of technical detail (staff still
+  see everything on data-entry forms, in the dialog gate, and in the log).
+- **UX-002:** presence checks replace `empty()` (a pattern of `"0"` counts),
+  the pattern box states the uppercase normalization and the ASCII subset, and
+  save-time validation means designers see errors in the dialog, not typists.
+- **UX-003:** enforcement copy now says BROWSER form/survey save everywhere;
+  read-only/disabled fields never arm the save blocker (no more traps on
+  `@READONLY` fields); the advisory dialog no longer double-prompts when a
+  save-button click is followed by its own submit.
+- **CMP-001 (partial):** everything below the vendored core now lives in one
+  IIFE publishing exactly one global (`window.INSPIREUniversalValidator`); the
+  legacy `QRCheck`/`QRID*`/`__QRIDGuard` globals are gone, and the config
+  travels only through the inert JSON node (no config global, no inline config
+  script). JSMO/`tt()` translation integration remains future work and is
+  disclosed as a known limitation (English-only messages).
+
+Claims, docs, assurance
+- **PRE-004/DOC-001:** the Repo-facing description, class header, README,
+  INSTALL, and settings copy no longer claim API/import audit coverage — they
+  describe a best-effort post-save audit wherever REDCap fires the hook, with
+  the live-instance verification step linked; "the server always logs" removed
+  (off mode exists); stale test counts replaced by the actual suite list.
+- **PRE-001/002/003:** recorded as explicit release-gate blockers in
+  `docs/TESTING.md` (public SemVer release + anonymous download, current REDCap
+  security scan, executed live matrix incl. browsers and a screen reader).
+- **TST-001:** hook suite grown 14 → 56 checks (strict-pid mocks, privacy modes
+  on success and exception paths, event/instrument scoping, repeats,
+  duplicates, isolation, HMAC, `validateSettings`); annotation suite 30 → 52
+  (shared-validator coverage); risky list 22 → 34 patterns + length-cap and
+  measured-time checks; new 19-check DOM/a11y suite; PHP matrix 7.4/8.1/8.3 in
+  CI so the declared floor is tested.
+- **CI-001/PKG-001:** workflow token limited to `contents: read`; actions
+  pinned to commit SHAs; new `package` job builds `universal_validator_vX.Y.Z.zip`
+  from `git archive` and verifies required files, excluded dev trees
+  (`.github`, `reports` via `export-ignore`), JSON validity, and namespace
+  match.
+
 ## 0.4.0 — bulk configuration + repositioning
 
 Driven by first live-REDCap field testing: configuring many fields one picker

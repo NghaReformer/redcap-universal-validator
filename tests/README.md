@@ -6,12 +6,17 @@ disagree with each other or with the ID generator. If either drifts, CI fails.
 ## Run
 
 ```bash
-node tests/parity_js.cjs      # JS engine  vs check_fixture.json
-php  tests/parity_php.php      # PHP port   vs check_fixture.json (needs mbstring)
-node tests/pooled_js.cjs      # JS pooled parser vs pooled_fixture.json
-php  tests/pooled_php.php      # PHP pooled parser vs pooled_fixture.json
-node tests/risky_js.cjs       # JS risky-pattern heuristic vs risky_patterns.json
-php  tests/risky_php.php       # PHP risky-pattern heuristic + server behavior
+node tests/parity_js.cjs        # JS engine  vs check_fixture.json
+php  tests/parity_php.php        # PHP port   vs check_fixture.json (needs mbstring + ctype)
+node tests/pooled_js.cjs        # JS pooled parser vs pooled_fixture.json
+php  tests/pooled_php.php        # PHP pooled parser vs pooled_fixture.json
+node tests/risky_js.cjs         # JS risky-pattern heuristic vs risky_patterns.json
+php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
+php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
+php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
+node tests/config_notice_js.cjs  # page-level config-error notice
+node tests/dispatch_notice_js.cjs # dispatcher config-error routing
+node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
 ```
 
 ## `check_fixture.json` — the algorithm + runtime-path contract
@@ -46,24 +51,46 @@ node tests/gen_pooled_fixture.cjs   # rewrites pooled_fixture.json; commit the d
 
 ## `risky_patterns.json` — the ReDoS-gate contract
 
-`riskyPattern` exists in both runtimes (`QRCheck.riskyPattern` in JS,
-`CheckCharacter::riskyPattern` in PHP) and must agree, or a catastrophic
+`riskyPattern` exists in both runtimes (`INSPIREUniversalValidator.riskyPattern`
+in JS, `CheckCharacter::riskyPattern` in PHP) and must agree, or a catastrophic
 `idPattern` the browser blocks could still run on the server. `risky_js.cjs` and
-`risky_php.php` assert both classify the shared `risky` / `safe` list identically;
-`risky_php.php` additionally proves the server path returns a fast, non-invalid
-verdict for a catastrophic pattern — both a heuristic-caught one and a
-heuristic-missed one that only the pooled PCRE-error guard stops. The heuristic
-targets nested/adjacent quantifiers, unbounded (`+` `*`) and bounded
-(`{n,m}`/`{n,}`), and is a conservative subset: it does not catch alternation- or
-optional-overlap ReDoS (e.g. `(a|a?)+`), which the pooled path instead defuses at
-match time by bailing to "unconfigurable" on a PCRE backtrack-limit error.
+`risky_php.php` assert both classify the shared `risky` / `safe` list
+identically. The heuristic rejects nested quantifiers (bounded and unbounded)
+and any repetition of a group that can match ambiguously — alternation,
+optionals, or inner quantifiers, so `(a|aa)+`, `(a?)+` and `((a)|(aa))+` are all
+refused — with inner groups collapsed layer by layer so nesting cannot hide the
+shape, plus a 512-code-point cap on the pattern source. It deliberately
+over-rejects (a repeated alternation is refused even with disjoint branches)
+and it still is a heuristic, not a proof: polynomial shapes like `A*A*A*9` pass
+it, which is why `risky_php.php` also proves the server bails to
+"unconfigurable" on a PCRE backtrack-limit failure instead of logging a false
+verdict, and why per-field input caps and the pooled work budget stay in place.
+`risky_js.cjs` additionally runs every `safe` pattern against adversarial
+inputs under a time budget, so "safe" is measured, not assumed.
+
+## `hook_php.php` — the audit-path contract
+
+Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.
+The mocks are deliberately strict: settings reads return nothing unless a
+resolvable project id reaches them, which models import/API contexts where
+`getProjectId()` is null — the module must thread the hook's `$project_id`
+explicitly or the suite fails. Covered: both configuration channels, all four
+log-privacy modes on the success AND exception paths, keyed-HMAC hashing and
+key persistence, event scoping (a value under another event is never audited),
+instrument scoping, repeat instances, duplicate-field skips, per-rule
+isolation, `uvalidate-unconfigurable` logging, non-ASCII fail-open, the
+non-text field rejection, and the save-time `validateSettings` gate.
 
 ## CI
 
-`.github/workflows/parity.yml` runs all six tests on every push and pull request
-(Node 20, PHP 8.1 with mbstring), `php -l`-lints the PHP, and checks that
-`pooled_fixture.json` is regenerated. Green CI means this module's client and
-server engines agree with each other and with the ID generator.
+`.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite
+on PHP 7.4, 8.1 and 8.3 (the declared minimum is exercised, not just stated),
+`php -l`-lints the PHP, checks that `pooled_fixture.json` is regenerated, and
+builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
+layout (required files present, development-only trees excluded, namespace
+matching). Green CI means the module's client and server engines agree with
+each other and with the ID generator — it does NOT replace the live-REDCap
+checklist in [`../docs/TESTING.md`](../docs/TESTING.md).
 
 ## Note on the PHP port
 

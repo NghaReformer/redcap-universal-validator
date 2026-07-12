@@ -62,22 +62,41 @@ if (empty($resA['ok'])) {
     fwrite(STDERR, 'bounded-nested pooled pattern gave an invalid verdict: ' . json_encode($resA) . "\n");
 }
 
-// (b) a heuristic-MISSED catastrophic pattern (optional-overlap alternation, which
-// PCRE cannot auto-possessify) that hits the PCRE backtrack limit at match time
-// must bail to "unconfigurable", NOT be logged as junk. riskyPattern does not
-// catch this class (no inner + * or {n,m}); the patTest guard is what saves it. A
-// tiny backtrack limit makes the engine failure deterministic. Uppercase pattern +
-// value because the pooled cleaner uppercases before matching.
+// (b) a heuristic-MISSED pattern that hits the PCRE backtrack limit at match
+// time must bail to "unconfigurable", NOT be logged as junk. Since the gate now
+// catches ambiguous-repetition shapes ((a|aa)+, (A|A?)+), the remaining missed
+// class is POLYNOMIAL backtracking (overlapping stars, A*A*A*9); the patTest
+// guard is what saves it. The required literal ('9') is present in the subject
+// so PCRE2's prescan cannot short-circuit, but the subject ends in 'A' so the
+// match only fails after exploring the quadratic split space. A tiny backtrack
+// limit makes the engine failure deterministic. Uppercase pattern + value
+// because the pooled cleaner uppercases before matching.
 $n++;
+if (CheckCharacter::riskyPattern('A*A*A*9') !== false) {
+    $fail++;
+    fwrite(STDERR, "A*A*A*9 unexpectedly gated — test 3(b) no longer exercises the PCRE-error guard\n");
+}
 $old = ini_get('pcre.backtrack_limit');
-ini_set('pcre.backtrack_limit', '200');
+ini_set('pcre.backtrack_limit', '100');
 $cfgB = ['algorithm' => 'none', 'source' => 'normalized_id', 'strip' => '',
-         'idPattern' => '(A|A?)+$', 'idLengths' => [30]];
-$resB = CheckCharacter::validatePooledField($cfgB, str_repeat('A', 29) . '9');
+         'idPattern' => 'A*A*A*9', 'idLengths' => [30]];
+$resB = CheckCharacter::validatePooledField($cfgB, str_repeat('A', 28) . '9A');
 ini_set('pcre.backtrack_limit', $old === false ? '1000000' : $old);
 if (empty($resB['ok'])) {
     $fail++;
     fwrite(STDERR, 'PCRE-error pooled path gave an invalid verdict instead of bailing: ' . json_encode($resB) . "\n");
+}
+
+// ---- 4) pattern-source length cap (mirrors the JS gate) ----
+$n++;
+if (CheckCharacter::riskyPattern(str_repeat('A', 513)) !== true) {
+    $fail++;
+    fwrite(STDERR, "513-char pattern source was not gated\n");
+}
+$n++;
+if (CheckCharacter::riskyPattern(str_repeat('A', 512)) !== false) {
+    $fail++;
+    fwrite(STDERR, "512-char plain pattern source was wrongly gated\n");
 }
 
 echo sprintf("risky_php: %d checks, %d mismatch(es)\n", $n, $fail);

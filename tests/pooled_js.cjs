@@ -22,7 +22,7 @@ global.document = {
   body: { addEventListener() {} },
 };
 require(path.join(__dirname, '..', 'js', 'engine.js'));
-global.window.QRCheck = global.QRCheck;
+const NS = global.window.INSPIREUniversalValidator;
 
 function canon(segs) {
   return segs.map((s) => (s.type === 'id' ? ['id', s.id, !!s.valid] : ['junk', s.text]));
@@ -31,9 +31,8 @@ function canon(segs) {
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'pooled_fixture.json'), 'utf8'));
 let fail = 0;
 for (const c of fx.cases) {
-  global.window.QRIDMulti = null;
-  window.QRIDPooledInit(Object.assign({ fields: [] }, c.config));
-  const got = JSON.stringify(canon(window.QRIDMulti.parse(c.input)));
+  NS.pooledInit(Object.assign({ fields: [] }, c.config));
+  const got = JSON.stringify(canon(NS.lastPooled.parse(c.input)));
   const exp = JSON.stringify(canon(c.segs));
   if (got !== exp) {
     fail++;

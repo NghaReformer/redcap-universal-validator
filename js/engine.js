@@ -3,13 +3,21 @@
 
    DEVIATIONS FROM UPSTREAM (full list + rationale in js/README.md, which is the
    authoritative provenance record — keep the two in sync):
-     1. Config source: read from window.INSPIRE_VALIDATOR_CONFIG (injected by
-        UniversalValidator.php) instead of a hardcoded literal.
+     1. Config source: parsed from the inert <script type="application/json"
+        id="inspire-validator-config"> node UniversalValidator.php emits (with
+        window.INSPIRE_VALIDATOR_CONFIG as a test-only fallback) instead of a
+        hardcoded literal.
      2. UI-layer security hardening: HTML-escaping of config-derived text,
         catastrophic-regex (ReDoS) rejection at config time, per-field input
-        length caps, and MutationObserver cleanup.
-     3. Test/namespace hooks: QRCheck.riskyPattern and the single public
-        namespace window.INSPIREUniversalValidator (see the dispatcher).
+        length caps, pooled work caps, input debouncing, and MutationObserver
+        cleanup.
+     3. Accessibility: status messages are polite live regions wired to their
+        inputs with aria-describedby/aria-invalid; save-block dialogs name
+        fields by their visible label.
+     4. Single public namespace: everything below the engine core lives in one
+        IIFE and is exposed ONLY as window.INSPIREUniversalValidator; the
+        legacy upstream globals (QRCheck, QRIDSingleInit, QRIDPooledInit,
+        QRIDValidators, QRIDMulti, __QRIDGuard) are not published.
    The ENGINE CORE — the QRCheck IIFE with every algorithm and ISO/IEC 7064
    factory — is byte-identical to the verified upstream and is proven against
    tests/check_fixture.json by tests/parity_js.cjs on every push. When
@@ -29,12 +37,11 @@
    Paste this whole file into the "JavaScript Injector" external module.
    Edit only QRID_COMBINED_CONFIG below. Warn-only: it never blocks saving.
    ============================================================ */
-/* ---- CONFIG: edit this part only ---- */
-var QRID_COMBINED_CONFIG = (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
-  ? window.INSPIRE_VALIDATOR_CONFIG
-  : { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, source: "normalized_id", strip: "-/ _|", suggestFix: true,
-      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
+/* ---- CONFIG ----
+   The module reads its config inside the UI IIFE below (QRID_readConfig):
+   first the inert JSON node UniversalValidator.php emits, then the
+   window.INSPIRE_VALIDATOR_CONFIG fallback used by the test harnesses. The
+   key reference that follows documents that config object. */
 /* ---- HOW TO CONFIGURE: the three supported set-ups -------------------------
    1) CHECK-CHARACTER PROJECT (the QR generator's default):
         algorithm: "iso7064_mod37_36"        idPattern: null
@@ -539,37 +546,269 @@ var QRID_COMBINED_CONFIG = (typeof window !== "undefined" && window.INSPIRE_VALI
     normalize, applySource, computeCheck, appendCheck, preparePayload, validateIdCheck,
   };
 })();
-/* ---- shared safety helpers (module addition — NOT part of the vendored core;
-   see js/README.md "intentional deviations"). Used by both factories. ---- */
+/* ============================================================================
+   UI MODULE (everything below is a module addition — NOT part of the vendored
+   core; see js/README.md "intentional deviations"). One IIFE, one public name:
+   window.INSPIREUniversalValidator. No other global survives loading.
+   ============================================================================ */
+(function(){
+  "use strict";
+  var G = (typeof globalThis !== "undefined") ? globalThis
+        : (typeof window !== "undefined") ? window : this;
+  /* Capture the verified core before its legacy global alias is retired at the
+     bottom of this IIFE. */
+  var Q = G.QRCheck;
+
+  /* Config source: the inert JSON node emitted by UniversalValidator.php is
+     authoritative; the window fallback exists for the Node test harnesses and
+     legacy JavaScript-Injector use. */
+  function QRID_readConfig(){
+    try {
+      if (typeof document !== "undefined" && document.getElementById) {
+        var el = document.getElementById("inspire-validator-config");
+        if (el && el.textContent) return JSON.parse(el.textContent);
+      }
+    } catch(e){
+      if (typeof console !== "undefined" && console.error)
+        console.error("Universal Field Validator: could not parse config", e);
+    }
+    if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
+      return window.INSPIRE_VALIDATOR_CONFIG;
+    return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
+      idPattern: null, source: "normalized_id", strip: "-/ _|", suggestFix: true,
+      keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
+  }
+  var QRID_COMBINED_CONFIG = QRID_readConfig();
+  /* Survey pages face respondents who cannot act on configuration problems:
+     technical config detail is muted there (UX-001) — admins still see every
+     detail on data-entry forms, in the Configure dialog, and in the module log. */
+  var QRID_IS_SURVEY = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.context === "survey");
+
+  /* Shared per-load registries (were window globals; now namespace-only).
+     Object.create(null): REDCap field names are attacker-ish input for a plain
+     object — a field named "constructor" or "toString" must not inherit
+     prototype members and corrupt lookups (COR-005). */
+  var UV_validators = Object.create(null);
+  var UV_guard = { items: [], armed: false };
+  var UV_lastPooled = null;
+
 function QRID_escapeHtml(t){
   return String(t)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-/* Conservative catastrophic-backtracking detector. Not a proof of safety — it
-   rejects the common exponential shapes (nested / adjacent unbounded quantifiers)
-   at CONFIG time so a bad project regex can never be compiled and run per
-   keystroke. Combined with the input-length caps below, this bounds ReDoS. */
+/* Conservative catastrophic-backtracking detector. Rejects, at CONFIG time, the
+   exponential shapes: nested quantifiers AND any repetition of a group that can
+   match the same text more than one way (alternation, optionals, or inner
+   quantifiers) — so (a|aa)+, (a?)+ and ((a)|(aa))+ are refused, not only (a+)+.
+   Inner groups are collapsed layer by layer, so nesting cannot hide the shape.
+   Still a conservative heuristic, not a formal safety proof: it over-rejects
+   (any repeated alternation is refused even when the branches are disjoint) and
+   the match-time PCRE-error guard remains the server backstop. */
 function QRID_riskyPattern(src){
+  if(Array.from(String(src)).length > 512) return true;   /* absurd pattern source */
   var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
+  s = s.replace(/\(\?(<?[=!]|:)/g, "(");                   /* (?: (?= (?! (?<= (?<! -> plain ( */
   /* Whitespace is an explicit ASCII class, NOT \s: JS \s matches Unicode
      whitespace but PCRE \s (no /u) does not, so \s would classify differently
-     across runtimes. The group checks accept a bounded quantifier ({n,m}/{n,})
+     across runtimes. The group check accepts a bounded quantifier ({n,m}/{n,})
      as the "repeating" token too, so nested bounded quantifiers like
      ([0-9]{1,20}){1,20} are caught, not only +/* nesting. Keep BYTE-IDENTICAL to
      CheckCharacter::riskyPattern (php); tests/risky_*.{cjs,php} assert parity. */
-  if(/[+*][ \t\n\r\f]*[+*]/.test(s)) return true;                                        /* a++  a*+ ...             */
-  if(/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/.test(s)) return true; /* (…a+…)+  (…{1,20}…){1,20} */
-  if(/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/.test(s)) return true;                  /* [0-9]+* style            */
+  for(;;){
+    if(/[+*][ \t\n\r\f]*[*+{]/.test(s)) return true;                                        /* a++  a*+  a*{2} ...      */
+    if(/\([^()]*(?:[*+]|\{[0-9]+,[0-9]*\})[^()]*\)[ \t\n\r\f]*[*+{?]/.test(s)) return true; /* (…a+…)+  (…{1,20}…){1,20} */
+    if(/\[[^\]]*\][ \t\n\r\f]*[*+][ \t\n\r\f]*[*+{]/.test(s)) return true;                  /* [0-9]+* style            */
+    /* Collapse every innermost group: a group whose body can match more than
+       one way (alternation, optional, or variable-length content) becomes a
+       variable-length token X*; a fixed body becomes the single token A. A
+       repetition of a variable token is then caught by the rules above on the
+       next pass — (a|aa)+ -> X*+ -> rule 1. */
+    var t = s.replace(/\(([^()]*)\)/g, function(_m, body){
+      return (/[|?*+]/.test(body) || /\{[0-9]+,[0-9]*\}/.test(body)) ? "X*" : "A";
+    });
+    if(t === s) break;
+    s = t;
+  }
   return false;
 }
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
-var QRID_MAX_POOLED_LEN = 8192;   /* pooled field: cap total scanned length        */
+var QRID_MAX_POOLED_LEN = 4096;   /* pooled field: cap total scanned length        */
+/* Rule-config work caps — mirror php/CheckCharacter.php MAX_* constants (the
+   server rejects the same limits at settings-save time and treats them as
+   unconfigurable at audit time); keep the values in sync. */
+var QRID_MAX_ID_LEN      = 64;    /* longest single ID/member the parser considers */
+var QRID_MAX_LEN_CHOICES = 32;    /* most candidate lengths a pooled rule may declare */
+var QRID_MAX_EXPECTED    = 9999;
+var QRID_MAX_KEEP        = 64;
+/* One pooled parse costs about (scanned length) x |LENS| x (member length)
+   character operations; this budget bounds that product for EVERY legal
+   config, so an expensive rule shrinks its scan cap instead of freezing the
+   tab. Default rules keep the full QRID_MAX_POOLED_LEN. */
+var QRID_POOLED_WORK_BUDGET = 2000000;
+/* How long after the last keystroke before validating (change/blur validate
+   immediately). Bounds per-keystroke work on slow machines (PER-002). */
+var QRID_DEBOUNCE_MS = 150;
+function QRID_debounced(fn){
+  if (typeof setTimeout !== "function") return fn;
+  var timer = null;
+  var wrapped = function(){
+    if (timer !== null) clearTimeout(timer);
+    timer = setTimeout(function(){ timer = null; fn(); }, QRID_DEBOUNCE_MS);
+  };
+  wrapped.cancel = function(){ if (timer !== null){ clearTimeout(timer); timer = null; } };
+  return wrapped;
+}
+/* Best-effort visible label for a field (REDCap data-entry rows put it in a
+   .labelrc cell); falls back to the internal field name. Used so save-block
+   dialogs and announcements speak the language of the FORM, not the data
+   dictionary (A11Y-001). */
+function QRID_fieldLabel(input, fieldName){
+  try {
+    var t = input.getAttribute && input.getAttribute("aria-label");
+    if (t && t.replace(/\s+/g, "").length) return t.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (input.labels && input.labels.length && input.labels[0].textContent) {
+      t = input.labels[0].textContent.replace(/\s+/g, " ").trim();
+      if (t) return t.slice(0, 80);
+    }
+    var row = input.closest ? input.closest("tr") : null;
+    if (row && row.querySelector) {
+      var cell = row.querySelector("td.labelrc, .labelrc");
+      if (cell && cell.textContent) {
+        t = cell.textContent.replace(/\s+/g, " ").trim();
+        if (t) return t.slice(0, 80);
+      }
+    }
+  } catch(e){}
+  return fieldName;
+}
+/* Stable, selector-safe id for a field's status region (aria-describedby). */
+function QRID_msgId(fieldName){
+  return "uvalidate-msg-" + String(fieldName).replace(/[^A-Za-z0-9_-]/g, "_");
+}
+/* Safe field lookup (no CSS-selector string building — field names with
+   special characters cannot break it). Shared by both factories. */
+function QRID_findField(name){
+  var els = document.getElementsByName ? document.getElementsByName(name) : [];
+  for(var i = 0; i < els.length; i++){
+    var tag = (els[i].tagName || "").toLowerCase();
+    if(tag === "input" || tag === "textarea") return els[i];
+  }
+  return null;
+}
+/* ---- optional save blocking (shared by both factories) ---------------------
+   blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
+   (refuse the BROWSER save until fixed — it cannot stop API/import writes;
+   the server audit is the net for those). Guards both real form submits and
+   REDCap's save buttons (which submit programmatically and never fire a
+   submit event). Native alert/confirm are used deliberately: they are modal
+   and announced by assistive tech without custom focus management. */
+function QRID_registerBlocker(input, fieldName, blockMode){
+  /* A field the user cannot edit must never trap the save: readonly/disabled
+     inputs (e.g. @READONLY) keep their message but are exempt from blocking
+     (UX-003) — the server audit still sees the value. */
+  if(input.readOnly || input.disabled) return;
+  input.__qridBlockMode = blockMode;
+  input.__qridFieldName = fieldName;
+  input.__qridFieldLabel = QRID_fieldLabel(input, fieldName);
+  UV_guard.items.push(input);
+  if(UV_guard.armed) return;
+  UV_guard.armed = true;
+  function guard(e){
+    /* the click guard runs before the programmatic submit it triggers; a
+       user who already chose "Save anyway" must not be asked twice */
+    if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return;
+    var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid; });
+    if(!bad.length) return;
+    var names = bad.map(function(el){ return el.__qridFieldLabel || el.__qridFieldName; }).join(", ");
+    var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
+    if(hard){
+      e.preventDefault();
+      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+      window.alert("Cannot save yet — please fix the flagged field(s): " + names);
+      try { bad[0].focus(); } catch(_f){}
+      return;
+    }
+    if(window.confirm("Validation FAILED for: " + names + "\n\nSave anyway?")){
+      UV_guard.passUntil = new Date().getTime() + 2000;
+    } else {
+      e.preventDefault();
+      if(e.stopImmediatePropagation) e.stopImmediatePropagation();
+    }
+  }
+  document.addEventListener("submit", guard, true);
+  document.addEventListener("click", function(e){
+    var t = e.target;
+    while(t && t.getAttribute){
+      var nm = (t.getAttribute("name") || t.id || "");
+      if(nm.indexOf("submit-btn-save") === 0){ guard(e); return; }
+      t = t.parentNode;
+    }
+  }, true);
+}
+/* Wire one message region under one input: polite live region + programmatic
+   error relationship, so dynamic verdicts are exposed to assistive technology
+   (WCAG 2.2 SC 4.1.3 / F103 — A11Y-001). */
+function QRID_attachMsgRegion(input, fieldName){
+  var msg = document.createElement("div");
+  msg.style.display = "none";
+  msg.id = QRID_msgId(fieldName);
+  if(msg.setAttribute){
+    msg.setAttribute("role", "status");
+    msg.setAttribute("aria-live", "polite");
+    msg.setAttribute("aria-atomic", "true");
+  }
+  input.parentNode.insertBefore(msg, input.nextSibling);
+  if(input.setAttribute && input.getAttribute){
+    var desc = input.getAttribute("aria-describedby") || "";
+    input.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+  }
+  return msg;
+}
+function QRID_setInvalidState(input, state){  /* true | false | null (empty field) */
+  if(!input.setAttribute) return;
+  if(state === null){ if(input.removeAttribute) input.removeAttribute("aria-invalid"); return; }
+  input.setAttribute("aria-invalid", state ? "true" : "false");
+}
+/* Configuration-error message directly under an affected field (UX-001: the
+   error belongs where the designer will look). Survey respondents get a
+   generic line instead of technical detail; staff see the full message. A
+   separate bound-marker and region id keep this from ever claiming the field
+   against a live validator. Returns false when the field is not on this page
+   (caller falls back to the page-level notice). */
+function QRID_attachErrorRegion(fieldName, configError){
+  var input = QRID_findField(fieldName);
+  if(!input) return false;
+  if(input.getAttribute && input.getAttribute("data-qrid-err-bound")) return true;
+  if(input.setAttribute) input.setAttribute("data-qrid-err-bound", "1");
+  var msg = document.createElement("div");
+  msg.id = QRID_msgId(fieldName) + "-cfg";
+  if(msg.setAttribute){
+    msg.setAttribute("role", "status");
+    msg.setAttribute("aria-live", "polite");
+    msg.setAttribute("aria-atomic", "true");
+  }
+  msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
+  input.parentNode.insertBefore(msg, input.nextSibling);
+  if(input.setAttribute && input.getAttribute){
+    var desc = input.getAttribute("aria-describedby") || "";
+    input.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+  }
+  msg.innerHTML = QRID_IS_SURVEY
+    ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
+    : "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
+  return true;
+}
 /* Show a configuration error that has no field widget to sit under — a rule whose
    fields were all mis-typed / not on the form, or an @UVALIDATE tag on a non-text
    field (dropdown, radio, calc) where there is no <input>/<textarea> — in a single
-   page-level notice, so it is never silently lost. Deduplicated by message. */
+   page-level notice, so it is never silently lost. Deduplicated by message.
+   Muted on surveys: respondents cannot act on configuration detail, and field
+   names/technical text do not belong on a public page (UX-001) — the same
+   errors stay fully visible to staff on data-entry forms and in the module log. */
 function QRID_configErrorNotice(message){
+  if(QRID_IS_SURVEY) return;
   if(typeof document === "undefined" || !document.body) return;
   var box = document.getElementById("uvalidate-config-errors");
   if(!box){
@@ -590,17 +829,8 @@ function QRID_configErrorNotice(message){
   line.innerHTML = "&bull; " + QRID_escapeHtml(message);
   box.appendChild(line);
 }
-/* Expose the risky-pattern predicate so the cross-runtime regression test
-   (tests/risky_js.cjs) can assert it agrees with the PHP twin,
-   CheckCharacter::riskyPattern. */
-if (typeof globalThis !== "undefined" && globalThis.QRCheck) {
-  globalThis.QRCheck.riskyPattern = QRID_riskyPattern;
-  globalThis.QRCheck.configErrorNotice = QRID_configErrorNotice; // exposed for tests/config_notice_js.cjs
-}
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
-window.QRIDSingleInit = function(QRID_CONFIG){
-  "use strict";
-  var Q = window.QRCheck;
+function QRIDSingleInit(QRID_CONFIG){
 
   /* ---- resolve the validation mode from the config ---- */
   var configError = QRID_CONFIG.configErrorOverride || "";
@@ -616,9 +846,14 @@ window.QRIDSingleInit = function(QRID_CONFIG){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
         "regex — use ^ and $ instead (anchors are optional anyway).";
+    } else if(/[^\x20-\x7E]/.test(rawPatS)){
+      /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
+      configError = "idPattern must contain printable ASCII only — the browser and server " +
+        "regex engines are only guaranteed to agree on that subset.";
     } else if(QRID_riskyPattern(rawPatS)){
-      configError = "idPattern looks catastrophically backtracking (nested or adjacent " +
-        "unbounded quantifiers, e.g. (a+)+). Rewrite it without nested quantifiers.";
+      configError = "idPattern looks catastrophically backtracking (nested quantifiers or a " +
+        "repeated alternation/optional group, e.g. (a+)+ or (a|aa)+). Rewrite it without " +
+        "repeating an ambiguous group.";
     } else try {
       var p = rawPatS.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + p + ")$");
@@ -643,9 +878,11 @@ window.QRIDSingleInit = function(QRID_CONFIG){
     }
   }
   var scheme = CHECK_MODE ? Q.makeScheme({
-    algorithm: algoName, source: QRID_CONFIG.source,
+    /* explicit fallbacks: an absent key must not override makeScheme's
+       defaults with undefined (Object.assign copies undefined values) */
+    algorithm: algoName, source: QRID_CONFIG.source || "normalized_id",
     placement: "append", delimiter: "-",
-    normalize_rules: { strip_delimiters: QRID_CONFIG.strip, uppercase: true,
+    normalize_rules: { strip_delimiters: QRID_CONFIG.strip || "", uppercase: true,
                        unify_unicode_dashes: true, keep_only: null },
     enabled: true
   }) : null;
@@ -812,105 +1049,64 @@ window.QRIDSingleInit = function(QRID_CONFIG){
       "probably a typo or mis-scan. Please re-scan or re-type it." + suggestion(v) };
   }
 
-  /* ---- optional save blocking ------------------------------------------------
-     blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
-     (refuse to save). Guards both real form submits and REDCap's save buttons
-     (which submit programmatically and never fire a submit event). */
   var BLOCK = QRID_CONFIG.blockSave || "off";
   if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
-  function registerBlocker(input, fieldName){
-    if(BLOCK === "off" || configError) return;
-    input.__qridBlockMode = BLOCK;
-    input.__qridFieldName = fieldName;
-    var G2 = window.__QRIDGuard = window.__QRIDGuard || { items: [], armed: false };
-    G2.items.push(input);
-    if(G2.armed) return;
-    G2.armed = true;
-    function guard(e){
-      var bad = G2.items.filter(function(el){ return el.__qridInvalid; });
-      if(!bad.length) return;
-      var names = bad.map(function(el){ return el.__qridFieldName; }).join(", ");
-      var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
-      if(hard){
-        e.preventDefault();
-        if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-        window.alert("Cannot save yet — please fix the flagged ID field(s): " + names);
-        try { bad[0].focus(); } catch(_f){}
-        return;
-      }
-      if(!window.confirm("ID validation FAILED for: " + names + "\n\nSave anyway?")){
-        e.preventDefault();
-        if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      }
-    }
-    document.addEventListener("submit", guard, true);
-    document.addEventListener("click", function(e){
-      var t = e.target;
-      while(t && t.getAttribute){
-        var nm = (t.getAttribute("name") || t.id || "");
-        if(nm.indexOf("submit-btn-save") === 0){ guard(e); return; }
-        t = t.parentNode;
-      }
-    }, true);
-  }
-  /* Safe field lookup (no CSS-selector string building — field names with
-     special characters cannot break it). */
-  function findField(name){
-    var els = document.getElementsByName ? document.getElementsByName(name) : [];
-    for(var i = 0; i < els.length; i++){
-      var tag = (els[i].tagName || "").toLowerCase();
-      if(tag === "input" || tag === "textarea") return els[i];
-    }
-    return null;
-  }
   function attach(fieldName){
-    var input = findField(fieldName);
+    var input = QRID_findField(fieldName);
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
-    var msg = document.createElement("div");
-    msg.style.display = "none";
-    input.parentNode.insertBefore(msg, input.nextSibling);
-    if(configError){
-      styleMsg(msg, "err");
-      msg.innerHTML = "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
-      return true;
-    }
+    var msg = QRID_attachMsgRegion(input, fieldName);
     function check(isFinal){
       var v = (input.value || "").trim();
-      if(!v){ msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false; return; }
+      if(!v){
+        msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+        QRID_setInvalidState(input, null);
+        return;
+      }
       if(v.length > QRID_MAX_SINGLE_LEN){
         styleMsg(msg, false);
         msg.innerHTML = "&#10007; This value is too long for an ID field (over " +
           QRID_MAX_SINGLE_LEN + " characters) — validation skipped.";
-        input.style.outline = "2px solid #c62828"; input.__qridInvalid = true; return;
+        input.style.outline = "2px solid #c62828"; input.__qridInvalid = true;
+        QRID_setInvalidState(input, true);
+        return;
       }
       var r = verdict(v, !!isFinal);
       styleMsg(msg, r.ok);
       input.style.outline = (r.ok === true) ? "2px solid #2e9e44"
                           : (r.ok === "info") ? "2px solid #0067c0" : "2px solid #c62828";
       input.__qridInvalid = (r.ok !== true);          /* "info" (still typing) also blocks a save */
+      QRID_setInvalidState(input, r.ok === false);    /* "info" is not announced as an error yet */
       msg.innerHTML = r.html;
     }
-    input.addEventListener("input", function(){ check(false); });
-    input.addEventListener("change", function(){ check(true); });
-    input.addEventListener("blur", function(){ check(true); });
+    var debounced = QRID_debounced(function(){ check(false); });
+    input.addEventListener("input", debounced);
+    input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
+    input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
     check(true);
-    registerBlocker(input, fieldName);
+    if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
   }
-  /* per-field registry (testing / power users) */
-  window.QRIDValidators = window.QRIDValidators || {};
+  /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
-    window.QRIDValidators[f] = { type: "single",
+    UV_validators[f] = { type: "single",
       mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, configError: configError,
               guidance: !!atoms, blockSave: BLOCK },
       test: function(v, isFinal){ return configError ? null : verdict(v, isFinal !== false); } };
   });
   function boot(){
-    if(configError){ QRID_configErrorNotice(configError); return; }  /* config error -> page notice once; nothing to validate, so never disarm retry */
+    if(configError){
+      /* Put the error on the affected field(s) when they are on this page —
+         that is where the designer will look (UX-001); fields not present
+         fall back to ONE page-level notice (muted on surveys). Nothing to
+         validate either way, so no retry/observer is armed. */
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
     var pending = (QRID_CONFIG.fields || []).slice();
     var mo = null;
     function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
@@ -932,11 +1128,9 @@ window.QRIDSingleInit = function(QRID_CONFIG){
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
-};
+}
 /* ---- pooled-field validator (factory: one instance per config/rule) ---- */
-window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
-  "use strict";
-  var Q = window.QRCheck;
+function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
   /* ---- resolve the validation mode from the config ---- */
@@ -953,9 +1147,14 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
         "regex — use ^ and $ instead (anchors are optional anyway).";
+    } else if(/[^\x20-\x7E]/.test(rawPatP)){
+      /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
+      configError = "idPattern must contain printable ASCII only — the browser and server " +
+        "regex engines are only guaranteed to agree on that subset.";
     } else if(QRID_riskyPattern(rawPatP)){
-      configError = "idPattern looks catastrophically backtracking (nested or adjacent " +
-        "unbounded quantifiers, e.g. (a+)+). Rewrite it without nested quantifiers.";
+      configError = "idPattern looks catastrophically backtracking (nested quantifiers or a " +
+        "repeated alternation/optional group, e.g. (a+)+ or (a|aa)+). Rewrite it without " +
+        "repeating an ambiguous group.";
     } else try {
       var _p = rawPatP.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + _p + ")$");
@@ -999,6 +1198,12 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     } else {
       LENS = lensCfg.slice().sort(function(a, b){ return a - b; });
       minLen = LENS[0]; maxLen = LENS[LENS.length - 1];
+      if(LENS.length > QRID_MAX_LEN_CHOICES){
+        configError = "idLengths lists " + LENS.length + " lengths — at most " +
+          QRID_MAX_LEN_CHOICES + " are supported.";
+      } else if(maxLen > QRID_MAX_ID_LEN){
+        configError = "ID lengths above " + QRID_MAX_ID_LEN + " characters are not supported.";
+      }
       /* a member length equal to the sum of two others would let one token
          swallow two real members */
       for(var _a = 0; _a < LENS.length && !configError; _a++)
@@ -1017,9 +1222,27 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
       configError = "idMaxLen (" + maxLen + ") must be LESS than 2 x idMinLen (" + (2 * minLen) +
         ") so one \"member\" can never swallow two real ones. Narrow the range, or set idLengths " +
         "to your exact ID length(s).";
+    } else if(maxLen > QRID_MAX_ID_LEN){
+      /* cap BEFORE the range loop below — a huge range must not even allocate */
+      configError = "idMaxLen (" + maxLen + ") is above the supported maximum of " + QRID_MAX_ID_LEN + ".";
     }
-    minLen = Math.max(minLen, nCheck + 1);
-    for(var _L = minLen; _L <= maxLen; _L++) LENS.push(_L);
+    if(!configError){
+      minLen = Math.max(minLen, nCheck + 1);
+      for(var _L = minLen; _L <= maxLen; _L++) LENS.push(_L);
+    }
+  }
+  if(!configError && QRID_MULTI_CONFIG.expectedIds != null
+     && (!isPosInt(QRID_MULTI_CONFIG.expectedIds) || QRID_MULTI_CONFIG.expectedIds > QRID_MAX_EXPECTED)){
+    configError = "expectedIds must be a positive whole number up to " + QRID_MAX_EXPECTED + ".";
+  }
+  if(!configError && QRID_MULTI_CONFIG.keepChars){
+    var keepCfg = String(QRID_MULTI_CONFIG.keepChars);
+    if(keepCfg.length > QRID_MAX_KEEP){
+      configError = "keepChars is limited to " + QRID_MAX_KEEP + " characters.";
+    } else if(/[^\x20-\x7E]/.test(keepCfg)){
+      configError = "keepChars must contain printable ASCII characters only " +
+        "(Unicode dashes in VALUES are unified automatically before checking).";
+    }
   }
 
   /* Mirror study_id_patterns.validate_concatenated_ids cleaning: unify unicode
@@ -1050,6 +1273,12 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     return Q.normalize(v, { strip_delimiters: "", uppercase: true, unify_unicode_dashes: true,
       keep_only: KEEP });
   }
+  /* Per-rule scan cap: the full QRID_MAX_POOLED_LEN unless this rule's length
+     configuration makes parsing expensive, in which case the cap shrinks so
+     one parse stays inside QRID_POOLED_WORK_BUDGET char-ops (PER-002). Mirrors
+     CheckCharacter::pooledScanCap (php) — keep the formula identical. */
+  var SCAN_CAP = configError ? QRID_MAX_POOLED_LEN : Math.min(QRID_MAX_POOLED_LEN,
+    Math.max(256, Math.floor(QRID_POOLED_WORK_BUDGET / ((LENS.length || 1) * (maxLen || 1)))));
   /* A verified member. Check mode: the check character verifies (and the shape
      matches, when a pattern is also given) — the check char alone marks where
      one ID ends and the next begins. Regex-only mode (legacy projects, no check
@@ -1060,6 +1289,9 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     return Q.validateIdCheck(t, scheme);
   }
   function parse(raw){
+    /* over-budget input: no verdict at all (null), never a slow parse — the
+       server bails identically, so the two runtimes cannot disagree here */
+    if(Array.from(String(raw)).length > SCAN_CAP) return null;
     var s = clean(raw);
     var N = s.length;
     /* Optimal segmentation into verified members + junk, scored lexicographically:
@@ -1148,16 +1380,18 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   var api = { clean: clean, parse: parse,              /* exposed for testing / power users */
               mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, configError: configError } };
-  window.QRIDMulti = api;                              /* back-compat: last pooled instance */
-  window.QRIDValidators = window.QRIDValidators || {};
+  UV_lastPooled = api;                                 /* namespace .lastPooled */
   (QRID_MULTI_CONFIG.fields || []).forEach(function(f){
-    window.QRIDValidators[f] = { type: "pooled", mode: api.mode, parse: parse, clean: clean };
+    UV_validators[f] = { type: "pooled", mode: api.mode, parse: parse, clean: clean };
   });
 
   function esc(t){ return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
   function chip(text, kind){
+    /* junk amber #8a5500 on #fbf6e8 measures 5.7:1 — WCAG 2.2 AA for normal
+       text needs 4.5:1, and chips are 12px (A11Y-002). Every state also has a
+       non-color mark (check / cross / circled-x / question mark). */
     var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
-          : (kind === "junk") ? "#e6d4a8;background:#fbf6e8;color:#b26a00"
+          : (kind === "junk") ? "#e6d4a8;background:#fbf6e8;color:#8a5500"
           : "#e0b4b0;background:#fbeceb;color:#c62828";   /* bad + dup share red */
     var mark = (kind === "ok") ? "&#10003;&nbsp;"
              : (kind === "dup") ? "&#8855;&nbsp;"          /* circled x = scanned again */
@@ -1168,13 +1402,19 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   function render(msg, input){
     var v = (input.value || "").trim();
-    if(!v){ msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false; return; }
-    if(v.length > QRID_MAX_POOLED_LEN){
+    if(!v){
+      msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+      QRID_setInvalidState(input, null);
+      return;
+    }
+    if(v.length > SCAN_CAP){
       msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
         "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-      msg.innerHTML = "&#10007; This field is too long to scan (over " + QRID_MAX_POOLED_LEN +
-        " characters) — split the pool into smaller entries.";
-      input.style.outline = "2px solid #c62828"; input.__qridInvalid = true; return;
+      msg.innerHTML = "&#10007; This field is too long to scan (over " + SCAN_CAP +
+        " characters for this rule's ID lengths) — split the pool into smaller entries.";
+      input.style.outline = "2px solid #c62828"; input.__qridInvalid = true;
+      QRID_setInvalidState(input, true);
+      return;
     }
     var segs = parse(v);
     var ids = segs.filter(function(x){ return x.type === "id"; });
@@ -1210,80 +1450,37 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
     msg.innerHTML = html;
     input.style.outline = ok ? "2px solid #2e9e44" : "2px solid #c62828";
     input.__qridInvalid = !ok;
+    QRID_setInvalidState(input, !ok);
   }
-  /* ---- optional save blocking (same semantics as the single-ID script) ---- */
+  /* ---- optional save blocking (shared QRID_registerBlocker semantics) ---- */
   var BLOCK = QRID_MULTI_CONFIG.blockSave || "off";
   if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
-  function registerBlocker(input, fieldName){
-    if(BLOCK === "off" || configError) return;
-    input.__qridBlockMode = BLOCK;
-    input.__qridFieldName = fieldName;
-    var G2 = window.__QRIDGuard = window.__QRIDGuard || { items: [], armed: false };
-    G2.items.push(input);
-    if(G2.armed) return;
-    G2.armed = true;
-    function guard(e){
-      var bad = G2.items.filter(function(el){ return el.__qridInvalid; });
-      if(!bad.length) return;
-      var names = bad.map(function(el){ return el.__qridFieldName; }).join(", ");
-      var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
-      if(hard){
-        e.preventDefault();
-        if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-        window.alert("Cannot save yet — please fix the flagged ID field(s): " + names);
-        try { bad[0].focus(); } catch(_f){}
-        return;
-      }
-      if(!window.confirm("ID validation FAILED for: " + names + "\n\nSave anyway?")){
-        e.preventDefault();
-        if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      }
-    }
-    document.addEventListener("submit", guard, true);
-    document.addEventListener("click", function(e){
-      var t = e.target;
-      while(t && t.getAttribute){
-        var nm = (t.getAttribute("name") || t.id || "");
-        if(nm.indexOf("submit-btn-save") === 0){ guard(e); return; }
-        t = t.parentNode;
-      }
-    }, true);
-  }
-  /* Safe field lookup (no CSS-selector string building). */
-  function findField(name){
-    var els = document.getElementsByName ? document.getElementsByName(name) : [];
-    for(var i = 0; i < els.length; i++){
-      var tag = (els[i].tagName || "").toLowerCase();
-      if(tag === "input" || tag === "textarea") return els[i];
-    }
-    return null;
-  }
   function attach(fieldName){
-    var input = findField(fieldName);
+    var input = QRID_findField(fieldName);
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound")) return true;  /* idempotent */
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
-    var msg = document.createElement("div");
-    msg.style.display = "none";
-    input.parentNode.insertBefore(msg, input.nextSibling);
-    if(configError){
-      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
-        "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-      msg.innerHTML = "&#9888; ID-check configuration error: " + QRID_escapeHtml(configError);
-      return true;
-    }
-    function check(){ render(msg, input); }
-    input.addEventListener("input", check);
-    input.addEventListener("change", check);
-    input.addEventListener("blur", check);
-    check();
-    registerBlocker(input, fieldName);
+    var msg = QRID_attachMsgRegion(input, fieldName);
+    var debounced = QRID_debounced(function(){ render(msg, input); });
+    input.addEventListener("input", debounced);
+    input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
+    input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
+    render(msg, input);
+    if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
   }
   function boot(){
-    if(configError){ QRID_configErrorNotice(configError); return; }  /* config error -> page notice once; nothing to validate, so never disarm retry */
+    if(configError){
+      /* Put the error on the affected field(s) when they are on this page —
+         that is where the designer will look (UX-001); fields not present
+         fall back to ONE page-level notice (muted on surveys). Nothing to
+         validate either way, so no retry/observer is armed. */
+      var missing = (QRID_MULTI_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
     var pending = (QRID_MULTI_CONFIG.fields || []).slice();
     var mo = null;
     function stop(){ if(mo){ mo.disconnect(); mo = null; } }   /* prevent observer leak */
@@ -1305,8 +1502,8 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   }
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
-};
-/* ---- dispatcher (do not edit): one validator instance per rule ---- */
+}
+/* ---- dispatcher: one validator instance per rule ---- */
 (function(){
   var C = QRID_COMBINED_CONFIG;
   var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
@@ -1330,8 +1527,10 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   if(C.pooledFields && C.pooledFields.length) rules.push({ type: "pooled", fields: C.pooledFields });
   /* a field may be owned by exactly ONE rule/list — duplicates would attach
      two contradictory validators to the same input. Detect them FIRST and bind
-     the error box before any real validator can claim the field. */
-  var counts = {};
+     the error box before any real validator can claim the field. Prototype-free
+     map: a field literally named "constructor" must not corrupt the counts
+     (COR-005). */
+  var counts = Object.create(null);
   rules.forEach(function(rule){
     if(rule.configError) return;  /* config-error rules validate nothing and often
       carry placeholder / shared field names — keep them out of duplicate detection
@@ -1341,7 +1540,7 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
   var dupFields = [];
   for(var df in counts) if(counts[df] > 1) dupFields.push(df);
   if(dupFields.length){
-    window.QRIDSingleInit({ fields: dupFields, algorithm: "none",
+    QRIDSingleInit({ fields: dupFields, algorithm: "none",
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
         '" are listed in more than one rule/list — remove the duplicates so each field has exactly one validator.' });
   }
@@ -1353,30 +1552,38 @@ window.QRIDPooledInit = function(QRID_MULTI_CONFIG){
                : (rule.fields || []).filter(function(f){ return counts[f] === 1; });
     if(!cfg.fields.length) return;
     if(rule.type === "pooled"){
-      window.QRIDPooledInit(cfg);
+      QRIDPooledInit(cfg);
     } else if(rule.type === "single"){
-      window.QRIDSingleInit(cfg);
+      QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
         '] has unknown type "' + rule.type + '" — use "single" or "pooled".';
-      window.QRIDSingleInit(cfg);
+      QRIDSingleInit(cfg);
     }
   });
-  /* ---- single public namespace (module deviation; REDCap JS guidance) -------
-     Everything this module exposes, reachable through ONE global. The individual
-     globals (QRCheck, QRIDSingleInit, QRIDPooledInit, QRIDValidators, QRIDMulti,
-     QRID_COMBINED_CONFIG, __QRIDGuard) are the upstream / JavaScript-Injector
-     contract and remain as DEPRECATED aliases for back-compat only — new code and
-     tests should go through window.INSPIREUniversalValidator. The lazy members
-     use getters because validators/guard are populated asynchronously as fields
-     attach. */
-  window.INSPIREUniversalValidator = {
-    config: C,
-    engine: (typeof globalThis !== "undefined" && globalThis.QRCheck) ? globalThis.QRCheck : window.QRCheck,
-    singleInit: window.QRIDSingleInit,
-    pooledInit: window.QRIDPooledInit,
-    get validators(){ return window.QRIDValidators || {}; },
-    get guard(){ return window.__QRIDGuard || null; },
-    get lastPooled(){ return window.QRIDMulti || null; }
-  };
+})();
+
+/* ---- single public namespace (module deviation; REDCap JS guidance strongly
+   discourages global scope). EVERYTHING this module exposes is reachable
+   through this one global; the legacy upstream/JavaScript-Injector globals
+   (QRCheck, QRIDSingleInit, QRIDPooledInit, QRIDValidators, QRIDMulti,
+   QRID_COMBINED_CONFIG, __QRIDGuard) are NOT published — this module never
+   shipped with them, so there is no consumer to break. The lazy members use
+   getters because validators/guard/lastPooled are populated asynchronously as
+   fields attach. */
+window.INSPIREUniversalValidator = {
+  config: QRID_COMBINED_CONFIG,
+  engine: Q,
+  riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
+  configErrorNotice: QRID_configErrorNotice, /* exercised by tests/config_notice_js.cjs */
+  singleInit: QRIDSingleInit,
+  pooledInit: QRIDPooledInit,
+  get validators(){ return UV_validators; },
+  get guard(){ return UV_guard; },
+  get lastPooled(){ return UV_lastPooled; }
+};
+/* The verified core published itself as a global for the legacy Injector
+   contract; it is captured as .engine above — retire the alias so this module
+   leaves exactly ONE global behind. */
+try { delete G.QRCheck; } catch(e){ G.QRCheck = undefined; }
 })();

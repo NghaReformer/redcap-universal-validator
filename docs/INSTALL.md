@@ -62,21 +62,32 @@ notice at the top of the form. Fields with identical tags are grouped into one
 rule automatically. Tags work on Text and Notes fields.
 
 ### Shared rule options
-- **On an invalid ID** — *Informational*, *Advisory*, or *Compulsory*. *Compulsory*
-  blocks the save **in the browser**; API and data-import writes cannot be blocked
-  from this hook, but they are validated and logged server-side (see below).
+- **On an invalid value** — *Informational*, *Advisory*, or *Compulsory*. All
+  three are **browser** behaviors; API and data-import writes cannot be blocked
+  from this module (see the audit notes below). *Compulsory* never traps a
+  read-only field — a person who cannot edit the value is not blocked by it.
 - **Advanced (optional)** — payload source (whole ID / digits only / trailing
-  number), a format regex (avoid nested quantifiers such as `(a+)+`), and
-  separators to ignore. For *Pooled* rules only: exact ID length(s) or a min/max
-  range, extra characters to keep, and the expected pool size.
+  number), a format regex (printable ASCII, matched against the UPPERCASED
+  value; catastrophic shapes such as `(a+)+` and `(a|aa)+` are rejected when
+  you save the settings), and separators to ignore. For *Pooled* rules only:
+  exact ID length(s) or a min/max range (up to 64 characters per ID), extra
+  characters to keep, and the expected pool size.
 
-There is also one project-level setting, **How to log invalid IDs caught on the
-server**. Every mode except *off* logs field, instrument, event, and instance;
-the modes differ in how the invalid value and the record ID are stored:
-*hashed* (default) stores a SHA-256 of the value with the raw record ID so staff
-can fix the record; *strict* stores no value and hashes the record ID too (for
-sites where record IDs are themselves identifying); *raw* stores both readable;
-*off* logs nothing. Pick the option your data-governance policy allows before
+Invalid rules are rejected when you press Save in the Configure dialog, with a
+message naming the rule and the problem — a bad rule never reaches data-entry
+staff silently.
+
+There is also one project-level setting, **How to log invalid values caught by
+the post-save audit**. Every mode except *off* logs field, instrument, event,
+and instance; the modes differ in how the invalid value and the record ID are
+stored: *hashed* (default) stores a keyed hash of the value (HMAC-SHA-256 with
+a module-held secret, scoped to the project) with the raw record ID so staff
+can fix the record; *strict* stores no value and applies the keyed hash to the
+record ID too (for sites where record IDs are themselves identifying); *raw*
+stores both readable; *off* logs no detections (identifier-free audit ERRORS
+are still logged so failures stay visible). A keyed hash is pseudonymization,
+not anonymity — treat the module log as identifying data in your access and
+retention policies. Pick the option your data-governance policy allows before
 turning the module loose on real IDs.
 
 Save. Open any record with those fields and type an ID — you'll see the live
@@ -95,12 +106,18 @@ of running two conflicting validators; give each field exactly one rule.
 
 - The module injects its own JavaScript; the JavaScript Injector module is **not**
   required and should not also carry an ID-check script for the same fields.
-- The server-side check (for API/import/JavaScript-off paths) validates the saved
-  value with the same rules as the client — single and pooled fields, check
-  character, format pattern, and regex-only — and logs any invalid ID to the
-  module log. It fires after the write, so treat it as detection/audit; the
-  *Compulsory* client block is what prevents a human form save.
-- Requires REDCap 13.7+ and PHP 7.4+ with the `mbstring` extension (declared in
-  `config.json`; External Module Framework version 14).
+- The server-side audit validates the saved value with the same rules as the
+  client — single and pooled fields, check character, format pattern, and
+  regex-only — and logs any invalid value to the module log, scoped to the
+  instrument that was saved. It fires *after* the write, and only where REDCap
+  invokes `redcap_save_record`: **verify on your own instance whether that
+  covers Data Import Tool and API writes** (the check is in
+  [`TESTING.md`](TESTING.md)) before relying on it for those paths.
+- Format-pattern auditing applies to printable-ASCII values; a value containing
+  other characters is left to the client and check-character validation rather
+  than risking a browser/server disagreement.
+- Requires REDCap 13.7+ and PHP 7.4+ with the `mbstring` and `ctype` extensions
+  (both ship enabled in standard PHP builds, but some minimal builds omit them;
+  declared in `config.json`; External Module Framework version 14).
 - After installing or upgrading, run the manual integration checklist in
   [`TESTING.md`](TESTING.md) on a test project.
