@@ -22,6 +22,22 @@ class CheckCharacter
     const LETTERS26 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     const ALNUM36   = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+    // Named weighted-modulus schemes — a byte-for-byte copy of WEIGHTED_SCHEMES
+    // in the Python source of truth (qrcode_generation/check_characters.py) and
+    // the JS engine (js/engine.js). Adding a scheme is one row here plus the same
+    // row in those two ports; nothing else in this file changes. All emit one
+    // check character over a digit payload.
+    const WEIGHTED_SCHEMES = [
+        'gs1_mod10'      => ['modulus' => 10, 'mode' => 'cycle',  'weights' => [3, 1],
+                             'from' => 'right', 'complement' => true,  'checkAlphabet' => self::DIGITS],
+        'aba_mod10'      => ['modulus' => 10, 'mode' => 'cycle',  'weights' => [3, 7, 1],
+                             'from' => 'left',  'complement' => true,  'checkAlphabet' => self::DIGITS],
+        'mrz_mod10'      => ['modulus' => 10, 'mode' => 'cycle',  'weights' => [7, 3, 1],
+                             'from' => 'left',  'complement' => false, 'checkAlphabet' => self::DIGITS],
+        'weighted_mod11' => ['modulus' => 11, 'mode' => 'linear', 'start' => 2, 'step' => 1,
+                             'from' => 'right', 'complement' => true,  'checkAlphabet' => self::DIGITS . 'X'],
+    ];
+
     // Hard caps that bound the pooled parser's work per keystroke (client) and
     // per save (server). A rule beyond them is a config error at settings-save
     // time and "unconfigurable" at runtime — never silently expensive. The JS
@@ -51,6 +67,9 @@ class CheckCharacter
      */
     public static function compute($name, $payload)
     {
+        if (isset(self::WEIGHTED_SCHEMES[$name])) {
+            return self::weighted($payload, self::WEIGHTED_SCHEMES[$name]);
+        }
         switch ($name) {
             case 'iso7064_mod11_2':  return self::pure($payload, self::DIGITS,  11, 2, 1, self::DIGITS . 'X');
             case 'iso7064_mod37_2':  return self::pure($payload, self::ALNUM36, 37, 2, 1, self::ALNUM36 . '*');
@@ -178,6 +197,9 @@ class CheckCharacter
     /** The check alphabet an algorithm emits into (mirrors the JS registry). */
     public static function checkAlphabet($name)
     {
+        if (isset(self::WEIGHTED_SCHEMES[$name])) {
+            return self::WEIGHTED_SCHEMES[$name]['checkAlphabet'];
+        }
         switch ($name) {
             case 'iso7064_mod11_2':  return self::DIGITS . 'X';
             case 'iso7064_mod37_2':  return self::ALNUM36 . '*';
@@ -816,6 +838,34 @@ class CheckCharacter
             $total += $d;
         }
         return (string) ((10 - ($total % 10)) % 10);
+    }
+
+    /**
+     * Generic positional weighted-sum modulus check (mirror WeightedModulus in
+     * check_characters.py and weightedModulus in js/engine.js). Weights each
+     * digit by position, sums, reduces mod M, and maps to the check alphabet.
+     * Covers gs1_mod10, aba_mod10, mrz_mod10 and weighted_mod11 from the
+     * WEIGHTED_SCHEMES table. Digit payload only.
+     */
+    private static function weighted($payload, array $spec)
+    {
+        if ($payload === '') throw new \InvalidArgumentException('payload must be non-empty');
+        $M = $spec['modulus'];
+        $cycle = ($spec['mode'] === 'cycle');
+        $weights = $cycle ? $spec['weights'] : null;
+        $wlen = $cycle ? count($weights) : 0;
+        $fromRight = ($spec['from'] === 'right');
+        $chars = str_split($payload);
+        $n = count($chars);
+        $total = 0;
+        for ($i = 0; $i < $n; $i++) {
+            $d = self::idx(self::DIGITS, $chars[$i]);
+            $pos = $fromRight ? ($n - 1 - $i) : $i;
+            $w = $cycle ? $weights[$pos % $wlen] : ($spec['start'] + $spec['step'] * $pos);
+            $total += $d * $w;
+        }
+        $v = $spec['complement'] ? (($M - $total % $M) % $M) : ($total % $M);
+        return $spec['checkAlphabet'][$v];
     }
 
     /** Verhoeff D5 multiplication table. */

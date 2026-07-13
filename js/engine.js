@@ -297,6 +297,36 @@
       compute:function(){ return ""; }, validate:function(){ return true; }});
   }
 
+  // ---- Weighted-modulus family (mirrors WeightedModulus, check_characters.py) ----
+  // One engine for the positional weighted-sum schemes; each named scheme is a
+  // row in WEIGHTED_SCHEMES below, so a new scheme is one table entry, not code.
+  function weightedModulus(spec){
+    const M = spec.modulus, alpha = spec.inputAlphabet || DIGITS,
+          checkAlphabet = spec.checkAlphabet, fromRight = spec.weightFrom === "right",
+          mode = spec.weightMode || "cycle", weights = spec.weights || [],
+          lStart = spec.linearStart || 0, lStep = spec.linearStep || 0,
+          complement = spec.complement !== false;
+    function compute(payload){
+      if(!payload) throw new Error(spec.name + ": payload must be non-empty");
+      const chars = Array.from(payload), n = chars.length; let total = 0;
+      for(let i=0;i<n;i++){
+        const d = valueOf(chars[i], alpha, spec.name);
+        const pos = fromRight ? (n - 1 - i) : i;
+        const w = mode === "cycle" ? weights[pos % weights.length] : (lStart + lStep * pos);
+        total += d * w;
+      }
+      const v = complement ? ((M - total % M) % M) : (total % M);
+      return checkAlphabet[v];
+    }
+    return makeAlgo({name:spec.name, inputAlphabet:alpha, checkAlphabet:checkAlphabet, nCheckChars:1, compute});
+  }
+  const WEIGHTED_SCHEMES = [
+    {name:"gs1_mod10",      modulus:10, weightMode:"cycle",  weights:[3,1],   weightFrom:"right", complement:true,  checkAlphabet:DIGITS},
+    {name:"aba_mod10",      modulus:10, weightMode:"cycle",  weights:[3,7,1], weightFrom:"left",  complement:true,  checkAlphabet:DIGITS},
+    {name:"mrz_mod10",      modulus:10, weightMode:"cycle",  weights:[7,3,1], weightFrom:"left",  complement:false, checkAlphabet:DIGITS},
+    {name:"weighted_mod11", modulus:11, weightMode:"linear", linearStart:2, linearStep:1, weightFrom:"right", complement:true, checkAlphabet:DIGITS + "X"},
+  ];
+
   // ---- Registry (mirrors _register_builtins, check_characters.py:469) ----
   const ALGORITHMS = {};
   function register(a){ ALGORITHMS[a.name] = a; }
@@ -311,6 +341,7 @@
   register(verhoeff());
   register(luhn());
   register(noCheck());
+  WEIGHTED_SCHEMES.forEach(function(s){ register(weightedModulus(s)); });
 
   // ---- By-hand derivation tracers -------------------------------------------
   // Each returns {title, intro, columns, rows, final, check}. The `check` is
@@ -423,6 +454,35 @@
       final: "check = (10 − " + total + " mod 10) mod 10 = " + check, check: String(check),
       stateLabel: "sum", stateStart: 0, positions: positions, states: states };
   }
+  function explainWeighted(spec, payload){
+    const M = spec.modulus, alpha = spec.inputAlphabet || DIGITS,
+          checkAlphabet = spec.checkAlphabet, fromRight = spec.weightFrom === "right",
+          mode = spec.weightMode || "cycle", weights = spec.weights || [],
+          lStart = spec.linearStart || 0, lStep = spec.linearStep || 0,
+          complement = spec.complement !== false;
+    const chars = Array.from(payload), n = chars.length;
+    const rows = [], positions = [], states = []; let total = 0;
+    for(let i=0;i<n;i++){
+      const ch = chars[i], v = valueOf(ch, alpha, spec.name);
+      const pos = fromRight ? (n - 1 - i) : i;
+      const w = mode === "cycle" ? weights[pos % weights.length] : (lStart + lStep * pos);
+      total += v * w;
+      rows.push([String(i+1), ch, v + "×" + w + " = " + (v*w), String(total)]);
+      positions.push(i); states.push(total);
+    }
+    const rem = total % M, cv = complement ? ((M - rem) % M) : rem, cstr = checkAlphabet[cv];
+    const dir = fromRight ? "right" : "left";
+    const wdesc = mode === "cycle" ? "cycle [" + weights.join(",") + "] from the " + dir
+                                   : "start " + lStart + ", +" + lStep + " per step from the " + dir;
+    const formula = complement ? "(" + M + " − " + total + " mod " + M + ") mod " + M : total + " mod " + M;
+    return { title: "Weighted-sum modulus " + M + " — " + wdesc,
+      intro: "Weight each digit by position (" + wdesc + "), sum, then check = "
+        + (complement ? "(" + M + " − sum mod " + M + ") mod " + M : "sum mod " + M)
+        + (M === 11 ? "  (a check value of 10 is written “X”)." : "."),
+      columns: ["#", "Digit", "digit × weight", "Running sum"], rows: rows,
+      final: "check = " + formula + " = " + cv + "  →  “" + cstr + "”", check: cstr,
+      stateLabel: "sum", stateStart: 0, positions: positions, states: states };
+  }
   ALGORITHMS["iso7064_mod11_2"].explain  = function(p){ return explainPure("iso7064_mod11_2", p, DIGITS, 11, 2, 1, DIGITS + "X"); };
   ALGORITHMS["iso7064_mod37_2"].explain  = function(p){ return explainPure("iso7064_mod37_2", p, ALNUM36, 37, 2, 1, ALNUM36 + "*"); };
   ALGORITHMS["iso7064_mod97_10"].explain = function(p){ return explainPure("iso7064_mod97_10", p, DIGITS, 97, 10, 2, DIGITS); };
@@ -433,6 +493,7 @@
   ALGORITHMS["damm"].explain     = explainDamm;
   ALGORITHMS["verhoeff"].explain = explainVerhoeff;
   ALGORITHMS["luhn"].explain     = explainLuhn;
+  WEIGHTED_SCHEMES.forEach(function(s){ ALGORITHMS[s.name].explain = function(p){ return explainWeighted(s, p); }; });
   ALGORITHMS["none"].explain     = function(){ return { title: "No check character",
     intro: "This method appends no check character — there is nothing to derive.",
     columns: [], rows: [], final: "", check: "",

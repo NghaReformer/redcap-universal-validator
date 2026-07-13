@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.7.0 — four widely-used weighted-modulus check schemes
+
+Adds four digit-only check-character methods so the validator can mint and verify
+IDs that use the check schemes already embedded in common external identifiers:
+
+- **`gs1_mod10`** — GS1 Mod-10 (weights 3,1 from the right): GTIN/EAN/UPC, GLN, SSCC.
+- **`aba_mod10`** — US ABA routing-number Mod-10 (weights 3,7,1 from the left).
+- **`mrz_mod10`** — ICAO 9303 machine-readable-zone Mod-10 (weights 7,3,1, no complement).
+- **`weighted_mod11`** — ISBN-10 weighted Mod-11 (may emit `X`).
+
+Each catches every single-digit error; the three Mod-10 schemes miss adjacent
+swaps of digits differing by 5, and `weighted_mod11` is length-safe only up to 9
+digits (for longer numbers prefer Mod 11,2 or Mod 97,10, which stay strong at any
+length). `weighted_mod11` is detection-equivalent to the existing
+`iso7064_mod11_2`; it is provided for compatibility with externally-minted
+ISBN-style IDs, not for extra strength.
+
+- One data-driven engine: a single `WeightedModulus` primitive parameterised by a
+  `WEIGHTED_SCHEMES` table (weights, modulus, direction, complement, alphabet) in
+  each runtime, so a future scheme is one table row, not new code. Kept in step
+  with the Python source of truth (`qrcode_generation/check_characters.py`) and the
+  JS/VBA ports through the shared `check_fixture.json` (now 574 compute rows across
+  15 algorithms; 805 rows total).
+- Selectable from the settings dropdown and via `@UVALIDATE` shorthands (`gs1`,
+  `gtin`, `ean`, `upc`, `aba`, `routing`, `mrz`, `icao`, `isbn`, `mod11w`).
+- New completeness guard: `tests/algorithm_coverage_js.cjs` and
+  `tests/algorithm_coverage_php.php` assert the algorithm set is identical across
+  the fixture, the JS registry, the PHP engine, `AnnotationRules::ALGORITHMS`, and
+  the `config.json` dropdown, so a half-wired algorithm (added to some surfaces but
+  not others) fails CI. Both are wired into `.github/workflows/parity.yml`.
+
 ## 0.6.0 — algorithm-name shorthands (ease of use)
 
 Configuring a rule no longer requires typing the full internal algorithm name.

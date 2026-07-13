@@ -104,6 +104,10 @@ One rule = one kind of validation, applied to any number of fields:
    | `372`, `37,2`, `37_2`, `mod37_2` | `iso7064_mod37_2` |
    | `letters1` / `letters2` | `iso7064_letters1` / `iso7064_letters2` |
    | `mod10` | `luhn` |
+   | `gs1`, `gtin`, `ean`, `upc` | `gs1_mod10` (GS1/GTIN/EAN/UPC Mod-10) |
+   | `aba`, `routing` | `aba_mod10` (US ABA routing Mod-10) |
+   | `mrz`, `icao` | `mrz_mod10` (ICAO 9303 MRZ Mod-10) |
+   | `isbn`, `mod11w`, `weighted11` | `weighted_mod11` (ISBN-10 weighted Mod-11) |
    | `regex`, `format` | `none` (format/regex only — pair with a `pattern`) |
 
    The full names still work everywhere; shorthands are resolved when the module
@@ -114,8 +118,15 @@ One rule = one kind of validation, applied to any number of fields:
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two
-letters-only variants, plus Damm, Verhoeff, Luhn, and "none" (format/regex only).
-The method must match how the IDs were minted.
+letters-only variants, plus Damm, Verhoeff, Luhn, four digit-only weighted-modulus
+schemes (GS1 Mod-10, ABA Mod-10, ICAO MRZ Mod-10, and ISBN-10 weighted Mod-11),
+and "none" (format/regex only). The method must match how the IDs were minted.
+
+The four weighted-modulus schemes run over a digit payload and each add one
+check character (`weighted_mod11` may emit `X`). They catch every single-digit
+error; the Mod-10 three miss adjacent swaps of digits differing by 5, and
+`weighted_mod11` is length-safe only up to 9 digits — for longer numbers prefer
+Mod 11,2 or Mod 97,10.
 
 ## How it works
 
@@ -137,9 +148,9 @@ truth (`qrcode_generation/check_characters.py`) — and not only the raw
 check-character primitive, but the full runtime path the module actually uses:
 
 - `tests/parity_js.cjs` / `tests/parity_php.php` — recompute every fixture row
-  across all three sections: `compute` (the primitive, 420 rows across 11
+  across all three sections: `compute` (the primitive, 574 rows across 15
   algorithms), `normalize` (Unicode dash folding / case / strip), and
-  `scheme_ops` (append + validate = normalize → source → compute → compare). 643
+  `scheme_ops` (append + validate = normalize → source → compute → compare). 805
   rows total.
 - `tests/pooled_js.cjs` / `tests/pooled_php.php` — recompute the pooled-field
   parser for every case in `tests/pooled_fixture.json` (frozen from the verified

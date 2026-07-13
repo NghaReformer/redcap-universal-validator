@@ -20,7 +20,7 @@
   "action-tags": [
     {
       "tag": "@UVALIDATE",
-      "description": "Validate this Text or Notes field with the Universal Field Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, note. Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
+      "description": "Validate this Text or Notes field with the Universal Field Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, <code>gs1</code> = GS1 Mod-10, <code>aba</code> = ABA Mod-10, <code>mrz</code> = ICAO MRZ Mod-10, <code>isbn</code> = Weighted Mod-11, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, note. Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
     }
   ],
 
@@ -92,6 +92,10 @@
             { "value": "damm", "name": "Damm — digits, 1 char" },
             { "value": "verhoeff", "name": "Verhoeff — digits, 1 char" },
             { "value": "luhn", "name": "Luhn — digits, 1 char (weakest; compatibility only)" },
+            { "value": "gs1_mod10", "name": "GS1 Mod-10 — digits, 1 char (GTIN/EAN/UPC style)" },
+            { "value": "aba_mod10", "name": "ABA Mod-10 — digits, 1 char (US routing style)" },
+            { "value": "mrz_mod10", "name": "ICAO MRZ Mod-10 — digits, 1 char (passport MRZ style)" },
+            { "value": "weighted_mod11", "name": "Weighted Mod-11 — digits, 1 char incl. X (ISBN-10 style)" },
             { "value": "none", "name": "No check character — format/regex only" }
           ]
         },

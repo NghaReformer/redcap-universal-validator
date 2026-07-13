@@ -63,9 +63,10 @@ rule automatically. Tags work on Text and Notes fields.
 
 The `algorithm` value accepts case-insensitive shorthands so you need not type
 the full name: `3736` (or `37,36`, `mod37_36`) → `iso7064_mod37_36`, `9710` →
-`iso7064_mod97_10`, `112` → `iso7064_mod11_2`, `mod10` → `luhn`, `regex`/`format`
-→ `none`, and so on. The full names still work; see the table in the README for
-the complete list.
+`iso7064_mod97_10`, `112` → `iso7064_mod11_2`, `mod10` → `luhn`, the digit-only
+weighted schemes `gs1`/`aba`/`mrz`/`isbn` → `gs1_mod10`/`aba_mod10`/`mrz_mod10`/
+`weighted_mod11`, `regex`/`format` → `none`, and so on. The full names still work;
+see the table in the README for the complete list.
 
 ### Shared rule options
 - **On an invalid value** — *Informational*, *Advisory*, or *Compulsory*. All

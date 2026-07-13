@@ -34,7 +34,8 @@ class AnnotationRules
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
         'iso7064_mod11_2', 'iso7064_mod37_2', 'iso7064_letters1',
-        'iso7064_letters2', 'damm', 'verhoeff', 'luhn', 'none',
+        'iso7064_letters2', 'damm', 'verhoeff', 'luhn',
+        'gs1_mod10', 'aba_mod10', 'mrz_mod10', 'weighted_mod11', 'none',
     ];
 
     /**
@@ -60,6 +61,10 @@ class AnnotationRules
         'iso7064_letters1' => ['letters1', 'letter1'],
         'iso7064_letters2' => ['letters2', 'letter2'],
         'luhn'             => ['mod10'],
+        'gs1_mod10'        => ['gs1', 'gtin', 'ean', 'upc'],
+        'aba_mod10'        => ['aba', 'routing'],
+        'mrz_mod10'        => ['mrz', 'icao'],
+        'weighted_mod11'   => ['isbn', 'mod11w', 'weighted11'],
         'none'             => ['regex', 'format'],
     ];
 
