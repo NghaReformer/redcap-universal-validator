@@ -195,16 +195,23 @@ class CheckCharacter
 
     /**
      * Conservative catastrophic-backtracking detector — the PHP twin of the
-     * browser's QRID_riskyPattern (js/engine.js). Rejects, at config time, the
-     * exponential shapes: nested quantifiers AND any repetition of a group that
-     * can match the same text more than one way (alternation, optionals, or
-     * inner quantifiers) — (a|aa)+, (a?)+ and ((a)|(aa))+ are refused, not only
-     * (a+)+. Inner groups are collapsed layer by layer so nesting cannot hide
-     * the shape. Still a heuristic, not a safety proof: it over-rejects (any
-     * repeated alternation is refused even when the branches are disjoint) and
-     * the match-time PCRE-error guard remains the server backstop. Keep in
-     * exact sync with the JS version; tests/risky_php.php and
-     * tests/risky_js.cjs assert the two agree on a shared pattern list.
+     * browser's QRID_riskyPattern (js/engine.js). Two stages, both at config
+     * time. Stage one rejects the EXPONENTIAL shapes: nested quantifiers AND any
+     * repetition of a group that can match the same text more than one way
+     * (alternation, optionals, or inner quantifiers) — (a|aa)+, (a?)+ and
+     * ((a)|(aa))+ are refused, not only (a+)+ — collapsing inner groups layer by
+     * layer so nesting cannot hide the shape. Stage two (polynomialOverlap)
+     * rejects the POLYNOMIAL shapes stage one misses: two or more unbounded
+     * quantifiers over overlapping character classes with no mandatory separator
+     * between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). Those do not blow up on
+     * PCRE2 (it auto-possessifies) but freeze a browser's backtracking engine,
+     * so the client needs them refused before they are ever run. Genuinely
+     * linear shapes — disjoint adjacent classes ([A-Z]+[0-9]+) and a mandatory
+     * separator (.*x.*) — are admitted. Still a heuristic, not a safety proof: it
+     * over-rejects, and the match-time PCRE-error guard remains the server
+     * backstop for the bounded residue (e.g. A{1,40}A{1,40}A{1,40}9). Keep in
+     * exact sync with the JS version; tests/risky_php.php and tests/risky_js.cjs
+     * assert the two agree on a shared pattern list.
      */
     public static function riskyPattern($src)
     {
@@ -229,6 +236,113 @@ class CheckCharacter
             }, $s);
             if ($t === $s) break;
             $s = $t;
+        }
+        // Stage two: the polynomial-overlap class the exponential rules miss.
+        if (self::polynomialOverlap($s)) return true;   // .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+
+        return false;
+    }
+
+    /**
+     * Reject two or more unbounded quantifiers (*, +, {n,}) whose atoms have
+     * overlapping character sets with no mandatory atom pinning a split between
+     * them — the polynomial-backtracking class stage one lets through. Operates
+     * on $s AFTER escape-stripping, lookaround-unwrapping, and the group-collapse
+     * loop above (so groups are already reduced to A / X* tokens; two repeats of
+     * the same collapsed group therefore read as overlapping too). Assumes an
+     * ASCII pattern source, which the server match path enforces elsewhere. Keep
+     * behavior in sync with QRID_polyOverlap (js).
+     */
+    private static function polynomialOverlap($s)
+    {
+        $toks = self::tokenizePattern($s);
+        $m = count($toks);
+        for ($i = 0; $i < $m; $i++) {
+            if (!$toks[$i]['unbounded']) continue;
+            for ($j = $i + 1; $j < $m; $j++) {
+                if ($toks[$j]['unbounded'] && self::classesOverlap($toks[$i]['cls'], $toks[$j]['cls'])) {
+                    return true;
+                }
+                if ($toks[$j]['mandatory']) break;   // a must-match atom anchors the split point
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Split a normalized pattern into atoms, each carrying its character set and
+     * quantifier facts. cls === null means "universal" (a '.', or a collapsed
+     * group token whose contents are unknown — treated as overlapping everything,
+     * conservatively). unbounded = the quantifier has no upper limit (*, +, {n,}).
+     * mandatory = it must consume at least one character (bare atom, +, {n>=1}).
+     */
+    private static function tokenizePattern($s)
+    {
+        $toks = [];
+        $n = strlen($s);
+        $i = 0;
+        while ($i < $n) {
+            $c = $s[$i];
+            $cls = null;
+            if ($c === '.') { $cls = null; $i++; }
+            elseif ($c === '[') {
+                $close = strpos($s, ']', $i + 1);
+                if ($close === false) { $i++; continue; }   // unterminated class: skip the '['
+                $cls = self::expandClass(substr($s, $i + 1, $close - $i - 1));
+                $i = $close + 1;
+            }
+            elseif (strpos('^$*+?{}|()', $c) !== false) { $i++; continue; }   // anchors / stray metachars: not atoms
+            else { $cls = $c; $i++; }                                          // a literal char (incl. A / X collapse tokens)
+            // read the quantifier that follows this atom
+            $unbounded = false; $mandatory = true;   // a bare atom must match once
+            if ($i < $n) {
+                $q = $s[$i];
+                if ($q === '*') { $unbounded = true; $mandatory = false; $i++; }
+                elseif ($q === '+') { $unbounded = true; $mandatory = true; $i++; }
+                elseif ($q === '?') { $unbounded = false; $mandatory = false; $i++; }
+                elseif ($q === '{') {
+                    $close = strpos($s, '}', $i + 1);
+                    if ($close !== false && preg_match('/^([0-9]*)(,?)([0-9]*)$/', substr($s, $i + 1, $close - $i - 1), $mm)) {
+                        $lo = $mm[1] === '' ? 0 : (int) $mm[1];
+                        $unbounded = ($mm[2] === ',') && ($mm[3] === '');   // {n,} unbounded; {n} / {n,m} bounded
+                        $mandatory = $lo >= 1;
+                        $i = $close + 1;
+                    }
+                }
+            }
+            $toks[] = ['cls' => $cls, 'unbounded' => $unbounded, 'mandatory' => $mandatory];
+        }
+        return $toks;
+    }
+
+    /** Expand a bracket-class body to its literal ASCII members; null = universal. */
+    private static function expandClass($inner)
+    {
+        if ($inner === '') return '';                // matches nothing
+        if ($inner[0] === '^') return null;          // negated class: large -> universal
+        $out = '';
+        $len = strlen($inner);
+        $k = 0;
+        while ($k < $len) {
+            if ($k + 2 < $len && $inner[$k + 1] === '-') {
+                $lo = ord($inner[$k]); $hi = ord($inner[$k + 2]);
+                if ($lo <= $hi && $hi - $lo <= 255) {
+                    for ($x = $lo; $x <= $hi; $x++) $out .= chr($x);
+                    $k += 3; continue;
+                }
+            }
+            $out .= $inner[$k]; $k++;
+        }
+        return $out;
+    }
+
+    /** Do two character sets share a member? null = universal (overlaps all). */
+    private static function classesOverlap($a, $b)
+    {
+        if ($a === null || $b === null) return true;
+        if ($a === '' || $b === '') return false;
+        $len = strlen($a);
+        for ($k = 0; $k < $len; $k++) {
+            if (strpos($b, $a[$k]) !== false) return true;
         }
         return false;
     }

@@ -1,5 +1,5 @@
 {
-  "note": "Shared list locking the risky-pattern heuristic across runtimes. `risky` are patterns QRID_riskyPattern / CheckCharacter::riskyPattern must reject (config error, no compile); `safe` must pass through. The heuristic rejects nested quantifiers (bounded and unbounded) AND any repetition of a group that can match ambiguously — alternation, optionals, or inner quantifiers — with inner groups collapsed layer by layer so nesting cannot hide the shape. It deliberately over-rejects (a repeated alternation is refused even when its branches are disjoint). It is still a heuristic, not a proof: polynomial shapes like A*A* pass it, which is why the server keeps the match-time PCRE-error guard as a backstop and why input-length caps stay in place.",
+  "note": "Shared list locking the risky-pattern heuristic across runtimes. `risky` are patterns QRID_riskyPattern / CheckCharacter::riskyPattern must reject (config error, no compile); `safe` must pass through. The gate has two stages. Stage one rejects nested quantifiers (bounded and unbounded) AND any repetition of a group that can match ambiguously — alternation, optionals, or inner quantifiers — with inner groups collapsed layer by layer so nesting cannot hide the shape. Stage two rejects the POLYNOMIAL class stage one misses: two or more unbounded quantifiers (*, +, {n,}) over overlapping character classes with no mandatory separator between them (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+) — these freeze a browser's backtracking engine even though PCRE2 auto-possessifies them. It deliberately over-rejects (a repeated alternation is refused even with disjoint branches; a collapsed group is treated as overlapping everything). It is still a heuristic, not a proof: a BOUNDED backtracker like A{1,40}A{1,40}A{1,40}9 passes (its work is bounded by the pattern, not the input length), which is why the server keeps the match-time PCRE-error guard as a backstop. `risky_js.cjs` additionally times every `safe` pattern against adversarial input, so \"safe\" is measured, not assumed.",
   "risky": [
     "(a+)+$",
     "([A-Z]+)*$",
@@ -20,7 +20,18 @@
     "(a?)+",
     "(a|aa){2,20}",
     "((a+))+",
-    "(?=(a+))\\1+"
+    "(?=(a+))\\1+",
+    ".*.*",
+    ".*.*.*.*.*b",
+    "[0-9]*[0-9]*[0-9]*[0-9]*[0-9]*b",
+    "a*a*",
+    "[A-Z0-9]*[A-Z0-9]*",
+    "[A-Z]+[A-Z0-9]+",
+    "A*A*A*9",
+    "(abc)+(abc)+",
+    "[A-Z]+[0-9]*[A-Z]+",
+    "[0-9]+x?[0-9]+",
+    ".+.+9"
   ],
   "safe": [
     "FC[1-9]-[0-9]{4}",
@@ -36,6 +47,8 @@
     "(abc)+",
     "(FC|TB)?",
     "(?:FC|TB)-[0-9]{4}",
-    "(A{2})+"
+    "(A{2})+",
+    "[A-Z]+-[A-Z]+",
+    ".*x.*"
   ]
 }

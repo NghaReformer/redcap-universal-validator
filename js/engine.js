@@ -575,7 +575,7 @@
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
       return window.INSPIRE_VALIDATOR_CONFIG;
     return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, source: "normalized_id", strip: "-/ _|", suggestFix: true,
+      idPattern: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: true,
       keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
   }
   var QRID_COMBINED_CONFIG = QRID_readConfig();
@@ -597,14 +597,22 @@ function QRID_escapeHtml(t){
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
-/* Conservative catastrophic-backtracking detector. Rejects, at CONFIG time, the
-   exponential shapes: nested quantifiers AND any repetition of a group that can
-   match the same text more than one way (alternation, optionals, or inner
-   quantifiers) — so (a|aa)+, (a?)+ and ((a)|(aa))+ are refused, not only (a+)+.
-   Inner groups are collapsed layer by layer, so nesting cannot hide the shape.
-   Still a conservative heuristic, not a formal safety proof: it over-rejects
-   (any repeated alternation is refused even when the branches are disjoint) and
-   the match-time PCRE-error guard remains the server backstop. */
+/* Conservative catastrophic-backtracking detector. Two stages, both at CONFIG
+   time. Stage one rejects the EXPONENTIAL shapes: nested quantifiers AND any
+   repetition of a group that can match the same text more than one way
+   (alternation, optionals, or inner quantifiers) — so (a|aa)+, (a?)+ and
+   ((a)|(aa))+ are refused, not only (a+)+ — collapsing inner groups layer by
+   layer so nesting cannot hide the shape. Stage two (QRID_polyOverlap) rejects
+   the POLYNOMIAL shapes stage one misses: two or more unbounded quantifiers over
+   overlapping character classes with no mandatory separator between them
+   (.*.*, [0-9]*[0-9]*, [A-Z]+[A-Z0-9]+). PCRE2 auto-possessifies those and stays
+   fast, but this browser engine backtracks and would freeze the tab, so they
+   must be refused before they ever run. Genuinely linear shapes — disjoint
+   adjacent classes ([A-Z]+[0-9]+) and a mandatory separator (.*x.*) — pass.
+   Still a heuristic, not a proof: it over-rejects, and on the server the
+   match-time PCRE-error guard remains the backstop for the bounded residue.
+   Keep BYTE-IDENTICAL behavior with CheckCharacter::riskyPattern (php);
+   tests/risky_*.{cjs,php} assert parity. */
 function QRID_riskyPattern(src){
   if(Array.from(String(src)).length > 512) return true;   /* absurd pattern source */
   var s = String(src).replace(/\\./g, "");                 /* ignore escaped chars */
@@ -629,6 +637,87 @@ function QRID_riskyPattern(src){
     });
     if(t === s) break;
     s = t;
+  }
+  /* Stage two: the polynomial-overlap class the exponential rules miss. */
+  if(QRID_polyOverlap(s)) return true;                                                       /* .*.*  [0-9]*[0-9]*  [A-Z]+[A-Z0-9]+ */
+  return false;
+}
+/* Reject two or more unbounded quantifiers (*, +, {n,}) whose atoms overlap with
+   no mandatory atom pinning a split between them. Runs on `s` AFTER escape-strip,
+   lookaround-unwrap, and the group-collapse loop (groups are already A / X*
+   tokens, so two repeats of one collapsed group read as overlapping too). Assumes
+   an ASCII pattern source. Twin of CheckCharacter::polynomialOverlap (php). */
+function QRID_polyOverlap(s){
+  var toks = QRID_tokenizePattern(s);
+  for(var i=0;i<toks.length;i++){
+    if(!toks[i].unbounded) continue;
+    for(var j=i+1;j<toks.length;j++){
+      if(toks[j].unbounded && QRID_classesOverlap(toks[i].cls, toks[j].cls)) return true;
+      if(toks[j].mandatory) break;                     /* a must-match atom anchors the split point */
+    }
+  }
+  return false;
+}
+/* Split a normalized pattern into atoms with their character set + quantifier
+   facts. cls === null is "universal" (a '.', or a collapsed group token, treated
+   as overlapping everything). unbounded = no upper limit (*, +, {n,}); mandatory
+   = must consume >= 1 char (bare atom, +, {n>=1}). Twin of tokenizePattern (php). */
+function QRID_tokenizePattern(s){
+  var toks = [], n = s.length, i = 0;
+  while(i < n){
+    var c = s.charAt(i), cls = null;
+    if(c === "."){ cls = null; i++; }
+    else if(c === "["){
+      var close = s.indexOf("]", i + 1);
+      if(close === -1){ i++; continue; }               /* unterminated class: skip the '[' */
+      cls = QRID_expandClass(s.slice(i + 1, close));
+      i = close + 1;
+    }
+    else if("^$*+?{}|()".indexOf(c) !== -1){ i++; continue; }   /* anchors / stray metachars: not atoms */
+    else { cls = c; i++; }                                       /* a literal char (incl. A / X collapse tokens) */
+    var unbounded = false, mandatory = true;           /* a bare atom must match once */
+    if(i < n){
+      var q = s.charAt(i);
+      if(q === "*"){ unbounded = true; mandatory = false; i++; }
+      else if(q === "+"){ unbounded = true; mandatory = true; i++; }
+      else if(q === "?"){ unbounded = false; mandatory = false; i++; }
+      else if(q === "{"){
+        var qc = s.indexOf("}", i + 1), mm;
+        if(qc !== -1 && (mm = /^([0-9]*)(,?)([0-9]*)$/.exec(s.slice(i + 1, qc)))){
+          var lo = mm[1] === "" ? 0 : parseInt(mm[1], 10);
+          unbounded = (mm[2] === ",") && (mm[3] === "");   /* {n,} unbounded; {n} / {n,m} bounded */
+          mandatory = lo >= 1;
+          i = qc + 1;
+        }
+      }
+    }
+    toks.push({ cls: cls, unbounded: unbounded, mandatory: mandatory });
+  }
+  return toks;
+}
+/* Expand a bracket-class body to its literal ASCII members; null = universal. */
+function QRID_expandClass(inner){
+  if(inner === "") return "";                          /* matches nothing */
+  if(inner.charAt(0) === "^") return null;             /* negated class: large -> universal */
+  var out = "", len = inner.length, k = 0;
+  while(k < len){
+    if(k + 2 < len && inner.charAt(k + 1) === "-"){
+      var lo = inner.charCodeAt(k), hi = inner.charCodeAt(k + 2);
+      if(lo <= hi && hi - lo <= 255){
+        for(var x = lo; x <= hi; x++) out += String.fromCharCode(x);
+        k += 3; continue;
+      }
+    }
+    out += inner.charAt(k); k++;
+  }
+  return out;
+}
+/* Do two character sets share a member? null = universal (overlaps all). */
+function QRID_classesOverlap(a, b){
+  if(a === null || b === null) return true;
+  if(a === "" || b === "") return false;
+  for(var k = 0; k < a.length; k++){
+    if(b.indexOf(a.charAt(k)) !== -1) return true;
   }
   return false;
 }
@@ -851,9 +940,10 @@ function QRIDSingleInit(QRID_CONFIG){
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
     } else if(QRID_riskyPattern(rawPatS)){
-      configError = "idPattern looks catastrophically backtracking (nested quantifiers or a " +
-        "repeated alternation/optional group, e.g. (a+)+ or (a|aa)+). Rewrite it without " +
-        "repeating an ambiguous group.";
+      configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
+        "repeated ambiguous group, or overlapping unbounded quantifiers — e.g. (a+)+, (a|aa)+, " +
+        "or .*.* / [0-9]*[0-9]*). Rewrite it so no ambiguous group repeats and no two unbounded " +
+        "quantifiers overlap (use bounded {min,max} counts or a disjoint class between them).";
     } else try {
       var p = rawPatS.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + p + ")$");
@@ -1152,9 +1242,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
     } else if(QRID_riskyPattern(rawPatP)){
-      configError = "idPattern looks catastrophically backtracking (nested quantifiers or a " +
-        "repeated alternation/optional group, e.g. (a+)+ or (a|aa)+). Rewrite it without " +
-        "repeating an ambiguous group.";
+      configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
+        "repeated ambiguous group, or overlapping unbounded quantifiers — e.g. (a+)+, (a|aa)+, " +
+        "or .*.* / [0-9]*[0-9]*). Rewrite it so no ambiguous group repeats and no two unbounded " +
+        "quantifiers overlap (use bounded {min,max} counts or a disjoint class between them).";
     } else try {
       var _p = rawPatP.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + _p + ")$");

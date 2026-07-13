@@ -62,24 +62,26 @@ if (empty($resA['ok'])) {
     fwrite(STDERR, 'bounded-nested pooled pattern gave an invalid verdict: ' . json_encode($resA) . "\n");
 }
 
-// (b) a heuristic-MISSED pattern that hits the PCRE backtrack limit at match
-// time must bail to "unconfigurable", NOT be logged as junk. Since the gate now
-// catches ambiguous-repetition shapes ((a|aa)+, (A|A?)+), the remaining missed
-// class is POLYNOMIAL backtracking (overlapping stars, A*A*A*9); the patTest
-// guard is what saves it. The required literal ('9') is present in the subject
-// so PCRE2's prescan cannot short-circuit, but the subject ends in 'A' so the
-// match only fails after exploring the quadratic split space. A tiny backtrack
-// limit makes the engine failure deterministic. Uppercase pattern + value
+// (b) a gate-MISSED pattern that hits the PCRE backtrack limit at match time
+// must bail to "unconfigurable", NOT be logged as junk. The gate now catches
+// both the exponential AND the polynomial (overlapping-unbounded) shapes, so the
+// remaining missed class is BOUNDED backtracking: A{1,40}A{1,40}A{1,40}9 does
+// input-independent work capped by the pattern, not the input length, so it is
+// not an input-scaling ReDoS and stays configurable — yet three overlapping
+// bounded quantifiers still exceed a tiny backtrack limit at match time, which
+// is exactly what the patTest guard exists for. The required literal ('9') is
+// present so PCRE2's prescan cannot short-circuit; the subject ends in 'A' so the
+// match only fails after exploring the split space. Uppercase pattern + value
 // because the pooled cleaner uppercases before matching.
 $n++;
-if (CheckCharacter::riskyPattern('A*A*A*9') !== false) {
+if (CheckCharacter::riskyPattern('A{1,40}A{1,40}A{1,40}9') !== false) {
     $fail++;
-    fwrite(STDERR, "A*A*A*9 unexpectedly gated — test 3(b) no longer exercises the PCRE-error guard\n");
+    fwrite(STDERR, "A{1,40}A{1,40}A{1,40}9 unexpectedly gated — test 3(b) no longer exercises the PCRE-error guard\n");
 }
 $old = ini_get('pcre.backtrack_limit');
 ini_set('pcre.backtrack_limit', '100');
 $cfgB = ['algorithm' => 'none', 'source' => 'normalized_id', 'strip' => '',
-         'idPattern' => 'A*A*A*9', 'idLengths' => [30]];
+         'idPattern' => 'A{1,40}A{1,40}A{1,40}9', 'idLengths' => [30]];
 $resB = CheckCharacter::validatePooledField($cfgB, str_repeat('A', 28) . '9A');
 ini_set('pcre.backtrack_limit', $old === false ? '1000000' : $old);
 if (empty($resB['ok'])) {

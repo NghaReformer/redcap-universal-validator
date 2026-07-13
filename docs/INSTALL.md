@@ -68,8 +68,9 @@ rule automatically. Tags work on Text and Notes fields.
   read-only field — a person who cannot edit the value is not blocked by it.
 - **Advanced (optional)** — payload source (whole ID / digits only / trailing
   number), a format regex (printable ASCII, matched against the UPPERCASED
-  value; catastrophic shapes such as `(a+)+` and `(a|aa)+` are rejected when
-  you save the settings), and separators to ignore. For *Pooled* rules only:
+  value; catastrophic shapes — `(a+)+`, `(a|aa)+`, and overlapping unbounded
+  quantifiers like `.*.*` or `[0-9]*[0-9]*` — are rejected when you save the
+  settings), and separators to ignore. For *Pooled* rules only:
   exact ID length(s) or a min/max range (up to 64 characters per ID), extra
   characters to keep, and the expected pool size.
 

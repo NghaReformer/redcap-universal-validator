@@ -55,18 +55,25 @@ node tests/gen_pooled_fixture.cjs   # rewrites pooled_fixture.json; commit the d
 in JS, `CheckCharacter::riskyPattern` in PHP) and must agree, or a catastrophic
 `idPattern` the browser blocks could still run on the server. `risky_js.cjs` and
 `risky_php.php` assert both classify the shared `risky` / `safe` list
-identically. The heuristic rejects nested quantifiers (bounded and unbounded)
-and any repetition of a group that can match ambiguously — alternation,
-optionals, or inner quantifiers, so `(a|aa)+`, `(a?)+` and `((a)|(aa))+` are all
-refused — with inner groups collapsed layer by layer so nesting cannot hide the
-shape, plus a 512-code-point cap on the pattern source. It deliberately
-over-rejects (a repeated alternation is refused even with disjoint branches)
-and it still is a heuristic, not a proof: polynomial shapes like `A*A*A*9` pass
-it, which is why `risky_php.php` also proves the server bails to
-"unconfigurable" on a PCRE backtrack-limit failure instead of logging a false
-verdict, and why per-field input caps and the pooled work budget stay in place.
-`risky_js.cjs` additionally runs every `safe` pattern against adversarial
-inputs under a time budget, so "safe" is measured, not assumed.
+identically. The gate has two stages. Stage one rejects nested quantifiers
+(bounded and unbounded) and any repetition of a group that can match ambiguously
+— alternation, optionals, or inner quantifiers, so `(a|aa)+`, `(a?)+` and
+`((a)|(aa))+` are all refused — with inner groups collapsed layer by layer so
+nesting cannot hide the shape. Stage two rejects the *polynomial* class stage
+one misses: two or more unbounded quantifiers (`*`, `+`, `{n,}`) over overlapping
+character classes with no mandatory separator between them, so `.*.*`,
+`[0-9]*[0-9]*` and `[A-Z]+[A-Z0-9]+` are refused while the genuinely-linear
+`[A-Z]+[0-9]+` and `.*x.*` pass. Both stages sit behind a 512-code-point cap on
+the pattern source, and a pattern the gate flags is never compiled, so it can
+never run. It deliberately over-rejects (a repeated alternation is refused even
+with disjoint branches; a collapsed group is treated as overlapping everything)
+and it is still a heuristic, not a proof: a *bounded* backtracker like
+`A{1,40}A{1,40}A{1,40}9` passes it — its work is capped by the pattern, not the
+input length, so it is not an input-scaling ReDoS — which is why `risky_php.php`
+also proves the server bails to "unconfigurable" on a PCRE backtrack-limit
+failure instead of logging a false verdict. `risky_js.cjs` additionally runs
+every `safe` pattern against adversarial inputs under a time budget, so "safe"
+is measured, not assumed.
 
 ## `hook_php.php` — the audit-path contract
 

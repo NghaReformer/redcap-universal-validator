@@ -172,6 +172,9 @@ assistive technology actually announces.
       under the field shows the text escaped, no alert.
 - [ ] Put `(a|aa)+` as a pattern → rejected at settings-save time with a
       catastrophic-pattern message; the form stays responsive.
+- [ ] Put `.*.*.*.*.*b` as a pattern → rejected at settings-save time with the
+      same message; the form stays responsive. (This polynomial-overlap shape
+      passed the pre-`0.5.1` gate and froze the browser tab — SEC-001R.)
 - [ ] Configure a pooled rule with lengths `100`–`199` → rejected at save time
       (the work caps allow at most 64-character IDs).
 - [ ] Run REDCap's built-in External Module security scan (Control Center) and

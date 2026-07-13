@@ -21,11 +21,16 @@ and the field-facing UI layer:
    engine core):
    - All config-derived text (regex class bodies, config-error messages) is
      HTML-escaped before it reaches `innerHTML` — closes a DOM-XSS path (UV-002).
-   - The catastrophic-backtracking gate rejects nested quantifiers AND repeated
-     alternation/optional groups (`(a+)+`, `(a|aa)+`, `(a?)+`, nested variants)
-     by collapsing inner groups layer by layer, plus a 512-code-point pattern
-     cap. Byte-identical twin of `CheckCharacter::riskyPattern` (php), locked by
-     `tests/risky_*` (SEC-001/UV-006).
+   - The catastrophic-backtracking gate rejects, at config time, both the
+     exponential shapes (nested quantifiers and repeated ambiguous groups —
+     `(a+)+`, `(a|aa)+`, `(a?)+`, nested variants — by collapsing inner groups
+     layer by layer) and the polynomial shapes (two or more unbounded quantifiers
+     over overlapping classes with no mandatory separator — `.*.*`,
+     `[0-9]*[0-9]*`, `[A-Z]+[A-Z0-9]+`), plus a 512-code-point pattern cap. A
+     flagged pattern is never compiled, so it can never run; the genuinely-linear
+     `[A-Z]+[0-9]+` and `.*x.*` still pass. Byte-identical-behavior twin of
+     `CheckCharacter::riskyPattern` (php), locked by `tests/risky_*`
+     (SEC-001/SEC-001R/UV-006).
    - Per-field input caps, hard rule caps (ID length ≤ 64, ≤ 32 candidate
      lengths, keepChars ≤ 64 printable ASCII, expectedIds ≤ 9999), a per-rule
      pooled work budget that shrinks the scan cap for expensive configs, and

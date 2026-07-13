@@ -237,8 +237,9 @@ class AnnotationRules
                     . 'which JavaScript cannot compile.';
             } elseif (CheckCharacter::riskyPattern($pattern)) {
                 $errors[] = 'the format pattern looks catastrophically backtracking (nested '
-                    . 'quantifiers or a repeated alternation/optional group, e.g. (a+)+ or (a|aa)+) '
-                    . '— rewrite it without repeating an ambiguous group.';
+                    . 'quantifiers, a repeated ambiguous group, or overlapping unbounded quantifiers '
+                    . '— e.g. (a+)+, (a|aa)+, or .*.* / [0-9]*[0-9]*) — rewrite it so no ambiguous '
+                    . 'group repeats and no two unbounded quantifiers overlap.';
             } elseif (!CheckCharacter::patternCompiles($pattern)) {
                 $errors[] = 'the format pattern does not compile as a regex — check the syntax.';
             }

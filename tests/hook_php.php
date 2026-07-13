@@ -323,11 +323,13 @@ namespace {
     check('other fields of the shared rule still audited', in_array('main_id_tag', loggedFields($m), true));
 
     // ---- 12) an unevaluable rule logs "unconfigurable" instead of passing silently ----
-    // A*A*A*9 passes the ReDoS gate (polynomial, not exponential) but trips the
-    // PCRE backtrack limit at match time -> pooled parse bails -> logged.
+    // A{1,40}A{1,40}A{1,40}9 passes the ReDoS gate (bounded work, capped by the
+    // pattern rather than the input length, so not an input-scaling ReDoS) but
+    // three overlapping bounded quantifiers trip the PCRE backtrack limit at
+    // match time -> pooled parse bails -> logged.
     $pcreRule = [[
         'rule-type' => 'pooled', 'fields' => ['main_id_1'], 'fields-csv' => '',
-        'algorithm' => 'none', 'source' => '', 'pattern' => 'A*A*A*9', 'strip' => '',
+        'algorithm' => 'none', 'source' => '', 'pattern' => 'A{1,40}A{1,40}A{1,40}9', 'strip' => '',
         'keep-chars' => '', 'id-lengths' => '30', 'id-min-len' => '', 'id-max-len' => '',
         'expected-count' => '', 'block-save' => 'off',
     ]];

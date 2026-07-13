@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.5.1 — polynomial-ReDoS gate closure
+
+Addresses `reports/predeployment-adversarial-review-2026-07-12b.md`, the second
+independent pass, which re-verified 21 of 22 code findings from `0.5.0` as
+genuinely fixed and re-opened one: **SEC-001R**.
+
+Security
+- **SEC-001R:** the regex safety gate now rejects the *polynomial* backtracking
+  class it previously let through — two or more unbounded quantifiers (`*`, `+`,
+  `{n,}`) over overlapping character classes with no mandatory separator between
+  them (`.*.*`, `[0-9]*[0-9]*`, `[A-Z]+[A-Z0-9]+`, `A*A*A*9`, and repeated
+  ungrouped/collapsed atoms such as `(abc)+(abc)+`). The `0.5.0` gate caught only
+  the exponential shapes; the polynomial ones passed every configuration channel
+  (settings dialog and `@UVALIDATE`) and, because a browser's backtracking engine
+  has no runtime backstop, froze the tab on ordinary form and survey input —
+  measured at ~20 s for `.*.*.*.*.*b` at a 200-character value, and unbounded at
+  the 512-character field cap. PCRE2 auto-possessifies the same patterns and was
+  never affected, which is why the client-only exposure was missed. The new
+  second stage (`QRID_polyOverlap` / `CheckCharacter::polynomialOverlap`)
+  tokenizes the already-group-collapsed pattern and refuses the
+  overlapping-unbounded shape while still admitting genuinely-linear patterns —
+  disjoint adjacent classes (`[A-Z]+[0-9]+`) and a mandatory separator (`.*x.*`).
+  A flagged pattern is never compiled on the client, so it can never run. The JS
+  and PHP twins stay behavior-identical, locked by an expanded
+  `tests/risky_patterns.json` that now covers the polynomial class in both
+  runtimes. Chosen over a bundled linear-time client engine (RE2/`re2js`) to keep
+  the module a build-free, dependency-free vendored script.
+
+Tests and docs
+- `tests/risky_patterns.json` gains the polynomial-overlap cases in `risky` and
+  two linear precision-guarantee cases (`[A-Z]+-[A-Z]+`, `.*x.*`) in `safe`.
+- The residual class the gate deliberately still passes is now a *bounded*
+  backtracker (`A{1,40}A{1,40}A{1,40}9`, work capped by the pattern rather than
+  the input length); `risky_php.php` and `hook_php.php` use it — instead of the
+  now-gated `A*A*A*9` — to keep exercising the server's match-time PCRE-error
+  guard.
+- Config-error messages (dialog + `@UVALIDATE`), `config.json`, `docs/INSTALL.md`,
+  `docs/TESTING.md`, `js/README.md`, and `tests/README.md` now describe both gate
+  stages and no longer imply the input caps bound regex match time (LOW-02).
+- **LOW-03:** the JS fallback config `strip` default (`-/ _|`) now matches the
+  PHP default and the `config.json` help text (`-/ _|\`). Production always
+  receives the PHP-built config, so this only affected the test-harness fallback.
+
+The three standing release-gate blockers (public SemVer tag, REDCap security
+scan, live REDCap/browser/screen-reader matrix) remain people-work, tracked at
+the top of `docs/TESTING.md`. LOW-04 (cross-save log deduplication) remains
+disclosed future work.
+
 ## 0.5.0 — predeployment-review hardening
 
 Addresses `reports/predeployment-adversarial-review-2026-07-12.md` (4 blockers,

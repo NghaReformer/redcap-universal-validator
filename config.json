@@ -107,7 +107,7 @@
         },
         {
           "key": "pattern",
-          "name": "Optional format pattern (regex for ONE ID; printable ASCII; tested against the UPPERCASED, dash-unified value). Required if method is 'No check character'. JavaScript regex syntax; nested quantifiers and repeated alternation/optional groups — (a+)+, (a|aa)+ — are rejected as catastrophic at save time.",
+          "name": "Optional format pattern (regex for ONE ID; printable ASCII; tested against the UPPERCASED, dash-unified value). Required if method is 'No check character'. JavaScript regex syntax; catastrophic patterns — nested quantifiers, repeated ambiguous groups, and overlapping unbounded quantifiers such as (a+)+, (a|aa)+, or .*.* — are rejected at save time.",
           "type": "text"
         },
         {
