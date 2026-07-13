@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0 — algorithm-name shorthands (ease of use)
+
+Configuring a rule no longer requires typing the full internal algorithm name.
+The `algorithm` value now accepts case-insensitive shorthands in both
+configuration channels — `@UVALIDATE=3736` (or `37,36`, `mod37_36`) resolves to
+`iso7064_mod37_36`, `9710` to `iso7064_mod97_10`, `112` to `iso7064_mod11_2`,
+`mod10` to `luhn`, `regex`/`format` to `none`, and so on for each method.
+
+- Single source of truth: `AnnotationRules::ALGORITHM_SYNONYMS` (canonical name →
+  list of shorthands) plus `AnnotationRules::canonicalAlgorithm()`. Shorthands are
+  resolved server-side wherever a raw algorithm string enters a rule (the
+  `@UVALIDATE` bare and JSON forms, and the settings dialog), so the check-character
+  engine, the server-side audit, and the browser all receive the canonical name —
+  no second synonym table in the JavaScript engine to keep in sync.
+- Unknown values are still rejected with the existing "unknown check algorithm"
+  error, and full names keep working everywhere. Documented in the `config.json`
+  action-tag help, the README (with a shorthand table), and `docs/INSTALL.md`.
+- Tests: `tests/annotation_php.php` gains shorthand-resolution, case-insensitivity,
+  and a maintenance guard that fails if a shorthand ever collides with a canonical
+  name or another shorthand; `tests/hook_php.php` proves a shorthand annotation is
+  audited server-side under its canonical name.
+
 ## 0.5.1 — polynomial-ReDoS gate closure
 
 Addresses `reports/predeployment-adversarial-review-2026-07-12b.md`, the second
@@ -47,7 +69,6 @@ The three standing release-gate blockers (public SemVer tag, REDCap security
 scan, live REDCap/browser/screen-reader matrix) remain people-work, tracked at
 the top of `docs/TESTING.md`. LOW-04 (cross-save log deduplication) remains
 disclosed future work.
-
 ## 0.5.0 — predeployment-review hardening
 
 Addresses `reports/predeployment-adversarial-review-2026-07-12.md` (4 blockers,

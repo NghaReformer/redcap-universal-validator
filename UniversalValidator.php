@@ -474,7 +474,10 @@ class UniversalValidator extends AbstractExternalModule
             'type'   => !empty($s['rule-type']) ? $s['rule-type'] : 'single',
             'fields' => $fields,
         ];
-        if (!empty($s['algorithm']))  $rule['algorithm'] = $s['algorithm'];
+        // Canonicalize the algorithm: the dropdown already stores canonical
+        // values, but a shorthand pasted into a future free-text channel (or a
+        // hand-edited stored setting) resolves the same way the annotations do.
+        if (!empty($s['algorithm']))  $rule['algorithm'] = AnnotationRules::canonicalAlgorithm((string) $s['algorithm']);
         if (!empty($s['source']))     $rule['source']    = $s['source'];
         if (!empty($s['block-save'])) $rule['blockSave'] = $s['block-save'];
         // Presence checks, not empty(): a pattern/strip/keep of the string "0"

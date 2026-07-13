@@ -90,6 +90,27 @@ One rule = one kind of validation, applied to any number of fields:
    malformed tag shows a configuration error under that field — never a silent
    no-op. Fields with identical tags are grouped into one rule automatically.
 
+   **Algorithm shorthands.** So you need not spell out the full internal name,
+   the `algorithm` value accepts case-insensitive shorthands (e.g.
+   `@UVALIDATE=3736` = ISO 7064 Mod 37,36). They also work inside the JSON form
+   (`{"algorithm":"9710", ...}`).
+
+   | Shorthands | Resolves to |
+   |---|---|
+   | `3736`, `37,36`, `37_36`, `mod37_36` | `iso7064_mod37_36` (default) |
+   | `1110`, `11,10`, `11_10`, `mod11_10` | `iso7064_mod11_10` |
+   | `9710`, `97,10`, `97_10`, `mod97_10` | `iso7064_mod97_10` |
+   | `112`, `11,2`, `11_2`, `mod11_2` | `iso7064_mod11_2` |
+   | `372`, `37,2`, `37_2`, `mod37_2` | `iso7064_mod37_2` |
+   | `letters1` / `letters2` | `iso7064_letters1` / `iso7064_letters2` |
+   | `mod10` | `luhn` |
+   | `regex`, `format` | `none` (format/regex only — pair with a `pattern`) |
+
+   The full names still work everywhere; shorthands are resolved when the module
+   builds its config, so the browser and the server-side audit both see the
+   canonical name. The single source of truth is `ALGORITHM_SYNONYMS` in
+   [`php/AnnotationRules.php`](php/AnnotationRules.php).
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two

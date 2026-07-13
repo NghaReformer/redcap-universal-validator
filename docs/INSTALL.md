@@ -61,6 +61,12 @@ bad JSON) — or a tag on a non-Text/Notes field — shows a configuration error
 notice at the top of the form. Fields with identical tags are grouped into one
 rule automatically. Tags work on Text and Notes fields.
 
+The `algorithm` value accepts case-insensitive shorthands so you need not type
+the full name: `3736` (or `37,36`, `mod37_36`) → `iso7064_mod37_36`, `9710` →
+`iso7064_mod97_10`, `112` → `iso7064_mod11_2`, `mod10` → `luhn`, `regex`/`format`
+→ `none`, and so on. The full names still work; see the table in the README for
+the complete list.
+
 ### Shared rule options
 - **On an invalid value** — *Informational*, *Advisory*, or *Compulsory*. All
   three are **browser** behaviors; API and data-import writes cannot be blocked

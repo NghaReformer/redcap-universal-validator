@@ -37,9 +37,57 @@ class AnnotationRules
         'iso7064_letters2', 'damm', 'verhoeff', 'luhn', 'none',
     ];
 
+    /**
+     * Friendly shorthands for the algorithm names, so a data manager can write
+     * @UVALIDATE=3736 (or 37,36, mod37_36, ...) instead of the full
+     * iso7064_mod37_36. This is the SINGLE source of truth for synonyms —
+     * canonicalAlgorithm() resolves against it, the dialog dropdown stores
+     * canonical names directly, and the client always receives canonical names
+     * (the config is built server-side), so nothing else needs a synonym table.
+     *
+     * To add a shorthand: add it to the right canonical row here (lowercase),
+     * then run tests/annotation_php.php — a collision guard there fails if a
+     * shorthand clashes with a canonical name or another shorthand.
+     *
+     * Format: CANONICAL => [ shorthand, shorthand, ... ] (all lowercase).
+     */
+    const ALGORITHM_SYNONYMS = [
+        'iso7064_mod37_36' => ['3736', '37_36', '37-36', '37,36', 'mod37_36', 'mod3736'],
+        'iso7064_mod11_10' => ['1110', '11_10', '11-10', '11,10', 'mod11_10', 'mod1110'],
+        'iso7064_mod97_10' => ['9710', '97_10', '97-10', '97,10', 'mod97_10', 'mod9710'],
+        'iso7064_mod11_2'  => ['112', '11_2', '11-2', '11,2', 'mod11_2', 'mod112'],
+        'iso7064_mod37_2'  => ['372', '37_2', '37-2', '37,2', 'mod37_2', 'mod372'],
+        'iso7064_letters1' => ['letters1', 'letter1'],
+        'iso7064_letters2' => ['letters2', 'letter2'],
+        'luhn'             => ['mod10'],
+        'none'             => ['regex', 'format'],
+    ];
+
     /** Keys accepted in the JSON form ("pattern" maps to the engine's idPattern). */
     const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'strip', 'keepChars',
                        'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'note'];
+
+    /**
+     * Resolve a user-typed algorithm shorthand to its canonical name.
+     *
+     * Matching is case-insensitive. An already-canonical name (any case) is
+     * returned canonical; an unrecognized value is returned UNCHANGED, so the
+     * existing "unknown algorithm" whitelist error still fires for real typos.
+     * Applied at every point a raw algorithm string is read into a rule, so the
+     * stored value — and therefore the check-character engine and the client —
+     * always sees a canonical name.
+     */
+    public static function canonicalAlgorithm($name)
+    {
+        if (!is_string($name) || $name === '') return $name;
+        if (in_array($name, self::ALGORITHMS, true)) return $name;      // fast path: already canonical
+        $key = strtolower(trim($name));
+        if (in_array($key, self::ALGORITHMS, true)) return $key;        // canonical, just wrong case
+        foreach (self::ALGORITHM_SYNONYMS as $canonical => $synonyms) {
+            if (in_array($key, $synonyms, true)) return $canonical;
+        }
+        return $name;                                                   // unknown -> unchanged
+    }
 
     /**
      * Extract the raw @UVALIDATE value from an annotation string.
@@ -109,15 +157,17 @@ class AnnotationRules
         $val = trim($val);
         if ($val === '') return [];
         if ($val[0] !== '{') {
-            if (!in_array($val, self::ALGORITHMS, true)) {
+            $canon = self::canonicalAlgorithm($val);
+            if (!in_array($canon, self::ALGORITHMS, true)) {
                 return ['error' => 'unknown check algorithm "' . $val . '" — valid: '
                     . implode(', ', self::ALGORITHMS) . '.'];
             }
-            if ($val === 'none') {
-                return ['error' => self::TAG . '=none needs a format pattern — use the JSON form: '
+            if ($canon === 'none') {
+                return ['error' => self::TAG . '=none (or "regex"/"format") validates format only and '
+                    . 'needs a pattern — use the JSON form: '
                     . self::TAG . '={"algorithm":"none","pattern":"YOUR-REGEX"}'];
             }
-            return ['algorithm' => $val];
+            return ['algorithm' => $canon];
         }
         $cfg = json_decode($val, true);
         if (!is_array($cfg)) {
@@ -148,6 +198,10 @@ class AnnotationRules
                 $out[$k] = $cfg[$k];
             }
         }
+        // Resolve an algorithm shorthand (e.g. "3736") to its canonical name
+        // before checkFragment validates it, so the whole audit/engine chain and
+        // the client all see the full iso7064_mod37_36 form.
+        if (isset($out['algorithm'])) $out['algorithm'] = self::canonicalAlgorithm($out['algorithm']);
 
         if (isset($cfg['pattern'])) {
             if (!is_string($cfg['pattern']) || $cfg['pattern'] === '') {

@@ -430,6 +430,21 @@ namespace {
     check('validateSettings rejects lengths beyond the work cap', is_string($msg) && strpos($msg, '64') !== false);
     check('validateSettings ignores non-rule settings shapes', $m->validateSettings(['enabled' => true]) === null);
 
+    // ---- 17) an @UVALIDATE algorithm shorthand is resolved and audited server-side ----
+    // @UVALIDATE=3736 must behave exactly like the canonical iso7064_mod37_36 on
+    // the audit path, and the log must record the canonical name (not "3736").
+    $synDd = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'syn_id'    => ['field_type' => 'text', 'field_annotation' => '@UVALIDATE=3736', 'form_name' => 'f'],
+    ];
+    $synData = [2 => [351 => ['syn_id' => '1ABC-00002E']]]; // invalid check under mod37,36
+    $m = newModule([], $synDd, $synData, 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('algorithm shorthand @UVALIDATE=3736 is audited', in_array('syn_id', loggedFields($m), true));
+    $synLog = invalidLogs($m);
+    check('shorthand audit logs the CANONICAL algorithm name',
+        $synLog && $synLog[0][1]['algorithm'] === 'iso7064_mod37_36');
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

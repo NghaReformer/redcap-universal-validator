@@ -70,6 +70,47 @@ check('bad type -> error', isset($r['error']));
 $r = AnnotationRules::parseField('@UVALIDATE={"source":"digits_only","blockSave":"confirm"}');
 check('source + blockSave pass through', !isset($r['error']) && $r['source'] === 'digits_only');
 
+// ---- algorithm synonyms (ease-of-use shorthands) ----
+check('numeric shorthand 3736 -> mod37_36',
+    AnnotationRules::canonicalAlgorithm('3736') === 'iso7064_mod37_36');
+check('underscore shorthand mod11_10 -> canonical',
+    AnnotationRules::canonicalAlgorithm('mod11_10') === 'iso7064_mod11_10');
+check('comma shorthand 97,10 -> canonical',
+    AnnotationRules::canonicalAlgorithm('97,10') === 'iso7064_mod97_10');
+check('luhn shorthand mod10 -> luhn', AnnotationRules::canonicalAlgorithm('mod10') === 'luhn');
+check('regex shorthand -> none', AnnotationRules::canonicalAlgorithm('regex') === 'none');
+check('canonical name passes through unchanged',
+    AnnotationRules::canonicalAlgorithm('damm') === 'damm');
+check('canonical name is case-normalized',
+    AnnotationRules::canonicalAlgorithm('ISO7064_MOD37_36') === 'iso7064_mod37_36');
+check('shorthand is case-insensitive', AnnotationRules::canonicalAlgorithm('MOD37_36') === 'iso7064_mod37_36');
+check('unknown value returned unchanged (whitelist still errors later)',
+    AnnotationRules::canonicalAlgorithm('bogus') === 'bogus');
+check('non-string is returned unchanged', AnnotationRules::canonicalAlgorithm(null) === null);
+// end-to-end through the annotation parser
+check('bare-tag shorthand parses to the canonical rule',
+    AnnotationRules::parseField('@UVALIDATE=3736') === ['algorithm' => 'iso7064_mod37_36']);
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"mod97_10"}');
+check('json shorthand is canonicalized', !isset($r['error']) && $r['algorithm'] === 'iso7064_mod97_10');
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"regex","pattern":"FC[0-9]{4}"}');
+check('regex shorthand + pattern behaves like algorithm none',
+    !isset($r['error']) && $r['algorithm'] === 'none' && $r['idPattern'] === 'FC[0-9]{4}');
+$r = AnnotationRules::parseField('@UVALIDATE=regex');
+check('bare regex shorthand without a pattern is still rejected', isset($r['error']));
+// maintenance guard: no shorthand may collide with a canonical name or another shorthand
+$seenSyn = [];
+$synCollision = false;
+foreach (AnnotationRules::ALGORITHM_SYNONYMS as $canon => $syns) {
+    if (!in_array($canon, AnnotationRules::ALGORITHMS, true)) $synCollision = true; // maps to a real algorithm
+    foreach ($syns as $s) {
+        if ($s !== strtolower($s)) $synCollision = true;                             // must be stored lowercase
+        if (in_array($s, AnnotationRules::ALGORITHMS, true)) $synCollision = true;   // clashes a canonical name
+        if (isset($seenSyn[$s])) $synCollision = true;                               // duplicate shorthand
+        $seenSyn[$s] = $canon;
+    }
+}
+check('no shorthand collides with a canonical name or another shorthand', !$synCollision);
+
 // ---- checkFragment: the one semantic validator shared by all channels ----
 function fragErrors($frag) { return AnnotationRules::checkFragment($frag); }
 check('sound single fragment -> no errors', fragErrors(['algorithm' => 'damm']) === []);
