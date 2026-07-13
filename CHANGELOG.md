@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.7.1 — post-review corrections for the weighted-modulus family
+
+Closes every finding from the 2026-07-13 multi-agent adversarial review of
+0.7.0 (7 dimensions, each finding independently refutation-tested by executing
+all four runtimes). No engine math changed; the review confirmed 0 blockers.
+
+- **Docs — `weighted_mod11` detection claim scoped honestly.** The linear
+  ISBN-10 weighting puts weight 11 ≡ 0 (mod 11) on the 10th-from-right digit,
+  so a substitution there is invisible for payloads of 10+ digits. The blanket
+  "catches every single-digit error" claims in the README, the engine module
+  docstring, and the 0.7.0 entry's "detection-equivalent to `iso7064_mod11_2`"
+  wording are all corrected to state the ≤9-digit boundary; the
+  `WeightedModulus` docstring now documents the blind positions explicitly.
+- **Dropdown help states the domain.** The `weighted_mod11` choice now says
+  "full strength only up to 9 digits — prefer Mod 11,2 for longer IDs" and the
+  `mrz_mod10` choice says "digits ONLY … not for letter-bearing MRZ fields",
+  closing the two label-clarity findings.
+- **Fixture now locks the weighted validate/append path.** The cross-runtime
+  contract gains all four weighted schemes through their real `digits_only`
+  config plus a dedicated `weighted_mod11` `X`-check-tail group (valid mint,
+  revalidate, and a hand-tampered `TBX-00007X` that must fail), so the
+  peel-check-then-extract-source order can no longer drift in any single
+  runtime unnoticed. 918 rows total (332 scheme_ops, up from 219); the same
+  rows now also run under Excel/VBA (879 assertions) and the playground
+  self-test (1592 checks), whose embedded fixture copy was refreshed.
+- **New `tests/explain_js.cjs` (wired into CI).** Asserts
+  `explain(payload).check === compute(payload)` for every fixture row, porting
+  the playground's explain-vs-compute guard so the vendored derivation tracer
+  cannot silently drift from the verified engine.
+- **`js/engine.js` header catalog completed.** The four weighted schemes are
+  documented in the in-file algorithm reference (they were present in the
+  engine and the upstream snippet catalog but missing from this file's
+  header), each with the "digit-only — use source digits_only for
+  letter-bearing IDs" note.
+- Studio (sibling repo): the four new preset example strings are recomputed
+  over the same `00239` base every other preset uses, matching what the
+  generator actually mints.
+
 ## 0.7.0 — four widely-used weighted-modulus check schemes
 
 Adds four digit-only check-character methods so the validator can mint and verify
@@ -10,12 +48,14 @@ IDs that use the check schemes already embedded in common external identifiers:
 - **`mrz_mod10`** — ICAO 9303 machine-readable-zone Mod-10 (weights 7,3,1, no complement).
 - **`weighted_mod11`** — ISBN-10 weighted Mod-11 (may emit `X`).
 
-Each catches every single-digit error; the three Mod-10 schemes miss adjacent
-swaps of digits differing by 5, and `weighted_mod11` is length-safe only up to 9
-digits (for longer numbers prefer Mod 11,2 or Mod 97,10, which stay strong at any
-length). `weighted_mod11` is detection-equivalent to the existing
-`iso7064_mod11_2`; it is provided for compatibility with externally-minted
-ISBN-style IDs, not for extra strength.
+The three Mod-10 schemes catch every single-digit error at any length but miss
+adjacent swaps of digits differing by 5. `weighted_mod11` matches
+`iso7064_mod11_2`'s detection only up to 9 digits, the ISBN-10 domain — at 10+
+digits the position carrying weight 11 goes blind to substitutions (prefer Mod
+11,2 or Mod 97,10 for longer numbers, which stay strong at any length). It is
+provided for compatibility with externally-minted ISBN-style IDs, not for extra
+strength. *(Wording corrected in 0.7.1: this entry originally called it
+"detection-equivalent", which holds only for payloads up to 9 digits.)*
 
 - One data-driven engine: a single `WeightedModulus` primitive parameterised by a
   `WEIGHTED_SCHEMES` table (weights, modulus, direction, complement, alphabet) in

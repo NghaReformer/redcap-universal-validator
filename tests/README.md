@@ -34,8 +34,11 @@ path is verified, not only the primitive:
 - `scheme_ops` — `append` and `validate` over the full pipeline (normalize →
   source → compute → compare), i.e. what the module runs at save time.
 
-805 rows total. To refresh after an engine change, regenerate it in
-`qrcode_generation` and copy it here — see [`../js/README.md`](../js/README.md).
+918 rows total (the `scheme_ops` section covers every weighted scheme through
+its real `digits_only` config and a `weighted_mod11` `X` check tail, locking
+the peel-check-then-extract-source order across runtimes). To refresh after an
+engine change, regenerate it in `qrcode_generation` and copy it here — see
+[`../js/README.md`](../js/README.md).
 
 `algorithm_coverage_js.cjs` / `algorithm_coverage_php.php` are a separate
 completeness guard: they assert the algorithm-name set is identical across the

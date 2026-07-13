@@ -98,6 +98,23 @@
    luhn               Luhn / Mod 10 (credit-card style) - digits only, one
                       check digit. WEAKEST of the set: cannot catch the 09<->90
                       adjacent swap. Provided for compatibility only.
+   gs1_mod10          GS1 Mod 10 - digits only, one check digit; weights 3,1
+                      from the right (GTIN/EAN/UPC, GLN, SSCC, carrier tracking).
+                      Catches all single-digit typos; misses adjacent swaps of
+                      digits that differ by 5. For IDs that also contain
+                      letters, set source to digits_only.
+   aba_mod10          US ABA routing Mod 10 - digits only, one check digit;
+                      weights 3,7,1 from the left. Catches all single-digit
+                      typos; misses differ-by-5 adjacent swaps. Digit-only:
+                      use source digits_only for letter-bearing IDs.
+   mrz_mod10          ICAO 9303 MRZ Mod 10 - digits only, one check digit;
+                      weights 7,3,1 from the left, no complement. Catches all
+                      single-digit typos; misses differ-by-5 adjacent swaps.
+                      Digit-only: use source digits_only for letter-bearing IDs.
+   weighted_mod11     Weighted Mod 11 (ISBN-10 style) - digits only, one check
+                      char that can be "X". For IDs up to 9 digits catches all
+                      single typos and adjacent swaps; longer IDs develop a blind
+                      spot, so prefer iso7064_mod11_2 (length-safe) for new work.
    none               No check character - every value passes (legacy projects
                       minted without a check char). Provides no protection.
 --------------------------------------------------------------------------- */

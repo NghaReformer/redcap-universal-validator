@@ -6264,6 +6264,2153 @@
    "result": true
   },
   {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002394"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TBABC-002394",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TBAZC002394",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC000017"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0ABC000017",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0AZC000017",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-00014"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "FC1-00014",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "FC101014",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002394"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "tbabc 002394",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TBABC012394",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–00017"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "VLB–00017",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "VLB10017",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00021"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "ZRC1/00021",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "ZRZ100021",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD123457"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0ABCD123457",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "0ABCD123057",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002394"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TB_ABC_002394",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "TBAZC002394",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017771"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "9CTR-017771",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "gs1_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "gs1_mod10|digits_only|append",
+   "id": "9ZTR017771",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TBABC-002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TBABC000396",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC000019"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABC000019",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABZ000019",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-00010"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "FC1-00010",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "FC110010",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "tbabc 002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TBABZ002396",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–00017"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "VLB–00017",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "ZLB00017",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00023"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "ZRC1/00023",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "YRC100023",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD123459"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABCD123459",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "0ABCD023459",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002396"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TB_ABC_002396",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "TBABC002096",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017775"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "9CTR-017775",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "aba_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "aba_mod10|digits_only|append",
+   "id": "9CTR017075",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002390"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TBABC-002390",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TBABZ002390",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC000011"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABC000011",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABC001011",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-00010"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "FC1-00010",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "FC100000",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002390"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "tbabc 002390",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TBABZ002390",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–00017"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "VLB–00017",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "VLB01017",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00023"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "ZRC1/00023",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "ZZC100023",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD123453"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABCD123453",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "0ABCD123053",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002390"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TB_ABC_002390",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "TBABC102390",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017771"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "9CTR-017771",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "mrz_mod10",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "mrz_mod10|digits_only|append",
+   "id": "9CTR007771",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TBABC-00239",
+   "result": "TBABC-002399"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TBABC-002399",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TBABZ002399",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0ABC00001",
+   "result": "0ABC000019"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0ABC000019",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0ABC000009",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "FC1-0001",
+   "result": "FC1-00013"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "FC1-00013",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "FC101013",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "tbabc 00239",
+   "result": "tbabc 002399"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "tbabc 002399",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TBABC002099",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "VLB–0001",
+   "result": "VLB–00019"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "VLB–00019",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "VLB10019",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "ZRC1/0002",
+   "result": "ZRC1/00021"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "ZRC1/00021",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "ZRC000021",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0ABCD12345",
+   "result": "0ABCD123455"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0ABCD123455",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "0AZCD123455",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TB_ABC_00239",
+   "result": "TB_ABC_002399"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TB_ABC_002399",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "TZABC002399",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "9CTR-01777",
+   "result": "9CTR-017771"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "9CTR-017771",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|digits_only|append",
+   "id": "9CTR017071",
+   "result": false
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|x_tail",
+   "id": "TBX-00006",
+   "result": "TBX-00006X"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|x_tail",
+   "id": "TBX-00006X",
+   "result": true
+  },
+  {
+   "op": "append",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|x_tail",
+   "id": "SITE-00017",
+   "result": "SITE-000175"
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|x_tail",
+   "id": "SITE-000175",
+   "result": true
+  },
+  {
+   "op": "validate",
+   "config": {
+    "algorithm": "weighted_mod11",
+    "source": "digits_only",
+    "placement": "append",
+    "delimiter": "-",
+    "enabled": true,
+    "normalize_rules": {
+     "strip_delimiters": "-/ _|\\",
+     "uppercase": true,
+     "unify_unicode_dashes": true,
+     "keep_only": null
+    }
+   },
+   "tag": "weighted_mod11|x_tail",
+   "id": "TBX-00007X",
+   "result": false
+  },
+  {
    "op": "validate",
    "config": {
     "algorithm": "aba_mod10",
@@ -6374,7 +8521,7 @@
     }
    },
    "tag": "gs1_mod10",
-   "id": "12345070",
+   "id": "02345670",
    "result": false
   },
   {
@@ -6412,7 +8559,7 @@
     }
    },
    "tag": "iso7064_letters1",
-   "id": "0AZCD12345N",
+   "id": "1ABCD12345N",
    "result": false
   },
   {
@@ -6450,7 +8597,7 @@
     }
    },
    "tag": "iso7064_letters2",
-   "id": "0ABCD12305DC",
+   "id": "0ABCD02345DC",
    "result": false
   },
   {
@@ -6488,7 +8635,7 @@
     }
    },
    "tag": "iso7064_mod11_10",
-   "id": "12305672",
+   "id": "02345672",
    "result": false
   },
   {
@@ -6526,7 +8673,7 @@
     }
    },
    "tag": "iso7064_mod11_2",
-   "id": "12305672",
+   "id": "02345672",
    "result": false
   },
   {
@@ -6564,7 +8711,7 @@
     }
    },
    "tag": "iso7064_mod37_2",
-   "id": "0AZCD12345H",
+   "id": "0ABZD12345H",
    "result": false
   },
   {
@@ -6602,7 +8749,7 @@
     }
    },
    "tag": "iso7064_mod37_36",
-   "id": "0ABCD12305K",
+   "id": "0ABCD10345K",
    "result": false
   },
   {
@@ -6640,7 +8787,7 @@
     }
    },
    "tag": "iso7064_mod97_10",
-   "id": "103456751",
+   "id": "123456051",
    "result": false
   },
   {
@@ -6678,7 +8825,7 @@
     }
    },
    "tag": "luhn",
-   "id": "12345074",
+   "id": "12340674",
    "result": false
   },
   {
@@ -6754,7 +8901,7 @@
     }
    },
    "tag": "verhoeff",
-   "id": "12345609",
+   "id": "12045679",
    "result": false
   },
   {
@@ -6792,7 +8939,7 @@
     }
    },
    "tag": "weighted_mod11",
-   "id": "12305679",
+   "id": "10345679",
    "result": false
   },
   {

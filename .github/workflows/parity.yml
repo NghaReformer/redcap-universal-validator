@@ -35,6 +35,8 @@ jobs:
         run: node tests/a11y_dom_js.cjs
       - name: Algorithm set is complete (fixture == JS registry == dropdown)
         run: node tests/algorithm_coverage_js.cjs
+      - name: Derivation tracers match compute() on every fixture row
+        run: node tests/explain_js.cjs
 
   php-parity:
     runs-on: ubuntu-latest

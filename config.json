@@ -94,8 +94,8 @@
             { "value": "luhn", "name": "Luhn — digits, 1 char (weakest; compatibility only)" },
             { "value": "gs1_mod10", "name": "GS1 Mod-10 — digits, 1 char (GTIN/EAN/UPC style)" },
             { "value": "aba_mod10", "name": "ABA Mod-10 — digits, 1 char (US routing style)" },
-            { "value": "mrz_mod10", "name": "ICAO MRZ Mod-10 — digits, 1 char (passport MRZ style)" },
-            { "value": "weighted_mod11", "name": "Weighted Mod-11 — digits, 1 char incl. X (ISBN-10 style)" },
+            { "value": "mrz_mod10", "name": "ICAO MRZ Mod-10 — digits ONLY, 1 char (7,3,1 passport scheme; not for letter-bearing MRZ fields)" },
+            { "value": "weighted_mod11", "name": "Weighted Mod-11 — digits, 1 char incl. X (ISBN-10 style; full strength only up to 9 digits — prefer Mod 11,2 for longer IDs)" },
             { "value": "none", "name": "No check character — format/regex only" }
           ]
         },

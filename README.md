@@ -123,10 +123,12 @@ schemes (GS1 Mod-10, ABA Mod-10, ICAO MRZ Mod-10, and ISBN-10 weighted Mod-11),
 and "none" (format/regex only). The method must match how the IDs were minted.
 
 The four weighted-modulus schemes run over a digit payload and each add one
-check character (`weighted_mod11` may emit `X`). They catch every single-digit
-error; the Mod-10 three miss adjacent swaps of digits differing by 5, and
-`weighted_mod11` is length-safe only up to 9 digits — for longer numbers prefer
-Mod 11,2 or Mod 97,10.
+check character (`weighted_mod11` may emit `X`). The three Mod-10 schemes catch
+every single-digit error at any length but miss adjacent swaps of digits
+differing by 5. `weighted_mod11` catches every single-digit error and every
+adjacent swap only up to 9 digits (the ISBN-10 domain): at 10+ digits the
+position carrying weight 11 goes blind to substitutions, so prefer Mod 11,2 or
+Mod 97,10 for longer numbers.
 
 ## How it works
 
@@ -150,8 +152,9 @@ check-character primitive, but the full runtime path the module actually uses:
 - `tests/parity_js.cjs` / `tests/parity_php.php` — recompute every fixture row
   across all three sections: `compute` (the primitive, 574 rows across 15
   algorithms), `normalize` (Unicode dash folding / case / strip), and
-  `scheme_ops` (append + validate = normalize → source → compute → compare). 805
-  rows total.
+  `scheme_ops` (append + validate = normalize → source → compute → compare,
+  including every weighted scheme through `digits_only` and a `weighted_mod11`
+  `X` check tail). 918 rows total.
 - `tests/pooled_js.cjs` / `tests/pooled_php.php` — recompute the pooled-field
   parser for every case in `tests/pooled_fixture.json` (frozen from the verified
   browser parser), so the server pooled auditor can never drift from the client.
