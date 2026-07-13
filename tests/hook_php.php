@@ -430,6 +430,36 @@ namespace {
     check('validateSettings rejects lengths beyond the work cap', is_string($msg) && strpos($msg, '64') !== false);
     check('validateSettings ignores non-rule settings shapes', $m->validateSettings(['enabled' => true]) === null);
 
+    // ---- 16b) a settings-DIALOG rule may use an algorithm SHORTHAND ----
+    // settingRowToRule canonicalizes the algorithm (UniversalValidator.php) before
+    // the whitelist check, exactly as the annotation channel does — so "9710"
+    // resolves to iso7064_mod97_10 and the save-time gate accepts it. Without that
+    // canonicalization the gate would reject the shorthand as an unknown algorithm.
+    // (The dialog dropdown stores canonical names, so this guards the hand-edited
+    // setting / future free-text field the code comment promises to support, and
+    // locks the dialog-channel line the shorthand tests otherwise never drive.)
+    $synFlat = [
+        'rules'      => [true],
+        'rule-type'  => ['single'],
+        'fields'     => [['main_id_1']],
+        'fields-csv' => [''],
+        'algorithm'  => ['9710'],            // shorthand for iso7064_mod97_10
+        'source'     => [''],
+        'pattern'    => [''],
+        'strip'      => [''],
+        'keep-chars' => [''],
+        'id-lengths' => [''],
+        'id-min-len' => [''],
+        'id-max-len' => [''],
+        'expected-count' => [''],
+        'block-save' => ['off'],
+    ];
+    check('validateSettings accepts an algorithm shorthand (dialog channel canonicalizes)',
+        $m->validateSettings($synFlat) === null);
+    $synFlat['algorithm'] = ['bogus99'];     // genuinely unknown -> still rejected
+    check('validateSettings still rejects a truly unknown algorithm',
+        is_string($m->validateSettings($synFlat)));
+
     // ---- 17) an @UVALIDATE algorithm shorthand is resolved and audited server-side ----
     // @UVALIDATE=3736 must behave exactly like the canonical iso7064_mod37_36 on
     // the audit path, and the log must record the canonical name (not "3736").
