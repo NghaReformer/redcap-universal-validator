@@ -16,9 +16,10 @@
  * JSON keys: type ("single"|"pooled"), algorithm, source, pattern, strip,
  * keepChars, idLengths (list or "10, 12"), idMinLen, idMaxLen, expectedIds,
  * blockSave ("off"|"confirm"|"hard"), when (a REDCap-style condition — the
- * rule validates only while it is true, see php/Logic.php), note. A malformed
- * value becomes a visible per-field configuration error — never a silently
- * skipped rule.
+ * rule validates only while it is true, see php/Logic.php), suggestFix
+ * (boolean; opt IN to the "should end in X" check-character hint), note. A
+ * malformed value becomes a visible per-field configuration error — never a
+ * silently skipped rule.
  *
  * Pure static class with no REDCap dependency, unit-tested by
  * tests/annotation_php.php; UniversalValidator::getAnnotationRules() is the thin
@@ -73,7 +74,8 @@ class AnnotationRules
 
     /** Keys accepted in the JSON form ("pattern" maps to the engine's idPattern). */
     const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'strip', 'keepChars',
-                       'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'when', 'note'];
+                       'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'when',
+                       'suggestFix', 'note'];
 
     /**
      * Resolve a user-typed algorithm shorthand to its canonical name.
@@ -98,26 +100,57 @@ class AnnotationRules
     }
 
     /**
-     * Extract the raw @UVALIDATE value from an annotation string.
+     * Extract the raw value of the FIRST @UVALIDATE tag (compatibility form).
      * Returns null when the tag is absent, '' for the bare tag, otherwise the
      * value text (bare token, 'quoted', "quoted", or a brace-balanced {...}).
      */
     public static function extractTag($annotation)
     {
+        $tags = self::extractTags($annotation);
+        return $tags ? $tags[0] : null;
+    }
+
+    /**
+     * Extract EVERY real @UVALIDATE tag value from an annotation, in order —
+     * one field may carry several tags since 0.9.0 (branched validation: each
+     * tag becomes its own rule, and Branching::resolve() turns the sharing
+     * into a per-field branch rule or a config error). Returns [] when no tag
+     * is present; a bare tag contributes ''.
+     */
+    public static function extractTags($annotation)
+    {
         $ann = (string) $annotation;
-        $pos = stripos($ann, self::TAG);
-        while ($pos !== false) {
+        $len = strlen($ann);
+        $out = [];
+        $offset = 0;
+        while ($offset < $len) {
+            $pos = stripos($ann, self::TAG, $offset);
+            while ($pos !== false) {
+                $after = $pos + strlen(self::TAG);
+                $ch = $after < $len ? $ann[$after] : '';
+                // a real tag ends at '=', whitespace, or end-of-string;
+                // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
+                if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
+                $pos = stripos($ann, self::TAG, $after);
+            }
+            if ($pos === false) break;
             $after = $pos + strlen(self::TAG);
-            $ch = $after < strlen($ann) ? $ann[$after] : '';
-            // a real tag ends at '=', whitespace, or end-of-string;
-            // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
-            if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
-            $pos = stripos($ann, self::TAG, $after);
+            if ($after >= $len || $ann[$after] !== '=') {
+                $out[] = '';
+                $offset = $after;
+                continue;
+            }
+            $val = self::readValue(substr($ann, $after + 1));
+            $out[] = $val;
+            // Advance PAST the consumed value so tag-like text inside a value
+            // (e.g. a pattern containing "@UVALIDATE") is never re-read as a
+            // second tag. Quoted values also consumed their two quote marks.
+            $consumed = strlen($val);
+            $first = $after + 1 < $len ? $ann[$after + 1] : '';
+            if ($first === '"' || $first === "'") $consumed += 2;
+            $offset = $after + 1 + $consumed;
         }
-        if ($pos === false) return null;
-        $after = $pos + strlen(self::TAG);
-        if ($after >= strlen($ann) || $ann[$after] !== '=') return '';
-        return self::readValue(substr($ann, $after + 1));
+        return $out;
     }
 
     /** Read one tag value: {json} (brace-balanced), quoted token, or bare token. */
@@ -156,12 +189,31 @@ class AnnotationRules
     /**
      * Parse one field's annotation into a rule fragment (engine keys, without
      * 'fields'): [] means "all defaults", ['error' => msg] a visible config
-     * error, null an untagged field.
+     * error, null an untagged field. Compatibility form — reads the FIRST tag.
      */
     public static function parseField($annotation)
     {
-        $val = self::extractTag($annotation);
-        if ($val === null) return null;
+        $all = self::parseFieldAll($annotation);
+        return $all === null ? null : $all[0];
+    }
+
+    /**
+     * Parse EVERY @UVALIDATE tag of one field's annotation: null for an
+     * untagged field, otherwise a list of fragments (each [] | ['error'=>...]
+     * | engine-key config), one per tag, in annotation order.
+     */
+    public static function parseFieldAll($annotation)
+    {
+        $tags = self::extractTags($annotation);
+        if (!$tags) return null;
+        $out = [];
+        foreach ($tags as $val) $out[] = self::parseValue($val);
+        return $out;
+    }
+
+    /** Parse one raw tag value into a fragment (see parseField). */
+    private static function parseValue($val)
+    {
         $val = trim($val);
         if ($val === '') return [];
         if ($val[0] !== '{') {
@@ -216,6 +268,15 @@ class AnnotationRules
                 return ['error' => '"pattern" must be a non-empty regex string.'];
             }
             $out['idPattern'] = $cfg['pattern'];
+        }
+
+        if (isset($cfg['suggestFix'])) {
+            // Strict boolean: "true"/1 would hide a typo'd intent, and the
+            // check-character hint is deliberately opt-in (see README).
+            if (!is_bool($cfg['suggestFix'])) {
+                return ['error' => '"suggestFix" must be true or false (unquoted).'];
+            }
+            $out['suggestFix'] = $cfg['suggestFix'];
         }
 
         foreach (['strip', 'keepChars', 'when', 'note'] as $k) {
@@ -398,35 +459,53 @@ class AnnotationRules
     }
 
     /**
-     * Group per-field fragments (field => fragment from parseField) into engine
-     * rules: fields with identical configs share one rule, so 50 tagged fields
-     * with the same tag produce one rule with 50 fields, not 50 rules. Error
-     * fragments become per-field config-error rules so the message shows exactly
-     * on the mis-tagged field.
+     * Group per-field fragments (field => ONE fragment) into engine rules —
+     * compatibility form over groupMulti().
      */
     public static function group(array $perField)
     {
+        $wrapped = [];
+        foreach ($perField as $field => $frag) $wrapped[$field] = [$frag];
+        return self::groupMulti($wrapped);
+    }
+
+    /**
+     * Group per-field fragment LISTS (field => [fragments] from parseFieldAll)
+     * into engine rules: fragments with identical configs share one rule, so
+     * 50 tagged fields with the same tag produce one rule with 50 fields, not
+     * 50 rules. Error fragments become per-field config-error rules so the
+     * message shows exactly on the mis-tagged field. A field carrying several
+     * DIFFERENT tags contributes to several rules — Branching::resolve() then
+     * turns that sharing into a branch rule (or a config error when illegal).
+     * Two byte-identical tags on one field collapse into a single claim.
+     */
+    public static function groupMulti(array $perField)
+    {
         $rules = [];
         $byKey = [];
-        foreach ($perField as $field => $frag) {
-            if (isset($frag['error'])) {
-                $rules[] = [
-                    'type' => 'single', 'fields' => [$field],
-                    'configError' => self::TAG . ' on "' . $field . '": ' . $frag['error'],
-                ];
-                continue;
+        foreach ($perField as $field => $frags) {
+            foreach ($frags as $frag) {
+                if (isset($frag['error'])) {
+                    $rules[] = [
+                        'type' => 'single', 'fields' => [$field],
+                        'configError' => self::TAG . ' on "' . $field . '": ' . $frag['error'],
+                    ];
+                    continue;
+                }
+                $canon = $frag;
+                ksort($canon);
+                $key = json_encode($canon);
+                if (!isset($byKey[$key])) {
+                    $rule = $frag;
+                    $rule['type'] = $frag['type'] ?? 'single';
+                    $rule['fields'] = [];
+                    $byKey[$key] = count($rules);
+                    $rules[] = $rule;
+                }
+                if (!in_array($field, $rules[$byKey[$key]]['fields'], true)) {
+                    $rules[$byKey[$key]]['fields'][] = $field;
+                }
             }
-            $canon = $frag;
-            ksort($canon);
-            $key = json_encode($canon);
-            if (!isset($byKey[$key])) {
-                $rule = $frag;
-                $rule['type'] = $frag['type'] ?? 'single';
-                $rule['fields'] = [];
-                $byKey[$key] = count($rules);
-                $rules[] = $rule;
-            }
-            $rules[$byKey[$key]]['fields'][] = $field;
         }
         return $rules;
     }

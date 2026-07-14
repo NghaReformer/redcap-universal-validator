@@ -55,19 +55,23 @@ dictionary once.
 ```
 
 JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
-`idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`, `note`.
-Use double quotes inside the JSON. A malformed tag (typo'd key, unknown
-algorithm, bad JSON) — or a tag on a non-Text/Notes field — shows a configuration
-error in a notice at the top of the form. Fields with identical tags are grouped
-into one rule automatically. Tags work on Text and Notes fields.
+`idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
+`suggestFix`, `note`. Use double quotes inside the JSON. A malformed tag
+(typo'd key, unknown algorithm, bad JSON) — or a tag on a non-Text/Notes field
+— shows a configuration error in a notice at the top of the form. Fields with
+identical tags are grouped into one rule automatically. Tags work on Text and
+Notes fields.
 
 The optional `when` key makes a rule conditional — it validates only while a
 REDCap-style condition is true, e.g.
 `@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}`. The
 Configure dialog offers the same thing as an "Only validate when" box per rule.
-See the README's "Conditional validation" section for the supported syntax and
-the exact semantics (a false condition skips the rule; it does NOT erase the
-value).
+One field may carry SEVERAL tags (or be covered by several dialog rules) when
+each has a different condition, plus at most one without as the fallback —
+branched validation. `suggestFix` (default false) opts in to the "should end
+in X" check-character hint. See the README's "Conditional validation" and
+"Branched validation" sections for the supported syntax and exact semantics
+(a false condition skips the rule; it does NOT erase the value).
 
 The `algorithm` value accepts case-insensitive shorthands so you need not type
 the full name: `3736` (or `37,36`, `mod37_36`) → `iso7064_mod37_36`, `9710` →

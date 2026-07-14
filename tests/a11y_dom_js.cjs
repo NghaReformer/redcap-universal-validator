@@ -95,6 +95,8 @@ function makeEl(tag) {
   input.fire('change');
   check('invalid final value sets aria-invalid=true', input.getAttribute('aria-invalid') === 'true');
   check('message shows a check-character error', /check character/i.test(msg.innerHTML));
+  check('no "should end in" hint by default (suggestFix is opt-in)',
+    !/should end in/i.test(msg.innerHTML));
 
   // mint a valid ID with the engine itself -> announced as valid
   const MINT = NS.engine.makeScheme({ algorithm: 'iso7064_mod37_36', source: 'normalized_id',
@@ -157,6 +159,39 @@ function makeEl(tag) {
       const NS2 = win2.INSPIREUniversalValidator;
       check('readonly field still gets its message region', holder2.children.length === 2);
       check('readonly field never arms the save blocker (UX-003)', NS2.guard.items.length === 0);
+    }
+
+    // ---- 2b) suggestFix opt-in restores the check-character hint ----
+    {
+      const enginePathS = path.join(__dirname, '..', 'js', 'engine.js');
+      delete require.cache[require.resolve(enginePathS)];
+      const allElsS = [];
+      const bodyS = makeEl('body');
+      const inpS = makeEl('input'); inpS.name = 'hint_id'; inpS.value = '0ABC00001X';
+      const holderS = makeEl('div'); holderS.appendChild(inpS); bodyS.appendChild(holderS);
+      allElsS.push(inpS, holderS);
+      const docS = {
+        body: bodyS, readyState: 'complete', _handlers: {},
+        createElement(t) { const e = makeEl(t); allElsS.push(e); return e; },
+        getElementById(id) { return allElsS.find((e) => e.id === id) || null; },
+        getElementsByName(name) { return allElsS.filter((e) => e.name === name); },
+        querySelector() { return null; },
+        addEventListener(type, fn) { (this._handlers[type] = this._handlers[type] || []).push(fn); },
+        fire() {},
+      };
+      const winS = {
+        alert() {}, confirm() { return true; },
+        INSPIRE_VALIDATOR_CONFIG: {
+          singleFields: [], pooledFields: [],
+          rules: [{ type: 'single', fields: ['hint_id'], algorithm: 'iso7064_mod37_36',
+                    source: 'normalized_id', suggestFix: true }],
+        },
+      };
+      global.document = docS; global.window = winS;
+      require(enginePathS);
+      const msgS = holderS.children[1];
+      check('suggestFix:true shows the "should end in" hint', /should end in/i.test(msgS.innerHTML));
+      check('the hint names one expected character in bold', /<b[^>]*>[0-9A-Z]<\/b>/.test(msgS.innerHTML));
     }
 
     // ---- 3) survey context mutes technical configuration detail ----

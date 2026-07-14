@@ -100,6 +100,32 @@ after switching), it only leaves the messages untranslated.
       `(code)`, an unknown checkbox code.
 - [ ] Survey page: the same condition gates the same way for respondents.
 
+## Branched validation (several rules on one field)
+
+- [ ] Two dialog rules on ONE field with mutually exclusive conditions
+      (`[stype]='1'` / `[stype]='2'`): flipping the dropdown switches which
+      validation applies, live, message and all.
+- [ ] Same via two `@UVALIDATE` tags in one Action Tags box.
+- [ ] A when-less rule alongside a conditional one acts as the "otherwise"
+      branch: it validates exactly when the condition is false.
+- [ ] Per-branch enforcement: a *Compulsory* branch blocks the save only while
+      ITS condition is true; with the informational branch active the same
+      invalid value saves (and is logged by the audit under that branch's
+      method).
+- [ ] Overlapping conditions engineered to be true at once: the field shows the
+      "Validation conflict" notice naming both conditions, the save is NOT
+      blocked, and a `uvalidate-unconfigurable` entry (branch conflict) appears
+      in the module log.
+- [ ] Illegal sharing is rejected at save time in the Configure dialog: two
+      when-less rules on one field / identical conditions / single+pooled mix.
+- [ ] A dialog rule and an @UVALIDATE tag sharing one field (different
+      conditions) work as branches together.
+- [ ] The "should end in X" hint is ABSENT by default on a check-character
+      error, and appears only for a rule with the suggest checkbox / 
+      `"suggestFix":true` enabled.
+- [ ] Pooled chips: an invalid member and leftover junk are RED (✗ / ?), a
+      repeat-scanned valid ID is AMBER with "(again!)".
+
 ## Data-entry form (classic project)
 
 - [ ] Type a correct minted ID → green "verified" message.

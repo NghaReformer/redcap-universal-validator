@@ -648,12 +648,12 @@
       }
     } catch(e){
       if (typeof console !== "undefined" && console.error)
-        console.error("Universal Field Validator: could not parse config", e);
+        console.error("Universal Regex & Check-Character Validator: could not parse config", e);
     }
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
       return window.INSPIRE_VALIDATOR_CONFIG;
     return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: true,
+      idPattern: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
       keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
   }
   var QRID_COMBINED_CONFIG = QRID_readConfig();
@@ -1280,7 +1280,7 @@ var QRID_WHEN = (function(){
     if(!r.ok){
       try {
         if(typeof console !== "undefined" && console.error){
-          console.error('Universal Field Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
+          console.error('Universal Regex & Check-Character Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
         }
       } catch(e){}
       return { active: function(){ return false; }, onChange: function(){} };
@@ -1326,7 +1326,11 @@ function QRID_registerBlocker(input, fieldName, blockMode){
     /* the click guard runs before the programmatic submit it triggers; a
        user who already chose "Save anyway" must not be asked twice */
     if(UV_guard.passUntil && new Date().getTime() < UV_guard.passUntil) return;
-    var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid; });
+    /* Branch rules overwrite __qridBlockMode per check with the ACTIVE
+       branch's mode, which may be "off" — such a field never holds the save.
+       (Pre-0.9.0 configs never register "off" items, so this filter is a
+       no-op for them.) */
+    var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
     if(!bad.length) return;
     var names = bad.map(function(el){ return el.__qridFieldLabel || el.__qridFieldName; }).join(", ");
     var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
@@ -1424,7 +1428,7 @@ function QRID_configErrorNotice(message){
     box.id = "uvalidate-config-errors";
     box.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:4px;font-family:inherit;" +
       "font-size:13px;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828;";
-    box.innerHTML = "<b>&#9888; Universal Field Validator — configuration error(s):</b>";
+    box.innerHTML = "<b>&#9888; Universal Regex & Check-Character Validator — configuration error(s):</b>";
     var host = document.getElementById("form") || document.querySelector("form");
     if(host && host.parentNode) host.parentNode.insertBefore(box, host);
     else document.body.insertBefore(box, document.body.firstChild);
@@ -1438,18 +1442,90 @@ function QRID_configErrorNotice(message){
   box.appendChild(line);
 }
 /* ---- single-field validator (factory: one instance per config/rule) ---- */
+/* ---- branched validation: shared variant plumbing (module feature) ---------
+   A rule may arrive as a per-field BRANCH rule ({fields:[f], branches:[...]})
+   built by php/Branching.php — several conditional rules sharing one field.
+   Each branch is built into a VARIANT by the factory's makeVariant() (the
+   whole mode-resolution + verdict closure, verbatim); a plain rule is exactly
+   one variant, so the legacy path is byte-identical. Runtime semantics are
+   specified normatively in php/Branching.php: one active variant validates;
+   none -> the else variant if present, otherwise inert; more than one -> a
+   conflict (a configuration problem — shown, never blocking, never guessed).
+   tests/branch_dom_js.cjs locks the client side of the same scenario table
+   tests/branching_php.php and tests/hook_php.php lock server-side. */
+function QRID_buildVariants(cfg, makeVariant){
+  var variants = [], elseVariant = null;
+  if(cfg.branches && cfg.branches.length){
+    for(var i = 0; i < cfg.branches.length; i++){
+      var v = makeVariant(cfg.branches[i]);
+      if(v.when === null) elseVariant = v;
+      else variants.push(v);
+    }
+  } else {
+    variants = [makeVariant(cfg)];
+  }
+  var all = elseVariant ? variants.concat([elseVariant]) : variants;
+  var configError = "";
+  for(var c = 0; c < all.length; c++){
+    if(all[c].configError){ configError = all[c].configError; break; }
+  }
+  var firstBlock = "off";
+  for(var b = 0; b < all.length; b++){
+    if(all[b].blockSave !== "off"){ firstBlock = all[b].blockSave; break; }
+  }
+  return { variants: variants, elseVariant: elseVariant, all: all,
+           configError: configError, firstBlock: firstBlock };
+}
+/* The variants whose gate is true right now; the else variant only when no
+   conditional one is active. A gate-less variant (legacy rule without "when")
+   is always active. */
+function QRID_activeVariants(vs){
+  var act = [];
+  for(var i = 0; i < vs.variants.length; i++){
+    var g = vs.variants[i].gate;
+    if(!g || g.active()) act.push(vs.variants[i]);
+  }
+  if(!act.length && vs.elseVariant) act = [vs.elseVariant];
+  return act;
+}
+/* More than one branch condition is true at once: a configuration problem,
+   not a data problem — show it (generic on surveys), validate nothing, and
+   NEVER hold the save (the server audit logs the same conflict). */
+function QRID_renderConflict(msg, input, act){
+  msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
+  msg.innerHTML = QRID_IS_SURVEY
+    ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
+    : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
+      QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
+      '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
+  input.style.outline = ""; input.__qridInvalid = false;
+  QRID_setInvalidState(input, null);
+}
 function QRIDSingleInit(QRID_CONFIG){
 
+  function styleMsg(el, kind){   /* kind: true=ok, false=bad, "info"=typing, "err"=config error */
+    var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+          : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
+          : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+
+  /* ---- one validation VARIANT: the whole mode-resolution + verdict closure,
+     built once per rule (legacy) or once per branch (branch rules). ---- */
+  function makeVariant(cfg){
+
   /* ---- resolve the validation mode from the config ---- */
-  var configError = QRID_CONFIG.configErrorOverride || "";
+  var configError = cfg.configErrorOverride || "";
   var CHECK_MODE = false, REGEX_ONLY = false, fullRe = null;
-  var algoName = QRID_CONFIG.algorithm;
+  var algoName = cfg.algorithm;
   if(!configError && algoName !== "none" && !Q.ALGORITHMS[algoName]){
     configError = "Unknown algorithm \"" + algoName + "\". Valid: " +
       Object.keys(Q.ALGORITHMS).join(", ") + ".";
   }
-  if(!configError && QRID_CONFIG.idPattern){
-    var rawPatS = String(QRID_CONFIG.idPattern);
+  if(!configError && cfg.idPattern){
+    var rawPatS = String(cfg.idPattern);
     if(/\\[AZ]/.test(rawPatS)){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
@@ -1481,7 +1557,7 @@ function QRIDSingleInit(QRID_CONFIG){
     }
   }
   if(!configError && CHECK_MODE){
-    var srcS = QRID_CONFIG.source || "normalized_id";
+    var srcS = cfg.source || "normalized_id";
     if(srcS !== "normalized_id" && srcS !== "digits_only" && srcS !== "sequence_only"){
       configError = 'Unknown source "' + srcS + '" — use normalized_id, digits_only or sequence_only.';
     }
@@ -1489,9 +1565,9 @@ function QRIDSingleInit(QRID_CONFIG){
   var scheme = CHECK_MODE ? Q.makeScheme({
     /* explicit fallbacks: an absent key must not override makeScheme's
        defaults with undefined (Object.assign copies undefined values) */
-    algorithm: algoName, source: QRID_CONFIG.source || "normalized_id",
+    algorithm: algoName, source: cfg.source || "normalized_id",
     placement: "append", delimiter: "-",
-    normalize_rules: { strip_delimiters: QRID_CONFIG.strip || "", uppercase: true,
+    normalize_rules: { strip_delimiters: cfg.strip || "", uppercase: true,
                        unify_unicode_dashes: true, keep_only: null },
     enabled: true
   }) : null;
@@ -1500,14 +1576,6 @@ function QRIDSingleInit(QRID_CONFIG){
      KEPT — user patterns are written against the printed form (FC1-1001). */
   var REGEX_RULES = { strip_delimiters: "", uppercase: true,
                       unify_unicode_dashes: true, keep_only: null };
-
-  function styleMsg(el, kind){   /* kind: true=ok, false=bad, "info"=typing, "err"=config error */
-    var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
-          : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
-          : "#e0b4b0;background:#fbeceb;color:#c62828";
-    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
-      "font-size:13px;font-family:inherit;border:1px solid " + c;
-  }
 
   /* ---- progressive format guidance ------------------------------------------
      Tokenize a SIMPLE pattern (literals, [classes], \d, {n} {n,} {n,m} ? + )
@@ -1567,7 +1635,7 @@ function QRIDSingleInit(QRID_CONFIG){
     }
     return atoms.length ? atoms : null;
   }
-  var atoms = fullRe ? tokenizePattern(QRID_CONFIG.idPattern) : null;
+  var atoms = fullRe ? tokenizePattern(cfg.idPattern) : null;
   function atomPhrase(count, a){
     return (count > 1 ? count + " x " : "") + a.desc;
   }
@@ -1602,7 +1670,7 @@ function QRIDSingleInit(QRID_CONFIG){
      a re-stamped suggestion would be a perfectly-valid-looking WRONG participant.
      Instead, state conditionally what the final character(s) would be. */
   function suggestion(raw){
-    if(!QRID_CONFIG.suggestFix || QRID_CONFIG.source !== "normalized_id") return "";
+    if(!cfg.suggestFix || cfg.source !== "normalized_id") return "";
     try {
       var norm = Q.normalize(raw, scheme.normalize_rules);
       if(norm.length <= nCheck) return "";
@@ -1658,12 +1726,23 @@ function QRIDSingleInit(QRID_CONFIG){
       "probably a typo or mis-scan. Please re-scan or re-type it." + suggestion(v) };
   }
 
-  var BLOCK = QRID_CONFIG.blockSave || "off";
+  var BLOCK = cfg.blockSave || "off";
   if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
   /* optional "when" condition: null when absent (no behavior change) */
-  var GATE = configError ? null : QRID_WHEN.gateFor(QRID_CONFIG.when);
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when);
+  return { configError: configError, verdict: verdict, gate: GATE, blockSave: BLOCK,
+           when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, guidance: !!atoms } };
+  }
+  /* ---- end makeVariant ---- */
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var IS_BRANCH = !!(QRID_CONFIG.branches && QRID_CONFIG.branches.length);
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
   function attach(fieldName){
     var input = QRID_findField(fieldName);
     if(!input) return false;
@@ -1671,13 +1750,22 @@ function QRIDSingleInit(QRID_CONFIG){
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = QRID_attachMsgRegion(input, fieldName);
     function check(isFinal){
-      if(GATE && !GATE.active()){
-        /* condition false -> the rule is inert here: clear any verdict and
+      /* which variant applies right now? (a legacy rule = one variant whose
+         gate, if any, is its "when"; a branch rule = one per branch) */
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        /* no condition is true -> the field is inert: clear any verdict and
            never hold the save (the submit guard reads only __qridInvalid). */
         msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
         QRID_setInvalidState(input, null);
         return;
       }
+      if(act.length > 1){
+        QRID_renderConflict(msg, input, act);
+        return;
+      }
+      var V = act[0];
+      input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
       var v = (input.value || "").trim();
       if(!v){
         msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
@@ -1692,7 +1780,7 @@ function QRIDSingleInit(QRID_CONFIG){
         QRID_setInvalidState(input, true);
         return;
       }
-      var r = verdict(v, !!isFinal);
+      var r = V.verdict(v, !!isFinal);
       styleMsg(msg, r.ok);
       input.style.outline = (r.ok === true) ? "2px solid #2e9e44"
                           : (r.ok === "info") ? "2px solid #0067c0" : "2px solid #c62828";
@@ -1705,17 +1793,28 @@ function QRIDSingleInit(QRID_CONFIG){
     input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
     input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
     /* a condition flip (true<->false) re-runs the full check for this field */
-    if(GATE) GATE.onChange(function(){ check(true); });
+    for(var gi = 0; gi < VS.variants.length; gi++){
+      if(VS.variants[gi].gate) VS.variants[gi].gate.onChange(function(){ check(true); });
+    }
+    /* register BEFORE the initial check: check() stamps the ACTIVE variant's
+       blockSave on the input, and registration must never clobber it */
+    if(ANY_BLOCK && !configError) QRID_registerBlocker(input, fieldName, VS.firstBlock);
     check(true);
-    if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
   }
   /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
+    if(IS_BRANCH){
+      UV_validators[f] = { type: "single", branch: true,
+        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode, test: V.verdict }; }),
+        active: function(){ return QRID_activeVariants(VS); } };
+      return;
+    }
+    var V0 = VS.all[0];
     UV_validators[f] = { type: "single",
-      mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, configError: configError,
-              guidance: !!atoms, blockSave: BLOCK },
-      test: function(v, isFinal){ return configError ? null : verdict(v, isFinal !== false); } };
+      mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError,
+              guidance: V0.mode.guidance, blockSave: V0.blockSave },
+      test: function(v, isFinal){ return configError ? null : V0.verdict(v, isFinal !== false); } };
   });
   function boot(){
     if(configError){
@@ -1753,16 +1852,20 @@ function QRIDSingleInit(QRID_CONFIG){
 function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
+  /* ---- one validation VARIANT: the whole mode-resolution + parser closure,
+     built once per rule (legacy) or once per branch (branch rules). ---- */
+  function makeVariant(cfg){
+
   /* ---- resolve the validation mode from the config ---- */
-  var configError = QRID_MULTI_CONFIG.configErrorOverride || "";
+  var configError = cfg.configErrorOverride || "";
   var CHECK_MODE = false, REGEX_ONLY = false, fullRe = null;
-  var algoName = QRID_MULTI_CONFIG.algorithm;
+  var algoName = cfg.algorithm;
   if(!configError && algoName !== "none" && !Q.ALGORITHMS[algoName]){
     configError = "Unknown algorithm \"" + algoName + "\". Valid: " +
       Object.keys(Q.ALGORITHMS).join(", ") + ".";
   }
-  if(!configError && QRID_MULTI_CONFIG.idPattern){
-    var rawPatP = String(QRID_MULTI_CONFIG.idPattern);
+  if(!configError && cfg.idPattern){
+    var rawPatP = String(cfg.idPattern);
     if(/\\[AZ]/.test(rawPatP)){
       /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
       configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
@@ -1793,7 +1896,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         "without check characters) set idPattern to your ID regex.";
     }
   }
-  var srcP = QRID_MULTI_CONFIG.source || "normalized_id";
+  var srcP = cfg.source || "normalized_id";
   if(!configError && CHECK_MODE &&
      srcP !== "normalized_id" && srcP !== "digits_only" && srcP !== "sequence_only"){
     configError = 'Unknown source "' + srcP + '" — use normalized_id, digits_only or sequence_only.';
@@ -1801,18 +1904,18 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var scheme = CHECK_MODE ? Q.makeScheme({
     algorithm: algoName, source: srcP,
     placement: "append", delimiter: "-",
-    normalize_rules: { strip_delimiters: QRID_MULTI_CONFIG.strip || "", uppercase: true,
+    normalize_rules: { strip_delimiters: cfg.strip || "", uppercase: true,
                        unify_unicode_dashes: true, keep_only: null },
     enabled: true
   }) : null;
   var nCheck = CHECK_MODE ? Q.ALGORITHMS[algoName].nCheckChars : 0;
   /* ---- validate the length configuration ---- */
   function isPosInt(x){ return typeof x === "number" && isFinite(x) && x > 0 && x % 1 === 0; }
-  var minLen = QRID_MULTI_CONFIG.idMinLen === undefined ? 8 : QRID_MULTI_CONFIG.idMinLen;
-  var maxLen = QRID_MULTI_CONFIG.idMaxLen === undefined ? 14 : QRID_MULTI_CONFIG.idMaxLen;
+  var minLen = cfg.idMinLen === undefined ? 8 : cfg.idMinLen;
+  var maxLen = cfg.idMaxLen === undefined ? 14 : cfg.idMaxLen;
   var LENS = [];
-  if(!configError && QRID_MULTI_CONFIG.idLengths != null){
-    var lensCfg = QRID_MULTI_CONFIG.idLengths;
+  if(!configError && cfg.idLengths != null){
+    var lensCfg = cfg.idLengths;
     if(!(lensCfg instanceof Array) || !lensCfg.length || !lensCfg.every(isPosInt)){
       configError = "idLengths must be a list of positive whole numbers, e.g. [10] — got " +
         JSON.stringify(lensCfg) + ".";
@@ -1852,12 +1955,12 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       for(var _L = minLen; _L <= maxLen; _L++) LENS.push(_L);
     }
   }
-  if(!configError && QRID_MULTI_CONFIG.expectedIds != null
-     && (!isPosInt(QRID_MULTI_CONFIG.expectedIds) || QRID_MULTI_CONFIG.expectedIds > QRID_MAX_EXPECTED)){
+  if(!configError && cfg.expectedIds != null
+     && (!isPosInt(cfg.expectedIds) || cfg.expectedIds > QRID_MAX_EXPECTED)){
     configError = "expectedIds must be a positive whole number up to " + QRID_MAX_EXPECTED + ".";
   }
-  if(!configError && QRID_MULTI_CONFIG.keepChars){
-    var keepCfg = String(QRID_MULTI_CONFIG.keepChars);
+  if(!configError && cfg.keepChars){
+    var keepCfg = String(cfg.keepChars);
     if(keepCfg.length > QRID_MAX_KEEP){
       configError = "keepChars is limited to " + QRID_MAX_KEEP + " characters.";
     } else if(/[^\x20-\x7E]/.test(keepCfg)){
@@ -1872,14 +1975,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      Also automatically kept: the check algorithm's special characters (e.g. the
      "*" that iso7064_mod37_2 can emit) and any literal separator the ID regex
      itself uses (-, /, _, ...), so the printed form still matches. */
-  var KEEP = ALPHA + (QRID_MULTI_CONFIG.keepChars || "");
+  var KEEP = ALPHA + (cfg.keepChars || "");
   if(CHECK_MODE){
     var CA = Q.ALGORITHMS[algoName].checkAlphabet || "";
     for(var _c = 0; _c < CA.length; _c++)
       if(KEEP.indexOf(CA.charAt(_c)) < 0) KEEP += CA.charAt(_c);
   }
   if(fullRe){
-    var _pat = String(QRID_MULTI_CONFIG.idPattern), _meta = "\\^$.|?*+()[]{}";
+    var _pat = String(cfg.idPattern), _meta = "\\^$.|?*+()[]{}";
     for(var _pi = 0; _pi < _pat.length; _pi++){
       var _pc = _pat.charAt(_pi);
       if(_pc === "\\"){                       /* escaped char: literal if it is a metachar */
@@ -1999,21 +2102,49 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     }
     return segs;
   }
-  var api = { clean: clean, parse: parse,              /* exposed for testing / power users */
-              mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, configError: configError } };
+  var BLOCK = cfg.blockSave || "off";
+  if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+    configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+  }
+  /* optional "when" condition: null when absent (no behavior change) */
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when);
+  return { configError: configError, clean: clean, parse: parse, scanCap: SCAN_CAP,
+           expectedIds: (cfg.expectedIds == null ? null : cfg.expectedIds),
+           blockSave: BLOCK, gate: GATE,
+           when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY } };
+  }
+  /* ---- end makeVariant ---- */
+
+  var VS = QRID_buildVariants(QRID_MULTI_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var IS_BRANCH = !!(QRID_MULTI_CONFIG.branches && QRID_MULTI_CONFIG.branches.length);
+  var ANY_BLOCK = VS.firstBlock !== "off";
+  var V0 = VS.all[0];
+  var api = { clean: V0.clean, parse: V0.parse,        /* exposed for testing / power users */
+              mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError } };
   UV_lastPooled = api;                                 /* namespace .lastPooled */
   (QRID_MULTI_CONFIG.fields || []).forEach(function(f){
-    UV_validators[f] = { type: "pooled", mode: api.mode, parse: parse, clean: clean };
+    if(IS_BRANCH){
+      UV_validators[f] = { type: "pooled", branch: true,
+        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode, parse: V.parse, clean: V.clean }; }),
+        active: function(){ return QRID_activeVariants(VS); } };
+      return;
+    }
+    UV_validators[f] = { type: "pooled", mode: api.mode, parse: V0.parse, clean: V0.clean };
   });
 
   function esc(t){ return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
   function chip(text, kind){
-    /* junk amber #8a5500 on #fbf6e8 measures 5.7:1 — WCAG 2.2 AA for normal
-       text needs 4.5:1, and chips are 12px (A11Y-002). Every state also has a
-       non-color mark (check / cross / circled-x / question mark). */
+    /* Color families: hard problems (bad check character AND junk that is not
+       an ID) are red; a DUPLICATE of a valid ID is a warning, not an error —
+       amber. Amber #8a5500 on #fbf6e8 measures 5.7:1 and red #c62828 on
+       #fbeceb 4.9:1 — WCAG 2.2 AA for normal text needs 4.5:1, and chips are
+       12px (A11Y-002). Every state also has a non-color mark
+       (check / circled-x / cross / question mark). */
     var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
-          : (kind === "junk") ? "#e6d4a8;background:#fbf6e8;color:#8a5500"
-          : "#e0b4b0;background:#fbeceb;color:#c62828";   /* bad + dup share red */
+          : (kind === "dup") ? "#e6d4a8;background:#fbf6e8;color:#8a5500"
+          : "#e0b4b0;background:#fbeceb;color:#c62828";   /* bad + junk share red */
     var mark = (kind === "ok") ? "&#10003;&nbsp;"
              : (kind === "dup") ? "&#8855;&nbsp;"          /* circled x = scanned again */
              : (kind === "bad") ? "&#10007;&nbsp;" : "?&nbsp;";
@@ -2022,34 +2153,41 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       'font-family:monospace;font-size:12px;border:1px solid ' + c + '">' + mark + text + suffix + '</span>';
   }
   function render(msg, input){
-    if(GATE && !GATE.active()){
-      /* condition false -> the rule is inert here (see the single factory) */
+    /* which variant applies right now? (see the single factory) */
+    var act = QRID_activeVariants(VS);
+    if(!act.length){
       msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
       QRID_setInvalidState(input, null);
       return;
     }
+    if(act.length > 1){
+      QRID_renderConflict(msg, input, act);
+      return;
+    }
+    var V = act[0];
+    input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
     var v = (input.value || "").trim();
     if(!v){
       msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
       QRID_setInvalidState(input, null);
       return;
     }
-    if(v.length > SCAN_CAP){
+    if(v.length > V.scanCap){
       msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
         "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
-      msg.innerHTML = "&#10007; This field is too long to scan (over " + SCAN_CAP +
+      msg.innerHTML = "&#10007; This field is too long to scan (over " + V.scanCap +
         " characters for this rule's ID lengths) — split the pool into smaller entries.";
       input.style.outline = "2px solid #c62828"; input.__qridInvalid = true;
       QRID_setInvalidState(input, true);
       return;
     }
-    var segs = parse(v);
+    var segs = V.parse(v);
     var ids = segs.filter(function(x){ return x.type === "id"; });
     var junkSegs = segs.filter(function(x){ return x.type === "junk"; });
     var bad = ids.filter(function(x){ return !x.valid; });
     var seen = {}, dups = 0;
     ids.forEach(function(x){ if(seen[x.id]) dups++; seen[x.id] = true; });
-    var expected = QRID_MULTI_CONFIG.expectedIds;
+    var expected = V.expectedIds;
     var problems = [];
     if(!ids.length) problems.push("no ID could be read");
     if(bad.length) problems.push(bad.length + " check-character mismatch" + (bad.length > 1 ? "es" : ""));
@@ -2060,8 +2198,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " +
       (ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32" : "#e0b4b0;background:#fbeceb;color:#c62828");
-    var okWord = REGEX_ONLY ? "all match the ID format &#10003; (no check character in this project)"
-                            : "all verified &#10003;";
+    var okWord = V.mode.regexOnly ? "all match the ID format &#10003; (no check character in this project)"
+                                  : "all verified &#10003;";
     var html = "<b>" + ids.length + " ID" + (ids.length === 1 ? "" : "s") + " read" +
       (ok ? " &mdash; " + okWord : " &mdash; " + esc(problems.join("; "))) + "</b><br>";
     var occ = {};
@@ -2080,14 +2218,6 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRID_setInvalidState(input, !ok);
   }
   /* ---- optional save blocking (shared QRID_registerBlocker semantics) ---- */
-  var BLOCK = QRID_MULTI_CONFIG.blockSave || "off";
-  if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
-    configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
-  }
-  /* optional "when" condition: null when absent (no behavior change). Declared
-     before use in render() above via function-scope hoisting; assigned here,
-     before any attach()/render() can run. */
-  var GATE = configError ? null : QRID_WHEN.gateFor(QRID_MULTI_CONFIG.when);
   function attach(fieldName){
     var input = QRID_findField(fieldName);
     if(!input) return false;
@@ -2099,9 +2229,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
     input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
     /* a condition flip (true<->false) re-renders this field's pooled verdict */
-    if(GATE) GATE.onChange(function(){ render(msg, input); });
+    for(var gi = 0; gi < VS.variants.length; gi++){
+      if(VS.variants[gi].gate) VS.variants[gi].gate.onChange(function(){ render(msg, input); });
+    }
+    /* register BEFORE the initial render: render() stamps the ACTIVE variant's
+       blockSave on the input, and registration must never clobber it */
+    if(ANY_BLOCK && !configError) QRID_registerBlocker(input, fieldName, VS.firstBlock);
     render(msg, input);
-    if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
   }
   function boot(){
@@ -2144,6 +2278,24 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "blockSave", "when"];
   function cfgFor(rule){
     var cfg = {}, i, k;
+    /* Branch rule (php/Branching.php): defaults are filled PER BRANCH, so a
+       branch and a plain rule default identically. A branch's explicit
+       when:null (the else branch) must not inherit anything — only an
+       UNDEFINED key falls back to the top-level config. */
+    if(rule.branches && rule.branches.length){
+      cfg.branches = [];
+      for(i = 0; i < rule.branches.length; i++){
+        var b = rule.branches[i], bc = {};
+        for(var j = 0; j < DEFAULT_KEYS.length; j++){
+          k = DEFAULT_KEYS[j];
+          bc[k] = (b[k] !== undefined) ? b[k] : C[k];
+        }
+        cfg.branches.push(bc);
+      }
+      cfg.fields = rule.fields || [];
+      if(rule.configError) cfg.configErrorOverride = rule.configError;
+      return cfg;
+    }
     for(i = 0; i < DEFAULT_KEYS.length; i++){
       k = DEFAULT_KEYS[i];
       cfg[k] = (rule[k] !== undefined) ? rule[k] : C[k];
