@@ -172,6 +172,51 @@ check('checkFragment: event prefix in when rejected',
 check('checkFragment: non-string when rejected',
     count(fragErrors(['when' => ['x']])) === 1);
 
+// ---- multi-tag annotations (branched validation, 0.9.0) ----
+$tags = AnnotationRules::extractTags('@UVALIDATE=verhoeff @UVALIDATE={"algorithm":"damm","when":"[a]=\'1\'"}');
+check('two tags extracted in order', count($tags) === 2 && $tags[0] === 'verhoeff'
+    && $tags[1] === '{"algorithm":"damm","when":"[a]=\'1\'"}');
+check('no tags -> empty list', AnnotationRules::extractTags('@READONLY @HIDDEN') === []);
+check('bare tag contributes empty string', AnnotationRules::extractTags('@UVALIDATE @UVALIDATE=damm') === ['', 'damm']);
+$tags = AnnotationRules::extractTags('@UVALIDATED=x @UVALIDATE=damm @UVALIDATE2 @UVALIDATE=luhn');
+check('near-misses between real tags are skipped', $tags === ['damm', 'luhn']);
+check('tag-like text inside a quoted value is not re-read',
+    AnnotationRules::extractTags('@UVALIDATE="@UVALIDATE" @UVALIDATE=damm') === ['@UVALIDATE', 'damm']);
+$frags = AnnotationRules::parseFieldAll('@UVALIDATE=verhoeff @UVALIDATE={"when":"[a]=\'1\'"}');
+check('parseFieldAll: two fragments', count($frags) === 2
+    && $frags[0] === ['algorithm' => 'verhoeff'] && $frags[1]['when'] === "[a]='1'");
+check('parseFieldAll: untagged -> null', AnnotationRules::parseFieldAll('@READONLY') === null);
+$frags = AnnotationRules::parseFieldAll('@UVALIDATE=notanalgo @UVALIDATE=damm');
+check('bad + good tag -> error fragment then config fragment',
+    isset($frags[0]['error']) && $frags[1] === ['algorithm' => 'damm']);
+check('parseField still reads only the first tag',
+    AnnotationRules::parseField('@UVALIDATE=verhoeff @UVALIDATE=damm') === ['algorithm' => 'verhoeff']);
+// groupMulti: a field with two different tags joins two rules
+$rules = AnnotationRules::groupMulti([
+    'sid'   => [['algorithm' => 'verhoeff', 'when' => "[a]='1'"], ['algorithm' => 'damm', 'when' => "[a]='2'"]],
+    'other' => [['algorithm' => 'damm', 'when' => "[a]='2'"]],
+]);
+check('groupMulti: field with two tags joins two rules', count($rules) === 2
+    && $rules[0]['fields'] === ['sid'] && $rules[1]['fields'] === ['sid', 'other']);
+// two byte-identical tags on one field collapse to a single claim
+$rules = AnnotationRules::groupMulti(['sid' => [['algorithm' => 'damm'], ['algorithm' => 'damm']]]);
+check('identical tags on one field collapse', count($rules) === 1 && $rules[0]['fields'] === ['sid']);
+// error fragments still become per-field configError rules
+$rules = AnnotationRules::groupMulti(['sid' => [['error' => 'boom'], ['algorithm' => 'damm']]]);
+check('error fragment + live fragment coexist', count($rules) === 2
+    && strpos($rules[0]['configError'], 'boom') !== false && $rules[1]['fields'] === ['sid']);
+
+// ---- the "suggestFix" key (opt-in check-character hint) ----
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"damm","suggestFix":true}');
+check('suggestFix true carried', !isset($r['error']) && $r['suggestFix'] === true);
+$r = AnnotationRules::parseField('@UVALIDATE={"suggestFix":false}');
+check('suggestFix false carried', !isset($r['error']) && $r['suggestFix'] === false);
+$r = AnnotationRules::parseField('@UVALIDATE={"suggestFix":"yes"}');
+check('quoted suggestFix -> error', isset($r['error']) && strpos($r['error'], 'suggestFix') !== false
+    && strpos($r['error'], 'unquoted') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"suggestFix":1}');
+check('numeric suggestFix -> error', isset($r['error']) && strpos($r['error'], 'suggestFix') !== false);
+
 // ---- group ----
 $rules = AnnotationRules::group([
     'pid_1' => ['algorithm' => 'damm'],

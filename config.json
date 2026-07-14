@@ -1,5 +1,5 @@
 {
-  "name": "Universal Field Validator — IDs, codes & patterns",
+  "name": "Universal Regex & Check-Character Validator — IDs, codes & patterns",
   "namespace": "INSPIRE\\UniversalValidator",
   "description": "Live, as-you-type validation for Text/Notes fields with a structure: participant and specimen IDs minted with check characters (ISO 7064, Damm, Verhoeff, Luhn — single fields or pooled several-IDs-in-one-box fields), or any regex-shaped code with progressive what's-still-missing guidance while typing. Enforcement happens in the BROWSER, per rule: message, confirm, or block the form/survey save. A post-save hook additionally logs invalid values to the module log as a best-effort audit wherever REDCap fires redcap_save_record — verify on your own instance whether that covers API and Data Import writes before relying on it (see the documentation). Three ways to configure: the settings dialog (one rule, many fields), fast field-name entry, or @UVALIDATE field annotations for bulk setup from the data dictionary.",
   "documentation": "README.md",
@@ -20,14 +20,14 @@
   "action-tags": [
     {
       "tag": "@UVALIDATE",
-      "description": "Validate this Text or Notes field with the Universal Field Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, <code>gs1</code> = GS1 Mod-10, <code>aba</code> = ABA Mod-10, <code>mrz</code> = ICAO MRZ Mod-10, <code>isbn</code> = Weighted Mod-11, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, when, note. The optional <code>when</code> key makes the rule conditional — it validates only while a REDCap-style condition is true, e.g. <code>@UVALIDATE={\"algorithm\":\"verhoeff\",\"when\":\"[specimen_type]='2'\"}</code> (supports [field] and [checkbox(code)] refs, = &lt;&gt; != &gt; &lt; &gt;= &lt;=, and/or/not, parentheses; a false condition skips the rule, it does NOT erase the value). Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
+      "description": "Validate this Text or Notes field with the Universal Regex & Check-Character Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, <code>gs1</code> = GS1 Mod-10, <code>aba</code> = ABA Mod-10, <code>mrz</code> = ICAO MRZ Mod-10, <code>isbn</code> = Weighted Mod-11, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, when, note. The optional <code>when</code> key makes the rule conditional — it validates only while a REDCap-style condition is true, e.g. <code>@UVALIDATE={\"algorithm\":\"verhoeff\",\"when\":\"[specimen_type]='2'\"}</code> (supports [field] and [checkbox(code)] refs, = &lt;&gt; != &gt; &lt; &gt;= &lt;=, and/or/not, parentheses; a false condition skips the rule, it does NOT erase the value). One field may carry SEVERAL tags when each has a different <code>when</code> (plus at most one without, as the fallback) — branched validation. <code>suggestFix</code> (true/false, default false) opts in to the \"should end in X\" check-character hint. Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
     }
   ],
 
   "project-settings": [
     {
       "key": "intro",
-      "name": "<b>Universal Field Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Leave a rule's advanced boxes blank to use the defaults.",
+      "name": "<b>Universal Regex & Check-Character Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Leave a rule's advanced boxes blank to use the defaults.",
       "type": "descriptive"
     },
     {
@@ -79,7 +79,7 @@
         },
         {
           "key": "when",
-          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on the same page are read live; fields on other instruments use their saved values. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching).",
+          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on the same page are read live; fields on other instruments use their saved values. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field.",
           "type": "text"
         },
         {
@@ -113,6 +113,11 @@
             { "value": "digits_only", "name": "Digits only" },
             { "value": "sequence_only", "name": "Trailing number only" }
           ]
+        },
+        {
+          "key": "suggest-fix",
+          "name": "Suggest the correct final check character on a mismatch (OFF by default — a visible \"should end in X\" hint can entice staff to force-fit a mistyped ID instead of re-scanning it; enable only where that risk is acceptable)",
+          "type": "checkbox"
         },
         {
           "key": "pattern",

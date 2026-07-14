@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.9.0 — branched validation, rename, opt-in hints, chip colors
+
+Four changes from live use. The headline: one field may now be covered by
+SEVERAL rules, each gated by a `when` condition — "validate as Verhoeff when
+[specimen_type]='2', otherwise as a plain format code".
+
+- **Branched validation.** Sharing a field is legal when every sharing rule
+  carries a `when`, plus at most ONE rule without (the else branch, firing
+  only when no condition is true). The new pure `php/Branching.php` resolves
+  sharing at config-build time into explicit per-field branch rules that the
+  client engine, the server audit, and the saved-value snapshot all consume —
+  its docblock is the normative semantics spec. Runtime: the branch whose
+  condition is true validates; none + no else = the field is inert; MORE than
+  one true = a "Validation conflict" notice naming both conditions, nothing
+  validated, the save never blocked, and an `uvalidate-unconfigurable` entry
+  (never silent). Illegal sharing (two unconditional rules, byte-identical
+  conditions, single+pooled mix) is a configuration error — in the Configure
+  dialog it is rejected at save time naming the rows. Both engine factories
+  now build their whole mode-resolution closure per VARIANT (an internal
+  `makeVariant` seam; a plain rule is exactly one variant, so single-rule
+  configs take byte-identical code paths). `blockSave` and `suggestFix` are
+  per branch; the submit guard now skips items whose ACTIVE mode is "off".
+  One field annotation may carry several `@UVALIDATE` tags
+  (`extractTags`/`parseFieldAll`/`groupMulti`; the single-tag forms delegate,
+  so nothing existing changed), and dialog + annotation rules may legally
+  share a field cross-channel. New `tests/branching_php.php` and
+  `tests/branch_dom_js.cjs` implement the same scenario table on both sides;
+  `tests/hook_php.php` drives branch selection through the full audit.
+- **Renamed** to **"Universal Regex & Check-Character Validator — IDs, codes &
+  patterns"** (module list, Configure dialog, action-tag help, page notices,
+  docs). The PHP namespace, the `INSPIREUniversalValidator` JS global, and the
+  `inspire-validator-config` node are deliberately unchanged — nothing
+  installed breaks.
+- **Check-character hints are now OFF by default and configurable.** The
+  "should end in X" tail on a check mismatch (`suggestFix`) revealed the
+  expected check character, which can entice staff to force-fit a mistyped ID
+  instead of re-scanning it. It previously had NO off switch; now it is a
+  per-rule opt-in in all three channels (dialog checkbox, `"suggestFix":true`
+  JSON key — strict boolean), default off. The progressive "what's still
+  missing" format guidance is unchanged (it reveals the shape, never the
+  answer).
+- **Pooled chip severity colors corrected.** What read as "errors are yellow"
+  was leftover-junk chips (amber) — actual invalid members were always red,
+  and DUPLICATES shared that same red. Now hard problems are red (invalid ✗
+  AND junk ?) and a repeat-scan of a VALID ID is amber ⊗ "(again!)" — a
+  warning, not an error. Both color pairs were already WCAG 2.2 AA
+  (amber 5.7:1, red 4.9:1) and every state keeps its non-color mark. New
+  `tests/pooled_dom_js.cjs` locks the severity mapping.
+
+## 0.8.0 — conditional validation: the `when` rule key
+
 ## 0.8.0 — conditional validation: the `when` rule key
 
 A rule can now carry an optional REDCap-style condition and validates only

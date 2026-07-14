@@ -321,6 +321,13 @@ namespace {
     $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
     check('field claimed by two rules is not audited by either', !in_array('main_id_1', loggedFields($m), true));
     check('other fields of the shared rule still audited', in_array('main_id_tag', loggedFields($m), true));
+    // since 0.9.0 sharing without "when" is a named config error (two rules
+    // with conditions would instead become a branch rule — see test 23)
+    $m = newModule($dupRules, $dictionary, $classicData, 149);
+    $r = injectedRuleFor($m, 'main_id_1');
+    check('unconditional sharing surfaces the two-unconditional config error',
+        $r && !empty($r['configError'])
+        && strpos($r['configError'], 'at most ONE unconditional rule') !== false);
 
     // ---- 12) an unevaluable rule logs "unconfigurable" instead of passing silently ----
     // A{1,40}A{1,40}A{1,40}9 passes the ReDoS gate (bounded work, capped by the
@@ -662,6 +669,169 @@ namespace {
     }
     check('when-less rules: whenValues omitted', $cfg && !isset($cfg['whenValues']));
     check('when-less rules: no render-time getData', \REDCap::$lastGetDataParams === null);
+
+    // ---- 22) suggestFix: dialog checkbox carriage into the injected config ----
+    function sfRule($sf) {
+        $row = [
+            'rule-type' => 'single', 'fields' => ['sid'], 'fields-csv' => '',
+            'algorithm' => 'iso7064_mod37_36', 'source' => '', 'pattern' => '', 'strip' => '',
+            'keep-chars' => '', 'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+            'expected-count' => '', 'block-save' => 'off',
+        ];
+        if ($sf !== null) $row['suggest-fix'] = $sf;
+        return [$row];
+    }
+    function injectedRuleFor($m, $field) {
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
+        $html = ob_get_clean();
+        if (!preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) return null;
+        $cfg = json_decode($mm[1], true);
+        if (!$cfg || !isset($cfg['rules'])) return null;
+        foreach ($cfg['rules'] as $r) {
+            if (isset($r['fields']) && in_array($field, $r['fields'], true)) return $r;
+        }
+        return null;
+    }
+    $m = newModule(sfRule(true), $whenDict, [], 149);
+    $r = injectedRuleFor($m, 'sid');
+    check('suggest-fix checkbox (bool true) carries suggestFix:true', $r && isset($r['suggestFix']) && $r['suggestFix'] === true);
+    $m = newModule(sfRule('true'), $whenDict, [], 149);
+    $r = injectedRuleFor($m, 'sid');
+    check('suggest-fix checkbox (string "true") carries suggestFix:true', $r && isset($r['suggestFix']) && $r['suggestFix'] === true);
+    $m = newModule(sfRule(null), $whenDict, [], 149);
+    $r = injectedRuleFor($m, 'sid');
+    check('no checkbox -> rule carries NO suggestFix key (engine default off)', $r && !isset($r['suggestFix']));
+    // the engine-level default (hint absent without opt-in) is locked client-side by a11y_dom_js
+
+    // ---- 23) branched validation: the audit picks the active branch ----
+    function branchRow($algo, $when) {
+        return [
+            'rule-type' => 'single', 'fields' => ['sid'], 'fields-csv' => '', 'when' => $when,
+            'algorithm' => $algo, 'source' => '', 'pattern' => '', 'strip' => '',
+            'keep-chars' => '', 'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+            'expected-count' => '', 'block-save' => 'off',
+        ];
+    }
+    $branchRules = [branchRow('verhoeff', "[stype]='1'"), branchRow('iso7064_mod37_36', "[stype]='2'")];
+    $badVerhoeff = '2364'; // verhoeff check digit for 236 is 3
+
+    // stype=2 -> the mod37,36 branch audits (and its ref rode the one getData)
+    $m = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('branch 2 active: audited under its algorithm',
+        count($logs) === 1 && $logs[0][1]['algorithm'] === 'iso7064_mod37_36' && $logs[0][1]['field'] === 'sid');
+    check('branch refs ride the single getData',
+        \REDCap::$lastGetDataParams && in_array('stype', \REDCap::$lastGetDataParams['fields'], true));
+
+    // stype=1 -> the verhoeff branch audits the same field
+    $m = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => $badVerhoeff, 'stype' => '1']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('branch 1 active: audited under verhoeff',
+        count($logs) === 1 && $logs[0][1]['algorithm'] === 'verhoeff');
+
+    // neither condition true, no else -> the field is inert (no logs of any kind)
+    $m = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '9']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('no branch active, no else: inert',
+        count(invalidLogs($m)) === 0 && count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+
+    // an unconditional sibling becomes the ELSE branch
+    $elseRules = [branchRow('verhoeff', "[stype]='1'"), branchRow('iso7064_mod37_36', '')];
+    $m = newModule($elseRules, $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '9']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('else branch fires when no condition is true',
+        count($logs) === 1 && $logs[0][1]['algorithm'] === 'iso7064_mod37_36');
+    $m = newModule($elseRules, $whenDict, [2 => [351 => ['sid' => $badVerhoeff, 'stype' => '1']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('a true condition beats the else', count($logs) === 1 && $logs[0][1]['algorithm'] === 'verhoeff');
+
+    // overlapping conditions both true -> conflict logged, nothing validated
+    $overlapRules = [branchRow('verhoeff', "[stype]<>'9'"), branchRow('iso7064_mod37_36', "[elig]='yes'")];
+    $m = newModule($overlapRules, $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '1', 'elig' => 'yes']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $unc = logsOf($m, 'uvalidate-unconfigurable');
+    check('branch conflict -> one unconfigurable entry naming both conditions',
+        count($unc) === 1 && strpos($unc[0][1]['why'], 'branch conflict') !== false
+        && strpos($unc[0][1]['why'], "[stype]<>'9'") !== false);
+    check('branch conflict -> no invalid log (never a guessed algorithm)', count(invalidLogs($m)) === 0);
+
+    // the branch rule reaches the client with branches + baked snapshot refs
+    $m = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => '2XYZ-K93B7I', 'stype' => '2']]], 149);
+    $r = injectedRuleFor($m, 'sid');
+    check('client receives the branch rule', $r && isset($r['branches']) && count($r['branches']) === 2
+        && !isset($r['when']) && !isset($r['algorithm']));
+    ob_start();
+    $m2 = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => '2XYZ-K93B7I', 'stype' => '2']]], 149);
+    $m2->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    check('branch whens baked into the whenValues snapshot',
+        $cfg && isset($cfg['whenValues']['stype']) && $cfg['whenValues']['stype'] === '2');
+
+    // annotation channel: TWO tags on one field become a working branch rule
+    $annDict2 = $whenDict;
+    $annDict2['tag2'] = ['field_type' => 'text', 'form_name' => 'f',
+        'field_annotation' => '@UVALIDATE={"algorithm":"verhoeff","when":"[stype]=\'1\'"} '
+            . '@UVALIDATE={"algorithm":"iso7064_mod37_36","when":"[stype]=\'2\'"}'];
+    $m = newModule([], $annDict2, [2 => [351 => ['tag2' => $badSid, 'stype' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('two-tag annotation: active branch audits the field',
+        count($logs) === 1 && $logs[0][1]['field'] === 'tag2' && $logs[0][1]['algorithm'] === 'iso7064_mod37_36');
+
+    // cross-channel sharing (dialog + annotation) is a legal branch rule
+    $xDict = $whenDict;
+    $xDict['sid']['field_annotation'] = '@UVALIDATE={"algorithm":"iso7064_mod37_36","when":"[stype]=\'2\'"}';
+    $m = newModule([branchRow('verhoeff', "[stype]='1'")], $xDict, [2 => [351 => ['sid' => $badSid, 'stype' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    $logs = invalidLogs($m);
+    check('dialog + annotation sharing one field works as branches',
+        count($logs) === 1 && $logs[0][1]['algorithm'] === 'iso7064_mod37_36');
+
+    // ---- 24) validateSettings: cross-rule sharing legality at save time ----
+    function twoRuleFlat($when1, $when2, $type2 = 'single') {
+        return [
+            'rules'      => [true, true],
+            'rule-type'  => ['single', $type2],
+            'fields'     => [['sid'], ['sid']],
+            'fields-csv' => ['', ''],
+            'when'       => [$when1, $when2],
+            'algorithm'  => ['verhoeff', 'iso7064_mod37_36'],
+            'source'     => ['', ''],
+            'suggest-fix' => ['', ''],
+            'pattern'    => ['', ''],
+            'strip'      => ['', ''],
+            'keep-chars' => ['', ''],
+            'id-lengths' => ['', ''],
+            'id-min-len' => ['', ''],
+            'id-max-len' => ['', ''],
+            'expected-count' => ['', ''],
+            'block-save' => ['off', 'off'],
+        ];
+    }
+    $m = newModule([], $whenDict, [], 149);
+    $msg = $m->validateSettings(twoRuleFlat('', ''));
+    check('save gate: two unconditional rules on one field rejected, rows named',
+        is_string($msg) && strpos($msg, 'Rule 1 and Rule 2') !== false
+        && strpos($msg, 'at most ONE unconditional rule') !== false);
+    $msg = $m->validateSettings(twoRuleFlat("[stype]='2'", "[stype]='2'"));
+    check('save gate: identical conditions rejected',
+        is_string($msg) && strpos($msg, 'identical condition') !== false);
+    $msg = $m->validateSettings(twoRuleFlat("[stype]='1'", "[stype]='2'", 'pooled'));
+    check('save gate: single/pooled mix rejected',
+        is_string($msg) && strpos($msg, 'same field type') !== false);
+    check('save gate: a legal 2-branch set passes',
+        $m->validateSettings(twoRuleFlat("[stype]='1'", "[stype]='2'")) === null);
+    check('save gate: conditional + else passes',
+        $m->validateSettings(twoRuleFlat("[stype]='1'", '')) === null);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

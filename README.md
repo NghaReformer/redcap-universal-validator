@@ -1,4 +1,4 @@
-# Universal Field Validator — IDs, codes & patterns (REDCap external module)
+# Universal Regex & Check-Character Validator — IDs, codes & patterns (REDCap external module)
 
 Live, as-you-type validation for any REDCap field with a structure. A mistyped
 participant ID costs hours of reconciliation later; this module catches it while
@@ -25,7 +25,10 @@ validate identically here, in Excel, and in the browser (same verified engine).
 - **Single-value fields** — recomputes the check character and/or tests the
   format, with a green "verified" or red "typo?" message under the field. Format
   errors and check-character errors are reported separately, so the person knows
-  which kind of mistake they made and where.
+  which kind of mistake they made and where. A "should end in X" hint naming
+  the expected check character is available per rule (`suggestFix`) but **OFF
+  by default** — a visible expected character can entice staff to force-fit a
+  mistyped ID instead of re-scanning it.
 - **Pooled fields** — splits a box holding several IDs (space/comma-separated, or
   jammed together with no separator) into individual IDs at the boundaries where
   the check character verifies, then shows one chip per member with warnings for
@@ -87,9 +90,10 @@ One rule = one kind of validation, applied to any number of fields:
 
    JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
    `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
-   `note`. A malformed tag shows a configuration error under that field — never
-   a silent no-op. Fields with identical tags are grouped into one rule
-   automatically.
+   `suggestFix`, `note`. A malformed tag shows a configuration error under that
+   field — never a silent no-op. Fields with identical tags are grouped into
+   one rule automatically, and one field may carry SEVERAL tags when each has
+   a different `when` condition (branched validation — see below).
 
    **Algorithm shorthands.** So you need not spell out the full internal name,
    the `algorithm` value accepts case-insensitive shorthands (e.g.
@@ -168,6 +172,38 @@ The dialect is specified normatively in [`php/Logic.php`](php/Logic.php); the
 browser twin lives in `js/engine.js`, and `tests/when_fixture.json` locks the
 two together (see Verification below).
 
+### Branched validation — several conditional rules on ONE field
+
+Since 0.9.0, a field may be covered by MORE THAN ONE rule, provided the
+sharing is gated: every sharing rule carries a `when`, except at most ONE rule
+without a condition, which becomes the **else** branch. The rule whose
+condition is true validates the field; if none is true, the else branch does;
+if there is no else either, the field is simply not validated at that moment.
+
+```text
+Field annotation (two tags in one box), or two dialog rules covering the field:
+@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}"}          <- the "otherwise"
+```
+
+Rules worth knowing:
+
+- **All configuration channels mix freely** — a dialog rule and an
+  `@UVALIDATE` tag may legally share a field, as long as the sharing is gated.
+- **Rejected at save time** (a configuration error, never silent): two
+  when-less rules on one field; two rules with byte-identical conditions; a
+  single-value rule and a pooled rule sharing a field.
+- **Overlapping conditions are a runtime conflict**: if two conditions are
+  ever true at once, the field shows a "Validation conflict" notice naming
+  both conditions, validates nothing, and NEVER blocks the save; the server
+  logs the same conflict to the module log. Mutually exclusive conditions
+  (`='2'` vs `<>'2'`) can never conflict.
+- `blockSave` and `suggestFix` are **per branch** — e.g. *Compulsory* for
+  blood specimens, informational otherwise.
+- The branch semantics are specified normatively in
+  [`php/Branching.php`](php/Branching.php); browser and audit implement the
+  same table (see Verification).
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two
@@ -222,6 +258,13 @@ check-character primitive, but the full runtime path the module actually uses:
   drives the browser gate itself: live dropdown/radio/checkbox flips, the
   saved-value snapshot, fail-open on an unparseable condition, and the
   guarantee that a gated-off rule never blocks a save.
+- `tests/branching_php.php` and `tests/branch_dom_js.cjs` — implement the SAME
+  branched-validation scenario table on both sides (active branch, else
+  branch, conflicts, per-branch blockSave/suggestFix, illegal-sharing
+  wording), with the resolver semantics specified in `php/Branching.php`;
+  `tests/hook_php.php` additionally drives branch selection through the whole
+  server audit. `tests/pooled_dom_js.cjs` locks pooled chip severity (invalid
+  and junk red, duplicates amber) with their non-color marks.
 - `tests/annotation_php.php` — the `@UVALIDATE` parser and the shared rule
   validator (`checkFragment`) used by every configuration channel.
 - `tests/hook_php.php` — the whole `redcap_save_record` audit path against a
@@ -255,6 +298,9 @@ php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
 node tests/when_js.cjs        # JS "when" evaluator vs when_fixture.json
 php  tests/when_php.php        # PHP "when" evaluator vs the same fixture
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, snapshot, fail-open)
+php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
+node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
+node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)

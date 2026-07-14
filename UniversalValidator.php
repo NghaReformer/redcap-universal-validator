@@ -1,6 +1,6 @@
 <?php
 /**
- * Universal Field Validator — REDCap external module.
+ * Universal Regex & Check-Character Validator — REDCap external module.
  *
  * Injects the verified check-character engine on data-entry forms and surveys,
  * configured entirely through the module's project settings (no code pasting,
@@ -23,6 +23,7 @@ use ExternalModules\AbstractExternalModule;
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/Logic.php';
+require_once __DIR__ . '/php/Branching.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -40,7 +41,10 @@ class UniversalValidator extends AbstractExternalModule
             'idPattern'   => null,
             'source'      => 'normalized_id',
             'strip'       => "-/ _|\\",
-            'suggestFix'  => true,
+            // OFF by default: a visible "should end in X" hint can entice
+            // staff to force-fit a mistyped ID instead of re-scanning it.
+            // Opt in per rule (dialog checkbox / "suggestFix" JSON key).
+            'suggestFix'  => false,
             'keepChars'   => '',
             'idLengths'   => null,
             'idMinLen'    => 8,
@@ -123,6 +127,24 @@ class UniversalValidator extends AbstractExternalModule
             $readSet = $fields;
             foreach ($rules as $ruleIndex => $r) {
                 if (!empty($r['configError'])) continue;
+                // Branch rules: pre-parse EVERY branch's condition (null = the
+                // else branch, false = does not parse) — auditRule picks the
+                // active branch per save.
+                if (isset($r['branches']) && is_array($r['branches'])) {
+                    $asts = [];
+                    foreach ($r['branches'] as $bi => $b) {
+                        if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') {
+                            $asts[$bi] = null;
+                            continue;
+                        }
+                        $p = Logic::parse($b['when']);
+                        if (empty($p['ok'])) { $asts[$bi] = false; continue; }
+                        $asts[$bi] = $p['ast'];
+                        foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+                    }
+                    $whenAst[$ruleIndex] = ['branches' => $asts];
+                    continue;
+                }
                 if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
                 $p = Logic::parse($r['when']);
                 if (empty($p['ok'])) { $whenAst[$ruleIndex] = false; continue; }
@@ -155,6 +177,50 @@ class UniversalValidator extends AbstractExternalModule
     /** Validate one rule's fields against the values read for this save. */
     private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null)
     {
+        // Branched rule (several conditional rules share this field): pick the
+        // branch whose condition is true for THIS save and audit under its
+        // configuration. Semantics mirror the client and are specified in
+        // php/Branching.php: one active -> validate; none -> the else branch
+        // if present, otherwise inert; more than one -> a branch conflict is
+        // an auditable configuration problem, never a silent pass and never a
+        // guessed algorithm.
+        if (isset($rule['branches']) && is_array($rule['branches'])) {
+            $asts = (is_array($whenAst) && isset($whenAst['branches'])) ? $whenAst['branches'] : [];
+            $active = [];
+            $else = null;
+            foreach ($rule['branches'] as $bi => $b) {
+                if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') {
+                    $else = $bi;
+                    continue;
+                }
+                $ast = isset($asts[$bi]) ? $asts[$bi] : false;
+                if (!is_array($ast)) {
+                    $this->logUnconfigurable($ruleIndex, $rule['fields'], 'a branch "when" condition cannot be evaluated — field skipped', $instrument, $event_id, $repeat_instance);
+                    return;
+                }
+                if (Logic::evaluate($ast, $values)) $active[] = $bi;
+            }
+            if (count($active) > 1) {
+                $this->logUnconfigurable($ruleIndex, $rule['fields'],
+                    'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
+                    . $rule['branches'][$active[0]]['when'] . '" | "' . $rule['branches'][$active[1]]['when'] . '"',
+                    $instrument, $event_id, $repeat_instance);
+                return;
+            }
+            if (count($active) === 1) $pick = $active[0];
+            elseif ($else !== null) $pick = $else;
+            else return; // no branch applies to this save — the field is inert
+
+            $branch = $rule['branches'][$pick];
+            unset($branch['when']);
+            $flat = array_merge([
+                'type'   => isset($rule['type']) ? $rule['type'] : 'single',
+                'fields' => $rule['fields'],
+            ], $branch);
+            $this->auditRule($flat, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, null);
+            return;
+        }
+
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
         $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
         $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
@@ -405,10 +471,19 @@ class UniversalValidator extends AbstractExternalModule
         $refs = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
-            if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
-            $p = Logic::parse($r['when']);
-            if (empty($p['ok'])) continue; // stored rules with a bad "when" are configError rules already
-            foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
+            $whens = [];
+            if (isset($r['when']) && is_string($r['when']) && $r['when'] !== '') $whens[] = $r['when'];
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                // page load cannot know which branch will win — bake refs of ALL
+                foreach ($r['branches'] as $b) {
+                    if (isset($b['when']) && is_string($b['when']) && $b['when'] !== '') $whens[] = $b['when'];
+                }
+            }
+            foreach ($whens as $w) {
+                $p = Logic::parse($w);
+                if (empty($p['ok'])) continue; // stored rules with a bad "when" are configError rules already
+                foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
+            }
         }
         if ($refs && $record !== null && $record !== '') {
             try {
@@ -439,7 +514,10 @@ class UniversalValidator extends AbstractExternalModule
     {
         $out = $this->getSettingRules($pid);
         foreach ($this->getAnnotationRules($pid) as $r) $out[] = $r;
-        return $out;
+        // Shared fields become explicit per-field branch rules (or config
+        // errors when the sharing is illegal), so the client engine, the
+        // audit, and the snapshot all consume one resolved structure.
+        return Branching::resolve($out);
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
@@ -470,7 +548,7 @@ class UniversalValidator extends AbstractExternalModule
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'algorithm', 'source', 'pattern', 'strip',
+        foreach (['rule-type', 'fields-csv', 'when', 'algorithm', 'source', 'suggest-fix', 'pattern', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
             if (isset($s[$k]) && !is_scalar($s[$k])) unset($s[$k]);
@@ -557,6 +635,12 @@ class UniversalValidator extends AbstractExternalModule
         // A blank box simply never sets the key (in the annotation JSON channel
         // an explicit "when":"" is a config error instead — it hides a typo).
         if (isset($s['when']) && trim((string) $s['when']) !== '')    $rule['when'] = trim((string) $s['when']);
+        // Opt-in check-character hint. EM checkbox values arrive as true /
+        // 'true' / '1' depending on the read path — accept all three; anything
+        // else (unchecked, null) leaves the key unset and the default (off).
+        if (isset($s['suggest-fix']) && in_array($s['suggest-fix'], [true, 'true', '1', 1], true)) {
+            $rule['suggestFix'] = true;
+        }
 
         // Strict validation of the numeric controls: a bad value becomes a
         // visible per-rule config error instead of being silently coerced
@@ -629,11 +713,27 @@ class UniversalValidator extends AbstractExternalModule
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
             $errors = [];
+            $clean = [];    // assembled live rules, for the cross-rule check below
+            $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
                 $rule = $this->settingRowToRule($row, $known, $types, $choices);
-                if ($rule !== null && !empty($rule['configError'])) {
+                if ($rule === null) continue;
+                if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
+                    continue;
                 }
+                $clean[] = $rule;
+                $rowNums[] = $i + 1;
+            }
+            // Cross-rule sharing legality (branched validation): several rules
+            // may cover one field only when the sharing is gated — reject an
+            // illegal combination BEFORE it is stored, naming the dialog rows.
+            // (Annotations are invisible at dialog-save time; cross-channel
+            // conflicts surface at runtime as configError rules instead.)
+            foreach (Branching::fieldConflicts($clean) as $field => $c) {
+                $nums = [];
+                foreach ($c['rules'] as $ri) $nums[] = 'Rule ' . $rowNums[$ri];
+                $errors[] = implode(' and ', $nums) . ': ' . Branching::message($field, $c);
             }
             if ($errors) {
                 return "The configuration was NOT saved — fix these problems first:\n- " . implode("\n- ", $errors);
@@ -651,7 +751,7 @@ class UniversalValidator extends AbstractExternalModule
     private static function rowsFromFlatSettings(array $settings)
     {
         $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'algorithm', 'source',
-                 'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
+                 'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
         $n = count($settings['rules']);
         foreach ($keys as $k) {
@@ -682,34 +782,36 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($dd as $name => $meta) {
             $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
             if ($ann === '' || stripos($ann, AnnotationRules::TAG) === false) continue;
-            $frag = AnnotationRules::parseField($ann);
-            if ($frag === null) continue; // e.g. @UVALIDATED — a different tag
+            $frags = AnnotationRules::parseFieldAll($ann);
+            if ($frags === null) continue; // e.g. @UVALIDATED — a different tag
             $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
             if (!in_array($ftype, ['text', 'notes'], true)) {
-                $frag = ['error' => 'this tag only works on Text or Notes fields (this field is "'
-                    . $ftype . '").'];
+                $frags = [['error' => 'this tag only works on Text or Notes fields (this field is "'
+                    . $ftype . '").']];
             }
-            $perField[$name] = $frag;
+            $perField[$name] = $frags;
         }
         if (!$perField) return [];
         // Dictionary-dependent "when" reference checks for this channel —
-        // parseField/checkFragment already validated the syntax; whether the
+        // parseFieldAll/checkFragment already validated the syntax; whether the
         // referenced fields exist (and checkbox codes are real) needs the dd,
         // which is in hand right here.
         $types = null;
         $choices = null;
-        foreach ($perField as $name => $frag) {
-            if (isset($frag['error']) || !isset($frag['when'])) continue;
-            $w = Logic::parse($frag['when']);
-            if (empty($w['ok'])) continue; // parseField already surfaced the syntax error
-            if ($types === null) {
-                $types = $this->projectFieldTypes($pid);
-                $choices = $this->projectFieldChoices($pid);
+        foreach ($perField as $name => $frags) {
+            foreach ($frags as $k => $frag) {
+                if (isset($frag['error']) || !isset($frag['when'])) continue;
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) continue; // parseFieldAll already surfaced the syntax error
+                if ($types === null) {
+                    $types = $this->projectFieldTypes($pid);
+                    $choices = $this->projectFieldChoices($pid);
+                }
+                $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
+                if ($errs) $perField[$name][$k] = ['error' => implode(' ', $errs)];
             }
-            $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
-            if ($errs) $perField[$name] = ['error' => implode(' ', $errs)];
         }
-        return AnnotationRules::group($perField);
+        return AnnotationRules::groupMulti($perField);
     }
 
     /**

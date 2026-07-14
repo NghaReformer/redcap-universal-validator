@@ -53,15 +53,18 @@ and the field-facing UI layer:
    `__QRIDGuard`) are NOT published — the core's own `QRCheck` global is
    captured as `.engine` and deleted after load. This module never shipped with
    those globals, so there is no consumer to break.
-5. **"when" conditions (REDCap-only module feature).** The `QRID_when*` block
-   (parser/evaluator twins of `php/Logic.php`, locked by
-   `tests/when_fixture.json` via `tests/when_js.cjs`/`tests/when_php.php`) and
-   the `QRID_WHEN` runtime gate (live DOM refs by REDCap name conventions +
-   the `whenValues` snapshot; `tests/when_dom_js.cjs`) live in the
-   module-authored UI layer. The factories consult a per-rule gate at the top
-   of `check()`/`render()` and re-check on referenced-field changes. Nothing
-   of this exists upstream — it rides the UI module IIFE across re-vendors,
-   like the rest of the module-authored layer.
+5. **"when" conditions and branched validation (REDCap-only module features).**
+   The `QRID_when*` block (parser/evaluator twins of `php/Logic.php`, locked by
+   `tests/when_fixture.json` via `tests/when_js.cjs`/`tests/when_php.php`), the
+   `QRID_WHEN` runtime gate (live DOM refs by REDCap name conventions + the
+   `whenValues` snapshot; `tests/when_dom_js.cjs`), and the branch plumbing
+   (`QRID_buildVariants`/`QRID_activeVariants`/`QRID_renderConflict`; both
+   factories build their mode-resolution closure per VARIANT via an internal
+   `makeVariant(cfg)`, so a per-field branch rule from `php/Branching.php`
+   selects the active branch at check time — `tests/branch_dom_js.cjs`) live in
+   the module-authored UI layer. Nothing of this exists upstream — it rides the
+   UI module IIFE across re-vendors, like the rest of the module-authored
+   layer.
 
 These deviations touch presentation and safety only, never the check-character
 math, so parity with the Python source is unaffected. Upstreaming them is
