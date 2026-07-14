@@ -75,6 +75,31 @@ after switching), it only leaves the messages untranslated.
 - [ ] `@UVALIDATE` appears in the Online Designer's **Action Tags** popup with its
       description (declared in `config.json` `action-tags`).
 
+## Conditional validation (`when`)
+
+- [ ] Dialog rule with **Only validate when** `[specimen_type]='2'` on a form
+      where `specimen_type` is a dropdown/radio: with the wrong option chosen,
+      an invalid ID shows NO message and a `hard` rule does NOT block the save;
+      picking the right option makes the verdict (and the block) appear
+      immediately, without leaving the field.
+- [ ] Same via the tag: `@UVALIDATE={"algorithm":"verhoeff","when":"[stype]='2'"}`.
+- [ ] Checkbox condition `[consent(1)]='1'`: ticking/unticking that one option
+      toggles validation live.
+- [ ] Condition referencing a field on ANOTHER instrument: the rule follows
+      that field's SAVED value (edit it on its own form, save, re-open this
+      form). On a brand-new record it reads as empty.
+- [ ] While the condition is false, an invalid value SAVES and is NOT erased —
+      and the module log shows no `invalid-id-saved` entry for it; after making
+      the condition true and re-saving, the entry appears.
+- [ ] Calc-field ref caveat: a condition on a calc field does not re-evaluate
+      the instant the calc silently changes — it refreshes at the next event on
+      a watched field or on the validated field itself. Confirm the behavior is
+      acceptable for your design (or gate on the calc's inputs instead).
+- [ ] Bad conditions are rejected at save time with a clear message: a typo'd
+      field name, `datediff(...)`, `[event][field]`, a checkbox ref without its
+      `(code)`, an unknown checkbox code.
+- [ ] Survey page: the same condition gates the same way for respondents.
+
 ## Data-entry form (classic project)
 
 - [ ] Type a correct minted ID → green "verified" message.

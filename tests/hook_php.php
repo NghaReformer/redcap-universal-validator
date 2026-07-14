@@ -475,6 +475,194 @@ namespace {
     check('shorthand audit logs the CANONICAL algorithm name',
         $synLog && $synLog[0][1]['algorithm'] === 'iso7064_mod37_36');
 
+    // ---- 18) "when" conditions gate the server audit ----
+    $whenDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'sid'       => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'stype'     => ['field_type' => 'radio', 'field_annotation' => '', 'form_name' => 'f',
+                        'select_choices_or_calculations' => '1, Sputum | 2, Blood'],
+        'consent'   => ['field_type' => 'checkbox', 'field_annotation' => '', 'form_name' => 'f',
+                        'select_choices_or_calculations' => '0, Verbal | 1, Written'],
+        'elig'      => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'other_form'],
+    ];
+    function whenRule($when) {
+        return [[
+            'rule-type' => 'single', 'fields' => ['sid'], 'fields-csv' => '', 'when' => $when,
+            'algorithm' => 'iso7064_mod37_36', 'source' => '', 'pattern' => '', 'strip' => '',
+            'keep-chars' => '', 'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+            'expected-count' => '', 'block-save' => 'off',
+        ]];
+    }
+    $badSid = '1ABC-00002E'; // invalid mod37,36 check
+
+    // condition FALSE -> the invalid value is NOT logged (and not "unconfigurable" either)
+    $m = newModule(whenRule("[stype]='2'"), $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '1']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('when false: invalid value is NOT audited', count(invalidLogs($m)) === 0);
+    check('when false: no unconfigurable entry', count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+
+    // condition TRUE -> logged as usual, and the ref rode the ONE getData call
+    $m = newModule(whenRule("[stype]='2'"), $whenDict, [2 => [351 => ['sid' => $badSid, 'stype' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('when true: invalid value IS audited', in_array('sid', loggedFields($m), true));
+    check('condition ref is part of the single getData read',
+        \REDCap::$lastGetDataParams && in_array('stype', \REDCap::$lastGetDataParams['fields'], true));
+
+    // checkbox refs arrive as code=>0/1 arrays from getData and resolve '1'/'0'
+    $m = newModule(whenRule("[consent(1)]='1'"), $whenDict,
+        [2 => [351 => ['sid' => $badSid, 'consent' => ['0' => '0', '1' => '1']]]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('checkbox ref checked: rule audited', in_array('sid', loggedFields($m), true));
+    $m = newModule(whenRule("[consent(1)]='1'"), $whenDict,
+        [2 => [351 => ['sid' => $badSid, 'consent' => ['0' => '1', '1' => '0']]]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('checkbox ref unchecked: rule skipped', count(invalidLogs($m)) === 0);
+
+    // a ref on ANOTHER instrument is still read and honored (refs are not form-filtered)
+    $m = newModule(whenRule("[elig]='yes'"), $whenDict,
+        [2 => [351 => ['sid' => $badSid, 'elig' => 'yes']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('off-instrument ref gates the rule (true case)', in_array('sid', loggedFields($m), true));
+    // a missing ref value evaluates as '' -> condition false here -> skipped
+    $m = newModule(whenRule("[elig]='yes'"), $whenDict, [2 => [351 => ['sid' => $badSid]]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('missing ref value evaluates as empty (rule skipped)', count(invalidLogs($m)) === 0);
+
+    // a when-less rule behaves exactly as before (regression guard for the new plumbing)
+    $m = newModule(whenRule(''), $whenDict, [2 => [351 => ['sid' => $badSid]]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('blank when box: rule audits unconditionally', in_array('sid', loggedFields($m), true));
+
+    // an unparseable when never reaches the audit: every channel turns it into a
+    // config-error rule, which the audit skips wholesale (client shows the error)
+    $m = newModule(whenRule("datediff([a],[b],'d')>3"), $whenDict, [2 => [351 => ['sid' => $badSid]]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('unparseable when -> config-error rule -> no invalid log', count(invalidLogs($m)) === 0);
+
+    // ---- 19) "when" carriage + save-time gate on the dialog channel ----
+    // the condition travels into the injected client config verbatim
+    $m = newModule(whenRule("[stype]='2'"), $whenDict, [], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'f', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    $sidRule = null;
+    if ($cfg && isset($cfg['rules'])) {
+        foreach ($cfg['rules'] as $r) { if (isset($r['fields']) && $r['fields'] === ['sid']) { $sidRule = $r; break; } }
+    }
+    check('when reaches the injected client config', $sidRule && isset($sidRule['when']) && $sidRule['when'] === "[stype]='2'");
+
+    // validateSettings (save-time gate) rejects bad conditions before storage
+    $m = newModule([], $whenDict, [], 149);
+    $wFlat = [
+        'rules'      => [true],
+        'rule-type'  => ['single'],
+        'fields'     => [['sid']],
+        'fields-csv' => [''],
+        'when'       => ["[stype]="],
+        'algorithm'  => ['iso7064_mod37_36'],
+        'source'     => [''],
+        'pattern'    => [''],
+        'strip'      => [''],
+        'keep-chars' => [''],
+        'id-lengths' => [''],
+        'id-min-len' => [''],
+        'id-max-len' => [''],
+        'expected-count' => [''],
+        'block-save' => ['off'],
+    ];
+    $msg = $m->validateSettings($wFlat);
+    check('validateSettings rejects a malformed when', is_string($msg) && strpos($msg, '"when"') !== false);
+    $wFlat['when'] = ["[nosuch]='1'"];
+    $msg = $m->validateSettings($wFlat);
+    check('validateSettings rejects a when referencing an unknown field',
+        is_string($msg) && strpos($msg, 'not a field') !== false);
+    $wFlat['when'] = ["[consent]='1'"];
+    $msg = $m->validateSettings($wFlat);
+    check('validateSettings demands a checkbox (code)', is_string($msg) && strpos($msg, 'is a checkbox') !== false);
+    $wFlat['when'] = ["[consent(9)]='1'"];
+    $msg = $m->validateSettings($wFlat);
+    check('validateSettings rejects an unknown checkbox code',
+        is_string($msg) && strpos($msg, 'no choice code') !== false);
+    $wFlat['when'] = ["[stype(1)]='1'"];
+    $msg = $m->validateSettings($wFlat);
+    check('validateSettings rejects a (code) on a non-checkbox',
+        is_string($msg) && strpos($msg, 'only checkbox fields') !== false);
+    $wFlat['when'] = ["[stype]='2' and [consent(1)]='1'"];
+    check('validateSettings passes a sound conditional rule', $m->validateSettings($wFlat) === null);
+
+    // ---- 20) annotation channel: dictionary ref checks surface on the field ----
+    $annDict = $whenDict;
+    $annDict['tagged'] = ['field_type' => 'text', 'form_name' => 'f',
+        'field_annotation' => '@UVALIDATE={"when":"[ghost]=\'1\'"}'];
+    $m = newModule([], $annDict, [], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'f', 351, null, 1);
+    $html = ob_get_clean();
+    check('annotation when with an unknown ref -> visible config error',
+        strpos($html, 'not a field in this project') !== false);
+    // and a sound annotation condition still gates the audit end-to-end
+    $annDict['tagged']['field_annotation'] = '@UVALIDATE={"when":"[stype]=\'2\'"}';
+    $m = newModule([], $annDict, [2 => [351 => ['tagged' => $badSid, 'stype' => '1']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('annotation when false: tagged field not audited', count(invalidLogs($m)) === 0);
+    $m = newModule([], $annDict, [2 => [351 => ['tagged' => $badSid, 'stype' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
+    check('annotation when true: tagged field audited', in_array('tagged', loggedFields($m), true));
+
+    // ---- 21) whenValues snapshot: saved ref values baked into the page config ----
+    $snapRule = whenRule("[stype]='2' or [consent(1)]='1' or [elig]='yes'");
+    $snapData = [2 => [351 => [
+        'sid'     => '2XYZ-K93B7I',
+        'stype'   => '1',
+        'consent' => ['0' => '1', '1' => '0'], // sequential numeric codes: the JSON-array trap
+        'elig'    => 'yes',
+    ]]];
+    $m = newModule($snapRule, $whenDict, $snapData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
+    $html = ob_get_clean();
+    $rawJson = null;
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $rawJson = $mm[1];
+        $cfg = json_decode($rawJson, true);
+    }
+    check('whenValues snapshot present', $cfg && isset($cfg['whenValues']));
+    check('scalar ref value baked', $cfg && isset($cfg['whenValues']['stype']) && $cfg['whenValues']['stype'] === '1');
+    check('off-instrument ref value baked', $cfg && isset($cfg['whenValues']['elig']) && $cfg['whenValues']['elig'] === 'yes');
+    check('checkbox map baked with its codes',
+        $cfg && isset($cfg['whenValues']['consent']) && $cfg['whenValues']['consent'] === ['0' => '1', '1' => '0']);
+    check('checkbox map serialized as a JSON OBJECT despite sequential codes',
+        $rawJson !== null && strpos($rawJson, '"consent":{') !== false);
+    check('non-ref fields are not snapshot', $cfg && !isset($cfg['whenValues']['sid']));
+
+    // a brand-new record (null) has no snapshot at all
+    $m = newModule($snapRule, $whenDict, $snapData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, null, 'f', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    check('null record: whenValues omitted', $cfg && !isset($cfg['whenValues']));
+
+    // rules without when: no snapshot key and no extra getData at render time
+    $m = newModule($dialogRules, $dictionary, $classicData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'id_validation_test', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    check('when-less rules: whenValues omitted', $cfg && !isset($cfg['whenValues']));
+    check('when-less rules: no render-time getData', \REDCap::$lastGetDataParams === null);
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

@@ -1,0 +1,415 @@
+{
+  "spec": "Normative dialect spec lives in the php/Logic.php docblock. Both runtimes (php/Logic.php and the QRID_when* block in js/engine.js) must agree on every case below; tests/when_php.php and tests/when_js.cjs drive them. errorContains is matched case-insensitively as a substring. The fixture locks parse ok/error, evaluate() verdicts, and referencedFields() output - never the internal AST shape.",
+  "caps": {
+    "maxLen": 500,
+    "maxRefs": 20,
+    "maxDepth": 10
+  },
+  "eval": [
+    {
+      "name": "eq_basic",
+      "expr": "[t]='2'",
+      "values": {
+        "t": "2"
+      },
+      "expect": true
+    },
+    {
+      "name": "eq_numeric_leading_zero",
+      "expr": "[t]='2'",
+      "values": {
+        "t": "02"
+      },
+      "expect": true
+    },
+    {
+      "name": "eq_case_sensitive",
+      "expr": "[t]='a'",
+      "values": {
+        "t": "A"
+      },
+      "expect": false
+    },
+    {
+      "name": "neq_angle",
+      "expr": "[t]<>'5'",
+      "values": {
+        "t": "4"
+      },
+      "expect": true
+    },
+    {
+      "name": "neq_bang_canonical",
+      "expr": "[t]!='5'",
+      "values": {
+        "t": "5"
+      },
+      "expect": false
+    },
+    {
+      "name": "gt_numeric_not_lexicographic",
+      "expr": "[n]>'9'",
+      "values": {
+        "n": "10"
+      },
+      "expect": true
+    },
+    {
+      "name": "gt_string_when_not_numeric",
+      "expr": "[s]>'9'",
+      "values": {
+        "s": "A"
+      },
+      "expect": true
+    },
+    {
+      "name": "and_binds_tighter_false",
+      "expr": "[a]='1' or [b]='1' and [c]='1'",
+      "values": {
+        "a": "0",
+        "b": "1",
+        "c": "0"
+      },
+      "expect": false
+    },
+    {
+      "name": "and_binds_tighter_true",
+      "expr": "[a]='1' or [b]='1' and [c]='1'",
+      "values": {
+        "a": "1",
+        "b": "0",
+        "c": "0"
+      },
+      "expect": true
+    },
+    {
+      "name": "not_simple",
+      "expr": "not [a]='1'",
+      "values": {
+        "a": "2"
+      },
+      "expect": true
+    },
+    {
+      "name": "not_group",
+      "expr": "not([a]='1' or [b]='1')",
+      "values": {
+        "a": "0",
+        "b": "0"
+      },
+      "expect": true
+    },
+    {
+      "name": "parens_override_precedence",
+      "expr": "([a]='1' or [b]='1') and [c]='1'",
+      "values": {
+        "a": "1",
+        "b": "0",
+        "c": "0"
+      },
+      "expect": false
+    },
+    {
+      "name": "or_chain_true_last",
+      "expr": "[a]='9' or [b]='9' or [c]='9'",
+      "values": {
+        "c": "9"
+      },
+      "expect": true
+    },
+    {
+      "name": "checkbox_checked",
+      "expr": "[cb(2)]='1'",
+      "values": {
+        "cb": {
+          "2": "1",
+          "3": "0"
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "checkbox_unchecked",
+      "expr": "[cb(3)]='1'",
+      "values": {
+        "cb": {
+          "2": "1",
+          "3": "0"
+        }
+      },
+      "expect": false
+    },
+    {
+      "name": "checkbox_field_absent",
+      "expr": "[cb(2)]='1'",
+      "values": {},
+      "expect": false
+    },
+    {
+      "name": "checkbox_absent_reads_zero",
+      "expr": "[cb(9)]='0'",
+      "values": {
+        "cb": {
+          "2": "1"
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "checkbox_code_with_letters",
+      "expr": "[cb(A_1)]='1'",
+      "values": {
+        "cb": {
+          "A_1": "1"
+        }
+      },
+      "expect": true
+    },
+    {
+      "name": "empty_ref_equals_empty",
+      "expr": "[t]=''",
+      "values": {},
+      "expect": true
+    },
+    {
+      "name": "empty_ref_not_equals_empty",
+      "expr": "[t]<>''",
+      "values": {},
+      "expect": false
+    },
+    {
+      "name": "empty_string_ordering",
+      "expr": "[t]<'1'",
+      "values": {},
+      "expect": true
+    },
+    {
+      "name": "zero_value_string",
+      "expr": "[t]='0'",
+      "values": {
+        "t": "0"
+      },
+      "expect": true
+    },
+    {
+      "name": "double_quoted_literal",
+      "expr": "[t]=\"x y\"",
+      "values": {
+        "t": "x y"
+      },
+      "expect": true
+    },
+    {
+      "name": "decimal_numeric_equality",
+      "expr": "[n]>='2.50'",
+      "values": {
+        "n": "2.5"
+      },
+      "expect": true
+    },
+    {
+      "name": "mixed_case_keywords_field",
+      "expr": "[SType]='1' AND NOT [b]='2'",
+      "values": {
+        "stype": "1",
+        "b": "3"
+      },
+      "expect": true
+    },
+    {
+      "name": "literal_only_tautology",
+      "expr": "'1'='1'",
+      "values": {},
+      "expect": true
+    },
+    {
+      "name": "whitespace_normalized",
+      "expr": "[t] =\n\t'2'",
+      "values": {
+        "t": "2"
+      },
+      "expect": true
+    },
+    {
+      "name": "negative_numbers",
+      "expr": "[n]<-1",
+      "values": {
+        "n": "-2"
+      },
+      "expect": true
+    },
+    {
+      "name": "boundary_le_ge",
+      "expr": "[n]<='10' and [n]>='10'",
+      "values": {
+        "n": "10.0"
+      },
+      "expect": true
+    },
+    {
+      "name": "values_are_trimmed",
+      "expr": "[t]='2'",
+      "values": {
+        "t": "  2  "
+      },
+      "expect": true
+    },
+    {
+      "name": "depth_ten_allowed",
+      "expr": "(((((((((([a]='1'))))))))))",
+      "values": {
+        "a": "1"
+      },
+      "expect": true
+    },
+    {
+      "name": "twenty_refs_allowed",
+      "expr": "[f1]='' and [f2]='' and [f3]='' and [f4]='' and [f5]='' and [f6]='' and [f7]='' and [f8]='' and [f9]='' and [f10]='' and [f11]='' and [f12]='' and [f13]='' and [f14]='' and [f15]='' and [f16]='' and [f17]='' and [f18]='' and [f19]='' and [f20]=''",
+      "values": {},
+      "expect": true
+    },
+    {
+      "name": "len_500_allowed",
+      "expr": "[a]='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+      "values": {},
+      "expect": false
+    }
+  ],
+  "errors": [
+    {
+      "name": "bare_ref",
+      "expr": "[a]",
+      "errorContains": "compare"
+    },
+    {
+      "name": "event_prefix",
+      "expr": "[event_1_arm_1][age]>'3'",
+      "errorContains": "[event][field]"
+    },
+    {
+      "name": "function_rejected",
+      "expr": "datediff([a],[b],'d')>'3'",
+      "errorContains": "function"
+    },
+    {
+      "name": "smart_variable",
+      "expr": "[record-name]='x'",
+      "errorContains": "smart variables"
+    },
+    {
+      "name": "arithmetic",
+      "expr": "[a]+1>'2'",
+      "errorContains": "unexpected character"
+    },
+    {
+      "name": "over_500_chars",
+      "expr": "[a]='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
+      "errorContains": "500"
+    },
+    {
+      "name": "over_20_refs",
+      "expr": "[f1]='' and [f2]='' and [f3]='' and [f4]='' and [f5]='' and [f6]='' and [f7]='' and [f8]='' and [f9]='' and [f10]='' and [f11]='' and [f12]='' and [f13]='' and [f14]='' and [f15]='' and [f16]='' and [f17]='' and [f18]='' and [f19]='' and [f20]='' and [f21]=''",
+      "errorContains": "20"
+    },
+    {
+      "name": "over_10_deep",
+      "expr": "((((((((((([a]='1')))))))))))",
+      "errorContains": "nested"
+    },
+    {
+      "name": "non_ascii",
+      "expr": "[t]='é'",
+      "errorContains": "ASCII"
+    },
+    {
+      "name": "unbalanced_paren",
+      "expr": "([a]='1'",
+      "errorContains": "parenthesis"
+    },
+    {
+      "name": "empty_expr",
+      "expr": "",
+      "errorContains": "non-empty"
+    },
+    {
+      "name": "whitespace_only",
+      "expr": "   ",
+      "errorContains": "non-empty"
+    },
+    {
+      "name": "unterminated_string",
+      "expr": "[a]='x",
+      "errorContains": "unterminated"
+    },
+    {
+      "name": "bare_word_value",
+      "expr": "[a]=yes",
+      "errorContains": "bare word"
+    },
+    {
+      "name": "trailing_content",
+      "expr": "[a]='1' [b]='2'",
+      "errorContains": "after a complete condition"
+    },
+    {
+      "name": "double_equals",
+      "expr": "[a]=='1'",
+      "errorContains": "expected"
+    },
+    {
+      "name": "missing_rhs",
+      "expr": "[a]=",
+      "errorContains": "ends where"
+    },
+    {
+      "name": "lone_not",
+      "expr": "not",
+      "errorContains": "ends where"
+    },
+    {
+      "name": "empty_brackets",
+      "expr": "[]='1'",
+      "errorContains": "empty brackets"
+    },
+    {
+      "name": "keyword_as_operand",
+      "expr": "[a]=and",
+      "errorContains": "where a [field]"
+    }
+  ],
+  "refs": [
+    {
+      "name": "dedupe_and_order",
+      "expr": "[a]='1' or [a(2)]='1' and [b]>'0' or [a]='2'",
+      "expect": [
+        [
+          "a",
+          null
+        ],
+        [
+          "a",
+          "2"
+        ],
+        [
+          "b",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "lowercased",
+      "expr": "[STYPE]='1'",
+      "expect": [
+        [
+          "stype",
+          null
+        ]
+      ]
+    },
+    {
+      "name": "literals_only",
+      "expr": "'1'='1'",
+      "expect": []
+    }
+  ]
+}

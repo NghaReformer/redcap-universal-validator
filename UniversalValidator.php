@@ -22,6 +22,7 @@ use ExternalModules\AbstractExternalModule;
 
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
+require_once __DIR__ . '/php/Logic.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -53,7 +54,9 @@ class UniversalValidator extends AbstractExternalModule
 
     public function redcap_data_entry_form_top($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance = 1)
     {
-        $this->injectClient($project_id, 'form');
+        // Record context is threaded through so "when" conditions can snapshot
+        // saved values of fields that are not on the rendered page.
+        $this->injectClient($project_id, 'form', $record, $instrument, $event_id, $repeat_instance);
     }
 
     public function redcap_survey_page_top($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance = 1)
@@ -62,7 +65,7 @@ class UniversalValidator extends AbstractExternalModule
         // detail in front of survey respondents (who cannot act on it); the
         // same problems stay fully visible on staff data-entry forms and in
         // the module log.
-        $this->injectClient($project_id, 'survey');
+        $this->injectClient($project_id, 'survey', $record, $instrument, $event_id, $repeat_instance);
     }
 
     /**
@@ -111,16 +114,34 @@ class UniversalValidator extends AbstractExternalModule
             }
             if (!$fields) return;
 
-            // Read every audited field for this exact record/event/instance in ONE
-            // getData call instead of one call per field (UV-007).
-            $values = $this->readValues($project_id, $record, array_keys($fields), $event_id, $instrument, $repeat_instance);
+            // Parse each live rule's "when" condition ONCE (false sentinel for a
+            // string that does not parse — auditRule surfaces it) and widen the
+            // read set with every referenced field. Refs are deliberately NOT
+            // instrument-filtered: a condition may look at any field on the
+            // saved event, wherever it lives.
+            $whenAst = [];
+            $readSet = $fields;
+            foreach ($rules as $ruleIndex => $r) {
+                if (!empty($r['configError'])) continue;
+                if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
+                $p = Logic::parse($r['when']);
+                if (empty($p['ok'])) { $whenAst[$ruleIndex] = false; continue; }
+                $whenAst[$ruleIndex] = $p['ast'];
+                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+            }
+
+            // Read every audited + condition-referenced field for this exact
+            // record/event/instance in ONE getData call instead of one call per
+            // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
+            $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true);
 
             foreach ($rules as $ruleIndex => $rule) {
                 if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
                 // Each rule is isolated: one rule blowing up must not silently
                 // abort the audit of every later rule (COR-002).
                 try {
-                    $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance);
+                    $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null);
                 } catch (\Throwable $e) {
                     $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
                 }
@@ -132,7 +153,7 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** Validate one rule's fields against the values read for this save. */
-    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance)
+    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null)
     {
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
         $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
@@ -146,6 +167,21 @@ class UniversalValidator extends AbstractExternalModule
         if (!in_array($algo, AnnotationRules::ALGORITHMS, true)) {
             $this->logUnconfigurable($ruleIndex, $rule['fields'], 'unknown algorithm "' . $algo . '"', $instrument, $event_id, $repeat_instance);
             return;
+        }
+
+        // Conditional rule: evaluate the pre-parsed "when" against this save's
+        // values (missing/empty ref => ''). False => the rule is inert for this
+        // save, mirroring the client gate — no detection logs. A "when" the
+        // caller could not parse should be unreachable (every configuration
+        // channel validates it via checkFragment, which turns it into a
+        // configError rule the audit skips), but if the two parse sites ever
+        // drift it must surface as unconfigurable, never as a silent pass.
+        if (isset($rule['when']) && $rule['when'] !== '') {
+            if (!is_array($whenAst)) {
+                $this->logUnconfigurable($ruleIndex, $rule['fields'], 'the "when" condition cannot be evaluated — rule skipped', $instrument, $event_id, $repeat_instance);
+                return;
+            }
+            if (!Logic::evaluate($whenAst, $values)) return;
         }
 
         $unconfigurable = [];
@@ -329,9 +365,9 @@ class UniversalValidator extends AbstractExternalModule
 
     // -- client injection ---------------------------------------------------
 
-    private function injectClient($pid = null, $context = 'form')
+    private function injectClient($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
-        $config = $this->buildClientConfig($pid, $context);
+        $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
         $engineUrl = $this->getUrl('js/engine.js');
         // Embed the config as INERT JSON (not executable JS); the engine parses
@@ -351,14 +387,45 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** Build the engine's config object from module settings. */
-    private function buildClientConfig($pid = null, $context = 'form')
+    private function buildClientConfig($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
-        return array_merge($this->defaults(), [
+        $rules = $this->getRules($pid);
+        $config = array_merge($this->defaults(), [
             'singleFields' => [],
             'pooledFields' => [],
             'context'      => $context,
-            'rules'        => $this->getRules($pid),
+            'rules'        => $rules,
         ]);
+
+        // Saved-value snapshot for "when" condition refs. The client resolver
+        // prefers the live DOM (fields on this page react as they are edited)
+        // and falls back to these baked values for fields on other instruments.
+        // A brand-new record has no saved values: the key is simply omitted and
+        // off-page refs resolve to '' — the same thing REDCap branching sees.
+        $refs = [];
+        foreach ($rules as $r) {
+            if (!empty($r['configError'])) continue;
+            if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
+            $p = Logic::parse($r['when']);
+            if (empty($p['ok'])) continue; // stored rules with a bad "when" are configError rules already
+            foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
+        }
+        if ($refs && $record !== null && $record !== '') {
+            try {
+                $vals = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true);
+                foreach ($vals as $f => $v) {
+                    // json_encode would emit a JSON ARRAY for a checkbox map with
+                    // sequential numeric codes (['0'=>...,'1'=>...]) — the client
+                    // resolver needs an object, so cast each map explicitly.
+                    if (is_array($v)) $vals[$f] = (object) $v;
+                }
+                if ($vals) $config['whenValues'] = $vals;
+            } catch (\Throwable $e) {
+                // Snapshot is best-effort: without it, off-page refs read '' on
+                // the client and the server audit remains the backstop.
+            }
+        }
+        return $config;
     }
 
     /**
@@ -383,9 +450,10 @@ class UniversalValidator extends AbstractExternalModule
         if (!is_array($subs)) return $out;
         $known = $this->projectFieldNames($pid);
         $types = $this->projectFieldTypes($pid);
+        $choices = $this->projectFieldChoices($pid);
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices);
             if ($rule !== null) $out[] = $rule;
         }
         return $out;
@@ -397,12 +465,12 @@ class UniversalValidator extends AbstractExternalModule
      * two can never disagree about what a valid rule is. Returns null for a row
      * with nothing to say, otherwise a rule array (with configError when bad).
      */
-    private function settingRowToRule(array $s, $known, $types)
+    private function settingRowToRule(array $s, $known, $types, $choices = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'algorithm', 'source', 'pattern', 'strip',
+        foreach (['rule-type', 'fields-csv', 'when', 'algorithm', 'source', 'pattern', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
             if (isset($s[$k]) && !is_scalar($s[$k])) unset($s[$k]);
@@ -485,6 +553,10 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($s['pattern']) && (string) $s['pattern'] !== '')    $rule['idPattern'] = (string) $s['pattern'];
         if (isset($s['strip']) && (string) $s['strip'] !== '')        $rule['strip']     = (string) $s['strip'];
         if (isset($s['keep-chars']) && (string) $s['keep-chars'] !== '') $rule['keepChars'] = (string) $s['keep-chars'];
+        // Optional "when" condition — the rule validates only while it is true.
+        // A blank box simply never sets the key (in the annotation JSON channel
+        // an explicit "when":"" is a config error instead — it hides a typo).
+        if (isset($s['when']) && trim((string) $s['when']) !== '')    $rule['when'] = trim((string) $s['when']);
 
         // Strict validation of the numeric controls: a bad value becomes a
         // visible per-rule config error instead of being silently coerced
@@ -518,9 +590,21 @@ class UniversalValidator extends AbstractExternalModule
 
         // One shared semantic validator for every configuration channel:
         // algorithm/source/blockSave whitelists, pattern safety (ReDoS gate,
-        // ASCII subset, compilability), none-needs-pattern, and the hard caps
-        // that bound the pooled parser's work (COR-002/PER-002/COR-004).
+        // ASCII subset, compilability), none-needs-pattern, "when" syntax, and
+        // the hard caps that bound the pooled parser's work (COR-002/PER-002).
         foreach (AnnotationRules::checkFragment($rule) as $e) $errors[] = $e;
+
+        // Dictionary-dependent "when" reference checks (field exists, checkbox
+        // needs a real (code), no file/descriptive refs) — only when the
+        // dictionary is available, like the field-name checks above.
+        if (isset($rule['when']) && $types !== null) {
+            $w = Logic::parse($rule['when']);
+            if (!empty($w['ok'])) {
+                foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
+                    $errors[] = $e;
+                }
+            }
+        }
 
         if ($errors) $rule['configError'] = implode(' ', $errors);
 
@@ -543,9 +627,10 @@ class UniversalValidator extends AbstractExternalModule
             try { $pid = $this->getProjectId(); } catch (\Throwable $e) {}
             $known = $pid ? $this->projectFieldNames($pid) : null;
             $types = $pid ? $this->projectFieldTypes($pid) : null;
+            $choices = $pid ? $this->projectFieldChoices($pid) : null;
             $errors = [];
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices);
                 if ($rule !== null && !empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
                 }
@@ -565,7 +650,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'algorithm', 'source',
+        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'algorithm', 'source',
                  'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
         $n = count($settings['rules']);
@@ -606,7 +691,25 @@ class UniversalValidator extends AbstractExternalModule
             }
             $perField[$name] = $frag;
         }
-        return $perField ? AnnotationRules::group($perField) : [];
+        if (!$perField) return [];
+        // Dictionary-dependent "when" reference checks for this channel —
+        // parseField/checkFragment already validated the syntax; whether the
+        // referenced fields exist (and checkbox codes are real) needs the dd,
+        // which is in hand right here.
+        $types = null;
+        $choices = null;
+        foreach ($perField as $name => $frag) {
+            if (isset($frag['error']) || !isset($frag['when'])) continue;
+            $w = Logic::parse($frag['when']);
+            if (empty($w['ok'])) continue; // parseField already surfaced the syntax error
+            if ($types === null) {
+                $types = $this->projectFieldTypes($pid);
+                $choices = $this->projectFieldChoices($pid);
+            }
+            $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
+            if ($errs) $perField[$name] = ['error' => implode(' ', $errs)];
+        }
+        return AnnotationRules::group($perField);
     }
 
     /**
@@ -650,6 +753,26 @@ class UniversalValidator extends AbstractExternalModule
             $types[$name] = isset($meta['field_type']) ? $meta['field_type'] : '';
         }
         return $types;
+    }
+
+    /**
+     * Checkbox field => [choice codes] map for validating "when" references,
+     * or null when the dictionary is unavailable. Only checkbox rows are
+     * parsed — for calc fields select_choices_or_calculations holds an
+     * equation, not choices.
+     */
+    private function projectFieldChoices($pid = null)
+    {
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return null;
+        $choices = [];
+        foreach ($dd as $name => $meta) {
+            if (!isset($meta['field_type']) || $meta['field_type'] !== 'checkbox') continue;
+            $raw = isset($meta['select_choices_or_calculations']) ? $meta['select_choices_or_calculations'] : '';
+            $codes = Logic::parseChoiceCodes($raw);
+            if ($codes) $choices[$name] = $codes;
+        }
+        return $choices;
     }
 
     /**
@@ -705,7 +828,7 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Returns a map of field => string value (only fields that had a value).
      */
-    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance)
+    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance, $keepArrays = false)
     {
         if (!$fields) return [];
         $params = [
@@ -760,7 +883,15 @@ class UniversalValidator extends AbstractExternalModule
             }
 
             if ($val !== null && $val !== '') {
-                $out[$f] = is_string($val) ? $val : (string) $val;
+                if (is_array($val)) {
+                    // Checkbox fields arrive as code => '0'/'1' maps. Kept only
+                    // when the caller asked for them ("when" condition refs);
+                    // validated fields are Text/Notes, so an array can never
+                    // reach the per-field audit loop.
+                    if ($keepArrays) $out[$f] = $val;
+                } else {
+                    $out[$f] = is_string($val) ? $val : (string) $val;
+                }
             }
         }
         return $out;

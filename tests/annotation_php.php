@@ -150,6 +150,28 @@ check('annotation JSON path uses checkFragment (pooled unsafe lengths -> error)'
     ($r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","idLengths":[8,16]}'))
     && isset($r['error']) && strpos($r['error'], 'swallow') !== false);
 
+// ---- the "when" condition key (carriage + validation through this channel) ----
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"damm","when":"[stype]=\'2\'"}');
+check('when carried on the fragment', !isset($r['error']) && $r['when'] === "[stype]='2'"
+    && $r['algorithm'] === 'damm');
+$r = AnnotationRules::parseField('@UVALIDATE={"when":"[a]="}');
+check('bad when syntax -> error naming when', isset($r['error']) && strpos($r['error'], '"when"') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"when":123}');
+check('non-string when -> error', isset($r['error']) && strpos($r['error'], '"when"') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"when":""}');
+check('empty when -> error (never a silent no-op)',
+    isset($r['error']) && stripos($r['error'], 'non-empty') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"whenn":"[a]=\'1\'"}');
+check('typo key lists when among valid keys',
+    isset($r['error']) && strpos($r['error'], 'whenn') !== false && strpos($r['error'], 'when') !== false);
+check('checkFragment: sound when -> no errors', fragErrors(['when' => "[a]='1'"]) === []);
+check('checkFragment: function in when rejected',
+    strpos(implode(' ', fragErrors(['when' => "datediff([a],[b],'d')>'3'"])), 'function') !== false);
+check('checkFragment: event prefix in when rejected',
+    strpos(implode(' ', fragErrors(['when' => "[event_1_arm_1][age]>'3'"])), '[event][field]') !== false);
+check('checkFragment: non-string when rejected',
+    count(fragErrors(['when' => ['x']])) === 1);
+
 // ---- group ----
 $rules = AnnotationRules::group([
     'pid_1' => ['algorithm' => 'damm'],
@@ -162,6 +184,18 @@ check('identical fragments share a rule', $rules[0]['fields'] === ['pid_1', 'pid
 check('defaults rule separate', $rules[1]['fields'] === ['pid_3'] && $rules[1]['type'] === 'single');
 check('error rule carries configError on its field',
     $rules[2]['fields'] === ['bad_1'] && strpos($rules[2]['configError'], 'boom') !== false);
+
+// grouping with when: identical conditions share a rule, different ones split
+$rules = AnnotationRules::group([
+    'w_1' => ['algorithm' => 'damm', 'when' => "[stype]='2'"],
+    'w_2' => ['algorithm' => 'damm', 'when' => "[stype]='2'"],
+    'w_3' => ['algorithm' => 'damm', 'when' => "[stype]='3'"],
+    'w_4' => ['algorithm' => 'damm'],
+]);
+check('when grouping: 3 rules out', count($rules) === 3);
+check('identical when shares a rule', $rules[0]['fields'] === ['w_1', 'w_2'] && $rules[0]['when'] === "[stype]='2'");
+check('different when splits the rule', $rules[1]['fields'] === ['w_3'] && $rules[1]['when'] === "[stype]='3'");
+check('when-less rule stays separate', $rules[2]['fields'] === ['w_4'] && !isset($rules[2]['when']));
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

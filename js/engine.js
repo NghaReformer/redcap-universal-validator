@@ -863,6 +863,447 @@ function QRID_findField(name){
   }
   return null;
 }
+/* ---- "when" conditions: parser/evaluator twins (module feature) ------------
+   A rule may carry {when: "[specimen_type]='2'"} — the rule then validates
+   only while the condition is true. php/Logic.php is the NORMATIVE dialect
+   spec (grammar, resolution, comparison semantics, caps, error wording); keep
+   this block behavior-identical to it. tests/when_js.cjs and
+   tests/when_php.php drive both runtimes against the shared
+   tests/when_fixture.json, so any drift fails CI.
+   AST: ["or",[...]] | ["and",[...]] | ["not",x] | ["cmp",op,lhs,rhs];
+   operands: ["ref",field,codeOrNull] | ["lit",string]. */
+var QRID_WHEN_MAX_LEN = 500, QRID_WHEN_MAX_REFS = 20, QRID_WHEN_MAX_DEPTH = 10;
+var QRID_WHEN_NUM_RE = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/;
+
+function QRID_whenErr(msg){ return { ok: false, error: msg }; }
+
+/* Parse one condition -> {ok:true, ast} | {ok:false, error}. Error strings are
+   subject-less predicates so callers can prefix 'the "when" condition '. */
+function QRID_whenParse(expr){
+  if(typeof expr !== "string") return QRID_whenErr("must be a non-empty condition string.");
+  var s = expr.replace(/[\t\r\n]/g, " ").replace(/^ +| +$/g, "");
+  if(s === "") return QRID_whenErr("must be a non-empty condition string.");
+  if(/[^\x20-\x7E]/.test(s)) return QRID_whenErr("must contain printable ASCII only.");
+  if(s.length > QRID_WHEN_MAX_LEN) return QRID_whenErr("is limited to " + QRID_WHEN_MAX_LEN + " characters.");
+  var lex = QRID_whenLex(s);
+  if(lex.error) return QRID_whenErr(lex.error);
+  var st = { t: lex.tokens, p: 0 };
+  var r = QRID_whenOr(st, 0);
+  if(r.error) return QRID_whenErr(r.error);
+  if(st.p < st.t.length){
+    return QRID_whenErr('has unexpected content after a complete condition — combine comparisons with "and"/"or".');
+  }
+  return { ok: true, ast: r.node };
+}
+function QRID_whenLex(s){
+  var tokens = [];
+  var n = s.length;
+  var refs = 0;
+  var i = 0;
+  while(i < n){
+    var ch = s.charAt(i);
+    if(ch === " "){ i++; continue; }
+    if(ch === "["){
+      var m = /^\[([A-Za-z][A-Za-z0-9_]*)(\(([A-Za-z0-9._-]+)\))?\]/.exec(s.slice(i));
+      if(!m){
+        return { error: "may only use plain [field] or [field(code)] references — no [event][field] prefixes, smart variables, or empty brackets." };
+      }
+      i += m[0].length;
+      if(i < n && s.charAt(i) === "["){
+        return { error: "may only use plain [field] or [field(code)] references — no [event][field] prefixes, smart variables, or empty brackets." };
+      }
+      refs++;
+      if(refs > QRID_WHEN_MAX_REFS){
+        return { error: "uses more than " + QRID_WHEN_MAX_REFS + " field references." };
+      }
+      tokens.push(["ref", m[1].toLowerCase(), (m[3] !== undefined && m[3] !== "") ? m[3] : null]);
+      continue;
+    }
+    if(ch === "'" || ch === '"'){
+      var end = s.indexOf(ch, i + 1);
+      if(end === -1) return { error: "has an unterminated quoted string." };
+      tokens.push(["lit", s.slice(i + 1, end)]);
+      i = end + 1;
+      continue;
+    }
+    if(ch === "-" || (ch >= "0" && ch <= "9")){
+      var nm = /^-?[0-9]+(\.[0-9]+)?/.exec(s.slice(i));
+      if(nm){
+        tokens.push(["lit", nm[0]]); /* numbers are literals; numeric-ness is decided at compare time */
+        i += nm[0].length;
+        continue;
+      }
+      return { error: 'contains an unexpected character "' + ch + '".' };
+    }
+    var two = s.slice(i, i + 2);
+    if(two === "<>" || two === "<=" || two === ">="){ tokens.push(["op", two]); i += 2; continue; }
+    if(two === "!="){ tokens.push(["op", "<>"]); i += 2; continue; } /* canonicalized */
+    if(ch === "="){ tokens.push(["op", "="]); i++; continue; }
+    if(ch === "<" || ch === ">"){ tokens.push(["op", ch]); i++; continue; }
+    if(ch === "("){ tokens.push(["("]); i++; continue; }
+    if(ch === ")"){ tokens.push([")"]); i++; continue; }
+    var wm = /^[A-Za-z_][A-Za-z0-9_]*/.exec(s.slice(i));
+    if(wm){
+      var w = wm[0].toLowerCase();
+      i += wm[0].length;
+      if(w === "and" || w === "or" || w === "not"){ tokens.push(["kw", w]); continue; }
+      var j = i;
+      while(j < n && s.charAt(j) === " ") j++;
+      if(j < n && s.charAt(j) === "("){
+        return { error: 'uses the function "' + wm[0] + '(...)", which is not supported — only [field] or [field(code)] comparisons combined with and/or/not and parentheses.' };
+      }
+      return { error: 'contains the bare word "' + wm[0] + '" — field references are written in [brackets], text values in quotes.' };
+    }
+    return { error: 'contains an unexpected character "' + ch + '".' };
+  }
+  return { tokens: tokens };
+}
+/* or := and ( OR and )* — returns {node} | {error}. */
+function QRID_whenOr(st, depth){
+  var r = QRID_whenAnd(st, depth);
+  if(r.error) return r;
+  var children = [r.node];
+  while(QRID_whenPeekKw(st, "or")){
+    st.p++;
+    r = QRID_whenAnd(st, depth);
+    if(r.error) return r;
+    children.push(r.node);
+  }
+  return { node: children.length === 1 ? children[0] : ["or", children] };
+}
+/* and := not ( AND not )* */
+function QRID_whenAnd(st, depth){
+  var r = QRID_whenNot(st, depth);
+  if(r.error) return r;
+  var children = [r.node];
+  while(QRID_whenPeekKw(st, "and")){
+    st.p++;
+    r = QRID_whenNot(st, depth);
+    if(r.error) return r;
+    children.push(r.node);
+  }
+  return { node: children.length === 1 ? children[0] : ["and", children] };
+}
+/* not := NOT not | primary — "not" adds a nesting level. */
+function QRID_whenNot(st, depth){
+  if(QRID_whenPeekKw(st, "not")){
+    if(depth + 1 > QRID_WHEN_MAX_DEPTH){
+      return { error: "is nested more than " + QRID_WHEN_MAX_DEPTH + " levels deep." };
+    }
+    st.p++;
+    var r = QRID_whenNot(st, depth + 1);
+    if(r.error) return r;
+    return { node: ["not", r.node] };
+  }
+  return QRID_whenPrimary(st, depth);
+}
+/* primary := '(' or ')' | comparison — parentheses add a nesting level. */
+function QRID_whenPrimary(st, depth){
+  var t = QRID_whenPeek(st);
+  if(t !== null && t[0] === "("){
+    if(depth + 1 > QRID_WHEN_MAX_DEPTH){
+      return { error: "is nested more than " + QRID_WHEN_MAX_DEPTH + " levels deep." };
+    }
+    st.p++;
+    var r = QRID_whenOr(st, depth + 1);
+    if(r.error) return r;
+    t = QRID_whenPeek(st);
+    if(t === null || t[0] !== ")") return { error: "has an unbalanced parenthesis." };
+    st.p++;
+    return r;
+  }
+  return QRID_whenCmp(st);
+}
+/* comparison := operand op operand */
+function QRID_whenCmp(st){
+  var lhs = QRID_whenOperandTok(st);
+  if(lhs.error) return lhs;
+  var t = QRID_whenPeek(st);
+  if(t === null || t[0] !== "op"){
+    return { error: "must compare each [field] or value to something, e.g. [specimen_type]='2'." };
+  }
+  var op = t[1];
+  st.p++;
+  var rhs = QRID_whenOperandTok(st);
+  if(rhs.error) return rhs;
+  return { node: ["cmp", op, lhs.node, rhs.node] };
+}
+/* operand := ref | string | number */
+function QRID_whenOperandTok(st){
+  var t = QRID_whenPeek(st);
+  if(t === null){
+    return { error: "ends where a [field] or quoted value was expected." };
+  }
+  if(t[0] === "ref"){ st.p++; return { node: ["ref", t[1], t[2]] }; }
+  if(t[0] === "lit"){ st.p++; return { node: ["lit", t[1]] }; }
+  var label = (t[0] === "op" || t[0] === "kw") ? t[1] : t[0];
+  return { error: 'has "' + label + '" where a [field] or quoted value was expected.' };
+}
+function QRID_whenPeek(st){
+  return st.p < st.t.length ? st.t[st.p] : null;
+}
+function QRID_whenPeekKw(st, kw){
+  var t = QRID_whenPeek(st);
+  return t !== null && t[0] === "kw" && t[1] === kw;
+}
+/* Evaluate against a resolver callback (field, codeOrNull) -> string. The
+   runtime gate resolves from the live DOM/snapshot; the map form below is the
+   fixture-locked entry point. */
+function QRID_whenEvaluateWith(ast, resolve){
+  switch(ast[0]){
+    case "or":
+      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve)) return true; }
+      return false;
+    case "and":
+      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve)) return false; }
+      return true;
+    case "not":
+      return !QRID_whenEvaluateWith(ast[1], resolve);
+    case "cmp":
+      return QRID_whenCompare(ast[1],
+        QRID_whenOperandVal(ast[2], resolve),
+        QRID_whenOperandVal(ast[3], resolve));
+  }
+  return false; /* unreachable for QRID_whenParse-produced ASTs */
+}
+function QRID_whenOperandVal(op, resolve){
+  return op[0] === "lit" ? op[1] : resolve(op[1], op[2]);
+}
+/* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
+   for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
+function QRID_whenEvaluate(ast, values){
+  return QRID_whenEvaluateWith(ast, function(f, code){
+    var v = (values && Object.prototype.hasOwnProperty.call(values, f)) ? values[f] : null;
+    if(code !== null){
+      if(v !== null && typeof v === "object"){
+        return (v[code] !== undefined && String(v[code]) === "1") ? "1" : "0";
+      }
+      return "0";
+    }
+    if(v === null || v === undefined || typeof v === "object") return "";
+    return String(v);
+  });
+}
+function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
+/* Numeric compare (floats) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
+   else exact case-sensitive string compare (ASCII-identical to PHP strcmp). */
+function QRID_whenCompare(op, a, b){
+  a = QRID_whenTrim(a); b = QRID_whenTrim(b);
+  if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
+    var fa = parseFloat(a), fb = parseFloat(b);
+    switch(op){
+      case "=":  return fa === fb;
+      case "<>": return fa !== fb;
+      case ">":  return fa > fb;
+      case "<":  return fa < fb;
+      case ">=": return fa >= fb;
+      case "<=": return fa <= fb;
+    }
+    return false;
+  }
+  switch(op){
+    case "=":  return a === b;
+    case "<>": return a !== b;
+    case ">":  return a > b;
+    case "<":  return a < b;
+    case ">=": return a >= b;
+    case "<=": return a <= b;
+  }
+  return false;
+}
+/* Unique [field]/[field(code)] refs as [[field, codeOrNull], ...], first-
+   appearance order, deduped per (field, code) pair. */
+function QRID_whenRefs(ast){
+  var out = [];
+  var seen = Object.create(null);
+  QRID_whenCollectRefs(ast, out, seen);
+  return out;
+}
+function QRID_whenCollectRefs(ast, out, seen){
+  switch(ast[0]){
+    case "or":
+    case "and":
+      for(var i = 0; i < ast[1].length; i++) QRID_whenCollectRefs(ast[1][i], out, seen);
+      return;
+    case "not":
+      QRID_whenCollectRefs(ast[1], out, seen);
+      return;
+    case "cmp":
+      var ops = [ast[2], ast[3]];
+      for(var j = 0; j < ops.length; j++){
+        if(ops[j][0] === "ref"){
+          var key = ops[j][1] + "|" + (ops[j][2] === null ? "" : "(" + ops[j][2] + ")");
+          if(!seen[key]){ seen[key] = true; out.push([ops[j][1], ops[j][2]]); }
+        }
+      }
+      return;
+  }
+}
+/* ---- "when" runtime gate: live DOM + snapshot resolution -------------------
+   One shared registry: rules referencing the same field share its change
+   listeners; each factory instance gets a small gate object from gateFor().
+   Ref values are read by REDCap's NAME conventions via getElementsByName only
+   (querySelector is off-limits — the DOM test stub has none): the value
+   element is the input/textarea/select named <field> (REDCap keeps a hidden
+   input named <field> updated for radio/yesno/truefalse; calc is a readonly
+   input); the clickable radio group is named <field>___radio; a checkbox
+   option is the input named __chk__<field>_RC_<code>. A ref element that
+   never appears on this page falls back to the server-baked saved-value
+   snapshot (config.whenValues), then '' — the same value REDCap branching
+   would see. Calc fields update without DOM events, so a calc ref refreshes
+   on the next event of any listened field or of the validated field itself
+   (check()/render() re-consult the gate every time); the server audit is the
+   backstop either way. */
+var QRID_WHEN = (function(){
+  var snapshot = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.whenValues) || {};
+  var hooks = Object.create(null);    /* ref field -> [recheck callbacks] */
+  var queued = Object.create(null);   /* listener target names already requested */
+  var targets = [];                   /* targets still to bind: {name, field, events, tries} */
+  var timer = null, mo = null;
+
+  function snapValue(f){
+    return Object.prototype.hasOwnProperty.call(snapshot, f) ? snapshot[f] : undefined;
+  }
+  /* The element whose .value carries a field's current answer (select for
+     dropdowns, hidden input for radio-family fields, plain input/textarea for
+     text). Radio/checkbox inputs themselves are skipped — their group state is
+     read through the hidden input / __chk__ elements instead. */
+  function findValueEl(name){
+    var els = document.getElementsByName ? document.getElementsByName(name) : [];
+    for(var i = 0; i < els.length; i++){
+      var tag = (els[i].tagName || "").toLowerCase();
+      if(tag === "select" || tag === "textarea") return els[i];
+      if(tag === "input"){
+        var ty = (els[i].type || "").toLowerCase();
+        if(ty !== "radio" && ty !== "checkbox") return els[i];
+      }
+    }
+    return null;
+  }
+  /* (field, codeOrNull) -> current string value: live DOM, else snapshot,
+     else '' ('0' for checkbox refs). This is the gate's resolver — the same
+     semantics the fixture locks for the map-based QRID_whenEvaluate. */
+  function readRef(f, code){
+    if(code !== null){
+      var els = document.getElementsByName ? document.getElementsByName("__chk__" + f + "_RC_" + code) : [];
+      for(var i = 0; i < els.length; i++){
+        if((els[i].tagName || "").toLowerCase() === "input") return els[i].checked ? "1" : "0";
+      }
+      var m = snapValue(f);
+      if(m && typeof m === "object"){
+        return (Object.prototype.hasOwnProperty.call(m, code) && String(m[code]) === "1") ? "1" : "0";
+      }
+      return "0";
+    }
+    var el = findValueEl(f);
+    if(el) return el.value == null ? "" : String(el.value);
+    var v = snapValue(f);
+    if(v === undefined || v === null) return "";
+    if(typeof v === "object") return "";
+    return String(v);
+  }
+  function fire(f){
+    var cbs = hooks[f];
+    if(!cbs) return;
+    for(var i = 0; i < cbs.length; i++){
+      try { cbs[i](); } catch(e){}
+    }
+  }
+  /* Bind the recheck trigger to every element carrying this target name.
+     Returns true once at least one element is hooked (or was already). */
+  function tryBind(t){
+    var els = document.getElementsByName ? document.getElementsByName(t.name) : [];
+    var bound = false;
+    for(var i = 0; i < els.length; i++){
+      var el = els[i];
+      if(el.__qridWhenBound){ bound = true; continue; }
+      if(!el.addEventListener) continue;
+      el.__qridWhenBound = true;
+      bound = true;
+      var handler = function(){ fire(t.field); };
+      for(var k = 0; k < t.events.length; k++) el.addEventListener(t.events[k], handler);
+    }
+    return bound;
+  }
+  function stopSweep(){
+    if(timer !== null && typeof clearInterval === "function"){ clearInterval(timer); }
+    timer = null;
+    if(mo){ mo.disconnect(); mo = null; }
+  }
+  /* Same late-render tolerance as the factories' boot(): retry each target on
+     a 500ms interval (max 20 tries) plus a MutationObserver. A target that
+     never appears is an off-page ref — the snapshot covers it, so giving up
+     quietly is correct. */
+  function sweep(){
+    var remaining = [];
+    for(var i = 0; i < targets.length; i++){
+      var t = targets[i];
+      if(tryBind(t)) continue;
+      t.tries = (t.tries || 0) + 1;
+      if(t.tries < 20) remaining.push(t);
+    }
+    targets = remaining;
+    if(!targets.length) stopSweep();
+    return !targets.length;
+  }
+  function queueTarget(name, field, events){
+    if(queued[name]) return;
+    queued[name] = true;
+    targets.push({ name: name, field: field, events: events, tries: 0 });
+  }
+  function requestField(f, code){
+    if(code !== null){
+      queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]);
+    } else {
+      queueTarget(f, f, ["input", "change"]);
+      queueTarget(f + "___radio", f, ["change", "click"]);
+    }
+    if(typeof document === "undefined" || !document.getElementsByName) return;
+    if(sweep()) return;
+    if(timer === null && typeof setInterval === "function"){
+      timer = setInterval(function(){ sweep(); }, 500);
+    }
+    if(!mo && typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  /* Factory-facing API. Returns null when the rule has no condition (zero
+     behavior change), else {active, onChange}. A condition that does not
+     parse — near-impossible for stored rules, every configuration channel
+     validates it — fails OPEN: the rule goes inert (never traps a save), the
+     reason lands on the console, and the server audit (which skips the rule
+     as a config error) keeps it from passing silently. */
+  function gateFor(exprRaw){
+    if(exprRaw === undefined || exprRaw === null || exprRaw === "") return null;
+    var r = QRID_whenParse(typeof exprRaw === "string" ? exprRaw : String(exprRaw));
+    if(!r.ok){
+      try {
+        if(typeof console !== "undefined" && console.error){
+          console.error('Universal Field Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
+        }
+      } catch(e){}
+      return { active: function(){ return false; }, onChange: function(){} };
+    }
+    var ast = r.ast;
+    var refs = QRID_whenRefs(ast);
+    return {
+      active: function(){
+        try { return QRID_whenEvaluateWith(ast, readRef); }
+        catch(e){ return false; } /* fail open: never trap a save on a gate bug */
+      },
+      onChange: function(cb){
+        for(var i = 0; i < refs.length; i++){
+          var f = refs[i][0];
+          if(!hooks[f]) hooks[f] = [];
+          hooks[f].push(cb);
+          requestField(f, refs[i][1]);
+        }
+      }
+    };
+  }
+  return { gateFor: gateFor, readRef: readRef };
+})();
 /* ---- optional save blocking (shared by both factories) ---------------------
    blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
@@ -1221,6 +1662,8 @@ function QRIDSingleInit(QRID_CONFIG){
   if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
+  /* optional "when" condition: null when absent (no behavior change) */
+  var GATE = configError ? null : QRID_WHEN.gateFor(QRID_CONFIG.when);
   function attach(fieldName){
     var input = QRID_findField(fieldName);
     if(!input) return false;
@@ -1228,6 +1671,13 @@ function QRIDSingleInit(QRID_CONFIG){
     if(input.setAttribute) input.setAttribute("data-qrid-bound", "1");
     var msg = QRID_attachMsgRegion(input, fieldName);
     function check(isFinal){
+      if(GATE && !GATE.active()){
+        /* condition false -> the rule is inert here: clear any verdict and
+           never hold the save (the submit guard reads only __qridInvalid). */
+        msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+        QRID_setInvalidState(input, null);
+        return;
+      }
       var v = (input.value || "").trim();
       if(!v){
         msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
@@ -1254,6 +1704,8 @@ function QRIDSingleInit(QRID_CONFIG){
     input.addEventListener("input", debounced);
     input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
     input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(true); });
+    /* a condition flip (true<->false) re-runs the full check for this field */
+    if(GATE) GATE.onChange(function(){ check(true); });
     check(true);
     if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
@@ -1570,6 +2022,12 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       'font-family:monospace;font-size:12px;border:1px solid ' + c + '">' + mark + text + suffix + '</span>';
   }
   function render(msg, input){
+    if(GATE && !GATE.active()){
+      /* condition false -> the rule is inert here (see the single factory) */
+      msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+      QRID_setInvalidState(input, null);
+      return;
+    }
     var v = (input.value || "").trim();
     if(!v){
       msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
@@ -1626,6 +2084,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   if(BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
+  /* optional "when" condition: null when absent (no behavior change). Declared
+     before use in render() above via function-scope hoisting; assigned here,
+     before any attach()/render() can run. */
+  var GATE = configError ? null : QRID_WHEN.gateFor(QRID_MULTI_CONFIG.when);
   function attach(fieldName){
     var input = QRID_findField(fieldName);
     if(!input) return false;
@@ -1636,6 +2098,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     input.addEventListener("input", debounced);
     input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
     input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); render(msg, input); });
+    /* a condition flip (true<->false) re-renders this field's pooled verdict */
+    if(GATE) GATE.onChange(function(){ render(msg, input); });
     render(msg, input);
     if(BLOCK !== "off" && !configError) QRID_registerBlocker(input, fieldName, BLOCK);
     return true;
@@ -1677,7 +2141,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var C = QRID_COMBINED_CONFIG;
   var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
-                      "blockSave"];
+                      "blockSave", "when"];
   function cfgFor(rule){
     var cfg = {}, i, k;
     for(i = 0; i < DEFAULT_KEYS.length; i++){
@@ -1745,6 +2209,12 @@ window.INSPIREUniversalValidator = {
   engine: Q,
   riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
   configErrorNotice: QRID_configErrorNotice, /* exercised by tests/config_notice_js.cjs */
+  whenLogic: {                               /* "when" twins, locked by tests/when_js.cjs */
+    parse: QRID_whenParse,
+    evaluate: QRID_whenEvaluate,
+    referencedFields: QRID_whenRefs,
+    caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
+  },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
   get validators(){ return UV_validators; },
