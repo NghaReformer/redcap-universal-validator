@@ -1,7 +1,7 @@
 # Universal Field Validator — User & Training Guide
 
 A hands-on guide to validating IDs, codes, and structured text in REDCap with the
-**Universal Field Validator** external module (v0.7.1). It catches a mistyped
+**Universal Field Validator** external module (v0.8.0). It catches a mistyped
 participant ID, a mis-scanned specimen barcode, or an off-format lab number while
 the person who typed it is still looking at the field — before the bad value ever
 reaches your dataset.
@@ -155,7 +155,7 @@ Two limits to keep in mind from the start:
 **From a downloaded copy**
 
 1. Put the module folder under `redcap/modules/` named with its version, e.g.
-   `redcap/modules/universal_validator_v0.7.1/`. The folder must contain
+   `redcap/modules/universal_validator_v0.8.0/`. The folder must contain
    `config.json` at its top level. (REDCap reads the version from the folder
    name — the module has no separate version field.)
 2. Go to **Control Center → External Modules → Manage**. The module appears as
@@ -228,6 +228,7 @@ one-to-one:
 | Maximum ID length | `idMaxLen` | pooled | `14` | Must be **less than 2× the minimum** |
 | Expected number of IDs | `expectedIds` | pooled | — | Warns if the pool holds a different count |
 | On an invalid value | `blockSave` | all | `off` | Enforcement: `off`, `confirm`, or `hard`. See below |
+| Only validate when | `when` | all | — | A REDCap-style condition; the rule validates only while it is true. See [Scenario 9](#scenario-9-conditional-validation-with-the-when-key) |
 | Rule label | `note` | all | — | Your own name for the rule (admin-facing only; never shown to typists) |
 
 > **`note` is a label, not a message.** It helps you organize rules ("Specimen
@@ -471,6 +472,54 @@ per-field clicking. Change the tag later and re-import to update them together.
 `regex` and `format` are shorthands for `none`, so the two annotations above use
 the same engine. Typists get the same progressive "remaining: …" guidance as in
 Scenario 2.
+
+### Scenario 9: Conditional validation with the `when` key
+
+**Goal.** A specimen aliquot ID should be validated **only when** a specimen was
+actually collected (`specimen_type = 2`). When the condition is false, the rule
+should stay out of the way.
+
+**Rule.** Add a `when` condition — a REDCap-style expression. The rule validates
+only while it is true.
+
+- *Annotation:* `@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}`
+- *Dialog:* fill the **"Only validate when"** box on the rule with
+  `[specimen_type]='2'`.
+
+Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
+
+**The condition language** is a REDCap-style *subset* — not full REDCap logic:
+
+| Supported | Rejected (a configuration error when you save) |
+|---|---|
+| `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
+| `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
+| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` cross-event prefixes |
+| `and` / `or` / `not`, parentheses | arithmetic and piping |
+
+**Behavior worth knowing.**
+
+- **A false condition skips the rule — it does not erase the value.** That is the
+  deliberate difference from REDCap's own field branching, which erases hidden
+  fields on save. Pair `when` with field branching if you also want the value
+  cleared.
+- **Same-page fields react live** — change the dropdown and the gated field's
+  verdict (and any *Compulsory* block) appears or clears at once. Fields on
+  **other instruments** use their **saved** values (a brand-new record has none
+  yet, so those references read as empty).
+- **The server audit honors the same condition**, so the browser and the audit
+  agree on when a rule applies.
+- Comparisons are numeric when both sides look numeric (`[age]>'9'` with age `10`
+  is true), otherwise exact case-sensitive text. A missing or empty field reads
+  as empty; a checkbox reference reads `'1'` or `'0'`.
+- References are checked against the data dictionary when you save — an unknown
+  field or a wrong checkbox code is a configuration error, not a silent surprise.
+  Caps: 500 characters, 20 references, 10 nesting levels.
+
+> **A field merely shown by branching logic** (no `when` needed) also just works:
+> the validator binds by field name and activates once the field is present and
+> has a value; while hidden and empty it stays silent. Reach for `when` when the
+> *validation itself* should depend on another field's value.
 
 ---
 
@@ -725,6 +774,11 @@ You can write these instead of the full name (case-insensitive), on the bare tag
 | `isbn`, `mod11w`, `weighted11` | `weighted_mod11` |
 | `regex`, `format` | `none` (pair with a `pattern`) |
 
+> The separators `,` `_` `-` are interchangeable, and each numeric shorthand also
+> accepts a `mod…` prefix (e.g. `mod3736`, `mod9710`). `damm` and `verhoeff` are
+> the only methods with **no** shorthand — type the full name. A bare
+> `@UVALIDATE` uses the default `iso7064_mod37_36`.
+
 ## Appendix C: Rule option reference
 
 Dialog label ↔ JSON key ↔ default, consolidated. "Pooled" options are ignored for
@@ -738,6 +792,7 @@ single-value rules.
 | Optional format pattern | `pattern` | *(none)* | all |
 | Separators to ignore | `strip` | dash, slash, space, underscore, pipe, backslash | all |
 | On an invalid value | `blockSave` | `off` | all |
+| Only validate when | `when` | *(none)* | all |
 | Rule label | `note` | *(none)* | all |
 | Extra characters to keep | `keepChars` | *(none)* | pooled |
 | Exact ID length(s) | `idLengths` | *(none)* | pooled |
@@ -793,6 +848,9 @@ literal between them, and prefer bounded `{n}` / `{n,m}` counts.
 # Check only the digits of a mixed ID
 @UVALIDATE={"algorithm":"mod11_10","source":"digits_only"}
 
+# Conditional: validate only when a specimen was collected
+@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}
+
 # Pooled field: 9-char IDs, expect 3
 @UVALIDATE={"type":"pooled","idLengths":[9],"expectedIds":3}
 
@@ -802,7 +860,7 @@ literal between them, and prefer bounded `{n}` / `{n,m}` counts.
 
 ---
 
-*This guide documents Universal Field Validator v0.7.1. For installation notes see
+*This guide documents Universal Field Validator v0.8.0. For installation notes see
 [`INSTALL.md`](INSTALL.md); for the manual REDCap test checklist see
 [`TESTING.md`](TESTING.md); for the product overview see the
 [README](../README.md).*

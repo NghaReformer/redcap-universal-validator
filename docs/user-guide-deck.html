@@ -52,7 +52,7 @@
 *{box-sizing:border-box; margin:0; padding:0;}
 html{
   /* the whole deck scales with the smaller of width/height so proportions hold on any screen */
-  font-size: clamp(13px, calc(0.62vw + 0.72vh), 23px);
+  font-size: clamp(16px, calc(0.62vw + 0.72vh + 3px), 26px);
   -webkit-text-size-adjust:100%;
 }
 body{
@@ -165,6 +165,7 @@ th{font-family:var(--font-mono); font-size:.7rem; text-transform:uppercase; lett
 td .mono{font-size:.86rem; color:var(--accent-deep);}
 tbody tr:last-child td{border-bottom:none;}
 .tick{color:var(--ok); font-weight:700;} .cross{color:var(--bad); font-weight:700;} .warn{color:var(--junk); font-weight:700;}
+table.sh th,table.sh td{padding:.34em .5em;} table.sh td:first-child{white-space:nowrap;} .sh-v{font-family:var(--font-mono); font-size:.72rem; color:var(--ink-soft); line-height:1.55;}
 
 .callout{background:var(--accent-tint); border:1px solid var(--accent-tint2); border-radius:14px; padding:var(--s4) var(--s5); font-size:.98rem; color:var(--ink-soft); display:flex; gap:var(--s4); align-items:flex-start;}
 .callout .ic{flex:none; margin-top:.15em; color:var(--accent-deep);}
@@ -257,7 +258,7 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
         before it ever reaches your data.
       </p>
       <div class="row wrap mt6" data-reveal style="--r:3">
-        <span class="tag accent">v0.7.1</span>
+        <span class="tag accent">v0.8.0</span>
         <span class="tag">IDs · codes · patterns</span>
         <span class="tag">Live, as-you-type</span>
       </div>
@@ -648,6 +649,7 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
             <tr><td>Format pattern</td><td><span class="mono">pattern</span></td><td>—</td><td>a regex; required when algorithm is <span class="mono">none</span></td></tr>
             <tr><td>Separators to ignore</td><td><span class="mono">strip</span></td><td>dash / slash / space …</td><td>removed before checking</td></tr>
             <tr><td>On an invalid value</td><td><span class="mono">blockSave</span></td><td><span class="mono">off</span></td><td>off · confirm · hard</td></tr>
+            <tr><td>Only validate when</td><td><span class="mono">when</span></td><td>—</td><td>a REDCap-style condition; the rule runs only while it is true</td></tr>
             <tr><td>Rule label</td><td><span class="mono">note</span></td><td>—</td><td>your own name (admin-facing only)</td></tr>
           </tbody>
         </table>
@@ -847,6 +849,69 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
     </div>
   </section>
 
+  <!-- ============ SCENARIO 6: CONDITIONAL VALIDATION (WHEN) ============ -->
+  <section class="slide" data-section="Scenarios">
+    <div class="stage wide">
+      <div class="row wrap" data-reveal style="--r:0"><span class="tag accent">Scenario 6</span><span class="tag">conditional · the when key</span></div>
+      <h2 class="mt3" data-reveal style="--r:1">Validation that depends on another field</h2>
+      <p class="lead mt3" data-reveal style="--r:2">Give any rule a <code>when</code> condition — a REDCap-style expression. The rule validates only while it is true, in all three channels.</p>
+      <div class="grid cols-5-7 mt5" style="gap:var(--s7); align-items:center">
+        <div data-reveal style="--r:3">
+          <div class="panel tint">
+            <svg viewBox="0 0 320 200" width="100%" role="img" aria-label="When the condition is true the rule validates; when false it is skipped, but the value is kept">
+              <text x="12" y="20" class="lbl-ink">when [specimen_type] = '2'</text>
+              <rect x="12" y="30" width="140" height="74" rx="9" fill="var(--ok-bg)" stroke="var(--ok-bd)"/>
+              <text x="26" y="52" class="lbl" style="fill:var(--ok)">TRUE</text>
+              <text x="26" y="76" style="font-family:var(--font-mono);font-size:13px;fill:var(--ink)">0ABC0001F</text>
+              <text x="124" y="72" style="font-family:var(--font-mono);font-size:18px;fill:var(--ok)">✓</text>
+              <text x="26" y="96" class="lbl">rule validates</text>
+              <rect x="168" y="30" width="140" height="74" rx="9" fill="var(--surface)" stroke="var(--line)"/>
+              <text x="182" y="52" class="lbl">FALSE</text>
+              <text x="182" y="76" style="font-family:var(--font-mono);font-size:13px;fill:var(--muted)">anything…</text>
+              <text x="182" y="96" class="lbl">rule skipped</text>
+              <rect x="12" y="118" width="296" height="34" rx="8" class="fill-tint" stroke="var(--accent-tint2)"/>
+              <text x="26" y="139" class="lbl" style="fill:var(--accent-deep)">value is NEVER erased — unlike field branching</text>
+              <text x="12" y="182" class="lbl">same-page refs live · other instruments use saved values</text>
+            </svg>
+          </div>
+        </div>
+        <div class="flow" data-reveal style="--r:4">
+          <div class="code"><span class="c"># validate the aliquot ID only when a specimen was collected</span>
+@UVALIDATE={<span class="t">"algorithm"</span>:<span class="s">"verhoeff"</span>,
+  <span class="t">"when"</span>:<span class="s">"[specimen_type]='2'"</span>}
+
+<span class="c"># conditions combine</span>
+<span class="t">"when"</span>:<span class="s">"[consent(1)]='1' and [site]&lt;&gt;'9'"</span></div>
+          <div class="callout"><svg class="ic" width="20" height="20" viewBox="0 0 24 24"><path class="st-acc" d="M12 3 L20 7 V12 C20 17 16 20 12 21 C8 20 4 17 4 12 V7 Z"/><path class="st-acc" d="M9 12 l2 2 l4-4"/></svg><div>The dialog offers the same as an <strong>“Only validate when”</strong> box. The <strong>server audit honors the condition too</strong>, so the browser and the audit always agree.</div></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SCENARIO 6b: THE WHEN DIALECT ============ -->
+  <section class="slide" data-section="Scenarios">
+    <div class="stage wide">
+      <div class="eyebrow" data-reveal style="--r:0">Conditional validation · dialect</div>
+      <h2 data-reveal style="--r:1; margin-top:.5rem">What a <code>when</code> condition can say</h2>
+      <p class="mt2 muted" data-reveal style="--r:2">A REDCap-style <strong>subset</strong> — anything unsupported is a configuration error when you save, not a surprise on a form later.</p>
+      <div class="grid cols-2 mt5" style="gap:var(--s7)">
+        <div class="panel" data-reveal style="--r:3; background:var(--ok-bg); border-color:var(--ok-bd)">
+          <div class="tag" style="background:#fff; border-color:var(--ok-bd); color:var(--ok); margin-bottom:1rem">✓ Supported</div>
+          <div class="chip-list"><span class="pill ok mono">[field]</span><span class="pill ok mono">[checkbox(code)]</span><span class="pill ok mono">= &lt;&gt; != &gt; &lt; &gt;= &lt;=</span><span class="pill ok mono">and · or · not</span><span class="pill ok mono">( )</span><span class="pill ok mono">'text' · numbers</span></div>
+        </div>
+        <div class="panel" data-reveal style="--r:4; background:var(--bad-bg); border-color:var(--bad-bd)">
+          <div class="tag" style="background:#fff; border-color:var(--bad-bd); color:var(--bad); margin-bottom:1rem">✗ Rejected at save</div>
+          <div class="chip-list"><span class="pill bad mono">datediff(…)</span><span class="pill bad mono">smart variables</span><span class="pill bad mono">[event][field]</span><span class="pill bad mono">arithmetic</span><span class="pill bad mono">piping</span></div>
+        </div>
+      </div>
+      <div class="grid cols-3 mt5">
+        <div class="def" data-reveal style="--r:5"><h3><span class="k">LIVE vs SNAPSHOT</span></h3><p>Same-page references react as you edit; other-instrument references use the record's saved values.</p></div>
+        <div class="def" data-reveal style="--r:6"><h3><span class="k">TYPES</span></h3><p>Numeric when both sides look numeric, else exact text. A checkbox reads <span class="mono">'1'</span>/<span class="mono">'0'</span>.</p></div>
+        <div class="def" data-reveal style="--r:7"><h3><span class="k">CAPS</span></h3><p>500 chars · 20 references · 10 nesting levels, checked against the data dictionary.</p></div>
+      </div>
+    </div>
+  </section>
+
   <!-- ============ SECTION: END USERS ============ -->
   <section class="slide divider" data-section="What users see">
     <div class="stage">
@@ -1008,11 +1073,56 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
 @UVALIDATE={<span class="t">"algorithm"</span>:<span class="s">"mod11_10"</span>,
   <span class="t">"source"</span>:<span class="s">"digits_only"</span>}
 
+<span class="c"># conditional — validate only while true</span>
+@UVALIDATE={<span class="t">"algorithm"</span>:<span class="s">"verhoeff"</span>,
+  <span class="t">"when"</span>:<span class="s">"[specimen_type]='2'"</span>}
+
 <span class="c"># pooled: 9-char IDs, expect 3</span>
 @UVALIDATE={<span class="t">"type"</span>:<span class="s">"pooled"</span>,
   <span class="t">"idLengths"</span>:[<span class="v">9</span>],<span class="t">"expectedIds"</span>:<span class="v">3</span>}
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- ============ FULL SHORTHAND REFERENCE ============ -->
+  <section class="slide" data-section="Reference">
+    <div class="stage wide">
+      <div class="eyebrow" data-reveal style="--r:0">Reference · algorithm names</div>
+      <h2 data-reveal style="--r:1; margin-top:.5rem">Full shorthand reference</h2>
+      <p class="mt2 muted small" data-reveal style="--r:2">Case-insensitive; the separators <code>,</code> <code>_</code> <code>-</code> are interchangeable. Use bare (<code>@UVALIDATE=3736</code>) or in JSON (<code>{"algorithm":"gs1"}</code>). Full canonical names always work too.</p>
+      <div class="grid cols-2 mt4" style="gap:var(--s6); align-items:start">
+        <div class="panel" data-reveal style="--r:3; padding:var(--s3) var(--s5)">
+          <table class="sh">
+            <thead><tr><th>Algorithm</th><th>Type any of</th></tr></thead>
+            <tbody>
+              <tr><td><span class="mono">iso7064_mod37_36</span></td><td class="sh-v">3736 · 37,36 · 37_36 · 37-36 · mod37_36 · mod3736</td></tr>
+              <tr><td><span class="mono">iso7064_mod11_10</span></td><td class="sh-v">1110 · 11,10 · 11_10 · 11-10 · mod11_10 · mod1110</td></tr>
+              <tr><td><span class="mono">iso7064_mod97_10</span></td><td class="sh-v">9710 · 97,10 · 97_10 · 97-10 · mod97_10 · mod9710</td></tr>
+              <tr><td><span class="mono">iso7064_mod11_2</span></td><td class="sh-v">112 · 11,2 · 11_2 · 11-2 · mod11_2 · mod112</td></tr>
+              <tr><td><span class="mono">iso7064_mod37_2</span></td><td class="sh-v">372 · 37,2 · 37_2 · 37-2 · mod37_2 · mod372</td></tr>
+              <tr><td><span class="mono">iso7064_letters1</span></td><td class="sh-v">letters1 · letter1</td></tr>
+              <tr><td><span class="mono">iso7064_letters2</span></td><td class="sh-v">letters2 · letter2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel" data-reveal style="--r:4; padding:var(--s3) var(--s5)">
+          <table class="sh">
+            <thead><tr><th>Algorithm</th><th>Type any of</th></tr></thead>
+            <tbody>
+              <tr><td><span class="mono">damm</span></td><td class="sh-v muted">— full name only</td></tr>
+              <tr><td><span class="mono">verhoeff</span></td><td class="sh-v muted">— full name only</td></tr>
+              <tr><td><span class="mono">luhn</span></td><td class="sh-v">mod10</td></tr>
+              <tr><td><span class="mono">gs1_mod10</span></td><td class="sh-v">gs1 · gtin · ean · upc</td></tr>
+              <tr><td><span class="mono">aba_mod10</span></td><td class="sh-v">aba · routing</td></tr>
+              <tr><td><span class="mono">mrz_mod10</span></td><td class="sh-v">mrz · icao</td></tr>
+              <tr><td><span class="mono">weighted_mod11</span></td><td class="sh-v">isbn · mod11w · weighted11</td></tr>
+              <tr><td><span class="mono">none</span></td><td class="sh-v">regex · format</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <p class="small muted mt4" data-reveal style="--r:5"><span class="mono accent">iso7064_mod37_36</span> is the default — a bare <code>@UVALIDATE</code> uses it. <span class="mono">damm</span> and <span class="mono">verhoeff</span> are the only methods with no shorthand.</p>
     </div>
   </section>
 
@@ -1029,7 +1139,7 @@ svg .lbl-ink{font-family:var(--font-mono); font-size:12px; fill:var(--ink); font
       <div class="brandline mt7" data-reveal style="--r:5">
         <span>Full reference: <code>docs/USER_GUIDE.md</code></span><span class="dot"></span>
         <span>Install: <code>docs/INSTALL.md</code></span><span class="dot"></span>
-        <span>Universal Field Validator v0.7.1 · CHPR</span>
+        <span>Universal Field Validator v0.8.0 · CHPR</span>
       </div>
     </div>
   </section>
