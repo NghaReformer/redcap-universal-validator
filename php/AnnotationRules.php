@@ -15,8 +15,10 @@
  *
  * JSON keys: type ("single"|"pooled"), algorithm, source, pattern, strip,
  * keepChars, idLengths (list or "10, 12"), idMinLen, idMaxLen, expectedIds,
- * blockSave ("off"|"confirm"|"hard"), note. A malformed value becomes a visible
- * per-field configuration error — never a silently skipped rule.
+ * blockSave ("off"|"confirm"|"hard"), when (a REDCap-style condition — the
+ * rule validates only while it is true, see php/Logic.php), note. A malformed
+ * value becomes a visible per-field configuration error — never a silently
+ * skipped rule.
  *
  * Pure static class with no REDCap dependency, unit-tested by
  * tests/annotation_php.php; UniversalValidator::getAnnotationRules() is the thin
@@ -26,6 +28,7 @@
 namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/CheckCharacter.php';
+require_once __DIR__ . '/Logic.php';
 
 class AnnotationRules
 {
@@ -70,7 +73,7 @@ class AnnotationRules
 
     /** Keys accepted in the JSON form ("pattern" maps to the engine's idPattern). */
     const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'strip', 'keepChars',
-                       'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'note'];
+                       'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'when', 'note'];
 
     /**
      * Resolve a user-typed algorithm shorthand to its canonical name.
@@ -215,7 +218,7 @@ class AnnotationRules
             $out['idPattern'] = $cfg['pattern'];
         }
 
-        foreach (['strip', 'keepChars', 'note'] as $k) {
+        foreach (['strip', 'keepChars', 'when', 'note'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
                 $out[$k] = $cfg[$k];
@@ -277,6 +280,20 @@ class AnnotationRules
         if (isset($frag['blockSave'])
             && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
             $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+        // Optional "when" condition: syntax, caps, and dialect-subset gating all
+        // live in Logic::parse (the normative spec). Dictionary-dependent ref
+        // checks (does the field exist, is the checkbox code real) happen in the
+        // channel glue, which is where the data dictionary is available.
+        if (isset($frag['when'])) {
+            if (!is_string($frag['when'])) {
+                $errors[] = 'the "when" condition must be a non-empty condition string.';
+            } else {
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) {
+                    $errors[] = 'the "when" condition ' . $w['error'];
+                }
+            }
         }
 
         $pattern = isset($frag['idPattern']) ? $frag['idPattern'] : null;

@@ -20,7 +20,7 @@
   "action-tags": [
     {
       "tag": "@UVALIDATE",
-      "description": "Validate this Text or Notes field with the Universal Field Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, <code>gs1</code> = GS1 Mod-10, <code>aba</code> = ABA Mod-10, <code>mrz</code> = ICAO MRZ Mod-10, <code>isbn</code> = Weighted Mod-11, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, note. Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
+      "description": "Validate this Text or Notes field with the Universal Field Validator, from the Online Designer or the data dictionary CSV instead of the module's Configure dialog. Forms: <code>@UVALIDATE</code> (default ISO 7064 Mod 37,36 check), <code>@UVALIDATE=verhoeff</code> (pick an algorithm), or a full-rule JSON such as <code>@UVALIDATE={\"algorithm\":\"none\",\"pattern\":\"FC[0-9]{4}\",\"blockSave\":\"hard\"}</code> or <code>@UVALIDATE={\"type\":\"pooled\",\"expectedIds\":3}</code>. Algorithm names accept shorthands so you need not spell out the full name: e.g. <code>@UVALIDATE=3736</code> (or <code>37,36</code>, <code>mod37_36</code>) = ISO 7064 Mod 37,36, <code>9710</code> = Mod 97,10, <code>112</code> = Mod 11,2, <code>letters1</code>/<code>letters2</code>, <code>mod10</code> = Luhn, <code>gs1</code> = GS1 Mod-10, <code>aba</code> = ABA Mod-10, <code>mrz</code> = ICAO MRZ Mod-10, <code>isbn</code> = Weighted Mod-11, and <code>regex</code> (or <code>format</code>) = no check character. JSON keys: type, algorithm, source, pattern, strip, keepChars, idLengths, idMinLen, idMaxLen, expectedIds, blockSave, when, note. The optional <code>when</code> key makes the rule conditional — it validates only while a REDCap-style condition is true, e.g. <code>@UVALIDATE={\"algorithm\":\"verhoeff\",\"when\":\"[specimen_type]='2'\"}</code> (supports [field] and [checkbox(code)] refs, = &lt;&gt; != &gt; &lt; &gt;= &lt;=, and/or/not, parentheses; a false condition skips the rule, it does NOT erase the value). Fields with identical tags are grouped into one rule; a malformed tag shows a configuration error."
     }
   ],
 
@@ -75,6 +75,11 @@
         {
           "key": "fields-csv",
           "name": "Fast entry (optional): more field names for this rule, separated by commas or spaces. Merged with the pickers above; unknown names show a configuration error.",
+          "type": "text"
+        },
+        {
+          "key": "when",
+          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on the same page are read live; fields on other instruments use their saved values. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching).",
           "type": "text"
         },
         {

@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0 — conditional validation: the `when` rule key
+
+A rule can now carry an optional REDCap-style condition and validates only
+while it is true — `@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}`,
+or the new "Only validate when" box on each Configure-dialog rule. A false
+condition makes the rule inert in the browser (message cleared, a *Compulsory*
+block never traps the save) and skips it in the server audit; it does NOT erase
+the value (unlike REDCap field branching).
+
+- **New `php/Logic.php` — the normative dialect spec.** A deliberate subset of
+  REDCap logic: `[field]` and `[checkbox(code)]` references, quoted/number
+  literals, `= <> != > < >= <=`, `and/or/not`, parentheses. Functions
+  (datediff…), smart variables, `[event][field]` prefixes, arithmetic and
+  piping are rejected when the rule is saved — with an error naming the
+  construct — instead of misbehaving later. Caps: 500 chars, 20 refs, 10
+  nesting levels. Comparisons are numeric iff both resolved sides are numeric
+  (own regex — no `is_numeric`/`Number()` leniency where PHP and JS disagree),
+  else exact case-sensitive string comparison; missing/empty refs read `''`,
+  checkbox refs read `'1'`/`'0'`.
+- **Cross-runtime parity, same discipline as everything else.** A JS twin
+  (`QRID_when*`, exposed as `whenLogic` on the namespace) lives in the
+  module-authored layer of `js/engine.js`; the hand-curated
+  `tests/when_fixture.json` locks parse errors, verdicts, referenced-field
+  extraction and the caps across both runtimes via `tests/when_js.cjs` +
+  `tests/when_php.php` (both in CI, which also lints and ships the new PHP
+  file).
+- **Live browser gate.** Referenced fields on the page react as they are
+  edited (dropdowns, radio groups via REDCap's hidden input, checkbox options
+  by `__chk__` name), shared listeners re-check every gated field on a flip,
+  and refs to fields on other instruments resolve from a saved-value snapshot
+  (`whenValues`) baked into the page config — checkbox maps are cast to JSON
+  objects so sequential codes (0,1,2…) cannot degrade into arrays. A condition
+  that cannot be evaluated fails OPEN (validation skipped, reason on the
+  console) so a save is never trapped by a gate bug; `tests/when_dom_js.cjs`
+  drives all of it through the DOM stub.
+- **Server audit honors the condition.** The one-getData read now includes
+  condition refs (never instrument-filtered), checkbox arrays survive
+  `readValues` (`$keepArrays`), and `auditRule` skips a false-condition rule
+  entirely — with the unconfigurable-log fallback if the stored condition can
+  ever not be parsed. Page hooks thread record/event/instance context into the
+  config build for the snapshot.
+- **All three channels, one validator.** `when` joins `@UVALIDATE`'s JSON keys,
+  the dialog (`rowsFromFlatSettings`/`settingRowToRule`), and fast entry;
+  `checkFragment` validates the syntax for every channel, and the
+  dictionary-dependent checks (field exists; checkbox needs a real `(code)`;
+  no file/descriptive refs) run wherever the data dictionary is available —
+  including the save-time `validateSettings` gate. Identical tags still group;
+  tags differing only in `when` split into separate rules.
+- **Docs.** README "Conditional validation" section (dialect table, live vs
+  snapshot, the no-erasure difference from field branching, calc-ref liveness
+  caveat), INSTALL.md, a manual `when` checklist in TESTING.md, and the
+  js/README.md deviation list.
+
+## 0.7.1 — post-review corrections for the weighted-modulus family
+
 ## 0.7.1 — post-review corrections for the weighted-modulus family
 
 Closes every finding from the 2026-07-13 multi-agent adversarial review of

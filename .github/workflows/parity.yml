@@ -27,6 +27,10 @@ jobs:
         run: node tests/pooled_js.cjs
       - name: JS risky-pattern heuristic
         run: node tests/risky_js.cjs
+      - name: JS "when" condition evaluator vs fixture
+        run: node tests/when_js.cjs
+      - name: JS "when" gate DOM contract (live refs, snapshot, fail-open)
+        run: node tests/when_dom_js.cjs
       - name: JS config-error notice
         run: node tests/config_notice_js.cjs
       - name: JS dispatcher config-error routing
@@ -56,6 +60,7 @@ jobs:
         run: |
           php -l php/CheckCharacter.php
           php -l php/AnnotationRules.php
+          php -l php/Logic.php
           php -l UniversalValidator.php
       - name: PHP port vs fixture (compute + normalize + scheme_ops)
         run: php tests/parity_php.php
@@ -63,6 +68,8 @@ jobs:
         run: php tests/pooled_php.php
       - name: PHP risky-pattern heuristic + server behavior
         run: php tests/risky_php.php
+      - name: PHP "when" condition evaluator vs fixture
+        run: php tests/when_php.php
       - name: PHP @UVALIDATE annotation parser
         run: php tests/annotation_php.php
       - name: PHP server-side audit (redcap_save_record) path
@@ -85,7 +92,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports; do

@@ -86,9 +86,10 @@ One rule = one kind of validation, applied to any number of fields:
    ```
 
    JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
-   `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `note`. A
-   malformed tag shows a configuration error under that field — never a silent
-   no-op. Fields with identical tags are grouped into one rule automatically.
+   `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
+   `note`. A malformed tag shows a configuration error under that field — never
+   a silent no-op. Fields with identical tags are grouped into one rule
+   automatically.
 
    **Algorithm shorthands.** So you need not spell out the full internal name,
    the `algorithm` value accepts case-insensitive shorthands (e.g.
@@ -114,6 +115,58 @@ One rule = one kind of validation, applied to any number of fields:
    builds its config, so the browser and the server-side audit both see the
    canonical name. The single source of truth is `ALGORITHM_SYNONYMS` in
    [`php/AnnotationRules.php`](php/AnnotationRules.php).
+
+## Conditional validation — the optional `when` key
+
+Any rule, in all three configuration channels, may carry a condition; the rule
+validates only while the condition is true:
+
+```text
+@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}","when":"[consent(1)]='1' and [site]<>'9'"}
+```
+
+The Configure dialog offers the same thing as an **"Only validate when"** box
+on each rule (fast-entry fields share the rule's box). Fields whose tags differ
+only in `when` become separate rules; identical tags still group.
+
+The condition language is a **REDCap-style subset — not byte-for-byte REDCap
+logic**:
+
+| Supported | Rejected when the rule is saved |
+|---|---|
+| `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
+| `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
+| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes (cross-event) |
+| `and` / `or` / `not`, parentheses | arithmetic and piping |
+
+Semantics worth knowing before relying on it:
+
+- **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with
+  age `10` is true, not a lexicographic accident), otherwise exact,
+  case-sensitive string comparison. A missing or empty field reads as `''`; a
+  checkbox reference reads `'1'`/`'0'`.
+- **Referenced fields on the same page react live**: pick the right dropdown
+  option and the gated field's verdict appears or clears immediately —
+  including a *Compulsory* save block. Fields on **other instruments** use
+  their **saved** values, baked into the page at load time (a brand-new record
+  has none yet, so such refs read `''`). A calc field updates without DOM
+  events, so a calc ref refreshes at the next event on any watched field — the
+  manual check for this is in [`docs/TESTING.md`](docs/TESTING.md).
+- **A false condition skips the rule — it never erases the value.** That is
+  the deliberate difference from REDCap's own field branching, which erases
+  hidden fields on save. Combine `when` with normal field branching if you
+  also want erasure.
+- **The server-side audit honors the same condition** against the record's
+  saved values, so browser and audit skip (or check) a rule consistently.
+- Caps: 500 characters, 20 field references, 10 nesting levels. References are
+  checked against the data dictionary at save time — unknown fields, missing
+  or wrong checkbox codes, and refs to file/descriptive fields are
+  configuration errors, not silent surprises.
+
+The dialect is specified normatively in [`php/Logic.php`](php/Logic.php); the
+browser twin lives in `js/engine.js`, and `tests/when_fixture.json` locks the
+two together (see Verification below).
 
 ## Methods supported
 
@@ -162,6 +215,13 @@ check-character primitive, but the full runtime path the module actually uses:
   (ReDoS) gate to one shared pattern list in both runtimes (nested quantifiers
   AND repeated alternation/optional groups such as `(a|aa)+`), and prove the
   server never turns a PCRE engine failure into a false invalid-ID log.
+- `tests/when_js.cjs` / `tests/when_php.php` — lock the `when` condition
+  dialect (parse errors, evaluation verdicts, referenced-field extraction,
+  caps) to `tests/when_fixture.json` in both runtimes, so the browser gate and
+  the server audit can never disagree about a condition. `tests/when_dom_js.cjs`
+  drives the browser gate itself: live dropdown/radio/checkbox flips, the
+  saved-value snapshot, fail-open on an unparseable condition, and the
+  guarantee that a gated-off rule never blocks a save.
 - `tests/annotation_php.php` — the `@UVALIDATE` parser and the shared rule
   validator (`checkFragment`) used by every configuration channel.
 - `tests/hook_php.php` — the whole `redcap_save_record` audit path against a
@@ -192,6 +252,9 @@ node tests/pooled_js.cjs      # JS pooled parser vs pooled_fixture.json
 php  tests/pooled_php.php      # PHP pooled parser vs pooled_fixture.json
 node tests/risky_js.cjs       # JS ReDoS gate vs risky_patterns.json
 php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
+node tests/when_js.cjs        # JS "when" evaluator vs when_fixture.json
+php  tests/when_php.php        # PHP "when" evaluator vs the same fixture
+node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, snapshot, fail-open)
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
 node tests/a11y_dom_js.cjs    # field DOM contract (a11y, debounce, survey, readonly)
