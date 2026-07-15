@@ -62,6 +62,15 @@ for (const c of fx.errors) {
   check('error: ' + c.name, ok);
 }
 
+// ---- astEval: prebuilt ASTs, incl. the server-folded ['const',bool] node ----
+for (const c of fx.astEval) {
+  check('astEval verdict: ' + c.name, W.evaluate(c.ast, c.values || {}) === c.expect);
+}
+for (const c of fx.astRefs) {
+  check('astRefs list: ' + c.name,
+    JSON.stringify(W.referencedFields(c.ast)) === JSON.stringify(c.expect));
+}
+
 // ---- refs: referencedFields output locked (order + dedupe + lowercase) ----
 for (const c of fx.refs) {
   const r = W.parse(c.expr);

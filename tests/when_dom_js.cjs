@@ -8,7 +8,8 @@
  *   - flipping a referenced dropdown/radio/checkbox re-checks live and
  *     restores full validation (including the hard block),
  *   - true -> false clears a previously shown verdict,
- *   - off-page refs resolve from the server-baked whenValues snapshot,
+ *   - conditions the browser cannot resolve arrive PRE-FOLDED as constants
+ *     from the server, so no record value is ever in the page (SEC-005),
  *   - an unparseable condition fails OPEN (skips validation, never blocks),
  *   - the pooled factory honors the same gate,
  *   - a rule without "when" is untouched (regression).
@@ -173,37 +174,68 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   check('checkbox untick clears the verdict', msg.style.display === 'none');
 }
 
-// ---- 4) off-page ref resolves from the whenValues snapshot -----------------
+// ---- 4) off-page conditions arrive PRE-FOLDED from the server (SEC-005) ----
+// The server resolves any comparison the browser cannot read and ships the
+// boolean (php/Logic.php fold()), so no record value is ever in the page.
 {
   const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
   const env = boot([sid], {
     singleFields: [], pooledFields: [],
-    whenValues: { elig: 'yes', consent: { '0': '1', '1': '0' } },
     rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
-              blockSave: 'hard', when: "[elig]='yes' and [consent(0)]='1'" }],
+              blockSave: 'hard', when: "[elig]='yes' and [consent(0)]='1'",
+              whenAst: ['and', [['const', true], ['const', true]]] }],
+  });
+  check('folded true constants -> rule validates', /check character/i.test(msgOf(env, 'sid').innerHTML));
+}
+{
+  const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+  const env = boot([sid], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
+              blockSave: 'hard', when: "[elig]='yes'", whenAst: ['const', false] }],
+  });
+  check('folded false constant -> inert', msgOf(env, 'sid').style.display === 'none');
+  const ev = submitEv();
+  env.doc.fire('submit', ev);
+  check('folded false constant: save never trapped', ev._prevented === false);
+}
+{
+  // mixed: one live ref (read from the form) AND one folded constant
+  const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+  const stype = makeEl('select'); stype.name = 'stype'; stype.value = '1';
+  const env = boot([sid, stype], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
+              blockSave: 'hard', when: "[stype]='2' and [elig]='yes'",
+              whenAst: ['and', [['cmp', '=', ['ref', 'stype', null], ['lit', '2']], ['const', true]]] }],
   });
   const msg = msgOf(env, 'sid');
-  check('snapshot refs (scalar + checkbox map) evaluate true', /check character/i.test(msg.innerHTML));
+  check('mixed folded AST: live ref still gates', msg.style.display === 'none');
+  stype.value = '2';
+  stype.fire('change');
+  check('mixed folded AST: live ref flip re-checks against the constant',
+    /check character/i.test(msg.innerHTML));
 }
 {
+  // the AST is authoritative: a false constant wins even though the condition
+  // TEXT would parse to something true (proves the server's fold is used)
   const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
   const env = boot([sid], {
     singleFields: [], pooledFields: [],
-    whenValues: { elig: 'no' },
     rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
-              blockSave: 'hard', when: "[elig]='yes'" }],
+              when: "[elig]=''", whenAst: ['const', false] }],
   });
-  check('snapshot ref evaluates false -> inert', msgOf(env, 'sid').style.display === 'none');
+  check('a shipped whenAst overrides the condition text', msgOf(env, 'sid').style.display === 'none');
 }
 {
+  // no AST shipped (window-config fallback / legacy): the text is parsed here
   const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
   const env = boot([sid], {
     singleFields: [], pooledFields: [],
-    // no whenValues at all (new record): off-page ref reads ''
     rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
-              blockSave: 'hard', when: "[elig]=''" }],
+              when: "[nosuch]=''" }],
   });
-  check('missing snapshot: off-page ref reads empty (condition true here)',
+  check('no whenAst: the condition text is still parsed (ref reads empty)',
     /check character/i.test(msgOf(env, 'sid').innerHTML));
 }
 

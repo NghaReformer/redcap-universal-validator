@@ -79,7 +79,7 @@
         },
         {
           "key": "when",
-          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on the same page are read live; fields on other instruments use their saved values. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field.",
+          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on this instrument are read live as they are edited; a field on another instrument is resolved on the server against its saved value and only the result is sent to the browser (its value never appears in the page). While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field.",
           "type": "text"
         },
         {

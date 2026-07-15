@@ -150,13 +150,21 @@ Semantics worth knowing before relying on it:
   age `10` is true, not a lexicographic accident), otherwise exact,
   case-sensitive string comparison. A missing or empty field reads as `''`; a
   checkbox reference reads `'1'`/`'0'`.
-- **Referenced fields on the same page react live**: pick the right dropdown
-  option and the gated field's verdict appears or clears immediately —
-  including a *Compulsory* save block. Fields on **other instruments** use
-  their **saved** values, baked into the page at load time (a brand-new record
-  has none yet, so such refs read `''`). A calc field updates without DOM
-  events, so a calc ref refreshes at the next event on any watched field — the
-  manual check for this is in [`docs/TESTING.md`](docs/TESTING.md).
+- **Referenced fields on the same instrument react live**: pick the right
+  dropdown option and the gated field's verdict appears or clears immediately —
+  including a *Compulsory* save block. A calc field updates without DOM events,
+  so a calc ref refreshes at the next event on any watched field — the manual
+  check for this is in [`docs/TESTING.md`](docs/TESTING.md).
+- **Fields on other instruments are resolved on the server, never sent to the
+  browser.** Such a field cannot change while the page is open, so the server
+  settles that part of the condition against the record's saved values and
+  sends only the result. The page carries field names, your own literals, and
+  booleans — never a record value, so a survey respondent (or a user without
+  rights to that instrument) cannot read one out of the page source. A
+  comparison mixing an on-instrument and an off-instrument field is settled the
+  same way, which means it is correct as of page load but does **not** react
+  live; put both fields on one instrument if you need that. A brand-new record
+  has no saved values yet, so such refs resolve as `''`.
 - **A false condition skips the rule — it never erases the value.** That is
   the deliberate difference from REDCap's own field branching, which erases
   hidden fields on save. Combine `when` with normal field branching if you
@@ -256,8 +264,16 @@ check-character primitive, but the full runtime path the module actually uses:
   caps) to `tests/when_fixture.json` in both runtimes, so the browser gate and
   the server audit can never disagree about a condition. `tests/when_dom_js.cjs`
   drives the browser gate itself: live dropdown/radio/checkbox flips, the
-  saved-value snapshot, fail-open on an unparseable condition, and the
-  guarantee that a gated-off rule never blocks a save.
+  server-folded constants, fail-open on an unparseable condition, and the
+  guarantee that a gated-off rule never blocks a save. `tests/hook_php.php`
+  additionally asserts that no record value ever reaches the page (SEC-005),
+  on data-entry forms and survey pages alike.
+- `tests/when_fuzz_php.php` — the cases nobody thought of: `gen_when_fuzz.cjs`
+  builds 4048 seeded conditions (valid ones from the grammar, plus mutated and
+  hostile ones), freezes what the browser twin does with each, and the PHP
+  engine must agree on every accept/reject, verdict and referenced-field list.
+  This is what catches a numeric-vs-string comparison quietly drifting between
+  the runtimes on inputs like `1e3`, `0x10` or `" 2 "`.
 - `tests/branching_php.php` and `tests/branch_dom_js.cjs` — implement the SAME
   branched-validation scenario table on both sides (active branch, else
   branch, conflicts, per-branch blockSave/suggestFix, illegal-sharing
@@ -297,7 +313,9 @@ node tests/risky_js.cjs       # JS ReDoS gate vs risky_patterns.json
 php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
 node tests/when_js.cjs        # JS "when" evaluator vs when_fixture.json
 php  tests/when_php.php        # PHP "when" evaluator vs the same fixture
-node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, snapshot, fail-open)
+node tests/gen_when_fuzz.cjs  # regenerate the seeded when-fuzz fixture
+php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cases)
+node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks

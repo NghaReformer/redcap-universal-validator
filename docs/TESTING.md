@@ -88,6 +88,11 @@ after switching), it only leaves the messages untranslated.
 - [ ] Condition referencing a field on ANOTHER instrument: the rule follows
       that field's SAVED value (edit it on its own form, save, re-open this
       form). On a brand-new record it reads as empty.
+- [ ] SEC-005 — that field's VALUE must not be in the page: View Source on the
+      form AND on a survey page, find the `inspire-validator-config` block, and
+      confirm it contains no `whenValues` key and none of the referenced
+      record's values — only field names, the condition text you wrote, and
+      `["const",true|false]`.
 - [ ] While the condition is false, an invalid value SAVES and is NOT erased —
       and the module log shows no `invalid-id-saved` entry for it; after making
       the condition true and re-saving, the entry appears.

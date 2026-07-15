@@ -30,6 +30,14 @@
  * [event][field] prefixes, arithmetic, piping.
  *
  * Evaluation semantics:
+ * Where conditions are EVALUATED (privacy-relevant, see fold()): a condition
+ * may reference fields that are not on the page being rendered. Their values
+ * are never sent to the browser — the server folds every comparison that
+ * needs one into a constant before the condition is injected, so the page
+ * carries field names, the designer's own literals, and booleans, but no
+ * record data.
+ *
+ * Evaluation semantics:
  *   - a missing or empty field value resolves to '' (the server value reader
  *     drops empties, so "missing" and "empty" are the same thing by design);
  *   - a checkbox ref [f(code)] resolves to '1' when that code is checked,
@@ -68,8 +76,9 @@ class Logic
      *
      * AST shape (internal — the fixture locks behavior, never this shape):
      *   ['or', [child, ...]] | ['and', [child, ...]] | ['not', child]
-     *   | ['cmp', op, operand, operand]
+     *   | ['cmp', op, operand, operand] | ['const', bool]
      *   operand: ['ref', field, codeOrNull] | ['lit', string]
+     * parse() never produces a 'const' node — fold() does (see there).
      */
     public static function parse($expr)
     {
@@ -102,6 +111,8 @@ class Logic
     public static function evaluate(array $ast, array $values)
     {
         switch ($ast[0]) {
+            case 'const':
+                return !empty($ast[1]);
             case 'or':
                 foreach ($ast[1] as $c) { if (self::evaluate($c, $values)) return true; }
                 return false;
@@ -131,6 +142,54 @@ class Logic
         $seen = [];
         self::collectRefs($ast, $out, $seen);
         return $out;
+    }
+
+    /**
+     * Partially evaluate a condition for ONE rendered page, so no record value
+     * ever has to be sent to the browser (SEC-005).
+     *
+     * $liveFields is the set (field => true) of fields the browser can read on
+     * this page — the fields of the instrument being rendered. A comparison
+     * whose references are ALL live is left alone: the browser reads those
+     * fields from the form and re-evaluates as the user edits them. Every
+     * OTHER comparison — one that needs a field the browser cannot see, and
+     * therefore cannot change while the page is open — is evaluated here
+     * against $values and replaced by ['const', bool].
+     *
+     * The result carries field names, the designer's own literals, and
+     * booleans; the referenced records' values stay on the server. What a
+     * folded constant still reveals is one bit ("this comparison held"), which
+     * the feature inherently reveals anyway by validating or not.
+     *
+     * A comparison that MIXES a live and a non-live reference is folded whole
+     * (it cannot be resolved in the browser at all): it is then correct as of
+     * page load but does not react live — put both fields on one instrument
+     * for live reaction.
+     */
+    public static function fold(array $ast, array $values, array $liveFields)
+    {
+        switch ($ast[0]) {
+            case 'or':
+            case 'and':
+                $out = [];
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields);
+                return [$ast[0], $out];
+            case 'not':
+                return ['not', self::fold($ast[1], $values, $liveFields)];
+            case 'cmp':
+                $refs = 0;
+                $live = 0;
+                foreach ([$ast[2], $ast[3]] as $op) {
+                    if ($op[0] !== 'ref') continue;
+                    $refs++;
+                    if (isset($liveFields[$op[1]])) $live++;
+                }
+                // all references readable in the browser -> keep it live
+                if ($refs > 0 && $refs === $live) return $ast;
+                // otherwise the browser could never resolve it: settle it here
+                return ['const', self::evaluate($ast, $values)];
+        }
+        return $ast;   // 'const' (already folded) and anything unknown
     }
 
     /**

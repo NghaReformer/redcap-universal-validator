@@ -56,8 +56,10 @@ and the field-facing UI layer:
 5. **"when" conditions and branched validation (REDCap-only module features).**
    The `QRID_when*` block (parser/evaluator twins of `php/Logic.php`, locked by
    `tests/when_fixture.json` via `tests/when_js.cjs`/`tests/when_php.php`), the
-   `QRID_WHEN` runtime gate (live DOM refs by REDCap name conventions + the
-   `whenValues` snapshot; `tests/when_dom_js.cjs`), and the branch plumbing
+   `QRID_WHEN` runtime gate (live DOM refs by REDCap name conventions; a
+   comparison the browser cannot read arrives PRE-FOLDED from the server as a
+   `["const",bool]` node — `Logic::fold()` — so no record value is ever in the
+   page; `tests/when_dom_js.cjs`), and the branch plumbing
    (`QRID_buildVariants`/`QRID_activeVariants`/`QRID_renderConflict`; both
    factories build their mode-resolution closure per VARIANT via an internal
    `makeVariant(cfg)`, so a per-field branch rule from `php/Branching.php`

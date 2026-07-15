@@ -620,55 +620,81 @@ namespace {
     $m->redcap_save_record(149, '2', 'f', 351, null, null, null, 1);
     check('annotation when true: tagged field audited', in_array('tagged', loggedFields($m), true));
 
-    // ---- 21) whenValues snapshot: saved ref values baked into the page config ----
-    $snapRule = whenRule("[stype]='2' or [consent(1)]='1' or [elig]='yes'");
-    $snapData = [2 => [351 => [
+    // ---- 21) SEC-005: conditions are folded, record values never reach the page ----
+    // In $whenDict, stype/consent live on the rendered form "f"; elig lives on
+    // "other_form". A condition over elig cannot be resolved in the browser —
+    // and elig's VALUE must never be shipped there (a survey respondent, or a
+    // user without rights to other_form, can read anything the page carries).
+    function pageCfg($m, $ctx, $record, $instrument) {
+        ob_start();
+        if ($ctx === 'survey') $m->redcap_survey_page_top(149, $record, $instrument, 351, null, 'h', null, 1);
+        else $m->redcap_data_entry_form_top(149, $record, $instrument, 351, null, 1);
+        $html = ob_get_clean();
+        if (!preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) return null;
+        return ['html' => $html, 'raw' => $mm[1], 'cfg' => json_decode($mm[1], true)];
+    }
+    function ruleFor($p, $field) {
+        if (!$p || empty($p['cfg']['rules'])) return null;
+        foreach ($p['cfg']['rules'] as $r) {
+            if (isset($r['fields']) && in_array($field, $r['fields'], true)) return $r;
+        }
+        return null;
+    }
+    $SECRET = 'ELIGIBLE_PATIENT_042';
+    $foldRule = whenRule("[stype]='2' or [consent(1)]='1' or [elig]='" . $SECRET . "'");
+    $foldData = [2 => [351 => [
         'sid'     => '2XYZ-K93B7I',
         'stype'   => '1',
-        'consent' => ['0' => '1', '1' => '0'], // sequential numeric codes: the JSON-array trap
-        'elig'    => 'yes',
+        'consent' => ['0' => '1', '1' => '0'], // sequential numeric codes
+        'elig'    => $SECRET,
     ]]];
-    $m = newModule($snapRule, $whenDict, $snapData, 149);
-    ob_start();
-    $m->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
-    $html = ob_get_clean();
-    $rawJson = null;
-    $cfg = null;
-    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
-        $rawJson = $mm[1];
-        $cfg = json_decode($rawJson, true);
-    }
-    check('whenValues snapshot present', $cfg && isset($cfg['whenValues']));
-    check('scalar ref value baked', $cfg && isset($cfg['whenValues']['stype']) && $cfg['whenValues']['stype'] === '1');
-    check('off-instrument ref value baked', $cfg && isset($cfg['whenValues']['elig']) && $cfg['whenValues']['elig'] === 'yes');
-    check('checkbox map baked with its codes',
-        $cfg && isset($cfg['whenValues']['consent']) && $cfg['whenValues']['consent'] === ['0' => '1', '1' => '0']);
-    check('checkbox map serialized as a JSON OBJECT despite sequential codes',
-        $rawJson !== null && strpos($rawJson, '"consent":{') !== false);
-    check('non-ref fields are not snapshot', $cfg && !isset($cfg['whenValues']['sid']));
+    $p = pageCfg(newModule($foldRule, $whenDict, $foldData, 149), 'form', '2', 'f');
+    check('no whenValues snapshot is emitted at all', $p && !isset($p['cfg']['whenValues']));
+    $r = ruleFor($p, 'sid');
+    check('the rule ships a folded whenAst', $r && isset($r['whenAst']) && is_array($r['whenAst']));
+    // [stype] and [consent(1)] are on this form -> stay live refs (the browser
+    // reads them); [elig] is not -> folded to the boolean it evaluates to.
+    $enc = json_encode($r['whenAst'] ?? null);
+    check('on-form refs stay live in the folded AST',
+        strpos($enc, '["ref","stype",null]') !== false && strpos($enc, '["ref","consent","1"]') !== false);
+    check('off-form comparison is folded to a constant', strpos($enc, '["const",true]') !== false);
+    check('off-form ref is GONE from the shipped AST', strpos($enc, '"elig"') === false);
 
-    // a brand-new record (null) has no snapshot at all
-    $m = newModule($snapRule, $whenDict, $snapData, 149);
-    ob_start();
-    $m->redcap_data_entry_form_top(149, null, 'f', 351, null, 1);
-    $html = ob_get_clean();
-    $cfg = null;
-    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
-        $cfg = json_decode($mm[1], true);
-    }
-    check('null record: whenValues omitted', $cfg && !isset($cfg['whenValues']));
+    // survey pages carry the same folded shape and no values either
+    $p = pageCfg(newModule($foldRule, $whenDict, $foldData, 149), 'survey', '2', 'f');
+    $r = ruleFor($p, 'sid');
+    check('survey page: no whenValues', $p && !isset($p['cfg']['whenValues']));
+    check('survey page: folded AST shipped', $r && isset($r['whenAst']));
 
-    // rules without when: no snapshot key and no extra getData at render time
+    // the record's actual values appear NOWHERE in the emitted page (the
+    // condition's own literals are designer config and may of course appear)
+    foreach (['form', 'survey'] as $ctx) {
+        $p = pageCfg(newModule(whenRule("[elig]<>''"), $whenDict, $foldData, 149), $ctx, '2', 'f');
+        check($ctx . ' page: the off-form record value is not in the page',
+            $p && strpos($p['html'], $SECRET) === false);
+    }
+
+    // a brand-new record: nothing to read, off-form comparisons fold against ''
+    $p = pageCfg(newModule($foldRule, $whenDict, $foldData, 149), 'form', null, 'f');
+    $r = ruleFor($p, 'sid');
+    check('null record: still no whenValues', $p && !isset($p['cfg']['whenValues']));
+    check('null record: off-form comparison folds to false (empty value)',
+        $r && strpos(json_encode($r['whenAst']), '["const",false]') !== false);
+
+    // rules without when: no folding work and no extra getData at render time
     $m = newModule($dialogRules, $dictionary, $classicData, 149);
-    ob_start();
-    $m->redcap_data_entry_form_top(149, '2', 'id_validation_test', 351, null, 1);
-    $html = ob_get_clean();
-    $cfg = null;
-    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
-        $cfg = json_decode($mm[1], true);
-    }
-    check('when-less rules: whenValues omitted', $cfg && !isset($cfg['whenValues']));
+    $p = pageCfg($m, 'form', '2', 'id_validation_test');
+    check('when-less rules: no whenAst', $p && !isset(ruleFor($p, 'main_id_1')['whenAst']));
     check('when-less rules: no render-time getData', \REDCap::$lastGetDataParams === null);
+
+    // a condition over ONLY on-form fields needs no values read either
+    $m = newModule(whenRule("[stype]='2'"), $whenDict, $foldData, 149);
+    $p = pageCfg($m, 'form', '2', 'f');
+    $r = ruleFor($p, 'sid');
+    check('on-form-only condition keeps its ref live',
+        $r && strpos(json_encode($r['whenAst']), '["ref","stype",null]') !== false);
+    check('on-form-only condition ships no constant',
+        $r && strpos(json_encode($r['whenAst']), '"const"') === false);
 
     // ---- 22) suggestFix: dialog checkbox carriage into the injected config ----
     function sfRule($sf) {
@@ -760,21 +786,30 @@ namespace {
         && strpos($unc[0][1]['why'], "[stype]<>'9'") !== false);
     check('branch conflict -> no invalid log (never a guessed algorithm)', count(invalidLogs($m)) === 0);
 
-    // the branch rule reaches the client with branches + baked snapshot refs
+    // the branch rule reaches the client with branches, each carrying its own
+    // folded condition (SEC-005) — never a value
     $m = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => '2XYZ-K93B7I', 'stype' => '2']]], 149);
     $r = injectedRuleFor($m, 'sid');
     check('client receives the branch rule', $r && isset($r['branches']) && count($r['branches']) === 2
         && !isset($r['when']) && !isset($r['algorithm']));
+    check('every branch ships a folded whenAst',
+        $r && isset($r['branches'][0]['whenAst'], $r['branches'][1]['whenAst']));
+    check('branch conditions over an on-form field stay live refs',
+        $r && strpos(json_encode($r['branches'][0]['whenAst']), '["ref","stype",null]') !== false);
+    // an off-form branch condition folds; its value never ships. The literal
+    // ("ELIGIBLE") is the designer's own text and may appear in the page — the
+    // RECORD's value ("SEEKRET") must not, so the two are kept distinct here.
+    $offRules = [branchRow('verhoeff', "[elig]='ELIGIBLE'"), branchRow('iso7064_mod37_36', "[stype]='2'")];
+    $offData = [2 => [351 => ['sid' => '2XYZ-K93B7I', 'elig' => 'SEEKRET']]];
+    $m = newModule($offRules, $whenDict, $offData, 149);
+    $r = injectedRuleFor($m, 'sid');
+    check('off-form branch condition is folded to a constant',
+        $r && json_encode($r['branches'][0]['whenAst']) === '["const",false]');
     ob_start();
-    $m2 = newModule($branchRules, $whenDict, [2 => [351 => ['sid' => '2XYZ-K93B7I', 'stype' => '2']]], 149);
+    $m2 = newModule($offRules, $whenDict, $offData, 149);
     $m2->redcap_data_entry_form_top(149, '2', 'f', 351, null, 1);
     $html = ob_get_clean();
-    $cfg = null;
-    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
-        $cfg = json_decode($mm[1], true);
-    }
-    check('branch whens baked into the whenValues snapshot',
-        $cfg && isset($cfg['whenValues']['stype']) && $cfg['whenValues']['stype'] === '2');
+    check('off-form branch value is not in the page', strpos($html, 'SEEKRET') === false);
 
     // annotation channel: TWO tags on one field become a working branch rule
     $annDict2 = $whenDict;
