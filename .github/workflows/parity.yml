@@ -31,12 +31,12 @@ jobs:
         run: node tests/risky_js.cjs
       - name: JS "when" condition evaluator vs fixture
         run: node tests/when_js.cjs
-      - name: "when" fuzz fixture is up to date
+      - name: JS "when" fuzz fixture is up to date
         run: |
           node tests/gen_when_fuzz.cjs
           git diff --exit-code tests/when_fuzz.json \
             || (echo "when_fuzz.json is stale — re-run node tests/gen_when_fuzz.cjs and commit"; exit 1)
-      - name: JS "when" gate DOM contract (live refs, snapshot, fail-open)
+      - name: JS "when" gate DOM contract (live refs, folded constants, fail-open)
         run: node tests/when_dom_js.cjs
       - name: JS branched validation DOM contract (active branch, else, conflict)
         run: node tests/branch_dom_js.cjs
