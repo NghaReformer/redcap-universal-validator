@@ -463,44 +463,93 @@ class UniversalValidator extends AbstractExternalModule
             'rules'        => $rules,
         ]);
 
-        // Saved-value snapshot for "when" condition refs. The client resolver
-        // prefers the live DOM (fields on this page react as they are edited)
-        // and falls back to these baked values for fields on other instruments.
-        // A brand-new record has no saved values: the key is simply omitted and
-        // off-page refs resolve to '' — the same thing REDCap branching sees.
+        $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance);
+        return $config;
+    }
+
+    /**
+     * Resolve every "when" condition for THIS page and attach the folded
+     * result as the rule's/branch's `whenAst` (SEC-005).
+     *
+     * A condition may reference fields that are not on the instrument being
+     * rendered. Their values must never be sent to the browser: a survey
+     * respondent, or a user without rights to that instrument, can read
+     * anything the page carries. So each comparison over such a field is
+     * evaluated HERE and shipped as a boolean (Logic::fold); comparisons over
+     * fields of this instrument stay live and the browser reads them from the
+     * form. The page ends up carrying field names, the designer's own
+     * literals, and booleans — never a record value.
+     *
+     * Values are read in ONE getData call for all rules. Without a record
+     * (a brand-new form) there is nothing to read and every off-page
+     * comparison folds against '' — exactly what REDCap's own branching sees.
+     */
+    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance)
+    {
+        // condition text => parsed AST, for every live rule/branch on the page
+        $asts = [];
         $refs = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
-            $whens = [];
-            if (isset($r['when']) && is_string($r['when']) && $r['when'] !== '') $whens[] = $r['when'];
-            if (isset($r['branches']) && is_array($r['branches'])) {
-                // page load cannot know which branch will win — bake refs of ALL
-                foreach ($r['branches'] as $b) {
-                    if (isset($b['when']) && is_string($b['when']) && $b['when'] !== '') $whens[] = $b['when'];
-                }
-            }
-            foreach ($whens as $w) {
+            foreach (self::ruleWhens($r) as $w) {
+                if (isset($asts[$w])) continue;
                 $p = Logic::parse($w);
-                if (empty($p['ok'])) continue; // stored rules with a bad "when" are configError rules already
+                if (empty($p['ok'])) continue; // a bad "when" is already a configError rule
+                $asts[$w] = $p['ast'];
                 foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
             }
         }
+        if (!$asts) return $rules;
+
+        // Fields the browser can read on this page. Unknown instrument (should
+        // not happen on the page hooks) => fold nothing rather than fold a
+        // field the user is about to edit; off-page refs then read '' in the
+        // browser and the server audit stays the backstop.
+        $live = $this->fieldsOnInstrument($pid, $instrument);
+        if ($live === null) $live = $refs;
+
+        $values = [];
         if ($refs && $record !== null && $record !== '') {
             try {
-                $vals = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true);
-                foreach ($vals as $f => $v) {
-                    // json_encode would emit a JSON ARRAY for a checkbox map with
-                    // sequential numeric codes (['0'=>...,'1'=>...]) — the client
-                    // resolver needs an object, so cast each map explicitly.
-                    if (is_array($v)) $vals[$f] = (object) $v;
-                }
-                if ($vals) $config['whenValues'] = $vals;
+                $values = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true);
             } catch (\Throwable $e) {
-                // Snapshot is best-effort: without it, off-page refs read '' on
-                // the client and the server audit remains the backstop.
+                // no values: every off-page comparison folds against '' — the
+                // conservative direction (a rule that does not fire never traps
+                // a save) and the audit still sees the truth.
             }
         }
-        return $config;
+
+        $folded = [];
+        foreach ($asts as $w => $ast) {
+            $folded[$w] = Logic::fold($ast, $values, $live);
+        }
+        foreach ($rules as $i => $r) {
+            if (!empty($r['configError'])) continue;
+            if (isset($r['when']) && isset($folded[$r['when']])) {
+                $rules[$i]['whenAst'] = $folded[$r['when']];
+            }
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                foreach ($r['branches'] as $bi => $b) {
+                    if (isset($b['when']) && isset($folded[$b['when']])) {
+                        $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']];
+                    }
+                }
+            }
+        }
+        return $rules;
+    }
+
+    /** Every non-empty "when" a rule carries (its own, and its branches'). */
+    private static function ruleWhens(array $r)
+    {
+        $out = [];
+        if (isset($r['when']) && is_string($r['when']) && $r['when'] !== '') $out[] = $r['when'];
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $b) {
+                if (isset($b['when']) && is_string($b['when']) && $b['when'] !== '') $out[] = $b['when'];
+            }
+        }
+        return $out;
     }
 
     /**

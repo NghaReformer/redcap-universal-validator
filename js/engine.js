@@ -870,8 +870,12 @@ function QRID_findField(name){
    this block behavior-identical to it. tests/when_js.cjs and
    tests/when_php.php drive both runtimes against the shared
    tests/when_fixture.json, so any drift fails CI.
-   AST: ["or",[...]] | ["and",[...]] | ["not",x] | ["cmp",op,lhs,rhs];
-   operands: ["ref",field,codeOrNull] | ["lit",string]. */
+   AST: ["or",[...]] | ["and",[...]] | ["not",x] | ["cmp",op,lhs,rhs]
+        | ["const",bool];
+   operands: ["ref",field,codeOrNull] | ["lit",string].
+   A "const" node is never produced by the parser here — the server folds
+   comparisons it will not send values for (Logic::fold in php/Logic.php) and
+   ships the result as a prebuilt AST, so no record value reaches the page. */
 var QRID_WHEN_MAX_LEN = 500, QRID_WHEN_MAX_REFS = 20, QRID_WHEN_MAX_DEPTH = 10;
 var QRID_WHEN_NUM_RE = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/;
 
@@ -1051,6 +1055,8 @@ function QRID_whenPeekKw(st, kw){
    fixture-locked entry point. */
 function QRID_whenEvaluateWith(ast, resolve){
   switch(ast[0]){
+    case "const":
+      return !!ast[1];
     case "or":
       for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve)) return true; }
       return false;
@@ -1121,6 +1127,8 @@ function QRID_whenRefs(ast){
 }
 function QRID_whenCollectRefs(ast, out, seen){
   switch(ast[0]){
+    case "const":
+      return;                    /* folded server-side: no field to watch */
     case "or":
     case "and":
       for(var i = 0; i < ast[1].length; i++) QRID_whenCollectRefs(ast[1][i], out, seen);
@@ -1155,15 +1163,10 @@ function QRID_whenCollectRefs(ast, out, seen){
    (check()/render() re-consult the gate every time); the server audit is the
    backstop either way. */
 var QRID_WHEN = (function(){
-  var snapshot = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.whenValues) || {};
   var hooks = Object.create(null);    /* ref field -> [recheck callbacks] */
   var queued = Object.create(null);   /* listener target names already requested */
   var targets = [];                   /* targets still to bind: {name, field, events, tries} */
   var timer = null, mo = null;
-
-  function snapValue(f){
-    return Object.prototype.hasOwnProperty.call(snapshot, f) ? snapshot[f] : undefined;
-  }
   /* The element whose .value carries a field's current answer (select for
      dropdowns, hidden input for radio-family fields, plain input/textarea for
      text). Radio/checkbox inputs themselves are skipped — their group state is
@@ -1180,27 +1183,22 @@ var QRID_WHEN = (function(){
     }
     return null;
   }
-  /* (field, codeOrNull) -> current string value: live DOM, else snapshot,
-     else '' ('0' for checkbox refs). This is the gate's resolver — the same
-     semantics the fixture locks for the map-based QRID_whenEvaluate. */
+  /* (field, codeOrNull) -> current string value, read from the FORM. A field
+     the page does not carry reads '' ('0' for a checkbox ref) — the server
+     folds every comparison over such a field into a constant before the
+     condition is injected (php/Logic.php fold()), so a ref that reaches here
+     is one the browser is expected to be able to read. */
   function readRef(f, code){
     if(code !== null){
       var els = document.getElementsByName ? document.getElementsByName("__chk__" + f + "_RC_" + code) : [];
       for(var i = 0; i < els.length; i++){
         if((els[i].tagName || "").toLowerCase() === "input") return els[i].checked ? "1" : "0";
       }
-      var m = snapValue(f);
-      if(m && typeof m === "object"){
-        return (Object.prototype.hasOwnProperty.call(m, code) && String(m[code]) === "1") ? "1" : "0";
-      }
       return "0";
     }
     var el = findValueEl(f);
     if(el) return el.value == null ? "" : String(el.value);
-    var v = snapValue(f);
-    if(v === undefined || v === null) return "";
-    if(typeof v === "object") return "";
-    return String(v);
+    return "";
   }
   function fire(f){
     var cbs = hooks[f];
@@ -1269,23 +1267,32 @@ var QRID_WHEN = (function(){
     }
   }
   /* Factory-facing API. Returns null when the rule has no condition (zero
-     behavior change), else {active, onChange}. A condition that does not
-     parse — near-impossible for stored rules, every configuration channel
-     validates it — fails OPEN: the rule goes inert (never traps a save), the
-     reason lands on the console, and the server audit (which skips the rule
-     as a config error) keeps it from passing silently. */
-  function gateFor(exprRaw){
-    if(exprRaw === undefined || exprRaw === null || exprRaw === "") return null;
-    var r = QRID_whenParse(typeof exprRaw === "string" ? exprRaw : String(exprRaw));
-    if(!r.ok){
-      try {
-        if(typeof console !== "undefined" && console.error){
-          console.error('Universal Regex & Check-Character Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
-        }
-      } catch(e){}
-      return { active: function(){ return false; }, onChange: function(){} };
+     behavior change), else {active, onChange}.
+     astRaw is the server's PRE-FOLDED condition (php/Logic.php fold()) and is
+     authoritative when present; exprRaw (the condition text) is parsed here
+     only when no AST was supplied — the window-config fallback and the test
+     harnesses take that path. A condition that does not parse —
+     near-impossible for stored rules, every configuration channel validates
+     it — fails OPEN: the rule goes inert (never traps a save), the reason
+     lands on the console, and the server audit (which skips the rule as a
+     config error) keeps it from passing silently. */
+  function gateFor(exprRaw, astRaw){
+    var ast;
+    if(astRaw && typeof astRaw === "object" && astRaw.length){
+      ast = astRaw;
+    } else {
+      if(exprRaw === undefined || exprRaw === null || exprRaw === "") return null;
+      var r = QRID_whenParse(typeof exprRaw === "string" ? exprRaw : String(exprRaw));
+      if(!r.ok){
+        try {
+          if(typeof console !== "undefined" && console.error){
+            console.error('Universal Regex & Check-Character Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
+          }
+        } catch(e){}
+        return { active: function(){ return false; }, onChange: function(){} };
+      }
+      ast = r.ast;
     }
-    var ast = r.ast;
     var refs = QRID_whenRefs(ast);
     return {
       active: function(){
@@ -1731,7 +1738,7 @@ function QRIDSingleInit(QRID_CONFIG){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
   /* optional "when" condition: null when absent (no behavior change) */
-  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when);
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
   return { configError: configError, verdict: verdict, gate: GATE, blockSave: BLOCK,
            when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
            mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, guidance: !!atoms } };
@@ -2107,7 +2114,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
   /* optional "when" condition: null when absent (no behavior change) */
-  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when);
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
   return { configError: configError, clean: clean, parse: parse, scanCap: SCAN_CAP,
            expectedIds: (cfg.expectedIds == null ? null : cfg.expectedIds),
            blockSave: BLOCK, gate: GATE,
@@ -2275,7 +2282,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var C = QRID_COMBINED_CONFIG;
   var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
-                      "blockSave", "when"];
+                      "blockSave", "when", "whenAst"];
   function cfgFor(rule){
     var cfg = {}, i, k;
     /* Branch rule (php/Branching.php): defaults are filled PER BRANCH, so a

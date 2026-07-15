@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.9.1 — conditions are resolved on the server; no record value reaches the page
+
+Security fix (SEC-005) for a data-exposure regression introduced with the
+`when` feature in 0.8.0, found while reviewing the 15 Jul 2026 external-module
+security scan. **Sites running 0.8.0 or 0.9.0 should take this release**;
+0.7.1 and earlier are unaffected (they never sent record data to the page).
+
+- **What was wrong.** To let the browser evaluate a condition that references a
+  field on another instrument, 0.8.0 baked that field's saved value into the
+  page as a `whenValues` block. Anything in the page is readable by whoever
+  loads it — so on a **survey page** a respondent could read a staff-only field
+  out of the page source (`View Source` → `inspire-validator-config`), and on a
+  data-entry form a user without rights to that instrument could do the same.
+  Only fields named in a `when` condition were exposed, and only for the record
+  being viewed; no XSS was involved (see below).
+- **The fix.** A field the browser cannot see also cannot change while the page
+  is open, so there is no reason to send its value. The server now resolves
+  those comparisons itself and sends only the outcome: `Logic::fold()` walks
+  each condition and replaces every comparison it will not ship a value for
+  with a `["const",true|false]` node. The page now carries field names, the
+  designer's own literals, and booleans — never a record value. Comparisons
+  over fields of the rendered instrument are untouched and still react live as
+  the user edits them; a comparison mixing an on- and off-instrument field is
+  folded whole (correct at page load, no live reaction — documented).
+  `whenValues` is gone from the injected config.
+- **The two scanner findings (`TaintedHtml`, `TaintedTextWithQuotes`) were a
+  correct false positive** for XSS — verified by pushing `</script><script>`,
+  `"><img src=x onerror=>` and three more breakout payloads through the old
+  path: `json_encode`'s `JSON_HEX_TAG|AMP|APOS|QUOT` flags escaped every markup
+  character, exactly as the scan summary argued. That analysis stands. What the
+  findings were pointing at, though, was the taint flow itself — saved record
+  values reaching the page — and this release removes it at the source. The
+  `REDCap::getData()` → `echo` string flow that appeared in 0.8.0 and made the
+  two builds differ from the clean v0.7.1 scans no longer exists, so the
+  whitelist request to the framework maintainers should no longer be needed —
+  worth a scanner re-run to confirm.
+- **Tests.** `tests/hook_php.php` now asserts the absence of record values in
+  the emitted page on both form and survey contexts, and the folded shape of
+  every rule/branch condition; `tests/when_php.php` unit-tests `fold()`
+  (live refs kept, off-page folded, mixed comparisons folded whole, checkbox
+  refs, values absent from the output); the shared `tests/when_fixture.json`
+  gains `astEval`/`astRefs` sections that lock the `["const",bool]` wire format
+  across both runtimes; `tests/when_dom_js.cjs` covers pre-folded ASTs, the
+  AST-beats-text precedence, and the parse-the-text fallback.
+
 ## 0.9.0 — branched validation, rename, opt-in hints, chip colors
 
 Four changes from live use. The headline: one field may now be covered by

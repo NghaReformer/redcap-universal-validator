@@ -1,5 +1,5 @@
 {
-  "spec": "Normative dialect spec lives in the php/Logic.php docblock. Both runtimes (php/Logic.php and the QRID_when* block in js/engine.js) must agree on every case below; tests/when_php.php and tests/when_js.cjs drive them. errorContains is matched case-insensitively as a substring. The fixture locks parse ok/error, evaluate() verdicts, and referencedFields() output - never the internal AST shape.",
+  "spec": "Normative dialect spec lives in the php/Logic.php docblock. Both runtimes (php/Logic.php and the QRID_when* block in js/engine.js) must agree on every case below; tests/when_php.php and tests/when_js.cjs drive them. errorContains is matched case-insensitively as a substring. eval/errors/refs start from condition TEXT and lock parse ok/error, evaluate() verdicts and referencedFields() output - never the internal AST shape. astEval/astRefs start from a prebuilt AST and DO pin the ['const',bool] node, which is a cross-runtime wire format: only Logic::fold() produces it (the server folds every comparison the browser cannot read, so no record value is ever sent to the page) and the JS twin must evaluate it identically.",
   "caps": {
     "maxLen": 500,
     "maxRefs": 20,
@@ -376,6 +376,21 @@
       "expr": "[a]=and",
       "errorContains": "where a [field]"
     }
+  ],
+  "astEval": [
+    { "name": "const_true", "ast": ["const", true], "values": {}, "expect": true },
+    { "name": "const_false", "ast": ["const", false], "values": {}, "expect": false },
+    { "name": "and_of_consts_true", "ast": ["and", [["const", true], ["const", true]]], "values": {}, "expect": true },
+    { "name": "and_of_consts_false", "ast": ["and", [["const", true], ["const", false]]], "values": {}, "expect": false },
+    { "name": "or_of_consts", "ast": ["or", [["const", false], ["const", true]]], "values": {}, "expect": true },
+    { "name": "not_const", "ast": ["not", ["const", false]], "values": {}, "expect": true },
+    { "name": "const_beside_live_ref_true", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", true]]], "values": { "a": "1" }, "expect": true },
+    { "name": "const_beside_live_ref_false", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", false]]], "values": { "a": "1" }, "expect": false },
+    { "name": "const_short_circuits_or", "ast": ["or", [["const", true], ["cmp", "=", ["ref", "a", null], ["lit", "9"]]]], "values": { "a": "1" }, "expect": true }
+  ],
+  "astRefs": [
+    { "name": "const_has_no_refs", "ast": ["const", true], "expect": [] },
+    { "name": "refs_beside_a_const", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", false]]], "expect": [["a", null]] }
   ],
   "refs": [
     {
