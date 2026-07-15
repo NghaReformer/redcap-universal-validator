@@ -225,3 +225,30 @@ confirm:
 The two instruments are additive and self-contained. To remove them, delete the
 `staff_review` and `wb_test` instruments in the Online Designer, or re-upload the
 dictionary you downloaded in step 0.2.
+
+---
+
+## Appendix — REDCap pipes `[field]` in Field Notes (learned the hard way)
+
+The first cut of this test bed wrote condition documentation into the field
+notes literally, e.g. *"the `[sr_elig]` half is settled on the server"*. REDCap
+**pipes** `[field]` references in Field Notes and Labels: it substituted the
+staff record's real value into the specimen form's HTML, which made the test
+bed itself leak the value the SEC-005 check is looking for — a false positive
+on the grep, and a genuine (if small) exposure of its own, since a
+survey-enabled form would show it to respondents.
+
+The rows in `uvalidate_091_test_fields.csv` therefore refer to fields WITHOUT
+brackets in notes/labels (`sr_elig`, not `[sr_elig]`); only the `@UVALIDATE`
+annotations use bracket syntax, where it is required and is never piped.
+
+Two things follow:
+
+- When grepping a page for a leak, use a record value that appears nowhere in
+  any note, label, or condition literal (`ZZTOPSECRET9`, not a word that is
+  also the condition's own literal). Otherwise you cannot tell a leak from your
+  own documentation.
+- The module is not the only way data reaches a page. Piping, `@DEFAULT`,
+  smart variables and custom JS all do too. SEC-005 is about what the MODULE
+  ships (`inspire-validator-config`); check that node specifically, not just
+  the raw HTML.
