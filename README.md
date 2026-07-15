@@ -268,6 +268,12 @@ check-character primitive, but the full runtime path the module actually uses:
   guarantee that a gated-off rule never blocks a save. `tests/hook_php.php`
   additionally asserts that no record value ever reaches the page (SEC-005),
   on data-entry forms and survey pages alike.
+- `tests/when_fuzz_php.php` — the cases nobody thought of: `gen_when_fuzz.cjs`
+  builds 4048 seeded conditions (valid ones from the grammar, plus mutated and
+  hostile ones), freezes what the browser twin does with each, and the PHP
+  engine must agree on every accept/reject, verdict and referenced-field list.
+  This is what catches a numeric-vs-string comparison quietly drifting between
+  the runtimes on inputs like `1e3`, `0x10` or `" 2 "`.
 - `tests/branching_php.php` and `tests/branch_dom_js.cjs` — implement the SAME
   branched-validation scenario table on both sides (active branch, else
   branch, conflicts, per-branch blockSave/suggestFix, illegal-sharing
@@ -307,6 +313,8 @@ node tests/risky_js.cjs       # JS ReDoS gate vs risky_patterns.json
 php  tests/risky_php.php       # PHP ReDoS gate + server-behavior checks
 node tests/when_js.cjs        # JS "when" evaluator vs when_fixture.json
 php  tests/when_php.php        # PHP "when" evaluator vs the same fixture
+node tests/gen_when_fuzz.cjs  # regenerate the seeded when-fuzz fixture
+php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cases)
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
