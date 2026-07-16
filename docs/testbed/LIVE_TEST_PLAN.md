@@ -1,254 +1,278 @@
-# Live test plan — v0.9.1 on chpr-redcap.org pid 149
+# Live test plan — v1.4.0 on chpr-redcap.org pid 149
 
-Covers everything added since 0.7.1: conditional validation (`when`), branched
-validation, opt-in check-character hints, pooled chip severity, and the SEC-005
-fix (no record value in the page). The existing `id_validation_test` instrument
-already covers the ≤0.7.1 features and is left untouched.
+The full pre-deployment acceptance run for the 1.x expansion: cross-field
+constraints (`@UVASSERT`, 1.0.0), conditional required (`@UVREQUIRED`, 1.1.0),
+the dialog rule-kind selector (1.2.0), uniqueness (`@UVUNIQUE` + the AJAX
+endpoint, 1.3.0) and the Validation scan page (1.4.0) — plus regression over
+everything ≤0.9.1 (the older sections of this file's previous revision are
+folded into §9).
 
-Every "type this" value below was minted with the engine itself and every
-annotation was pushed through the real parser + branch resolver before this file
-was written, so an unexpected result here is a genuine finding, not a typo.
+Every annotation in `uvalidate_140_test_fields.csv` was pushed through the
+real parser, the branch resolver, the per-mode field-type gates and the
+reference checker before this file was written, and every check-digit or
+comparison claim in a field note was recomputed with the engine — an
+unexpected result here is a genuine finding, not a typo.
+
+**Two things only a live instance can prove** (mock-tested until now):
+the JSMO AJAX transport for `@UVUNIQUE` (§5) and the Validation scan page
+(§6). Treat those two sections as the release gate.
 
 ---
 
 ## 0. Setup
 
-1. **Confirm the deployed version.** Control Center → External Modules, or on any
-   data-entry form open the console:
+1. **Confirm the deployed version** — Control Center → External Modules must
+   read **v1.4.0**. On any data-entry form, the console must show the config:
    ```js
    JSON.parse(document.getElementById('inspire-validator-config').textContent).rules.length
    ```
-   The module list must read **v0.9.1**. (0.9.0 will fail §5 — that is the bug
-   0.9.1 fixes, and §5 is written so you can see the difference.)
 
-2. **Add the test fields.** `uvalidate_091_test_fields.csv` in this folder holds
-   26 new fields on two NEW instruments (`staff_review`, `wb_test`). A REDCap
-   dictionary upload REPLACES the whole dictionary, so **append, do not upload
-   this file on its own**:
-   - Project → **Data Dictionary** → *Download the current data dictionary*
-   - Open both files, copy the 26 data rows from this CSV (everything except the
-     header) to the bottom of the downloaded file, save
-   - Upload the merged file. REDCap shows a diff first — it must report only
-     ADDITIONS (2 new instruments, 26 new fields) and no deletions.
+2. **Add the test fields.** `uvalidate_140_test_fields.csv` holds 21 fields on
+   two NEW instruments (`uv_hidden_test`, `uv_modes_test`). A dictionary upload
+   REPLACES everything, so **append, never upload this file alone**:
+   - Project → Data Dictionary → download the current dictionary
+   - Append the 21 data rows of this CSV to the bottom, save, upload
+   - The diff must report ONLY additions (2 instruments, 21 fields)
 
-3. **Create/pick a record** and open **Staff Review** first:
-   - `sr_elig` → `SECRET-PATIENT-042`
-   - `sr_hiv` → `HIV-POSITIVE-CONTROL`
-   - leave `sr_consent` unticked → **Save**
+3. **Enable `uv_modes_test` as a survey** (needed for §5.6, §7.3 and §8).
 
-Then open **When & Branching Test** for the same record. Unless a step says
-otherwise, leave *Specimen type* on **Sputum**.
+4. **Seed data:**
+   - Record A: open **Hidden Test**, set `uht_code` = `ZZTOPSECRET77`, save.
+     Open **Modes Test**, set `umt_pid` = `UNIQ-1001`, `umt_spec` = `SP-500`,
+     `umt_specsite` = North, save.
+   - Record B: leave it empty for now — most §1–§5 steps run here.
+
+5. **DAG prep for §5.5/§6.5** (skip if pid 149 must stay DAG-free — mark those
+   steps N/A): create DAGs `north`/`south`, assign Record A to `north`, and
+   have one test account assigned to `south`.
 
 ---
 
-## 1. Conditional validation (`when`) — fields react live
+## 1. Cross-field constraints (`@UVASSERT`) — on Record B, Modes Test
 
 | Field | Do | Expect |
 |---|---|---|
-| `wb_when_drop` | Specimen type = **Sputum**, type `BLD000010` | No message at all — the rule is inert |
-| | switch to **Blood** (do not touch the ID) | Message appears immediately: check-character error |
-| | fix to `BLD000019` | ✓ verified |
-| | switch back to **Other** | Message clears; the value stays (it is NOT erased) |
-| `wb_when_cb` | leave *Consent given?* unticked, type `57241` | inert |
-| | tick **Yes** | check-character error appears |
-| | fix to `57240` | ✓ verified |
-| `wb_when_radio` | Sex = **Male**, type `23611` | inert |
-| | pick **Female** | error appears (radio DOM is read live) |
-| | fix to `23610` | ✓ verified |
+| `umt_end` | start = 2024-01-15, end = 2024-01-01 | red custom message; **Save blocked**, focus jumps here |
+| | change end to 2024-02-01 | ✓ OK; save allowed |
+| | now move START to 2024-03-01 (do not touch end) | the END field re-checks **live** and turns red again |
+| `umt_dose` | type `150` | red message; Save asks *"Save anyway?"* (advisory) |
+| | type `99` | ✓ (numeric compare — not lexicographic) |
+| | type `100.5` | red (100.5 > 100 numerically) |
+| `umt_grade` | pick **Unknown** | red GENERIC wording (no custom message set) |
+| | pick Grade A | ✓ |
+| `umt_sex` | pregnant = **Yes**, sex = **Male** | blocked with the custom message (radio constraint) |
+| | pregnant = **No** | message clears — the when-gate turned the rule off |
+| `umt_id_confirm` | `umt_id` = 23610, confirm = 23611 | mismatch message, blocked (double entry) |
+| | confirm = 23610 | ✓ |
+| `umt_branch` | Type one + `-5` | blocked: *positive* branch message |
+| | switch to Type two (keep `-5`) | ✓ — the *negative* branch passes it |
+| | switch to Type three | inert (no branch applies) |
 
-**The point:** a false condition means *not validated*, not *erased* — the
-deliberate difference from REDCap's own branching logic.
-
----
-
-## 2. Branched validation — several rules, one field
-
-`wb_branch`: Sputum → Verhoeff (**hard block**) | Blood → Mod 37,36 (message only).
-
-| Do | Expect |
-|---|---|
-| Specimen type = **Sputum**, type `23610` | ✓ verified (valid Verhoeff) |
-| switch to **Blood** | ✗ check-character error — the *other* branch now judges the same value |
-| switch back to **Sputum** | ✓ verified again |
-| type `23611` (bad Verhoeff), Sputum, click **Save** | Save is **blocked**, focus jumps to the field |
-| switch to **Blood**, click **Save** | Save is **allowed** — the Blood branch is message-only |
-
-**The point:** enforcement is per branch, and the last row is the one to watch —
-the same invalid value blocks under one branch and not the other.
-
-`wb_branch_else`: Sputum → Verhoeff | anything else → Damm (the fallback).
-
-| Do | Expect |
-|---|---|
-| **Sputum** + `23610` | ✓ verified |
-| switch to **Blood** | ✗ error (Damm judges it now) |
-| type `57240` | ✓ verified (valid Damm) |
-| switch to **Other** | still ✓ — the else branch covers every non-Sputum value |
-| switch to **Sputum** | ✗ error (Verhoeff again) |
-
-`wb_pool_branch` (pooled branches):
-
-| Do | Expect |
-|---|---|
-| **Sputum**, paste `PL000001C PL000002A` | 2 green chips, "all verified" |
-| switch to **Blood** | the same text is now judged as 11-char Luhn → red/junk chips |
-| paste `79927398713 12345678903` | 2 green chips |
+**Empty is inert:** clear `umt_end` entirely → no message, save allowed
+(emptiness is `@UVREQUIRED`'s job, not a constraint's).
 
 ---
 
-## 3. Conflict — two conditions true at once
-
-`wb_conflict` deliberately overlaps: `[wb_stype]<>'3'` and `[wb_stype]='1'`.
-
-| Do | Expect |
-|---|---|
-| **Blood** (only the first matches), type `23610` | ✓ verified |
-| switch to **Sputum** — now BOTH are true | ⚠ **"Validation conflict"** naming *both* conditions; no verdict |
-| click **Save** with the conflict showing | Save is **NOT blocked** (a config problem must never trap a user) |
-| switch to **Other** | no branch matches → field inert |
-
-Then check the module log (**Logging** → filter to this module, or *View Logs*
-under External Modules): the Sputum save must leave one
-**`uvalidate-unconfigurable`** entry saying *branch conflict* — the conflict is
-never silent.
-
----
-
-## 4. Check-character hints are opt-in (0.9.0)
+## 2. Conditional required (`@UVREQUIRED`)
 
 | Field | Do | Expect |
 |---|---|---|
-| `wb_hint_off` | type `57241` | error ending at "…re-scan or re-type it." — **no** "should end in" |
-| `wb_hint_on` | type `57241` | same error **plus** "…the ID should end in **0**." |
-
-**The point:** the hint reveals the expected check character, which can tempt
-staff to force-fit a mistyped ID. It is now off unless a rule asks for it.
+| `umt_phone` | consent = **Yes**, leave blank | red notice; **Save blocked** |
+| | type anything | notice **clears** — deliberately no green tick |
+| | type spaces only | still counts as blank; blocked again |
+| | consent = **No** | blank is fine; notice gone, save allowed |
+| `umt_site` | leave blank | notice shows but the save **goes through** (informational default) |
+| `umt_score` | just look at it | a **configuration error** under the calc field — the tag was refused, never validating |
 
 ---
 
-## 5. SEC-005 — no record value reaches the page ⚠ the important one
+## 3. Mode composition — `umt_both` (one field, two independent rules)
 
-`wb_offpage` is validated only when the **staff form** says `ELIGIBLE`. You set
-`sr_elig` to `SECRET-PATIENT-042` in setup, so the condition is false.
+| Type | Expect |
+|---|---|
+| `23611` | check-character block (constraint is satisfied) |
+| `23610` | valid check — but the RESERVED message blocks (independent guards; a passing rule never clears the other's block) |
+| `12340` | both pass; save allowed |
 
-1. Open **When & Branching Test**, type `57241` into `wb_offpage` → **inert**
-   (condition false).
-2. **View Source** (Ctrl+U) → find `inspire-validator-config`. Then:
+---
 
-| Check | v0.9.1 (expected) | v0.9.0 (the bug) |
-|---|---|---|
-| Search the page for `SECRET-PATIENT-042` | **not found** | **found** in a `whenValues` block |
-| The `wb_offpage` rule's condition | `"whenAst":["const",false]` | `"when":"[sr_elig]='ELIGIBLE'"` + the raw value |
-| A `whenValues` key exists | **no** | yes |
+## 4. The Configure dialog (1.2.0)
 
-   Console one-liner:
+In the module's Configure dialog on this project:
+
+1. Add a rule, kind **Constraint**, field `umt_dose`, condition box empty →
+   Save must refuse: *"…needs a non-empty assert condition"* (row named).
+2. Kind **Required**, field `umt_score` (the calc) → refused: *"…not calc"*.
+3. Kind **Unique**, field `umt_pid`, composite box `no_such_field` → refused.
+4. Kind **Constraint**, field `umt_dose`, condition `[umt_dose]>='0'`,
+   and deliberately ALSO paste `(a+)+` into the format-pattern box → **saves
+   fine** (the pattern box is ignored for constraints) and the rule works on
+   the form. Delete the rule afterwards.
+
+---
+
+## 5. Uniqueness (`@UVUNIQUE`) — ⚠ first live proof of the AJAX transport
+
+On Record B, Modes Test:
+
+1. **Transport sanity.** Focus `umt_pid`, type `UNIQ-1001` (Record A's value),
+   tab out → *"checking…"* then the custom message naming **Record A's id**;
+   Save blocked. Console must show no errors; the Network tab shows one
+   module-AJAX POST (CSRF token present).
+2. **Free value.** Type `UNIQ-2002` → green *"Not used before."*; save allowed.
+   Retype the same value → **no second network request** (answer cache).
+3. **Self-match.** Reopen Record A: its own `umt_pid` = `UNIQ-1001` must show
+   green (a record never collides with itself).
+4. **Composite.** Record B: `umt_spec` = `SP-500` + site **North** → advisory
+   warning (same code, same site). Switch site to **South** → passes (the
+   composite key differs).
+5. **DAG masking** (if §0.5 done): as the `south` user, type `UNIQ-1001` into
+   a fresh record → *used* but **without** a record id (Record A is in
+   `north`).
+6. **Surveys are opt-in.** Open the `uv_modes_test` survey link:
+   `umt_supid` still checks live (opted in) but a duplicate names **no
+   record**; `umt_pid` shows nothing at all (not opted in).
+7. **Fail-open.** DevTools → Network → Offline, then edit `umt_pid` → console
+   notes the failure, field stays unflagged, **save is never trapped**.
+8. **The race.** Two browsers on two new records; type the same fresh value in
+   both while both show green; save both quickly. The second save must appear
+   in the module log as `invalid-id-saved` with `type: unique` (this is §8's
+   entry) — and §6's scan must also list both records.
+
+---
+
+## 6. The Validation scan (1.4.0) — ⚠ first live proof
+
+1. **Link + rights.** "Validation scan" appears on the left menu for a
+   design-rights user; a data-entry-only account must not see the link, and
+   pasting the URL directly must show the rights refusal.
+2. **Seed violations, then scan.** Ensure at least: one bad check value
+   (`umt_id` = 23611 saved via a non-blocking route — e.g. save with the
+   advisory dialog accepted, or import), one end<start pair, one blank
+   `umt_phone` with consent Yes, and the §5.8 duplicate pair. Run the scan →
+   every seeded violation listed with record / event / instance / field /
+   rule / kind / reason.
+3. **No values anywhere.** Search the scan page source AND the downloaded CSV
+   for `ZZTOPSECRET77`, `UNIQ-1001` and `23611` — none may appear (the report
+   names *where*, never *what*).
+4. **CSV.** Downloads, opens in Excel, one row per violation; a cell beginning
+   with `=` `+` `-` `@` is formula-defused (leading apostrophe).
+5. **DAG confinement** (if §0.5 done): as the `south` user the scan must count
+   only south records and never name a north record id.
+6. **The import gap — the reason this page exists.** Data Import Tool: import
+   a row with `umt_id` = 23611 and `umt_end` earlier than `umt_start`. Check
+   the module log (per the standing 17.0.6 issue the post-save audit may be
+   silent for imports) — then run the scan: **both violations must appear**
+   regardless of whether the hook fired.
+7. **Performance spot-check** (PRE-gate): on a project with 1000+ records the
+   scan completes without a memory error (chunked reads) — time it and note
+   the duration.
+
+---
+
+## 7. SEC-005 sweep for the new modes
+
+1. **Assert refs fold.** Record with `uht_code` saved: open Modes Test,
+   View Source → `ZZTOPSECRET77` must NOT appear anywhere; the `umt_offref`
+   rule in `inspire-validator-config` carries a folded `assertAst` (constants
+   in place of the off-instrument comparison), not the value.
    ```js
    const c = JSON.parse(document.getElementById('inspire-validator-config').textContent);
-   ({ leaks: document.documentElement.outerHTML.includes('SECRET-PATIENT-042'),
-      hasWhenValues: 'whenValues' in c,
-      offpageRule: c.rules.find(r => (r.fields||[]).includes('wb_offpage')) })
+   ({ leak: document.documentElement.outerHTML.includes('ZZTOPSECRET77'),
+      offref: c.rules.find(r => (r.fields||[]).includes('umt_offref')) })
    ```
-   Want: `leaks: false`, `hasWhenValues: false`, and the rule carrying
-   `whenAst: ["const", false]`.
-
-3. `sr_hiv` (`HIV-POSITIVE-CONTROL`) is referenced by nothing — it must not
-   appear in the config in **any** version.
-4. Now go back to Staff Review, set `sr_elig` = `ELIGIBLE`, save, reopen this
-   form: `wb_offpage` validates (`57240` ✓ / `57241` ✗), and the config shows
-   `["const",true]` — still no value.
-5. **Repeat on the survey.** `wb_test` must be enabled as a survey; open its
-   public link and run the same page-source check. This is the case that
-   mattered: a respondent must never be able to read a staff field.
-6. `wb_offpage_cb`: tick **Written** on the staff form, save, reload → validates
-   (`23610` ✓). Off-instrument *checkbox* refs fold the same way.
-7. `wb_mixed_ref`: condition is `[wb_stype]='2' and [sr_elig]='ELIGIBLE'`. The
-   `wb_stype` half stays live (flip the dropdown and it re-checks); the
-   `sr_elig` half was settled on the server. With staff = ELIGIBLE and Blood
-   selected → `57240` ✓.
+   Want `leak: false`.
+2. **jsmoName scoping.** On Modes Test (has unique rules) the config carries
+   `jsmoName`; on `id_validation_test` (none) it must NOT, and no JSMO
+   bootstrap script is injected there.
+3. **Survey wording.** On the survey, force a constraint failure and a config
+   error into view: respondents must see the generic wording, never field
+   names, conditions, or technical detail.
+4. Repeat the ≤0.9.1 `wb_offpage` checks (§9) — unchanged behavior expected.
 
 ---
 
-## 6. Negative configs — each must show an error, never validate
+## 8. Server audit — module log entries for the new modes
 
-Open the form and read the message under each. None may validate anything.
+After §1–§6, External Modules → View Logs must contain:
 
-| Field | Expected message contains |
+| Entry | From |
 |---|---|
-| `wb_err_ref` | `not a field in this project` |
-| `wb_err_cbcode` | `is a checkbox — reference one option as [wb_cb(code)]` |
-| `wb_err_badcode` | `has no choice code "9"` |
-| `wb_err_func` | `functions such as "datediff("… are not supported` |
-| `wb_err_event` | `no [event][field] prefixes` |
-| `wb_err_twouncond` | `at most ONE unconditional rule may share a field` |
-| `wb_err_identical` | `the identical condition "[wb_stype]='1'"` |
-| `wb_err_mixedtype` | `all rules sharing a field must have the same field type` |
+| `invalid-id-saved` with `type: constraint`, reason starting `assert:` | any end<start save that got through (advisory/import) |
+| `invalid-id-saved` with `type: required`, reason `required-blank` | a blank-phone-with-consent save |
+| `invalid-id-saved` with `type: unique`, reason `duplicate-value` | the §5.8 race |
+| value handling per the project's privacy mode | hashed by default — no raw values in any entry |
 
-Also try the **save-time gate**: Configure the module on this project, add two
-rules both covering `wb_when_drop` with no condition, and Save → the dialog must
-refuse with *"Rule 1 and Rule 2 … at most ONE unconditional rule"*.
+> The standing 17.0.6 caveat applies: if the post-save audit is silent for
+> *imports*, that is the pre-existing hook-coverage issue — §6.6 (the scan) is
+> the mitigation shipped for exactly that, and it must find what the hook
+> missed.
 
 ---
 
-## 7. Regression — nothing from before broke
+## 9. Regression — nothing before 1.x broke
 
-On `id_validation_test` (the original instrument), spot-check:
+Run the previous revision's sections against their original instruments
+(`id_validation_test`, `staff_review`, `wb_test`); this file's git history
+holds the full 0.9.1 text. Spot-check at minimum:
 
-- `main_id_tag`: `8QRS-55555E` ✓ / `8QRS-55556E` ✗
-- `fc_id` hard block still blocks; `zrc_id` still asks to confirm
-- the 4 deliberately-broken tags still show their config errors
-- `redos_poly` / `redos_exp` still show the ReDoS config error and the tab stays responsive
-- `pool_main`: paste `1ABC-00001E 1ABC-00001E 8QRS-55556E zz` → duplicate chip is
-  **amber ⊗ (again!)**, junk chip is **red ?** (the 0.9.0 swap)
+- `main_id_tag`: `8QRS-55555E` ✓ / `8QRS-55556E` ✗; hard block and confirm
+  modes still enforce; the deliberately-broken tags still show config errors;
+  ReDoS fields stay responsive.
+- `wb_when_drop` / `wb_when_cb` / `wb_when_radio`: conditions react live;
+  false condition = inert, value NOT erased.
+- `wb_branch` / `wb_branch_else` / `wb_pool_branch`: per-branch verdicts and
+  enforcement; `wb_conflict`: conflict notice, save never trapped, one
+  `uvalidate-unconfigurable` log entry.
+- `wb_hint_off` / `wb_hint_on`: the check-character hint stays opt-in.
+- `wb_offpage` + survey: the 0.9.1 SEC-005 checks (no `whenValues`, no staff
+  value in source, `["const",…]` in the config).
+- Pooled chips: duplicate amber, junk red.
 
 ---
 
-## 8. Server audit
+## 10. Sign-off checklist
 
-After the runs above, open **External Modules → View Logs** (or Logging) and
-confirm:
-
-- invalid values saved while a condition was **true** produce `invalid-id-saved`
-  entries naming the branch's algorithm;
-- values saved while a condition was **false** produce **no** entry;
-- the `wb_conflict` Sputum save produced exactly one `uvalidate-unconfigurable`.
-
-> Known caveat from earlier testing on 17.0.6: the post-save audit has previously
-> produced no module-log entries on a live instance (see the project's
-> `validator-audit-log-not-firing-live` note). If §8 is silent, that is the
-> pre-existing open issue, **not** something 0.9.1 introduced — browser
-> enforcement (§1–§4) is unaffected.
+| # | Gate | Result |
+|---|---|---|
+| 1 | §1–§4 all pass (constraints, required, compose, dialog) | ☐ |
+| 2 | §5 transport proven live (incl. fail-open + race) | ☐ |
+| 3 | §6 scan proven live (incl. the import case) | ☐ |
+| 4 | §7 SEC-005 sweep clean on form AND survey | ☐ |
+| 5 | §8 audit entries present with correct privacy handling | ☐ |
+| 6 | §9 regression clean | ☐ |
+| 7 | §6.7 performance spot-check on 1000+ records | ☐ |
+| 8 | Control Center security scan re-run and archived (PRE-002) | ☐ |
+| 9 | Screen-reader pass per docs/TESTING.md on one constraint + one required field | ☐ |
 
 ---
 
 ## Cleanup
 
-The two instruments are additive and self-contained. To remove them, delete the
-`staff_review` and `wb_test` instruments in the Online Designer, or re-upload the
-dictionary you downloaded in step 0.2.
+The two instruments are additive and self-contained: delete `uv_hidden_test`
+and `uv_modes_test` in the Online Designer, or restore the dictionary
+downloaded in §0.2. Remove any dialog rules added in §4 and the DAGs from
+§0.5 if they were created only for this run.
 
 ---
 
 ## Appendix — REDCap pipes `[field]` in Field Notes (learned the hard way)
 
-The first cut of this test bed wrote condition documentation into the field
-notes literally, e.g. *"the `[sr_elig]` half is settled on the server"*. REDCap
-**pipes** `[field]` references in Field Notes and Labels: it substituted the
-staff record's real value into the specimen form's HTML, which made the test
-bed itself leak the value the SEC-005 check is looking for — a false positive
-on the grep, and a genuine (if small) exposure of its own, since a
-survey-enabled form would show it to respondents.
+An earlier revision of this test bed wrote condition documentation into field
+notes literally, e.g. *"the `[sr_elig]` half is settled on the server"*.
+REDCap **pipes** `[field]` references in Field Notes and Labels: it
+substituted the staff record's real value into the specimen form's HTML,
+which made the test bed itself leak the value the SEC-005 check looks for — a
+false positive on the grep and a small real exposure of its own.
 
-The rows in `uvalidate_091_test_fields.csv` therefore refer to fields WITHOUT
-brackets in notes/labels (`sr_elig`, not `[sr_elig]`); only the `@UVALIDATE`
-annotations use bracket syntax, where it is required and is never piped.
+The rows in both testbed CSVs therefore refer to fields WITHOUT brackets in
+notes and labels; only the action-tag annotations use bracket syntax, where
+it is required and never piped. Two consequences:
 
-Two things follow:
-
-- When grepping a page for a leak, use a record value that appears nowhere in
-  any note, label, or condition literal (`ZZTOPSECRET9`, not a word that is
-  also the condition's own literal). Otherwise you cannot tell a leak from your
-  own documentation.
-- The module is not the only way data reaches a page. Piping, `@DEFAULT`,
+- When grepping a page for a leak, use a value that appears in no note,
+  label, or condition literal (`ZZTOPSECRET77`), or you cannot tell a leak
+  from your own documentation.
+- The module is not the only way data reaches a page — piping, `@DEFAULT`,
   smart variables and custom JS all do too. SEC-005 is about what the MODULE
-  ships (`inspire-validator-config`); check that node specifically, not just
-  the raw HTML.
+  ships (`inspire-validator-config` and, since 1.3.0, the AJAX responses);
+  check those specifically, not just the raw HTML.
