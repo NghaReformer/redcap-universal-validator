@@ -662,6 +662,11 @@ entry. **Do not assume import/API writes are audited until you have verified it 
 your own instance** (the check is in [`TESTING.md`](TESTING.md)). Browser form and
 survey entry are the paths you can count on.
 
+Since 1.4.0 there is a reliable way to catch what the hook may have missed:
+the **Validation scan** page (left project menu, design rights) re-runs every
+rule over every saved record on demand — run it after bulk imports and before
+data locks/exports, and work through its CSV.
+
 ### Privacy modes for the log
 
 The project-level setting **How to log invalid values caught by the post-save
@@ -727,6 +732,8 @@ condition is true. See the README sections on both tags.
 **Does it block API or Data Import Tool writes?**
 No. Enforcement is a browser behavior only. Those paths may be *audited* after the
 fact, but coverage is version-dependent — see [Part 7](#part-7-server-side-audit-and-privacy).
+To catch bad imported values reliably, run the **Validation scan** page after
+bulk imports: it re-checks every rule against every saved record on demand.
 
 **Can I translate the messages?**
 Not yet — messages are English only in this version.

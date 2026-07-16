@@ -72,6 +72,7 @@ namespace {
         public static function getGroupNames($unique = false, $group_id = null) {
             return isset(self::$groupNames[$group_id]) ? self::$groupNames[$group_id] : '';
         }
+        public static function getRecordIdField() { return 'record_id'; }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -1236,6 +1237,100 @@ namespace {
         ['rule-type' => 'unique', 'fields' => ['spec'], 'unique-with' => 'site', 'unique-scope' => 'event', 'block-save' => 'hard'],
     ]));
     check('save gate: sound unique rule passes', $msg === null);
+
+    // ---- scanProject: the retrospective sweep (Phase 5) -----------------------
+    // A project with all four rule kinds and seeded violations across records;
+    // the scan must find each one via the SAME dispatch as the audit.
+    $scDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'sf'],
+        'pid'       => ['field_type' => 'text', 'form_name' => 'sf', 'field_annotation' => '@UVALIDATE=verhoeff'],
+        'start'     => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'sf'],
+        'end'       => ['field_type' => 'text', 'form_name' => 'sf',
+                        'field_annotation' => '@UVASSERT={"assert":"[end]>=[start]","message":"m"}'],
+        'phone'     => ['field_type' => 'text', 'form_name' => 'sf', 'field_annotation' => '@UVREQUIRED'],
+        'sid'       => ['field_type' => 'text', 'form_name' => 'sf', 'field_annotation' => '@UVUNIQUE'],
+    ];
+    // 75 = valid verhoeff check digit for payload 7; 12345 is invalid.
+    $scData = [
+        '1' => [351 => ['record_id' => '1', 'pid' => '12345', 'start' => '2024-05-01',
+                        'end' => '2024-04-01', 'phone' => '', 'sid' => 'DUP-9',
+                        'redcap_data_access_group' => 'north']],
+        '2' => [351 => ['record_id' => '2', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '677', 'sid' => 'DUP-9',
+                        'redcap_data_access_group' => 'south']],
+        '3' => [351 => ['record_id' => '3', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '678', 'sid' => 'FREE-1',
+                        'redcap_data_access_group' => 'north']],
+    ];
+    $m = newModule([], $scDict, $scData, 149);
+    $res = $m->scanProject(149);
+    check('scan: stats count records and rules', $res['stats']['records'] === 3 && $res['stats']['rules'] === 4);
+    function scanHits($res, $type) {
+        return array_values(array_filter($res['violations'], function ($v) use ($type) { return $v['type'] === $type; }));
+    }
+    $chk = scanHits($res, 'single');
+    check('scan: bad check character found (record 1 only)',
+        count($chk) === 1 && $chk[0]['record'] === '1' && $chk[0]['field'] === 'pid');
+    $con = scanHits($res, 'constraint');
+    check('scan: violated constraint found (record 1 only)',
+        count($con) === 1 && $con[0]['record'] === '1' && $con[0]['field'] === 'end');
+    $req = scanHits($res, 'required');
+    check('scan: blank required found (record 1 only)',
+        count($req) === 1 && $req[0]['record'] === '1' && $req[0]['field'] === 'phone'
+        && $req[0]['reason'] === 'required-blank');
+    $unq = scanHits($res, 'unique');
+    $unqRecs = array_map(function ($v) { return $v['record']; }, $unq);
+    sort($unqRecs);
+    check('scan: duplicate pair flagged on BOTH records',
+        count($unq) === 2 && $unqRecs === ['1', '2'] && $unq[0]['field'] === 'sid');
+    check('scan: no value is ever in the report',
+        !array_filter($res['violations'], function ($v) { return isset($v['value']); }));
+
+    // DAG filter: scanning as a 'north' user sees only north records — and the
+    // duplicate pair (split across DAGs, project scope) is NOT reported because
+    // the south record is outside the visible set.
+    $res = $m->scanProject(149, 'north');
+    check('scan: DAG filter scopes the record set', $res['stats']['records'] === 2);
+    $recs = array_unique(array_map(function ($v) { return $v['record']; }, $res['violations']));
+    check('scan: DAG filter never names another group\'s record', !in_array('2', $recs, true));
+
+    // unique scope=dag in the scan: same value in two DAGs is NOT a duplicate
+    $scDictD = $scDict;
+    $scDictD['sid']['field_annotation'] = '@UVUNIQUE=dag';
+    $m = newModule([], $scDictD, $scData, 149);
+    $res = $m->scanProject(149);
+    check('scan: dag-scoped unique ignores cross-DAG repeats', count(scanHits($res, 'unique')) === 0);
+
+    // repeating instruments: a violation on instance 2 carries its instance
+    $scDataR = [
+        '1' => [
+            351 => ['record_id' => '1', 'start' => '2024-05-01', 'phone' => 'x', 'pid' => '70', 'sid' => 'A1'],
+            'repeat_instances' => [351 => ['sf' => [
+                1 => ['end' => '2024-06-01'],
+                2 => ['end' => '2024-01-01'],   // violates end>=start
+            ]]],
+        ],
+    ];
+    $m = newModule([], $scDict, $scDataR, 149);
+    $res = $m->scanProject(149);
+    $con = scanHits($res, 'constraint');
+    check('scan: repeat instance violation carries its instance number',
+        count($con) === 1 && $con[0]['instance'] === 2 && $con[0]['record'] === '1');
+
+    // chunking: a small chunk size still scans every record
+    $m = newModule([], $scDict, $scData, 149);
+    $res = $m->scanProject(149, null, 1);
+    check('scan: chunked read covers all records',
+        $res['stats']['records'] === 3 && count(scanHits($res, 'unique')) === 2);
+
+    // unconfigurable rules are reported once, not per record
+    $scDictU = $scDict;
+    $scDictU['end']['field_annotation'] = '@UVASSERT={"assert":"[end]>=[start]","when":"[ghost]=\'1\'"}';
+    // (unknown ref caught at config time -> configError rule -> excluded from live rules)
+    $m = newModule([], $scDictU, $scData, 149);
+    $res = $m->scanProject(149);
+    check('scan: config-error rules are excluded, not evaluated',
+        count(scanHits($res, 'constraint')) === 0);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

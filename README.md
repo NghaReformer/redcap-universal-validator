@@ -306,6 +306,28 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
 
+## The Validation scan — checking data that is already saved
+
+Live validation guards the form; it cannot reach values that arrived through
+the **Data Import Tool** or the **API** (where the save-hook audit is
+version-dependent), or records entered **before a rule existed**. The
+**Validation scan** project page closes that gap: it runs every configured
+rule — check-character/format, constraint, required, and unique — over every
+saved record and lists each violation with a CSV export.
+
+- **Where:** the "Validation scan" link on the project's left menu (visible to
+  users with design rights; the page re-checks). Records are read in chunks,
+  so large projects scan without exhausting memory.
+- **Same engine, same verdicts.** The scan evaluates through the exact
+  dispatch the save-hook audit uses (`ruleFindings`), so the two can never
+  disagree about what a violation is. Unique rules are checked in one
+  aggregate pass over the scanned data (project/DAG/event scopes honored).
+- **Privacy by construction.** The report names *where* each problem is —
+  record, event, instance, field, rule, reason — **never the stored value**;
+  staff open the record itself under REDCap's own access control to see and
+  fix it. A user working inside a Data Access Group only ever scans their own
+  group's records. CSV cells are quoted and formula-defused.
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two

@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.4.0 — the Validation scan (retrospective project sweep)
+
+The last piece of the 1.x expansion: a project page that runs EVERY configured
+rule over EVERY saved record. Live validation guards the form; the scan
+reaches what it cannot — Data Import Tool and API writes (save-hook coverage
+is version-dependent), and records entered before a rule existed.
+
+- **"Validation scan" project link** (`pages/scan.php`), visible to users
+  with design rights via `redcap_module_link_check_display` and re-checked on
+  the page. Read-only; results as an on-page table and a CSV download
+  (quoted, spreadsheet-formula-defused).
+- **One dispatch, two consumers.** `auditRule` was refactored into a thin
+  logging wrapper over the new `ruleFindings()` — pure evaluation returning
+  findings — and the scan consumes the same method, so the save-hook audit
+  and the scan can never disagree about what a violation is. All 175
+  pre-refactor hook checks pass unchanged.
+- **Scan semantics.** Records are read in chunks (memory-safe on large
+  projects); every record/event/instance context is evaluated, with repeat
+  rows merged over their event row exactly as the audit's value reader does.
+  Unique rules run as ONE aggregate pass over the scanned data (project /
+  DAG / event scopes honored; a group is a violation only across two or more
+  distinct records) instead of a whole-project read per record.
+- **Privacy by construction.** The report names record / event / instance /
+  field / rule / reason — never the stored value (staff open the record under
+  REDCap's own access control). A DAG-bound user scans only their own group's
+  records; an unresolvable DAG scans nothing rather than everything.
+- **Verification.** `tests/hook_php.php` 175→187: all four modes found where
+  seeded, DAG record-set confinement, dag-scoped unique across DAGs, repeat
+  instance numbers, chunked reads, config-error exclusion, and a guard that
+  no stored value appears in the report.
+
 ## 1.3.0 — no duplicates across records (`@UVUNIQUE`)
 
 Fourth validation mode, and the module's first server round-trip: field-level

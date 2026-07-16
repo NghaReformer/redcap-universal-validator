@@ -188,18 +188,58 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
-    /** Validate one rule's fields against the values read for this save. */
+    /**
+     * Validate one rule's fields against the values read for this save, and
+     * log the findings. Thin wrapper: the verdicts come from ruleFindings(),
+     * the ONE dispatch shared with the project scan page — the hook and the
+     * scan can never disagree about what a violation is.
+     */
     private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null)
     {
+        $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst);
+        foreach ($f['unconfigurable'] as $u) {
+            $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
+        }
+        foreach ($f['invalid'] as $v) {
+            $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason']);
+        }
+    }
+
+    /**
+     * One rule's verdicts against ONE set of values (one record/event/instance
+     * context). Pure evaluation — no logging, no instrument scoping beyond the
+     * caller's $onForm filter — so the redcap_save_record audit (which logs)
+     * and the project scan page (which collects) share this single dispatch.
+     *
+     * $whenAst: pre-parsed condition AST(s) from the hook, or null — null makes
+     * this method parse the rule's own "when" (and each branch's) itself, the
+     * path the scan takes. Returns:
+     *   ['invalid'         => [ ['field','value','algo','type','reason'], ... ],
+     *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ]]
+     */
+    private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+
         // Branched rule (several conditional rules share this field): pick the
-        // branch whose condition is true for THIS save and audit under its
-        // configuration. Semantics mirror the client and are specified in
+        // branch whose condition is true for THIS context and evaluate under
+        // its configuration. Semantics mirror the client and are specified in
         // php/Branching.php: one active -> validate; none -> the else branch
         // if present, otherwise inert; more than one -> a branch conflict is
-        // an auditable configuration problem, never a silent pass and never a
+        // a reportable configuration problem, never a silent pass and never a
         // guessed algorithm.
         if (isset($rule['branches']) && is_array($rule['branches'])) {
-            $asts = (is_array($whenAst) && isset($whenAst['branches'])) ? $whenAst['branches'] : [];
+            if ($whenAst === null) {
+                // Scan path: parse each branch condition here (false = no parse).
+                $asts = [];
+                foreach ($rule['branches'] as $bi => $b) {
+                    if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') continue;
+                    $p = Logic::parse($b['when']);
+                    $asts[$bi] = empty($p['ok']) ? false : $p['ast'];
+                }
+            } else {
+                $asts = (is_array($whenAst) && isset($whenAst['branches'])) ? $whenAst['branches'] : [];
+            }
             $active = [];
             $else = null;
             foreach ($rule['branches'] as $bi => $b) {
@@ -209,21 +249,20 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 $ast = isset($asts[$bi]) ? $asts[$bi] : false;
                 if (!is_array($ast)) {
-                    $this->logUnconfigurable($ruleIndex, $rule['fields'], 'a branch "when" condition cannot be evaluated — field skipped', $instrument, $event_id, $repeat_instance);
-                    return;
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'a branch "when" condition cannot be evaluated — field skipped'];
+                    return $out;
                 }
                 if (Logic::evaluate($ast, $values)) $active[] = $bi;
             }
             if (count($active) > 1) {
-                $this->logUnconfigurable($ruleIndex, $rule['fields'],
-                    'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
-                    . $rule['branches'][$active[0]]['when'] . '" | "' . $rule['branches'][$active[1]]['when'] . '"',
-                    $instrument, $event_id, $repeat_instance);
-                return;
+                $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                    'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
+                    . $rule['branches'][$active[0]]['when'] . '" | "' . $rule['branches'][$active[1]]['when'] . '"'];
+                return $out;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif ($else !== null) $pick = $else;
-            else return; // no branch applies to this save — the field is inert
+            else return $out; // no branch applies to this context — the field is inert
 
             $branch = $rule['branches'][$pick];
             unset($branch['when']);
@@ -231,8 +270,7 @@ class UniversalValidator extends AbstractExternalModule
                 'type'   => isset($rule['type']) ? $rule['type'] : 'single',
                 'fields' => $rule['fields'],
             ], $branch);
-            $this->auditRule($flat, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, null);
-            return;
+            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null);
         }
 
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
@@ -243,31 +281,37 @@ class UniversalValidator extends AbstractExternalModule
 
         // An algorithm outside the whitelist would make CheckCharacter::compute
         // throw inside validateId, which reads as "invalid ID" — a config
-        // problem must never be logged as a data problem.
-        if (!in_array($algo, AnnotationRules::ALGORITHMS, true)) {
-            $this->logUnconfigurable($ruleIndex, $rule['fields'], 'unknown algorithm "' . $algo . '"', $instrument, $event_id, $repeat_instance);
-            return;
+        // problem must never be reported as a data problem. Constraint /
+        // required / unique rules carry no algorithm and skip this gate.
+        if ($type !== 'constraint' && $type !== 'required' && $type !== 'unique'
+            && !in_array($algo, AnnotationRules::ALGORITHMS, true)) {
+            $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'unknown algorithm "' . $algo . '"'];
+            return $out;
         }
 
-        // Conditional rule: evaluate the pre-parsed "when" against this save's
-        // values (missing/empty ref => ''). False => the rule is inert for this
-        // save, mirroring the client gate — no detection logs. A "when" the
-        // caller could not parse should be unreachable (every configuration
-        // channel validates it via checkFragment, which turns it into a
-        // configError rule the audit skips), but if the two parse sites ever
-        // drift it must surface as unconfigurable, never as a silent pass.
+        // Conditional rule: evaluate the "when" against this context's values
+        // (missing/empty ref => ''). False => the rule is inert here, mirroring
+        // the client gate. The hook pre-parses conditions ($whenAst array, or
+        // false when a stored condition no longer parses — surfaced, never a
+        // silent pass); the scan passes null and the condition is parsed here.
         if (isset($rule['when']) && $rule['when'] !== '') {
-            if (!is_array($whenAst)) {
-                $this->logUnconfigurable($ruleIndex, $rule['fields'], 'the "when" condition cannot be evaluated — rule skipped', $instrument, $event_id, $repeat_instance);
-                return;
+            if ($whenAst === null) {
+                $p = Logic::parse($rule['when']);
+                $whenAst = empty($p['ok']) ? false : $p['ast'];
             }
-            if (!Logic::evaluate($whenAst, $values)) return;
+            if (!is_array($whenAst)) {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "when" condition cannot be evaluated — rule skipped'];
+                return $out;
+            }
+            if (!Logic::evaluate($whenAst, $values)) return $out;
         }
 
         // Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
         // common case live via the AJAX check; two near-simultaneous submits
         // can both pass it, so the audit re-checks the SAVED value against
-        // every other record and logs the collision the client could not see.
+        // every other record. (The scan page does NOT take this path — it
+        // detects duplicates in one aggregate pass over the scanned data
+        // instead of one whole-project read per record.)
         if ($type === 'unique') {
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
@@ -281,17 +325,17 @@ class UniversalValidator extends AbstractExternalModule
                     $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
                 }
                 if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id) !== null) {
-                    $this->logInvalid($logMode, $project_id, $record, $field, $value, 'unique', 'unique', $instrument, $event_id, $repeat_instance, 'duplicate-value');
+                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
                 }
             }
-            return;
+            return $out;
         }
 
         // Required mode (@UVREQUIRED): the INVERSE emptiness rule — a BLANK
         // field is the violation (every other mode is inert on blank). The
         // "when" gate above already skipped the rule when the condition is
         // false, so reaching here means the requirement is in force. Nothing
-        // identifying is in a blank, so the log carries an empty value.
+        // identifying is in a blank, so the finding carries an empty value.
         if ($type === 'required') {
             foreach ($rule['fields'] as $field) {
                 if (isset($dupes[$field])) continue;
@@ -299,23 +343,23 @@ class UniversalValidator extends AbstractExternalModule
                 $value = isset($values[$field]) ? $values[$field] : null;
                 if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
                 if ($value === null || trim((string) $value) === '') {
-                    $this->logInvalid($logMode, $project_id, $record, $field, '', 'required', 'required', $instrument, $event_id, $repeat_instance, 'required-blank');
+                    $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
                 }
             }
-            return;
+            return $out;
         }
 
         // Constraint mode (@UVASSERT): the field is invalid whenever its
-        // "assert" condition is false against this save's values. An empty
+        // "assert" condition is false against this context's values. An empty
         // field is inert (emptiness is @UVREQUIRED's concern, not a
         // constraint's). No check character / pattern — just the test. The
         // condition is re-parsed here (config-validated, cheap) and evaluated
-        // against the full saved-value map, so no fold is needed server-side.
+        // against the full value map, so no fold is needed server-side.
         if ($type === 'constraint') {
             $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
             if (empty($a['ok'])) {
-                $this->logUnconfigurable($ruleIndex, $rule['fields'], 'the "assert" condition cannot be evaluated — field skipped', $instrument, $event_id, $repeat_instance);
-                return;
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "assert" condition cannot be evaluated — field skipped'];
+                return $out;
             }
             foreach ($rule['fields'] as $field) {
                 if (isset($dupes[$field])) continue;
@@ -323,10 +367,10 @@ class UniversalValidator extends AbstractExternalModule
                 $value = isset($values[$field]) ? $values[$field] : null;
                 if ($value === null || $value === '' || is_array($value)) continue; // inert when empty (or non-scalar)
                 if (!Logic::evaluate($a['ast'], $values)) {
-                    $this->logInvalid($logMode, $project_id, $record, $field, $value, 'constraint', 'constraint', $instrument, $event_id, $repeat_instance, 'assert:' . $rule['assert']);
+                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . $rule['assert']];
                 }
             }
-            return;
+            return $out;
         }
 
         $unconfigurable = [];
@@ -354,12 +398,14 @@ class UniversalValidator extends AbstractExternalModule
                 // auditor can never see (COR-002).
                 $unconfigurable[] = $field;
             } elseif (empty($res['ok'])) {
-                $this->logInvalid($logMode, $project_id, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, isset($res['reason']) ? $res['reason'] : '');
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => $algo, 'type' => $type,
+                                     'reason' => isset($res['reason']) ? $res['reason'] : ''];
             }
         }
         if ($unconfigurable) {
-            $this->logUnconfigurable($ruleIndex, $unconfigurable, 'rule cannot be evaluated server-side (unsafe or uncompilable configuration)', $instrument, $event_id, $repeat_instance);
+            $out['unconfigurable'][] = ['fields' => $unconfigurable, 'why' => 'rule cannot be evaluated server-side (unsafe or uncompilable configuration)'];
         }
+        return $out;
     }
 
     // -- logging ------------------------------------------------------------
@@ -1280,6 +1326,241 @@ class UniversalValidator extends AbstractExternalModule
             if ($c > 1) $dupes[] = substr($key, 0, strrpos($key, "\x1F"));
         }
         return array_values(array_unique($dupes));
+    }
+
+    // -- project scan (retrospective validation report) ----------------------
+
+    /**
+     * Show the "Validation scan" project link only to users who can already
+     * see the whole design (design rights). The page re-checks; this only
+     * governs the sidebar link.
+     */
+    public function redcap_module_link_check_display($project_id, $link)
+    {
+        try {
+            $user = $this->getUser();
+            if ($user && method_exists($user, 'hasDesignRights') && $user->hasDesignRights()) return $link;
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+
+    /**
+     * Run every configured rule over EVERY saved record — the retrospective
+     * sweep the per-save audit cannot give you: legacy data, Data Import Tool
+     * and API writes (whose save-hook coverage is version-dependent), and
+     * records entered before a rule existed.
+     *
+     * Reads records in CHUNKS (memory-safe on large projects) and evaluates
+     * each record/event/instance context through ruleFindings() — the same
+     * dispatch the save-hook audit uses, so the two can never disagree.
+     * Unique rules are handled in ONE aggregate pass over the scanned data
+     * (grouping by value + composite key + scope) instead of a whole-project
+     * read per record.
+     *
+     * $dagFilter: a DAG unique name — only records in that DAG are scanned
+     * (pass the acting user's DAG so a DAG-bound user never sees other
+     * groups' record ids). null scans everything.
+     *
+     * Returns ['violations' => [ ['record','event_id','instance','field',
+     * 'type','reason','rule' => 1-based index], ... ], 'unconfigurable' =>
+     * [ ['rule','fields','why'], ... ] (deduplicated), 'stats' => [...]].
+     * Stored VALUES are deliberately not returned: the report names where the
+     * problem is; the value itself stays behind REDCap's own access control.
+     */
+    public function scanProject($pid, $dagFilter = null, $chunkSize = 200)
+    {
+        $result = ['violations' => [], 'unconfigurable' => [], 'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0]];
+        $rules = $this->getRules($pid);
+        if (!$rules) return $result;
+        $live = [];
+        foreach ($rules as $i => $r) {
+            if (empty($r['configError'])) $live[$i] = $r;
+        }
+        if (!$live) return $result;
+        $result['stats']['rules'] = count($live);
+
+        $dupes = [];
+        foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
+
+        // Everything the evaluation needs to read: rule fields + when/assert
+        // refs + composite unique keys.
+        $readSet = [];
+        foreach ($live as $r) {
+            foreach ($r['fields'] as $f) $readSet[$f] = true;
+            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
+                $p = Logic::parse($cond);
+                if (empty($p['ok'])) continue;
+                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+            }
+            foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
+        }
+
+        // Record list first (ids only), then chunked full reads.
+        $pk = null;
+        try {
+            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
+        } catch (\Throwable $e) {
+        }
+        $idData = \REDCap::getData([
+            'project_id' => $pid, 'return_format' => 'array',
+            'fields' => $pk ? [$pk] : array_keys($readSet),
+            'exportDataAccessGroups' => true,
+        ]);
+        if (!is_array($idData)) return $result;
+        $ids = [];
+        foreach ($idData as $rec => $node) {
+            if ($dagFilter !== null && is_array($node) && self::dagOfRecordNode($node) !== $dagFilter) continue;
+            $ids[] = $rec;
+        }
+        $result['stats']['records'] = count($ids);
+        if (!$ids) return $result;
+
+        $uniqueSeen = [];   // aggregate pass: groupKey => [ [record,event,instance,field,rule], ... ]
+        $unconf = [];       // dedupe unconfigurable notes by rule+why
+
+        foreach (array_chunk($ids, max(1, (int) $chunkSize)) as $chunk) {
+            $data = \REDCap::getData([
+                'project_id' => $pid, 'return_format' => 'array',
+                'records' => $chunk, 'fields' => array_keys($readSet),
+                'exportDataAccessGroups' => true,
+            ]);
+            if (!is_array($data)) continue;
+            foreach ($chunk as $rec) {
+                if (!isset($data[$rec]) || !is_array($data[$rec])) continue;
+                $recDag = self::dagOfRecordNode($data[$rec]);
+                foreach (self::recordContexts($data[$rec]) as $ctx) {
+                    $result['stats']['contexts']++;
+                    foreach ($live as $i => $r) {
+                        $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+                        if ($mode === 'unique') {
+                            self::collectUniqueCandidates($uniqueSeen, $r, $i, $ctx, $rec, $recDag, $dupes);
+                            continue;
+                        }
+                        $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, null, $pid, $rec, $ctx['event_id'], null);
+                        foreach ($f['invalid'] as $v) {
+                            $result['violations'][] = [
+                                'record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                                'instance' => $ctx['instance'], 'field' => $v['field'],
+                                'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
+                            ];
+                        }
+                        foreach ($f['unconfigurable'] as $u) {
+                            $key = $i . '|' . $u['why'];
+                            if (!isset($unconf[$key])) {
+                                $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Aggregate duplicate detection: a group is a violation when TWO OR
+        // MORE DISTINCT RECORDS share the key (same-record repeats mirror the
+        // endpoint/audit, which only compare against OTHER records).
+        foreach ($uniqueSeen as $entries) {
+            $records = [];
+            foreach ($entries as $e) $records[$e['record']] = true;
+            if (count($records) < 2) continue;
+            foreach ($entries as $e) {
+                $result['violations'][] = [
+                    'record' => $e['record'], 'event_id' => $e['event_id'],
+                    'instance' => $e['instance'], 'field' => $e['field'],
+                    'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
+                ];
+            }
+        }
+        $result['unconfigurable'] = array_values($unconf);
+        return $result;
+    }
+
+    /**
+     * Every value context of one record node: the plain event rows, plus each
+     * repeat instance merged over its event row (a repeat row wins where both
+     * carry a field — the same precedence readValues applies).
+     */
+    private static function recordContexts(array $recordNode)
+    {
+        $out = [];
+        foreach ($recordNode as $k => $node) {
+            if ($k === 'repeat_instances' || !is_array($node)) continue;
+            $out[] = ['event_id' => $k, 'instance' => 1, 'values' => self::cleanRow($node)];
+        }
+        if (isset($recordNode['repeat_instances']) && is_array($recordNode['repeat_instances'])) {
+            foreach ($recordNode['repeat_instances'] as $evt => $byInstr) {
+                if (!is_array($byInstr)) continue;
+                $base = (isset($recordNode[$evt]) && is_array($recordNode[$evt])) ? self::cleanRow($recordNode[$evt]) : [];
+                foreach ($byInstr as $byInst) {
+                    if (!is_array($byInst)) continue;
+                    foreach ($byInst as $inst => $row) {
+                        if (!is_array($row)) continue;
+                        $out[] = ['event_id' => $evt, 'instance' => $inst,
+                                  'values' => array_merge($base, self::cleanRow($row))];
+                    }
+                }
+            }
+        }
+        return $out;
+    }
+
+    /** Drop empty values from a data row (mirrors readValues: missing == empty). */
+    private static function cleanRow(array $row)
+    {
+        $out = [];
+        foreach ($row as $f => $v) {
+            if ($v === null || $v === '') continue;
+            $out[$f] = is_array($v) ? $v : (is_string($v) ? $v : (string) $v);
+        }
+        return $out;
+    }
+
+    /**
+     * Collect one context's candidate values for a unique rule into the
+     * aggregate map. The group key mirrors findCollision's semantics: the
+     * trimmed value + composite "with" values, widened by the scope (event id
+     * for scope=event, the record's DAG for scope=dag). Branch rules resolve
+     * their active branch against this context first.
+     */
+    private static function collectUniqueCandidates(array &$seen, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes)
+    {
+        $cfg = $rule;
+        if (isset($rule['branches']) && is_array($rule['branches'])) {
+            $active = [];
+            $else = null;
+            foreach ($rule['branches'] as $bi => $b) {
+                if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') { $else = $bi; continue; }
+                $p = Logic::parse($b['when']);
+                if (empty($p['ok'])) return; // unev.: the non-scan audit surfaces it
+                if (Logic::evaluate($p['ast'], $ctx['values'])) $active[] = $bi;
+            }
+            if (count($active) === 1) $pick = $active[0];
+            elseif (!count($active) && $else !== null) $pick = $else;
+            else return;
+            $b = $rule['branches'][$pick];
+            unset($b['when']);
+            $cfg = array_merge(['type' => 'unique', 'fields' => $rule['fields']], $b);
+        }
+        if (isset($cfg['when']) && is_string($cfg['when']) && $cfg['when'] !== '') {
+            $p = Logic::parse($cfg['when']);
+            if (empty($p['ok']) || !Logic::evaluate($p['ast'], $ctx['values'])) return;
+        }
+        $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
+        $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
+            if ($v === null || is_array($v) || trim((string) $v) === '') continue;
+            $key = $ruleIndex . "\x1F" . $field . "\x1F" . trim((string) $v);
+            foreach ($with as $w) {
+                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? trim((string) $ctx['values'][$w]) : '';
+                $key .= "\x1F" . $wv;
+            }
+            if ($scope === 'event') $key .= "\x1Fevt:" . $ctx['event_id'];
+            elseif ($scope === 'dag') $key .= "\x1Fdag:" . (string) $recDag;
+            $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                             'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1];
+        }
     }
 
     // -- uniqueness (@UVUNIQUE): live endpoint + shared lookup ---------------

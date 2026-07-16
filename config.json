@@ -15,6 +15,17 @@
   "auth-ajax-actions": ["unique-check"],
   "no-auth-ajax-actions": ["unique-check"],
 
+  "links": {
+    "project": [
+      {
+        "name": "Validation scan",
+        "icon": "fas fa-magnifying-glass",
+        "url": "pages/scan.php",
+        "show-header-and-footer": true
+      }
+    ]
+  },
+
   "compatibility": {
     "php-version-min": "7.4.0",
     "redcap-version-min": "13.7.0"
