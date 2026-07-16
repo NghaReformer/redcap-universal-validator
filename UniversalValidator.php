@@ -673,11 +673,18 @@ class UniversalValidator extends AbstractExternalModule
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'algorithm', 'source', 'suggest-fix', 'pattern', 'strip',
+        foreach (['rule-type', 'fields-csv', 'when', 'assert', 'message', 'algorithm', 'source',
+                  'suggest-fix', 'pattern', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
             if (isset($s[$k]) && !is_scalar($s[$k])) unset($s[$k]);
         }
+        // The rule KIND decides which boxes apply and which field types are
+        // eligible. single|pooled are the two types of the check mode;
+        // constraint (@UVASSERT-style) and required (@UVREQUIRED-style) are
+        // the added modes — their rows read only their own boxes below.
+        $ruleType = !empty($s['rule-type']) ? (string) $s['rule-type'] : 'single';
+        $mode = Branching::modeOfType($ruleType);
         $fields = isset($s['fields']) ? $s['fields'] : [];
         if (!is_array($fields)) $fields = [$fields];
         $fields = array_values(array_filter($fields, function ($f) {
@@ -711,19 +718,30 @@ class UniversalValidator extends AbstractExternalModule
                 $fields = array_values(array_intersect($fields, $known));
             }
         }
-        // The engine can only attach to Text/Notes inputs, and the server audit
-        // of e.g. a radio's stored code would silently diverge from what the
-        // form shows — reject unsupported field types instead (COR-003). The
-        // annotation channel already enforces the same rule.
+        // Field-type eligibility is per MODE (COR-003, mirrored from the
+        // annotation channel): check-character/regex rules can only attach to
+        // Text/Notes inputs; a constraint reads any scalar field's answer; a
+        // required rule additionally excludes calc (the person entering data
+        // cannot fill a calc, so requiring one would trap them).
         if ($types !== null && $fields) {
+            if ($mode === 'constraint') {
+                $allowed = AnnotationRules::CONSTRAINT_FIELD_TYPES;
+                $why = 'a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields';
+            } elseif ($mode === 'required') {
+                $allowed = AnnotationRules::REQUIRED_FIELD_TYPES;
+                $why = 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)';
+            } else {
+                $allowed = ['text', 'notes'];
+                $why = 'only Text and Notes fields can be validated';
+            }
             $wrong = [];
             foreach ($fields as $f) {
-                if (isset($types[$f]) && !in_array($types[$f], ['text', 'notes'], true)) $wrong[] = $f . ' (' . $types[$f] . ')';
+                if (isset($types[$f]) && !in_array($types[$f], $allowed, true)) $wrong[] = $f . ' (' . $types[$f] . ')';
             }
             if ($wrong) {
-                $csvErrors[] = 'only Text and Notes fields can be validated — remove: ' . implode(', ', $wrong) . '.';
-                $fields = array_values(array_filter($fields, function ($f) use ($types) {
-                    return !isset($types[$f]) || in_array($types[$f], ['text', 'notes'], true);
+                $csvErrors[] = $why . ' — remove: ' . implode(', ', $wrong) . '.';
+                $fields = array_values(array_filter($fields, function ($f) use ($types, $allowed) {
+                    return !isset($types[$f]) || in_array($types[$f], $allowed, true);
                 }));
             }
         }
@@ -739,6 +757,38 @@ class UniversalValidator extends AbstractExternalModule
                 ];
             }
             return null;
+        }
+
+        // Constraint / Required rows: assemble ONLY their own keys — the
+        // algorithm/pattern/pooled boxes visible in the shared dialog do not
+        // apply to these modes (their labels say so) and must not leak into
+        // the rule. checkFragment routes to the mode's own validator.
+        if ($mode === 'constraint' || $mode === 'required') {
+            $rule = ['type' => $ruleType, 'fields' => $fields];
+            if ($mode === 'constraint' && isset($s['assert']) && trim((string) $s['assert']) !== '') {
+                $rule['assert'] = trim((string) $s['assert']);
+            }
+            if (isset($s['message']) && trim((string) $s['message']) !== '') {
+                $rule['message'] = trim((string) $s['message']);
+            }
+            if (!empty($s['block-save'])) $rule['blockSave'] = $s['block-save'];
+            if (isset($s['when']) && trim((string) $s['when']) !== '') $rule['when'] = trim((string) $s['when']);
+
+            $errors = $csvErrors;
+            foreach (AnnotationRules::checkFragment($rule) as $e) $errors[] = $e;
+            // Dictionary-dependent reference checks for BOTH conditions.
+            foreach (['when', 'assert'] as $condKey) {
+                if (isset($rule[$condKey]) && $types !== null) {
+                    $w = Logic::parse($rule[$condKey]);
+                    if (!empty($w['ok'])) {
+                        foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
+                            $errors[] = $e;
+                        }
+                    }
+                }
+            }
+            if ($errors) $rule['configError'] = implode(' ', $errors);
+            return $rule;
         }
 
         $rule = [
@@ -875,7 +925,8 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'algorithm', 'source',
+        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
+                 'algorithm', 'source',
                  'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
         $n = count($settings['rules']);

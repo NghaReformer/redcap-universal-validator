@@ -69,7 +69,10 @@ validate identically here, in Excel, and in the browser (same verified engine).
 
 ## Three ways to configure (pick per rule — they mix freely)
 
-One rule = one kind of validation, applied to any number of fields:
+One rule = one kind of validation, applied to any number of fields. Every rule
+kind — Single value / Pooled (check-character or regex), **Constraint**
+(`@UVASSERT`) and **Required** (`@UVREQUIRED`) — is available in all three
+channels; the dialog's "What this rule checks" selector picks the kind:
 
 1. **The settings dialog** — pick fields with the field picker (click its `+` to
    add more fields to the same rule) and choose the method and enforcement.

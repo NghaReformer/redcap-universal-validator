@@ -35,7 +35,7 @@
   "project-settings": [
     {
       "key": "intro",
-      "name": "<b>Universal Regex & Check-Character Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Leave a rule's advanced boxes blank to use the defaults.",
+      "name": "<b>Universal Regex & Check-Character Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Four kinds of rule: <b>Single value</b> / <b>Pooled</b> (check-character or regex ID validation), <b>Constraint</b> (cross-field: invalid unless a condition is true) and <b>Required</b> (must not be blank, optionally only while a condition is true). Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b>, <b>@UVASSERT</b> or <b>@UVREQUIRED</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Different rule kinds may cover the SAME field (they compose — all must pass). Leave a rule's advanced boxes blank to use the defaults.",
       "type": "descriptive"
     },
     {
@@ -67,11 +67,13 @@
         },
         {
           "key": "rule-type",
-          "name": "Field type",
+          "name": "What this rule checks",
           "type": "radio",
           "choices": [
-            { "value": "single", "name": "Single value (one ID/code per field)" },
-            { "value": "pooled", "name": "Pooled (several IDs jammed into one field)" }
+            { "value": "single", "name": "Single value (one ID/code per field — check character and/or format)" },
+            { "value": "pooled", "name": "Pooled (several IDs jammed into one field)" },
+            { "value": "constraint", "name": "Constraint (cross-field rule: the field is invalid unless a condition is true — set the condition below; algorithm/pattern boxes are ignored)" },
+            { "value": "required", "name": "Required (the field must not be left blank — optionally only while the 'Only validate when' condition is true; algorithm/pattern boxes are ignored)" }
           ]
         },
         {
@@ -88,6 +90,16 @@
         {
           "key": "when",
           "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on this instrument are read live as they are edited; a field on another instrument is resolved on the server against its saved value and only the result is sent to the browser (its value never appears in the page). While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field.",
+          "type": "text"
+        },
+        {
+          "key": "assert",
+          "name": "Constraint rules only: the condition that must be TRUE for the field's value to be valid, e.g. [end_date]>=[start_date] or [dose]<=[max_dose]. Same REDCap-style dialect as 'Only validate when' ([field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, parentheses; ISO dates and numbers compare correctly). An EMPTY field is never tested — use a Required rule to demand a value (one field may carry both; the rules compose).",
+          "type": "text"
+        },
+        {
+          "key": "message",
+          "name": "Constraint and Required rules only (optional): your wording shown when the rule fails, e.g. 'End date must be on or after the start date'. Strongly recommended for constraints — only you can word what the relationship means. Left blank, a generic message is shown.",
           "type": "text"
         },
         {

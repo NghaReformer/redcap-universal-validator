@@ -129,8 +129,13 @@ flowchart TD
 
 Two limits to keep in mind from the start:
 
-- **Only Text and Notes fields** are eligible. Pointing a rule at a dropdown,
-  radio, date, or calc field produces a configuration error.
+- **Check-character and format rules attach to Text and Notes fields only.**
+  Pointing a Single-value or Pooled rule at a dropdown, radio, date, or calc
+  field produces a configuration error. The newer **Constraint** (`@UVASSERT`)
+  and **Required** (`@UVREQUIRED`) rules are wider: they also accept dropdown,
+  radio, yes/no, true/false and slider fields (constraints additionally accept
+  calc; a Required rule rejects calc because the person entering data cannot
+  fill one). See the README sections on those two tags.
 - **The browser is the enforcement point.** *Compulsory* blocks a human form or
   survey save; it cannot stop an API or import write. The server audit is a
   detection log that fires *after* the write, and whether it covers API and Data
@@ -686,10 +691,12 @@ Leave it **off** in production — exception messages can quote data values.
 
 **Nothing happens when I type in the field.**
 Check, in order: (1) the module is enabled on the project; (2) a rule actually
-lists this field; (3) the field is **Text or Notes** (dropdowns, radios, dates,
-calcs are not eligible); (4) the field name in the rule is spelled correctly
-(unknown names show a configuration error); (5) the field is not claimed by two
-rules (that shows a configuration error instead of validating).
+lists this field; (3) the field's type suits the rule kind — check-character
+and format rules need **Text or Notes**; Constraint and Required rules also
+accept dropdown/radio/yes-no/true-false/slider; (4) the field name in the rule
+is spelled correctly (unknown names show a configuration error); (5) the field
+is not claimed by two rules **of the same kind** (that shows a configuration
+error instead of validating — different kinds compose and are fine).
 
 **A value I know is correct is flagged as invalid.**
 The rule's **algorithm** probably does not match how the ID was minted, or the
@@ -705,13 +712,17 @@ fields never block saving.
 **The Configure dialog will not save my rule.**
 The save-time gate rejected it and named the problem: an unknown algorithm, a
 non-compiling or catastrophic regex (see [Part 6](#part-6-format-patterns-and-safety)),
-unsafe pooled lengths (maximum must be **less than 2×** the minimum), or a field
-that is not Text/Notes. Fix the named rule and save again.
+unsafe pooled lengths (maximum must be **less than 2×** the minimum), a field
+type the rule kind does not support, or a Constraint rule without a condition.
+Fix the named rule and save again.
 
 **Can I say "field A must equal field B" or otherwise validate across fields?**
-No. Each rule validates its own field(s) independently. The closest built-in
-behavior is **duplicate detection inside a single pooled field**. Cross-field
-logic still belongs in REDCap branching logic or data-quality rules.
+Yes — since 1.0.0 that is exactly what a **Constraint** rule (the `@UVASSERT`
+tag, or the Constraint kind in the Configure dialog) does: the field is invalid
+unless a condition such as `[end_date]>=[start_date]` or `[id]=[id_confirm]`
+is true, checked live and enforceable with a real save block. And since 1.1.0
+a **Required** rule (`@UVREQUIRED`) demands a value, optionally only while a
+condition is true. See the README sections on both tags.
 
 **Does it block API or Data Import Tool writes?**
 No. Enforcement is a browser behavior only. Those paths may be *audited* after the
@@ -721,7 +732,9 @@ fact, but coverage is version-dependent — see [Part 7](#part-7-server-side-aud
 Not yet — messages are English only in this version.
 
 **Which fields can I validate?**
-Text and Notes fields only.
+Check-character and format rules: Text and Notes fields only. Constraint
+rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
+Required rules: the same minus calc.
 
 ---
 

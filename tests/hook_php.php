@@ -998,6 +998,117 @@ namespace {
     check('compose filled-bad: check fires, required satisfied',
         count($types) === 1 && $types[0] !== 'required');
 
+    // ---- Configure-dialog channel for the new modes (Phase 3) -----------------
+    // Constraint and Required rules built from dialog rows (settingRowToRule),
+    // not annotations — same audit semantics, same shared validator.
+    $dlgDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'df'],
+        'start'     => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'df'],
+        'end'       => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'df'],
+        'grade'     => ['field_type' => 'dropdown', 'field_annotation' => '', 'form_name' => 'df',
+                        'select_choices_or_calculations' => '1, A | 2, B | 9, Unknown'],
+        'score'     => ['field_type' => 'calc', 'field_annotation' => '', 'form_name' => 'df',
+                        'select_choices_or_calculations' => '[start]*2'],
+    ];
+    function dlgRow($over) {
+        return array_merge([
+            'rule-type' => 'single', 'fields' => [], 'fields-csv' => '', 'when' => '',
+            'assert' => '', 'message' => '', 'algorithm' => 'iso7064_mod37_36', 'source' => '',
+            'suggest-fix' => '', 'pattern' => '', 'strip' => '', 'keep-chars' => '',
+            'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+            'expected-count' => '', 'block-save' => 'off',
+        ], $over);
+    }
+    // dialog constraint on a DROPDOWN (extended field type), violated
+    $dlgRules = [dlgRow(['rule-type' => 'constraint', 'fields' => ['grade'],
+                         'assert' => "[grade]<>'9'", 'message' => 'Pick a real grade'])];
+    $m = newModule($dlgRules, $dlgDict, [2 => [351 => ['record_id' => '2', 'grade' => '9']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    $one = invalidLogs($m);
+    check('dialog constraint on dropdown audited', count($one) === 1
+        && $one[0][1]['field'] === 'grade' && $one[0][1]['type'] === 'constraint');
+    // satisfied -> silent
+    $m = newModule($dlgRules, $dlgDict, [2 => [351 => ['record_id' => '2', 'grade' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog constraint satisfied -> no audit', count(invalidLogs($m)) === 0);
+    // dialog constraint: irrelevant algorithm/pattern boxes are IGNORED, not leaked
+    $dlgRules2 = [dlgRow(['rule-type' => 'constraint', 'fields' => ['end'],
+                          'assert' => '[end]>=[start]', 'algorithm' => 'verhoeff',
+                          'pattern' => '(a+)+'])]; // risky pattern would be rejected if read
+    $m = newModule($dlgRules2, $dlgDict, [2 => [351 => ['record_id' => '2', 'start' => '5', 'end' => '3']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog constraint ignores algorithm/pattern boxes (no configError, audits)',
+        count(invalidLogs($m)) === 1 && count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+
+    // dialog required with a when-gate
+    $dlgRules3 = [dlgRow(['rule-type' => 'required', 'fields' => ['end'],
+                          'when' => "[grade]='1'", 'message' => 'End date needed for grade A'])];
+    $m = newModule($dlgRules3, $dlgDict, [2 => [351 => ['record_id' => '2', 'grade' => '1']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    $one = invalidLogs($m);
+    check('dialog required-when true + blank -> audited', count($one) === 1
+        && $one[0][1]['field'] === 'end' && $one[0][1]['type'] === 'required');
+    $m = newModule($dlgRules3, $dlgDict, [2 => [351 => ['record_id' => '2', 'grade' => '2']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog required-when false -> no audit', count(invalidLogs($m)) === 0);
+
+    // dialog compose: check rule + constraint rule on ONE field, both audit
+    $dlgRules4 = [
+        dlgRow(['fields' => ['end'], 'algorithm' => 'verhoeff']),
+        dlgRow(['rule-type' => 'constraint', 'fields' => ['end'], 'assert' => '[end]>=[start]']),
+    ];
+    $m = newModule($dlgRules4, $dlgDict, [2 => [351 => ['record_id' => '2', 'start' => '99999', 'end' => '12345']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    $types = array_map(function ($L) { return $L[1]['type']; }, invalidLogs($m));
+    sort($types);
+    check('dialog compose: check + constraint both audit one field',
+        $types === ['constraint', 'single']);
+
+    // ---- validateSettings gate for the new modes ----
+    function modeFlat($rows) {
+        $keys = ['rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message', 'algorithm',
+                 'source', 'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths',
+                 'id-min-len', 'id-max-len', 'expected-count', 'block-save'];
+        $flat = ['rules' => array_fill(0, count($rows), true)];
+        foreach ($keys as $k) {
+            $flat[$k] = [];
+            foreach ($rows as $r) $flat[$k][] = isset($r[$k]) ? $r[$k] : '';
+        }
+        return $flat;
+    }
+    $m = newModule([], $dlgDict, [], 149);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'constraint', 'fields' => ['end'], 'algorithm' => 'iso7064_mod37_36', 'block-save' => 'off'],
+    ]));
+    check('save gate: constraint without an assert rejected',
+        is_string($msg) && strpos($msg, 'assert') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'constraint', 'fields' => ['end'], 'assert' => "datediff([a],[b],'d')>3",
+         'algorithm' => 'iso7064_mod37_36', 'block-save' => 'off'],
+    ]));
+    check('save gate: assert with a function rejected (dialect subset)',
+        is_string($msg) && strpos($msg, 'assert') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'required', 'fields' => ['score'], 'algorithm' => 'iso7064_mod37_36', 'block-save' => 'off'],
+    ]));
+    check('save gate: required-on-calc rejected',
+        is_string($msg) && strpos($msg, 'not calc') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'single', 'fields' => ['end'], 'algorithm' => 'verhoeff', 'block-save' => 'off'],
+        ['rule-type' => 'constraint', 'fields' => ['end'], 'assert' => '[end]>=[start]', 'block-save' => 'off'],
+    ]));
+    check('save gate: check + constraint on one field COMPOSE (no false conflict)', $msg === null);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'constraint', 'fields' => ['grade'], 'assert' => "[grade]<>'9'",
+         'message' => 'Pick a real grade', 'block-save' => 'hard'],
+    ]));
+    check('save gate: sound dropdown constraint passes', $msg === null);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'constraint', 'fields' => ['end'], 'assert' => '[nosuch]>3', 'block-save' => 'off'],
+    ]));
+    check('save gate: assert referencing an unknown field rejected',
+        is_string($msg) && strpos($msg, 'nosuch') !== false);
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

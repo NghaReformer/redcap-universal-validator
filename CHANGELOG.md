@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.0 — Constraint and Required rules in the Configure dialog
+
+The two 1.x modes reach the dialog and fast-entry channels, so every rule kind
+is now available in all three configuration channels (dialog, fast entry,
+action tags) — no annotations needed for cross-field or required rules.
+
+- **"What this rule checks" selector.** The dialog's rule-type radio grows two
+  kinds: *Constraint* (cross-field: invalid unless a condition is true) and
+  *Required* (must not be blank, optionally gated by "Only validate when").
+  New per-rule boxes: the constraint **condition** (`assert`) and the shared
+  optional **message**.
+- **Per-mode key isolation.** Constraint/Required rows read ONLY their own
+  boxes — algorithm/pattern/pooled boxes visible in the shared dialog are
+  ignored for those kinds (their labels say so), proven by a test that puts a
+  catastrophic regex in an ignored box and shows the rule still runs clean.
+- **Per-mode field types in the dialog** (mirrors the annotation channel):
+  constraints accept Text/Notes/dropdown/radio/yes-no/true-false/calc/slider;
+  required the same minus calc; check rules stay Text/Notes.
+- **Save-time gate covers the new kinds.** A constraint without a condition, a
+  function in the dialect, required-on-calc, and an assert referencing an
+  unknown field are all rejected in the dialog with the row named; a check
+  rule and a constraint sharing a field pass (they compose, not conflict).
+- **Docs.** README channel intro reflects the four kinds; USER_GUIDE's
+  outdated "no cross-field validation" and "Text/Notes only" answers updated.
+- **Verification.** `tests/hook_php.php` 139→151 (dialog-channel audits for
+  both modes, key isolation, save-gate cases). Full JS + PHP suites green.
+
 ## 1.1.0 — conditional required (`@UVREQUIRED`)
 
 Third validation mode: a field must not be left blank — with the two things
