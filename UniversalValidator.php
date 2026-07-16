@@ -152,9 +152,10 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
             }
 
-            // Constraint rules (@UVASSERT) compare fields their "assert" names —
-            // widen the read set with those refs too, so the audit can evaluate
-            // the condition (mirrors the "when" widening above).
+            // Constraint rules (@UVASSERT) compare fields their "assert" names,
+            // and unique rules (@UVUNIQUE) read their composite "with" fields —
+            // widen the read set with both, so the audit can evaluate them
+            // (mirrors the "when" widening above).
             foreach ($rules as $r) {
                 if (!empty($r['configError'])) continue;
                 foreach (self::ruleAsserts($r) as $a) {
@@ -162,6 +163,7 @@ class UniversalValidator extends AbstractExternalModule
                     if (empty($pa['ok'])) continue;
                     foreach (Logic::referencedFields($pa['ast']) as $ref) $readSet[$ref[0]] = true;
                 }
+                foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
             }
 
             // Read every audited + condition-referenced field for this exact
@@ -260,6 +262,29 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
             if (!Logic::evaluate($whenAst, $values)) return;
+        }
+
+        // Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
+        // common case live via the AJAX check; two near-simultaneous submits
+        // can both pass it, so the audit re-checks the SAVED value against
+        // every other record and logs the collision the client could not see.
+        if ($type === 'unique') {
+            $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+            $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
+            foreach ($rule['fields'] as $field) {
+                if (isset($dupes[$field])) continue;
+                if ($onForm !== null && !isset($onForm[$field])) continue;
+                $value = isset($values[$field]) ? $values[$field] : null;
+                if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+                $cand = [$field => trim((string) $value)];
+                foreach ($with as $w) {
+                    $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
+                }
+                if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id) !== null) {
+                    $this->logInvalid($logMode, $project_id, $record, $field, $value, 'unique', 'unique', $instrument, $event_id, $repeat_instance, 'duplicate-value');
+                }
+            }
+            return;
         }
 
         // Required mode (@UVREQUIRED): the INVERSE emptiness rule — a BLANK
@@ -490,6 +515,22 @@ class UniversalValidator extends AbstractExternalModule
         $config = $this->buildClientConfig($pid, $context, $record, $instrument, $event_id, $repeat_instance);
         if (empty($config['rules'])) return; // nothing configured for this project
         $engineUrl = $this->getUrl('js/engine.js');
+        // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
+        // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
+        // Initialized only when a unique rule is live, so other pages carry no
+        // extra script. If the framework cannot provide it, jsmoName stays
+        // absent and the unique factory fails open (the audit is the net).
+        if (self::hasUniqueRules($config['rules']) && method_exists($this, 'initializeJavascriptModuleObject')) {
+            try {
+                $js = $this->initializeJavascriptModuleObject();
+                if (is_string($js) && $js !== '') echo $js . "\n";
+                $name = method_exists($this, 'getJavascriptModuleObjectName')
+                    ? $this->getJavascriptModuleObjectName() : null;
+                if (is_string($name) && $name !== '') $config['jsmoName'] = $name;
+            } catch (\Throwable $e) {
+                // no transport: the unique factory shows nothing and never blocks
+            }
+        }
         // Embed the config as INERT JSON (not executable JS); the engine parses
         // this element itself, so no config global is ever written. The hex
         // flags escape < > & ' " to \uXXXX and the default slash escaping is
@@ -628,6 +669,23 @@ class UniversalValidator extends AbstractExternalModule
         return $out;
     }
 
+    /** Every composite "with" field a unique rule carries (own + branches'). */
+    private static function ruleUniqueWith(array $r)
+    {
+        $out = [];
+        if (isset($r['uniqueWith']) && is_array($r['uniqueWith'])) {
+            foreach ($r['uniqueWith'] as $w) { if (is_string($w) && $w !== '') $out[] = $w; }
+        }
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $b) {
+                if (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) {
+                    foreach ($b['uniqueWith'] as $w) { if (is_string($w) && $w !== '') $out[] = $w; }
+                }
+            }
+        }
+        return $out;
+    }
+
     /**
      * All active rules, from BOTH configuration channels:
      *   1. the repeatable "rules" project settings (module Configure dialog),
@@ -673,7 +731,8 @@ class UniversalValidator extends AbstractExternalModule
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'assert', 'message', 'algorithm', 'source',
+        foreach (['rule-type', 'fields-csv', 'when', 'assert', 'message',
+                  'unique-with', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
                   'suggest-fix', 'pattern', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
@@ -730,6 +789,9 @@ class UniversalValidator extends AbstractExternalModule
             } elseif ($mode === 'required') {
                 $allowed = AnnotationRules::REQUIRED_FIELD_TYPES;
                 $why = 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)';
+            } elseif ($mode === 'unique') {
+                $allowed = AnnotationRules::UNIQUE_FIELD_TYPES;
+                $why = 'a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fix a calc collision)';
             } else {
                 $allowed = ['text', 'notes'];
                 $why = 'only Text and Notes fields can be validated';
@@ -759,14 +821,24 @@ class UniversalValidator extends AbstractExternalModule
             return null;
         }
 
-        // Constraint / Required rows: assemble ONLY their own keys — the
-        // algorithm/pattern/pooled boxes visible in the shared dialog do not
-        // apply to these modes (their labels say so) and must not leak into
-        // the rule. checkFragment routes to the mode's own validator.
-        if ($mode === 'constraint' || $mode === 'required') {
+        // Constraint / Required / Unique rows: assemble ONLY their own keys —
+        // the algorithm/pattern/pooled boxes visible in the shared dialog do
+        // not apply to these modes (their labels say so) and must not leak
+        // into the rule. checkFragment routes to the mode's own validator.
+        if ($mode === 'constraint' || $mode === 'required' || $mode === 'unique') {
             $rule = ['type' => $ruleType, 'fields' => $fields];
             if ($mode === 'constraint' && isset($s['assert']) && trim((string) $s['assert']) !== '') {
                 $rule['assert'] = trim((string) $s['assert']);
+            }
+            if ($mode === 'unique') {
+                if (isset($s['unique-with']) && trim((string) $s['unique-with']) !== '') {
+                    $rule['uniqueWith'] = array_map('strtolower',
+                        preg_split('/[,;\s]+/', trim((string) $s['unique-with']), -1, PREG_SPLIT_NO_EMPTY));
+                }
+                if (!empty($s['unique-scope'])) $rule['uniqueScope'] = strtolower((string) $s['unique-scope']);
+                if (isset($s['unique-surveys']) && in_array($s['unique-surveys'], [true, 'true', '1', 1], true)) {
+                    $rule['uniqueSurveys'] = true;
+                }
             }
             if (isset($s['message']) && trim((string) $s['message']) !== '') {
                 $rule['message'] = trim((string) $s['message']);
@@ -784,6 +856,16 @@ class UniversalValidator extends AbstractExternalModule
                         foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
                             $errors[] = $e;
                         }
+                    }
+                }
+            }
+            // Composite-key fields: exist, scalar, and not one of the covered
+            // fields (a self-composite is a tautology).
+            if (isset($rule['uniqueWith']) && is_array($rule['uniqueWith']) && !$errors) {
+                foreach (self::checkUniqueWith($rule['uniqueWith'], null, $types) as $e) $errors[] = $e;
+                foreach ($fields as $f) {
+                    if (in_array($f, $rule['uniqueWith'], true)) {
+                        $errors[] = '"with" must not name a field this rule validates ("' . $f . '").';
                     }
                 }
             }
@@ -926,6 +1008,7 @@ class UniversalValidator extends AbstractExternalModule
     private static function rowsFromFlatSettings(array $settings)
     {
         $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
+                 'unique-with', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
@@ -983,6 +1066,12 @@ class UniversalValidator extends AbstractExternalModule
                                 : ' — it requires a scalar input the person can fill in.'),
                             '_tag' => AnnotationRules::TAG_REQUIRED];
                     }
+                } elseif ($mode === 'unique') {
+                    if (!in_array($ftype, AnnotationRules::UNIQUE_FIELD_TYPES, true)) {
+                        $frags[$k] = ['error' => AnnotationRules::TAG_UNIQUE . ' does not support "' . $ftype
+                            . '" fields — it compares one scalar field\'s value across records.',
+                            '_tag' => AnnotationRules::TAG_UNIQUE];
+                    }
                 } elseif (!in_array($ftype, ['text', 'notes'], true)) {
                     $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
                         . $ftype . '").'];
@@ -1010,10 +1099,24 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
                     if ($errs) {
-                        $isConstraint = (isset($frag['type']) && $frag['type'] === 'constraint');
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
-                            '_tag' => $isConstraint ? AnnotationRules::TAG_ASSERT : AnnotationRules::TAG];
+                            '_tag' => self::tagOfFrag($frag)];
                         break;
+                    }
+                }
+                // Composite-key fields of a unique rule must exist and hold ONE
+                // scalar value (checkbox is multi-valued; file/descriptive have
+                // no comparable value) — and "with" naming the field itself is
+                // a tautology, not a composite.
+                if (!isset($perField[$name][$k]['error']) && isset($frag['uniqueWith'])) {
+                    if ($types === null) {
+                        $types = $this->projectFieldTypes($pid);
+                        $choices = $this->projectFieldChoices($pid);
+                    }
+                    $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+                    if ($errs) {
+                        $perField[$name][$k] = ['error' => implode(' ', $errs),
+                            '_tag' => AnnotationRules::TAG_UNIQUE];
                     }
                 }
             }
@@ -1102,6 +1205,56 @@ class UniversalValidator extends AbstractExternalModule
         return $set ?: null;
     }
 
+    /** Whether any live (non-config-error) rule is a unique rule. */
+    private static function hasUniqueRules(array $rules)
+    {
+        foreach ($rules as $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') === 'unique') return true;
+        }
+        return false;
+    }
+
+    /** The action tag a fragment came from, for config-error attribution. */
+    private static function tagOfFrag(array $frag)
+    {
+        $type = isset($frag['type']) ? $frag['type'] : '';
+        if ($type === 'constraint') return AnnotationRules::TAG_ASSERT;
+        if ($type === 'required')   return AnnotationRules::TAG_REQUIRED;
+        if ($type === 'unique')     return AnnotationRules::TAG_UNIQUE;
+        return AnnotationRules::TAG;
+    }
+
+    /**
+     * Dictionary checks for a unique rule's composite "with" fields: each must
+     * exist, hold one scalar value, and not be the unique field itself.
+     * Returns a list of error strings, [] when sound. Shared by the annotation
+     * and dialog channels ($selfField is null for a dialog rule covering
+     * several fields — the self-reference check then runs per covered field
+     * in the caller).
+     */
+    private static function checkUniqueWith(array $with, $selfField, $types)
+    {
+        $errors = [];
+        $scalar = ['text', 'notes', 'dropdown', 'radio', 'yesno', 'truefalse', 'sql', 'slider', 'calc'];
+        foreach ($with as $w) {
+            if (!is_string($w) || $w === '') continue; // shape errors already caught by checkUnique
+            if ($selfField !== null && $w === $selfField) {
+                $errors[] = '"with" must not name the unique field itself ("' . $w . '").';
+                continue;
+            }
+            if (is_array($types)) {
+                if (!isset($types[$w])) {
+                    $errors[] = '"with" field "' . $w . '" is not in this project — check the spelling.';
+                } elseif (!in_array($types[$w], $scalar, true)) {
+                    $errors[] = '"with" field "' . $w . '" is a ' . $types[$w]
+                        . ' field — composite keys need one scalar value per field.';
+                }
+            }
+        }
+        return $errors;
+    }
+
     /** Fields claimed by more than one live (non-config-error) rule. */
     private static function duplicateFields(array $rules)
     {
@@ -1127,6 +1280,216 @@ class UniversalValidator extends AbstractExternalModule
             if ($c > 1) $dupes[] = substr($key, 0, strrpos($key, "\x1F"));
         }
         return array_values(array_unique($dupes));
+    }
+
+    // -- uniqueness (@UVUNIQUE): live endpoint + shared lookup ---------------
+
+    /**
+     * Live uniqueness endpoint (framework AJAX). The client sends the field
+     * name and the CANDIDATE values (the field's own, plus the composite
+     * "with" fields'); everything else — scope, composite key, eligibility —
+     * is re-derived from the module's own stored rules, never trusted from
+     * the page. Anti-oracle: only a field covered by a live unique rule is
+     * answered at all, so this cannot be used to probe arbitrary fields for
+     * value existence.
+     *
+     * Survey requests (no-auth) are answered ONLY when the rule opted in
+     * ("surveys": true) and always with a boolean — never a record id. For
+     * authenticated staff the colliding record id is included only when it
+     * is inside the user's Data Access Group (or the user has none).
+     */
+    public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
+    {
+        if ($action !== 'unique-check') return ['error' => 'unknown action'];
+        try {
+            $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            $field = (isset($payload['field']) && is_string($payload['field']))
+                ? strtolower(trim($payload['field'])) : '';
+            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) {
+                return ['error' => 'not a checkable field'];
+            }
+            $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
+            if (count($raw) > 8) return ['error' => 'too many values'];
+            $values = [];
+            foreach ($raw as $k => $v) {
+                if (!is_string($k) || (!is_string($v) && !is_numeric($v))) continue;
+                $v = (string) $v;
+                if (strlen($v) > 1024) return ['error' => 'value too long'];
+                $values[strtolower($k)] = $v;
+            }
+
+            $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance);
+            if ($rule === null) return ['error' => 'not a checkable field'];
+            if ($isSurvey && empty($rule['uniqueSurveys'])) return ['error' => 'not enabled on surveys'];
+
+            $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+            $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
+            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id);
+            if ($col === null) return ['used' => false, 'record' => null];
+
+            $recOut = null;
+            if (!$isSurvey && $user_id !== null && $user_id !== '') {
+                $recOut = $col['record'];
+                if ($group_id !== null && $group_id !== '') {
+                    // A DAG-bound user may learn THAT the value is used, but a
+                    // record id outside their DAG is not theirs to see.
+                    $userDag = self::dagNameOf($group_id);
+                    if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
+                }
+            }
+            return ['used' => true, 'record' => $recOut];
+        } catch (\Throwable $e) {
+            return ['error' => 'unique check failed']; // client fails open; no detail leaks
+        }
+    }
+
+    /**
+     * The live unique rule covering one field, flattened to its active branch.
+     * Branch selection mirrors auditRule: conditions are evaluated against the
+     * record's SAVED values (the client gates itself on live values before
+     * calling). Returns null when no unique rule covers the field, or the
+     * branch situation is unresolvable (conflict / unparseable) — the client
+     * then fails open and the audit logs the config problem on save.
+     */
+    private function uniqueRuleFor(array $rules, $field, $pid, $record, $event_id, $instrument, $repeat_instance)
+    {
+        foreach ($rules as $r) {
+            if (!empty($r['configError'])) continue;
+            if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+            if (empty($r['fields']) || !is_array($r['fields']) || !in_array($field, $r['fields'], true)) continue;
+            if (!isset($r['branches']) || !is_array($r['branches'])) return $r;
+
+            $asts = [];
+            $refs = [];
+            $else = null;
+            foreach ($r['branches'] as $bi => $b) {
+                if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') { $else = $bi; continue; }
+                $p = Logic::parse($b['when']);
+                if (empty($p['ok'])) return null;
+                $asts[$bi] = $p['ast'];
+                foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
+            }
+            $values = ($record !== null && $record !== '')
+                ? $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true)
+                : [];
+            $active = [];
+            foreach ($asts as $bi => $ast) {
+                if (Logic::evaluate($ast, $values)) $active[] = $bi;
+            }
+            if (count($active) === 1) $pick = $active[0];
+            elseif (!count($active) && $else !== null) $pick = $else;
+            else return null;
+            $b = $r['branches'][$pick];
+            unset($b['when']);
+            return array_merge(['type' => 'unique', 'fields' => $r['fields']], $b);
+        }
+        return null;
+    }
+
+    /**
+     * Scan every OTHER record for the candidate value(s). Comparison is exact
+     * string equality after ASCII trimming — raw stored values (dropdown/radio
+     * codes, canonical Y-M-D dates) on both sides, deliberately no
+     * normalization: uniqueness is about what is stored. A blank primary value
+     * never collides; composite "with" components match blank-to-blank.
+     * Scopes: project (default), event (same event only), dag (records in the
+     * same Data Access Group — resolved from the current record's saved rows,
+     * falling back to the acting user's group; unresolvable DAG degrades to
+     * project scope, the conservative direction for finding duplicates).
+     * Returns null or ['record' => id, 'dag' => nameOrNull].
+     */
+    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null)
+    {
+        $need = array_merge([$field], $with);
+        $target = [];
+        foreach ($need as $f) {
+            $target[$f] = isset($values[$f]) ? trim((string) $values[$f]) : '';
+        }
+        if ($target[$field] === '') return null;
+
+        $params = [
+            'project_id'    => $pid,
+            'return_format' => 'array',
+            'fields'        => $need,
+            'exportDataAccessGroups' => true,
+        ];
+        if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
+        $data = \REDCap::getData($params);
+        if (!is_array($data)) return null;
+
+        $currentDag = null;
+        if ($scope === 'dag') {
+            if ($excludeRecord !== null && $excludeRecord !== '' && isset($data[$excludeRecord]) && is_array($data[$excludeRecord])) {
+                $currentDag = self::dagOfRecordNode($data[$excludeRecord]);
+            }
+            if ($currentDag === null && $groupId !== null && $groupId !== '') {
+                $currentDag = self::dagNameOf($groupId);
+            }
+        }
+
+        foreach ($data as $rec => $node) {
+            if ($excludeRecord !== null && $excludeRecord !== '' && (string) $rec === (string) $excludeRecord) continue;
+            if (!is_array($node)) continue;
+            $dag = self::dagOfRecordNode($node);
+            if ($scope === 'dag' && $currentDag !== null && $dag !== $currentDag) continue;
+            foreach (self::rowNodes($node) as $row) {
+                $match = true;
+                foreach ($target as $f => $tv) {
+                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? trim((string) $row[$f]) : '';
+                    if ($rv !== $tv) { $match = false; break; }
+                }
+                if ($match) return ['record' => (string) $rec, 'dag' => $dag];
+            }
+        }
+        return null;
+    }
+
+    /** Every data row of one record node: plain event rows + repeat instances. */
+    private static function rowNodes(array $recordNode)
+    {
+        $rows = [];
+        foreach ($recordNode as $k => $node) {
+            if ($k === 'repeat_instances') {
+                if (!is_array($node)) continue;
+                foreach ($node as $byInstr) {
+                    if (!is_array($byInstr)) continue;
+                    foreach ($byInstr as $byInst) {
+                        if (!is_array($byInst)) continue;
+                        foreach ($byInst as $row) {
+                            if (is_array($row)) $rows[] = $row;
+                        }
+                    }
+                }
+            } elseif (is_array($node)) {
+                $rows[] = $node;
+            }
+        }
+        return $rows;
+    }
+
+    /** The exported DAG unique name of a record node, or null. */
+    private static function dagOfRecordNode(array $recordNode)
+    {
+        foreach (self::rowNodes($recordNode) as $row) {
+            if (isset($row['redcap_data_access_group']) && !is_array($row['redcap_data_access_group'])
+                && $row['redcap_data_access_group'] !== '') {
+                return (string) $row['redcap_data_access_group'];
+            }
+        }
+        return null;
+    }
+
+    /** Resolve a numeric group id to its unique DAG name, or null. */
+    private static function dagNameOf($groupId)
+    {
+        try {
+            if (is_callable(['\REDCap', 'getGroupNames'])) {
+                $g = \REDCap::getGroupNames(true, $groupId);
+                if (is_string($g) && $g !== '') return $g;
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
     }
 
     // -- server-side value read --------------------------------------------

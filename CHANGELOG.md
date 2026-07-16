@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.3.0 — no duplicates across records (`@UVUNIQUE`)
+
+Fourth validation mode, and the module's first server round-trip: field-level
+uniqueness, which REDCap has no native equivalent for. As the value is typed,
+the browser asks the server whether it is already recorded in another record
+(framework AJAX — CSRF-protected, survey-aware) and shows used/free live with
+the usual message/confirm/block enforcement.
+
+- **`@UVUNIQUE` tag / `unique` mode.** Bare (project-wide), `=project|dag|event`
+  scope shorthand, or JSON `{with, scope, when, message, blockSave, surveys}`.
+  `with` makes the key composite (value + those fields together unique, e.g.
+  specimen ID within site); available in all three configuration channels
+  (new dialog boxes: composite fields, scope, survey opt-in).
+- **Privacy posture.** The endpoint re-derives scope/composite from stored
+  rules — nothing security-relevant is trusted from the page — and answers
+  ONLY for fields carrying a live unique rule, so it cannot be used as an
+  existence oracle for arbitrary fields. Staff see the colliding record id
+  only inside their own DAG; surveys are an explicit per-rule opt-in
+  (`surveys:true`) answered boolean-only, never a record id.
+- **Fail-open transport.** No JSMO, a network error, an error response, or an
+  answer that never arrives — each leaves the field unflagged and never traps
+  a save; the console explains why. A one-deep answer cache plus a pending-key
+  guard means one request per candidate value (the direct listeners and the
+  when-registry self-watch cannot double-fire a request), and stale responses
+  are discarded by sequence.
+- **The race is audited, not denied.** Two near-simultaneous saves can both
+  pass the live check; the post-save audit re-checks the saved value against
+  every other record (same scope/composite semantics via one shared
+  `findCollision`) and logs `type: unique, reason: duplicate-value`.
+- **Field types.** Text, Notes, dropdown, radio, yes/no, true/false, slider
+  (no calc); composes with the other modes on one field.
+- **Verification.** New `tests/unique_dom_js.cjs` (32 checks: transport stub,
+  payload shape, composite re-check, fail-open paths, pending/stale/cache,
+  survey opt-in, when-gate, composition); `tests/hook_php.php` 151→175 (the
+  AJAX endpoint end-to-end: collision/self-exclusion/trim, anti-oracle,
+  composite, survey opt-in + boolean-only, DAG masking both directions,
+  payload hygiene, event-scope read, audit backstop, JSMO injection on/off,
+  dialog save-gate); `tests/annotation_php.php` 121→136. Full JS + PHP
+  7.4/8.3 suites green.
+
 ## 1.2.0 — Constraint and Required rules in the Configure dialog
 
 The two 1.x modes reach the dialog and fast-entry channels, so every rule kind

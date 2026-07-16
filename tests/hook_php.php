@@ -46,6 +46,9 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
+        // JSMO plumbing (framework AJAX transport for @UVUNIQUE)
+        public function initializeJavascriptModuleObject() { return '<script>/* jsmo bootstrap */</script>'; }
+        public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
     }
 }
 
@@ -64,6 +67,10 @@ namespace {
         public static function getDataDictionary($pid, $format = 'array') {
             if (!$pid) throw new \RuntimeException('getDataDictionary requires a pid');
             return self::$dictionary;
+        }
+        public static $groupNames = [];   // group_id => unique DAG name
+        public static function getGroupNames($unique = false, $group_id = null) {
+            return isset(self::$groupNames[$group_id]) ? self::$groupNames[$group_id] : '';
         }
     }
 
@@ -1066,7 +1073,8 @@ namespace {
 
     // ---- validateSettings gate for the new modes ----
     function modeFlat($rows) {
-        $keys = ['rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message', 'algorithm',
+        $keys = ['rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
+                 'unique-with', 'unique-scope', 'unique-surveys', 'algorithm',
                  'source', 'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths',
                  'id-min-len', 'id-max-len', 'expected-count', 'block-save'];
         $flat = ['rules' => array_fill(0, count($rows), true)];
@@ -1108,6 +1116,126 @@ namespace {
     ]));
     check('save gate: assert referencing an unknown field rejected',
         is_string($msg) && strpos($msg, 'nosuch') !== false);
+
+    // ---- @UVUNIQUE unique mode: AJAX endpoint + audit backstop (Phase 4) -----
+    $uqDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'uf'],
+        'pid'       => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE'],
+        'spec'      => ['field_type' => 'text', 'form_name' => 'uf',
+                        'field_annotation' => '@UVUNIQUE={"with":["site"],"message":"Specimen already registered"}'],
+        'site'      => ['field_type' => 'dropdown', 'field_annotation' => '', 'form_name' => 'uf',
+                        'select_choices_or_calculations' => '1, North | 2, South'],
+        'plain'     => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'uf'],
+        'surv'      => ['field_type' => 'text', 'form_name' => 'uf',
+                        'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+    ];
+    $uqData = [
+        '1' => [351 => ['record_id' => '1', 'pid' => 'AB100', 'spec' => 'S-77', 'site' => '1',
+                        'surv' => 'X9', 'redcap_data_access_group' => 'north']],
+        '2' => [351 => ['record_id' => '2', 'pid' => 'AB200', 'spec' => 'S-77', 'site' => '2',
+                        'redcap_data_access_group' => 'south']],
+    ];
+    function ajaxCall($m, $payload, $record = '3', $survey = null, $user = 'staff1', $gid = null) {
+        return $m->redcap_module_ajax('unique-check', $payload, 149, $record, 'uf', 351, 1,
+            $survey, null, null, 'DataEntry/index.php', '', $user, $gid);
+    }
+    // collision found, own record excluded, staff sees the record id
+    $m = newModule([], $uqDict, $uqData, 149);
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'AB100']]);
+    check('ajax: duplicate detected with record id for staff', $r['used'] === true && $r['record'] === '1');
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'AB100']], '1');
+    check('ajax: own record never collides with itself', $r['used'] === false);
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'FRESH1']]);
+    check('ajax: unused value is free', $r['used'] === false && $r['record'] === null);
+    check('ajax: trimming applies', ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => '  AB100  ']])['used'] === true);
+    // anti-oracle: a field with no unique rule is refused
+    $r = ajaxCall($m, ['field' => 'plain', 'values' => ['plain' => 'AB100']]);
+    check('ajax: non-unique field refused (no oracle)', isset($r['error']));
+    $r = ajaxCall($m, ['field' => 'no_such', 'values' => []]);
+    check('ajax: unknown field refused', isset($r['error']));
+    // composite key: same spec at a DIFFERENT site is free; same site collides
+    $r = ajaxCall($m, ['field' => 'spec', 'values' => ['spec' => 'S-77', 'site' => '1']]);
+    check('ajax: composite collision (same spec + same site)', $r['used'] === true && $r['record'] === '1');
+    $r = ajaxCall($m, ['field' => 'spec', 'values' => ['spec' => 'S-77', 'site' => '9']]);
+    check('ajax: composite free (same spec, other site)', $r['used'] === false);
+    // surveys: opt-in enforced; opted-in answers boolean-only
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'AB100']], '3', 'shash', null);
+    check('ajax: survey refused without opt-in', isset($r['error']));
+    $r = ajaxCall($m, ['field' => 'surv', 'values' => ['surv' => 'X9']], '3', 'shash', null);
+    check('ajax: opted-in survey answers used=true, no record id', $r['used'] === true && $r['record'] === null);
+    // DAG masking: staff in DAG 'south' colliding with a 'north' record
+    \REDCap::$groupNames = [7 => 'south'];
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'AB100']], '3', null, 'staff1', 7);
+    check('ajax: record id masked outside the user\'s DAG', $r['used'] === true && $r['record'] === null);
+    $r = ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'AB200']], '3', null, 'staff1', 7);
+    check('ajax: record id shown inside the user\'s DAG', $r['used'] === true && $r['record'] === '2');
+    \REDCap::$groupNames = [];
+    // payload hygiene
+    check('ajax: overlong value refused', isset(ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => str_repeat('x', 1200)]])['error']));
+    check('ajax: bad field name refused', isset(ajaxCall($m, ['field' => 'pid; DROP', 'values' => []])['error']));
+    check('ajax: unknown action refused', isset($m->redcap_module_ajax('other', [], 149, '3', 'uf', 351, 1, null, null, null, '', '', 'u', null)['error']));
+
+    // scope=event: same value on ANOTHER event is free
+    $uqDictE = $uqDict;
+    $uqDictE['pid']['field_annotation'] = '@UVUNIQUE=event';
+    $uqDataE = ['1' => [352 => ['record_id' => '1', 'pid' => 'EV100']]]; // other event only
+    $m = newModule([], $uqDictE, $uqDataE, 149);
+    // the mock getData ignores the events param — emulate the filter by checking
+    // what the module ASKED for instead
+    ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => 'EV100']]);
+    $p = \REDCap::$lastGetDataParams;
+    check('ajax: event scope restricts the getData read to the saved event',
+        is_array($p) && isset($p['events']) && $p['events'] === [351]);
+
+    // audit backstop: a collision in SAVED data logs type "unique"
+    $m = newModule([], $uqDict, [
+        '1' => [351 => ['record_id' => '1', 'pid' => 'DUP-1']],
+        '2' => [351 => ['record_id' => '2', 'pid' => 'DUP-1']],
+    ], 149);
+    $m->redcap_save_record(149, '2', 'uf', 351, null, null, null, 1);
+    $uLogs = array_values(array_filter(invalidLogs($m), function ($L) { return $L[1]['type'] === 'unique'; }));
+    check('audit: saved duplicate logged as type unique', count($uLogs) === 1
+        && $uLogs[0][1]['field'] === 'pid' && $uLogs[0][1]['reason'] === 'duplicate-value');
+    $m = newModule([], $uqDict, [
+        '1' => [351 => ['record_id' => '1', 'pid' => 'ONLY-1']],
+    ], 149);
+    $m->redcap_save_record(149, '1', 'uf', 351, null, null, null, 1);
+    check('audit: unique value -> no unique log', count(array_filter(invalidLogs($m), function ($L) { return $L[1]['type'] === 'unique'; })) === 0);
+
+    // jsmoName + bootstrap injected only when a unique rule is live
+    $m = newModule([], $uqDict, [], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'uf', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    check('unique page: jsmoName in the injected config',
+        $cfg && isset($cfg['jsmoName']) && $cfg['jsmoName'] === 'ExternalModules.TEST.UniversalValidator');
+    check('unique page: JSMO bootstrap script emitted', strpos($html, '/* jsmo bootstrap */') !== false);
+    $m = newModule($dialogRules, $dictionary, [], 149); // no unique rules
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $html = ob_get_clean();
+    check('non-unique page: no JSMO, no jsmoName',
+        strpos($html, 'jsmoName') === false && strpos($html, '/* jsmo bootstrap */') === false);
+
+    // dialog channel: unique rule with bad "with" rejected at save time
+    $m = newModule([], $uqDict, [], 149);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['pid'], 'unique-with' => 'no_such_field', 'block-save' => 'off'],
+    ]));
+    check('save gate: unique with unknown composite field rejected',
+        is_string($msg) && strpos($msg, 'no_such_field') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['pid'], 'unique-with' => 'pid', 'block-save' => 'off'],
+    ]));
+    check('save gate: self-composite rejected', is_string($msg) && strpos($msg, 'must not name') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['spec'], 'unique-with' => 'site', 'unique-scope' => 'event', 'block-save' => 'hard'],
+    ]));
+    check('save gate: sound unique rule passes', $msg === null);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

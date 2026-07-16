@@ -316,5 +316,48 @@ check('checkFragment: required with sound when -> []',
 check('checkFragment: required bad when -> error',
     AnnotationRules::checkFragment(['type' => 'required', 'when' => '[a]']) !== []);
 
+// ---- @UVUNIQUE unique mode (parseAllTags) ----
+$f = AnnotationRules::parseAllTags('@UVUNIQUE');
+check('unique bare -> unique frag, project scope default', is_array($f) && count($f) === 1
+    && $f[0]['type'] === 'unique' && !isset($f[0]['uniqueScope']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE=event');
+check('unique scope shorthand', $f[0]['type'] === 'unique' && $f[0]['uniqueScope'] === 'event');
+$f = AnnotationRules::parseAllTags('@UVUNIQUE=DAG');
+check('unique scope shorthand case-insensitive', $f[0]['uniqueScope'] === 'dag');
+$f = AnnotationRules::parseAllTags('@UVUNIQUE=weekly');
+check('unique bad scope -> error', isset($f[0]['error']) && $f[0]['_tag'] === '@UVUNIQUE');
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"with":["Site","batch"],"scope":"event","message":"Dup","blockSave":"hard","surveys":true}');
+check('unique json -> keys carried + with lowercased', $f[0]['type'] === 'unique'
+    && $f[0]['uniqueWith'] === ['site', 'batch'] && $f[0]['uniqueScope'] === 'event'
+    && $f[0]['message'] === 'Dup' && $f[0]['blockSave'] === 'hard' && $f[0]['uniqueSurveys'] === true);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"with":"site"}');
+check('unique with must be a list', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"with":["a","b","c","d","e","f"]}');
+check('unique with capped at 5', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"with":["site","site"]}');
+check('unique with duplicate entry -> error', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"surveys":"yes"}');
+check('unique surveys must be a real boolean', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"frob":1}');
+check('unique unknown key -> error', isset($f[0]['error']) && strpos($f[0]['error'], 'frob') !== false);
+
+// @UVUNIQUE does not collide with the boundary rule
+check('@UVUNIQUEX is a different tag', AnnotationRules::parseAllTags('@UVUNIQUEX=1') === null);
+
+// all four modes on one field -> four frags
+$f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]" @UVREQUIRED @UVUNIQUE');
+check('four modes -> four frags', count($f) === 4
+    && ($f[0]['algorithm'] ?? '') === 'verhoeff'
+    && ($f[1]['type'] ?? '') === 'constraint'
+    && ($f[2]['type'] ?? '') === 'required'
+    && ($f[3]['type'] ?? '') === 'unique');
+
+// checkFragment routes unique fragments
+check('checkFragment: bare unique -> []', AnnotationRules::checkFragment(['type' => 'unique']) === []);
+check('checkFragment: unique bad scope -> error',
+    AnnotationRules::checkFragment(['type' => 'unique', 'uniqueScope' => 'weekly']) !== []);
+check('checkFragment: unique empty with -> error',
+    AnnotationRules::checkFragment(['type' => 'unique', 'uniqueWith' => []]) !== []);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

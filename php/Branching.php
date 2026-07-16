@@ -52,7 +52,9 @@ class Branching
                          'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
                          'blockSave', 'suggestFix', 'note',
                          // constraint mode (@UVASSERT)
-                         'assert', 'message'];
+                         'assert', 'message',
+                         // unique mode (@UVUNIQUE)
+                         'uniqueWith', 'uniqueScope', 'uniqueSurveys'];
 
     /**
      * The validation MODE a rule's "type" belongs to. Different modes on one

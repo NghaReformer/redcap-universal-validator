@@ -734,7 +734,14 @@ Not yet — messages are English only in this version.
 **Which fields can I validate?**
 Check-character and format rules: Text and Notes fields only. Constraint
 rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
-Required rules: the same minus calc.
+Required and Unique rules: the same minus calc.
+
+**Can I stop the same participant ID being entered in two records?**
+Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
+in the Configure dialog) checks the value against every other record as it is
+typed, with optional composite keys (`with`), project/DAG/event scopes, and a
+real save block. Two saves at the same instant can both pass the live check —
+the post-save audit logs such a collision to the module log.
 
 ---
 

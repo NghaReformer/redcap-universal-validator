@@ -36,6 +36,7 @@ class AnnotationRules
     const TAG = '@UVALIDATE';
     const TAG_ASSERT = '@UVASSERT';
     const TAG_REQUIRED = '@UVREQUIRED';
+    const TAG_UNIQUE = '@UVUNIQUE';
 
     /**
      * Every action tag this module owns, mapped to the validation MODE the tag
@@ -50,7 +51,15 @@ class AnnotationRules
         self::TAG          => 'check',
         self::TAG_ASSERT   => 'constraint',
         self::TAG_REQUIRED => 'required',
+        self::TAG_UNIQUE   => 'unique',
     ];
+
+    /** Uniqueness scopes: whole project (default), within the record's Data
+     *  Access Group, or within the same event of a longitudinal project. */
+    const UNIQUE_SCOPES = ['project', 'dag', 'event'];
+
+    /** Composite-key size cap: [field]+with must stay a cheap lookup. */
+    const MAX_UNIQUE_WITH = 5;
 
     /** Field types a constraint (@UVASSERT) may be attached to — any scalar
      *  input whose current answer is a single readable value. Checkbox (multi
@@ -64,6 +73,12 @@ class AnnotationRules
      *  calc, so "required" would trap them on a field they cannot fix). */
     const REQUIRED_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
                                   'yesno', 'truefalse', 'sql', 'slider'];
+
+    /** Field types @UVUNIQUE may be attached to — same list as required (no
+     *  calc: a data enterer cannot fix a calc collision). Composite "with"
+     *  fields are checked separately against the data dictionary. */
+    const UNIQUE_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
+                                'yesno', 'truefalse', 'sql', 'slider'];
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
@@ -270,12 +285,81 @@ class AnnotationRules
                 $any = true;
                 if ($mode === 'constraint')    $frag = self::parseAssertValue($val);
                 elseif ($mode === 'required')  $frag = self::parseRequiredValue($val);
+                elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val);
                 else                           $frag = self::parseValue($val);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
         }
         return $any ? $out : null;
+    }
+
+    /**
+     * Parse one @UVUNIQUE value into a unique fragment. Three forms:
+     *   @UVUNIQUE                       unique across the whole project
+     *   @UVUNIQUE=event                 pick a scope (project | dag | event)
+     *   @UVUNIQUE={"with":["site"],"scope":"event","when":"...",
+     *              "message":"...","blockSave":"hard","surveys":true}
+     * "with" makes the key composite (value + those fields together must be
+     * unique). "surveys" is an explicit OPT-IN: a live used/free answer is
+     * record-derived information, so survey respondents only get the check
+     * when the designer decides the trade-off is acceptable (the server
+     * answers surveys with a boolean only, never a record id).
+     */
+    private static function parseUniqueValue($val)
+    {
+        $val = trim($val);
+        if ($val === '') {
+            $out = ['type' => 'unique'];
+            $errs = self::checkFragment($out);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        if ($val[0] !== '{') {
+            $scope = strtolower($val);
+            if (!in_array($scope, self::UNIQUE_SCOPES, true)) {
+                return ['error' => self::TAG_UNIQUE . '=' . $val . ' is not a scope — use '
+                    . implode(', ', self::UNIQUE_SCOPES) . ', or the JSON form for other options.'];
+            }
+            $out = ['type' => 'unique', 'uniqueScope' => $scope];
+            $errs = self::checkFragment($out);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_UNIQUE . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_UNIQUE . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'unique'];
+        if (isset($cfg['with'])) {
+            if (!is_array($cfg['with'])) return ['error' => '"with" must be a list of field names, e.g. ["site"].'];
+            // Field names are lowercase in REDCap — normalize here so the rule,
+            // the client payload and the server lookup all agree.
+            $out['uniqueWith'] = array_map(function ($w) {
+                return is_string($w) ? strtolower(trim($w)) : $w;
+            }, array_values($cfg['with']));
+        }
+        if (isset($cfg['scope'])) {
+            if (!is_string($cfg['scope'])) return ['error' => '"scope" must be a string.'];
+            $out['uniqueScope'] = strtolower($cfg['scope']);
+        }
+        if (isset($cfg['surveys'])) {
+            if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
+            $out['uniqueSurveys'] = $cfg['surveys'];
+        }
+        foreach (['when', 'message', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        $errs = self::checkFragment($out);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
     /**
@@ -484,6 +568,8 @@ class AnnotationRules
         if ($type === 'constraint') return self::checkConstraint($frag);
         // Required mode (@UVREQUIRED): blank-while-required is the only test.
         if ($type === 'required') return self::checkRequired($frag);
+        // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
+        if ($type === 'unique') return self::checkUnique($frag);
 
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
 
@@ -658,6 +744,60 @@ class AnnotationRules
     public static function checkRequired(array $frag)
     {
         $errors = [];
+        if (isset($frag['when'])) {
+            if (!is_string($frag['when']) || trim($frag['when']) === '') {
+                $errors[] = 'the "when" condition must be a non-empty condition string.';
+            } else {
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
+            }
+        }
+        if (isset($frag['blockSave'])
+            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
+            $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+        if (isset($frag['message']) && !is_string($frag['message'])) {
+            $errors[] = '"message" must be a string.';
+        }
+        return $errors;
+    }
+
+    /**
+     * Semantic validation for a unique (@UVUNIQUE) fragment: scope whitelist,
+     * composite "with" list shape (valid field-name syntax, no duplicates,
+     * capped), optional when/message/blockSave/surveys. Whether the with-fields
+     * exist (and are scalar) is checked in the channel glue with the data
+     * dictionary in hand.
+     */
+    public static function checkUnique(array $frag)
+    {
+        $errors = [];
+        if (isset($frag['uniqueScope'])
+            && !in_array($frag['uniqueScope'], self::UNIQUE_SCOPES, true)) {
+            $errors[] = '"scope" must be ' . implode(', ', self::UNIQUE_SCOPES) . '.';
+        }
+        if (isset($frag['uniqueWith'])) {
+            $with = $frag['uniqueWith'];
+            if (!is_array($with) || !$with) {
+                $errors[] = '"with" must be a non-empty list of field names.';
+            } elseif (count($with) > self::MAX_UNIQUE_WITH) {
+                $errors[] = '"with" is limited to ' . self::MAX_UNIQUE_WITH . ' fields.';
+            } else {
+                $seen = [];
+                foreach ($with as $w) {
+                    if (!is_string($w) || !preg_match('/^[a-z][a-z0-9_]*$/', strtolower($w))) {
+                        $errors[] = '"with" entry ' . json_encode($w) . ' is not a valid REDCap field name.';
+                        break;
+                    }
+                    $lw = strtolower($w);
+                    if (isset($seen[$lw])) { $errors[] = '"with" lists "' . $lw . '" twice.'; break; }
+                    $seen[$lw] = true;
+                }
+            }
+        }
+        if (isset($frag['uniqueSurveys']) && !is_bool($frag['uniqueSurveys'])) {
+            $errors[] = '"surveys" must be true or false (unquoted).';
+        }
         if (isset($frag['when'])) {
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';

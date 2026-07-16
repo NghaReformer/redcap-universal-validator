@@ -12,6 +12,9 @@
   ],
   "framework-version": 14,
 
+  "auth-ajax-actions": ["unique-check"],
+  "no-auth-ajax-actions": ["unique-check"],
+
   "compatibility": {
     "php-version-min": "7.4.0",
     "redcap-version-min": "13.7.0"
@@ -25,6 +28,10 @@
     {
       "tag": "@UVREQUIRED",
       "description": "Conditional REQUIRED: the field must not be left blank — with a real save block and a condition, neither of which REDCap's own required flag offers. Forms: <code>@UVREQUIRED</code> (always required), <code>@UVREQUIRED=\"[consent]='1'\"</code> (required only WHILE the condition is true — the value is the condition), or JSON <code>@UVREQUIRED={\"when\":\"[consent]='1'\",\"message\":\"Phone needed for consented participants\",\"blockSave\":\"hard\"}</code>. The condition uses the same REDCap-style dialect as <code>when</code>. A blank (or whitespace-only) field shows the notice while the requirement is in force; filling it clears the notice — required mode never judges the VALUE, so pair it with @UVALIDATE or @UVASSERT (modes compose, all must pass). Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill a calc). Several @UVREQUIRED tags with different conditions branch (plus at most one without, as the fallback). Read-only fields show the notice but never block the save. A malformed tag shows a configuration error under the field. The server audit logs a blank-while-required save as type 'required'."
+    },
+    {
+      "tag": "@UVUNIQUE",
+      "description": "No-duplicates across records — a validation REDCap has no native field-level equivalent for. As the value is typed, the module asks the server (a CSRF-protected module AJAX call) whether it is already recorded in another record, and shows used/free live; enforcement modes are the usual message/confirm/block. Forms: <code>@UVUNIQUE</code> (unique across the project), <code>@UVUNIQUE=event</code> (scope shorthand: project, dag or event), or JSON <code>@UVUNIQUE={\"with\":[\"site\"],\"scope\":\"event\",\"message\":\"This specimen ID is already registered\",\"blockSave\":\"hard\",\"when\":\"...\",\"surveys\":true}</code>. <code>with</code> makes the key COMPOSITE (the value plus those fields together must be unique, e.g. specimen ID within site). Scopes: <code>project</code> (default), <code>dag</code> (unique within each Data Access Group), <code>event</code> (unique within the same event). <code>surveys</code> is an explicit OPT-IN: a live used/free answer is record-derived information, so respondents only get the check when you decide the trade-off is acceptable — surveys are always answered with a boolean only, never a record id; staff see the colliding record id only when it is in their own DAG. Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields. Two near-simultaneous saves can both pass the live check — the post-save audit logs such a collision (type 'unique'), so review the module log for races. A malformed tag shows a configuration error under the field."
     },
     {
       "tag": "@UVASSERT",
@@ -73,7 +80,8 @@
             { "value": "single", "name": "Single value (one ID/code per field — check character and/or format)" },
             { "value": "pooled", "name": "Pooled (several IDs jammed into one field)" },
             { "value": "constraint", "name": "Constraint (cross-field rule: the field is invalid unless a condition is true — set the condition below; algorithm/pattern boxes are ignored)" },
-            { "value": "required", "name": "Required (the field must not be left blank — optionally only while the 'Only validate when' condition is true; algorithm/pattern boxes are ignored)" }
+            { "value": "required", "name": "Required (the field must not be left blank — optionally only while the 'Only validate when' condition is true; algorithm/pattern boxes are ignored)" },
+            { "value": "unique", "name": "Unique (no duplicates across records, checked live against the server — see the Unique boxes below; algorithm/pattern boxes are ignored)" }
           ]
         },
         {
@@ -101,6 +109,26 @@
           "key": "message",
           "name": "Constraint and Required rules only (optional): your wording shown when the rule fails, e.g. 'End date must be on or after the start date'. Strongly recommended for constraints — only you can word what the relationship means. Left blank, a generic message is shown.",
           "type": "text"
+        },
+        {
+          "key": "unique-with",
+          "name": "Unique rules only (optional): composite-key field names, separated by commas — the value plus these fields TOGETHER must be unique (e.g. a specimen ID within its site). Up to 5 fields; each must exist and hold one scalar value.",
+          "type": "text"
+        },
+        {
+          "key": "unique-scope",
+          "name": "Unique rules only: where the value must be unique.",
+          "type": "dropdown",
+          "choices": [
+            { "value": "project", "name": "Whole project (default)" },
+            { "value": "dag", "name": "Within each Data Access Group" },
+            { "value": "event", "name": "Within the same event (longitudinal)" }
+          ]
+        },
+        {
+          "key": "unique-surveys",
+          "name": "Unique rules only: also check live on SURVEY pages (OFF by default — a used/free answer is record-derived information shown to a respondent; surveys always get a boolean only, never a record id). The post-save audit covers survey submissions either way.",
+          "type": "checkbox"
         },
         {
           "key": "algorithm",

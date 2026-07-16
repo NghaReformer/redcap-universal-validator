@@ -275,6 +275,37 @@ the two things it lacks: a **condition** and a **real block**:
   `reason: required-blank` (a blank carries nothing identifying, so this entry
   is safe in every privacy mode).
 
+## No duplicates across records — the `@UVUNIQUE` tag
+
+REDCap has no native field-level uniqueness. `@UVUNIQUE` checks the value
+against every other record **as it is typed** (a CSRF-protected module AJAX
+call — no page reload), with the usual message/confirm/block enforcement:
+
+```text
+@UVUNIQUE                                                unique across the project
+@UVUNIQUE=event                                          scope: project | dag | event
+@UVUNIQUE={"with":["site"],"message":"Specimen already registered","blockSave":"hard"}
+```
+
+- `with` makes the key **composite** — the value plus those fields together
+  must be unique (a specimen ID within its site). Scopes: `project` (default),
+  `dag` (unique within each Data Access Group), `event` (within the same
+  event of a longitudinal project).
+- **Privacy posture.** The endpoint answers only for fields carrying a unique
+  rule (it cannot be used to probe arbitrary fields for value existence).
+  Staff see the colliding record id only when it is inside their own DAG.
+  `surveys` is an explicit **opt-in** (`{"surveys":true}`): a live used/free
+  answer is record-derived information, so respondents only get the check when
+  the designer accepts that trade-off — and always as a boolean, never a
+  record id. Comparison is exact (trimmed) against stored values.
+- **The race is audited, not denied.** Two near-simultaneous saves can both
+  pass the live check; the post-save audit re-checks the saved value against
+  every other record and logs a collision (`type: unique`,
+  `reason: duplicate-value`) — review the module log for races. Any transport
+  failure fails **open** (a network error never traps a save).
+- Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
+  composes with the other modes on the same field.
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two
@@ -383,6 +414,7 @@ php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
+node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fail-open, cache)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

@@ -44,6 +44,8 @@ jobs:
         run: node tests/constraint_dom_js.cjs
       - name: JS required (@UVREQUIRED) DOM contract (blank, when-gate, compose)
         run: node tests/required_dom_js.cjs
+      - name: JS unique (@UVUNIQUE) DOM contract (transport, fail-open, cache)
+        run: node tests/unique_dom_js.cjs
       - name: JS config-error notice
         run: node tests/config_notice_js.cjs
       - name: JS dispatcher config-error routing
