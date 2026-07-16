@@ -928,6 +928,76 @@ namespace {
     check('compose: check rule audited pid', in_array('single', $types, true) || in_array('verhoeff', $types, true) || count($pidLogs) >= 1);
     check('compose: constraint rule audited pid independently', in_array('constraint', $types, true));
 
+    // ---- @UVREQUIRED required mode: server audit ------------------------------
+    // Required is the INVERSE emptiness rule: a blank field logs (type
+    // "required", reason "required-blank") while the requirement is in force.
+    $rDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'rf'],
+        'consent'   => ['field_type' => 'radio', 'field_annotation' => '', 'form_name' => 'rf',
+                        'select_choices_or_calculations' => '1, Yes | 0, No'],
+        'phone'     => ['field_type' => 'text', 'form_name' => 'rf',
+                        'field_annotation' => "@UVREQUIRED=\"[consent]='1'\""],
+        'site'      => ['field_type' => 'dropdown', 'form_name' => 'rf',
+                        'field_annotation' => '@UVREQUIRED'],
+    ];
+    // consent given, phone blank (missing from data = blank), site blank
+    $rData = [2 => [351 => ['record_id' => '2', 'consent' => '1']]];
+    $m = newModule([], $rDict, $rData, 149);
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    $rf = loggedFields($m);
+    check('required-when true + blank -> audited', in_array('phone', $rf, true));
+    check('unconditional required + blank -> audited', in_array('site', $rf, true));
+    $phoneLog = null;
+    foreach (invalidLogs($m) as $L) if ($L[1]['field'] === 'phone') $phoneLog = $L[1];
+    check('required log typed "required"', $phoneLog && $phoneLog['type'] === 'required');
+    check('required reason is required-blank', $phoneLog && $phoneLog['reason'] === 'required-blank');
+
+    // consent NOT given -> phone requirement off; site still required
+    $rData2 = [2 => [351 => ['record_id' => '2', 'consent' => '0']]];
+    $m = newModule([], $rDict, $rData2, 149);
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    $rf = loggedFields($m);
+    check('required-when false + blank -> NOT audited', !in_array('phone', $rf, true));
+    check('unconditional required still audited', in_array('site', $rf, true));
+
+    // both filled -> nothing logged
+    $rData3 = [2 => [351 => ['record_id' => '2', 'consent' => '1', 'phone' => '677001122', 'site' => '3']]];
+    $m = newModule([], $rDict, $rData3, 149);
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    check('required satisfied -> no audit', count(invalidLogs($m)) === 0);
+
+    // whitespace-only value counts as blank
+    $rData4 = [2 => [351 => ['record_id' => '2', 'consent' => '1', 'phone' => '   ', 'site' => '3']]];
+    $m = newModule([], $rDict, $rData4, 149);
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    check('whitespace-only counts as blank', in_array('phone', loggedFields($m), true));
+
+    // @UVREQUIRED on a calc field -> config error, not a rule
+    $rDictC = $rDict;
+    $rDictC['score'] = ['field_type' => 'calc', 'form_name' => 'rf', 'field_annotation' => '@UVREQUIRED'];
+    $m = newModule([], $rDictC, $rData3, 149);
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    check('required-on-calc rejected: no false detection on the calc field',
+        !in_array('score', loggedFields($m), true));
+
+    // composition: @UVREQUIRED + @UVALIDATE on one field — blank triggers only
+    // required (check is inert on blank); a bad filled value triggers only check
+    $rDictX = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'rf'],
+        'pid'       => ['field_type' => 'text', 'form_name' => 'rf',
+                        'field_annotation' => '@UVALIDATE=verhoeff @UVREQUIRED'],
+    ];
+    $m = newModule([], $rDictX, [2 => [351 => ['record_id' => '2']]], 149); // pid blank
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    $types = array_map(function ($L) { return $L[1]['type']; }, invalidLogs($m));
+    check('compose blank: required fires, check stays inert',
+        $types === ['required']);
+    $m = newModule([], $rDictX, [2 => [351 => ['record_id' => '2', 'pid' => '12345']]], 149); // bad verhoeff, filled
+    $m->redcap_save_record(149, '2', 'rf', 351, null, null, null, 1);
+    $types = array_map(function ($L) { return $L[1]['type']; }, invalidLogs($m));
+    check('compose filled-bad: check fires, required satisfied',
+        count($types) === 1 && $types[0] !== 'required');
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

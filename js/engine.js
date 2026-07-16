@@ -2005,6 +2005,123 @@ function QRIDConstraintInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- required validator (@UVREQUIRED) -------------------------------------
+   The INVERSE emptiness rule: a BLANK field is the violation (every other mode
+   is inert on blank). Optional "when" makes the requirement conditional —
+   REDCap's own required flag can do neither conditionality nor a real block.
+   Required mode never judges the VALUE; pair it with @UVALIDATE / @UVASSERT
+   (the modes compose, each with its own guard item). A satisfied requirement
+   CLEARS the notice rather than showing a green OK — green would falsely
+   suggest the value itself was validated. tests/required_dom_js.cjs locks this
+   contract; UniversalValidator::auditRule (type "required") is the server twin. */
+function QRIDRequiredInit(QRID_CONFIG){
+  function styleMsg(el){
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* requirement gate */
+    return { configError: configError, gate: GATE, blockSave: BLOCK,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             mode: { required: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-r")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-r", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName);
+    /* Own guard item (see QRIDConstraintInit): independent invalid/block state
+       so required composes with any other mode on the same input. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){ clear(); return; }              /* no requirement in force */
+      if(act.length > 1){                               /* branch conflict: show, never block */
+        styleMsg(msg);
+        msg.innerHTML = QRID_IS_SURVEY
+          ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
+          : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
+            QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
+            '". The requirement was <b>NOT</b> enforced; make the conditions mutually exclusive.';
+        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+      }
+      var V = act[0];
+      var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === "";
+      if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
+      styleMsg(msg);
+      input.style.outline = "2px solid #c62828";
+      setGuard(true, V.blockSave);
+      QRID_setInvalidState(input, true);
+      msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+        : "This field must not be left blank" + (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") + ".");
+    }
+    var debounced = QRID_debounced(function(){ check(); });
+    if(input.addEventListener){
+      input.addEventListener("input", debounced);
+      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    }
+    /* Watch the field ITSELF through the shared when-registry: a synthetic
+       "[field]<>''" gate is never evaluated for the verdict (readRef+trim is),
+       it exists purely so requestField wires the ___radio / select / hidden-
+       mirror listeners this factory would otherwise have to duplicate. */
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ check(); });
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  /* per-field registry (namespace .validators — testing / power users) */
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "required", mode: { required: true, configError: configError },
+      test: function(){ var a = QRID_activeVariants(VS);
+        if(a.length !== 1) return null;
+        return String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") !== ""; } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- pooled-field validator (factory: one instance per config/rule) ---- */
 function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -2513,11 +2630,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       QRIDPooledInit(cfg);
     } else if(rule.type === "constraint"){
       QRIDConstraintInit(cfg);
+    } else if(rule.type === "required"){
+      QRIDRequiredInit(cfg);
     } else if(rule.type === "single" || rule.type === undefined || rule.type === "" || rule.configError){
       QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
-        '] has unknown type "' + rule.type + '" — use "single", "pooled" or "constraint".';
+        '] has unknown type "' + rule.type + '" — use "single", "pooled", "constraint" or "required".';
       QRIDSingleInit(cfg);
     }
   });
@@ -2545,6 +2664,7 @@ window.INSPIREUniversalValidator = {
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
   constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
+  requiredInit: QRIDRequiredInit,       /* @UVREQUIRED — locked by tests/required_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

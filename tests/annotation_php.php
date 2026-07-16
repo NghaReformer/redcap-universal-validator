@@ -278,5 +278,43 @@ $rules = AnnotationRules::groupMulti(['fx' => AnnotationRules::parseAllTags('@UV
 check('groupMulti: constraint rule typed', count($rules) === 1 && $rules[0]['type'] === 'constraint'
     && $rules[0]['assert'] === '[fx]>0' && $rules[0]['fields'] === ['fx']);
 
+// ---- @UVREQUIRED required mode (parseAllTags) ----
+$f = AnnotationRules::parseAllTags('@UVREQUIRED');
+check('required bare -> required frag', is_array($f) && count($f) === 1
+    && $f[0]['type'] === 'required' && !isset($f[0]['when']));
+$f = AnnotationRules::parseAllTags('@UVREQUIRED="[consent]=\'1\'"');
+check('required condition shorthand -> when', $f[0]['type'] === 'required'
+    && $f[0]['when'] === "[consent]='1'");
+$f = AnnotationRules::parseAllTags('@UVREQUIRED={"when":"[site]<>\'9\'","message":"Needed at real sites","blockSave":"hard"}');
+check('required json -> keys carried', $f[0]['type'] === 'required'
+    && $f[0]['when'] === "[site]<>'9'" && $f[0]['message'] === 'Needed at real sites'
+    && $f[0]['blockSave'] === 'hard');
+$f = AnnotationRules::parseAllTags('@UVREQUIRED="datediff([a],[b],\'d\')>3"');
+check('required bad shorthand condition -> error tagged @UVREQUIRED',
+    isset($f[0]['error']) && $f[0]['_tag'] === '@UVREQUIRED');
+$f = AnnotationRules::parseAllTags('@UVREQUIRED={"frob":"x"}');
+check('required unknown key -> error', isset($f[0]['error']) && strpos($f[0]['error'], 'frob') !== false);
+$f = AnnotationRules::parseAllTags('@UVREQUIRED={"blockSave":"nope"}');
+check('required bad blockSave -> error', isset($f[0]['error']));
+
+// @UVREQUIRED does not collide with @UVREQUIREDX (boundary rule)
+check('@UVREQUIREDX is a different tag', AnnotationRules::parseAllTags('@UVREQUIREDX=1') === null);
+
+// three modes on one field -> three frags, three distinct modes
+$f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]" @UVREQUIRED');
+check('three modes -> three frags', count($f) === 3);
+check('  mode set is check+constraint+required',
+    ($f[0]['algorithm'] ?? '') === 'verhoeff'
+    && ($f[1]['type'] ?? '') === 'constraint'
+    && ($f[2]['type'] ?? '') === 'required');
+
+// checkFragment routes required fragments
+check('checkFragment: bare required -> []',
+    AnnotationRules::checkFragment(['type' => 'required']) === []);
+check('checkFragment: required with sound when -> []',
+    AnnotationRules::checkFragment(['type' => 'required', 'when' => "[a]='1'"]) === []);
+check('checkFragment: required bad when -> error',
+    AnnotationRules::checkFragment(['type' => 'required', 'when' => '[a]']) !== []);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

@@ -244,6 +244,34 @@ enforced with the same message/confirm/block modes as everything else:
   `type: constraint`), so browser and audit agree. Off-instrument refs are
   server-`fold()`ed to constants, so no record value reaches the page (SEC-005).
 
+## Conditional required — the `@UVREQUIRED` tag
+
+REDCap's own required flag is unconditional and only warns. `@UVREQUIRED` adds
+the two things it lacks: a **condition** and a **real block**:
+
+```text
+@UVREQUIRED                                              always required
+@UVREQUIRED="[consent]='1'"                              required only while consented
+@UVREQUIRED={"when":"[consent]='1'","message":"Phone needed for consented participants","blockSave":"hard"}
+```
+
+- A blank (or whitespace-only) field shows the notice while the requirement is
+  in force; the requirement turns on and off **live** as referenced fields
+  change. Filling the field clears the notice — deliberately no green "OK",
+  because required mode never judges the *value*. Pair it with `@UVALIDATE`
+  or `@UVASSERT` for that (modes compose, each with its own save-block state:
+  on a blank field only `@UVREQUIRED` fires; on a filled-but-wrong value only
+  the value checks fire).
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false and slider**
+  fields. Not calc — the person entering data cannot fill a calc, so requiring
+  one would trap them (the same reasoning as the read-only exemption: a
+  read-only field shows the notice but never blocks the save).
+- Several `@UVREQUIRED` tags with different `when` conditions **branch**; two
+  conditions true at once is a visible conflict that never blocks.
+- The server audit logs a blank-while-required save as `type: required`,
+  `reason: required-blank` (a blank carries nothing identifying, so this entry
+  is safe in every privacy mode).
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two
@@ -351,6 +379,7 @@ node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded cons
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
+node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

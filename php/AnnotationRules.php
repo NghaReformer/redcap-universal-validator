@@ -35,6 +35,7 @@ class AnnotationRules
 {
     const TAG = '@UVALIDATE';
     const TAG_ASSERT = '@UVASSERT';
+    const TAG_REQUIRED = '@UVREQUIRED';
 
     /**
      * Every action tag this module owns, mapped to the validation MODE the tag
@@ -42,12 +43,13 @@ class AnnotationRules
      * the intent-named tags each configure one added mode. Different modes on
      * one field COMPOSE (all must pass); several tags of the SAME mode on one
      * field branch (php/Branching.php). The mode travels on the rule as its
-     * "type" (single|pooled = check; constraint; …), which is what the client
-     * dispatcher, the server audit, and Branching all key on.
+     * "type" (single|pooled = check; constraint; required; …), which is what
+     * the client dispatcher, the server audit, and Branching all key on.
      */
     const TAGS = [
-        self::TAG        => 'check',
-        self::TAG_ASSERT => 'constraint',
+        self::TAG          => 'check',
+        self::TAG_ASSERT   => 'constraint',
+        self::TAG_REQUIRED => 'required',
     ];
 
     /** Field types a constraint (@UVASSERT) may be attached to — any scalar
@@ -56,6 +58,12 @@ class AnnotationRules
      *  though any of them may still be REFERENCED inside an assert condition. */
     const CONSTRAINT_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
                                     'yesno', 'truefalse', 'calc', 'sql', 'slider'];
+
+    /** Field types @UVREQUIRED may be attached to. Same scalar family as
+     *  constraints MINUS calc (the person entering data cannot type into a
+     *  calc, so "required" would trap them on a field they cannot fix). */
+    const REQUIRED_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
+                                  'yesno', 'truefalse', 'sql', 'slider'];
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
@@ -260,12 +268,59 @@ class AnnotationRules
         foreach (self::TAGS as $tag => $mode) {
             foreach (self::extractTagsFor($annotation, $tag) as $val) {
                 $any = true;
-                $frag = ($mode === 'constraint') ? self::parseAssertValue($val) : self::parseValue($val);
+                if ($mode === 'constraint')    $frag = self::parseAssertValue($val);
+                elseif ($mode === 'required')  $frag = self::parseRequiredValue($val);
+                else                           $frag = self::parseValue($val);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
         }
         return $any ? $out : null;
+    }
+
+    /**
+     * Parse one @UVREQUIRED value into a required fragment. Three forms:
+     *   @UVREQUIRED                          always required (while non-blank saves)
+     *   @UVREQUIRED="[consent]='1'"          required only WHILE the condition is
+     *                                        true (the value IS the "when")
+     *   @UVREQUIRED={"when":"...","message":"...","blockSave":"hard"}
+     * A blank field is invalid while required; a filled field simply clears the
+     * notice (required mode never judges the VALUE — pair with @UVALIDATE or
+     * @UVASSERT for that; the modes compose).
+     */
+    private static function parseRequiredValue($val)
+    {
+        $val = trim($val);
+        if ($val === '') {
+            $out = ['type' => 'required'];
+            $errs = self::checkFragment($out);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        if ($val[0] !== '{') {
+            $out = ['type' => 'required', 'when' => $val];
+            $errs = self::checkFragment($out);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_REQUIRED . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['when', 'message', 'blockSave'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_REQUIRED . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'required'];
+        foreach ($allowed as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        $errs = self::checkFragment($out);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
     /**
@@ -427,6 +482,8 @@ class AnnotationRules
         // It shares "when"/"blockSave" with check rules but none of the
         // check-character/pattern/pooled machinery, so it validates separately.
         if ($type === 'constraint') return self::checkConstraint($frag);
+        // Required mode (@UVREQUIRED): blank-while-required is the only test.
+        if ($type === 'required') return self::checkRequired($frag);
 
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
 
@@ -576,6 +633,33 @@ class AnnotationRules
         }
         if (isset($frag['when'])) {
             if (!is_string($frag['when'])) {
+                $errors[] = 'the "when" condition must be a non-empty condition string.';
+            } else {
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
+            }
+        }
+        if (isset($frag['blockSave'])
+            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
+            $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+        if (isset($frag['message']) && !is_string($frag['message'])) {
+            $errors[] = '"message" must be a string.';
+        }
+        return $errors;
+    }
+
+    /**
+     * Semantic validation for a required (@UVREQUIRED) fragment: optional
+     * "when" gate (normative dialect in php/Logic.php), optional "message"
+     * wording, optional blockSave. There is no condition to require — the
+     * bare tag is complete.
+     */
+    public static function checkRequired(array $frag)
+    {
+        $errors = [];
+        if (isset($frag['when'])) {
+            if (!is_string($frag['when']) || trim($frag['when']) === '') {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
                 $w = Logic::parse($frag['when']);

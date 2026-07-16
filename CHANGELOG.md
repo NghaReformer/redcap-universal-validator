@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.0 — conditional required (`@UVREQUIRED`)
+
+Third validation mode: a field must not be left blank — with the two things
+REDCap's own required flag lacks, a **condition** and a **real block**. Native
+required is unconditional and only warns; `@UVREQUIRED="[consent]='1'"` turns
+the requirement on and off live as the referenced fields change, and
+`blockSave:"hard"` actually stops the browser save.
+
+- **`@UVREQUIRED` tag / `required` mode.** Bare (always required), a bare
+  condition value as the `when` shorthand, or JSON `{when, message, blockSave}`.
+- **The inverse emptiness rule.** Every other mode is inert on blank; required
+  fires ON blank (whitespace-only counts). Filling the field clears the notice
+  — deliberately no green "OK", because required never judges the value. Pair
+  with `@UVALIDATE`/`@UVASSERT` (modes compose): on a blank field only required
+  fires; on a filled-but-wrong value only the value checks fire.
+- **Field types.** Text, Notes, dropdown, radio, yes/no, true/false, slider —
+  not calc (the person entering data cannot fill a calc, so requiring one would
+  trap them). Read-only fields show the notice but never block (UX-003).
+- **Self-watch via the shared when-registry.** The factory watches its own
+  field through a synthetic `[field]<>''` gate, reusing the existing
+  `___radio`/select/hidden-mirror listener wiring instead of duplicating it.
+- **Server audit.** A blank-while-required save logs as `type: required`,
+  `reason: required-blank`; a blank carries nothing identifying, so the entry
+  is safe in every privacy mode. The `when` gate is honored server-side.
+- **Verification.** New `tests/required_dom_js.cjs` (33 checks: blank/fill,
+  whitespace, live when-flip, dropdown + radio anchors, composition, readonly
+  exemption, branch conflict); `annotation_php` 109→121, `hook_php` 128→139.
+  CI wired.
+
 ## 1.0.0 — cross-field constraints (`@UVASSERT`)
 
 The 1.0 milestone: the module grows beyond ID/check-character validation into a

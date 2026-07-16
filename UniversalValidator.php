@@ -262,6 +262,24 @@ class UniversalValidator extends AbstractExternalModule
             if (!Logic::evaluate($whenAst, $values)) return;
         }
 
+        // Required mode (@UVREQUIRED): the INVERSE emptiness rule — a BLANK
+        // field is the violation (every other mode is inert on blank). The
+        // "when" gate above already skipped the rule when the condition is
+        // false, so reaching here means the requirement is in force. Nothing
+        // identifying is in a blank, so the log carries an empty value.
+        if ($type === 'required') {
+            foreach ($rule['fields'] as $field) {
+                if (isset($dupes[$field])) continue;
+                if ($onForm !== null && !isset($onForm[$field])) continue;
+                $value = isset($values[$field]) ? $values[$field] : null;
+                if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
+                if ($value === null || trim((string) $value) === '') {
+                    $this->logInvalid($logMode, $project_id, $record, $field, '', 'required', 'required', $instrument, $event_id, $repeat_instance, 'required-blank');
+                }
+            }
+            return;
+        }
+
         // Constraint mode (@UVASSERT): the field is invalid whenever its
         // "assert" condition is false against this save's values. An empty
         // field is inert (emptiness is @UVREQUIRED's concern, not a
@@ -905,6 +923,14 @@ class UniversalValidator extends AbstractExternalModule
                         $frags[$k] = ['error' => AnnotationRules::TAG_ASSERT . ' does not support "' . $ftype
                             . '" fields — it checks one scalar field\'s value against a condition.',
                             '_tag' => AnnotationRules::TAG_ASSERT];
+                    }
+                } elseif ($mode === 'required') {
+                    if (!in_array($ftype, AnnotationRules::REQUIRED_FIELD_TYPES, true)) {
+                        $frags[$k] = ['error' => AnnotationRules::TAG_REQUIRED . ' does not support "' . $ftype
+                            . '" fields' . ($ftype === 'calc'
+                                ? ' — a calc value is computed, the person entering data cannot fill it in.'
+                                : ' — it requires a scalar input the person can fill in.'),
+                            '_tag' => AnnotationRules::TAG_REQUIRED];
                     }
                 } elseif (!in_array($ftype, ['text', 'notes'], true)) {
                     $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
