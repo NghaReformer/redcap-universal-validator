@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.0 — cross-field constraints (`@UVASSERT`)
+
+The 1.0 milestone: the module grows beyond ID/check-character validation into a
+universal data-integrity validator. This release adds a second validation mode,
+`@UVASSERT`, that turns the existing condition engine from an applicability
+*gate* into a validation *test*: the field is invalid unless a cross-field
+condition holds. This closes a gap stock REDCap leaves open — branching only
+hides, a range check only warns, and Data Quality runs in batch — none can
+*block* a bad relationship at entry.
+
+- **`@UVASSERT` tag / `constraint` mode.** `@UVASSERT="[end_date]>=[start_date]"`,
+  or JSON `{assert, message, blockSave, when}`. The condition uses the same
+  REDCap-style dialect as `when` (parity-locked in `php/Logic.php` + the JS
+  twin); ISO dates and numbers compare correctly. Confirm-a-value is just
+  `@UVASSERT="[id]=[id_confirm]"`.
+- **An empty field is inert** (requiring a value will be `@UVREQUIRED`'s job).
+  `message` is the designer's own wording, with a generic fallback.
+- **Field types.** Constraints attach to Text, Notes, dropdown, radio, yes/no,
+  true/false, calc and slider fields (check-character/regex validation stays
+  Text/Notes). The validated field's value is read through the same
+  name-convention reader the `when` gate uses.
+- **Modes compose.** A field may carry `@UVASSERT` alongside `@UVALIDATE`; the
+  two attach independent validators and both must pass. Duplicate detection and
+  `Branching::resolve()` now key on **(field, mode)** — same-mode sharing still
+  branches; different modes coexist. Each validator owns an independent
+  save-block item, so a passing constraint never clears a failing check's block.
+- **Server audit + privacy.** `redcap_save_record` evaluates the assert against
+  saved values and logs a failure as `type: constraint`. Off-instrument refs are
+  server-`fold()`ed to constants, so no record value reaches the page (SEC-005).
+- **Verification.** New `tests/constraint_dom_js.cjs` (assert test, dropdown,
+  when-gate, composition, branches, config error); `tests/annotation_php.php`
+  and `tests/hook_php.php` extended for the parser and the server audit. Full
+  JS + PHP (7.4/8.1/8.3) suites pass.
+
 ## 0.9.1 — conditions are resolved on the server; no record value reaches the page
 
 Security fix (SEC-005) for a data-exposure regression introduced with the

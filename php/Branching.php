@@ -50,7 +50,28 @@ class Branching
      */
     const BRANCH_KEYS = ['algorithm', 'idPattern', 'source', 'strip', 'keepChars',
                          'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
-                         'blockSave', 'suggestFix', 'note'];
+                         'blockSave', 'suggestFix', 'note',
+                         // constraint mode (@UVASSERT)
+                         'assert', 'message'];
+
+    /**
+     * The validation MODE a rule's "type" belongs to. Different modes on one
+     * field COMPOSE (a check rule and a constraint rule both attach and both
+     * must pass); several rules of the SAME mode on one field branch. So all
+     * field-sharing logic below groups claims by (field, mode), and the client
+     * dispatcher + server duplicate guard must key on the same pair.
+     * single|pooled are two TYPES of the one "check" mode (their single-vs-
+     * pooled clash stays a mixed-type conflict within that mode).
+     */
+    public static function modeOfType($type)
+    {
+        switch ($type) {
+            case 'constraint': return 'constraint';
+            case 'required':   return 'required';
+            case 'unique':     return 'unique';
+            default:           return 'check'; // single | pooled | '' | unknown
+        }
+    }
 
     /**
      * Illegal sharing per field: field => ['kind' => 'two-unconditional' |
@@ -62,10 +83,12 @@ class Branching
     public static function fieldConflicts(array $rules)
     {
         $out = [];
-        foreach (self::fieldClaims($rules) as $field => $idxs) {
-            if (count($idxs) < 2) continue;
-            $conflict = self::conflictOf($rules, $field, $idxs);
-            if ($conflict !== null) $out[$field] = $conflict;
+        foreach (self::fieldClaims($rules) as $field => $byMode) {
+            foreach ($byMode as $idxs) {
+                if (count($idxs) < 2) continue;
+                $conflict = self::conflictOf($rules, $field, $idxs);
+                if ($conflict !== null && !isset($out[$field])) $out[$field] = $conflict;
+            }
         }
         return $out;
     }
@@ -78,15 +101,19 @@ class Branching
      */
     public static function resolve(array $rules)
     {
-        $sharedFields = [];
-        foreach (self::fieldClaims($rules) as $field => $idxs) {
-            if (count($idxs) > 1) $sharedFields[$field] = $idxs;
+        $sharedGroups = [];  // list of ['field'=>f, 'idxs'=>[...]] — one per (field, mode)
+        foreach (self::fieldClaims($rules) as $field => $byMode) {
+            foreach ($byMode as $idxs) {
+                if (count($idxs) > 1) $sharedGroups[] = ['field' => $field, 'idxs' => $idxs];
+            }
         }
-        if (!$sharedFields) return $rules;
+        if (!$sharedGroups) return $rules;
 
         $removeFrom = [];  // ruleIndex => [field => true]
         $extra = [];       // synthesized per-field rules, appended in field order
-        foreach ($sharedFields as $field => $idxs) {
+        foreach ($sharedGroups as $grp) {
+            $field = $grp['field'];
+            $idxs  = $grp['idxs'];
             foreach ($idxs as $i) $removeFrom[$i][$field] = true;
             $conflict = self::conflictOf($rules, $field, $idxs);
             if ($conflict !== null) {
@@ -150,7 +177,10 @@ class Branching
     // -- internals ------------------------------------------------------------
 
     /**
-     * field => [ruleIndex, ...] over live (non-configError) rules. A field
+     * field => [mode => [ruleIndex, ...]] over live (non-configError) rules.
+     * Claims are split BY MODE so a check rule and a constraint rule on the
+     * same field are separate groups (they compose, they do not branch); only
+     * two rules of the SAME mode on one field are a sharing group. A field
      * listed twice inside ONE rule counts once here — the pre-existing
      * duplicate guards still flag that separately.
      */
@@ -160,11 +190,12 @@ class Branching
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError'])) continue;
             if (empty($r['fields']) || !is_array($r['fields'])) continue;
+            $mode = self::modeOfType(isset($r['type']) ? $r['type'] : '');
             $seen = [];
             foreach ($r['fields'] as $f) {
                 if (!is_string($f) || $f === '' || isset($seen[$f])) continue;
                 $seen[$f] = true;
-                $claims[$f][] = $i;
+                $claims[$f][$mode][] = $i;
             }
         }
         return $claims;

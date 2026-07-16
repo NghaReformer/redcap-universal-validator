@@ -863,6 +863,26 @@ function QRID_findField(name){
   }
   return null;
 }
+/* Anchor element for a field of ANY input type — where the constraint/required
+   modes hang their status region and save block. Unlike QRID_findField (ID
+   fields are always <input>/<textarea>), this also returns a <select> (dropdown)
+   or the hidden mirror <input> REDCap keeps for radio/yes-no/true-false, and
+   falls back to a radio/checkbox input as a last resort. The field's own VALUE
+   is read separately via QRID_WHEN.readRef, which knows the same conventions. */
+function QRID_findAnchor(name){
+  var els = document.getElementsByName ? document.getElementsByName(name) : [];
+  var fallback = null;
+  for(var i = 0; i < els.length; i++){
+    var tag = (els[i].tagName || "").toLowerCase();
+    if(tag === "select" || tag === "textarea") return els[i];
+    if(tag === "input"){
+      var ty = (els[i].type || "").toLowerCase();
+      if(ty !== "radio" && ty !== "checkbox") return els[i]; /* text / hidden radio mirror */
+      if(!fallback) fallback = els[i];
+    }
+  }
+  return fallback;
+}
 /* ---- "when" conditions: parser/evaluator twins (module feature) ------------
    A rule may carry {when: "[specimen_type]='2'"} — the rule then validates
    only while the condition is true. php/Logic.php is the NORMATIVE dialect
@@ -1855,6 +1875,136 @@ function QRIDSingleInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- constraint validator (@UVASSERT) ------------------------------------
+   The field is invalid unless its "assert" condition holds — the shared
+   when-engine used as a TEST here, not just an applicability gate. Reuses the
+   branch plumbing (QRID_buildVariants/activeVariants), the a11y status region
+   and the save guard. An EMPTY field is inert (emptiness is @UVREQUIRED's job,
+   not a constraint's). The verdict wording is the designer's own "message"
+   (only they can word an arbitrary relationship), with a generic fallback.
+   tests/constraint_dom_js.cjs locks this DOM contract; php/AnnotationRules.php
+   (parser) and UniversalValidator::auditRule (server audit) are the twins. */
+function QRIDConstraintInit(QRID_CONFIG){
+  function styleMsg(el, ok){
+    var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+               : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    /* the assert is the TEST: active()===true means the value is VALID. A rule
+       that reaches the client has been syntax-validated by every config
+       channel, so gateFor returns a real gate; null only when there is no
+       condition at all, which is a configuration error for a constraint. */
+    var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst);
+    if(!configError && !assertGate){
+      configError = "@UVASSERT has no condition to check — set an \"assert\" such as [end_date]>=[start_date].";
+    }
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* applicability */
+    return { configError: configError, assertGate: assertGate, gate: GATE, blockSave: BLOCK,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             mode: { constraint: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-c")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-c", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName);
+    /* Own guard item — a WRAPPER, not the input element. A check rule (or a
+       later required/unique rule) may sit on the SAME input; each mode keeps an
+       INDEPENDENT invalid/block state so they compose instead of stomping one
+       shared flag. Readonly/disabled fields keep their message but never trap
+       the save (the anchor's state is copied onto the wrapper). */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){ inert(); return; }              /* no applicability gate true -> inert */
+      if(act.length > 1){                               /* branch conflict: show, validate nothing, never block */
+        styleMsg(msg, false);
+        msg.innerHTML = QRID_IS_SURVEY
+          ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
+          : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
+            QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
+            '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
+        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+      }
+      var V = act[0];
+      var val = QRID_WHEN.readRef(fieldName, null);
+      if(val === null || String(val).trim() === ""){ inert(); return; }   /* empty field is inert */
+      var ok = true;
+      try { ok = V.assertGate.active(); } catch(e){ ok = true; }          /* fail open: a gate bug never traps a save */
+      styleMsg(msg, ok);
+      input.style.outline = ok ? "2px solid #2e9e44" : "2px solid #c62828";
+      setGuard(!ok, V.blockSave);
+      QRID_setInvalidState(input, !ok);
+      msg.innerHTML = ok
+        ? "&#10003; OK."
+        : "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+            : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
+                              : "This value fails its validation rule for this field."));
+    }
+    var debounced = QRID_debounced(function(){ check(); });
+    if(input.addEventListener){
+      input.addEventListener("input", debounced);
+      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    }
+    /* re-check when ANY referenced field (of an applicability gate or an assert)
+       changes — this covers the validated field itself and every other ref */
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      if(VS.all[gi].assertGate) VS.all[gi].assertGate.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  /* per-field registry (namespace .validators — testing / power users) */
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "constraint", mode: { constraint: true, configError: configError },
+      test: function(){ var a = QRID_activeVariants(VS); return (a.length === 1) ? a[0].assertGate.active() : null; } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- pooled-field validator (factory: one instance per config/rule) ---- */
 function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
@@ -2282,7 +2432,16 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var C = QRID_COMBINED_CONFIG;
   var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
-                      "blockSave", "when", "whenAst"];
+                      "blockSave", "when", "whenAst",
+                      /* constraint mode (@UVASSERT) */
+                      "assert", "assertAst", "message"];
+  /* The validation MODE a rule's type belongs to — twin of
+     Branching::modeOfType in php/Branching.php. Different modes on one field
+     COMPOSE (each attaches its own validator); same-mode sharing is branched
+     server-side. Duplicate detection therefore keys on (field, mode). */
+  function modeOfType(t){
+    return (t === "constraint" || t === "required" || t === "unique") ? t : "check";
+  }
   function cfgFor(rule){
     var cfg = {}, i, k;
     /* Branch rule (php/Branching.php): defaults are filled PER BRANCH, so a
@@ -2322,34 +2481,43 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      the error box before any real validator can claim the field. Prototype-free
      map: a field literally named "constructor" must not corrupt the counts
      (COR-005). */
+  /* Count per (field, MODE): a check rule and a constraint rule may share a
+     field (they compose — each attaches its own validator); only two rules of
+     the SAME mode on one field are a genuine duplicate. Key with a separator
+     that cannot occur in a field name or mode. */
   var counts = Object.create(null);
+  function dupKey(field, type){ return field + "\x1F" + modeOfType(type); }
   rules.forEach(function(rule){
     if(rule.configError) return;  /* config-error rules validate nothing and often
       carry placeholder / shared field names — keep them out of duplicate detection
       so two mis-configured rules can't collapse into one bogus "duplicate" error. */
-    (rule.fields || []).forEach(function(f){ counts[f] = (counts[f] || 0) + 1; });
+    (rule.fields || []).forEach(function(f){ var k = dupKey(f, rule.type); counts[k] = (counts[k] || 0) + 1; });
   });
+  var dupByField = Object.create(null);
+  for(var dk in counts) if(counts[dk] > 1){ var fld = dk.slice(0, dk.lastIndexOf("\x1F")); dupByField[fld] = true; }
   var dupFields = [];
-  for(var df in counts) if(counts[df] > 1) dupFields.push(df);
+  for(var df in dupByField) dupFields.push(df);
   if(dupFields.length){
     QRIDSingleInit({ fields: dupFields, algorithm: "none",
       configErrorOverride: 'field(s) "' + dupFields.join('", "') +
-        '" are listed in more than one rule/list — remove the duplicates so each field has exactly one validator.' });
+        '" are listed in more than one rule/list of the same kind — remove the duplicates so each field has exactly one validator per kind.' });
   }
   rules.forEach(function(rule){
     var cfg = cfgFor(rule);
     /* config-error rules keep their fields as-is (their message is shown once in
-       the page notice by the factory's boot); live rules drop duplicate fields. */
+       the page notice by the factory's boot); live rules drop same-mode duplicates. */
     cfg.fields = rule.configError ? (rule.fields || [])
-               : (rule.fields || []).filter(function(f){ return counts[f] === 1; });
+               : (rule.fields || []).filter(function(f){ return counts[dupKey(f, rule.type)] === 1; });
     if(!cfg.fields.length) return;
     if(rule.type === "pooled"){
       QRIDPooledInit(cfg);
-    } else if(rule.type === "single"){
+    } else if(rule.type === "constraint"){
+      QRIDConstraintInit(cfg);
+    } else if(rule.type === "single" || rule.type === undefined || rule.type === "" || rule.configError){
       QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
-        '] has unknown type "' + rule.type + '" — use "single" or "pooled".';
+        '] has unknown type "' + rule.type + '" — use "single", "pooled" or "constraint".';
       QRIDSingleInit(cfg);
     }
   });
@@ -2376,6 +2544,7 @@ window.INSPIREUniversalValidator = {
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
+  constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

@@ -152,6 +152,18 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
             }
 
+            // Constraint rules (@UVASSERT) compare fields their "assert" names —
+            // widen the read set with those refs too, so the audit can evaluate
+            // the condition (mirrors the "when" widening above).
+            foreach ($rules as $r) {
+                if (!empty($r['configError'])) continue;
+                foreach (self::ruleAsserts($r) as $a) {
+                    $pa = Logic::parse($a);
+                    if (empty($pa['ok'])) continue;
+                    foreach (Logic::referencedFields($pa['ast']) as $ref) $readSet[$ref[0]] = true;
+                }
+            }
+
             // Read every audited + condition-referenced field for this exact
             // record/event/instance in ONE getData call instead of one call per
             // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
@@ -248,6 +260,30 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
             if (!Logic::evaluate($whenAst, $values)) return;
+        }
+
+        // Constraint mode (@UVASSERT): the field is invalid whenever its
+        // "assert" condition is false against this save's values. An empty
+        // field is inert (emptiness is @UVREQUIRED's concern, not a
+        // constraint's). No check character / pattern — just the test. The
+        // condition is re-parsed here (config-validated, cheap) and evaluated
+        // against the full saved-value map, so no fold is needed server-side.
+        if ($type === 'constraint') {
+            $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
+            if (empty($a['ok'])) {
+                $this->logUnconfigurable($ruleIndex, $rule['fields'], 'the "assert" condition cannot be evaluated — field skipped', $instrument, $event_id, $repeat_instance);
+                return;
+            }
+            foreach ($rule['fields'] as $field) {
+                if (isset($dupes[$field])) continue;
+                if ($onForm !== null && !isset($onForm[$field])) continue;
+                $value = isset($values[$field]) ? $values[$field] : null;
+                if ($value === null || $value === '' || is_array($value)) continue; // inert when empty (or non-scalar)
+                if (!Logic::evaluate($a['ast'], $values)) {
+                    $this->logInvalid($logMode, $project_id, $record, $field, $value, 'constraint', 'constraint', $instrument, $event_id, $repeat_instance, 'assert:' . $rule['assert']);
+                }
+            }
+            return;
         }
 
         $unconfigurable = [];
@@ -491,10 +527,13 @@ class UniversalValidator extends AbstractExternalModule
         $refs = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
-            foreach (self::ruleWhens($r) as $w) {
+            // Both the "when" gate and the "assert" test (constraint mode) are
+            // folded the same way: a comparison the browser can read live stays
+            // live; one needing an off-instrument field is settled on the server.
+            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $w) {
                 if (isset($asts[$w])) continue;
                 $p = Logic::parse($w);
-                if (empty($p['ok'])) continue; // a bad "when" is already a configError rule
+                if (empty($p['ok'])) continue; // a bad condition is already a configError rule
                 $asts[$w] = $p['ast'];
                 foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
             }
@@ -528,10 +567,16 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($r['when']) && isset($folded[$r['when']])) {
                 $rules[$i]['whenAst'] = $folded[$r['when']];
             }
+            if (isset($r['assert']) && isset($folded[$r['assert']])) {
+                $rules[$i]['assertAst'] = $folded[$r['assert']];
+            }
             if (isset($r['branches']) && is_array($r['branches'])) {
                 foreach ($r['branches'] as $bi => $b) {
                     if (isset($b['when']) && isset($folded[$b['when']])) {
                         $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']];
+                    }
+                    if (isset($b['assert']) && isset($folded[$b['assert']])) {
+                        $rules[$i]['branches'][$bi]['assertAst'] = $folded[$b['assert']];
                     }
                 }
             }
@@ -547,6 +592,19 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($r['branches']) && is_array($r['branches'])) {
             foreach ($r['branches'] as $b) {
                 if (isset($b['when']) && is_string($b['when']) && $b['when'] !== '') $out[] = $b['when'];
+            }
+        }
+        return $out;
+    }
+
+    /** Every non-empty "assert" a rule carries (its own, and its branches'). */
+    private static function ruleAsserts(array $r)
+    {
+        $out = [];
+        if (isset($r['assert']) && is_string($r['assert']) && $r['assert'] !== '') $out[] = $r['assert'];
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $b) {
+                if (isset($b['assert']) && is_string($b['assert']) && $b['assert'] !== '') $out[] = $b['assert'];
             }
         }
         return $out;
@@ -830,34 +888,57 @@ class UniversalValidator extends AbstractExternalModule
         $perField = [];
         foreach ($dd as $name => $meta) {
             $ann = isset($meta['field_annotation']) ? (string) $meta['field_annotation'] : '';
-            if ($ann === '' || stripos($ann, AnnotationRules::TAG) === false) continue;
-            $frags = AnnotationRules::parseFieldAll($ann);
-            if ($frags === null) continue; // e.g. @UVALIDATED — a different tag
+            // Cheap pre-filter: every module tag starts with "@UV" (@UVALIDATE,
+            // @UVASSERT, …). parseAllTags then finds the real, boundary-checked ones.
+            if ($ann === '' || stripos($ann, '@UV') === false) continue;
+            $frags = AnnotationRules::parseAllTags($ann);
+            if ($frags === null) continue; // no module tag (e.g. @UVALIDATED)
+            // Field-type eligibility is per MODE: check-character/regex still
+            // needs a Text/Notes input; a constraint (@UVASSERT) reads any
+            // scalar field's answer, so it accepts dropdowns/dates/etc.
             $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
-            if (!in_array($ftype, ['text', 'notes'], true)) {
-                $frags = [['error' => 'this tag only works on Text or Notes fields (this field is "'
-                    . $ftype . '").']];
+            foreach ($frags as $k => $frag) {
+                if (isset($frag['error'])) continue;
+                $mode = isset($frag['type']) ? $frag['type'] : 'single';
+                if ($mode === 'constraint') {
+                    if (!in_array($ftype, AnnotationRules::CONSTRAINT_FIELD_TYPES, true)) {
+                        $frags[$k] = ['error' => AnnotationRules::TAG_ASSERT . ' does not support "' . $ftype
+                            . '" fields — it checks one scalar field\'s value against a condition.',
+                            '_tag' => AnnotationRules::TAG_ASSERT];
+                    }
+                } elseif (!in_array($ftype, ['text', 'notes'], true)) {
+                    $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
+                        . $ftype . '").'];
+                }
             }
             $perField[$name] = $frags;
         }
         if (!$perField) return [];
-        // Dictionary-dependent "when" reference checks for this channel —
-        // parseFieldAll/checkFragment already validated the syntax; whether the
-        // referenced fields exist (and checkbox codes are real) needs the dd,
-        // which is in hand right here.
+        // Dictionary-dependent reference checks for this channel — parseAllTags/
+        // checkFragment already validated syntax; whether the referenced fields
+        // exist (and checkbox codes are real) needs the dd, which is in hand
+        // here. Both the "when" gate and the "assert" condition are checked.
         $types = null;
         $choices = null;
         foreach ($perField as $name => $frags) {
             foreach ($frags as $k => $frag) {
-                if (isset($frag['error']) || !isset($frag['when'])) continue;
-                $w = Logic::parse($frag['when']);
-                if (empty($w['ok'])) continue; // parseFieldAll already surfaced the syntax error
-                if ($types === null) {
-                    $types = $this->projectFieldTypes($pid);
-                    $choices = $this->projectFieldChoices($pid);
+                if (isset($frag['error'])) continue;
+                foreach (['when', 'assert'] as $condKey) {
+                    if (!isset($frag[$condKey])) continue;
+                    $w = Logic::parse($frag[$condKey]);
+                    if (empty($w['ok'])) continue; // syntax error already surfaced
+                    if ($types === null) {
+                        $types = $this->projectFieldTypes($pid);
+                        $choices = $this->projectFieldChoices($pid);
+                    }
+                    $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
+                    if ($errs) {
+                        $isConstraint = (isset($frag['type']) && $frag['type'] === 'constraint');
+                        $perField[$name][$k] = ['error' => implode(' ', $errs),
+                            '_tag' => $isConstraint ? AnnotationRules::TAG_ASSERT : AnnotationRules::TAG];
+                        break;
+                    }
                 }
-                $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
-                if ($errs) $perField[$name][$k] = ['error' => implode(' ', $errs)];
             }
         }
         return AnnotationRules::groupMulti($perField);
@@ -947,19 +1028,28 @@ class UniversalValidator extends AbstractExternalModule
     /** Fields claimed by more than one live (non-config-error) rule. */
     private static function duplicateFields(array $rules)
     {
+        // Count per (field, MODE): a check rule and a constraint rule may share
+        // a field (they compose — both audit it); only two rules of the SAME
+        // mode on one field are a genuine duplicate (post-Branching this should
+        // not occur, but the guard stays as a safety net).
         $counts = [];
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             if (empty($r['fields']) || !is_array($r['fields'])) continue;
+            $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+            $seen = [];
             foreach ($r['fields'] as $f) {
-                $counts[$f] = isset($counts[$f]) ? $counts[$f] + 1 : 1;
+                if (isset($seen[$f])) continue; // a field twice in ONE rule is not a cross-rule dupe
+                $seen[$f] = true;
+                $key = $f . "\x1F" . $mode;
+                $counts[$key] = isset($counts[$key]) ? $counts[$key] + 1 : 1;
             }
         }
         $dupes = [];
-        foreach ($counts as $f => $c) {
-            if ($c > 1) $dupes[] = $f;
+        foreach ($counts as $key => $c) {
+            if ($c > 1) $dupes[] = substr($key, 0, strrpos($key, "\x1F"));
         }
-        return $dupes;
+        return array_values(array_unique($dupes));
     }
 
     // -- server-side value read --------------------------------------------

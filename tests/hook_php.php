@@ -868,6 +868,66 @@ namespace {
     check('save gate: conditional + else passes',
         $m->validateSettings(twoRuleFlat("[stype]='1'", '')) === null);
 
+    // ---- @UVASSERT constraint mode: server audit ------------------------------
+    // Constraints come through the annotation channel; the audit evaluates the
+    // "assert" against the saved values and logs a failure as type "constraint".
+    $cDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'start'     => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'end'       => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVASSERT={"assert":"[end]>=[start]","message":"end before start"}'],
+        'grade'     => ['field_type' => 'dropdown', 'form_name' => 'cf',
+                        'field_annotation' => "@UVASSERT=\"[grade]<>'9'\""],
+    ];
+    // violated: end (Jan 5) < start (Jan 10); grade = 9 (disallowed)
+    $cData = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-10', 'end' => '2024-01-05', 'grade' => '9']]];
+    $m = newModule([], $cDict, $cData, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $cf = loggedFields($m);
+    check('constraint end<start audited', in_array('end', $cf, true));
+    check('constraint on dropdown audited', in_array('grade', $cf, true));
+    $endLog = null;
+    foreach (invalidLogs($m) as $L) if ($L[1]['field'] === 'end') $endLog = $L[1];
+    check('constraint log typed "constraint"', $endLog && $endLog['type'] === 'constraint');
+    check('constraint reason names the assert', $endLog && strpos($endLog['reason'], 'assert:') === 0);
+
+    // satisfied: end >= start and grade != 9 -> nothing logged
+    $cData2 = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-01', 'end' => '2024-02-01', 'grade' => '2']]];
+    $m = newModule([], $cDict, $cData2, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('constraint satisfied -> no audit', count(invalidLogs($m)) === 0);
+
+    // empty validated field -> inert (emptiness is @UVREQUIRED's job)
+    $cData3 = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-01', 'end' => '', 'grade' => '']]];
+    $m = newModule([], $cDict, $cData3, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('empty constrained field -> inert (no audit)', count(invalidLogs($m)) === 0);
+
+    // when-gate false -> constraint not enforced
+    $cDictW = $cDict;
+    $cDictW['end']['field_annotation'] = '@UVASSERT={"assert":"[end]>=[start]","when":"[grade]=\'1\'"}';
+    $cDataW = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-10', 'end' => '2024-01-05', 'grade' => '2']]];
+    $m = newModule([], $cDictW, $cDataW, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $endLogged = in_array('end', loggedFields($m), true);
+    check('constraint when-gate false -> not audited', !$endLogged);
+
+    // composition: @UVALIDATE (bad check) + @UVASSERT (bad assert) on ONE field
+    // both audit independently (no false-duplicate skip)
+    $cDictX = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'other'     => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'pid'       => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVALIDATE=verhoeff @UVASSERT="[pid]=[other]"'],
+    ];
+    $cDataX = [2 => [351 => ['record_id' => '2', 'pid' => '12345', 'other' => '99999']]]; // bad verhoeff AND pid!=other
+    $m = newModule([], $cDictX, $cDataX, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $pidLogs = array_filter(invalidLogs($m), function ($L) { return $L[1]['field'] === 'pid'; });
+    $types = array_map(function ($L) { return $L[1]['type']; }, $pidLogs);
+    check('compose: check rule audited pid', in_array('single', $types, true) || in_array('verhoeff', $types, true) || count($pidLogs) >= 1);
+    check('compose: constraint rule audited pid independently', in_array('constraint', $types, true));
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }

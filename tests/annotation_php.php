@@ -242,5 +242,41 @@ check('identical when shares a rule', $rules[0]['fields'] === ['w_1', 'w_2'] && 
 check('different when splits the rule', $rules[1]['fields'] === ['w_3'] && $rules[1]['when'] === "[stype]='3'");
 check('when-less rule stays separate', $rules[2]['fields'] === ['w_4'] && !isset($rules[2]['when']));
 
+// ---- @UVASSERT constraint mode (parseAllTags) ----
+$f = AnnotationRules::parseAllTags('@UVASSERT="[end]>=[start]"');
+check('assert bare -> constraint frag', is_array($f) && count($f) === 1
+    && $f[0]['type'] === 'constraint' && $f[0]['assert'] === '[end]>=[start]');
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]<[b]","message":"A before B","blockSave":"hard"}');
+check('assert json -> keys carried', $f[0]['type'] === 'constraint' && $f[0]['message'] === 'A before B'
+    && $f[0]['blockSave'] === 'hard');
+$f = AnnotationRules::parseAllTags('@UVASSERT');
+check('assert with no condition -> error tagged @UVASSERT',
+    isset($f[0]['error']) && $f[0]['_tag'] === '@UVASSERT');
+$f = AnnotationRules::parseAllTags('@UVASSERT="[a]"'); // bare ref, no operator
+check('assert bad condition -> error', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","frob":1}');
+check('assert unknown key -> error', isset($f[0]['error']) && strpos($f[0]['error'], 'frob') !== false);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"datediff([a],[b],\'d\')>3"}');
+check('assert function -> rejected (dialect subset)', isset($f[0]['error']));
+
+// mode composition: @UVALIDATE + @UVASSERT on one field are two frags, distinct modes
+$f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]"');
+check('compose: two tags -> two frags', count($f) === 2);
+check('compose: check frag first', ($f[0]['algorithm'] ?? '') === 'verhoeff' && !isset($f[0]['type']));
+check('compose: constraint frag second', ($f[1]['type'] ?? '') === 'constraint');
+
+// checkFragment routes constraint fragments to the constraint validator
+check('checkFragment: sound constraint -> []',
+    AnnotationRules::checkFragment(['type' => 'constraint', 'assert' => '[a]>=[b]', 'message' => 'x']) === []);
+check('checkFragment: constraint missing assert -> error',
+    AnnotationRules::checkFragment(['type' => 'constraint']) !== []);
+check('checkFragment: constraint bad blockSave -> error',
+    AnnotationRules::checkFragment(['type' => 'constraint', 'assert' => '[a]=[b]', 'blockSave' => 'nope']) !== []);
+
+// groupMulti: constraint frags carry type='constraint' into the rule
+$rules = AnnotationRules::groupMulti(['fx' => AnnotationRules::parseAllTags('@UVASSERT="[fx]>0"')]);
+check('groupMulti: constraint rule typed', count($rules) === 1 && $rules[0]['type'] === 'constraint'
+    && $rules[0]['assert'] === '[fx]>0' && $rules[0]['fields'] === ['fx']);
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

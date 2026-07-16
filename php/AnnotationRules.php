@@ -34,6 +34,28 @@ require_once __DIR__ . '/Logic.php';
 class AnnotationRules
 {
     const TAG = '@UVALIDATE';
+    const TAG_ASSERT = '@UVASSERT';
+
+    /**
+     * Every action tag this module owns, mapped to the validation MODE the tag
+     * configures. @UVALIDATE is the original check-character / regex ID tag;
+     * the intent-named tags each configure one added mode. Different modes on
+     * one field COMPOSE (all must pass); several tags of the SAME mode on one
+     * field branch (php/Branching.php). The mode travels on the rule as its
+     * "type" (single|pooled = check; constraint; …), which is what the client
+     * dispatcher, the server audit, and Branching all key on.
+     */
+    const TAGS = [
+        self::TAG        => 'check',
+        self::TAG_ASSERT => 'constraint',
+    ];
+
+    /** Field types a constraint (@UVASSERT) may be attached to — any scalar
+     *  input whose current answer is a single readable value. Checkbox (multi
+     *  value), file and descriptive fields are excluded as the VALIDATED field,
+     *  though any of them may still be REFERENCED inside an assert condition. */
+    const CONSTRAINT_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
+                                    'yesno', 'truefalse', 'calc', 'sql', 'slider'];
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
@@ -119,22 +141,33 @@ class AnnotationRules
      */
     public static function extractTags($annotation)
     {
+        return self::extractTagsFor($annotation, self::TAG);
+    }
+
+    /**
+     * Extract every real occurrence of ONE tag from an annotation, in order.
+     * Generalized from extractTags so each module tag (@UVALIDATE, @UVASSERT,
+     * …) is scanned by the same value-boundary rules. A tag ends at '=',
+     * whitespace, or end-of-string, so @UVALIDATED / @UVASSERTS never match.
+     */
+    public static function extractTagsFor($annotation, $tag)
+    {
         $ann = (string) $annotation;
         $len = strlen($ann);
         $out = [];
         $offset = 0;
         while ($offset < $len) {
-            $pos = stripos($ann, self::TAG, $offset);
+            $pos = stripos($ann, $tag, $offset);
             while ($pos !== false) {
-                $after = $pos + strlen(self::TAG);
+                $after = $pos + strlen($tag);
                 $ch = $after < $len ? $ann[$after] : '';
                 // a real tag ends at '=', whitespace, or end-of-string;
                 // @UVALIDATED / @UVALIDATE2 are different tags — keep scanning.
                 if ($ch === '' || $ch === '=' || ctype_space($ch)) break;
-                $pos = stripos($ann, self::TAG, $after);
+                $pos = stripos($ann, $tag, $after);
             }
             if ($pos === false) break;
-            $after = $pos + strlen(self::TAG);
+            $after = $pos + strlen($tag);
             if ($after >= $len || $ann[$after] !== '=') {
                 $out[] = '';
                 $offset = $after;
@@ -209,6 +242,70 @@ class AnnotationRules
         $out = [];
         foreach ($tags as $val) $out[] = self::parseValue($val);
         return $out;
+    }
+
+    /**
+     * Parse EVERY module tag on one field's annotation, across all modes
+     * (@UVALIDATE check rules AND the intent-named mode tags like @UVASSERT):
+     * null when the field carries none, else a list of fragments in tag order
+     * (each [] | engine-key config | ['error'=>msg, '_tag'=>tag]). A fragment's
+     * "type" carries its mode, so groupMulti/Branching/the audit route it. This
+     * is the multi-mode superset of parseFieldAll (which stays @UVALIDATE-only
+     * for back-compat).
+     */
+    public static function parseAllTags($annotation)
+    {
+        $any = false;
+        $out = [];
+        foreach (self::TAGS as $tag => $mode) {
+            foreach (self::extractTagsFor($annotation, $tag) as $val) {
+                $any = true;
+                $frag = ($mode === 'constraint') ? self::parseAssertValue($val) : self::parseValue($val);
+                if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
+                $out[] = $frag;
+            }
+        }
+        return $any ? $out : null;
+    }
+
+    /**
+     * Parse one @UVASSERT value into a constraint fragment. The value is EITHER
+     * the condition itself (@UVASSERT="[end]>=[start]") or a JSON object
+     * {assert, message, blockSave, when}. The field is invalid whenever the
+     * condition is false; an empty field is inert (that is @UVREQUIRED's job).
+     */
+    private static function parseAssertValue($val)
+    {
+        $val = trim($val);
+        if ($val === '') {
+            return ['error' => self::TAG_ASSERT . ' needs a condition — e.g. '
+                . self::TAG_ASSERT . '="[end_date]>=[start_date]".'];
+        }
+        if ($val[0] !== '{') {
+            $out = ['type' => 'constraint', 'assert' => $val];
+            $errs = self::checkFragment($out);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_ASSERT . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['assert', 'message', 'blockSave', 'when'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_ASSERT . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'constraint'];
+        foreach ($allowed as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        $errs = self::checkFragment($out);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
     /** Parse one raw tag value into a fragment (see parseField). */
@@ -325,6 +422,12 @@ class AnnotationRules
     {
         $errors = [];
         $type = isset($frag['type']) && $frag['type'] !== '' ? $frag['type'] : 'single';
+
+        // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
+        // It shares "when"/"blockSave" with check rules but none of the
+        // check-character/pattern/pooled machinery, so it validates separately.
+        if ($type === 'constraint') return self::checkConstraint($frag);
+
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
 
         if (!in_array($type, ['single', 'pooled'], true)) {
@@ -451,6 +554,44 @@ class AnnotationRules
         return $errors;
     }
 
+    /**
+     * Semantic validation for a constraint (@UVASSERT) fragment. The "assert"
+     * condition and the optional "when" gate share the normative dialect spec
+     * in php/Logic.php; dictionary-dependent reference checks (do the fields
+     * exist) happen in the channel glue where the data dictionary is in hand.
+     * A missing "message" is allowed — the client shows a generic wording — but
+     * a message is strongly recommended (only the designer can word what an
+     * arbitrary relationship means).
+     */
+    public static function checkConstraint(array $frag)
+    {
+        $errors = [];
+        $assert = isset($frag['assert']) ? $frag['assert'] : null;
+        if (!is_string($assert) || trim($assert) === '') {
+            $errors[] = self::TAG_ASSERT . ' needs a non-empty "assert" condition, '
+                . 'e.g. "[end_date]>=[start_date]".';
+        } else {
+            $a = Logic::parse($assert);
+            if (empty($a['ok'])) $errors[] = 'the "assert" condition ' . $a['error'];
+        }
+        if (isset($frag['when'])) {
+            if (!is_string($frag['when'])) {
+                $errors[] = 'the "when" condition must be a non-empty condition string.';
+            } else {
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
+            }
+        }
+        if (isset($frag['blockSave'])
+            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
+            $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+        if (isset($frag['message']) && !is_string($frag['message'])) {
+            $errors[] = '"message" must be a string.';
+        }
+        return $errors;
+    }
+
     public static function posInt($v)
     {
         if (is_int($v)) return $v > 0;
@@ -486,13 +627,15 @@ class AnnotationRules
         foreach ($perField as $field => $frags) {
             foreach ($frags as $frag) {
                 if (isset($frag['error'])) {
+                    $tag = isset($frag['_tag']) ? $frag['_tag'] : self::TAG;
                     $rules[] = [
                         'type' => 'single', 'fields' => [$field],
-                        'configError' => self::TAG . ' on "' . $field . '": ' . $frag['error'],
+                        'configError' => $tag . ' on "' . $field . '": ' . $frag['error'],
                     ];
                     continue;
                 }
                 $canon = $frag;
+                unset($canon['_tag']);
                 ksort($canon);
                 $key = json_encode($canon);
                 if (!isset($byKey[$key])) {

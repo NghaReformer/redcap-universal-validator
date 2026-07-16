@@ -212,6 +212,38 @@ Rules worth knowing:
   [`php/Branching.php`](php/Branching.php); browser and audit implement the
   same table (see Verification).
 
+## Cross-field constraints — the `@UVASSERT` tag
+
+Stock REDCap cannot *block* a bad relationship between fields at entry: branching
+only hides, a range check only warns, and Data Quality runs in batch. `@UVASSERT`
+closes that gap — the field is invalid unless a condition holds, checked live and
+enforced with the same message/confirm/block modes as everything else:
+
+```text
+@UVASSERT="[end_date]>=[start_date]"
+@UVASSERT={"assert":"[dose]<=[max_dose]","message":"Dose exceeds the protocol maximum","blockSave":"hard"}
+@UVASSERT={"assert":"[sex]='2'","when":"[pregnant]='1'","message":"Pregnant participants must be recorded female"}
+```
+
+- The condition uses the **same dialect** as `when` (`[field]`/`[checkbox(code)]`
+  refs, `= <> != > < >= <=`, `and`/`or`/`not`, parentheses). ISO dates and numbers
+  compare correctly; the evaluator is the one parity-locked engine, used here as
+  the *test* rather than a gate.
+- **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
+  constraint's. Confirm-a-value ("type it twice") is just `@UVASSERT="[id]=[id_confirm]"`.
+- `message` is your own wording, shown on failure (a generic line is used if you
+  omit it — recommended to set one, since only you can word an arbitrary relationship).
+- Optional `when` enforces the constraint only while a condition is true; several
+  `@UVASSERT` tags with different `when` conditions **branch** (plus at most one
+  without, as the fallback), exactly like `@UVALIDATE`.
+- Works on **Text, Notes, dropdown, radio, yes/no, true/false, calc and slider**
+  fields (check-character/regex validation stays Text/Notes). A field may carry
+  `@UVASSERT` **alongside** `@UVALIDATE` and other modes — they **compose**, and
+  all must pass; each keeps an independent save-block state.
+- The server audit honors the constraint against saved values (logged as
+  `type: constraint`), so browser and audit agree. Off-instrument refs are
+  server-`fold()`ed to constants, so no record value reaches the page (SEC-005).
+
 ## Methods supported
 
 ISO/IEC 7064 Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two
@@ -318,6 +350,7 @@ php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cas
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
+node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
