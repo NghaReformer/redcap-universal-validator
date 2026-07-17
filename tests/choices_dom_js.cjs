@@ -280,7 +280,107 @@ function selectValues(sel) { return sel.children.filter((c) => c.tagName === 'OP
   check('MDC value: save allowed', ev._prevented === false);
 }
 
-// ---- 8) fixture: the hidden-set contract shared with tests/hook_php.php -----
+// ---- 8) confirm mode: allow when confirmed, block when declined -------------
+{
+  const legacy = makeEl('input'); legacy.name = 'legacy'; legacy.value = '0';
+  const method = makeEl('select'); method.name = 'method';
+  ['', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  method.value = '9';
+  const env = boot([method, legacy], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'],
+              choicesAll: ['2', '9'], when: "[legacy]='0'", blockSave: 'confirm' }],
+  });
+  check('confirm: stale flagged', method.getAttribute('aria-invalid') === 'true');
+  env.win.confirm = () => false;               // user clicks "Cancel"
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('confirm declined: save trapped', ev._prevented === true);
+  env.win.confirm = () => true;                // user clicks "Save anyway"
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('confirm accepted: save allowed', ev._prevented === false);
+}
+
+// ---- 9) composition: @UVCHOICES + @UVREQUIRED on the SAME field -------------
+// independent guard items — a stale choice blocks even while the field is
+// non-blank (required satisfied), and vice-versa.
+{
+  const country = makeEl('input'); country.name = 'country'; country.value = '1';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '';
+  const r1 = makeEl('input'); r1.name = 'site___radio'; r1.type = 'radio'; r1.value = '101';
+  const r2 = makeEl('input'); r2.name = 'site___radio'; r2.type = 'radio'; r2.value = '201';
+  const env = boot([country, mirror, r1, r2], {
+    singleFields: [], pooledFields: [],
+    rules: [
+      { type: 'choices', fields: ['site'], choicesShow: ['101'], choicesAll: ['101', '201'],
+        when: "[country]='1'", blockSave: 'hard' },
+      { type: 'required', fields: ['site'], blockSave: 'hard' },
+    ],
+  });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('compose: blank blocks (required)', ev._prevented === true);
+  // pick the HIDDEN code 201 (out of the country-1 whitelist): required now
+  // satisfied, but the choice filter must still block
+  mirror.value = '201'; r2.checked = true; r2.fire('click');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('compose: stale-but-nonblank still blocks (choices)', ev._prevented === true);
+  // pick the shown code 101: both modes satisfied
+  mirror.value = '101'; r2.checked = false; r1.checked = true; r1.fire('click');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('compose: valid pick clears both, save allowed', ev._prevented === false);
+}
+
+// ---- 10) one rule, TWO fields (groupMulti) — each filtered independently ----
+{
+  const s1 = makeEl('select'); s1.name = 's1'; ['', '1', '2', '9'].forEach((v) => s1.appendChild(option(v))); s1.value = '';
+  const s2 = makeEl('select'); s2.name = 's2'; ['', '1', '2', '9'].forEach((v) => s2.appendChild(option(v))); s2.value = '9';
+  const env = boot([s1, s2], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['s1', 's2'], choicesHide: ['9'],
+              choicesAll: ['1', '2', '9'], blockSave: 'hard' }],
+  });
+  check('multi-field: field 1 filtered', selectValues(s1).join(',') === ',1,2');
+  check('multi-field: field 2 filtered (own stale 9 kept, disabled)',
+    selectValues(s2).join(',') === ',1,2,9' && s2.children.find((o) => o.value === '9').disabled === true);
+  check('multi-field: only the stale field flags', s1.getAttribute('aria-invalid') === null
+    && s2.getAttribute('aria-invalid') === 'true');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('multi-field: the stale field blocks the shared save', ev._prevented === true);
+}
+
+// ---- 11) checkbox show-list (complement over choicesAll) --------------------
+{
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '1';
+  const chks = ['1', '2', '9'].map((v) => {
+    const c = makeEl('input'); c.name = '__chk__reach_RC_' + v; c.type = 'checkbox'; c.value = v; return c;
+  });
+  const env = boot([pilot, ...chks], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesShow: ['1', '2'],
+              choicesAll: ['1', '2', '9'], when: "[pilot]='1'", blockSave: 'hard' }],
+  });
+  const shownRow = (i) => chks[i].parentNode.style.display !== 'none';
+  check('checkbox show-list: whitelisted codes visible', shownRow(0) && shownRow(1));
+  check('checkbox show-list: complement (9) hidden', !shownRow(2));
+}
+
+// ---- 12) readonly anchor: message shown, save NEVER trapped -----------------
+{
+  const legacy = makeEl('input'); legacy.name = 'legacy'; legacy.value = '0';
+  const method = makeEl('select'); method.name = 'method'; method.readOnly = true;
+  ['', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  method.value = '9';
+  const env = boot([method, legacy], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'],
+              choicesAll: ['2', '9'], when: "[legacy]='0'", blockSave: 'hard' }],
+  });
+  const msg = rMsg(env, 'method');
+  check('readonly: stale message still shown', /no longer available/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('readonly: save never trapped (UX-003 exemption)', ev._prevented === false);
+}
+
+// ---- 13) fixture: the hidden-set contract shared with tests/hook_php.php -----
 {
   const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'choices_fixture.json'), 'utf8'));
   check('fixture loads', Array.isArray(fx.cases) && fx.cases.length > 0);
