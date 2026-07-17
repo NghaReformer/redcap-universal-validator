@@ -1,5 +1,53 @@
 # Changelog
 
+## 1.5.1 — checkbox state was unreadable on REDCap 17 (live-found, pid 149)
+
+**Bug fix. Anyone using a checkbox in a `when`/`assert` condition, or filtering a
+checkbox with `@UVCHOICES`, should take this release.** Found on the first live
+run of 1.5.0 on REDCap 17.0.6.
+
+- **The defect.** For each checkbox option, REDCap 17 renders TWO elements: a
+  **hidden** input named `__chk__<field>_RC_<code>` (its VALUE is the code when
+  checked, `""` when not — `type=hidden`, so its `.checked` is always false) and
+  the **visible** clickable `<input type=checkbox>` carrying id
+  `id-__chk__<field>_RC_<code>` (shared name `__chkn__<field>`). The engine read
+  `.checked` off the element it found **by name** — the hidden mirror — so a
+  checked box read as **unchecked**. Consequence: every `[field(code)]` checkbox
+  reference evaluated false regardless of the real state. A cascade gated on a
+  checkbox (e.g. `@UVCHOICES={"when":"[pilot(1)]='1'",…}`) never activated; a
+  checkbox `@UVASSERT`/`@UVREQUIRED`/`@UVUNIQUE` `when` never fired; a
+  checked-but-hidden `@UVCHOICES` code was never detected as stale.
+- **The fix.** A single `QRID_readCheckbox(field, code)` now resolves the state
+  across renderings: a `__chk__…_RC_code` that IS a checkbox → its `.checked`
+  (classic REDCap); one that is `hidden` → `value === code` (17.x mirror); else
+  the visible `id-__chk__…_RC_code` checkbox → its `.checked`. `readRef` routes
+  every checkbox reference through it, `requestField` also binds change/click on
+  the visible `__chkn__<field>` (the hidden mirror fires no events), and the
+  `@UVCHOICES` renderer computes "is this option checked" the same robust way so
+  a checked option is never hidden from under the user.
+- **Why the tests missed it.** The DOM stub modeled `__chk__…_RC_code` as a real
+  checkbox with a working `.checked` — more forgiving than REDCap 17. The stub
+  now models the 17.x two-element structure (hidden mirror + visible box in one
+  choicevert row); `tests/choices_dom_js.cjs` gained a checkbox-ref-gated
+  cascade and a checked-hidden-stale case (58→67 checks) that FAIL on the old
+  code and pass on the fix (verified by reverting). Backward compatibility with
+  the classic single-checkbox rendering is retained and still covered.
+- Radio, dropdown, the two-level cascade, stale-kept selections, and the
+  save-block (off/confirm/hard) were all verified working live on the same run.
+
+### Known issues (not fixed here)
+
+- **Performance on rule-heavy projects.** A project injecting ~69 rules made a
+  checkbox click freeze the page for tens of seconds live (each rule installs its
+  own `document.body` MutationObserver; a click that mutates the DOM fans out to
+  all of them). Pre-existing and module-wide, not specific to choices mode —
+  tracked separately. Candidate fix: inject only rules whose fields are on the
+  rendered instrument, and share one observer.
+- **Checkbox message placement.** A `@UVCHOICES` message on a checkbox field is
+  anchored inside the first option row; a show/hide list that hides that first
+  code could hide the message with it. Narrow (typical cascades keep the first
+  code shown); to be re-anchored above the option rows in a later release.
+
 ## 1.5.0 — dynamic choice filtering: the @UVCHOICES tag (choices mode)
 
 A fifth rule mode. REDCap's `@HIDECHOICE` hides options statically;

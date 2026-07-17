@@ -1167,6 +1167,33 @@ function QRID_whenCollectRefs(ast, out, seen){
       return;
   }
 }
+/* Robust read of ONE checkbox option's checked state as "1"/"0", across REDCap
+   renderings (LIVE-FOUND on REDCap 17.0.6, pid 149). A checkbox option is NOT a
+   single element: REDCap keeps a HIDDEN companion input named
+   __chk__<field>_RC_<code> whose VALUE is the code when checked and "" when not
+   (type=hidden, so its .checked is meaningless/always false), plus the VISIBLE
+   clickable <input type=checkbox> carrying id "id-__chk__<field>_RC_<code>"
+   (shared name __chkn__<field>). Older REDCap rendered __chk__<field>_RC_<code>
+   itself as the real checkbox. Reading .checked on the name blindly returned "0"
+   for a CHECKED box on 17.x, so every [field(code)] reference silently evaluated
+   false. Resolution order handles all shapes:
+     1. a named __chk__…_RC_code that IS a checkbox  -> its .checked  (classic)
+     2. a named __chk__…_RC_code that is hidden       -> value===code  (17.x mirror)
+     3. the visible id-__chk__…_RC_code checkbox      -> its .checked  (fallback) */
+function QRID_readCheckbox(f, code){
+  var nm = "__chk__" + f + "_RC_" + code;
+  var els = document.getElementsByName ? document.getElementsByName(nm) : [];
+  for(var i = 0; i < els.length; i++){
+    var e = els[i];
+    if((e.tagName || "").toLowerCase() !== "input") continue;
+    var t = (e.type || "").toLowerCase();
+    if(t === "checkbox") return e.checked ? "1" : "0";
+    if(t === "hidden") return (e.value != null && String(e.value) !== "") ? "1" : "0";
+  }
+  var vis = document.getElementById ? document.getElementById("id-" + nm) : null;
+  if(vis && (vis.type || "").toLowerCase() === "checkbox") return vis.checked ? "1" : "0";
+  return "0";
+}
 /* ---- "when" runtime gate: live DOM + snapshot resolution -------------------
    One shared registry: rules referencing the same field share its change
    listeners; each factory instance gets a small gate object from gateFor().
@@ -1209,13 +1236,7 @@ var QRID_WHEN = (function(){
      condition is injected (php/Logic.php fold()), so a ref that reaches here
      is one the browser is expected to be able to read. */
   function readRef(f, code){
-    if(code !== null){
-      var els = document.getElementsByName ? document.getElementsByName("__chk__" + f + "_RC_" + code) : [];
-      for(var i = 0; i < els.length; i++){
-        if((els[i].tagName || "").toLowerCase() === "input") return els[i].checked ? "1" : "0";
-      }
-      return "0";
-    }
+    if(code !== null) return QRID_readCheckbox(f, code);
     var el = findValueEl(f);
     if(el) return el.value == null ? "" : String(el.value);
     return "";
@@ -1271,7 +1292,12 @@ var QRID_WHEN = (function(){
   }
   function requestField(f, code){
     if(code !== null){
+      // classic REDCap: __chk__…_RC_code is the real checkbox and fires events.
       queueTarget("__chk__" + f + "_RC_" + code, f, ["change", "click"]);
+      // REDCap 17.x: that element is a hidden mirror (no events); the VISIBLE
+      // checkbox shares the name __chkn__<field> — bind there so a live toggle
+      // still re-evaluates the gate (LIVE-FOUND, see QRID_readCheckbox).
+      queueTarget("__chkn__" + f, f, ["change", "click"]);
     } else {
       queueTarget(f, f, ["input", "change"]);
       queueTarget(f + "___radio", f, ["change", "click"]);
@@ -2270,19 +2296,28 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       for(var i = 0; i < els.length; i++){
         if(String(els[i].value) === code) out.push(els[i]);
       }
+      /* checkbox: the hidden mirror AND (REDCap 17.x) the visible checkbox both
+         sit inside the same choicevert row, so hiding either one's parent hides
+         the whole option — include both so the row hides on every rendering. */
       var chk = document.getElementsByName ? document.getElementsByName("__chk__" + fieldName + "_RC_" + code) : [];
       for(var c = 0; c < chk.length; c++) out.push(chk[c]);
+      var vis = document.getElementById ? document.getElementById("id-__chk__" + fieldName + "_RC_" + code) : null;
+      if(vis) out.push(vis);
       return out;
     }
-    function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper */
+    function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper row */
       for(var i = 0; i < MANAGED.length; i++){
         var code = MANAGED[i];
+        /* a checked/selected option is NEVER hidden from under the user. The
+           checked state is read robustly (QRID_readCheckbox) because a checkbox
+           option's .checked cannot be read off the hidden mirror on REDCap 17. */
+        var selected = isCheckbox
+          ? (QRID_readCheckbox(fieldName, code) === "1")
+          : (String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === code);
+        var hide = !!hiddenSet[code] && !selected;
         var els = optionWrappers(code);
         for(var j = 0; j < els.length; j++){
-          var el = els[j];
-          /* a checked option is never hidden from under the user */
-          var hide = !!hiddenSet[code] && !el.checked;
-          var box = el.parentNode;
+          var box = els[j].parentNode;
           if(box && box.style) box.style.display = hide ? "none" : "";
         }
       }

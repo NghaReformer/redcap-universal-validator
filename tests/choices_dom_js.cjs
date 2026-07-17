@@ -69,12 +69,24 @@ function boot(els, config) {
   const allEls = [];
   const body = makeEl('body');
   const holders = {};
+  const groupHolders = {};
   for (const el of els) {
-    const holder = makeEl('div');
+    // Elements sharing a groupKey land in ONE holder — models REDCap's
+    // choicevert row, where a checkbox option's hidden mirror and visible
+    // <input type=checkbox> live together (so hiding the row hides both).
+    let holder;
+    if (el.groupKey && groupHolders[el.groupKey]) {
+      holder = groupHolders[el.groupKey];
+    } else {
+      holder = makeEl('div');
+      body.appendChild(holder);
+      allEls.push(holder);
+      if (el.groupKey) groupHolders[el.groupKey] = holder;
+    }
     holder.appendChild(el);
-    body.appendChild(holder);
-    allEls.push(el, holder);
-    holders[el.name] = holder;
+    allEls.push(el);
+    if (el.name && !holders[el.name]) holders[el.name] = holder;
+    if (el.id) holders['#' + el.id] = holder;
   }
   const doc = {
     body, readyState: 'complete', _handlers: {},
@@ -111,6 +123,26 @@ function submitEv() {
 }
 function option(value) { const o = makeEl('option'); o.value = value; return o; }
 function selectValues(sel) { return sel.children.filter((c) => c.tagName === 'OPTION').map((o) => o.value); }
+
+// A REDCap 17.x checkbox OPTION: a hidden mirror named __chk__<field>_RC_<code>
+// (value = code when checked, "" when not; type=hidden so .checked is useless)
+// plus the visible clickable <input type=checkbox> id="id-__chk__…" name
+// "__chkn__<field>", both in ONE choicevert row (shared groupKey). This is the
+// structure that exposed the live bug: reading .checked off the hidden mirror
+// always returned unchecked. set(on) mimics REDCap's own click handler.
+function r17chk(field, code) {
+  const key = 'row:' + field + ':' + code;
+  const hidden = makeEl('input');
+  hidden.name = '__chk__' + field + '_RC_' + code; hidden.type = 'hidden'; hidden.value = ''; hidden.groupKey = key;
+  const visible = makeEl('input');
+  visible.type = 'checkbox'; visible.name = '__chkn__' + field; visible.id = 'id-__chk__' + field + '_RC_' + code;
+  visible.checked = false; visible.groupKey = key;
+  return {
+    hidden, visible, code,
+    set(on) { visible.checked = on; hidden.value = on ? code : ''; visible.fire('click'); },
+    rowShown() { return hidden.parentNode.style.display !== 'none'; },
+  };
+}
 
 // ---- 1) dropdown: remove/restore in order, stale selection kept + blocked --
 {
@@ -347,20 +379,18 @@ function selectValues(sel) { return sel.children.filter((c) => c.tagName === 'OP
   check('multi-field: the stale field blocks the shared save', ev._prevented === true);
 }
 
-// ---- 11) checkbox show-list (complement over choicesAll) --------------------
+// ---- 11) checkbox show-list on REDCap 17.x option markup --------------------
 {
   const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '1';
-  const chks = ['1', '2', '9'].map((v) => {
-    const c = makeEl('input'); c.name = '__chk__reach_RC_' + v; c.type = 'checkbox'; c.value = v; return c;
-  });
-  const env = boot([pilot, ...chks], {
+  const reach = ['1', '2', '9'].map((v) => r17chk('reach', v));
+  const flat = reach.reduce((a, o) => a.concat([o.hidden, o.visible]), []);
+  boot([pilot, ...flat], {
     singleFields: [], pooledFields: [],
     rules: [{ type: 'choices', fields: ['reach'], choicesShow: ['1', '2'],
               choicesAll: ['1', '2', '9'], when: "[pilot]='1'", blockSave: 'hard' }],
   });
-  const shownRow = (i) => chks[i].parentNode.style.display !== 'none';
-  check('checkbox show-list: whitelisted codes visible', shownRow(0) && shownRow(1));
-  check('checkbox show-list: complement (9) hidden', !shownRow(2));
+  check('R17 checkbox show-list: whitelisted 1,2 visible', reach[0].rowShown() && reach[1].rowShown());
+  check('R17 checkbox show-list: complement 9 hidden', !reach[2].rowShown());
 }
 
 // ---- 12) readonly anchor: message shown, save NEVER trapped -----------------
@@ -397,6 +427,41 @@ function selectValues(sel) { return sel.children.filter((c) => c.tagName === 'OP
     check('fixture "' + c.name + '": visible = all minus hidden, in order',
       visible.join(',') === expected.join(','));
   }
+}
+
+// ---- 14) checkbox REF gate + checkbox target stale (LIVE-FOUND, REDCap 17) --
+// The filter on `reach` is gated on a CHECKBOX ref [pilot(1)]='1'. Before the
+// fix the engine read the hidden mirror's .checked (always false on 17.x) so the
+// gate never fired live (pid 149). Now it reads the mirror VALUE / visible box.
+// Also verifies a checked-but-hidden checkbox code is detected as stale.
+{
+  const pilot = r17chk('pilot', '1');
+  const reach = ['1', '2', '9'].map((v) => r17chk('reach', v));
+  const flat = [pilot.hidden, pilot.visible].concat(
+    reach.reduce((a, o) => a.concat([o.hidden, o.visible]), []));
+  const env = boot(flat, {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesShow: ['1', '2'],
+              choicesAll: ['1', '2', '9'], when: "[pilot(1)]='1'", blockSave: 'hard',
+              message: 'Only Radio and TV during the pilot.' }],
+  });
+  check('checkbox-ref gate off: all reach rows shown',
+    reach[0].rowShown() && reach[1].rowShown() && reach[2].rowShown());
+  pilot.set(true);   // tick the VISIBLE pilot box -> gate must read it as checked
+  check('checkbox-ref gate reads a checked box live -> filter activates', !reach[2].rowShown());
+  check('checkbox-ref gate: whitelisted rows still shown', reach[0].rowShown() && reach[1].rowShown());
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('gate active, nothing stale: save allowed', ev._prevented === false);
+  reach[2].set(true);   // check a HIDDEN code -> stale
+  check('checked hidden checkbox code stays VISIBLE (never hidden)', reach[2].rowShown());
+  const anyMsg = env.allEls.find((e) => e.id && /^uvalidate-msg-/.test(e.id) && /Only Radio and TV/.test(e.innerHTML));
+  check('checked hidden checkbox: custom stale message shown', !!anyMsg);
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('checked hidden checkbox: hard block traps save', ev._prevented === true);
+  reach[2].set(false);
+  check('uncheck stale code: row hidden again', !reach[2].rowShown());
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('uncheck stale code: save allowed', ev._prevented === false);
 }
 
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
