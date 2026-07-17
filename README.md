@@ -294,10 +294,17 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
-  `surveys` is an explicit **opt-in** (`{"surveys":true}`): a live used/free
-  answer is record-derived information, so respondents only get the check when
-  the designer accepts that trade-off — and always as a boolean, never a
-  record id. Comparison is exact (trimmed) against stored values.
+  Comparison is exact (trimmed) against stored values.
+- **Surveys: opt-in, and never on an identifier.** Survey respondents are not
+  logged in, so an "already used" answer tells anyone holding the survey link
+  that a specific value is in the study — one value at a time. `{"surveys":true}`
+  is therefore off by default, answered as a bare yes/no (never a record id),
+  rate-limited, and **refused outright on any field REDCap flags as an
+  Identifier** — there it would let a stranger test whether a named person is
+  enrolled, so the module makes that a configuration error rather than trusting
+  a warning to be read. Reasonable use: a non-identifying response token, to
+  stop the same person submitting twice. Leaving it off costs no data quality —
+  survey submissions are still covered by the post-save audit and the scan.
 - **The race is audited, not denied.** Two near-simultaneous saves can both
   pass the live check; the post-save audit re-checks the saved value against
   every other record and logs a collision (`type: unique`,

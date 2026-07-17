@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.4.1 — the survey uniqueness check is refused on Identifier fields
+
+Closes the one advisory from the 15 Jul 2026 security scan (v1.4.0: **0 errors**,
+one warning). The scanner flagged the module's `no-auth-ajax-actions` and asked
+us to confirm two things. The first was already true — the `unique-check`
+payload is allow-listed (field name validated, answered only for fields
+carrying a live unique rule, scope/composite/opt-in re-derived from stored
+rules, payload capped). The second — *"a survey-side uniqueness reply does not
+expose sensitive record existence"* — **could not honestly be confirmed**: an
+"already used" answer to an unauthenticated respondent IS record-existence
+disclosure. That is inherent to the feature, and opt-in + boolean-only limits
+the blast radius but does nothing about a TARGETED probe ("is this national ID
+enrolled?"). So the guard is no longer left to the designer's reading:
+
+- **Refused on Identifier fields.** REDCap already knows which fields identify
+  a person, so `surveys:true` on a field flagged `Identifier?` is now a
+  configuration ERROR in both channels, not a warning — enforced again at the
+  endpoint (defence in depth), and staff-side uniqueness on those fields is
+  unaffected.
+- **The unauthenticated path is rate-limited** (30 checks/minute/session,
+  fail-open when there is no session). Honest about scope: this blunts a script
+  walking an ID space; it is not a defence against a targeted probe or an
+  attacker who clears cookies — the Identifier refusal is.
+- **The opt-in label now says what is true**: "anyone holding your survey link
+  can test whether a specific value is already in this study", with the
+  reasonable use (a non-identifying response token) named, instead of the old
+  euphemism "record-derived information".
+- **Fixed a fail-open the guard itself introduced** (caught by PHP warnings, not
+  by a passing test): the dialog channel resolved the identifier map inside
+  `settingRowToRule`, which has no project id and would fall back to
+  `getProjectId()` — null on import/API contexts (SEC-002), so the dictionary
+  read would come back empty and the guard would silently pass. The map is now
+  passed in from the caller's explicit pid, like `$types`/`$choices`, with a
+  regression test that models a null `getProjectId()`.
+- Also: the Control Center **description** still described only `@UVALIDATE` and
+  "Text/Notes fields" — factually wrong since 1.0.0. It now covers the four
+  composable rule kinds and the Validation scan.
+- `tests/hook_php.php` 187→197.
+
 ## 1.4.0 — the Validation scan (retrospective project sweep)
 
 The last piece of the 1.x expansion: a project page that runs EVERY configured

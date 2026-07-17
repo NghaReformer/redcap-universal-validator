@@ -758,9 +758,10 @@ class UniversalValidator extends AbstractExternalModule
         $known = $this->projectFieldNames($pid);
         $types = $this->projectFieldTypes($pid);
         $choices = $this->projectFieldChoices($pid);
+        $identifiers = $this->projectIdentifierFields($pid);
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers);
             if ($rule !== null) $out[] = $rule;
         }
         return $out;
@@ -772,7 +773,7 @@ class UniversalValidator extends AbstractExternalModule
      * two can never disagree about what a valid rule is. Returns null for a row
      * with nothing to say, otherwise a rule array (with configError when bad).
      */
-    private function settingRowToRule(array $s, $known, $types, $choices = null)
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
@@ -905,6 +906,18 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
+            // The survey opt-in may never sit on an Identifier field (see
+            // SURVEY_ON_IDENTIFIER) — the same guard the annotation channel applies.
+            // The identifier map is passed IN (like $types/$choices) — resolving
+            // it here would need a project id this method does not have, and
+            // falling back to getProjectId() is exactly the unreliable read
+            // SEC-002 warns about: on an import/API context it returns null, the
+            // dictionary comes back empty, and the guard would silently pass.
+            if (!empty($rule['uniqueSurveys'])) {
+                foreach ($fields as $f) {
+                    if (self::isIdentifier($identifiers, $f)) { $errors[] = 'field "' . $f . '": ' . self::SURVEY_ON_IDENTIFIER; break; }
+                }
+            }
             // Composite-key fields: exist, scalar, and not one of the covered
             // fields (a self-composite is a tautology).
             if (isset($rule['uniqueWith']) && is_array($rule['uniqueWith']) && !$errors) {
@@ -1015,11 +1028,12 @@ class UniversalValidator extends AbstractExternalModule
             $known = $pid ? $this->projectFieldNames($pid) : null;
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
+            $identifiers = $pid ? $this->projectIdentifierFields($pid) : null;
             $errors = [];
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -1117,6 +1131,8 @@ class UniversalValidator extends AbstractExternalModule
                         $frags[$k] = ['error' => AnnotationRules::TAG_UNIQUE . ' does not support "' . $ftype
                             . '" fields — it compares one scalar field\'s value across records.',
                             '_tag' => AnnotationRules::TAG_UNIQUE];
+                    } elseif (!empty($frag['uniqueSurveys']) && self::isIdentifier($this->projectIdentifierFields($pid), $name)) {
+                        $frags[$k] = ['error' => self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
                     }
                 } elseif (!in_array($ftype, ['text', 'notes'], true)) {
                     $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
@@ -1201,6 +1217,28 @@ class UniversalValidator extends AbstractExternalModule
         return $dd ? array_keys($dd) : null;
     }
 
+    /**
+     * Field name => true for every field REDCap flags as an Identifier, or null
+     * when the dictionary is unavailable. Used to REFUSE the @UVUNIQUE survey
+     * opt-in on identifying fields: a survey-side used/free reply is an
+     * unauthenticated existence oracle, and on an identifier that means anyone
+     * holding the survey link could test whether a specific person is in the
+     * study. REDCap already knows which fields those are — so the module does
+     * not rely on the designer reading a warning (security scan 15 Jul 2026,
+     * no-auth-ajax advisory).
+     */
+    private function projectIdentifierFields($pid = null)
+    {
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return null;
+        $out = [];
+        foreach ($dd as $name => $meta) {
+            $flag = isset($meta['identifier']) ? strtolower(trim((string) $meta['identifier'])) : '';
+            if ($flag === 'y' || $flag === 'yes' || $flag === '1' || $flag === 'true') $out[$name] = true;
+        }
+        return $out;
+    }
+
     /** Field name => field type map, or null when the dictionary is unavailable. */
     private function projectFieldTypes($pid = null)
     {
@@ -1249,6 +1287,23 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($meta['form_name']) && $meta['form_name'] === $instrument) $set[$name] = true;
         }
         return $set ?: null;
+    }
+
+    /**
+     * Refusal wording for the @UVUNIQUE survey opt-in on an Identifier field.
+     * Shared by both configuration channels so the message cannot drift.
+     */
+    const SURVEY_ON_IDENTIFIER =
+        'the survey uniqueness check ("surveys") cannot be enabled on a field REDCap marks as an '
+        . 'Identifier: a survey answer of "already used" would let anyone holding the survey link test '
+        . 'whether a specific person is in this study. Drop "surveys" (staff still get the live check, '
+        . 'and survey submissions are still covered by the post-save audit and the Validation scan), or '
+        . 'un-flag the field as an Identifier if it truly is not one.';
+
+    /** Whether $field is flagged as an Identifier ($ids may be null = unknown). */
+    private static function isIdentifier($ids, $field)
+    {
+        return is_array($ids) && isset($ids[$field]);
     }
 
     /** Whether any live (non-config-error) rule is a unique rule. */
@@ -1601,7 +1656,18 @@ class UniversalValidator extends AbstractExternalModule
 
             $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance);
             if ($rule === null) return ['error' => 'not a checkable field'];
-            if ($isSurvey && empty($rule['uniqueSurveys'])) return ['error' => 'not enabled on surveys'];
+            if ($isSurvey) {
+                if (empty($rule['uniqueSurveys'])) return ['error' => 'not enabled on surveys'];
+                // Defence in depth: the configuration channels already refuse the
+                // survey opt-in on an Identifier field, so a live rule should
+                // never reach here — but the unauthenticated path re-checks
+                // rather than trust that (security scan 15 Jul 2026 advisory).
+                if (self::isIdentifier($this->projectIdentifierFields($project_id), $field)) {
+                    return ['error' => 'not enabled on surveys'];
+                }
+                // Blunt scripted enumeration through one survey session.
+                if ($this->surveyRateLimited()) return ['error' => 'too many checks — slow down'];
+            }
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
@@ -1621,6 +1687,39 @@ class UniversalValidator extends AbstractExternalModule
             return ['used' => true, 'record' => $recOut];
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
+        }
+    }
+
+    /**
+     * Sliding-window throttle for the UNAUTHENTICATED (survey) uniqueness path.
+     *
+     * Honest about what this is and is not: it stops a script walking an ID
+     * space through one survey session. It does NOT stop a determined attacker
+     * who clears cookies, and it does nothing about a single TARGETED probe —
+     * that exposure is inherent to answering "is this value already used?" at
+     * all, which is why the survey opt-in is refused outright on Identifier
+     * fields and is off by default everywhere else. Defence in depth, not the
+     * defence. Fails OPEN when there is no session to count in: the check is a
+     * convenience, never a gate on data entry.
+     */
+    private function surveyRateLimited()
+    {
+        $max = 30;          // checks ...
+        $window = 60;       // ... per rolling minute, per session
+        try {
+            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return false;
+            $now = time();
+            $key = 'uvalidate_unique_hits';
+            $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+            $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
+                return is_int($t) && ($now - $t) < $window;
+            }));
+            if (count($hits) >= $max) { $_SESSION[$key] = $hits; return true; }
+            $hits[] = $now;
+            $_SESSION[$key] = $hits;
+            return false;
+        } catch (\Throwable $e) {
+            return false;
         }
     }
 

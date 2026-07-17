@@ -1332,6 +1332,91 @@ namespace {
     check('scan: config-error rules are excluded, not evaluated',
         count(scanHits($res, 'constraint')) === 0);
 
+    // ---- @UVUNIQUE survey opt-in is REFUSED on Identifier fields --------------
+    // Security-scan advisory (15 Jul 2026): the survey path is unauthenticated,
+    // so an "already used" answer on an IDENTIFIER would let anyone with the
+    // survey link test whether a named person is enrolled. REDCap already knows
+    // which fields those are, so the module refuses rather than warns.
+    $idDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
+        'nat_id'    => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => 'y',
+                        'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+        'token'     => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
+                        'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+        'nat_id2'   => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => 'y',
+                        'field_annotation' => '@UVUNIQUE'],
+    ];
+    $idData = ['1' => [351 => ['record_id' => '1', 'nat_id' => 'ID-1', 'token' => 'TK-1', 'nat_id2' => 'ID-2']]];
+    $m = newModule([], $idDict, $idData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'if', 351, null, 1);
+    $html = ob_get_clean();
+    check('annotation: survey opt-in on an Identifier is a visible config error',
+        strpos($html, 'cannot be enabled on a field REDCap marks as an Identifier') !== false);
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    $liveFieldsOf = function ($cfg) {
+        $out = [];
+        foreach (($cfg['rules'] ?? []) as $r) {
+            if (!empty($r['configError'])) continue;
+            foreach (($r['fields'] ?? []) as $f) $out[] = $f;
+        }
+        return $out;
+    };
+    $liveF = $liveFieldsOf($cfg);
+    check('  the refused rule is NOT live', !in_array('nat_id', $liveF, true));
+    check('  a NON-identifier survey opt-in still works', in_array('token', $liveF, true));
+    check('  unique on an Identifier is fine WITHOUT the survey opt-in', in_array('nat_id2', $liveF, true));
+
+    // endpoint defence in depth: even if such a rule existed, surveys get nothing
+    $m = newModule([], $idDict, $idData, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'nat_id', 'values' => ['nat_id' => 'ID-1']],
+        149, '2', 'if', 351, 1, 'shash', null, null, '', '', null, null);
+    check('endpoint: survey check on an Identifier field refused', isset($r['error']));
+    // ... while staff (authenticated) still get the full answer on that field
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'nat_id2', 'values' => ['nat_id2' => 'ID-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('endpoint: staff check on an Identifier field still answers',
+        isset($r['used']) && $r['used'] === true && $r['record'] === '1');
+
+    // dialog channel refuses the same combination at save time
+    $m = newModule([], $idDict, [], 149);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['nat_id'], 'unique-surveys' => '1', 'block-save' => 'off'],
+    ]));
+    check('save gate: survey opt-in on an Identifier rejected',
+        is_string($msg) && strpos($msg, 'Identifier') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['token'], 'unique-surveys' => '1', 'block-save' => 'off'],
+    ]));
+    check('save gate: survey opt-in on a non-Identifier passes', $msg === null);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['nat_id'], 'block-save' => 'hard'],
+    ]));
+    check('save gate: Identifier unique WITHOUT surveys passes', $msg === null);
+
+    // The identifier map must reach settingRowToRule from the CALLER's explicit
+    // pid. Resolving it inside the method would fall back to getProjectId(),
+    // which is null on import/API contexts (SEC-002) — the dictionary would come
+    // back empty and the guard would silently pass. Model that context here:
+    // getProjectId() returns null, so a guard that relied on it fails open.
+    $m = newModule([], $idDict, $idData, null); // getProjectId() === null
+    $m->subSettings = [[
+        'rule-type' => 'unique', 'fields' => ['nat_id'], 'fields-csv' => '', 'when' => '',
+        'assert' => '', 'message' => '', 'unique-with' => '', 'unique-scope' => '',
+        'unique-surveys' => '1', 'algorithm' => 'iso7064_mod37_36', 'source' => '',
+        'suggest-fix' => '', 'pattern' => '', 'strip' => '', 'keep-chars' => '',
+        'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+        'expected-count' => '', 'block-save' => 'off',
+    ]];
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'if', 351, null, 1); // hook pid IS known
+    $html = ob_get_clean();
+    check('dialog rule: Identifier guard holds when getProjectId() is null (SEC-002)',
+        strpos($html, 'cannot be enabled on a field REDCap marks as an Identifier') !== false);
+
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);
 }
