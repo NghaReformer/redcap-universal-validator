@@ -506,6 +506,27 @@ class UniversalValidator extends AbstractExternalModule
         $this->log('invalid-id-saved', $entry);
     }
 
+    /**
+     * The live uniqueness check has no transport on this page — operational
+     * signal, no identifiers. Without it @UVUNIQUE cannot check anything in the
+     * browser (it fails open and never traps a save), so this must be visible
+     * rather than silent: a project would otherwise believe duplicates were
+     * being caught live when nothing was happening. The post-save audit and the
+     * Validation scan still catch duplicates either way.
+     */
+    private function logNoUniqueTransport($why, $instrument, $context)
+    {
+        try {
+            $this->log('uvalidate-no-unique-transport', [
+                'why'        => (string) $why,
+                'instrument' => (string) $instrument,
+                'context'    => (string) $context,
+                'effect'     => 'the live duplicate check is inert on this page; the post-save audit and the Validation scan still apply',
+            ]);
+        } catch (\Throwable $ignored) {
+        }
+    }
+
     /** A rule the server could not evaluate — operational signal, no identifiers. */
     private function logUnconfigurable($ruleIndex, array $fields, $why, $instrument, $event_id, $repeat_instance)
     {
@@ -564,18 +585,40 @@ class UniversalValidator extends AbstractExternalModule
         // Live uniqueness (@UVUNIQUE) needs a transport: the framework's
         // JavaScript Module Object (module.ajax, CSRF-protected, survey-aware).
         // Initialized only when a unique rule is live, so other pages carry no
-        // extra script. If the framework cannot provide it, jsmoName stays
-        // absent and the unique factory fails open (the audit is the net).
-        if (self::hasUniqueRules($config['rules']) && method_exists($this, 'initializeJavascriptModuleObject')) {
+        // extra script.
+        //
+        // is_callable, NOT method_exists: the External Modules framework exposes
+        // these through AbstractExternalModule::__call(), and method_exists()
+        // returns FALSE for a magic-proxied method. Guarding with method_exists
+        // silently skipped this whole block on a real REDCap — no exception, no
+        // jsmoName, @UVUNIQUE inert in production — while every mocked test
+        // passed, because the test stub declares the methods for real. Found on
+        // pid 149, v1.4.0. is_callable() honours __call(), so it is true in both
+        // shapes.
+        //
+        // A missing transport is now LOGGED, not swallowed: the module's rule is
+        // that nothing fails silently, and the old empty catch hid exactly the
+        // diagnosis this bug needed. The client still fails open (never traps a
+        // save) and the post-save audit remains the net.
+        if (self::hasUniqueRules($config['rules'])) {
+            $why = null;
             try {
-                $js = $this->initializeJavascriptModuleObject();
-                if (is_string($js) && $js !== '') echo $js . "\n";
-                $name = method_exists($this, 'getJavascriptModuleObjectName')
+                if (is_callable([$this, 'initializeJavascriptModuleObject'])) {
+                    $js = $this->initializeJavascriptModuleObject();
+                    // Older framework builds echo the bootstrap themselves and
+                    // return null; newer ones hand back the markup. Support both.
+                    if (is_string($js) && $js !== '') echo $js . "\n";
+                } else {
+                    $why = 'the framework does not expose initializeJavascriptModuleObject()';
+                }
+                $name = is_callable([$this, 'getJavascriptModuleObjectName'])
                     ? $this->getJavascriptModuleObjectName() : null;
                 if (is_string($name) && $name !== '') $config['jsmoName'] = $name;
+                elseif ($why === null) $why = 'the framework returned no JavaScript module object name';
             } catch (\Throwable $e) {
-                // no transport: the unique factory shows nothing and never blocks
+                $why = 'the framework threw ' . get_class($e) . ' while initializing the JavaScript module object';
             }
+            if ($why !== null) $this->logNoUniqueTransport($why, $instrument, $context);
         }
         // Embed the config as INERT JSON (not executable JS); the engine parses
         // this element itself, so no config global is ever written. The hex

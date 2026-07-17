@@ -77,6 +77,32 @@ namespace {
 
     require_once __DIR__ . '/../UniversalValidator.php';
 
+    // A module shaped like the REAL External Modules framework, which exposes
+    // initializeJavascriptModuleObject()/getJavascriptModuleObjectName()
+    // through __call() rather than declaring them. method_exists() returns
+    // FALSE for such a method — which is how @UVUNIQUE shipped inert to a live
+    // REDCap while every mock (whose stub DECLARES the methods) passed. This
+    // class exists so that mistake cannot come back.
+    class ProxyJsmoModule extends \INSPIRE\UniversalValidator\UniversalValidator {
+        public $jsmoCalls = [];
+        // Hide the stub's real declarations so only __call can serve them.
+        public function initializeJavascriptModuleObject() { return $this->__call('initializeJavascriptModuleObject', []); }
+        public function getJavascriptModuleObjectName() { return $this->__call('getJavascriptModuleObjectName', []); }
+        public function __call($name, $args) {
+            $this->jsmoCalls[] = $name;
+            if ($name === 'initializeJavascriptModuleObject') { echo '<script>/* proxied jsmo */</script>'; return null; }
+            if ($name === 'getJavascriptModuleObjectName') return 'ExternalModules.PROXY.UniversalValidator';
+            throw new \BadMethodCallException($name);
+        }
+    }
+
+    // A module whose framework offers NO JSMO at all (older/other build): the
+    // absence must be LOGGED, never swallowed.
+    class NoJsmoModule extends \INSPIRE\UniversalValidator\UniversalValidator {
+        public function initializeJavascriptModuleObject() { throw new \BadMethodCallException('unavailable'); }
+        public function getJavascriptModuleObjectName() { return null; }
+    }
+
     // A module whose log backend throws on the first detection write — used by
     // the per-rule isolation test (a framework hiccup on one rule must not
     // silently kill the audit of every later rule).
@@ -1416,6 +1442,56 @@ namespace {
     $html = ob_get_clean();
     check('dialog rule: Identifier guard holds when getProjectId() is null (SEC-002)',
         strpos($html, 'cannot be enabled on a field REDCap marks as an Identifier') !== false);
+
+    // ---- JSMO transport is found through __call() (live-found regression) -----
+    // The framework proxies these methods via __call(); method_exists() is FALSE
+    // for them, which silently skipped the whole JSMO block on a real REDCap and
+    // left @UVUNIQUE inert (found on pid 149, v1.4.0). is_callable() honours
+    // __call(), so the transport must be found in BOTH shapes.
+    $jm = new \ProxyJsmoModule();
+    $jm->subSettings = [];
+    $jm->projectSettings = ['log-values' => ''];
+    $jm->projectIdReturn = 149;
+    \REDCap::$dictionary = $uqDict;
+    \REDCap::$data = $uqData;
+    \REDCap::$dataThrows = false;
+    ob_start();
+    $jm->redcap_data_entry_form_top(149, '3', 'uf', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    check('JSMO found via __call(): jsmoName reaches the client',
+        $cfg && isset($cfg['jsmoName']) && $cfg['jsmoName'] === 'ExternalModules.PROXY.UniversalValidator');
+    check('JSMO found via __call(): the bootstrap is emitted',
+        strpos($html, '/* proxied jsmo */') !== false);
+    check('JSMO found via __call(): both framework methods were actually called',
+        in_array('initializeJavascriptModuleObject', $jm->jsmoCalls, true)
+        && in_array('getJavascriptModuleObjectName', $jm->jsmoCalls, true));
+    check('JSMO found via __call(): no "no transport" log written',
+        count(logsOf($jm, 'uvalidate-no-unique-transport')) === 0);
+
+    // No transport at all -> LOGGED, never silent; the page still renders and
+    // the other modes keep working.
+    $nj = new \NoJsmoModule();
+    $nj->subSettings = [];
+    $nj->projectSettings = ['log-values' => ''];
+    $nj->projectIdReturn = 149;
+    ob_start();
+    $nj->redcap_data_entry_form_top(149, '3', 'uf', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    $ntLogs = logsOf($nj, 'uvalidate-no-unique-transport');
+    check('no JSMO: the absence is logged, not swallowed', count($ntLogs) === 1);
+    check('no JSMO: the log says why and what it means',
+        $ntLogs && strpos($ntLogs[0][1]['why'], 'threw') !== false
+        && strpos($ntLogs[0][1]['effect'], 'inert') !== false);
+    check('no JSMO: jsmoName absent, so the client fails open', $cfg && !isset($cfg['jsmoName']));
+    check('no JSMO: the rest of the config still ships', $cfg && !empty($cfg['rules']));
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

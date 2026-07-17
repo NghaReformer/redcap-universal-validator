@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.2 — @UVUNIQUE was inert on a real REDCap (live-found)
+
+Found on the first live run of v1.4.0 (pid 149, REDCap 17.0.6): every rule kind
+parsed and attached correctly, but the injected config carried **no
+`jsmoName`** on a form with three unique rules — so the browser had no AJAX
+transport and the live duplicate check did nothing at all. Silently. The
+post-save audit and the Validation scan still caught duplicates, so no data was
+wrong; the headline as-you-type check simply never ran.
+
+- **Root cause.** The transport was guarded with
+  `method_exists($this, 'initializeJavascriptModuleObject')`. The External
+  Modules framework exposes those methods through
+  `AbstractExternalModule::__call()`, and **`method_exists()` returns FALSE for
+  a magic-proxied method** — so the entire block was skipped, with no exception
+  to notice. Now guarded with `is_callable()`, which honours `__call()` and is
+  true for a directly-declared method too. Both framework shapes work.
+- **Why no test caught it.** The test stub *declares* the methods, so
+  `method_exists()` was true in the mock and false in production — the mock was
+  more permissive than reality. `tests/hook_php.php` now carries a
+  `ProxyJsmoModule` that serves both methods **only** through `__call()`,
+  exactly as the real framework does, so this class of mistake cannot return.
+- **The empty catch was the other bug.** A missing transport was swallowed,
+  which is precisely what hid the diagnosis and violates the module's own rule
+  that nothing fails silently. A missing/failing JSMO now logs
+  `uvalidate-no-unique-transport` with the reason and the consequence ("the live
+  duplicate check is inert on this page; the post-save audit and the Validation
+  scan still apply"). The client still fails open and never traps a save.
+- `tests/hook_php.php` 197→205.
+
 ## 1.4.1 — the survey uniqueness check is refused on Identifier fields
 
 Closes the one advisory from the 15 Jul 2026 security scan (v1.4.0: **0 errors**,
