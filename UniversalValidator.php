@@ -1,6 +1,6 @@
 <?php
 /**
- * Universal Regex & Check-Character Validator — REDCap external module.
+ * Universal Field Validator — REDCap external module.
  *
  * Injects the verified check-character engine on data-entry forms and surveys,
  * configured entirely through the module's project settings (no code pasting,

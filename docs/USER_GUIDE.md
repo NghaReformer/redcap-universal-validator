@@ -1,7 +1,7 @@
-# Universal Regex & Check-Character Validator — User & Training Guide
+# Universal Field Validator — User & Training Guide
 
 A hands-on guide to validating IDs, codes, and structured text in REDCap with the
-**Universal Regex & Check-Character Validator** external module (v0.8.0). It catches a mistyped
+**Universal Field Validator** external module (v0.8.0). It catches a mistyped
 participant ID, a mis-scanned specimen barcode, or an off-format lab number while
 the person who typed it is still looking at the field — before the bad value ever
 reaches your dataset.
@@ -206,7 +206,7 @@ All three produce the same internal rule and can be mixed freely across a projec
 
 | Channel | Best when | Where |
 |---|---|---|
-| **Configure dialog** | You have a handful of rules and want a guided form | Project → External Modules → *Universal Regex & Check-Character Validator* → **Configure** |
+| **Configure dialog** | You have a handful of rules and want a guided form | Project → External Modules → *Universal Field Validator* → **Configure** |
 | **Fast entry** | One rule covers many fields and you know their names | The "Fast entry" box inside a dialog rule |
 | **`@UVALIDATE` annotations** | Bulk setup — tagging many fields, or configuring as you design | The Online Designer's Action Tags box, or the `field_annotation` column of the data dictionary CSV |
 
@@ -898,7 +898,7 @@ literal between them, and prefer bounded `{n}` / `{n,m}` counts.
 
 ---
 
-*This guide documents Universal Regex & Check-Character Validator v0.8.0. For installation notes see
+*This guide documents Universal Field Validator v0.8.0. For installation notes see
 [`INSTALL.md`](INSTALL.md); for the manual REDCap test checklist see
 [`TESTING.md`](TESTING.md); for the product overview see the
 [README](../README.md).*

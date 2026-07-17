@@ -1297,7 +1297,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 ---
 
-*Documents Universal Regex & Check-Character Validator v1.5.0. For the full training
+*Documents Universal Field Validator v1.5.0. For the full training
 guide see [`USER_GUIDE.md`](USER_GUIDE.md); for installation see
 [`INSTALL.md`](INSTALL.md); for the manual REDCap test checklist see
 [`TESTING.md`](TESTING.md); for the product overview see the [README](../README.md).*

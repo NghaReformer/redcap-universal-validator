@@ -1,4 +1,4 @@
-# Universal Regex & Check-Character Validator — IDs, codes & patterns (REDCap external module)
+# Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
 Live, as-you-type validation for any REDCap field with a structure. A mistyped
 participant ID costs hours of reconciliation later; this module catches it while

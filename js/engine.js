@@ -648,7 +648,7 @@
       }
     } catch(e){
       if (typeof console !== "undefined" && console.error)
-        console.error("Universal Regex & Check-Character Validator: could not parse config", e);
+        console.error("Universal Field Validator: could not parse config", e);
     }
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
       return window.INSPIRE_VALIDATOR_CONFIG;
@@ -1332,7 +1332,7 @@ var QRID_WHEN = (function(){
       if(!r.ok){
         try {
           if(typeof console !== "undefined" && console.error){
-            console.error('Universal Regex & Check-Character Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
+            console.error('Universal Field Validator: the "when" condition ' + r.error + ' — rule disabled: ' + exprRaw);
           }
         } catch(e){}
         return { active: function(){ return false; }, onChange: function(){} };
@@ -1481,7 +1481,7 @@ function QRID_configErrorNotice(message){
     box.id = "uvalidate-config-errors";
     box.style.cssText = "margin:8px 0;padding:8px 12px;border-radius:4px;font-family:inherit;" +
       "font-size:13px;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828;";
-    box.innerHTML = "<b>&#9888; Universal Regex & Check-Character Validator — configuration error(s):</b>";
+    box.innerHTML = "<b>&#9888; Universal Field Validator — configuration error(s):</b>";
     var host = document.getElementById("form") || document.querySelector("form");
     if(host && host.parentNode) host.parentNode.insertBefore(box, host);
     else document.body.insertBefore(box, document.body.firstChild);
@@ -2544,7 +2544,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       if(pendingKey === key) return;                    /* already asked; the answer will render */
       var t = QRID_uniqueTransport();
       if(!t){
-        try { if(typeof console !== "undefined" && console.error) console.error("Universal Regex & Check-Character Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
+        try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
         inert(); return;
       }
       var my = ++seq;
@@ -2559,7 +2559,7 @@ function QRIDUniqueInit(QRID_CONFIG){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
         if(err || !resp || resp.error || typeof resp.used === "undefined"){
-          try { if(typeof console !== "undefined" && console.error) console.error("Universal Regex & Check-Character Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
           inert(); return;       /* fail open; the server audit is the net */
         }
         lastResp = { key: key, resp: resp };

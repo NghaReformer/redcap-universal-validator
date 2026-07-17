@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.2 — renamed to "Universal Field Validator"; tightened the module description
+
+Presentation only — no functional change, no rule behaves differently.
+
+- **Renamed** from "Universal Regex & Check-Character Validator — IDs, codes &
+  patterns" to **"Universal Field Validator — check-character & regex IDs,
+  cross-field rules, uniqueness & dynamic choices"**. The old name framed the
+  module as ID validation; four of its five modes (constraints, required,
+  uniqueness, dynamic choices) are not about IDs. The `INSPIRE\UniversalValidator`
+  namespace and the module directory are unchanged, so this is a display-name
+  change with no deployment impact. The browser-facing strings (the
+  configuration-error box title and console messages in `js/engine.js`), the
+  README and user-guide titles, and the class docblock were updated to match;
+  historical CHANGELOG entries keep the name they shipped under.
+- **Description rewritten** shorter (~330 → ~190 words) and made scannable: each
+  of the five tags gets a one-line "what it does", and the **Validation scan** is
+  now called out as its own capability (it was previously a clause buried in the
+  first sentence) — a post-save audit plus an on-demand project scan that
+  re-checks every saved record, covering values entered by API, Data Import, or
+  before a rule existed, with CSV export.
+- The five action-tag helper entries (shown in the Online Designer) were already
+  complete; no change there.
+
 ## 1.5.1 — checkbox state was unreadable on REDCap 17 (live-found, pid 149)
 
 **Bug fix. Anyone using a checkbox in a `when`/`assert` condition, or filtering a
