@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.4.3 — the v1.4.1 survey guards were bypassable by omitting a parameter
+
+**Security fix. Anyone running 1.4.1 or 1.4.2 with an `@UVUNIQUE` rule should
+take this release.** Found by adversarial review of 1.4.1 itself: the hardening
+it added did not defend the path that actually mattered.
+
+- **The defect.** `unique-check` is declared in `no-auth-ajax-actions`, so the
+  endpoint is reachable with **no session at all**. v1.4.1 decided "is this
+  caller untrusted?" from `$survey_hash` — a value the *caller* supplies. An
+  unauthenticated request that simply **omitted the hash** got
+  `$isSurvey === false` and skipped every guard added in 1.4.1: the
+  `surveys` opt-in requirement, the Identifier refusal, and the rate limit. The
+  endpoint then answered `used: true/false` for **any** field carrying a live
+  unique rule — including a field flagged `Identifier?`, and including rules
+  whose designer never opted surveys in. An unauthenticated, unthrottled
+  existence oracle ("is this national ID enrolled?") — precisely what 1.4.1 was
+  written to prevent, defeated by leaving a parameter out.
+- **The fix.** The guards now key on **authentication** (`$user_id`), the only
+  value here that means REDCap authenticated the caller; a survey hash proves
+  nothing. Any unauthenticated caller — survey page or bare HTTP — must pass the
+  opt-in, the Identifier refusal and the throttle. The colliding record id still
+  requires an authenticated, non-survey request (and the DAG check).
+- **Why the tests missed it.** They covered `(survey_hash, no user)` and
+  `(no hash, staff user)` but never `(no hash, no user)` — the unauthenticated
+  caller. `tests/hook_php.php` now exercises that exact shape: an anonymous
+  request is refused on an Identifier field and on any rule without the opt-in,
+  answers boolean-only on an opted-in non-identifying field, and the same field
+  still answers a staff session in full. Verified by reverting the fix and
+  watching the new checks fail.
+- `tests/hook_php.php` 205→210.
+
 ## 1.4.2 — @UVUNIQUE was inert on a real REDCap (live-found)
 
 Found on the first live run of v1.4.0 (pid 149, REDCap 17.0.6): every rule kind

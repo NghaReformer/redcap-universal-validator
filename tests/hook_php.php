@@ -1401,7 +1401,43 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'nat_id', 'values' => ['nat_id' => 'ID-1']],
         149, '2', 'if', 351, 1, 'shash', null, null, '', '', null, null);
     check('endpoint: survey check on an Identifier field refused', isset($r['error']));
-    // ... while staff (authenticated) still get the full answer on that field
+
+    // THE UNAUTHENTICATED, NON-SURVEY CALLER (no session, no survey hash).
+    // "unique-check" is in no-auth-ajax-actions, so this request is reachable by
+    // anyone. v1.4.1 keyed its guards on $survey_hash, so omitting the hash
+    // skipped the opt-in check, the Identifier refusal AND the rate limit, and
+    // still answered used/free — the exact oracle the guard exists to prevent.
+    // Guards must key on AUTHENTICATION, not on survey-ness.
+    $anon = function ($m, $field, $val) {
+        return $m->redcap_module_ajax('unique-check', ['field' => $field, 'values' => [$field => $val]],
+            149, '2', 'if', 351, 1, null, null, null, '', '', null, null);  // no hash, no user
+    };
+    $m = newModule([], $idDict, $idData, 149);
+    $r = $anon($m, 'nat_id2', 'ID-2');   // Identifier, unique rule, surveys NOT opted in
+    check('anon caller (no hash, no user): Identifier field refused, no oracle',
+        isset($r['error']) && !isset($r['used']));
+    $r = $anon($m, 'nat_id', 'ID-1');    // Identifier + surveys:true -> refused config, but be sure
+    check('anon caller: Identifier + survey opt-in still refused', isset($r['error']) && !isset($r['used']));
+    $r = $anon($m, 'token', 'TK-1');     // non-identifier WITH surveys opt-in -> allowed, boolean only
+    check('anon caller: opted-in non-identifier answers boolean only',
+        isset($r['used']) && $r['used'] === true && $r['record'] === null);
+    // a unique rule WITHOUT the survey opt-in must never answer an anon caller
+    $noOptIn = $idDict;
+    $noOptIn['plain2'] = ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
+                          'field_annotation' => '@UVUNIQUE'];
+    $m = newModule([], $noOptIn, ['1' => [351 => ['record_id' => '1', 'plain2' => 'P-1']]], 149);
+    $r = $anon($m, 'plain2', 'P-1');
+    check('anon caller: unique rule without the survey opt-in refused',
+        isset($r['error']) && !isset($r['used']));
+    // ...while the SAME field answers a logged-in staff user in full
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'plain2', 'values' => ['plain2' => 'P-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('staff caller: same field answers with the record id',
+        isset($r['used']) && $r['used'] === true && $r['record'] === '1');
+    // ... while staff (authenticated) still get the full answer on that field.
+    // (newModule() rebinds the shared \REDCap::$data static, so restore the
+    // identifier dataset first — the anon block above pointed it elsewhere.)
+    $m = newModule([], $idDict, $idData, 149);
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'nat_id2', 'values' => ['nat_id2' => 'ID-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('endpoint: staff check on an Identifier field still answers',

@@ -1681,6 +1681,22 @@ class UniversalValidator extends AbstractExternalModule
     {
         if ($action !== 'unique-check') return ['error' => 'unknown action'];
         try {
+            // AUTHENTICATION, not survey-ness, decides which guards apply.
+            //
+            // "unique-check" is declared in no-auth-ajax-actions, so this route
+            // is reachable with NO session and NO survey hash. v1.4.1 keyed its
+            // guards on $survey_hash, which meant an unauthenticated caller who
+            // simply OMITTED the hash was treated as staff: the surveys opt-in
+            // check, the Identifier refusal and the rate limit were all skipped
+            // and the endpoint still answered used/free — an unthrottled
+            // existence oracle on exactly the identifying fields v1.4.1 set out
+            // to protect. Defeated by leaving a parameter out. (Adversarial
+            // review of v1.4.1; the tests only covered (hash,null) and
+            // (null,staff) — never (null,null).)
+            //
+            // $user_id is the only value here that means "REDCap authenticated
+            // this caller"; a survey hash is caller-supplied and proves nothing.
+            $isAuthenticated = ($user_id !== null && $user_id !== '');
             $isSurvey = ($survey_hash !== null && $survey_hash !== '');
             $field = (isset($payload['field']) && is_string($payload['field']))
                 ? strtolower(trim($payload['field'])) : '';
@@ -1699,16 +1715,18 @@ class UniversalValidator extends AbstractExternalModule
 
             $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance);
             if ($rule === null) return ['error' => 'not a checkable field'];
-            if ($isSurvey) {
+            if (!$isAuthenticated) {
+                // An unauthenticated caller gets an answer ONLY for a rule whose
+                // designer opted surveys in...
                 if (empty($rule['uniqueSurveys'])) return ['error' => 'not enabled on surveys'];
-                // Defence in depth: the configuration channels already refuse the
-                // survey opt-in on an Identifier field, so a live rule should
-                // never reach here — but the unauthenticated path re-checks
-                // rather than trust that (security scan 15 Jul 2026 advisory).
+                // ...never for an identifying field (the configuration channels
+                // already refuse that opt-in; this re-check is what actually
+                // holds the line for a caller who skips the survey machinery
+                // altogether — security scan 15 Jul 2026 advisory)...
                 if (self::isIdentifier($this->projectIdentifierFields($project_id), $field)) {
                     return ['error' => 'not enabled on surveys'];
                 }
-                // Blunt scripted enumeration through one survey session.
+                // ...and never faster than the throttle allows.
                 if ($this->surveyRateLimited()) return ['error' => 'too many checks — slow down'];
             }
 
@@ -1717,8 +1735,11 @@ class UniversalValidator extends AbstractExternalModule
             $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id);
             if ($col === null) return ['used' => false, 'record' => null];
 
+            // The colliding record id goes ONLY to an authenticated user, and a
+            // survey page never names a record even if a staff session happens
+            // to be open in the same browser.
             $recOut = null;
-            if (!$isSurvey && $user_id !== null && $user_id !== '') {
+            if ($isAuthenticated && !$isSurvey) {
                 $recOut = $col['record'];
                 if ($group_id !== null && $group_id !== '') {
                     // A DAG-bound user may learn THAT the value is used, but a
