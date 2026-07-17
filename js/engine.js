@@ -2122,6 +2122,278 @@ function QRIDRequiredInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- choice filter (@UVCHOICES) --------------------------------------------
+   Dynamic choice filtering: show/hide individual options of a radio, dropdown
+   or checkbox field while a condition holds (REDCap's @HIDECHOICE is static).
+   Each branch carries a "show" whitelist or "hide" blacklist; the hidden set
+   is show ? complement over choicesAll (the field's full code list, attached
+   server-side from the data dictionary) : the hide list. Rendering:
+     dropdown  — hidden <option>s are physically REMOVED and re-inserted in
+                 their original order when unhidden (Safari ignores hidden/
+                 display:none on <option>, removal is the one portable way);
+     radio     — the input named <field>___radio with value=code hides its
+                 parent wrapper; the hidden mirror input is never touched;
+     checkbox  — the input named __chk__<field>_RC_<code> hides its parent.
+   A currently-SELECTED choice is NEVER hidden or cleared: it stays visible
+   (dropdown: kept + disabled), the field is flagged invalid with the message,
+   and blockSave (off/confirm/hard) decides whether the save is challenged —
+   silently destroying an entered value is the one thing this mode must never
+   do. A value outside choicesAll (e.g. a missing-data code) is out of scope.
+   tests/choices_dom_js.cjs locks this contract (tests/choices_fixture.json is
+   the hidden-set contract); UniversalValidator::ruleFindings (type "choices")
+   is the server twin. */
+function QRIDChoiceFilterInit(QRID_CONFIG){
+  function styleMsg(el){
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var all = (cfg.choicesAll && cfg.choicesAll.length) ? cfg.choicesAll.map(String) : null;
+    var hiddenSet = Object.create(null);
+    var hiddenList = [];
+    if(!configError){
+      if(cfg.choicesShow && cfg.choicesShow.length){
+        if(!all){
+          /* the complement of a whitelist is undefined without the full list —
+             fail visible, never guess (the server attaches choicesAll to every
+             valid rule; only a hand-built config can get here) */
+          configError = 'a "show" list needs the field\'s full choice list (choicesAll) — ' +
+            "the module attaches it from the data dictionary; re-save the field/rule.";
+        } else {
+          var showSet = Object.create(null);
+          for(var s = 0; s < cfg.choicesShow.length; s++) showSet[String(cfg.choicesShow[s])] = true;
+          for(var a = 0; a < all.length; a++){
+            if(!showSet[all[a]]){ hiddenSet[all[a]] = true; hiddenList.push(all[a]); }
+          }
+        }
+      } else if(cfg.choicesHide && cfg.choicesHide.length){
+        for(var h = 0; h < cfg.choicesHide.length; h++){
+          var hc = String(cfg.choicesHide[h]);
+          if(!hiddenSet[hc]){ hiddenSet[hc] = true; hiddenList.push(hc); }
+        }
+      } else {
+        configError = 'the choices rule carries neither a "show" nor a "hide" list.';
+      }
+    }
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
+    return { configError: configError, gate: GATE, blockSave: BLOCK,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             all: all, hiddenSet: hiddenSet, hiddenList: hiddenList,
+             mode: { choices: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
+  /* Every code any variant may hide, plus the full list when known — the set
+     of choice elements this factory manages (hides AND restores). */
+  var MANAGED = (function(){
+    var seen = Object.create(null), out = [];
+    for(var i = 0; i < VS.all.length; i++){
+      var v = VS.all[i];
+      var src = v.all || v.hiddenList;
+      for(var j = 0; j < src.length; j++){
+        if(!seen[src[j]]){ seen[src[j]] = true; out.push(src[j]); }
+      }
+    }
+    return out;
+  })();
+
+  function attach(fieldName){
+    /* Checkbox fields carry NO element named <field> — fall back to the first
+       __chk__ option input so the message region and guard have a home. */
+    var input = QRID_findAnchor(fieldName);
+    var isCheckbox = !input;   /* only checkbox fields carry no element named <field> */
+    if(!input){
+      for(var mi = 0; mi < MANAGED.length && !input; mi++){
+        var chkEls = document.getElementsByName ? document.getElementsByName("__chk__" + fieldName + "_RC_" + MANAGED[mi]) : [];
+        if(chkEls.length) input = chkEls[0];
+      }
+    }
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-cf")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-cf", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName);
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+
+    /* ---- the three renderers (kind detected per call — late DOM tolerant) */
+    var select = (input.tagName || "").toLowerCase() === "select" ? input : null;
+    var selectOrig = null;   /* original <option> order, snapshotted once */
+    function snapshotOptions(){
+      if(selectOrig !== null) return;
+      selectOrig = [];
+      for(var i = 0; i < select.children.length; i++){
+        var o = select.children[i];
+        if((o.tagName || "").toLowerCase() === "option") selectOrig.push(o);
+      }
+    }
+    function renderSelect(hiddenSet){
+      snapshotOptions();
+      var cur = select.value == null ? "" : String(select.value);
+      for(var i = 0; i < selectOrig.length; i++){
+        var o = selectOrig[i];
+        var val = o.value == null ? "" : String(o.value);
+        var isCur = (val !== "" && val === cur);
+        /* the blank placeholder and the CURRENT selection are never removed */
+        var show = (val === "") || isCur || !hiddenSet[val];
+        if(show && o.parentNode !== select){
+          var ref = null;   /* next original option still attached keeps order */
+          for(var j = i + 1; j < selectOrig.length && !ref; j++){
+            if(selectOrig[j].parentNode === select) ref = selectOrig[j];
+          }
+          select.insertBefore(o, ref);
+        } else if(!show && o.parentNode === select){
+          select.removeChild(o);
+        }
+        /* a kept-but-hidden current selection is visibly dead-ended */
+        o.disabled = !!(isCur && hiddenSet[val]);
+      }
+    }
+    function optionWrappers(code){
+      var out = [];
+      var els = document.getElementsByName ? document.getElementsByName(fieldName + "___radio") : [];
+      for(var i = 0; i < els.length; i++){
+        if(String(els[i].value) === code) out.push(els[i]);
+      }
+      var chk = document.getElementsByName ? document.getElementsByName("__chk__" + fieldName + "_RC_" + code) : [];
+      for(var c = 0; c < chk.length; c++) out.push(chk[c]);
+      return out;
+    }
+    function renderOptions(hiddenSet){   /* radio + checkbox: hide the wrapper */
+      for(var i = 0; i < MANAGED.length; i++){
+        var code = MANAGED[i];
+        var els = optionWrappers(code);
+        for(var j = 0; j < els.length; j++){
+          var el = els[j];
+          /* a checked option is never hidden from under the user */
+          var hide = !!hiddenSet[code] && !el.checked;
+          var box = el.parentNode;
+          if(box && box.style) box.style.display = hide ? "none" : "";
+        }
+      }
+    }
+    function render(hiddenSet){
+      if(select) renderSelect(hiddenSet);
+      else renderOptions(hiddenSet);
+    }
+    /* codes currently SELECTED that the active filter hides (the stale set) */
+    function staleCodes(V){
+      var out = [];
+      if(!isCheckbox){                                     /* dropdown / radio: one scalar value */
+        var v = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        if(v !== "" && V.hiddenSet[v] && (!V.all || QRID_inList(V.all, v))) out.push(v);
+        return out;
+      }
+      for(var i = 0; i < V.hiddenList.length; i++){        /* checkbox: any checked hidden code */
+        var code = V.hiddenList[i];
+        if(QRID_WHEN.readRef(fieldName, code) === "1") out.push(code);
+      }
+      return out;
+    }
+    var NONE = Object.create(null);
+    function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){ render(NONE); clear(); return; }   /* no filter in force — everything shown */
+      if(act.length > 1){                                  /* branch conflict: show, never filter, never block */
+        render(NONE);
+        styleMsg(msg);
+        msg.innerHTML = QRID_IS_SURVEY
+          ? "&#9888; Automatic checking of this field is unavailable (a configuration issue has been logged for the study team)."
+          : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
+            QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
+            '". The choice filter was <b>NOT</b> applied; make the conditions mutually exclusive.';
+        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+      }
+      var V = act[0];
+      render(V.hiddenSet);
+      var stale = staleCodes(V);
+      if(!stale.length){ clear(); return; }
+      styleMsg(msg);
+      input.style.outline = "2px solid #c62828";
+      setGuard(true, V.blockSave);
+      QRID_setInvalidState(input, true);
+      msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+        : "The selected choice is no longer available" +
+          (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") +
+          " — pick one of the choices shown (the current answer is kept until you do).");
+    }
+    var debounced = QRID_debounced(function(){ check(); });
+    if(input.addEventListener){
+      input.addEventListener("input", debounced);
+      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    }
+    /* Watch the field ITSELF through the shared when-registry (see
+       QRIDRequiredInit): synthetic gates are never evaluated for the verdict,
+       they exist so requestField wires the select / ___radio / __chk__
+       listeners this factory would otherwise duplicate. */
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ check(); });
+    for(var mc = 0; mc < MANAGED.length; mc++){
+      var codeWatch = QRID_WHEN.gateFor("[" + fieldName + "(" + MANAGED[mc] + ")]='1'", null);
+      if(codeWatch) codeWatch.onChange(function(){ check(); });
+    }
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  /* per-field registry (namespace .validators — testing / power users):
+     test() = "no stale selection under the single active filter" */
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "choices", mode: { choices: true, configError: configError },
+      test: function(){ var a = QRID_activeVariants(VS);
+        if(a.length !== 1) return null;
+        var v = String(QRID_WHEN.readRef(f, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        if(v !== "") return !a[0].hiddenSet[v];
+        for(var i = 0; i < a[0].hiddenList.length; i++){
+          if(QRID_WHEN.readRef(f, a[0].hiddenList[i]) === "1") return false;
+        }
+        return true; } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ES5-safe Array#indexOf membership (shared helper for the choices mode). */
+function QRID_inList(list, v){
+  for(var i = 0; i < list.length; i++){ if(list[i] === v) return true; }
+  return false;
+}
 /* ---- unique validator (@UVUNIQUE) -----------------------------------------
    No-duplicates across records — the one check the browser cannot do alone.
    The server answers through the framework's JavaScript Module Object
@@ -2743,13 +3015,15 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       /* constraint mode (@UVASSERT) */
                       "assert", "assertAst", "message",
                       /* unique mode (@UVUNIQUE) */
-                      "uniqueWith", "uniqueScope", "uniqueSurveys"];
+                      "uniqueWith", "uniqueScope", "uniqueSurveys",
+                      /* choices mode (@UVCHOICES) */
+                      "choicesShow", "choicesHide", "choicesAll"];
   /* The validation MODE a rule's type belongs to — twin of
      Branching::modeOfType in php/Branching.php. Different modes on one field
      COMPOSE (each attaches its own validator); same-mode sharing is branched
      server-side. Duplicate detection therefore keys on (field, mode). */
   function modeOfType(t){
-    return (t === "constraint" || t === "required" || t === "unique") ? t : "check";
+    return (t === "constraint" || t === "required" || t === "unique" || t === "choices") ? t : "check";
   }
   function cfgFor(rule){
     var cfg = {}, i, k;
@@ -2826,11 +3100,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       QRIDRequiredInit(cfg);
     } else if(rule.type === "unique"){
       QRIDUniqueInit(cfg);
+    } else if(rule.type === "choices"){
+      QRIDChoiceFilterInit(cfg);
     } else if(rule.type === "single" || rule.type === undefined || rule.type === "" || rule.configError){
       QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
-        '] has unknown type "' + rule.type + '" — use "single", "pooled", "constraint", "required" or "unique".';
+        '] has unknown type "' + rule.type + '" — use "single", "pooled", "constraint", "required", "unique" or "choices".';
       QRIDSingleInit(cfg);
     }
   });
@@ -2860,6 +3136,7 @@ window.INSPIREUniversalValidator = {
   constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
   requiredInit: QRIDRequiredInit,       /* @UVREQUIRED — locked by tests/required_dom_js.cjs */
   uniqueInit: QRIDUniqueInit,           /* @UVUNIQUE — locked by tests/unique_dom_js.cjs */
+  choiceFilterInit: QRIDChoiceFilterInit, /* @UVCHOICES — locked by tests/choices_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

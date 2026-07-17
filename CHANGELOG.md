@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.5.0 — dynamic choice filtering: the @UVCHOICES tag (choices mode)
+
+A fifth rule mode. REDCap's `@HIDECHOICE` hides options statically;
+`@UVCHOICES` shows/hides individual options of a **radio, dropdown or
+checkbox** field while a REDCap-style condition holds — cascading
+country → region → site lists in one field instead of a near-duplicate field
+per country.
+
+- **Grammar.** JSON form only, exactly one of `show` (whitelist — the
+  complement of the field's own choice list hides) or `hide` (blacklist) per
+  tag, plus optional `when`, `message`, `blockSave`. Repeated tags with
+  different `when` conditions branch through the existing `Branching`
+  machinery (one tag per country, at most one unconditional fallback); no
+  active branch means no filter. Codes are validated against the field's
+  `select_choices_or_calculations` at rule-build time; unknown codes,
+  non-choice field types, and matrix membership are per-field config errors.
+- **A hidden selection is never cleared.** A currently-selected choice that
+  becomes hidden stays visible (dropdowns keep it in place, disabled), the
+  field is flagged invalid with the message, and `blockSave` (off/confirm/
+  hard) runs through the shared save guard. Values outside the field's choice
+  list (missing-data codes) are out of scope on both runtimes.
+- **Plumbing.** Rules carry `choicesAll` (the full code list, attached from
+  the data dictionary) so the client computes a `show` whitelist's complement
+  without DOM enumeration — checkbox options are only findable by exact
+  `__chk__<field>_RC_<code>` name. `choicesAll` participates in the
+  `groupMulti` canonical key, so identically-tagged fields with different
+  choice lists never merge into one rule. `projectFieldChoices()` now
+  enumerates radio and dropdown rows too (previously checkbox-only;
+  `Logic::checkRefs` is unaffected — it only consults checkbox entries).
+- **Client.** New `QRIDChoiceFilterInit` factory (same variant/gate/boot
+  skeleton as required mode, own guard item, composes with the other modes).
+  Dropdown filtering physically removes and re-inserts `<option>`s in
+  original order — Safari ignores `hidden`/`display:none` on options; radio
+  and checkbox options hide their wrapper element. Live re-evaluation rides
+  the shared when-registry.
+- **Audit + scan.** `ruleFindings` gains a `choices` block: a saved value
+  (or checked checkbox code — the one mode that judges checkbox arrays) that
+  the active filter hides logs `type: choices`, `reason: hidden-choice`; the
+  Validation scan reports the same verdicts unchanged.
+- **Tests.** `tests/choices_php.php` (37 checks: grammar, errors, grouping,
+  branching), `tests/choices_dom_js.cjs` (44 checks: remove/restore order,
+  stale-kept semantics, conflict, survey muting, blocking), and
+  `tests/choices_fixture.json` — the hidden-set contract consumed by BOTH
+  runtimes (`hook_php.php` drives every fixture case through the real audit;
+  the DOM test through the real factory). `tests/hook_php.php` 210→246.
+  Full existing suite green (no regressions).
+
 ## 1.4.3 — the v1.4.1 survey guards were bypassable by omitting a parameter
 
 **Security fix. Anyone running 1.4.1 or 1.4.2 with an `@UVUNIQUE` rule should

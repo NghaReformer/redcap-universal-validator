@@ -37,6 +37,7 @@ class AnnotationRules
     const TAG_ASSERT = '@UVASSERT';
     const TAG_REQUIRED = '@UVREQUIRED';
     const TAG_UNIQUE = '@UVUNIQUE';
+    const TAG_CHOICES = '@UVCHOICES';
 
     /**
      * Every action tag this module owns, mapped to the validation MODE the tag
@@ -52,6 +53,7 @@ class AnnotationRules
         self::TAG_ASSERT   => 'constraint',
         self::TAG_REQUIRED => 'required',
         self::TAG_UNIQUE   => 'unique',
+        self::TAG_CHOICES  => 'choices',
     ];
 
     /** Uniqueness scopes: whole project (default), within the record's Data
@@ -79,6 +81,19 @@ class AnnotationRules
      *  fields are checked separately against the data dictionary. */
     const UNIQUE_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
                                 'yesno', 'truefalse', 'sql', 'slider'];
+
+    /** Field types @UVCHOICES may filter — the multiple-choice family whose
+     *  options come from select_choices_or_calculations. yesno/truefalse have
+     *  fixed options (filtering one of two makes the field a foregone
+     *  conclusion, not a choice) and sql options live outside the dictionary,
+     *  so neither is eligible. Matrix membership is refused separately in the
+     *  channel glue (grid rows render different markup). */
+    const CHOICES_FIELD_TYPES = ['radio', 'dropdown', 'checkbox'];
+
+    /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
+     *  every re-evaluation, so the list must stay small. REDCap fields with
+     *  more choices than this belong in an autocomplete dropdown anyway. */
+    const MAX_CHOICE_CODES = 200;
 
     const ALGORITHMS = [
         'iso7064_mod37_36', 'iso7064_mod11_10', 'iso7064_mod97_10',
@@ -286,6 +301,7 @@ class AnnotationRules
                 if ($mode === 'constraint')    $frag = self::parseAssertValue($val);
                 elseif ($mode === 'required')  $frag = self::parseRequiredValue($val);
                 elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val);
+                elseif ($mode === 'choices')   $frag = self::parseChoicesValue($val);
                 else                           $frag = self::parseValue($val);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
@@ -351,6 +367,65 @@ class AnnotationRules
         if (isset($cfg['surveys'])) {
             if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
             $out['uniqueSurveys'] = $cfg['surveys'];
+        }
+        foreach (['when', 'message', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        $errs = self::checkFragment($out);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVCHOICES value into a choices fragment (dynamic choice
+     * filtering: show/hide individual options of a radio, dropdown or checkbox
+     * field while a condition holds). JSON form only — the tag has no sensible
+     * bare default, and a shorthand would just be a second grammar to learn:
+     *   @UVCHOICES={"when":"[country]='1'","show":["101","102"]}
+     *   @UVCHOICES={"when":"[legacy]<>'1'","hide":["9"],"blockSave":"hard"}
+     * Exactly one of "show" (whitelist — everything else hides) or "hide"
+     * (blacklist) per tag. Several tags on one field branch via Branching, so
+     * a country→site cascade is one tag per country. A currently-selected
+     * choice that becomes hidden is NEVER cleared — it stays visible, flagged
+     * invalid, and blockSave decides whether the save is challenged.
+     */
+    private static function parseChoicesValue($val)
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_CHOICES . ' needs a show or hide list — use the JSON form, e.g. '
+                . self::TAG_CHOICES . '={"when":"[country]=\'1\'","show":["101","102"]}.'];
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_CHOICES . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['when', 'show', 'hide', 'message', 'blockSave'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_CHOICES . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'choices'];
+        foreach (['show' => 'choicesShow', 'hide' => 'choicesHide'] as $k => $ruleKey) {
+            if (!isset($cfg[$k])) continue;
+            if (!is_array($cfg[$k])) {
+                return ['error' => '"' . $k . '" must be a list of choice codes, e.g. ["1","2"].'];
+            }
+            $codes = [];
+            foreach (array_values($cfg[$k]) as $c) {
+                // Codes may be typed unquoted (JSON numbers) — normalize every
+                // scalar to its trimmed string form, the shape REDCap stores.
+                if (!is_string($c) && !is_int($c) && !is_float($c)) {
+                    return ['error' => '"' . $k . '" entry ' . json_encode($c)
+                        . ' is not a choice code — use strings or numbers.'];
+                }
+                $codes[] = trim((string) $c);
+            }
+            $out[$ruleKey] = $codes;
         }
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
@@ -570,6 +645,8 @@ class AnnotationRules
         if ($type === 'required') return self::checkRequired($frag);
         // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
         if ($type === 'unique') return self::checkUnique($frag);
+        // Choices mode (@UVCHOICES): dynamic show/hide of individual options.
+        if ($type === 'choices') return self::checkChoices($frag);
 
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
 
@@ -797,6 +874,62 @@ class AnnotationRules
         }
         if (isset($frag['uniqueSurveys']) && !is_bool($frag['uniqueSurveys'])) {
             $errors[] = '"surveys" must be true or false (unquoted).';
+        }
+        if (isset($frag['when'])) {
+            if (!is_string($frag['when']) || trim($frag['when']) === '') {
+                $errors[] = 'the "when" condition must be a non-empty condition string.';
+            } else {
+                $w = Logic::parse($frag['when']);
+                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
+            }
+        }
+        if (isset($frag['blockSave'])
+            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
+            $errors[] = '"blockSave" must be off, confirm or hard.';
+        }
+        if (isset($frag['message']) && !is_string($frag['message'])) {
+            $errors[] = '"message" must be a string.';
+        }
+        return $errors;
+    }
+
+    /**
+     * Semantic validation for a choices (@UVCHOICES) fragment: exactly one of
+     * choicesShow/choicesHide, a non-empty deduplicated code list under the
+     * cap, optional when/message/blockSave. Whether the codes exist in the
+     * field's own choice list is checked in the channel glue with the data
+     * dictionary in hand (getAnnotationRules), which also attaches choicesAll.
+     */
+    public static function checkChoices(array $frag)
+    {
+        $errors = [];
+        $hasShow = isset($frag['choicesShow']);
+        $hasHide = isset($frag['choicesHide']);
+        if ($hasShow === $hasHide) {
+            $errors[] = $hasShow
+                ? '"show" and "hide" cannot be combined — a whitelist already says everything about the other codes.'
+                : self::TAG_CHOICES . ' needs a "show" or "hide" list of choice codes.';
+        }
+        foreach (['choicesShow' => 'show', 'choicesHide' => 'hide'] as $ruleKey => $label) {
+            if (!isset($frag[$ruleKey])) continue;
+            $codes = $frag[$ruleKey];
+            if (!is_array($codes) || !$codes) {
+                $errors[] = '"' . $label . '" must be a non-empty list of choice codes.';
+                continue;
+            }
+            if (count($codes) > self::MAX_CHOICE_CODES) {
+                $errors[] = '"' . $label . '" is limited to ' . self::MAX_CHOICE_CODES . ' codes.';
+                continue;
+            }
+            $seen = [];
+            foreach ($codes as $c) {
+                if (!is_string($c) || $c === '') {
+                    $errors[] = '"' . $label . '" entry ' . json_encode($c) . ' is not a choice code.';
+                    break;
+                }
+                if (isset($seen[$c])) { $errors[] = '"' . $label . '" lists code "' . $c . '" twice.'; break; }
+                $seen[$c] = true;
+            }
         }
         if (isset($frag['when'])) {
             if (!is_string($frag['when']) || trim($frag['when']) === '') {

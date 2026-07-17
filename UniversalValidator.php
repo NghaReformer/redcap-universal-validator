@@ -282,8 +282,8 @@ class UniversalValidator extends AbstractExternalModule
         // An algorithm outside the whitelist would make CheckCharacter::compute
         // throw inside validateId, which reads as "invalid ID" — a config
         // problem must never be reported as a data problem. Constraint /
-        // required / unique rules carry no algorithm and skip this gate.
-        if ($type !== 'constraint' && $type !== 'required' && $type !== 'unique'
+        // required / unique / choices rules carry no algorithm and skip this gate.
+        if ($type !== 'constraint' && $type !== 'required' && $type !== 'unique' && $type !== 'choices'
             && !in_array($algo, AnnotationRules::ALGORITHMS, true)) {
             $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'unknown algorithm "' . $algo . '"'];
             return $out;
@@ -344,6 +344,60 @@ class UniversalValidator extends AbstractExternalModule
                 if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
                 if ($value === null || trim((string) $value) === '') {
                     $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
+                }
+            }
+            return $out;
+        }
+
+        // Choices mode (@UVCHOICES): a saved value that is a currently-hidden
+        // choice is the violation. The "when" gate above already skipped the
+        // rule while its condition is false, so reaching here means the filter
+        // is in force. A value outside the field's own choice list (e.g. a
+        // missing-data code like -99) is out of the filter's scope — never
+        // flagged. Checkbox values arrive as code=>0/1 maps (keepArrays); this
+        // is the one mode that must judge them.
+        if ($type === 'choices') {
+            $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
+                ? array_map('strval', $rule['choicesAll']) : [];
+            if (isset($rule['choicesShow']) && is_array($rule['choicesShow'])) {
+                if (!$all) {
+                    // A "show" whitelist is only meaningful against the full
+                    // list — without it the complement cannot be computed.
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
+                    return $out;
+                }
+                $hidden = array_diff($all, array_map('strval', $rule['choicesShow']));
+            } elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) {
+                $hidden = array_map('strval', $rule['choicesHide']);
+            } else {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                    'why' => 'the choices rule carries neither a "show" nor a "hide" list — rule skipped'];
+                return $out;
+            }
+            $hiddenSet = array_fill_keys(array_values($hidden), true);
+            foreach ($rule['fields'] as $field) {
+                if (isset($dupes[$field])) continue;
+                if ($onForm !== null && !isset($onForm[$field])) continue;
+                $value = isset($values[$field]) ? $values[$field] : null;
+                if (is_array($value)) {
+                    foreach ($value as $code => $checked) {
+                        if ((string) $checked !== '1') continue;
+                        $c = (string) $code;
+                        if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
+                        if (isset($hiddenSet[$c])) {
+                            $out['invalid'][] = ['field' => $field, 'value' => $c, 'algo' => 'choices',
+                                                 'type' => 'choices', 'reason' => 'hidden-choice'];
+                        }
+                    }
+                    continue;
+                }
+                if ($value === null || trim((string) $value) === '') continue;
+                $v = trim((string) $value);
+                if ($all && !in_array($v, $all, true)) continue; // outside the choice list — out of scope
+                if (isset($hiddenSet[$v])) {
+                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'choices',
+                                         'type' => 'choices', 'reason' => 'hidden-choice'];
                 }
             }
             return $out;
@@ -1177,6 +1231,20 @@ class UniversalValidator extends AbstractExternalModule
                     } elseif (!empty($frag['uniqueSurveys']) && self::isIdentifier($this->projectIdentifierFields($pid), $name)) {
                         $frags[$k] = ['error' => self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
                     }
+                } elseif ($mode === 'choices') {
+                    $grid = isset($meta['matrix_group_name']) ? trim((string) $meta['matrix_group_name']) : '';
+                    if (!in_array($ftype, AnnotationRules::CHOICES_FIELD_TYPES, true)) {
+                        $frags[$k] = ['error' => AnnotationRules::TAG_CHOICES . ' does not support "' . $ftype
+                            . '" fields — it filters the options of a radio, dropdown or checkbox field.',
+                            '_tag' => AnnotationRules::TAG_CHOICES];
+                    } elseif ($grid !== '') {
+                        // Matrix rows render different markup than standalone
+                        // choice fields — the client cannot hide their options
+                        // reliably, so refuse instead of half-working.
+                        $frags[$k] = ['error' => AnnotationRules::TAG_CHOICES . ' does not support matrix fields '
+                            . '(this field is in matrix "' . $grid . '") — move the field out of the matrix to filter its choices.',
+                            '_tag' => AnnotationRules::TAG_CHOICES];
+                    }
                 } elseif (!in_array($ftype, ['text', 'notes'], true)) {
                     $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
                         . $ftype . '").'];
@@ -1222,6 +1290,39 @@ class UniversalValidator extends AbstractExternalModule
                     if ($errs) {
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
                             '_tag' => AnnotationRules::TAG_UNIQUE];
+                    }
+                }
+                // @UVCHOICES codes must exist in the field's OWN choice list,
+                // and the full code list travels on the rule (choicesAll) so
+                // the client can compute a "show" whitelist's complement
+                // without enumerating the DOM (checkbox inputs are only
+                // findable by exact name, code included). choicesAll is part
+                // of groupMulti's canonical key, so two fields with identical
+                // tags but different choice lists never share a rule.
+                if (!isset($perField[$name][$k]['error'])
+                        && isset($frag['type']) && $frag['type'] === 'choices') {
+                    if ($types === null) {
+                        $types = $this->projectFieldTypes($pid);
+                        $choices = $this->projectFieldChoices($pid);
+                    }
+                    $all = (is_array($choices) && isset($choices[$name]))
+                        ? array_map('strval', $choices[$name]) : [];
+                    if (!$all) {
+                        $perField[$name][$k] = ['error' => 'this field has no parseable choice list — '
+                            . AnnotationRules::TAG_CHOICES . ' has nothing to filter.',
+                            '_tag' => AnnotationRules::TAG_CHOICES];
+                    } else {
+                        $authored = isset($frag['choicesShow']) ? $frag['choicesShow']
+                            : (isset($frag['choicesHide']) ? $frag['choicesHide'] : []);
+                        $missing = array_values(array_diff($authored, $all));
+                        if ($missing) {
+                            $perField[$name][$k] = ['error' => 'choice code(s) '
+                                . implode(', ', array_map('json_encode', $missing))
+                                . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
+                                '_tag' => AnnotationRules::TAG_CHOICES];
+                        } else {
+                            $perField[$name][$k]['choicesAll'] = $all;
+                        }
                     }
                 }
             }
@@ -1295,10 +1396,12 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Checkbox field => [choice codes] map for validating "when" references,
-     * or null when the dictionary is unavailable. Only checkbox rows are
-     * parsed — for calc fields select_choices_or_calculations holds an
-     * equation, not choices.
+     * Choice field => [choice codes] map, or null when the dictionary is
+     * unavailable. Covers the multiple-choice family (checkbox, radio,
+     * dropdown) — Logic::checkRefs consults it for checkbox "when" references
+     * only, and @UVCHOICES eligibility/code checks read the radio/dropdown
+     * rows. Calc/sql rows are excluded: their
+     * select_choices_or_calculations holds an equation/query, not choices.
      */
     private function projectFieldChoices($pid = null)
     {
@@ -1306,7 +1409,8 @@ class UniversalValidator extends AbstractExternalModule
         if (!$dd) return null;
         $choices = [];
         foreach ($dd as $name => $meta) {
-            if (!isset($meta['field_type']) || $meta['field_type'] !== 'checkbox') continue;
+            $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+            if (!in_array($ftype, ['checkbox', 'radio', 'dropdown'], true)) continue;
             $raw = isset($meta['select_choices_or_calculations']) ? $meta['select_choices_or_calculations'] : '';
             $codes = Logic::parseChoiceCodes($raw);
             if ($codes) $choices[$name] = $codes;

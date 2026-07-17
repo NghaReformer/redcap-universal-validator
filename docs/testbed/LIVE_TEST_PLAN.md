@@ -231,6 +231,40 @@ holds the full 0.9.1 text. Spot-check at minimum:
 
 ---
 
+## 9b. Dynamic choice filtering (`@UVCHOICES`, 1.5.0) — ⚠ first live proof
+
+Upload `uvalidate_150_test_fields.csv` (form `uv_choices_test`; each field's
+note carries its own instructions). Before anything else, **inspect the real
+choice markup** on the rendered form (DevTools): confirm each radio/checkbox
+option's `<input>` sits inside a wrapper element whose hiding removes the
+whole row (the client hides `input.parentNode`) — if REDCap's markup differs,
+that is the first thing to fix, not the test.
+
+1. **Cascade** — `uch_country` → `uch_region` → `uch_site` (two levels, the
+   site conditions combine country AND region). No country picked = all
+   regions show.
+2. **Stale-kept semantics** — pick a region, change country: the stale choice
+   stays visible + flagged, save blocked (hard) until repicked; a stale
+   dropdown site stays in the list but disabled.
+3. **Hide-list + confirm** — `uch_method` option 9 vs the `uch_legacy` flag
+   (confirm-mode block).
+4. **Checkbox** — `uch_reach` restricted while `uch_pilot(1)` is ticked; a
+   pre-ticked hidden code flags with the custom message.
+5. **Config errors** — `uch_badcode` (unknown code, names the real ones),
+   `uch_badtype` (text field), `uch_mx1` (matrix refusal) all show visible
+   errors and filter nothing.
+6. **Survey** — enable the form as a survey: filtering works, stale/conflict
+   messages are generic (no condition text, no field names).
+7. **Audit + scan** — force a hidden value in via import (e.g. `uch_region=201`
+   with `uch_country=1`): the module log gains `type: choices`,
+   `reason: hidden-choice`, and the Validation scan lists it. An imported
+   `-99` in `uch_mdc` must NOT be flagged (out of scope).
+8. **Safari** (if available) — the dropdown filtering on `uch_site` must
+   actually shorten the list (options removed, not merely styled).
+9. **SEC-005** — the injected config for `uv_choices_test` may carry field
+   names, codes, and the designer's literals only — never another field's
+   saved value (off-instrument conditions arrive pre-folded).
+
 ## 10. Sign-off checklist
 
 | # | Gate | Result |

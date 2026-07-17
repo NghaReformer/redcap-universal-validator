@@ -54,7 +54,11 @@ class Branching
                          // constraint mode (@UVASSERT)
                          'assert', 'message',
                          // unique mode (@UVUNIQUE)
-                         'uniqueWith', 'uniqueScope', 'uniqueSurveys'];
+                         'uniqueWith', 'uniqueScope', 'uniqueSurveys',
+                         // choices mode (@UVCHOICES) — choicesAll travels on
+                         // every branch (identical per field, attached from the
+                         // dd) so a flattened branch is self-contained.
+                         'choicesShow', 'choicesHide', 'choicesAll'];
 
     /**
      * The validation MODE a rule's "type" belongs to. Different modes on one
@@ -71,6 +75,7 @@ class Branching
             case 'constraint': return 'constraint';
             case 'required':   return 'required';
             case 'unique':     return 'unique';
+            case 'choices':    return 'choices';
             default:           return 'check'; // single | pooled | '' | unknown
         }
     }

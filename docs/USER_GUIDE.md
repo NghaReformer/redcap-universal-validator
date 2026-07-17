@@ -741,7 +741,18 @@ Not yet — messages are English only in this version.
 **Which fields can I validate?**
 Check-character and format rules: Text and Notes fields only. Constraint
 rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
-Required and Unique rules: the same minus calc.
+Required and Unique rules: the same minus calc. Choice-filter rules
+(`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields).
+
+**Can the options of a dropdown depend on an earlier answer (country → site)?**
+Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
+dropdown or checkbox field while a condition holds, e.g.
+`@UVCHOICES={"when":"[country]='1'","show":["101","102"]}` — one tag per
+country replaces a near-duplicate field per country (REDCap's own
+`@HIDECHOICE` cannot follow the form). A selection that becomes hidden is
+never cleared: it is kept visible, flagged, and can block the save until
+fixed. Annotation-only in this version; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Can I stop the same participant ID being entered in two records?**
 Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind

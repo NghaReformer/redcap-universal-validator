@@ -1,0 +1,17 @@
+{
+  "comment": "Cross-runtime contract for @UVCHOICES hidden-set computation. Each case gives the field's full code list (all) and an authored show OR hide list; 'hidden' is the exact set of codes the filter must hide, in order. tests/hook_php.php drives these through the real server audit (a value is flagged iff hidden); tests/choices_dom_js.cjs drives them through the real client factory (a choice element is hidden iff hidden). Both runtimes must agree with this file.",
+  "cases": [
+    { "name": "show a subset hides the complement, in all-list order",
+      "all": ["1", "2", "3", "4"], "show": ["1", "2"], "hidden": ["3", "4"] },
+    { "name": "show everything hides nothing",
+      "all": ["1", "2"], "show": ["1", "2"], "hidden": [] },
+    { "name": "hide one code hides exactly it",
+      "all": ["1", "2", "3"], "hide": ["2"], "hidden": ["2"] },
+    { "name": "hide several codes",
+      "all": ["a", "b", "c", "d"], "hide": ["a", "c"], "hidden": ["a", "c"] },
+    { "name": "non-numeric codes work",
+      "all": ["s01", "s02", "s03"], "show": ["s02"], "hidden": ["s01", "s03"] },
+    { "name": "complement preserves the all-list order, not the show order",
+      "all": ["9", "1", "5", "3"], "show": ["3", "1"], "hidden": ["9", "5"] }
+  ]
+}

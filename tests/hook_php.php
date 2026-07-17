@@ -1032,6 +1032,127 @@ namespace {
     check('compose filled-bad: check fires, required satisfied',
         count($types) === 1 && $types[0] !== 'required');
 
+    // ---- @UVCHOICES choices mode: server audit --------------------------------
+    // A saved value that is a currently-hidden choice logs (type "choices",
+    // reason "hidden-choice"); values are NEVER cleared, only reported.
+    $cDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'country'   => ['field_type' => 'radio', 'field_annotation' => '', 'form_name' => 'cf',
+                        'select_choices_or_calculations' => '1, Cameroon | 2, Nigeria'],
+        'site'      => ['field_type' => 'radio', 'form_name' => 'cf',
+                        'select_choices_or_calculations' => '101, Douala | 102, Yaounde | 201, Lagos',
+                        'field_annotation' => '@UVCHOICES={"when":"[country]=\'1\'","show":["101","102"]} '
+                            . '@UVCHOICES={"when":"[country]=\'2\'","show":["201"]}'],
+        'reach'     => ['field_type' => 'checkbox', 'form_name' => 'cf',
+                        'select_choices_or_calculations' => '1, Radio | 2, TV | 9, Legacy',
+                        'field_annotation' => '@UVCHOICES={"hide":["9"]}'],
+    ];
+    function choicesLog($m, $field) {
+        foreach (invalidLogs($m) as $L) if ($L[1]['field'] === $field) return $L[1];
+        return null;
+    }
+    // country=1 makes site a Cameroon-only list: a saved Lagos site is hidden
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2', 'country' => '1', 'site' => '201']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $L = choicesLog($m, 'site');
+    check('hidden radio value -> audited', $L !== null);
+    check('choices log typed "choices"', $L && $L['type'] === 'choices');
+    check('choices reason is hidden-choice', $L && $L['reason'] === 'hidden-choice');
+    // a shown value passes
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2', 'country' => '1', 'site' => '101']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('shown radio value -> no audit', choicesLog($m, 'site') === null);
+    // the OTHER branch hides the first branch's sites
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2', 'country' => '2', 'site' => '101']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('other branch active: its hidden set applies', choicesLog($m, 'site') !== null);
+    // no branch active (no else) -> the field is inert, nothing hidden
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2', 'site' => '201']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('no active branch -> filter off, nothing audited', choicesLog($m, 'site') === null);
+    // checkbox: a checked hidden code is the violation; unchecked is fine
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2',
+        'reach' => ['1' => '1', '2' => '0', '9' => '1']]]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $L = choicesLog($m, 'reach');
+    check('checked hidden checkbox code -> audited', $L !== null && $L['reason'] === 'hidden-choice');
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2',
+        'reach' => ['1' => '1', '2' => '1', '9' => '0']]]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('unchecked hidden checkbox code -> no audit', choicesLog($m, 'reach') === null);
+    // a value outside the field's own choice list (missing-data code) is out of scope
+    $m = newModule([], $cDict, [2 => [351 => ['record_id' => '2', 'country' => '1', 'site' => '-99']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('out-of-dictionary value (MDC) -> never flagged', choicesLog($m, 'site') === null);
+    // @UVCHOICES on a text field / unknown code / matrix membership -> config
+    // errors (visible in the injected config), never audit detections
+    $cDictBad = $cDict;
+    $cDictBad['freetext'] = ['field_type' => 'text', 'form_name' => 'cf',
+        'field_annotation' => '@UVCHOICES={"hide":["1"]}'];
+    $cDictBad['site2'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"show":["999"]}'];
+    $cDictBad['mx'] = ['field_type' => 'radio', 'form_name' => 'cf', 'matrix_group_name' => 'grid1',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"hide":["1"]}'];
+    $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
+        'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'cf', 351, null, 1);
+    $html = ob_get_clean();
+    $cfg = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfg = json_decode($mm[1], true);
+    }
+    $cfgErrs = [];
+    foreach (($cfg ? $cfg['rules'] : []) as $r) {
+        if (!empty($r['configError'])) $cfgErrs[$r['fields'][0]] = $r['configError'];
+    }
+    check('choices on a text field -> configError', isset($cfgErrs['freetext'])
+        && strpos($cfgErrs['freetext'], 'radio, dropdown or checkbox') !== false);
+    check('unknown code -> configError naming the real codes', isset($cfgErrs['site2'])
+        && strpos($cfgErrs['site2'], '"999"') !== false && strpos($cfgErrs['site2'], '1, 2') !== false);
+    check('matrix field -> configError', isset($cfgErrs['mx'])
+        && strpos($cfgErrs['mx'], 'matrix') !== false);
+    $m->logCalls = [];
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('config-error choices rules produce no detections',
+        choicesLog($m, 'freetext') === null && choicesLog($m, 'site2') === null && choicesLog($m, 'mx') === null);
+    // the injected site rule is a branch rule carrying choicesAll (the full list)
+    $siteRule = null;
+    foreach (($cfg ? $cfg['rules'] : []) as $r) {
+        if ($r['fields'] === ['site'] && $r['type'] === 'choices') $siteRule = $r;
+    }
+    check('site rule ships as a choices branch rule', $siteRule && isset($siteRule['branches'])
+        && count($siteRule['branches']) === 2);
+    check('branches carry choicesAll from the dictionary',
+        $siteRule && $siteRule['branches'][0]['choicesAll'] === ['101', '102', '201']);
+
+    // fixture: the hidden-set contract shared with tests/choices_dom_js.cjs —
+    // for every case, a saved value is flagged IFF the fixture says it hides
+    $fx = json_decode(file_get_contents(__DIR__ . '/choices_fixture.json'), true);
+    check('choices fixture loads', is_array($fx) && !empty($fx['cases']));
+    foreach ($fx['cases'] as $case) {
+        $enumParts = [];
+        foreach ($case['all'] as $c) $enumParts[] = $c . ', Label ' . $c;
+        $tagCfg = isset($case['show'])
+            ? '{"show":' . json_encode($case['show']) . '}'
+            : '{"hide":' . json_encode($case['hide']) . '}';
+        $fxDict = [
+            'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'xf'],
+            'pick'      => ['field_type' => 'radio', 'form_name' => 'xf',
+                            'select_choices_or_calculations' => implode(' | ', $enumParts),
+                            'field_annotation' => '@UVCHOICES=' . $tagCfg],
+        ];
+        foreach ($case['all'] as $code) {
+            $m = newModule([], $fxDict, [2 => [351 => ['record_id' => '2', 'pick' => $code]]], 149);
+            $m->redcap_save_record(149, '2', 'xf', 351, null, null, null, 1);
+            $flagged = choicesLog($m, 'pick') !== null;
+            check('fixture "' . $case['name'] . '": code ' . $code,
+                $flagged === in_array($code, $case['hidden'], true));
+        }
+    }
+
     // ---- Configure-dialog channel for the new modes (Phase 3) -----------------
     // Constraint and Required rules built from dialog rows (settingRowToRule),
     // not annotations — same audit semantics, same shared validator.

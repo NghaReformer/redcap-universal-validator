@@ -46,6 +46,8 @@ jobs:
         run: node tests/required_dom_js.cjs
       - name: JS unique (@UVUNIQUE) DOM contract (transport, fail-open, cache)
         run: node tests/unique_dom_js.cjs
+      - name: JS choices (@UVCHOICES) DOM contract (filter, stale-kept, fixture)
+        run: node tests/choices_dom_js.cjs
       - name: JS config-error notice
         run: node tests/config_notice_js.cjs
       - name: JS dispatcher config-error routing
@@ -92,6 +94,8 @@ jobs:
         run: php tests/when_fuzz_php.php
       - name: PHP @UVALIDATE annotation parser
         run: php tests/annotation_php.php
+      - name: PHP @UVCHOICES choices parser + branching
+        run: php tests/choices_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)

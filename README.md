@@ -313,14 +313,59 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
 
+## Dynamic choice filtering — the `@UVCHOICES` tag
+
+REDCap's `@HIDECHOICE` hides options **statically**; `@UVCHOICES` shows or
+hides individual options of a **radio, dropdown or checkbox** field based on
+the live values of other fields — a country → region → site cascade in one
+field instead of one near-duplicate field per country:
+
+```text
+@UVCHOICES={"when":"[country]='1'","show":["101","102","103"]}
+@UVCHOICES={"when":"[country]='2'","show":["201","202"]}
+
+@UVCHOICES={"when":"[legacy_entry]<>'1'","hide":["9"]}
+
+@UVCHOICES={"when":"[pilot(1)]='1'","show":["s01","s02"],
+            "message":"Only pilot sites during the pilot phase.","blockSave":"hard"}
+```
+
+- **JSON form only.** Exactly one of `show` (whitelist — every other code of
+  the field hides) or `hide` (blacklist) per tag, plus optional `when`,
+  `message`, `blockSave`. Codes must exist in the field's own choice list — an
+  unknown code is a configuration error naming the real codes.
+- **Branches like every other mode.** Repeat the tag with different `when`
+  conditions (plus at most one without, as the fallback). Exactly one true
+  condition filters; none (and no fallback) shows everything; more than one
+  true is a visible conflict — the filter is **not** applied and the save is
+  never blocked on a configuration problem. Conditions may reference fields on
+  other instruments; those are resolved server-side against saved values
+  (nothing off-page leaks into the browser).
+- **A hidden selection is never cleared.** If the stored/selected choice
+  becomes hidden (the user changes the country after picking a site), the
+  module keeps it visible — dropdowns keep the option in place but disabled —
+  flags the field invalid with your `message`, and applies `blockSave`
+  (off/confirm/hard). Silently erasing an entered value is the one thing this
+  mode refuses to do; fix it by picking one of the shown choices.
+- **Out-of-list values are out of scope.** A value that is not in the field's
+  choice list at all (e.g. a missing-data code like `-99`) is never flagged.
+- Works on radio, dropdown and checkbox fields; **not** yes/no, true/false,
+  sql, or matrix fields (matrix rows render different markup — the tag is
+  refused there rather than half-working). Dropdown filtering physically
+  removes and re-inserts `<option>`s because Safari ignores CSS hiding on
+  options. Configure via field annotation only in this version.
+- **Audited like everything else.** A save that lands a hidden choice (API,
+  import, a race) is logged by the post-save audit as `type: choices`,
+  `reason: hidden-choice`, and the Validation scan reports it retrospectively.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
 the **Data Import Tool** or the **API** (where the save-hook audit is
 version-dependent), or records entered **before a rule existed**. The
 **Validation scan** project page closes that gap: it runs every configured
-rule — check-character/format, constraint, required, and unique — over every
-saved record and lists each violation with a CSV export.
+rule — check-character/format, constraint, required, unique, and choice
+filtering — over every saved record and lists each violation with a CSV export.
 
 - **Where:** the "Validation scan" link on the project's left menu (visible to
   users with design rights; the page re-checks). Records are read in chunks,
