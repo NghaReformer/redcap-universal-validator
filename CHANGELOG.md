@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.4 — Validation scan transparency and a collision-free scan key (M-05, L-01)
+
+Two lower-severity fixes from the second independent review. Scan-page reporting only — no rule's
+accepted-value behavior changes.
+
+- **M-05 — the Validation scan now discloses rules it could not enforce.** A rule with a
+  configuration error was silently dropped from the scan, so a broken rule read as "no violations
+  found." The scan now lists every config-error rule (and any unique-rule branch conflict or
+  unparseable branch condition hit during the sweep) in its "rule problems" section — the module's
+  rule is that nothing fails silently, and a scan operator must know when a rule is inert. Config-
+  error rules still produce no phantom violations; live rules are unaffected.
+- **L-01 — the scan's composite-duplicate key is now collision-free.** The aggregate uniqueness pass
+  joined key components with a raw `0x1F` byte, so two distinct tuples whose values happened to
+  contain that byte could share a key and be reported as a false duplicate. The key is now a
+  `json_encode` of the component array (which escapes every byte), so distinct tuples never collide;
+  genuine duplicates are still detected.
+- **Tests.** `tests/hook_php.php` 256→261: a mixed live / config-error scan (the config error is
+  surfaced, produces no phantom violation, and the live rule still runs), and the `0x1F`
+  key-collision case (distinct tuples are not a false duplicate, a genuine duplicate is still
+  caught). Both verified to fail without the fix. Full JS and PHP 7.4 / 8.3 suites green.
+
 ## 1.5.3 — pre-submission review fixes: client ReDoS residue, regex-dialect parity, identifier oracle gaps, cross-instrument uniqueness
 
 Addresses the three Medium findings from

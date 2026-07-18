@@ -1680,6 +1680,52 @@ namespace {
     $uniqScan = array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; }));
     check('H-03 scan: same cross-instrument duplicate detected (audit == scan)', count($uniqScan) >= 2);
 
+    // M-05: a config-broken rule enforces nothing; the scan must DISCLOSE it rather
+    // than imply a clean project. Mixed set: one live @UVREQUIRED (scan runs fully)
+    // and one config-error @UVALIDATE (unknown algorithm).
+    $m5Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'code' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '',
+                   'field_annotation' => '@UVALIDATE={"algorithm":"bogus"}'],
+        'good' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '',
+                   'field_annotation' => '@UVREQUIRED'],
+    ];
+    $m = newModule([], $m5Dict, ['1' => [351 => ['record_id' => '1', 'code' => 'ABC', 'good' => '']]], 149);
+    $res = $m->scanProject(149);
+    check('M-05: a config-error rule is surfaced in the scan, not silently skipped',
+        count(array_filter($res['unconfigurable'], function ($u) {
+            return strpos($u['why'], 'configuration error') !== false;
+        })) >= 1);
+    check('M-05: the config-error rule produced no phantom violations',
+        count(array_filter($res['violations'], function ($v) { return $v['field'] === 'code'; })) === 0);
+    check('M-05: the live rule still ran (blank required detected)',
+        count(array_filter($res['violations'], function ($v) { return $v['field'] === 'good' && $v['type'] === 'required'; })) === 1);
+
+    // L-01: distinct composite tuples must not collide when a value contains the raw
+    // separator byte. (X<US>Y, Z) and (X, Y<US>Z) are DISTINCT but joined with 0x1F
+    // they share a key -> a false duplicate. json_encode keys keep them apart.
+    $us = "\x1f";
+    $l1Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'a' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '', 'field_annotation' => '@UVUNIQUE={"with":["b"]}'],
+        'b' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '', 'field_annotation' => ''],
+    ];
+    $m = newModule([], $l1Dict, [
+        '1' => [351 => ['record_id' => '1', 'a' => 'X' . $us . 'Y', 'b' => 'Z']],
+        '2' => [351 => ['record_id' => '2', 'a' => 'X', 'b' => 'Y' . $us . 'Z']],
+    ], 149);
+    $res = $m->scanProject(149);
+    check('L-01: distinct composite tuples with a raw separator are not a false duplicate',
+        count(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })) === 0);
+    // sanity: a genuine composite duplicate is still detected
+    $m = newModule([], $l1Dict, [
+        '1' => [351 => ['record_id' => '1', 'a' => 'X', 'b' => 'Z']],
+        '2' => [351 => ['record_id' => '2', 'a' => 'X', 'b' => 'Z']],
+    ], 149);
+    $res = $m->scanProject(149);
+    check('L-01 sanity: a genuine composite duplicate is still detected',
+        count(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })) >= 2);
+
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
     $msg = $m->validateSettings(modeFlat([

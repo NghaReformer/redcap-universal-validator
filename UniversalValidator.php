@@ -1603,11 +1603,24 @@ class UniversalValidator extends AbstractExternalModule
         $rules = $this->getRules($pid);
         if (!$rules) return $result;
         $live = [];
+        $unconf = [];   // dedupe rule-problem notes by rule+why (config errors AND runtime)
         foreach ($rules as $i => $r) {
-            if (empty($r['configError'])) $live[$i] = $r;
+            if (!empty($r['configError'])) {
+                // A config-broken rule enforces NOTHING. Surface it in the scan
+                // rather than imply a clean project — the module's rule is that
+                // nothing fails silently (M-05). It also shows on the data-entry
+                // form, but a scan operator would not otherwise know a rule is inert.
+                $unconf[$i . '|configError'] = [
+                    'rule'   => $i + 1,
+                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                    'why'    => 'configuration error — this rule validates nothing: ' . $r['configError'],
+                ];
+                continue;
+            }
+            $live[$i] = $r;
         }
-        if (!$live) return $result;
         $result['stats']['rules'] = count($live);
+        if (!$live) { $result['unconfigurable'] = array_values($unconf); return $result; }
 
         $dupes = [];
         foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
@@ -1646,7 +1659,7 @@ class UniversalValidator extends AbstractExternalModule
         if (!$ids) return $result;
 
         $uniqueSeen = [];   // aggregate pass: groupKey => [ [record,event,instance,field,rule], ... ]
-        $unconf = [];       // dedupe unconfigurable notes by rule+why
+        // $unconf was declared above (it already holds any config-error rules)
 
         foreach (array_chunk($ids, max(1, (int) $chunkSize)) as $chunk) {
             $data = \REDCap::getData([
@@ -1663,7 +1676,7 @@ class UniversalValidator extends AbstractExternalModule
                     foreach ($live as $i => $r) {
                         $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
                         if ($mode === 'unique') {
-                            self::collectUniqueCandidates($uniqueSeen, $r, $i, $ctx, $rec, $recDag, $dupes);
+                            self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $dupes);
                             continue;
                         }
                         $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, null, $pid, $rec, $ctx['event_id'], null);
@@ -1751,7 +1764,7 @@ class UniversalValidator extends AbstractExternalModule
      * for scope=event, the record's DAG for scope=dag). Branch rules resolve
      * their active branch against this context first.
      */
-    private static function collectUniqueCandidates(array &$seen, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes)
+    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes)
     {
         $cfg = $rule;
         if (isset($rule['branches']) && is_array($rule['branches'])) {
@@ -1760,12 +1773,28 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($rule['branches'] as $bi => $b) {
                 if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') { $else = $bi; continue; }
                 $p = Logic::parse($b['when']);
-                if (empty($p['ok'])) return; // unev.: the non-scan audit surfaces it
+                if (empty($p['ok'])) {
+                    // A branch condition that no longer parses means the value is not
+                    // checked here — surface it rather than a silent skip (M-05).
+                    $unconf[$ruleIndex . '|unique-branch-unparseable'] = ['rule' => $ruleIndex + 1,
+                        'fields' => $rule['fields'], 'why' => 'a unique-rule branch "when" cannot be evaluated — the value is not checked'];
+                    return;
+                }
                 if (Logic::evaluate($p['ast'], $ctx['values'])) $active[] = $bi;
             }
-            if (count($active) === 1) $pick = $active[0];
-            elseif (!count($active) && $else !== null) $pick = $else;
-            else return;
+            if (count($active) === 1) {
+                $pick = $active[0];
+            } elseif (!count($active) && $else !== null) {
+                $pick = $else;
+            } else {
+                if (count($active) > 1) {
+                    // Two branch conditions true at once — mirror the non-unique scan
+                    // and the live client, which report this rather than guess (M-05).
+                    $unconf[$ruleIndex . '|unique-branch-conflict'] = ['rule' => $ruleIndex + 1,
+                        'fields' => $rule['fields'], 'why' => 'more than one unique-rule "when" is true for a record (branch conflict) — the value is not checked'];
+                }
+                return;
+            }
             $b = $rule['branches'][$pick];
             unset($b['when']);
             $cfg = array_merge(['type' => 'unique', 'fields' => $rule['fields']], $b);
@@ -1780,13 +1809,18 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($dupes[$field])) continue;
             $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
             if ($v === null || is_array($v) || trim((string) $v) === '') continue;
-            $key = $ruleIndex . "\x1F" . $field . "\x1F" . trim((string) $v);
+            // Collision-free composite key: a raw byte in a value (e.g. 0x1F) must
+            // not let two distinct tuples share a key and read as a false duplicate
+            // (L-01). json_encode escapes every byte so the array shape is
+            // unambiguous; the substitute flag keeps the result a string on any input.
+            $keyParts = [$ruleIndex, $field, trim((string) $v)];
             foreach ($with as $w) {
-                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? trim((string) $ctx['values'][$w]) : '';
-                $key .= "\x1F" . $wv;
+                $keyParts[] = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? trim((string) $ctx['values'][$w]) : '';
             }
-            if ($scope === 'event') $key .= "\x1Fevt:" . $ctx['event_id'];
-            elseif ($scope === 'dag') $key .= "\x1Fdag:" . (string) $recDag;
+            if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = $ctx['event_id']; }
+            elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
+            $key = json_encode($keyParts, JSON_INVALID_UTF8_SUBSTITUTE);
+            if (!is_string($key)) continue;   // unreachable with the substitute flag; never group under a non-string key
             $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
                              'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1];
         }

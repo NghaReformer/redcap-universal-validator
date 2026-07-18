@@ -25,8 +25,15 @@ instance was exercised from this pass — see §6.
 > (never sending it back to the page). Audit == scan == live for composite keys; `hook_php` 252→256,
 > each leg verified to fail without its fix. Same-instrument composites unaffected.
 >
-> Remaining items F4–F9 are unchanged and tracked below. Live in-situ verification of the fixes is
-> still outstanding (§6).
+> **M-05 and L-01 (from the second review, fixed in 1.5.4):** the Validation scan silently dropped
+> config-error rules (a broken rule read as "no violations") — it now discloses them, plus any
+> unique-branch conflict/unparseable branch, in its "rule problems" section; and the scan's
+> composite-duplicate key moved from a raw-`0x1F` join to `json_encode`, so two distinct tuples
+> whose values contain that byte can no longer collide into a false duplicate. `hook_php` 256→261,
+> both verified to fail without the fix.
+>
+> Remaining items F4–F9 (and the second review's M-03 pooled-ambiguity) are unchanged and tracked
+> below. Live in-situ verification of the fixes is still outstanding (§6).
 
 ---
 
