@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.5.3 — pre-submission review fixes: client ReDoS residue, regex-dialect parity, identifier oracle gaps, cross-instrument uniqueness
+
+Addresses the three Medium findings from
+`reports/presubmission-adversarial-review-2026-07-18.md` (a source-level adversarial pass, each
+reproduced by execution), plus H-01 and H-03 from a second independent review. No rule's
+accepted-value behavior changes; the fixes tighten config-time rejection, close the unauthenticated
+survey-oracle gaps, and make live/audit/scan uniqueness agree on composite keys.
+
+- **F1 — client tab-freeze from a bounded-quantifier chain (security / availability).** The
+  `riskyPattern` gate reasoned only about UNBOUNDED quantifiers, so a flat chain of overlapping
+  BOUNDED quantifiers — `A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}!` — passed both stages and then
+  ran in the browser's backtracking engine on every keystroke, the factor count acting as the
+  exponent (measured: ~5 factors of `{1,20}` = 130 ms, ≥6 froze the tab). The server has a
+  match-time PCRE-error backstop; the client had none. New stage **two-b** bounds the PRODUCT of
+  per-factor match-length choices across a contiguous run of overlapping bounded repeats at
+  `MAX_BACKTRACK_PRODUCT` (1,000,000) — chosen by measurement so the deliberate 3-factor residue
+  `A{1,40}A{1,40}A{1,40}9` (64,000, ~3 ms, which still exercises the server's match-time guard)
+  passes and the freezing chains do not; the worst admitted case is ~40 ms. A fixed atom, an
+  unbounded quantifier, or a disjoint class ends the run and anchors a split, so disjoint ID formats
+  (`[A-Z]{2}[0-9]{4}`) are untouched. The `QRID_polyOverlap` / `CheckCharacter::polynomialOverlap`
+  twins stay behavior-identical, locked by `tests/risky_patterns.json`.
+- **F2 — regex-dialect parity break on `\p{}` / `\u{}` / `\k<>` (correctness).** The client compiles
+  an `idPattern` WITHOUT the JavaScript `u` flag while the server compiles PCRE with `/u`, so a
+  Unicode-property escape validated oppositely: `\p{Nd}{3}` matched `"123"` on the server but not in
+  the browser, blocking a valid ID live while the audit and scan passed it. These escapes are
+  all-ASCII, so the printable-ASCII guard let them through. They are now rejected at config time in
+  both channels — the same way `\A` / `\Z` and `(?P<...)` already are — keeping the proven-parity
+  subset to explicit character classes.
+- **F3 — identifier existence-oracle fail-open (security, defense in depth).** The unauthenticated
+  survey uniqueness check refuses Identifier fields via `projectIdentifierFields()`, which returns
+  null when the data dictionary momentarily cannot be read; `isIdentifier(null, …)` is false, so a
+  transient dictionary failure silently reopened the existence oracle (a settings-channel unique
+  rule with the survey opt-in survives a null dictionary, and `findCollision()` needs no dictionary
+  to answer). The endpoint now FAILS CLOSED when identifier status is unverifiable — an
+  unauthenticated caller loses only the live convenience, and the post-save audit and the Validation
+  scan still cover the field.
+- **H-01 — Identifier refusal now covers composite `with` fields (security, sibling of F3).** The
+  survey opt-in was refused only when the PRIMARY unique field was an Identifier; a composite key
+  such as `@UVUNIQUE={"surveys":true,"with":["date_of_birth"]}` on a non-identifier primary let the
+  identifying `date_of_birth` value be compared on the unauthenticated route. All three gates (both
+  config channels and the endpoint) now refuse the opt-in when the primary field OR any `with` field
+  is an Identifier, via a shared `firstIdentifier()` helper; the endpoint re-check is defense in
+  depth behind the config gates.
+- **H-03 — cross-instrument / repeating composite uniqueness now agrees across live, audit, and
+  scan (correctness).** A composite `@UVUNIQUE` whose `with` field lives on a different instrument
+  (or repeating context) than the primary field had three different verdicts: the live check sent
+  `""` for the off-page `with` field and read "available"; the post-save audit's `findCollision`
+  compared each other record within a single raw row and MISSED a composite split across an event
+  node and a repeat row; only the scan (which merges rows) caught it. Two fixes, both server-side
+  and privacy-preserving: (1) `findCollision` now compares each other record's MERGED contexts
+  (`recordContexts` — base event row + each repeat instance), the exact view the scan uses, so the
+  audit and scan can no longer disagree; (2) the live endpoint resolves an off-instrument `with`
+  field's saved value on the server (a field on the rendered instrument keeps the browser's live
+  value), so the composite is complete without ever sending an off-page value back to the page.
+  Same-instrument composites are unaffected.
+- **Tests.** `tests/risky_patterns.json` gains the bounded-chain class in `risky` and the residue
+  plus a disjoint-alternation in `safe` (locked across both runtimes by `risky_js` / `risky_php`,
+  50→56 patterns); `tests/annotation_php.php` adds the F1 chain rejection, the residue-still-passes
+  control, and the F2 `\p{}` / `\u{}` dialect errors (136→141); `tests/hook_php.php` adds the F3
+  anonymous-caller fail-closed case, the H-01 composite-Identifier refusal across all three gates
+  with a non-identifier control, and the H-03 cross-instrument composite agreeing across audit /
+  live endpoint / scan (246→256, verified to fail without each fix). Full JS and PHP 7.4 / 8.3
+  suites green.
+
 ## 1.5.2 — renamed to "Universal Field Validator"; tightened the module description
 
 Presentation only — no functional change, no rule behaves differently.

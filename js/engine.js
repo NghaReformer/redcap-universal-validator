@@ -734,8 +734,27 @@ function QRID_polyOverlap(s){
       if(toks[j].mandatory) break;                     /* a must-match atom anchors the split point */
     }
   }
+  /* Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
+     overlapping bounded repeats (A{1,20}A{1,20}…) backtracks with the factor
+     count as the exponent — a browser tab freeze past ~5 factors, and this engine
+     has no match-time guard the server's PCRE path has. Bound the product of
+     per-factor match-length choices; a fixed atom (choices 1), an unbounded
+     quantifier, or a disjoint class ends the run and anchors a split. A single
+     quantifier (or the deliberate 3-factor residue) stays under the budget.
+     Twin of CheckCharacter::polynomialOverlap stage two-b (php). */
+  for(var a=0;a<toks.length;a++){
+    if(toks[a].choices < 2) continue;
+    var prod = toks[a].choices;
+    for(var b=a+1;b<toks.length;b++){
+      if(toks[b].choices < 2) break;                                   /* fixed atom / unbounded ends the run */
+      if(!QRID_classesOverlap(toks[a].cls, toks[b].cls)) break;        /* a disjoint repeat ends it */
+      prod *= toks[b].choices;
+      if(prod > QRID_MAX_BACKTRACK_PRODUCT) return true;
+    }
+  }
   return false;
 }
+var QRID_MAX_BACKTRACK_PRODUCT = 1000000;   /* bounded-chain budget; twin of CheckCharacter::MAX_BACKTRACK_PRODUCT (php) */
 /* Split a normalized pattern into atoms with their character set + quantifier
    facts. cls === null is "universal" (a '.', or a collapsed group token, treated
    as overlapping everything). unbounded = no upper limit (*, +, {n,}); mandatory
@@ -753,23 +772,31 @@ function QRID_tokenizePattern(s){
     }
     else if("^$*+?{}|()".indexOf(c) !== -1){ i++; continue; }   /* anchors / stray metachars: not atoms */
     else { cls = c; i++; }                                       /* a literal char (incl. A / X collapse tokens) */
-    var unbounded = false, mandatory = true;           /* a bare atom must match once */
+    /* choices = the number of distinct match-lengths this atom can take (its
+       backtracking slack): 1 for a bare atom or a fixed {n}, 2 for ?, (hi-lo+1)
+       for {lo,hi}; an unbounded quantifier is handled by stage two-a. */
+    var unbounded = false, mandatory = true, choices = 1;   /* a bare atom must match once */
     if(i < n){
       var q = s.charAt(i);
       if(q === "*"){ unbounded = true; mandatory = false; i++; }
       else if(q === "+"){ unbounded = true; mandatory = true; i++; }
-      else if(q === "?"){ unbounded = false; mandatory = false; i++; }
+      else if(q === "?"){ unbounded = false; mandatory = false; choices = 2; i++; }
       else if(q === "{"){
         var qc = s.indexOf("}", i + 1), mm;
         if(qc !== -1 && (mm = /^([0-9]*)(,?)([0-9]*)$/.exec(s.slice(i + 1, qc)))){
           var lo = mm[1] === "" ? 0 : parseInt(mm[1], 10);
           unbounded = (mm[2] === ",") && (mm[3] === "");   /* {n,} unbounded; {n} / {n,m} bounded */
           mandatory = lo >= 1;
+          if(!unbounded){
+            var hi = mm[3] === "" ? lo : parseInt(mm[3], 10);   /* {n} -> hi=lo (choices 1) */
+            choices = hi - lo + 1;
+            if(choices < 1) choices = 1;                        /* malformed {5,2}: JS rejects it anyway */
+          }
           i = qc + 1;
         }
       }
     }
-    toks.push({ cls: cls, unbounded: unbounded, mandatory: mandatory });
+    toks.push({ cls: cls, unbounded: unbounded, mandatory: mandatory, choices: choices });
   }
   return toks;
 }
@@ -1587,11 +1614,20 @@ function QRIDSingleInit(QRID_CONFIG){
       /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
+    } else if(/\\[pP]\{/.test(rawPatS) || rawPatS.indexOf("\\u{") !== -1 || rawPatS.indexOf("\\k<") !== -1){
+      /* \p{}, \P{}, \u{}, \k<> only work with JS's "u" flag; the browser compiles
+         ID patterns WITHOUT it (so \p reads as a literal "p") while the server
+         matches with /u — the two would disagree on a valid value (F2). */
+      configError = "idPattern uses a Unicode-property or named escape (\\p{...}, \\P{...}, " +
+        "\\u{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the browser compiles " +
+        "ID patterns without it, so the value would validate differently in the browser and on the " +
+        "server. Use explicit character classes such as [A-Z] or [0-9] instead.";
     } else if(QRID_riskyPattern(rawPatS)){
       configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
-        "repeated ambiguous group, or overlapping unbounded quantifiers — e.g. (a+)+, (a|aa)+, " +
-        "or .*.* / [0-9]*[0-9]*). Rewrite it so no ambiguous group repeats and no two unbounded " +
-        "quantifiers overlap (use bounded {min,max} counts or a disjoint class between them).";
+        "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
+        "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
+        "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
+        "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class.";
     } else try {
       var p = rawPatS.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + p + ")$");
@@ -2645,11 +2681,20 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
+    } else if(/\\[pP]\{/.test(rawPatP) || rawPatP.indexOf("\\u{") !== -1 || rawPatP.indexOf("\\k<") !== -1){
+      /* \p{}, \P{}, \u{}, \k<> only work with JS's "u" flag; the browser compiles
+         ID patterns WITHOUT it (so \p reads as a literal "p") while the server
+         matches with /u — the two would disagree on a valid value (F2). */
+      configError = "idPattern uses a Unicode-property or named escape (\\p{...}, \\P{...}, " +
+        "\\u{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the browser compiles " +
+        "ID patterns without it, so the value would validate differently in the browser and on the " +
+        "server. Use explicit character classes such as [A-Z] or [0-9] instead.";
     } else if(QRID_riskyPattern(rawPatP)){
       configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
-        "repeated ambiguous group, or overlapping unbounded quantifiers — e.g. (a+)+, (a|aa)+, " +
-        "or .*.* / [0-9]*[0-9]*). Rewrite it so no ambiguous group repeats and no two unbounded " +
-        "quantifiers overlap (use bounded {min,max} counts or a disjoint class between them).";
+        "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
+        "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
+        "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
+        "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class.";
     } else try {
       var _p = rawPatP.replace(/^\^/, "").replace(/\$$/, "");
       fullRe = new RegExp("^(?:" + _p + ")$");

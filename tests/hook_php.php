@@ -1564,6 +1564,122 @@ namespace {
     check('endpoint: staff check on an Identifier field still answers',
         isset($r['used']) && $r['used'] === true && $r['record'] === '1');
 
+    // F3: the identifier oracle must FAIL CLOSED when the data dictionary is
+    // unreadable. A settings-channel unique rule with the survey opt-in survives a
+    // null dictionary (settingRowToRule skips field/type/identifier gating when the
+    // dd is unavailable), and projectIdentifierFields() then returns null — under
+    // which isIdentifier(null, …) is false. findCollision() needs no dictionary, so
+    // it could still resolve the value; the endpoint must refuse the unauthenticated
+    // answer rather than reopen the existence oracle. Empty dict [] => dataDictionary()
+    // is null; the value SECRET-ID exists in another record so a leak WOULD occur.
+    $survSettingRule = [[
+        'rule-type' => 'unique', 'fields' => ['nat_id'], 'unique-surveys' => '1',
+    ]];
+    $m = newModule($survSettingRule, [],
+        ['1' => [351 => ['record_id' => '1', 'nat_id' => 'SECRET-ID']]], 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'nat_id', 'values' => ['nat_id' => 'SECRET-ID']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);  // anon: no hash, no user
+    check('F3: anon oracle fails CLOSED when the dictionary is unreadable (no used/free leaked)',
+        isset($r['error']) && !isset($r['used']));
+
+    // H-01: the Identifier refusal must cover COMPOSITE "with" fields, not only the
+    // primary field. A survey uniqueness answer whose key includes an identifying
+    // value (surveys:true with ["dob"]) is the same unauthenticated existence-oracle
+    // risk the single-field refusal closes — on the primary field OR any with-field.
+    $compDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
+        'tok' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
+                  'field_annotation' => '@UVUNIQUE={"surveys":true,"with":["dob"]}'],
+        'dob' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => 'y', 'field_annotation' => ''],
+    ];
+    $compData = ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-9', 'dob' => '1980-01-01']]];
+    $m = newModule([], $compDict, $compData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'if', 351, null, 1);
+    $html = ob_get_clean();
+    check('H-01: annotation survey opt-in with an Identifier "with" field is a config error',
+        strpos($html, 'Identifier') !== false && strpos($html, 'dob') !== false);
+    $cfgC = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfgC = json_decode($mm[1], true);
+    }
+    check('H-01: the composite-Identifier rule is NOT live', !in_array('tok', $liveFieldsOf($cfgC), true));
+    // endpoint defence in depth: an anon caller gets no used/free for that rule
+    $m = newModule([], $compDict, $compData, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-9', 'dob' => '1980-01-01']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('H-01: anon composite check involving an Identifier with-field gets no oracle',
+        isset($r['error']) && !isset($r['used']));
+    // settings save-gate refuses the same combination, naming the identifier field
+    $m = newModule([], $compDict, [], 149);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['tok'], 'unique-with' => 'dob',
+         'unique-surveys' => '1', 'block-save' => 'off'],
+    ]));
+    check('H-01: save gate refuses survey opt-in with an Identifier composite field',
+        is_string($msg) && strpos($msg, 'Identifier') !== false && strpos($msg, 'dob') !== false);
+    // control: a NON-identifier composite field is still allowed
+    $okDict = $compDict;
+    $okDict['tok'] = ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
+                      'field_annotation' => '@UVUNIQUE={"surveys":true,"with":["site"]}'];
+    $okDict['site'] = ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '', 'field_annotation' => ''];
+    $m = newModule([], $okDict, ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-9', 'site' => 'N']]], 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '2', 'if', 351, null, 1);
+    $html = ob_get_clean();
+    $cfgOK = null;
+    if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+        $cfgOK = json_decode($mm[1], true);
+    }
+    check('H-01 control: survey opt-in with a NON-identifier composite field still works',
+        in_array('tok', $liveFieldsOf($cfgOK), true));
+
+    // H-03: a cross-instrument / repeating composite @UVUNIQUE must agree across the
+    // live endpoint, the post-save audit, and the scan. Rule on a REPEATING lab
+    // field (specimen_id) composited with an EVENT-level field (site) on another
+    // instrument. Records 1 and 2 both hold (specimen_id=S77, site=1), the two
+    // components split across the event node (site) and a repeat instance (specimen).
+    $xiDict = [
+        'record_id'   => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'enroll'],
+        'site'        => ['field_type' => 'text', 'form_name' => 'enroll', 'identifier' => '', 'field_annotation' => ''],
+        'specimen_id' => ['field_type' => 'text', 'form_name' => 'lab', 'identifier' => '',
+                          'field_annotation' => '@UVUNIQUE={"with":["site"]}'],
+    ];
+    $xiData = [
+        '1' => [351 => ['record_id' => '1', 'site' => '1'],
+                'repeat_instances' => [351 => ['lab' => [1 => ['specimen_id' => 'S77']]]]],
+        '2' => [351 => ['record_id' => '2', 'site' => '1'],
+                'repeat_instances' => [351 => ['lab' => [1 => ['specimen_id' => 'S77']]]]],
+    ];
+    // (a) post-save AUDIT of record 2 now detects it (leg B: findCollision compares
+    //     merged contexts, not single raw rows). Missed before the fix.
+    $m = newModule([], $xiDict, $xiData, 149);
+    $m->redcap_save_record(149, '2', 'lab', 351, null, null, null, 1);
+    $uniqAudit = array_values(array_filter(invalidLogs($m), function ($c) {
+        return isset($c[1]['type']) && $c[1]['type'] === 'unique';
+    }));
+    check('H-03 audit: cross-instrument composite duplicate is detected (was missed)',
+        count($uniqAudit) >= 1);
+    // (b) the LIVE endpoint resolves the off-instrument "site" server-side (leg A):
+    //     the client sends site="" because site is off the lab page, but the server
+    //     reads the saved value and finds the collision. False "available" before.
+    $m = newModule([], $xiDict, $xiData, 149);
+    $r = $m->redcap_module_ajax('unique-check',
+        ['field' => 'specimen_id', 'values' => ['specimen_id' => 'S77', 'site' => '']],
+        149, '2', 'lab', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('H-03 endpoint: off-page composite value resolved server-side -> collision found',
+        isset($r['used']) && $r['used'] === true);
+    // control: a genuinely new specimen still reads free (no false positive)
+    $r = $m->redcap_module_ajax('unique-check',
+        ['field' => 'specimen_id', 'values' => ['specimen_id' => 'S99', 'site' => '']],
+        149, '2', 'lab', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('H-03 endpoint: a new specimen still reads free', isset($r['used']) && $r['used'] === false);
+    // (c) the SCAN detects the same duplicate — audit and scan now AGREE.
+    $m = newModule([], $xiDict, $xiData, 149);
+    $res = $m->scanProject(149);
+    $uniqScan = array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; }));
+    check('H-03 scan: same cross-instrument duplicate detected (audit == scan)', count($uniqScan) >= 2);
+
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
     $msg = $m->validateSettings(modeFlat([

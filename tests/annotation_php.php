@@ -61,6 +61,26 @@ $r = AnnotationRules::parseField("@UVALIDATE={'algorithm':'damm'}");
 check('single-quoted json -> parse error with hint', isset($r['error']) && strpos($r['error'], 'double quotes') !== false);
 $r = AnnotationRules::parseField('@UVALIDATE={"pattern":"(a+)+"}');
 check('catastrophic pattern -> error', isset($r['error']) && strpos($r['error'], 'backtracking') !== false);
+// F1: a long chain of overlapping BOUNDED quantifiers (freezes the browser engine
+// even though PCRE stays fast) is now gated by riskyPattern stage two-b.
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}9"}');
+check('F1: long bounded-quantifier chain -> backtracking error',
+    isset($r['error']) && strpos($r['error'], 'backtracking') !== false);
+// The deliberate 3-factor residue stays under the budget and still passes.
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"A{1,40}A{1,40}A{1,40}9"}');
+check('F1: 3-factor bounded residue still passes', !isset($r['error']) && $r['idPattern'] === 'A{1,40}A{1,40}A{1,40}9');
+// F2: \p{}/\u{}/\k<> need JS's "u" flag; the browser compiles ID patterns without
+// it, so the value would validate differently in the browser and on the server.
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\p{Lu}{3}\\\\p{Nd}{5}"}');
+check('F2: \\p{} unicode-property pattern -> u-flag dialect error',
+    isset($r['error']) && strpos($r['error'], 'flag') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\u{41}[0-9]{3}"}');
+check('F2: \\u{} code-point escape -> u-flag dialect error',
+    isset($r['error']) && strpos($r['error'], 'flag') !== false);
+// F1/F2 control: a plain bounded pattern with disjoint classes is still accepted.
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"[A-Z]{3}[0-9]{5}"}');
+check('F1/F2 control: disjoint bounded pattern still passes',
+    !isset($r['error']) && $r['idPattern'] === '[A-Z]{3}[0-9]{5}');
 $r = AnnotationRules::parseField('@UVALIDATE={"blockSave":"maybe"}');
 check('bad blockSave -> error', isset($r['error']));
 $r = AnnotationRules::parseField('@UVALIDATE={"expectedIds":"three"}');

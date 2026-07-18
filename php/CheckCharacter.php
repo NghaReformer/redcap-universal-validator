@@ -52,6 +52,17 @@ class CheckCharacter
     // char-ops; this budget bounds the product for every legal config, so an
     // expensive rule shrinks its scan cap instead of stalling the save hook.
     const POOLED_WORK_BUDGET = 2000000;
+    // Config-time bound on BOUNDED-quantifier backtracking (riskyPattern stage
+    // two-b). A contiguous run of overlapping bounded repeats (A{1,20}A{1,20}…)
+    // backtracks with the factor count as the exponent, so a long chain freezes a
+    // browser's engine even though each factor is bounded and PCRE2 auto-
+    // possessifies it — and the client has no match-time backstop the server's
+    // preg_last_error guard provides. Refuse a run whose product of per-factor
+    // match-length choices exceeds this. Chosen (measured) so the deliberate
+    // 3-factor residue A{1,40}A{1,40}A{1,40}9 (= 64000) still passes and a browser-
+    // freezing chain (≥5 factors of {1,20} = 3.2M) does not; the worst admitted
+    // case measures ~40 ms. Keep in sync with QRID_MAX_BACKTRACK_PRODUCT (js).
+    const MAX_BACKTRACK_PRODUCT = 1000000;
 
     /** Number of check characters an algorithm appends. */
     public static function nCheckChars($name)
@@ -287,6 +298,24 @@ class CheckCharacter
                 if ($toks[$j]['mandatory']) break;   // a must-match atom anchors the split point
             }
         }
+        // Stage two-b: the BOUNDED-quantifier chain (F1). A contiguous run of
+        // overlapping bounded repeats (A{1,20}A{1,20}…) backtracks with the factor
+        // count as the exponent — bounded per factor, but still a browser tab
+        // freeze past ~5 factors, and the client has no match-time guard. Bound
+        // the product of per-factor match-length choices; a fixed atom (choices 1),
+        // an unbounded quantifier, or a disjoint class ends the run and anchors a
+        // split. A single quantifier (or the deliberate 3-factor residue) stays
+        // under the budget. Twin of QRID_polyOverlap stage two-b (js).
+        for ($a = 0; $a < $m; $a++) {
+            if ($toks[$a]['choices'] < 2) continue;
+            $prod = $toks[$a]['choices'];
+            for ($b = $a + 1; $b < $m; $b++) {
+                if ($toks[$b]['choices'] < 2) break;                                     // fixed atom / unbounded ends the run
+                if (!self::classesOverlap($toks[$a]['cls'], $toks[$b]['cls'])) break;    // a disjoint repeat ends it
+                $prod *= $toks[$b]['choices'];
+                if ($prod > self::MAX_BACKTRACK_PRODUCT) return true;
+            }
+        }
         return false;
     }
 
@@ -314,24 +343,32 @@ class CheckCharacter
             }
             elseif (strpos('^$*+?{}|()', $c) !== false) { $i++; continue; }   // anchors / stray metachars: not atoms
             else { $cls = $c; $i++; }                                          // a literal char (incl. A / X collapse tokens)
-            // read the quantifier that follows this atom
-            $unbounded = false; $mandatory = true;   // a bare atom must match once
+            // read the quantifier that follows this atom. `choices` = the number
+            // of distinct match-lengths the atom can take (its backtracking slack):
+            // 1 for a bare atom or a fixed {n}, 2 for ?, (hi-lo+1) for {lo,hi};
+            // an unbounded quantifier is handled by stage two-a, not the product.
+            $unbounded = false; $mandatory = true; $choices = 1;   // a bare atom must match once
             if ($i < $n) {
                 $q = $s[$i];
                 if ($q === '*') { $unbounded = true; $mandatory = false; $i++; }
                 elseif ($q === '+') { $unbounded = true; $mandatory = true; $i++; }
-                elseif ($q === '?') { $unbounded = false; $mandatory = false; $i++; }
+                elseif ($q === '?') { $unbounded = false; $mandatory = false; $choices = 2; $i++; }
                 elseif ($q === '{') {
                     $close = strpos($s, '}', $i + 1);
                     if ($close !== false && preg_match('/^([0-9]*)(,?)([0-9]*)$/', substr($s, $i + 1, $close - $i - 1), $mm)) {
                         $lo = $mm[1] === '' ? 0 : (int) $mm[1];
                         $unbounded = ($mm[2] === ',') && ($mm[3] === '');   // {n,} unbounded; {n} / {n,m} bounded
                         $mandatory = $lo >= 1;
+                        if (!$unbounded) {
+                            $hi = ($mm[3] === '') ? $lo : (int) $mm[3];      // {n} -> hi=lo (choices 1)
+                            $choices = $hi - $lo + 1;
+                            if ($choices < 1) $choices = 1;                  // malformed {5,2}: PCRE rejects it anyway
+                        }
                         $i = $close + 1;
                     }
                 }
             }
-            $toks[] = ['cls' => $cls, 'unbounded' => $unbounded, 'mandatory' => $mandatory];
+            $toks[] = ['cls' => $cls, 'unbounded' => $unbounded, 'mandatory' => $mandatory, 'choices' => $choices];
         }
         return $toks;
     }

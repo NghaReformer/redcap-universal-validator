@@ -1011,9 +1011,12 @@ class UniversalValidator extends AbstractExternalModule
             // SEC-002 warns about: on an import/API context it returns null, the
             // dictionary comes back empty, and the guard would silently pass.
             if (!empty($rule['uniqueSurveys'])) {
-                foreach ($fields as $f) {
-                    if (self::isIdentifier($identifiers, $f)) { $errors[] = 'field "' . $f . '": ' . self::SURVEY_ON_IDENTIFIER; break; }
-                }
+                // The Identifier refusal covers the primary field(s) AND the
+                // composite "with" fields (H-01) — an identifying value anywhere in
+                // the uniqueness key makes the survey answer an existence oracle.
+                $withF = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+                $idField = self::firstIdentifier($identifiers, array_merge($fields, $withF));
+                if ($idField !== null) $errors[] = 'field "' . $idField . '": ' . self::SURVEY_ON_IDENTIFIER;
             }
             // Composite-key fields: exist, scalar, and not one of the covered
             // fields (a self-composite is a tautology).
@@ -1228,8 +1231,17 @@ class UniversalValidator extends AbstractExternalModule
                         $frags[$k] = ['error' => AnnotationRules::TAG_UNIQUE . ' does not support "' . $ftype
                             . '" fields — it compares one scalar field\'s value across records.',
                             '_tag' => AnnotationRules::TAG_UNIQUE];
-                    } elseif (!empty($frag['uniqueSurveys']) && self::isIdentifier($this->projectIdentifierFields($pid), $name)) {
-                        $frags[$k] = ['error' => self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
+                    } elseif (!empty($frag['uniqueSurveys'])) {
+                        // Refuse the survey opt-in when the primary field OR any
+                        // composite "with" field is an Identifier (H-01); name the
+                        // offending field so a composite hit is not mistaken for the
+                        // primary one.
+                        $withF = (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [];
+                        $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF));
+                        if ($idField !== null) {
+                            $frags[$k] = ['error' => ($idField === $name ? '' : 'composite "with" field "' . $idField . '": ')
+                                . self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
+                        }
                     }
                 } elseif ($mode === 'choices') {
                     $grid = isset($meta['matrix_group_name']) ? trim((string) $meta['matrix_group_name']) : '';
@@ -1451,6 +1463,21 @@ class UniversalValidator extends AbstractExternalModule
     private static function isIdentifier($ids, $field)
     {
         return is_array($ids) && isset($ids[$field]);
+    }
+
+    /**
+     * The first of $fields that $ids flags as an Identifier, or null. Used to
+     * refuse the @UVUNIQUE survey opt-in when EITHER the primary field OR any
+     * composite "with" field is an Identifier (H-01): a survey "already used"
+     * answer whose key includes an identifying value is the same unauthenticated
+     * existence-oracle risk the single-field refusal closes.
+     */
+    private static function firstIdentifier($ids, array $fields)
+    {
+        foreach ($fields as $f) {
+            if (is_string($f) && $f !== '' && self::isIdentifier($ids, $f)) return $f;
+        }
+        return null;
     }
 
     /** Whether any live (non-config-error) rule is a unique rule. */
@@ -1827,7 +1854,26 @@ class UniversalValidator extends AbstractExternalModule
                 // already refuse that opt-in; this re-check is what actually
                 // holds the line for a caller who skips the survey machinery
                 // altogether — security scan 15 Jul 2026 advisory)...
-                if (self::isIdentifier($this->projectIdentifierFields($project_id), $field)) {
+                //
+                // FAIL CLOSED when identifier status is UNVERIFIABLE (F3). All
+                // three identifier gates (the two config channels and this one)
+                // read the same data dictionary; projectIdentifierFields() returns
+                // null on any getDataDictionary failure/empty result, and
+                // isIdentifier(null, …) is false — so a transient dictionary read
+                // failure would silently reopen the unauthenticated existence
+                // oracle this check exists to close. findCollision() does NOT need
+                // the dictionary, so it would still answer. Refuse instead: an
+                // unauthenticated caller loses only a convenience (the post-save
+                // audit and the Validation scan still cover the field), while a
+                // known-identifier field stays protected even when the dictionary
+                // momentarily cannot be read.
+                // The refusal covers the primary field AND every composite "with"
+                // field (H-01), not just the primary: an "already used" answer whose
+                // key includes an identifying value is the same existence oracle.
+                $identifiers = $this->projectIdentifierFields($project_id);
+                $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+                if ($identifiers === null
+                        || self::firstIdentifier($identifiers, array_merge([$field], $withFields)) !== null) {
                     return ['error' => 'not enabled on surveys'];
                 }
                 // ...and never faster than the throttle allows.
@@ -1836,6 +1882,34 @@ class UniversalValidator extends AbstractExternalModule
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
+
+            // Resolve composite "with" values the browser could not read (H-03). A
+            // field that is not on the rendered instrument is sent as "" by the
+            // client, which would compare against blank and MISS a real collision.
+            // For such a field, read its saved value on the server (authoritative);
+            // a field ON the instrument keeps the client's live value (unsaved edits
+            // count), mirroring how "when"/"assert" conditions fold. The resolved
+            // values feed ONLY the in-PHP comparison — nothing off-page is ever
+            // returned to the page, so no record value leaks (SEC-005 posture holds).
+            if ($with && $record !== null && $record !== '') {
+                $onForm = $this->fieldsOnInstrument($project_id, $instrument);
+                $offPage = [];
+                foreach ($with as $w) {
+                    if ($onForm !== null && isset($onForm[$w])) continue;   // on-page: client value is authoritative
+                    if (!isset($values[$w]) || $values[$w] === '') $offPage[] = $w;
+                }
+                if ($offPage) {
+                    try {
+                        $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
+                        foreach ($offPage as $w) {
+                            if (isset($saved[$w]) && !is_array($saved[$w])) $values[$w] = (string) $saved[$w];
+                        }
+                    } catch (\Throwable $e) {
+                        // Read failure: keep the client's blank — fails OPEN (never a
+                        // false "used"), consistent with the endpoint's catch-all below.
+                    }
+                }
+            }
             $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id);
             if ($col === null) return ['used' => false, 'record' => null];
 
@@ -1939,7 +2013,11 @@ class UniversalValidator extends AbstractExternalModule
      * string equality after ASCII trimming — raw stored values (dropdown/radio
      * codes, canonical Y-M-D dates) on both sides, deliberately no
      * normalization: uniqueness is about what is stored. A blank primary value
-     * never collides; composite "with" components match blank-to-blank.
+     * never collides; composite "with" components match blank-to-blank. Each
+     * other record is compared as its MERGED contexts (base-event row + each
+     * repeat instance), so a composite key that spans an event-level field and a
+     * repeating-instrument field is matched exactly the way the Validation scan
+     * matches it — the per-save audit and the scan can no longer disagree (H-03).
      * Scopes: project (default), event (same event only), dag (records in the
      * same Data Access Group — resolved from the current record's saved rows,
      * falling back to the acting user's group; unresolvable DAG degrades to
@@ -1980,7 +2058,11 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_array($node)) continue;
             $dag = self::dagOfRecordNode($node);
             if ($scope === 'dag' && $currentDag !== null && $dag !== $currentDag) continue;
-            foreach (self::rowNodes($node) as $row) {
+            // Compare against MERGED contexts (base event row + each repeat
+            // instance), not raw rows, so a composite spanning an event field and a
+            // repeat-instrument field is detected — the same view the scan uses (H-03).
+            foreach (self::recordContexts($node) as $ctx) {
+                $row = $ctx['values'];
                 $match = true;
                 foreach ($target as $f => $tv) {
                     $rv = (isset($row[$f]) && !is_array($row[$f])) ? trim((string) $row[$f]) : '';

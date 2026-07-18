@@ -695,11 +695,26 @@ class AnnotationRules
             } elseif (strpos($pattern, '(?P<') !== false) {
                 $errors[] = 'the format pattern uses Python-only (?P<name>...) groups, '
                     . 'which JavaScript cannot compile.';
+            } elseif (preg_match('/\\\\[pP]\{/', $pattern) || strpos($pattern, '\\u{') !== false
+                    || strpos($pattern, '\\k<') !== false) {
+                // \p{}, \P{}, \u{}, \k<> only work with JavaScript's "u" flag; the
+                // browser compiles ID patterns WITHOUT it (so \p reads as a literal
+                // "p") while the server matches with PCRE /u, so the two engines
+                // would disagree on a valid value (F2). Reject at config time like
+                // \A/\Z and (?P<...), keeping the proven-parity subset to explicit
+                // classes.
+                $errors[] = 'the format pattern uses a Unicode-property or named escape (\p{...}, '
+                    . '\P{...}, \u{...} or \k<...>) that only works with JavaScript\'s "u" flag — the '
+                    . 'browser compiles ID patterns without it, so the value would validate differently '
+                    . 'in the browser and on the server. Use explicit character classes such as [A-Z] '
+                    . 'or [0-9] instead.';
             } elseif (CheckCharacter::riskyPattern($pattern)) {
                 $errors[] = 'the format pattern looks catastrophically backtracking (nested '
-                    . 'quantifiers, a repeated ambiguous group, or overlapping unbounded quantifiers '
-                    . '— e.g. (a+)+, (a|aa)+, or .*.* / [0-9]*[0-9]*) — rewrite it so no ambiguous '
-                    . 'group repeats and no two unbounded quantifiers overlap.';
+                    . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
+                    . 'long run of overlapping bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / '
+                    . '[0-9]*[0-9]*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
+                    . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
+                    . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
             } elseif (!CheckCharacter::patternCompiles($pattern)) {
                 $errors[] = 'the format pattern does not compile as a regex — check the syntax.';
             }
