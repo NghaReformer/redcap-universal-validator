@@ -32,8 +32,19 @@ instance was exercised from this pass — see §6.
 > whose values contain that byte can no longer collide into a false duplicate. `hook_php` 256→261,
 > both verified to fail without the fix.
 >
-> Remaining items F4–F9 (and the second review's M-03 pooled-ambiguity) are unchanged and tracked
-> below. Live in-situ verification of the fixes is still outstanding (§6).
+> **F9, F6, F7 (fixed in 1.5.5):** F9 — `buildClientConfig` now injects only the rendered
+> instrument's rules (and each rule's on-form fields), so a rule-heavy project no longer stacks one
+> `document.body` MutationObserver per project rule on every form (the documented freeze). F6 — the
+> client dedups pooled `idLengths` to match the server's `array_unique` (scan-cap parity). F7 — the
+> client `when`/`assert` ordering comparison is now code-point order, matching the server's `strcmp`
+> on astral values. `hook_php` 261→265, four astral cases locked in `when_fixture.json`, F6 confirmed
+> by cross-runtime probe. **Deferred:** consolidating the 7 per-factory MutationObservers into one
+> shared observer — the DOM test harness has no `MutationObserver`, so it needs a live/browser pass;
+> F9's per-form filtering already removes the documented freeze.
+>
+> **Still open:** F4 (unauth whole-project `getData` amplification), F5 (rate-limit honesty/re-key),
+> the second review's M-03 (pooled ambiguous-length segmentation), and the deferred shared-observer.
+> Live in-situ verification of all fixes is still outstanding (§6).
 
 ---
 

@@ -273,6 +273,30 @@
       "expr": "[a]='xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'",
       "values": {},
       "expect": false
+    },
+    {
+      "name": "order_astral_gt",
+      "expr": "[a]>[b]",
+      "values": { "a": "😀", "b": "＀" },
+      "expect": true
+    },
+    {
+      "name": "order_astral_lt",
+      "expr": "[a]<[b]",
+      "values": { "a": "😀", "b": "＀" },
+      "expect": false
+    },
+    {
+      "name": "order_astral_prefix",
+      "expr": "[a]<[b]",
+      "values": { "a": "Z", "b": "Z😀" },
+      "expect": true
+    },
+    {
+      "name": "order_astral_eq_ge",
+      "expr": "[a]>=[b]",
+      "values": { "a": "😀", "b": "😀" },
+      "expect": true
     }
   ],
   "errors": [

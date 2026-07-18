@@ -1140,6 +1140,24 @@ function QRID_whenEvaluate(ast, values){
 function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
 /* Numeric compare (floats) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
    else exact case-sensitive string compare (ASCII-identical to PHP strcmp). */
+/* Code-point string comparison, matching PHP strcmp's byte order (UTF-8 byte order
+   preserves code-point order for valid text). JS "<"/">" compare UTF-16 code UNITS,
+   which rank an astral (>U+FFFF) character before U+E000..U+FFFF where its code
+   point ranks after — so an ordered comparison of a non-ASCII field value would
+   otherwise disagree between the browser and the server (F7). ASCII/BMP results are
+   identical to plain "<"/">", so only astral-plane values change behavior. */
+function QRID_cmpStr(a, b){
+  a = String(a); b = String(b);
+  var i = 0, j = 0, na = a.length, nb = b.length;
+  while(i < na && j < nb){
+    var ca = a.codePointAt(i), cb = b.codePointAt(j);
+    if(ca !== cb) return ca < cb ? -1 : 1;
+    i += ca > 0xFFFF ? 2 : 1;
+    j += cb > 0xFFFF ? 2 : 1;
+  }
+  var ra = na - i, rb = nb - j;   /* one side is exhausted: the shorter string sorts first */
+  return ra < rb ? -1 : (ra > rb ? 1 : 0);
+}
 function QRID_whenCompare(op, a, b){
   a = QRID_whenTrim(a); b = QRID_whenTrim(b);
   if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
@@ -1157,10 +1175,10 @@ function QRID_whenCompare(op, a, b){
   switch(op){
     case "=":  return a === b;
     case "<>": return a !== b;
-    case ">":  return a > b;
-    case "<":  return a < b;
-    case ">=": return a >= b;
-    case "<=": return a <= b;
+    case ">":  return QRID_cmpStr(a, b) > 0;
+    case "<":  return QRID_cmpStr(a, b) < 0;
+    case ">=": return QRID_cmpStr(a, b) >= 0;
+    case "<=": return QRID_cmpStr(a, b) <= 0;
   }
   return false;
 }
@@ -2736,7 +2754,16 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configError = "idLengths must be a list of positive whole numbers, e.g. [10] — got " +
         JSON.stringify(lensCfg) + ".";
     } else {
-      LENS = lensCfg.slice().sort(function(a, b){ return a - b; });
+      /* Deduplicate (and integer-normalize) to mirror the server's pooledState
+         (array_unique + intval), so the length count, the sum-swallow check, and
+         the per-rule scan cap are all computed from the same |LENS| on both
+         runtimes (F6 — a duplicate length otherwise shrank only the browser's
+         scan cap, so a mid-length pooled value got no client verdict but was
+         still audited server-side). */
+      var _seenL = {};
+      LENS = [];
+      lensCfg.forEach(function(x){ var n = x | 0; if(!_seenL[n]){ _seenL[n] = 1; LENS.push(n); } });
+      LENS.sort(function(a, b){ return a - b; });
       minLen = LENS[0]; maxLen = LENS[LENS.length - 1];
       if(LENS.length > QRID_MAX_LEN_CHOICES){
         configError = "idLengths lists " + LENS.length + " lengths — at most " +

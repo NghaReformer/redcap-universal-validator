@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.5.5 — per-form rule injection, and two client/server parity fixes (F9, F6, F7)
+
+Three fixes from the pre-submission review — the performance one is server-side, the two parity ones
+adjust the client to match the server.
+
+- **F9 — inject only the rendered instrument's rules (performance).** The module injected EVERY
+  project rule on EVERY data-entry form and survey page, and each injected rule installs its own
+  `document.body` MutationObserver — so a rule-heavy project (the 1.5.1 note measured ~69 rules)
+  stacked dozens of observers on every form, and a single DOM mutation (e.g. a checkbox click)
+  fanned out to all of them and froze the tab for seconds. `buildClientConfig` now filters the
+  injected rules (and each rule's field list) to fields on the instrument being rendered, so a form
+  carries a validator/observer only for its own fields. Coverage is unchanged — the post-save audit
+  and the Validation scan still run every rule over every record — and config-error rules are kept
+  so their notice still surfaces.
+- **F6 — pooled `idLengths` deduplicated on the client (parity).** The browser kept duplicate
+  `idLengths` while the server `array_unique`'d them, so the per-rule scan cap was computed from a
+  different `|LENS|` on each runtime: a mid-length pooled value got no client verdict yet was still
+  audited server-side. The client now dedups (and integer-normalizes) to mirror `pooledState`.
+- **F7 — client `when`/`assert` ordering compares by code point (parity).** JS `<`/`>` compare
+  UTF-16 code units, which order astral (> U+FFFF) characters differently than the server's `strcmp`
+  (byte order = code-point order); an ordered comparison of a non-ASCII field value could hold on
+  one runtime and not the other. The client now compares by code point for `< > <= >=` (equality was
+  already exact). ASCII / BMP results are unchanged.
+- **Tests.** `tests/hook_php.php` 261→265 (F9 per-instrument rule + field filtering, including a
+  cross-form rule); `tests/when_fixture.json` gains four astral-ordering cases locked across both
+  runtimes (`when_js` 114→122, `when_php` 142→150, verified to fail without the F7 fix); F6 parity
+  confirmed by a cross-runtime probe (a mid-length duplicate-length value now parses on both). Full
+  JS and PHP 7.4 / 8.3 suites green.
+
+**Not done (disclosed):** consolidating the seven per-factory MutationObservers into one shared
+observer — the other half of the 1.5.1 perf note. The DOM test harness does not implement
+`MutationObserver`, so that client rewrite cannot be verified here; it is deferred to a live/browser
+pass. F9's per-form filtering already removes the documented freeze by cutting the observer count on
+any form to that form's own rules.
+
 ## 1.5.4 — Validation scan transparency and a collision-free scan key (M-05, L-01)
 
 Two lower-severity fixes from the second independent review. Scan-page reporting only — no rule's

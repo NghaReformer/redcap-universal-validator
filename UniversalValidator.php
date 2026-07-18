@@ -694,6 +694,15 @@ class UniversalValidator extends AbstractExternalModule
     private function buildClientConfig($pid = null, $context = 'form', $record = null, $instrument = null, $event_id = null, $repeat_instance = 1)
     {
         $rules = $this->getRules($pid);
+        // Inject only rules that touch the instrument being rendered — and only
+        // their on-instrument fields. A rule whose field lives on another form can
+        // never bind here (its field never appears in this page's DOM), yet each
+        // injected rule installs its own document.body MutationObserver; a
+        // rule-heavy project otherwise stacks one observer per PROJECT rule on
+        // EVERY form, so a single DOM mutation fans out to all of them and freezes
+        // the tab (PER-003, the 1.5.1 known perf issue). The post-save audit and the
+        // Validation scan still cover every rule on every form.
+        $rules = $this->rulesOnInstrument($rules, $pid, $instrument);
         $config = array_merge($this->defaults(), [
             'singleFields' => [],
             'pooledFields' => [],
@@ -1446,6 +1455,34 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($meta['form_name']) && $meta['form_name'] === $instrument) $set[$name] = true;
         }
         return $set ?: null;
+    }
+
+    /**
+     * Keep only the rules — and, within each, the fields — that live on the
+     * instrument being rendered, so the browser installs a validator (and its
+     * MutationObserver) ONLY for fields actually on the page (PER-003, the 1.5.1
+     * perf issue). Config-error rules are kept unchanged so their notice still
+     * surfaces. An unknown instrument or dictionary means "do not filter" — the
+     * conservative choice for contexts where the form is not identifiable, matching
+     * fieldsOnInstrument()'s null contract elsewhere in the audit.
+     */
+    private function rulesOnInstrument(array $rules, $pid, $instrument)
+    {
+        $onForm = $this->fieldsOnInstrument($pid, $instrument);
+        if ($onForm === null) return $rules;   // cannot identify the form's fields: leave the set as-is
+        $out = [];
+        foreach ($rules as $r) {
+            if (!empty($r['configError'])) { $out[] = $r; continue; }   // keep config-error notices
+            if (empty($r['fields']) || !is_array($r['fields'])) continue;
+            $onFields = [];
+            foreach ($r['fields'] as $f) {
+                if (isset($onForm[$f])) $onFields[] = $f;
+            }
+            if (!$onFields) continue;           // no field of this rule is on this form
+            $r['fields'] = $onFields;           // inject only the on-form fields
+            $out[] = $r;
+        }
+        return $out;
     }
 
     /**

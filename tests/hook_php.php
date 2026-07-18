@@ -1726,6 +1726,48 @@ namespace {
     check('L-01 sanity: a genuine composite duplicate is still detected',
         count(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })) >= 2);
 
+    // F9: inject only rules whose fields are on the RENDERED instrument, so a
+    // rule-heavy project does not stack one document.body MutationObserver per
+    // project rule on every form (the 1.5.1 perf issue). Off-form rules stay
+    // covered by the post-save audit and the Validation scan.
+    $f9Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'fa'],
+        'a_code' => ['field_type' => 'text', 'form_name' => 'fa', 'identifier' => '', 'field_annotation' => '@UVALIDATE'],
+        'b_code' => ['field_type' => 'text', 'form_name' => 'fb', 'identifier' => '', 'field_annotation' => '@UVALIDATE'],
+    ];
+    $renderForm = function ($m, $instrument) {
+        ob_start();
+        $m->redcap_data_entry_form_top(149, '1', $instrument, 351, null, 1);
+        $html = ob_get_clean();
+        $cfg = null;
+        if (preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm)) {
+            $cfg = json_decode($mm[1], true);
+        }
+        return $cfg;
+    };
+    $liveA = $liveFieldsOf($renderForm(newModule([], $f9Dict, [], 149), 'fa'));
+    check('F9: rendering form fa injects its own rule', in_array('a_code', $liveA, true));
+    check('F9: rendering form fa does NOT inject the other form\'s rule', !in_array('b_code', $liveA, true));
+    $liveB = $liveFieldsOf($renderForm(newModule([], $f9Dict, [], 149), 'fb'));
+    check('F9: rendering form fb injects only its own rule',
+        in_array('b_code', $liveB, true) && !in_array('a_code', $liveB, true));
+    // a rule that covers fields on BOTH forms is injected on each with only that
+    // form's fields (so the browser binds only the on-page ones).
+    $f9Dict2 = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'fa'],
+        'x1' => ['field_type' => 'text', 'form_name' => 'fa', 'identifier' => '', 'field_annotation' => '@UVREQUIRED'],
+        'x2' => ['field_type' => 'text', 'form_name' => 'fb', 'identifier' => '', 'field_annotation' => '@UVREQUIRED'],
+    ];
+    // x1 and x2 carry byte-identical tags -> one rule covering both fields; on form
+    // fa only x1 must remain in that rule's field list.
+    $cfgA2 = $renderForm(newModule([], $f9Dict2, [], 149), 'fa');
+    $reqRuleFields = [];
+    foreach (($cfgA2['rules'] ?? []) as $rr) {
+        if (empty($rr['configError']) && ($rr['type'] ?? '') === 'required') $reqRuleFields = $rr['fields'] ?? [];
+    }
+    check('F9: a cross-form rule injects only the rendered form\'s field',
+        in_array('x1', $reqRuleFields, true) && !in_array('x2', $reqRuleFields, true));
+
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
     $msg = $m->validateSettings(modeFlat([
