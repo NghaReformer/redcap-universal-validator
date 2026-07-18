@@ -81,6 +81,17 @@ check('F2: \\u{} code-point escape -> u-flag dialect error',
 $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"[A-Z]{3}[0-9]{5}"}');
 check('F1/F2 control: disjoint bounded pattern still passes',
     !isset($r['error']) && $r['idPattern'] === '[A-Z]{3}[0-9]{5}');
+// M-03: regex-only pooled + expectedIds over a VARIABLE length is ambiguous (no
+// check character to disambiguate the split) -> config error.
+$r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{2,3}","idLengths":[2,3],"expectedIds":2}');
+check('M-03: regex-only pooled + expectedIds + variable length -> ambiguity error',
+    isset($r['error']) && strpos($r['error'], 'expectedIds') !== false && strpos($r['error'], 'ambiguous') !== false);
+// control: a single EXACT length is unambiguous -> fine.
+$r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}","idLengths":[3],"expectedIds":2}');
+check('M-03 control: regex-only pooled + expectedIds + single exact length is fine', !isset($r['error']));
+// control: a CHECK algorithm disambiguates by verification -> variable + expectedIds fine.
+$r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","idLengths":[10,12],"expectedIds":3}');
+check('M-03 control: check-mode pooled + expectedIds + variable length is fine', !isset($r['error']));
 $r = AnnotationRules::parseField('@UVALIDATE={"blockSave":"maybe"}');
 check('bad blockSave -> error', isset($r['error']));
 $r = AnnotationRules::parseField('@UVALIDATE={"expectedIds":"three"}');

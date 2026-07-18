@@ -786,6 +786,25 @@ class AnnotationRules
                 }
             }
         }
+        // M-03: regex-only pooled parsing (algorithm "none" — no check character to
+        // disambiguate a split) over a VARIABLE ID length is ambiguous: a run can
+        // divide into different numbers of members, so an "expected count" cannot be
+        // enforced (the parser would pick one division and could misreport the
+        // count). Require a single exact length, drop expectedIds, or use a check
+        // algorithm (which disambiguates by verification).
+        if ($type === 'pooled' && !$errors && $algo === 'none'
+                && isset($frag['expectedIds']) && self::posInt($frag['expectedIds'])) {
+            $variable = $lens
+                ? (count(array_unique(array_map('intval', $lens))) > 1)
+                : ((isset($frag['idMaxLen']) && self::posInt($frag['idMaxLen']) ? (int) $frag['idMaxLen'] : 14)
+                    > (isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8));
+            if ($variable) {
+                $errors[] = '"expectedIds" cannot be enforced on a regex-only pooled field with a '
+                    . 'variable ID length: without a check character a run can split into different '
+                    . 'numbers of IDs, so the count is ambiguous. Set a single exact ID length, drop '
+                    . '"expectedIds", or use a check algorithm (which disambiguates by verification).';
+            }
+        }
         return $errors;
     }
 

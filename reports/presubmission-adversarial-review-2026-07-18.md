@@ -47,10 +47,18 @@ instance was exercised from this pass — see §6.
 > call, with a fail-safe fallback to the full read (unsafe value / unsupported build) and the audit
 > staying authoritative. `hook_php` 265→270, verified to fail without the fix.
 >
-> **Still open:** F5 (an effective *sessionless* rate limit — F4 bounds per-call cost, F5 would bound
-> call volume), the second review's M-03 (pooled ambiguous-length segmentation), and the deferred
-> shared-observer. Live in-situ verification of all fixes is still outstanding (§6) — F4 in
-> particular relies on REDCap `filterLogic` semantics that should be confirmed on the target build.
+> **F5 and M-03 (fixed in 1.5.7).** F5 — `surveyRateLimited` gained a per-project sessionless tier
+> (bounded system setting, 600/min) that engages only when there is no session, so a cookieless flood
+> is now counted while normal sessioned survey traffic is untouched. M-03 — a regex-only pooled field
+> with a variable length and `expectedIds` (an inherently ambiguous count) is now a config error.
+> `annotation_php` 141→144, `hook_php` 270→273.
+>
+> **Still open (deferred, with rationale):** consolidating the 7 per-factory MutationObservers into
+> one shared observer. The DOM test harness has no `MutationObserver` and the stubs resolve fields
+> immediately, so that path is unreachable in tests; F9-A's per-form rule filtering already removes
+> the documented freeze, so a blind untestable client rewrite is not worth the regression risk — it
+> needs a live/browser pass. Live in-situ verification of all fixes remains outstanding (§6); F4 in
+> particular relies on REDCap `filterLogic` semantics to be confirmed on the target build.
 
 ---
 

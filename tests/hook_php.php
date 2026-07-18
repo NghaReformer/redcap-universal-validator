@@ -1802,6 +1802,31 @@ namespace {
     check('F4: the post-save audit does NOT narrow (full-scan authoritative)',
         !isset(\REDCap::$lastGetDataParams['filterLogic']));
 
+    // F5: a SESSIONLESS flood is bounded per project (the session-only throttle
+    // could not count a cookieless caller). CLI has no active session, so the
+    // endpoint takes the per-project tier. Pre-seed the budget to the cap -> the
+    // next anon check is throttled.
+    $f5Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
+        'tok' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
+                  'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+    ];
+    $f5Data = ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-1']]];
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->systemSettings['uv_noauth_hits_149'] = array_fill(0, 600, time());   // budget exhausted
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
+    check('F5: a sessionless caller is throttled once the per-project budget is spent',
+        isset($r['error']) && strpos($r['error'], 'too many') !== false);
+    // a fresh project: the anon caller is answered, and the check is recorded in the budget
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-9']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F5: a fresh sessionless caller is answered (not throttled)', isset($r['used']));
+    check('F5: the sessionless check is recorded in the per-project budget',
+        is_array($m->systemSettings['uv_noauth_hits_149'] ?? null)
+        && count($m->systemSettings['uv_noauth_hits_149']) === 1);
+
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
     $msg = $m->validateSettings(modeFlat([

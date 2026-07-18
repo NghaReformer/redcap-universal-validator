@@ -1948,7 +1948,7 @@ class UniversalValidator extends AbstractExternalModule
                     return ['error' => 'not enabled on surveys'];
                 }
                 // ...and never faster than the throttle allows.
-                if ($this->surveyRateLimited()) return ['error' => 'too many checks — slow down'];
+                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             }
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -2009,31 +2009,60 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Sliding-window throttle for the UNAUTHENTICATED (survey) uniqueness path.
+     * Two tiers, so a caller is bounded whether or not it carries a session:
      *
-     * Honest about what this is and is not: it stops a script walking an ID
-     * space through one survey session. It does NOT stop a determined attacker
-     * who clears cookies, and it does nothing about a single TARGETED probe —
-     * that exposure is inherent to answering "is this value already used?" at
-     * all, which is why the survey opt-in is refused outright on Identifier
-     * fields and is off by default everywhere else. Defence in depth, not the
-     * defence. Fails OPEN when there is no session to count in: the check is a
-     * convenience, never a gate on data entry.
+     *   (1) With an active session (a normal survey respondent): a per-SESSION
+     *       window (30 / minute), cheap and touching no shared storage.
+     *   (2) With NO session (a cookieless or cookie-rotating caller — the actual
+     *       sessionless flood vector v1.4.1's session-only throttle could not
+     *       count): a per-PROJECT window (F5) in a single, hard-capped,
+     *       self-pruning system setting, so the flood is bounded even with
+     *       nothing to key a session on. Legitimate respondents carry a session
+     *       and never reach tier (2), so it adds no write load or false
+     *       throttling to normal traffic.
+     *
+     * Still defence in depth, not THE defence: a single TARGETED probe is
+     * inherent to answering "is this value already used?" at all, which is why
+     * the survey opt-in is refused on Identifier fields and off by default
+     * everywhere else. Fails OPEN on any error — the live check is a convenience,
+     * never a gate on data entry.
      */
-    private function surveyRateLimited()
+    private function surveyRateLimited($pid = null)
     {
-        $max = 30;          // checks ...
-        $window = 60;       // ... per rolling minute, per session
+        $window = 60;
+        $now = time();
+        // Tier (1): per-session window for a caller that has a session.
         try {
-            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return false;
-            $now = time();
-            $key = 'uvalidate_unique_hits';
-            $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+            if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+                $max = 30;
+                $key = 'uvalidate_unique_hits';
+                $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+                $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
+                    return is_int($t) && ($now - $t) < $window;
+                }));
+                if (count($hits) >= $max) { $_SESSION[$key] = $hits; return true; }
+                $hits[] = $now;
+                $_SESSION[$key] = $hits;
+                return false;
+            }
+        } catch (\Throwable $e) {
+            return false;
+        }
+        // Tier (2): no session — bound the sessionless flood per project.
+        try {
+            if (!$pid) return false;
+            $pmax = 600;                                       // no-auth checks / project / window (>> the per-session cap)
+            $skey = 'uv_noauth_hits_' . (int) $pid;
+            $raw = $this->getSystemSetting($skey);
+            $hits = is_array($raw) ? $raw : ((is_string($raw) && $raw !== '') ? json_decode($raw, true) : []);
+            if (!is_array($hits)) $hits = [];
             $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
                 return is_int($t) && ($now - $t) < $window;
             }));
-            if (count($hits) >= $max) { $_SESSION[$key] = $hits; return true; }
+            if (count($hits) >= $pmax) { $this->setSystemSetting($skey, $hits); return true; }
             $hits[] = $now;
-            $_SESSION[$key] = $hits;
+            if (count($hits) > $pmax + 100) $hits = array_slice($hits, -$pmax);   // hard cap the stored array
+            $this->setSystemSetting($skey, $hits);
             return false;
         } catch (\Throwable $e) {
             return false;

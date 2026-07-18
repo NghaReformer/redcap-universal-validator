@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.5.7 — sessionless rate-limit tier and a pooled-ambiguity guard (F5, M-03)
+
+- **F5 — the unauthenticated throttle now bounds a sessionless flood.** v1.4.1's throttle counted
+  only in `$_SESSION`, so a cookieless (or cookie-rotating) caller — the actual sessionless vector —
+  was never counted. `surveyRateLimited` now has two tiers: a per-session window for a caller that
+  carries a session (a normal survey respondent, unchanged), and, when there is NO session, a
+  per-PROJECT sliding window (600 / minute) in a single hard-capped, self-pruning system setting.
+  Legitimate respondents carry a session and never reach the project tier, so it adds no write load
+  or false throttling to normal traffic; both tiers fail open. This bounds call VOLUME; F4 (1.5.6)
+  bounds per-call cost, and the survey opt-in stays off by default and refused on Identifier fields.
+- **M-03 — reject an ambiguous regex-only pooled count.** A regex-only pooled field (algorithm
+  "none", so no check character to disambiguate a split) with a VARIABLE ID length and an
+  `expectedIds` count is inherently ambiguous — a run can divide into different numbers of members,
+  so the parser would pick one division and could misreport the count. That combination is now a
+  config error naming the fix (a single exact length, drop `expectedIds`, or a check algorithm, which
+  disambiguates by verification). Check-mode and single-exact-length configs are unaffected.
+- **Tests.** `tests/annotation_php.php` 141→144 (M-03 error + two controls); `tests/hook_php.php`
+  270→273 (F5 per-project budget throttles a sessionless caller at the cap; a fresh caller is
+  answered and recorded). Full JS and PHP 7.4 / 8.3 suites green.
+
 ## 1.5.6 — bound the live uniqueness query (F4)
 
 - **F4 — the live endpoint no longer exports the whole project on every call.** `findCollision` on
