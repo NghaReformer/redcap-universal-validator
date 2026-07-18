@@ -42,9 +42,15 @@ instance was exercised from this pass — see §6.
 > shared observer — the DOM test harness has no `MutationObserver`, so it needs a live/browser pass;
 > F9's per-form filtering already removes the documented freeze.
 >
-> **Still open:** F4 (unauth whole-project `getData` amplification), F5 (rate-limit honesty/re-key),
-> the second review's M-03 (pooled ambiguous-length segmentation), and the deferred shared-observer.
-> Live in-situ verification of all fixes is still outstanding (§6).
+> **F4 (fixed in 1.5.6):** the live endpoint's `findCollision` now narrows its read with a REDCap
+> `filterLogic` on the candidate value(s) instead of exporting the whole project on every no-auth
+> call, with a fail-safe fallback to the full read (unsafe value / unsupported build) and the audit
+> staying authoritative. `hook_php` 265→270, verified to fail without the fix.
+>
+> **Still open:** F5 (an effective *sessionless* rate limit — F4 bounds per-call cost, F5 would bound
+> call volume), the second review's M-03 (pooled ambiguous-length segmentation), and the deferred
+> shared-observer. Live in-situ verification of all fixes is still outstanding (§6) — F4 in
+> particular relies on REDCap `filterLogic` semantics that should be confirmed on the target build.
 
 ---
 

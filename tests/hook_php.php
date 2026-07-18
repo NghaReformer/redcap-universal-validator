@@ -1768,6 +1768,40 @@ namespace {
     check('F9: a cross-form rule injects only the rendered form\'s field',
         in_array('x1', $reqRuleFields, true) && !in_array('x2', $reqRuleFields, true));
 
+    // F4: the live endpoint narrows the collision query with a filterLogic so the
+    // whole project is not exported on every no-auth call. The exact comparison and
+    // the post-save audit stay authoritative, so correctness is unchanged.
+    $f4Dict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
+        'pid_f' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '', 'field_annotation' => '@UVUNIQUE'],
+    ];
+    $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => 'UNIQ-1']]], 149);
+    \REDCap::$lastGetDataParams = null;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'UNIQ-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('F4: live endpoint still finds the collision', isset($r['used']) && $r['used'] === true);
+    check('F4: live endpoint narrows the query with a filterLogic on the candidate value',
+        isset(\REDCap::$lastGetDataParams['filterLogic'])
+        && strpos(\REDCap::$lastGetDataParams['filterLogic'], 'pid_f') !== false
+        && strpos(\REDCap::$lastGetDataParams['filterLogic'], 'UNIQ-1') !== false);
+    // a value that cannot be safely inlined (contains a quote) falls back to the full scan
+    $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => "A'B"]]], 149);
+    \REDCap::$lastGetDataParams = null;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => "A'B"]],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('F4: an unsafe value falls back to the full scan (no filterLogic)',
+        !isset(\REDCap::$lastGetDataParams['filterLogic']));
+    check('F4: the fallback full scan still finds the collision', isset($r['used']) && $r['used'] === true);
+    // the post-save AUDIT never narrows — it keeps the authoritative full scan
+    $m = newModule([], $f4Dict, [
+        '1' => [351 => ['record_id' => '1', 'pid_f' => 'UNIQ-1']],
+        '2' => [351 => ['record_id' => '2', 'pid_f' => 'UNIQ-1']],
+    ], 149);
+    \REDCap::$lastGetDataParams = null;
+    $m->redcap_save_record(149, '2', 'if', 351, null, null, null, 1);
+    check('F4: the post-save audit does NOT narrow (full-scan authoritative)',
+        !isset(\REDCap::$lastGetDataParams['filterLogic']));
+
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
     $msg = $m->validateSettings(modeFlat([

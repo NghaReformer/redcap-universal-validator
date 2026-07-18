@@ -1981,7 +1981,11 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
-            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id);
+            // $narrow = true: this is the live endpoint, the amplification vector —
+            // let REDCap filter to candidate matches instead of exporting the whole
+            // project (F4). The post-save audit's findCollision call keeps the full,
+            // authoritative scan.
+            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true);
             if ($col === null) return ['used' => false, 'record' => null];
 
             // The colliding record id goes ONLY to an authenticated user, and a
@@ -2080,6 +2084,29 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * A REDCap filterLogic that narrows a collision lookup to candidate matches,
+     * so the live endpoint does not export the whole project on every call (F4).
+     * Only values made of a safe character set (letters, digits, and the ID/date
+     * punctuation . _ : / - and space) are inlined — anything that could break the
+     * logic literal (a quote, a bracket, an operator) returns null and the caller
+     * falls back to the full scan. Blank composite components are left
+     * unconstrained (the exact PHP comparison still requires them blank). The
+     * primary field is never blank (guarded in findCollision), so at least it is
+     * always constrained. Returns null when nothing can be safely constrained.
+     */
+    private static function collisionFilterLogic(array $need, array $target)
+    {
+        $clauses = [];
+        foreach ($need as $f) {
+            $tv = isset($target[$f]) ? $target[$f] : '';
+            if ($tv === '') continue;                                       // don't constrain a blank component
+            if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/', $tv)) return null;    // unsafe to inline -> full scan
+            $clauses[] = '[' . $f . "] = '" . $tv . "'";
+        }
+        return $clauses ? implode(' and ', $clauses) : null;
+    }
+
+    /**
      * Scan every OTHER record for the candidate value(s). Comparison is exact
      * string equality after ASCII trimming — raw stored values (dropdown/radio
      * codes, canonical Y-M-D dates) on both sides, deliberately no
@@ -2095,7 +2122,7 @@ class UniversalValidator extends AbstractExternalModule
      * project scope, the conservative direction for finding duplicates).
      * Returns null or ['record' => id, 'dag' => nameOrNull].
      */
-    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null)
+    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false)
     {
         $need = array_merge([$field], $with);
         $target = [];
@@ -2111,7 +2138,28 @@ class UniversalValidator extends AbstractExternalModule
             'exportDataAccessGroups' => true,
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
-        $data = \REDCap::getData($params);
+
+        // Live-endpoint amplification guard (F4): the no-auth path would otherwise
+        // export the WHOLE project on every call. Narrow the read to candidate
+        // matches with a filterLogic, so REDCap returns only the few records that
+        // could collide. Best-effort — a value that cannot be safely inlined, or a
+        // build that does not honor filterLogic, falls back to the full read. The
+        // exact comparison below stays authoritative and the post-save audit (which
+        // never narrows) is the correctness backstop, so this only ever saves work:
+        // it can never turn a real duplicate into a missed save.
+        $data = null;
+        if ($narrow) {
+            $fl = self::collisionFilterLogic($need, $target);
+            if ($fl !== null) {
+                try {
+                    $n = \REDCap::getData($params + ['filterLogic' => $fl]);
+                    if (is_array($n)) $data = $n;
+                } catch (\Throwable $e) {
+                    // filterLogic unsupported/malformed here — fall back below.
+                }
+            }
+        }
+        if ($data === null) $data = \REDCap::getData($params);
         if (!is_array($data)) return null;
 
         $currentDag = null;

@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.5.6 — bound the live uniqueness query (F4)
+
+- **F4 — the live endpoint no longer exports the whole project on every call.** `findCollision` on
+  the unauthenticated (survey) uniqueness path — reachable repeatedly by anyone once a field is
+  opted into survey checks — read every record's value for the checked field(s) on each request, so
+  a scripted walk of an ID space amplified a tiny request into a full-project data export. The live
+  endpoint now narrows the read with a REDCap `filterLogic` built from the candidate value(s), so the
+  database returns only the few records that could collide. Best-effort and fail-safe: a value that
+  cannot be safely inlined (a quote, a bracket, an operator) or a build that does not honor
+  `filterLogic` falls back to the full read, and the exact PHP comparison plus the post-save audit
+  (which never narrows) stay authoritative — the narrowing can only save work, never turn a real
+  duplicate into a missed save.
+- **Tests.** `tests/hook_php.php` 265→270: the endpoint sets a `filterLogic` on a safe candidate
+  value and still finds the collision; an unsafe value (with a quote) falls back to the full scan and
+  still finds it; the post-save audit never narrows. Verified to fail without the fix. Full JS and
+  PHP 7.4 / 8.3 suites green.
+
+**Note:** this bounds the *cost per call*; an effective sessionless *rate limit* on the no-auth path
+(F5) is still open and would bound call *volume*. The survey opt-in stays off by default and is
+refused on Identifier fields, so the endpoint answers at all only for a designer-nominated,
+non-identifying field.
+
 ## 1.5.5 — per-form rule injection, and two client/server parity fixes (F9, F6, F7)
 
 Three fixes from the pre-submission review — the performance one is server-side, the two parity ones
