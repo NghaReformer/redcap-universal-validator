@@ -1726,6 +1726,40 @@ namespace {
     check('L-01 sanity: a genuine composite duplicate is still detected',
         count(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })) >= 2);
 
+    // L01-UTF8-COLLAPSE: distinct values differing only in invalid-UTF8 bytes must
+    // not collapse to one scan key (json_encode's substitute flag mapped both to
+    // U+FFFD, causing a false duplicate the enforcement engine never saw).
+    $luDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'v' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '', 'field_annotation' => '@UVUNIQUE'],
+    ];
+    $m = newModule([], $luDict, [
+        '1' => [351 => ['record_id' => '1', 'v' => "\x80"]],
+        '2' => [351 => ['record_id' => '2', 'v' => "\x81"]],
+    ], 149);
+    $res = $m->scanProject(149);
+    check('L01-UTF8-COLLAPSE: distinct invalid-UTF8 values are not a false duplicate',
+        count(array_filter($res['violations'], function ($x) { return $x['type'] === 'unique'; })) === 0);
+    $m = newModule([], $luDict, [
+        '1' => [351 => ['record_id' => '1', 'v' => "\x80"]],
+        '2' => [351 => ['record_id' => '2', 'v' => "\x80"]],
+    ], 149);
+    $res = $m->scanProject(149);
+    check('L01-UTF8-COLLAPSE control: identical invalid-UTF8 values ARE a duplicate',
+        count(array_filter($res['violations'], function ($x) { return $x['type'] === 'unique'; })) >= 2);
+
+    // UV-1553-01: the scan must surface config-error rules even when there are no
+    // scannable records — the empty-records early return dropped them before.
+    $emptyScanDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'f'],
+        'good' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '', 'field_annotation' => '@UVREQUIRED'],
+        'bad' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '', 'field_annotation' => '@UVALIDATE={"algorithm":"bogus"}'],
+    ];
+    $m = newModule([], $emptyScanDict, [], 149);   // NO records
+    $res = $m->scanProject(149);
+    check('UV-1553-01: config-error rule surfaced even with zero scannable records',
+        count(array_filter($res['unconfigurable'], function ($u) { return strpos($u['why'], 'configuration error') !== false; })) >= 1);
+
     // F9: inject only rules whose fields are on the RENDERED instrument, so a
     // rule-heavy project does not stack one document.body MutationObserver per
     // project rule on every form (the 1.5.1 perf issue). Off-form rules stay
@@ -1801,6 +1835,26 @@ namespace {
     $m->redcap_save_record(149, '2', 'if', 351, null, null, null, 1);
     check('F4: the post-save audit does NOT narrow (full-scan authoritative)',
         !isset(\REDCap::$lastGetDataParams['filterLogic']));
+    // F4-DAG-01: a dag-scoped live check must NOT narrow — narrowing drops the
+    // current record from the result and breaks DAG resolution, so a no-DAG user
+    // would get a false cross-DAG "already used". dag scope keeps the full scan.
+    $f4dagDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
+        'pid_d' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '', 'field_annotation' => '@UVUNIQUE=dag'],
+    ];
+    $m = newModule([], $f4dagDict, ['1' => [351 => ['record_id' => '1', 'pid_d' => 'D-1']]], 149);
+    \REDCap::$lastGetDataParams = null;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_d', 'values' => ['pid_d' => 'D-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('F4-DAG-01: a dag-scoped live check does NOT narrow (full scan resolves the current DAG)',
+        !isset(\REDCap::$lastGetDataParams['filterLogic']));
+    // control: a project-scoped check still narrows (the amplification guard applies)
+    $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => 'P-1']]], 149);
+    \REDCap::$lastGetDataParams = null;
+    $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'P-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('F4-DAG-01 control: a project-scoped check still narrows',
+        isset(\REDCap::$lastGetDataParams['filterLogic']));
 
     // F5: a SESSIONLESS flood is bounded per project (the session-only throttle
     // could not count a cookieless caller). CLI has no active session, so the

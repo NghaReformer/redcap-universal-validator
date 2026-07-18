@@ -77,6 +77,15 @@ check('F2: \\p{} unicode-property pattern -> u-flag dialect error',
 $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\u{41}[0-9]{3}"}');
 check('F2: \\u{} code-point escape -> u-flag dialect error',
     isset($r['error']) && strpos($r['error'], 'flag') !== false);
+// F2-BYPASS-01: \x{...} is the same u-flag-only brace escape as \u{...} (\x{41}
+// is code point 'A' under PCRE /u but literal x{41}=41 x's in the browser).
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\x{41}[0-9]{3}"}');
+check('F2-BYPASS-01: \\x{} code-point escape -> u-flag dialect error',
+    isset($r['error']) && strpos($r['error'], 'flag') !== false);
+// F2-OVERREJECT-02: a LITERAL backslash pair before u{ is not a \u escape -> accepted.
+$r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"\\\\\\\\u{2}"}');
+check('F2-OVERREJECT-02: literal-backslash \\\\u{ is not a u-flag escape -> accepted',
+    !isset($r['error']));
 // F1/F2 control: a plain bounded pattern with disjoint classes is still accepted.
 $r = AnnotationRules::parseField('@UVALIDATE={"algorithm":"none","pattern":"[A-Z]{3}[0-9]{5}"}');
 check('F1/F2 control: disjoint bounded pattern still passes',

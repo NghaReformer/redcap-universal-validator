@@ -306,14 +306,24 @@ class CheckCharacter
         // an unbounded quantifier, or a disjoint class ends the run and anchors a
         // split. A single quantifier (or the deliberate 3-factor residue) stays
         // under the budget. Twin of QRID_polyOverlap stage two-b (js).
+        // F1-1 fix: only a genuine split point ends a run — an UNBOUNDED quantifier
+        // (stage two-a's territory) or a class DISJOINT from the run so far. A
+        // fixed/bare atom whose class OVERLAPS does NOT end the run (its char is
+        // fungible with the surrounding class, so it cannot pin a split — a lone
+        // [0-9] between {1,20} digit runs must not reset the product); it bridges on
+        // with choices 1. Track the class FORWARD so a bridging chain is whole.
         for ($a = 0; $a < $m; $a++) {
-            if ($toks[$a]['choices'] < 2) continue;
+            if ($toks[$a]['choices'] < 2) continue;                                      // a run starts at a bounded repeat
             $prod = $toks[$a]['choices'];
+            $prevCls = $toks[$a]['cls'];
             for ($b = $a + 1; $b < $m; $b++) {
-                if ($toks[$b]['choices'] < 2) break;                                     // fixed atom / unbounded ends the run
-                if (!self::classesOverlap($toks[$a]['cls'], $toks[$b]['cls'])) break;    // a disjoint repeat ends it
-                $prod *= $toks[$b]['choices'];
-                if ($prod > self::MAX_BACKTRACK_PRODUCT) return true;
+                if ($toks[$b]['unbounded']) break;                                       // unbounded -> stage two-a; ends the bounded run
+                if (!self::classesOverlap($prevCls, $toks[$b]['cls'])) break;            // a DISJOINT atom pins a split, ending the run
+                if ($toks[$b]['choices'] >= 2) {
+                    $prod *= $toks[$b]['choices'];
+                    if ($prod > self::MAX_BACKTRACK_PRODUCT) return true;
+                }
+                $prevCls = $toks[$b]['cls'];                                             // overlapping fixed atom bridges on (does not pin)
             }
         }
         return false;

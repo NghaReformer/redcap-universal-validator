@@ -1657,7 +1657,13 @@ class UniversalValidator extends AbstractExternalModule
             $live[$i] = $r;
         }
         $result['stats']['rules'] = count($live);
-        if (!$live) { $result['unconfigurable'] = array_values($unconf); return $result; }
+        // Attach the config-error notices NOW so EVERY subsequent return carries them
+        // — the empty-idData and no-records early returns below would otherwise drop
+        // them, reporting a clean project when a rule is actually inert (UV-1553-01,
+        // the M-05 silent-failure the feature exists to prevent). The final assignment
+        // on the full path re-attaches $unconf with any runtime additions.
+        $result['unconfigurable'] = array_values($unconf);
+        if (!$live) return $result;
 
         $dupes = [];
         foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
@@ -1846,18 +1852,22 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($dupes[$field])) continue;
             $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
             if ($v === null || is_array($v) || trim((string) $v) === '') continue;
-            // Collision-free composite key: a raw byte in a value (e.g. 0x1F) must
-            // not let two distinct tuples share a key and read as a false duplicate
-            // (L-01). json_encode escapes every byte so the array shape is
-            // unambiguous; the substitute flag keeps the result a string on any input.
-            $keyParts = [$ruleIndex, $field, trim((string) $v)];
+            // Collision-free, LOSSLESS composite key (L-01, L01-UTF8-COLLAPSE): a raw
+            // byte in a value (a 0x1F separator, or an invalid-UTF8 byte from a Latin-1
+            // import) must not let two DISTINCT tuples share a key and read as a false
+            // duplicate. bin2hex encodes every byte injectively and '.' cannot appear
+            // in hex output, so the joined key round-trips uniquely — unlike
+            // json_encode with JSON_INVALID_UTF8_SUBSTITUTE, which collapsed distinct
+            // invalid-UTF8 values to U+FFFD. findCollision compares raw bytes, so the
+            // key must too (keeps the scan and the audit in agreement).
+            $keyParts = [(string) $ruleIndex, $field, trim((string) $v)];
             foreach ($with as $w) {
                 $keyParts[] = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? trim((string) $ctx['values'][$w]) : '';
             }
-            if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = $ctx['event_id']; }
+            if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = (string) $ctx['event_id']; }
             elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
-            $key = json_encode($keyParts, JSON_INVALID_UTF8_SUBSTITUTE);
-            if (!is_string($key)) continue;   // unreachable with the substitute flag; never group under a non-string key
+            $key = '';
+            foreach ($keyParts as $kp) $key .= bin2hex($kp) . '.';
             $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
                              'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1];
         }
@@ -2176,8 +2186,14 @@ class UniversalValidator extends AbstractExternalModule
         // exact comparison below stays authoritative and the post-save audit (which
         // never narrows) is the correctness backstop, so this only ever saves work:
         // it can never turn a real duplicate into a missed save.
+        // F4-DAG-01: dag scope must NOT narrow — a value-filtered read drops the
+        // current record (whose saved value differs from the candidate being typed)
+        // from the result, so its DAG can no longer be resolved from the record node
+        // and a no-DAG acting user (group_id null) would silently degrade to project
+        // scope, falsely flagging a collision in another DAG. Keep the full scan for
+        // dag scope; narrowing (the F4 amplification guard) applies to project/event.
         $data = null;
-        if ($narrow) {
+        if ($narrow && $scope !== 'dag') {
             $fl = self::collisionFilterLogic($need, $target);
             if ($fl !== null) {
                 try {

@@ -675,6 +675,15 @@ function QRID_escapeHtml(t){
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+/* Whether a pattern uses a \p{}/\P{}/\u{}/\x{}/\k<> escape that only works with the
+   RegExp "u" flag — the browser compiles ID patterns WITHOUT it, so such a pattern
+   enforces a different value set than the server's PCRE /u (F2, F2-BYPASS-01).
+   Escaped-backslash pairs are stripped first so a literal-backslash pattern like
+   "\\u{2}" is not misread (F2-OVERREJECT-02). Twin of usesUFlagEscape (php). */
+function QRID_uFlagEscape(p){
+  var d = String(p).replace(/\\\\/g, "");                  /* drop escaped-backslash pairs (parity) */
+  return /\\[pPux]\{/.test(d) || d.indexOf("\\k<") !== -1;
+}
 /* Conservative catastrophic-backtracking detector. Two stages, both at CONFIG
    time. Stage one rejects the EXPONENTIAL shapes: nested quantifiers AND any
    repetition of a group that can match the same text more than one way
@@ -742,14 +751,20 @@ function QRID_polyOverlap(s){
      quantifier, or a disjoint class ends the run and anchors a split. A single
      quantifier (or the deliberate 3-factor residue) stays under the budget.
      Twin of CheckCharacter::polynomialOverlap stage two-b (php). */
+  /* F1-1 fix: what ENDS a run is a genuine split point — an UNBOUNDED quantifier
+     (stage two-a's territory) or a class DISJOINT from the run so far. A fixed/bare
+     atom whose class OVERLAPS does NOT end the run (its char is fungible with the
+     surrounding class, so it cannot pin a split — e.g. '…{1,20}[0-9]{1,20}…' with a
+     lone [0-9] between must NOT reset the product); it bridges on with choices 1.
+     Track the class FORWARD so a bridging chain (A, [AB], B) is measured whole. */
   for(var a=0;a<toks.length;a++){
-    if(toks[a].choices < 2) continue;
-    var prod = toks[a].choices;
+    if(toks[a].choices < 2) continue;                                  /* a run starts at a bounded repeat */
+    var prod = toks[a].choices, prevCls = toks[a].cls;
     for(var b=a+1;b<toks.length;b++){
-      if(toks[b].choices < 2) break;                                   /* fixed atom / unbounded ends the run */
-      if(!QRID_classesOverlap(toks[a].cls, toks[b].cls)) break;        /* a disjoint repeat ends it */
-      prod *= toks[b].choices;
-      if(prod > QRID_MAX_BACKTRACK_PRODUCT) return true;
+      if(toks[b].unbounded) break;                                     /* unbounded -> stage two-a; ends the bounded run */
+      if(!QRID_classesOverlap(prevCls, toks[b].cls)) break;            /* a DISJOINT atom pins a split, ending the run */
+      if(toks[b].choices >= 2){ prod *= toks[b].choices; if(prod > QRID_MAX_BACKTRACK_PRODUCT) return true; }
+      prevCls = toks[b].cls;                                           /* overlapping fixed atom bridges on (does not pin) */
     }
   }
   return false;
@@ -1632,14 +1647,14 @@ function QRIDSingleInit(QRID_CONFIG){
       /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
-    } else if(/\\[pP]\{/.test(rawPatS) || rawPatS.indexOf("\\u{") !== -1 || rawPatS.indexOf("\\k<") !== -1){
-      /* \p{}, \P{}, \u{}, \k<> only work with JS's "u" flag; the browser compiles
-         ID patterns WITHOUT it (so \p reads as a literal "p") while the server
-         matches with /u — the two would disagree on a valid value (F2). */
-      configError = "idPattern uses a Unicode-property or named escape (\\p{...}, \\P{...}, " +
-        "\\u{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the browser compiles " +
-        "ID patterns without it, so the value would validate differently in the browser and on the " +
-        "server. Use explicit character classes such as [A-Z] or [0-9] instead.";
+    } else if(QRID_uFlagEscape(rawPatS)){
+      /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
+         compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
+         x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
+      configError = "idPattern uses a Unicode-property, code-point or named escape (\\p{...}, " +
+        "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
+        "browser compiles ID patterns without it, so the value would validate differently in the " +
+        "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead.";
     } else if(QRID_riskyPattern(rawPatS)){
       configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
         "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
@@ -2699,14 +2714,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
       configError = "idPattern must contain printable ASCII only — the browser and server " +
         "regex engines are only guaranteed to agree on that subset.";
-    } else if(/\\[pP]\{/.test(rawPatP) || rawPatP.indexOf("\\u{") !== -1 || rawPatP.indexOf("\\k<") !== -1){
-      /* \p{}, \P{}, \u{}, \k<> only work with JS's "u" flag; the browser compiles
-         ID patterns WITHOUT it (so \p reads as a literal "p") while the server
-         matches with /u — the two would disagree on a valid value (F2). */
-      configError = "idPattern uses a Unicode-property or named escape (\\p{...}, \\P{...}, " +
-        "\\u{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the browser compiles " +
-        "ID patterns without it, so the value would validate differently in the browser and on the " +
-        "server. Use explicit character classes such as [A-Z] or [0-9] instead.";
+    } else if(QRID_uFlagEscape(rawPatP)){
+      /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
+         compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
+         x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
+      configError = "idPattern uses a Unicode-property, code-point or named escape (\\p{...}, " +
+        "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
+        "browser compiles ID patterns without it, so the value would validate differently in the " +
+        "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead.";
     } else if(QRID_riskyPattern(rawPatP)){
       configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
         "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +

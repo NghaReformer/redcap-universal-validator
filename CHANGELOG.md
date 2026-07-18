@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.5.8 — hardening from an adversarial red-team of the 1.5.3–1.5.7 fixes
+
+A red-team / wargaming pass over every 1.5.3–1.5.7 change (each candidate independently
+refutation-tested) found six real defects in those fixes; all are fixed here.
+
+- **F1-1 (the F1 ReDoS gate).** The bounded-quantifier stage two-b run was ended by ANY `choices<2`
+  token, so a bare atom of the SAME class as the surrounding repeats reset the product mid-chain:
+  `[0-9]{1,20}` ×4, a lone `[0-9]`, then `[0-9]{1,20}` ×4 passed the gate (two 4-factor runs, each
+  under the budget) yet froze the browser (~9 s at 44 chars). A run now ends only at a genuine split
+  — an UNBOUNDED quantifier or a class DISJOINT from the run — and an overlapping fixed atom bridges
+  on (choices 1); the run's class is tracked forward so a bridging chain is measured whole.
+  Twinned JS + PHP.
+- **F2-BYPASS-01 (the F2 dialect guard).** The guard missed `\x{...}`, the brace-form sibling of
+  `\u{...}` (PCRE `/u` reads `\x{41}` as 'A'; the browser without the `u` flag reads it as `x{41}` =
+  41 x's). `\x{` is now rejected alongside `\p{ \P{ \u{ \k<`, in all three sites.
+- **F2-OVERREJECT-02.** The same guard used naive substring scans and wrongly rejected a legitimate
+  literal-backslash pattern like `\\u{2}`. It now strips escaped-backslash pairs first, so only a real
+  `\`-escape is caught. (Shared `usesUFlagEscape` / `QRID_uFlagEscape` helper.)
+- **F4-DAG-01 (the F4 filterLogic narrowing).** For a dag-scoped rule, the narrowed live query dropped
+  the current record from the result, so a no-DAG acting user's DAG could not be resolved and the
+  check silently degraded to project scope, falsely flagging a cross-DAG "already used". Narrowing is
+  now skipped for dag scope (the full scan resolves the DAG correctly); it still applies to
+  project/event scope.
+- **L01-UTF8-COLLAPSE (the L-01 scan key).** `json_encode` with `JSON_INVALID_UTF8_SUBSTITUTE`
+  collapsed distinct invalid-UTF8 values to U+FFFD, so two different stored values could read as a
+  false duplicate in the scan (while the byte-exact audit did not). The scan key is now a lossless
+  `bin2hex` join.
+- **UV-1553-01 (the M-05 scan transparency).** The config-error notices were attached only on the
+  normal path, so a scan of a project with zero scannable records (empty/new project, a DAG with no
+  records, a transient read failure) dropped them and implied a clean project. They are now attached
+  before those early returns.
+- **Tests.** `tests/risky_patterns.json` gains the F1-1 reset-trick (risky) + disjoint-separated
+  controls (safe); `annotation_php` 144→146 (`\x{}` rejected, literal-backslash accepted); `hook_php`
+  273→278 (F4-DAG-01 dag-vs-project narrowing, invalid-UTF8 non-collapse, zero-record config-error
+  surfacing). Full JS + PHP 7.4 / 8.3 suites green. The F5 concerns from the same review were verified
+  to be defense-in-depth / deployment-dependent and left as documented.
+
 ## 1.5.7 — sessionless rate-limit tier and a pooled-ambiguity guard (F5, M-03)
 
 - **F5 — the unauthenticated throttle now bounds a sessionless flood.** v1.4.1's throttle counted

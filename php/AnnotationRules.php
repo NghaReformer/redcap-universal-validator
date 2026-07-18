@@ -695,19 +695,18 @@ class AnnotationRules
             } elseif (strpos($pattern, '(?P<') !== false) {
                 $errors[] = 'the format pattern uses Python-only (?P<name>...) groups, '
                     . 'which JavaScript cannot compile.';
-            } elseif (preg_match('/\\\\[pP]\{/', $pattern) || strpos($pattern, '\\u{') !== false
-                    || strpos($pattern, '\\k<') !== false) {
-                // \p{}, \P{}, \u{}, \k<> only work with JavaScript's "u" flag; the
-                // browser compiles ID patterns WITHOUT it (so \p reads as a literal
-                // "p") while the server matches with PCRE /u, so the two engines
-                // would disagree on a valid value (F2). Reject at config time like
-                // \A/\Z and (?P<...), keeping the proven-parity subset to explicit
-                // classes.
-                $errors[] = 'the format pattern uses a Unicode-property or named escape (\p{...}, '
-                    . '\P{...}, \u{...} or \k<...>) that only works with JavaScript\'s "u" flag — the '
-                    . 'browser compiles ID patterns without it, so the value would validate differently '
-                    . 'in the browser and on the server. Use explicit character classes such as [A-Z] '
-                    . 'or [0-9] instead.';
+            } elseif (self::usesUFlagEscape($pattern)) {
+                // \p{}, \P{}, \u{}, \x{} and \k<> only work with JavaScript's "u"
+                // flag; the browser compiles ID patterns WITHOUT it (so \p reads as
+                // a literal "p" and \x{41} as x{41}) while the server matches with
+                // PCRE /u, so the two engines would disagree on a valid value (F2 +
+                // F2-BYPASS-01). Reject at config time like \A/\Z and (?P<...),
+                // keeping the proven-parity subset to explicit classes.
+                $errors[] = 'the format pattern uses a Unicode-property, code-point or named escape '
+                    . '(\p{...}, \P{...}, \u{...}, \x{...} or \k<...>) that only works with '
+                    . 'JavaScript\'s "u" flag — the browser compiles ID patterns without it, so the '
+                    . 'value would validate differently in the browser and on the server. Use explicit '
+                    . 'character classes such as [A-Z] or [0-9] instead.';
             } elseif (CheckCharacter::riskyPattern($pattern)) {
                 $errors[] = 'the format pattern looks catastrophically backtracking (nested '
                     . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
@@ -988,6 +987,20 @@ class AnnotationRules
         if (is_int($v)) return $v > 0;
         if (is_string($v)) return ctype_digit($v) && (int) $v > 0;
         return false;
+    }
+
+    /**
+     * Whether $pattern uses a regex escape that only works with JavaScript's "u"
+     * flag — \p{...} \P{...} \u{...} \x{...} or \k<...> — which the browser (no u
+     * flag) and the server (PCRE /u) enforce DIFFERENTLY (F2, F2-BYPASS-01).
+     * Escaped-backslash pairs are stripped first so a literal-backslash pattern
+     * like "\\u{2}" is NOT mistaken for a real \u escape (F2-OVERREJECT-02). Keep
+     * in sync with QRID_uFlagEscape (js).
+     */
+    private static function usesUFlagEscape($pattern)
+    {
+        $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
+        return preg_match('/\\\\[pPux]\{/', $d) === 1 || strpos($d, '\\k<') !== false;
     }
 
     /**
