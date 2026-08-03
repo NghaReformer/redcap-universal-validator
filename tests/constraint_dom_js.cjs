@@ -15,7 +15,13 @@
  *     passing constraint never clears a failing check's block, and vice versa,
  *   - branched constraints (two @UVASSERT with different "when"): active branch
  *     validates; both true -> conflict, never blocks,
- *   - a constraint with no condition is a visible config error.
+ *   - a constraint with no condition is a visible config error,
+ *   - M-04 BLANK PARITY: "no answer" is decided with the evaluators' own
+ *     charlist (" \t\r\n"), so space/tab/CRLF go inert but a Unicode NBSP is
+ *     judged — what matters is that the browser and the server AGREE,
+ *   - M-02 SNAPSHOT DIAGNOSTIC: a failure names the off-page fields it was
+ *     compared against and when they were read; survey respondents get the
+ *     designer's wording only, never a field name.
  *
  * The assert evaluator itself is parity-locked by tests/when_js.cjs +
  * when_php.php; this file tests the constraint DOM wiring around it.
@@ -420,6 +426,170 @@ function submitEv() {
   f.value = '8QRS-55555E'; f.fire('change');
   ev = submitEv(); env.doc.fire('submit', ev);
   check('compose: with the check rule satisfied, the deferred constraint alone never blocks',
+    ev._prevented === false);
+}
+
+// ---- 13) M-04 BLANK PARITY: what counts as "no answer" must be the SAME on
+//          both sides. The client decides inertness with QRID_whenTrim, whose
+//          charlist is " \t\r\n" — exactly what BOTH evaluators trim with
+//          before comparing (QRID_whenCompare in js/engine.js,
+//          Logic::compare in php/Logic.php) and exactly what the server's
+//          constraint branch skips a blank value with
+//          (UniversalValidator.php: trim((string) $value, " \t\r\n") === ''
+//          -> continue).
+//
+//          Before the fix the client used String.prototype.trim, which ALSO
+//          strips Unicode spaces (U+00A0 and friends). A field holding a
+//          single NBSP therefore went silently inert in the browser while the
+//          server — trimming ASCII whitespace only — still compared "\u00A0"
+//          against the assert, found it false, and logged a violation the user
+//          was never shown.
+//
+//          Per host value, what each runtime must now do:
+//            " "        client inert    server skips (trim -> "")     AGREE
+//            "\t"       client inert    server skips                  AGREE
+//            "\r\n"     client inert    server skips                  AGREE
+//            "\u00A0"   client JUDGES   server judges: NBSP is not in
+//                                        the charlist, so it survives
+//                                        the trim, and [x]='OK' is false  AGREE
+//          The claim is not that NBSP is better treated as a real value — it
+//          is that the two runtimes must not disagree about it.
+//
+//          The NBSP host value is written as an escape on purpose: a
+//          literal U+00A0 in this source would be invisible, and one stray
+//          editor normalization away from silently collapsing this case
+//          into the plain-space case above it.
+{
+  const HOSTS = [
+    { label: 'a single space', value: ' ', inert: true },
+    { label: 'a tab', value: '\t', inert: true },
+    { label: 'a CRLF', value: '\r\n', inert: true },
+    { label: 'a Unicode NBSP (U+00A0)', value: '\u00A0', inert: false },
+  ];
+  for (const host of HOSTS) {
+    const x = makeEl('input'); x.name = 'x'; x.value = host.value;
+    const env = boot([x], {
+      singleFields: [], pooledFields: [],
+      rules: [{ type: 'constraint', fields: ['x'], assert: "[x]='OK'",
+                message: 'x must be OK', blockSave: 'hard' }],
+    });
+    const msg = cMsg(env, 'x');
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    if (host.inert) {
+      // a fresh boot, so an untouched region proves no verdict was ever stated
+      check(`M-04: ${host.label} is blank on BOTH sides -> inert, no verdict`,
+        msg.style.display === 'none' && msg.innerHTML === '' &&
+        x.getAttribute('aria-invalid') === null);
+      check(`M-04: ${host.label} never traps the save`, ev._prevented === false);
+    } else {
+      check(`M-04: ${host.label} is blank on NEITHER side -> judged and flagged`,
+        /x must be OK/.test(msg.innerHTML) && x.getAttribute('aria-invalid') === 'true');
+      check(`M-04: ${host.label} blocks in the browser exactly as the server would`,
+        ev._prevented === true);
+    }
+  }
+}
+
+// ---- 14) M-02 SNAPSHOT DIAGNOSTIC (data-entry form): off-page operands are
+//          baked once, when the page is built. Naming them on a failure lets
+//          the user tell a real violation from a stale read (someone edited
+//          the other form in another tab) and reload — without it a wrong hard
+//          block is a dead end with no explanation.
+{
+  const end = makeEl('input'); end.name = 'end_date'; end.value = '2020-01-01';
+  const env = boot([end], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]',
+              assertAst: ['cmp', '>=', ['ref', 'end_date', null], ['lit', '2026-05-10']],
+              snapshotFields: ['start_date'],
+              message: 'End date must be on or after the start date', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 'end_date');
+  check('M-02: the failure still leads with the designer\'s own message',
+    /on or after the start date/.test(msg.innerHTML));
+  check('M-02: the failure names the off-page field it was compared against',
+    /start_date/.test(msg.innerHTML));
+  check('M-02: and says the value was read when this page was opened',
+    /read when this page was opened/.test(msg.innerHTML));
+
+  // a PASS needs no caveat: the note exists to explain a block, not to nag
+  end.value = '2026-06-01';
+  end.fire('change');
+  check('M-02: no snapshot note on a passing value',
+    /OK/.test(msg.innerHTML) && !/start_date/.test(msg.innerHTML));
+}
+
+// ---- 15) M-02 on a SURVEY: same rule, same block, generic wording. A
+//          respondent cannot act on "start_date" and must not learn the name
+//          of a field on an instrument they were never shown (the same muting
+//          the branch-conflict and config-error paths already do).
+{
+  const end = makeEl('input'); end.name = 'end_date'; end.value = '2020-01-01';
+  const env = boot([end], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]',
+              assertAst: ['cmp', '>=', ['ref', 'end_date', null], ['lit', '2026-05-10']],
+              snapshotFields: ['start_date'],
+              message: 'End date must be on or after the start date', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 'end_date');
+  check('M-02 survey: the respondent still gets the designer\'s message',
+    /on or after the start date/.test(msg.innerHTML));
+  check('M-02 survey: no off-page field name leaks to the respondent',
+    !/start_date/.test(msg.innerHTML));
+  check('M-02 survey: no "read when this page was opened" detail either',
+    !/page was opened/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('M-02 survey: muting the wording does NOT mute the enforcement',
+    ev._prevented === true);
+}
+
+// ---- 16) deferredWhy: shown to STAFF, withheld from survey respondents.
+//
+//          A deferred rule states no verdict, but it must still say WHY it
+//          stopped checking — the server builds a human-readable reason and
+//          discarding it is the same silent failure the reason exists to
+//          prevent (M-05): the rule goes quiet and the only trace is a
+//          module-log entry the person typing the value never sees.
+//          Respondents are still told nothing: the reasons name other
+//          instruments and fields, and a respondent cannot act on a design
+//          problem. Neither path ever blocks.
+{
+  /* the shape UniversalValidator.php ships: an array of human-readable reasons
+     attached to the first deferred rule (see the $notices loop). */
+  const WHY = 'the "assert" condition reads [start_date], which is on a form not designated for this event';
+  function bootDeferred(context) {
+    const v = makeEl('input'); v.name = 'v'; v.value = '';
+    const cfg = {
+      singleFields: [], pooledFields: [],
+      rules: [{ type: 'constraint', fields: ['v'], assert: '[v]=[start_date]',
+                assertAst: ['const', false], deferred: true, deferredWhy: [WHY],
+                message: 'v must match the start date', blockSave: 'hard' }],
+    };
+    if (context) cfg.context = context;
+    const env = boot([v], cfg);
+    return { env: env, v: v, msg: cMsg(env, 'v') };
+  }
+
+  const s = bootDeferred('survey');
+  s.v.value = 'ANYTHING';
+  s.v.fire('change');
+  check('deferredWhy: the reason is never rendered to a survey respondent',
+    !/designated for this event/.test(s.msg.innerHTML) && !/start_date/.test(s.msg.innerHTML));
+  check('deferredWhy: the survey region states no verdict at all',
+    s.msg.style.display === 'none' && s.msg.innerHTML === '');
+
+  const d = bootDeferred(null);
+  d.v.value = 'ANYTHING';
+  d.v.fire('change');
+  check('deferredWhy: staff DO see the reason on a data-entry form',
+    /designated for this event/.test(d.msg.innerHTML));
+  check('deferredWhy: staff are told the check still happens after the save',
+    /after the save/i.test(d.msg.innerHTML));
+  check('deferredWhy: it is shown as a notice, not as a pass/fail verdict',
+    !/OK\./.test(d.msg.innerHTML) && d.v.getAttribute('aria-invalid') !== 'true');
+  const ev = submitEv(); d.env.doc.fire('submit', ev);
+  check('deferredWhy: the deferred rule still never blocks the save',
     ev._prevented === false);
 }
 

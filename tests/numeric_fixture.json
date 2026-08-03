@@ -1,0 +1,564 @@
+{
+  "spec": "Exact-decimal comparison contract (H-03). Both runtimes compare NUM_RE-shaped operands as decimal STRINGS - no float, no bcmath, no BigInt - because the IEEE-754 cast silently merged distinct values above 2^53 and truncated long fractions, so @UVASSERT=\"[id]=[id_confirm]\" accepted two different identifiers. Logic::decCmp in php/Logic.php and QRID_whenDecCmp in js/engine.js are the twins; tests/numeric_php.php and tests/numeric_js.cjs drive them over this file. Each case declares one comparison: \"cmp\" is -1/0/1 for a<b, a==b, a>b and the six verdicts are derived from it, so every op is pinned per case. \"path\" says which branch of compare() must be taken - \"numeric\" when BOTH trimmed operands are NUM_RE-shaped, \"string\" otherwise; string-path cases are re-checked against an independent byte/code-point comparison written in each test, which is what proves the engine really fell through. \"floatTrap\" marks the cases where the old float cast gave a DIFFERENT answer; each test recomputes the float verdict and fails if it agrees, so these stay genuine H-03 sentinels. \"digest\" is the sha256 of every verdict both runtimes produce, so PHP and JS cannot drift case-for-case even if someone edits one expectation.",
+  "ops": [
+    "=",
+    "<>",
+    "<",
+    ">",
+    "<=",
+    ">="
+  ],
+  "shapes": [
+    "ref_ref",
+    "ref_lit",
+    "lit_ref",
+    "lit_lit"
+  ],
+  "mustInclude": [
+    "h03_counterexample",
+    "h03_counterexample_reversed",
+    "pow2_53_minus1_vs_pow2_53",
+    "d20_last_digit",
+    "d400_last_digit",
+    "frac_17dp",
+    "eq_leading_zero",
+    "eq_trailing_fraction_zero",
+    "eq_bare_leading_point",
+    "eq_negative_zero",
+    "eq_trailing_point",
+    "ord_neg5_gt_neg10",
+    "sci_1e3_vs_1000",
+    "hex_0x1f_vs_31"
+  ],
+  "digest": "265f409383841646bcaa154bdb8c334b08f4610d28814dc3d51702fe69c4fbd2",
+  "cases": [
+    {
+      "name": "h03_counterexample",
+      "a": "9007199254740992",
+      "b": "9007199254740993",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true,
+      "note": "the reviewer's counterexample: 2^53 vs 2^53+1 compared EQUAL under the float cast, so @UVASSERT=\"[id]=[id_confirm]\" accepted two different identifiers"
+    },
+    {
+      "name": "h03_counterexample_reversed",
+      "a": "9007199254740993",
+      "b": "9007199254740992",
+      "path": "numeric",
+      "cmp": 1,
+      "floatTrap": true
+    },
+    {
+      "name": "h03_counterexample_same",
+      "a": "9007199254740993",
+      "b": "9007199254740993",
+      "path": "numeric",
+      "cmp": 0,
+      "note": "the recipe still has to ACCEPT a genuine match"
+    },
+    {
+      "name": "pow2_53_minus1_vs_pow2_53",
+      "a": "9007199254740991",
+      "b": "9007199254740992",
+      "path": "numeric",
+      "cmp": -1,
+      "note": "adjacent integers straddling 2^53 from below; both are exact doubles"
+    },
+    {
+      "name": "pow2_53_minus1_vs_plus1",
+      "a": "9007199254740991",
+      "b": "9007199254740993",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "pow2_53_plus1_vs_minus1",
+      "a": "9007199254740993",
+      "b": "9007199254740991",
+      "path": "numeric",
+      "cmp": 1
+    },
+    {
+      "name": "pow2_53_negatives",
+      "a": "-9007199254740993",
+      "b": "-9007199254740992",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "pow2_53_negatives_reversed",
+      "a": "-9007199254740992",
+      "b": "-9007199254740993",
+      "path": "numeric",
+      "cmp": 1,
+      "floatTrap": true
+    },
+    {
+      "name": "pow2_53_mixed_sign",
+      "a": "-9007199254740993",
+      "b": "9007199254740992",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "d20_last_digit",
+      "a": "12345678901234567890",
+      "b": "12345678901234567891",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "d20_last_digit_reversed",
+      "a": "12345678901234567891",
+      "b": "12345678901234567890",
+      "path": "numeric",
+      "cmp": 1,
+      "floatTrap": true
+    },
+    {
+      "name": "d20_leading_zeros_equal",
+      "a": "0012345678901234567890",
+      "b": "12345678901234567890",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "d20_vs_d21",
+      "a": "99999999999999999999",
+      "b": "100000000000000000000",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true,
+      "note": "both cast to 1.0e20"
+    },
+    {
+      "name": "d400_last_digit",
+      "a": "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "b": "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567891",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true,
+      "note": "both cast to INF"
+    },
+    {
+      "name": "d400_equal",
+      "a": "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "b": "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "d400_vs_d401",
+      "a": "1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "b": "11234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true,
+      "note": "digit-count ordering, both cast to INF"
+    },
+    {
+      "name": "d400_negative_last_digit",
+      "a": "-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567891",
+      "b": "-1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "frac_17dp",
+      "a": "1.00000000000000001",
+      "b": "1.00000000000000002",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "frac_17dp_reversed",
+      "a": "1.00000000000000002",
+      "b": "1.00000000000000001",
+      "path": "numeric",
+      "cmp": 1,
+      "floatTrap": true
+    },
+    {
+      "name": "frac_17dp_same",
+      "a": "1.00000000000000001",
+      "b": "1.00000000000000001",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "frac_17dp_trailing_zeros",
+      "a": "1.000000000000000010000000",
+      "b": "1.00000000000000001",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "frac_17dp_negative",
+      "a": "-1.00000000000000002",
+      "b": "-1.00000000000000001",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "frac_200dp_last_digit",
+      "a": "1.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001",
+      "b": "1.00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000002",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "int_vs_deep_fraction",
+      "a": "5",
+      "b": "5.0000000000000000001",
+      "path": "numeric",
+      "cmp": -1,
+      "floatTrap": true
+    },
+    {
+      "name": "zero_vs_deep_fraction",
+      "a": "0",
+      "b": "0.0000000000000000001",
+      "path": "numeric",
+      "cmp": -1,
+      "note": "no float trap: 1e-19 survives the cast next to 0, unlike next to 5 above"
+    },
+    {
+      "name": "frac_pad_short_wins",
+      "a": "1.5",
+      "b": "1.45",
+      "path": "numeric",
+      "cmp": 1,
+      "note": "the fraction is zero-padded before comparing: 1.5 > 1.45, which raw lexicographic order gets wrong"
+    },
+    {
+      "name": "frac_pad_short_wins_reversed",
+      "a": "1.45",
+      "b": "1.5",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "frac_prefix_tail",
+      "a": "1.1",
+      "b": "1.10001",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "eq_leading_zero",
+      "a": "02",
+      "b": "2",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_trailing_fraction_zero",
+      "a": "2.50",
+      "b": "2.5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_bare_leading_point",
+      "a": ".5",
+      "b": "0.5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_negative_zero",
+      "a": "-0",
+      "b": "0",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_trailing_point",
+      "a": "5.",
+      "b": "5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_negative_zero_fraction",
+      "a": "-0.000",
+      "b": "0",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_plus_sign",
+      "a": "+5",
+      "b": "5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_many_leading_zeros",
+      "a": "00007",
+      "b": "7",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_point_zero",
+      "a": "5.0",
+      "b": "5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_bare_point_zero_vs_negative_zero",
+      "a": ".0",
+      "b": "-0",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_negative_bare_point",
+      "a": "-.5",
+      "b": "-0.5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "eq_signed_zero_fractions",
+      "a": "-0.0",
+      "b": "0.0",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "ord_neg5_gt_neg10",
+      "a": "-5",
+      "b": "-10",
+      "path": "numeric",
+      "cmp": 1,
+      "note": "the sign is applied once, after magnitude"
+    },
+    {
+      "name": "ord_neg_vs_pos",
+      "a": "-1",
+      "b": "1",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "ord_zero_gt_neg1",
+      "a": "0",
+      "b": "-1",
+      "path": "numeric",
+      "cmp": 1
+    },
+    {
+      "name": "ord_negative_zero_gt_neg1",
+      "a": "-0",
+      "b": "-1",
+      "path": "numeric",
+      "cmp": 1
+    },
+    {
+      "name": "ord_negative_fractions",
+      "a": "-0.5",
+      "b": "-0.25",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "ord_len_9_vs_10",
+      "a": "9",
+      "b": "10",
+      "path": "numeric",
+      "cmp": -1,
+      "note": "digit count first, so 9 < 10"
+    },
+    {
+      "name": "ord_len_neg9_vs_neg10",
+      "a": "-9",
+      "b": "-10",
+      "path": "numeric",
+      "cmp": 1
+    },
+    {
+      "name": "ord_big_negative_vs_one",
+      "a": "-99999999999999999999",
+      "b": "1",
+      "path": "numeric",
+      "cmp": -1
+    },
+    {
+      "name": "ws_spaces_trimmed",
+      "a": " 5 ",
+      "b": "5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "ws_tab_cr_lf_trimmed",
+      "a": "\t\r\n5\t\r\n",
+      "b": "5",
+      "path": "numeric",
+      "cmp": 0
+    },
+    {
+      "name": "ws_around_big_int",
+      "a": "  9007199254740993  ",
+      "b": "9007199254740992",
+      "path": "numeric",
+      "cmp": 1,
+      "floatTrap": true
+    },
+    {
+      "name": "ws_vertical_tab_not_trimmed",
+      "a": "\u000b5",
+      "b": "5",
+      "path": "string",
+      "cmp": -1,
+      "note": "vertical tab is NOT in the charlist, so the value stays non-numeric"
+    },
+    {
+      "name": "ws_form_feed_not_trimmed",
+      "a": "\f5",
+      "b": "5",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "ws_empty_both",
+      "a": "",
+      "b": "",
+      "path": "string",
+      "cmp": 0
+    },
+    {
+      "name": "ws_empty_vs_zero",
+      "a": "",
+      "b": "0",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "ws_blank_vs_zero",
+      "a": "   ",
+      "b": "0",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "sci_1e3_vs_1000",
+      "a": "1e3",
+      "b": "1000",
+      "path": "string",
+      "cmp": 1,
+      "note": "scientific notation is not NUM_RE-shaped: byte order puts \"1e3\" AFTER \"1000\", where a numeric read would call them equal"
+    },
+    {
+      "name": "sci_1e3_same",
+      "a": "1e3",
+      "b": "1e3",
+      "path": "string",
+      "cmp": 0
+    },
+    {
+      "name": "sci_one_side_only",
+      "a": "10",
+      "b": "1e1",
+      "path": "string",
+      "cmp": -1,
+      "note": "one non-numeric side is enough"
+    },
+    {
+      "name": "hex_0x1f_vs_31",
+      "a": "0x1F",
+      "b": "31",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "hex_0x1f_same",
+      "a": "0x1F",
+      "b": "0x1F",
+      "path": "string",
+      "cmp": 0
+    },
+    {
+      "name": "hex_case_sensitive",
+      "a": "0x1F",
+      "b": "0x1f",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "double_sign",
+      "a": "++5",
+      "b": "5",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "lone_dot",
+      "a": ".",
+      "b": "0",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "nan_text",
+      "a": "NaN",
+      "b": "NaN",
+      "path": "string",
+      "cmp": 0,
+      "note": "text, never a float NaN: it equals itself"
+    },
+    {
+      "name": "infinity_text_vs_big_int",
+      "a": "Infinity",
+      "b": "9007199254740993",
+      "path": "string",
+      "cmp": 1
+    },
+    {
+      "name": "thousands_comma",
+      "a": "1,000",
+      "b": "1000",
+      "path": "string",
+      "cmp": -1
+    },
+    {
+      "name": "underscore_separator",
+      "a": "1_000",
+      "b": "1000",
+      "path": "string",
+      "cmp": 1
+    },
+    {
+      "name": "inner_space",
+      "a": "1 000",
+      "b": "1000",
+      "path": "string",
+      "cmp": -1,
+      "note": "the inner space survives the trim"
+    },
+    {
+      "name": "trailing_unit",
+      "a": "5kg",
+      "b": "5",
+      "path": "string",
+      "cmp": 1
+    },
+    {
+      "name": "sci_negative_exponent",
+      "a": "1e-3",
+      "b": "0.001",
+      "path": "string",
+      "cmp": 1
+    }
+  ]
+}

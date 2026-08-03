@@ -67,7 +67,9 @@ run the import; I read the result). In order:
 - [ ] **[auto] D — config errors** (badcode/badtype/matrix) + survey muting
 - [ ] **[manual→auto] E — out-of-scope MDC** (you import `-99`; I verify not flagged)
 - [ ] **[auto] F — survey parity** (generic messages, submit block)
-- [ ] **[auto] G — off-instrument folding + SEC-005** (no raw value in page source)
+- [ ] **[auto] G — off-instrument folding + SEC-005** (no raw value in the page
+      source, except the 1.6.0 baked literal an entitled viewer is meant to get —
+      all four rows of Section G)
 - [ ] **[manual→auto] H — audit + scan** (you import/race a save; I read the log + scan)
 - [ ] **[auto] I — browsers + cross-mode regression + pid 134**
 - [ ] **[auto] J — performance sanity**
@@ -93,6 +95,11 @@ the 1.4.1–1.4.3 fixes, so this deploy is the first chance. From
 - [ ] **[auto] §7 SEC-005 sweep.** grep every testbed form's page source for the
       sentinel `ZZTOPSECRET77` (1.4.x) and `ZZCHOICES99` (1.5.0) — neither may
       appear in `inspire-validator-config` or any AJAX response.
+      **On 1.6.0 and later this expectation splits in two:** a viewer entitled to
+      read the referenced instrument now receives the value on purpose, baked
+      into the condition as a `["lit", …]` operand, and only a survey or a user
+      without those rights must see nothing. Run it per §7.1a/§7.1b of
+      [`LIVE_TEST_PLAN.md`](LIVE_TEST_PLAN.md), not as a single grep.
 - [ ] **[auto] §8 audit log.** Confirm `redcap_save_record` writes the expected
       module-log entries for each mode. **Watch specifically for the open
       "audit log not firing live" question** (see the

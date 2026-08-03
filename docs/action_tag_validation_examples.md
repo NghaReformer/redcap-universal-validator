@@ -303,8 +303,10 @@ Note the two conditions do different jobs: `assert` is the **test**, `when` is t
 - **An empty field is inert.** A constraint never demands a value — that is
   `@UVREQUIRED`'s job. The two compose cleanly.
 - Sits on Text, Notes, dropdown, radio, yes/no, true/false, **calc** and slider fields.
-  Any field type — including checkbox and file — may be *referenced* inside the
-  condition; the restriction is only on the field the tag sits on.
+  Most field types may be *referenced* inside the condition, checkbox included (as
+  `[field(code)]`). The two exceptions are **file** and **descriptive** fields:
+  they have no comparable value, and referencing one is a configuration error when the
+  rule is saved (`Logic::checkRefs`).
 - The server audit honors the constraint against saved values (logged as
   `type: constraint`).
 - **Cross-form (1.6.0).** A comparison between the field you are typing in and a field
@@ -312,13 +314,22 @@ Note the two conditions do different jobs: `assert` is the **test**, `when` is t
   entitled to read that instrument — staff data entry, with REDCap rights to it. The
   value is resolved on the server and baked into the condition, so the check reacts to
   every keystroke exactly as a same-instrument one does.
+- **A failure names what it was compared against.** On a staff form the message ends
+  with *"(compared against `scr_screen_date`, read when this page was opened — reload if
+  it has changed since.)"*, so a stale snapshot is distinguishable from a real
+  violation. Survey respondents get the plain message, without field names.
 - On a **survey**, or for a user **without rights** to the referenced instrument, the
-  value is never sent to the page. The rule is then **deferred**: the browser shows no
-  verdict and never blocks, and the post-save audit plus the Validation scan enforce it.
-  Deferring costs live feedback, never enforcement.
-- **One event only.** A reference to a field on a *different event* reads as empty, so
-  the constraint silently passes in the browser *and* in the audit. Keep both fields in
-  the same event.
+  value is never sent to the page. The rule is then **deferred**.
+- **Deferred means detection, not prevention.** A deferred rule shows no verdict and
+  never blocks, so the save is **accepted** and the value is written.
+  `redcap_save_record` fires *after* the write: the audit logs the violation to the
+  module log once it has happened, and the Validation scan finds it later on demand.
+  Deferring costs live feedback **and** the block; someone has to read the log or run
+  the scan.
+- **Unresolvable references are refused, not guessed (1.6.1).** See
+  [the condition language](#the-when-condition-language) for the three cases — a
+  different repeating instrument, a field not collected in this event, and a failed
+  read — and what still resolves normally.
 
 ### `@UVASSERT` JSON keys
 
@@ -635,15 +646,40 @@ Semantics:
     and the browser re-checks on every keystroke, exactly like a same-instrument rule.
     This only happens when you are entitled to read that instrument — authenticated data
     entry, with REDCap rights to it. Otherwise the value is withheld and the rule is
-    **deferred** (no verdict, never blocks; the audit enforces).
+    **deferred**: no verdict, never blocks, and **the save is accepted**. The audit runs
+    after the write and logs it; the Validation scan finds it later. Detection, not
+    prevention.
 
   Either way the page carries field names, your literals and booleans — plus, for the
   live case, values you already have the right to read. A survey respondent, or a user
   without rights to that instrument, never receives one. A brand-new record has no saved
   values, so such references resolve as `''`.
-- **Same event.** Off-instrument resolution is scoped to the event being rendered. A
-  reference to a field on a *different event* reads as empty, in the browser and in the
-  audit alike.
+- **A reference the module cannot resolve is refused, not treated as blank (1.6.1).**
+  Before 1.6.1 an unreadable reference was indistinguishable from a genuine blank, so a
+  rule could be checked against a `''` that had never been read, in the browser and in
+  the audit alike. Three cases are now detected positively:
+
+  - The field is on a **different repeating instrument**. Instance 3 of form A has no
+    defined pairing with any instance of form B — REDCap itself needs
+    `[instrument][instance]` smart variables to cross that boundary — so the module
+    refuses rather than picking an instance for you.
+  - The field is **not collected in this event**, and the project's instrument-event
+    mapping says so. Where that mapping cannot be read (a classic project, or a REDCap
+    build that does not expose it) the reference still reads as empty, so keep both
+    fields in one event either way.
+  - The **read failed** — a `getData` error, or a malformed result. The value is not
+    taken as blank.
+
+  What still resolves normally: a repeating instrument reading a non-repeating one, the
+  event's base row, two fields inside the **same** repeating instrument, and repeating
+  **events** (every form in the event shares the instance).
+
+  A refused reference makes the whole rule **deferred** — sibling terms of an `and`/`or`
+  still fold on their own merits, but no verdict is shown for the rule and nothing is
+  blocked. The reason names the field and the fix. For `@UVASSERT` the server reports it
+  as well: a `uvalidate-unconfigurable` module-log entry after a save (all three cases),
+  and a *Rule problems* line on the Validation scan page (the cross-repeating-instrument
+  case — the scan reads a whole record at once, so the other two cannot arise there).
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
   branching if you also want erasure.
@@ -960,12 +996,20 @@ since 1.6.0:
 - The screening date is resolved on the server and baked into the condition, so the check
   re-runs on every keystroke and blocks exactly like a same-instrument rule. Before 1.6.0
   this was frozen at page load, which rejected correct entries outright.
+- A failure says which field it was compared against and that the value was read when the
+  page opened, so you can tell a stale snapshot from a real violation and reload.
 - This requires you to be entitled to read the screening form: authenticated data entry,
   with REDCap rights to that instrument. On a **survey**, or without those rights, the
-  value is withheld and the rule is **deferred** — the browser states no verdict and never
-  blocks, and the post-save audit plus the Validation scan enforce it instead.
-- **One unreadable instrument defers the whole rule**, not just that term. A condition
-  spanning two other forms where you can read only one goes advisory in its entirety.
+  value is withheld and the rule is **deferred** — the browser states no verdict, nothing
+  is blocked, and **the save goes through**. The post-save audit logs it afterwards and
+  the Validation scan lists it on demand; neither can stop the write.
+- **One unresolvable reference defers the whole rule**, not just that term. A condition
+  spanning two other forms where you can read only one produces no verdict at all — not a
+  partial one, and not a warning.
+- If the screening form **repeats independently** of the diagnosis form, this rule is
+  refused as a configuration problem (there is no defined pairing between their
+  instances) — see [the condition language](#the-when-condition-language). Put the two
+  fields on the same instrument, or reference a field that does not repeat.
 
 `and` / `or` / `not` combine as many of these as you like — a single rule may span several
 instruments:

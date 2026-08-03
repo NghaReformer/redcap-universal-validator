@@ -512,6 +512,10 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
   yet, so those references read as empty).
+- **A reference that cannot be resolved is refused, not read as blank** (1.6.1):
+  a field on a different repeating instrument, a field not collected in this
+  event, or a read that failed. The rule stops checking and reports why — see the
+  cross-instrument question in [Part 8](#part-8-troubleshooting-and-faq).
 - **The server audit honors the same condition**, so the browser and the audit
   agree on when a rule applies.
 - Comparisons are numeric when both sides look numeric (`[age]>'9'` with age `10`
@@ -734,13 +738,27 @@ Yes, since 1.6.0, as long as they are in the **same event** — and it is checke
 live as you type, the same as a same-instrument rule. Combine as many as you
 like with `and` / `or` / `not`; one rule may span several forms.
 
-Two things to know. First, live checking needs you to be **entitled to read**
-the referenced instrument (staff data entry, with REDCap rights to it). On a
-survey, or without those rights, the value is never sent to the page: the rule
-is then **deferred** — no verdict is shown and the save is never blocked, and
-the post-save audit and Validation scan enforce it instead. Second, a reference
-to a field on a **different event** reads as empty, so the check silently
-passes everywhere; keep both fields in one event.
+Three things to know.
+
+First, live checking needs you to be **entitled to read** the referenced
+instrument (staff data entry, with REDCap rights to it). On a survey, or without
+those rights, the value is never sent to the page and the rule is **deferred**.
+
+Second, **a deferred rule is not enforced anywhere.** No verdict is shown, the
+save is never blocked, and the value is written. The server audit runs *after*
+the write, so it can only log the violation to the module log once it has
+happened; the **Validation scan** page finds it later on demand. That is
+detection, not prevention — someone has to read the log or run the scan.
+
+Third, some references cannot be resolved at all, and since 1.6.1 those are
+**refused rather than guessed**: a field on a *different repeating instrument*
+(instance 3 of one form has no defined counterpart in another), a field not
+collected in *this event* (where the module can read the project's
+instrument-event mapping), or a value whose read *failed*. The rule stops
+checking and names the field and the fix, instead of comparing against a blank it
+never read. A repeating form reading a non-repeating one, the event's base row,
+two fields in the same repeating instrument and repeating events all keep
+working.
 
 **Does it block API or Data Import Tool writes?**
 No. Enforcement is a browser behavior only. Those paths may be *audited* after the

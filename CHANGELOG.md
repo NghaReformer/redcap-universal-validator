@@ -1,6 +1,113 @@
 # Changelog
 
-## 1.6.0 — cross-form `@UVASSERT` actually works in the browser
+## 1.6.0 — cross-form `@UVASSERT`
+
+> The first cut of this release (local tag, never pushed) was reviewed and rejected: cross-form
+> `@UVASSERT` was correct only inside a narrow same-event, non-repeating envelope, and outside it
+> produced false passes, false failures and false audit entries. Nine findings were filed; all
+> nine were independently reproduced with executable probes before anything was changed. The
+> sections below fold those fixes into 1.6.0 rather than shipping a broken tag and superseding it.
+
+### Resolution is now three-state, not "value or blank"
+
+Four findings (H-01, H-04, M-01, M-03) had one root cause: `readValues()` could not distinguish
+**"resolved to blank"** from **"could not be resolved"**. Both arrived as "absent from the value
+map", which `Logic::operandValue()` renders as `''` — so the module confidently validated against
+a value it had never read. It now reports one of four states per field:
+
+| state | meaning |
+|---|---|
+| `ok` | located; the value may legitimately be empty |
+| `missing` | the field's form is not designated for this event (`M-01`) |
+| `ambiguous` | the field lives in a **different repeating instrument** (`H-01`) |
+| `unreadable` | `getData` threw, returned a non-array, or the record was absent (`H-04`) |
+
+Anything other than `ok` means *no answer*: `fold()` refuses to bake it, marks the rule
+`deferred`, and records **why**. The browser states no verdict and never blocks; the save audit
+and the Validation scan skip the rule and emit an `unconfigurable` note naming the field and the
+reason, instead of logging a violation for correct data on every save and every scan. The guard
+covers the `when` gate as well as the `assert` — a gate evaluated against a value that was never
+read turns a rule silently off, which is no better than turning it silently on.
+
+`unreadable` is stronger still: an empty value map is indistinguishable from "every field is
+blank" for **every** rule kind, not just constraints — `@UVREQUIRED` would report a populated
+field as blank and a check rule would pass an invalid ID — so a failed read aborts the whole
+audit for that save with a logged error rather than auditing data the module does not have.
+
+A **genuinely saved-blank** reference still resolves `ok` and still bakes as `['lit','']` — that
+distinction is the whole point, and it is pinned by tests.
+
+**Cross-repeating-instrument references are refused, not guessed.** Instance 3 of one repeating
+form has no defined counterpart in another; REDCap itself requires explicit
+`[instrument][instance]` smart variables to cross that boundary. Guessing by instance number
+would be silently wrong whenever the two forms are not created in lockstep, and indistinguishable
+from a real violation. Still fully supported: repeating → non-repeating, the base event row, two
+fields on the **same** repeating instrument, and repeating **events**.
+
+`missing` is derived from the project's instrument-event mapping — a positive fact — never from
+mere absence of data, which is just a blank. Where the mapping cannot be established the module
+does **not** claim `missing`, which fails open to previous behaviour rather than deferring rules
+wrongly.
+
+### Editing the referenced form is no longer unguarded (H-02)
+
+A cross-form constraint lives on the instrument carrying the tag, so breaking the relationship by
+editing **only the referenced side** was completely silent: that form installs no client
+validator, and the audit's instrument scope excluded the dependent rule. `redcap_save_record` now
+also audits **reverse dependencies** — rules whose own field is not on the saved instrument but
+whose `assert`/`when` references a field that is. Scope is widened per-rule only, so **PER-001
+still holds**: an unrelated instrument with no dependants reads no data and audits nothing, which
+its test asserts explicitly.
+
+### Numeric comparison is exact decimal, never float (H-03)
+
+`9007199254740992 = 9007199254740993` returned **true** in both runtimes, so the documented
+`@UVASSERT="[id]=[id_confirm]"` recipe accepted two different identifiers. Every numeric-looking
+operand was cast to IEEE-754, losing precision above 2^53 and on long fractions. `Logic::decCmp`
+and its twin `QRID_whenDecCmp` now compare decimal strings exactly — no float, no `bcmath`, no
+`BigInt`. Documented equivalences are unchanged (`02` = `2`, `2.50` = `2.5`, `.5` = `0.5`,
+`-0` = `0`), and values `NUM_RE` rejects (`1e3`, `0x1F`) still take the string path as before.
+
+### Blank means the same thing on both sides (M-04)
+
+The browser went inert on any JS-trimmable host value while the server only short-circuited on
+exact `null`/`''`, so a whitespace-only entry showed no verdict yet logged a violation. Both now
+use the charlist the two evaluators already trim with before comparing (`" \t\r\n"`).
+
+### A stale snapshot is now explicable (M-02)
+
+Off-page operands are resolved once, when the page is built. If someone edits that form in
+another tab the verdict here goes stale, and a wrong **hard** block was a dead end with no
+explanation. A failure now names the field it was compared against and says the value was read
+when the page was opened, so the user can reload. Survey respondents still get generic wording.
+
+### A deferred rule now says why
+
+The reason a rule stopped checking was built on the server and thrown away: nothing in the engine
+ever read `deferredWhy`, because a deferred rule short-circuits before any message is composed. A
+rule that goes quiet with no explanation is the same silent failure the reason exists to prevent,
+so staff data-entry forms now show it as a neutral notice — never a pass/fail verdict, never a
+block. Survey respondents still see nothing: the reasons name other instruments and fields, and a
+respondent cannot act on a design problem anyway.
+
+Reasons are attributed **per rule**. The first cut collected them page-wide and attached the whole
+list to whichever rule deferred first, so that rule was blamed for fields its condition never
+mentioned while the rule whose problem it actually was got nothing.
+
+### Deferred rules are DETECTION, not enforcement (H-05)
+
+`redcap_save_record` fires **after** the write — its own docblock has always said so — and cannot
+prevent persistence by any channel. The previous release notes and documentation called the
+deferred path "enforcement" and claimed "deferring costs live feedback, never enforcement". That
+was materially false: for a survey respondent, or a user without rights to the referenced
+instrument, a `blockSave:"hard"` rule is demoted to `off`, the invalid value **is written**, and
+the audit logs it afterwards. Every such claim across README, the user guide and the action-tag
+examples has been rewritten to say plainly: the save is accepted, the audit records it, the scan
+can find it later.
+
+---
+
+### The original 1.6.0 change, for context
 
 A constraint whose `assert` referenced a field on **another instrument** was folded whole to a
 boolean at page load, freezing the verdict against the **saved** value of the field the user was

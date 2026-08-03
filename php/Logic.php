@@ -38,11 +38,16 @@
  * record data.
  *
  * Evaluation semantics:
- *   - a missing or empty field value resolves to '' (the server value reader
- *     drops empties, so "missing" and "empty" are the same thing by design);
+ *   - a missing or empty field value resolves to '' HERE. That is safe only
+ *     because the CALLER no longer conflates the two: readValues() reports a
+ *     three-state resolution, and a reference it could not actually resolve
+ *     (off-event, cross-repeating-instrument, failed read) never reaches
+ *     evaluate() at all — the rule is deferred and the reason surfaced instead
+ *     of being judged against a '' that was never read;
  *   - a checkbox ref [f(code)] resolves to '1' when that code is checked,
  *     otherwise '0' (field absent from the value map counts as unchecked);
- *   - comparison is numeric (as floats) iff BOTH resolved sides match
+ *   - comparison is numeric (EXACT decimal, never floats — see decCmp; a float
+ *     cast merged distinct integers above 2^53) iff BOTH resolved sides match
  *     ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$ after ASCII trimming — deliberately
  *     no exponents or hex, where PHP and JavaScript number parsing diverge —
  *     otherwise an exact, case-sensitive string comparison (strcmp ordering;
@@ -187,27 +192,44 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false)
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [])
     {
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot);
                 return [$ast[0], $out];
             case 'not':
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen)];
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
                 $offPage = [];                       // operand slots (2|3) needing the server
+                $thisBlocked = false;                // per-COMPARISON, never tree-wide
                 foreach ([2, 3] as $slot) {
                     $op = $ast[$slot];
                     if ($op[0] !== 'ref') continue;
                     $refs++;
+                    // UNRESOLVED (1.6.1): the caller could not actually read this
+                    // field — off-event, on another repeating instrument, or the
+                    // read failed. Evaluating it would compare against a '' we
+                    // never saw, so this comparison is settled to a constant AND
+                    // the rule is frozen, whichever side the field is on.
+                    if (isset($unresolved[$op[1]])) {
+                        $blocked[$op[1]] = $unresolved[$op[1]];
+                        $frozen = true;
+                        $thisBlocked = true;
+                    }
                     if (isset($liveFields[$op[1]])) $live++;
                     else $offPage[] = $slot;
                 }
+                // An unresolvable operand poisons only ITS OWN comparison; sibling
+                // terms of the same and/or still fold on their own merits. The
+                // constant is false so the rule cannot silently "pass" on data we
+                // never read — the rule is deferred anyway, so the client ignores
+                // this value and only the audit's own guard consumes it.
+                if ($thisBlocked) return ['const', false];
                 // all references readable in the browser -> keep it live
                 if ($refs > 0 && $refs === $live) return $ast;
                 // MIXED, and every off-page field is one this viewer may read ->
@@ -219,6 +241,7 @@ class Logic
                     }
                     if ($ok) {
                         foreach ($offPage as $slot) {
+                            $snapshot[$ast[$slot][1]] = true;   // read once, at render
                             $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values)];
                         }
                         return $ast;
@@ -486,21 +509,67 @@ class Logic
         return (string) $v;
     }
 
+    /**
+     * Exact decimal comparison of two NUM_RE-shaped strings: -1, 0 or 1.
+     *
+     * Pure string work — no float, no bcmath, no BigInt — because casting to
+     * IEEE-754 silently merged distinct values above 2^53: `9007199254740992`
+     * and `9007199254740993` compared EQUAL in both runtimes, so the documented
+     * `@UVASSERT="[id]=[id_confirm]"` recipe accepted two different identifiers
+     * (H-03). Long decimal fractions lost precision the same way. The twin is
+     * QRID_whenDecCmp in js/engine.js; tests/when_fixture.json pins both.
+     *
+     * Documented equivalences that MUST survive: '02' = '2', '2.50' = '2.5',
+     * '.5' = '0.5', '-0' = '0'.
+     */
+    private static function decCmp($a, $b)
+    {
+        $sa = 1; $sb = 1;
+        if ($a !== '' && ($a[0] === '-' || $a[0] === '+')) { $sa = ($a[0] === '-') ? -1 : 1; $a = substr($a, 1); }
+        if ($b !== '' && ($b[0] === '-' || $b[0] === '+')) { $sb = ($b[0] === '-') ? -1 : 1; $b = substr($b, 1); }
+
+        $pa = explode('.', $a, 2); $pb = explode('.', $b, 2);
+        $ia = ltrim($pa[0], '0'); $ib = ltrim($pb[0], '0');
+        $fa = isset($pa[1]) ? rtrim($pa[1], '0') : '';
+        $fb = isset($pb[1]) ? rtrim($pb[1], '0') : '';
+
+        // Zero is unsigned, so -0 == 0 and -0.0 == 0.
+        $za = ($ia === '' && $fa === '');
+        $zb = ($ib === '' && $fb === '');
+        if ($za && $zb) return 0;
+        if ($za) return $sb > 0 ? -1 : 1;
+        if ($zb) return $sa > 0 ? 1 : -1;
+        if ($sa !== $sb) return $sa > 0 ? 1 : -1;
+
+        // Same sign: compare magnitudes, then apply the sign once.
+        $mag = 0;
+        if (strlen($ia) !== strlen($ib)) {
+            $mag = (strlen($ia) > strlen($ib)) ? 1 : -1;
+        } elseif ($ia !== $ib) {
+            $mag = ($ia > $ib) ? 1 : -1;         // equal length => lexicographic is numeric
+        } else {
+            $n = max(strlen($fa), strlen($fb));
+            $fa = str_pad($fa, $n, '0');
+            $fb = str_pad($fb, $n, '0');
+            if ($fa !== $fb) $mag = ($fa > $fb) ? 1 : -1;
+        }
+        return $sa > 0 ? $mag : -$mag;
+    }
+
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
     private static function compare($op, $a, $b)
     {
         $a = trim((string) $a, " \t\r\n");
         $b = trim((string) $b, " \t\r\n");
         if (preg_match(self::NUM_RE, $a) && preg_match(self::NUM_RE, $b)) {
-            $fa = (float) $a;
-            $fb = (float) $b;
+            $c = self::decCmp($a, $b);
             switch ($op) {
-                case '=':  return $fa == $fb;
-                case '<>': return $fa != $fb;
-                case '>':  return $fa > $fb;
-                case '<':  return $fa < $fb;
-                case '>=': return $fa >= $fb;
-                case '<=': return $fa <= $fb;
+                case '=':  return $c === 0;
+                case '<>': return $c !== 0;
+                case '>':  return $c > 0;
+                case '<':  return $c < 0;
+                case '>=': return $c >= 0;
+                case '<=': return $c <= 0;
             }
             return false;
         }

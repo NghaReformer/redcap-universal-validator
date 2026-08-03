@@ -85,6 +85,47 @@ failure instead of logging a false verdict. `risky_js.cjs` additionally runs
 every `safe` pattern against adversarial inputs under a time budget, so "safe"
 is measured, not assumed.
 
+## `numeric_fixture.json` — the exact-decimal comparison contract
+
+Both runtimes compare two `NUM_RE`-shaped operands as decimal **strings**
+(`Logic::decCmp` in PHP, `QRID_whenDecCmp` in JS) — no float, no bcmath, no
+BigInt. They used to cast to IEEE-754 first, which merged distinct values:
+`9007199254740992` and `9007199254740993` compared equal, so the documented
+`@UVASSERT="[id]=[id_confirm]"` recipe accepted two different identifiers, and
+long fractions lost their tail the same way.
+
+```bash
+php  tests/numeric_php.php    # PHP comparator vs numeric_fixture.json
+node tests/numeric_js.cjs     # JS  comparator vs numeric_fixture.json
+```
+
+71 cases, each declaring one `cmp` of `-1`/`0`/`1`; the six verdicts (`=`, `<>`,
+`<`, `>`, `<=`, `>=`) are derived from it and run in all four operand shapes
+(field/field, field/literal, literal/field, literal/literal), so every operator
+is pinned per case — 1704 verdicts a side. Covered: the 2^53 neighbourhood and
+its negatives, 20- and 400-digit integers differing only in the last digit,
+17- and 200-place fractional tails, and the equivalences that must survive
+(`02`=`2`, `2.50`=`2.5`, `.5`=`0.5`, `-0`=`0`, `5.`=`5`, `+5`=`5`), plus
+mixed signs and ordering (`-5` > `-10`, `9` < `10`, `1.5` > `1.45`).
+
+Three properties make the pair hard to break quietly:
+
+- **Cross-runtime digest.** Each test sha256-hashes every verdict it produced
+  and compares it to `digest` in the fixture. PHP and JS hash the same list in
+  the same order, so the two cannot drift case-for-case even if someone edits a
+  single expectation.
+- **String-path proof.** Values `NUM_RE` rejects (`1e3`, `0x1F`, `1,000`,
+  `NaN`, `Infinity`, a vertical tab that the shared `" \t\r\n"` trim charlist
+  leaves in place) must fall through to byte comparison unchanged. Each test
+  re-derives those cases from its own byte/code-point comparison rather than
+  from the engine, which is what proves the fall-through happened. The PHP side
+  additionally asserts the declared path against `Logic::NUM_RE` directly; the
+  JS regex is module-private, so that check has no twin.
+- **Live float sentinels.** The 16 cases flagged `floatTrap` are the ones where
+  the old cast still gives a *different* answer; each test recomputes the float
+  verdict and fails if it now agrees, so a sentinel cannot rot into a case that
+  would pass either way.
+
 ## `hook_php.php` — the audit-path contract
 
 Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.

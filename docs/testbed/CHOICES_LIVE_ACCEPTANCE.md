@@ -125,12 +125,32 @@ Enable `uv_choices_test` as a survey (or use the public survey link).
 
 ---
 
-## Section G — off-instrument conditions & SEC-005 (no value leaks)
+## Section G — off-instrument conditions & SEC-005 (what may and may not leave the server)
+
+Since 1.6.0 "the off-page value never appears in the page source" is no longer
+the whole rule. It depends on **the shape of the comparison** and on **who is
+looking**:
+
+- **Off-page field vs a literal** (`[umt_pid]='UNIQ-1001'`) — no live side, so the
+  whole comparison is settled on the server and shipped as a boolean. The value
+  never leaves the server, for anybody.
+- **Off-page field vs a field on THIS form** — kept live by baking the off-page
+  value in as a `["lit", …]` operand, but **only** for a viewer entitled to read
+  that instrument (authenticated data entry, with REDCap rights to it). On a
+  survey, or without those rights, the comparison is settled to a boolean
+  instead — correct as of page load, and unable to react to anything typed after
+  it. (For `@UVASSERT` that also marks the rule deferred, so it states no verdict
+  and never blocks; a `@UVCHOICES` filter simply applies the settled result.)
+
+Both paths must be exercised; a clean grep on one proves nothing about the other.
+Use a sentinel that appears in no note or label (`ZZCHOICES99`).
 
 | # | Action | Expect |
 |---|---|---|
-| G1 | Add a temporary @UVCHOICES on a `uv_choices_test` field whose `when` references a field on **another** instrument (e.g. `uv_modes_test`), give that off-page field a saved value, load the form | the filter reflects the saved off-page value (server folds it) AND the page source (`inspire-validator-config`) carries only the folded boolean/AST — **never the off-page field's raw value** |
-| G2 | grep the rendered page source for any real saved value | only field names, the designer's own literals, codes, and booleans appear — no record value (SEC-005) |
+| G1 | Temporary @UVCHOICES on a `uv_choices_test` field whose `when` compares a field on **another** instrument (e.g. `uv_modes_test`) **to a literal**; give that off-page field the sentinel value; load the form | the filter reflects the saved off-page value (the server folded it) AND `inspire-validator-config` carries only the folded boolean — the sentinel appears **nowhere** in the page |
+| G2 | Change that `when` so the off-page field is compared **to a field on this form**, then load the form as a user **WITH** rights to the referenced instrument | the sentinel **is** present, and only as a `["lit","ZZCHOICES99"]` operand inside that rule's `whenAst`; the filter reacts live as the on-form field changes. A hit here is correct, not a leak |
+| G3 | Same rule, loaded on the **survey**, and again as a staff account **without** rights to the referenced instrument | the sentinel appears **nowhere** in the page; the comparison arrives as a settled boolean (SEC-005) |
+| G4 | grep the rendered page source of every testbed form for any other real saved value | only field names, the designer's own literals, codes, booleans — plus, in the G2 case alone, the one value that viewer already has the right to read |
 
 ---
 
@@ -179,7 +199,9 @@ Choice filtering adds per-code watchers, so:
 - [ ] Section D — config errors (+ survey muting)
 - [ ] Section E — out-of-scope values
 - [ ] Section F — survey parity
-- [ ] Section G — off-instrument folding + SEC-005
+- [ ] Section G — off-instrument folding + SEC-005 (all four rows: withheld on
+      the literal shape and for survey/no-rights, baked only for an entitled
+      viewer)
 - [ ] Section H — audit + scan
 - [ ] Section I — browsers + cross-mode regression + cross-project
 - [ ] Section J — performance

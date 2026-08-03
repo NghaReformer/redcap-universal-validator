@@ -1173,17 +1173,50 @@ function QRID_cmpStr(a, b){
   var ra = na - i, rb = nb - j;   /* one side is exhausted: the shorter string sorts first */
   return ra < rb ? -1 : (ra > rb ? 1 : 0);
 }
+/* Exact decimal comparison of two NUM_RE-shaped strings: -1, 0 or 1. Pure
+   string work — no Number, no BigInt — because parseFloat silently merged
+   distinct values above 2^53 (9007199254740992 === 9007199254740993), so the
+   documented [id]=[id_confirm] recipe accepted two different identifiers
+   (H-03). Twin of Logic::decCmp in php/Logic.php; tests/when_fixture.json and
+   tests/when_fuzz_php.php pin the pair. Equivalences that MUST survive:
+   "02"="2", "2.50"="2.5", ".5"="0.5", "-0"="0". */
+function QRID_whenDecCmp(a, b){
+  var sa = 1, sb = 1;
+  if(a.length && (a.charAt(0) === "-" || a.charAt(0) === "+")){ sa = a.charAt(0) === "-" ? -1 : 1; a = a.slice(1); }
+  if(b.length && (b.charAt(0) === "-" || b.charAt(0) === "+")){ sb = b.charAt(0) === "-" ? -1 : 1; b = b.slice(1); }
+  var da = a.split("."), db = b.split(".");
+  var ia = da[0].replace(/^0+/, ""), ib = db[0].replace(/^0+/, "");
+  var fa = (da.length > 1 ? da[1] : "").replace(/0+$/, "");
+  var fb = (db.length > 1 ? db[1] : "").replace(/0+$/, "");
+  var za = (ia === "" && fa === ""), zb = (ib === "" && fb === "");
+  if(za && zb) return 0;                     /* zero is unsigned: -0 === 0 */
+  if(za) return sb > 0 ? -1 : 1;
+  if(zb) return sa > 0 ? 1 : -1;
+  if(sa !== sb) return sa > 0 ? 1 : -1;
+  var mag = 0;
+  if(ia.length !== ib.length){
+    mag = ia.length > ib.length ? 1 : -1;
+  } else if(ia !== ib){
+    mag = ia > ib ? 1 : -1;                  /* equal length => lexicographic is numeric */
+  } else {
+    var n = Math.max(fa.length, fb.length);
+    while(fa.length < n) fa += "0";
+    while(fb.length < n) fb += "0";
+    if(fa !== fb) mag = fa > fb ? 1 : -1;
+  }
+  return sa > 0 ? mag : -mag;
+}
 function QRID_whenCompare(op, a, b){
   a = QRID_whenTrim(a); b = QRID_whenTrim(b);
   if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
-    var fa = parseFloat(a), fb = parseFloat(b);
+    var c = QRID_whenDecCmp(a, b);
     switch(op){
-      case "=":  return fa === fb;
-      case "<>": return fa !== fb;
-      case ">":  return fa > fb;
-      case "<":  return fa < fb;
-      case ">=": return fa >= fb;
-      case "<=": return fa <= fb;
+      case "=":  return c === 0;
+      case "<>": return c !== 0;
+      case ">":  return c > 0;
+      case "<":  return c < 0;
+      case ">=": return c >= 0;
+      case "<=": return c <= 0;
     }
     return false;
   }
@@ -2008,9 +2041,16 @@ function QRIDConstraintInit(QRID_CONFIG){
        and logs any violation (type: constraint). See php/Logic.php fold(). */
     var DEFERRED = !configError && !!cfg.deferred;
     if(DEFERRED) BLOCK = "off";
+    /* Off-page operands are resolved once, when the page is built. Naming them
+       on a failure lets the user tell a real violation from a stale snapshot
+       (someone edited the other form in another tab) and reload — without it a
+       wrong hard block is a dead end with no explanation (M-02). */
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length)
+                   ? cfg.snapshotFields : null;
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* applicability */
     return { configError: configError, assertGate: assertGate, gate: GATE, blockSave: BLOCK,
-             deferred: DEFERRED,
+             deferred: DEFERRED, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { constraint: true } };
@@ -2054,21 +2094,50 @@ function QRIDConstraintInit(QRID_CONFIG){
         input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
       }
       var V = act[0];
-      /* frozen assert: state no verdict rather than a stale one (see makeVariant) */
-      if(V.deferred){ inert(); return; }
+      /* Frozen assert: state no VERDICT rather than a stale one (see
+         makeVariant). But say WHY, on staff forms: the server builds a
+         human-readable reason ("… is on a different repeating instrument",
+         "… is not collected in this event") and silently discarding it is the
+         same M-05 silent failure the reason exists to prevent — the rule stops
+         checking and the only trace is a module-log entry the person typing the
+         value never sees. Survey respondents still get nothing: the reasons name
+         other instruments and fields they must not learn about, and they could
+         not act on a design problem anyway. Never blocks either way. */
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+            "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+          msg.innerHTML = "&#9888; Not checked here — " +
+            QRID_escapeHtml(V.deferredWhy.join(" ")) +
+            " The value is still checked after the save.";
+          input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null);
+          return;
+        }
+        inert(); return;
+      }
       var val = QRID_WHEN.readRef(fieldName, null);
-      if(val === null || String(val).trim() === ""){ inert(); return; }   /* empty field is inert */
+      /* Empty field is inert. Blankness MUST use the same charlist the two
+         evaluators trim with before comparing (QRID_whenTrim / Logic::compare),
+         not JS String.trim: String.trim also strips Unicode spaces such as
+         U+00A0, so a host value of " " went inert in the browser while the
+         server compared it untrimmed and logged a violation (M-04). */
+      if(val === null || QRID_whenTrim(val) === ""){ inert(); return; }
       var ok = true;
       try { ok = V.assertGate.active(); } catch(e){ ok = true; }          /* fail open: a gate bug never traps a save */
       styleMsg(msg, ok);
       input.style.outline = ok ? "2px solid #2e9e44" : "2px solid #c62828";
       setGuard(!ok, V.blockSave);
       QRID_setInvalidState(input, !ok);
-      msg.innerHTML = ok
-        ? "&#10003; OK."
-        : "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+      var base = V.message ? QRID_escapeHtml(V.message)
             : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
-                              : "This value fails its validation rule for this field."));
+                              : "This value fails its validation rule for this field.");
+      /* Survey respondents get no field names or technical detail, as elsewhere. */
+      if(!ok && V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(compared against ' +
+          QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since.)</span>";
+      }
+      msg.innerHTML = ok ? "&#10003; OK." : "&#10007; " + base;
     }
     var debounced = QRID_debounced(function(){ check(); });
     if(input.addEventListener){
@@ -3149,7 +3218,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                          the server had to freeze (an off-page ref this viewer may
                          not read): the verdict is stale the moment the user types,
                          so the client shows it as advisory and never blocks. */
-                      "assert", "assertAst", "message", "deferred",
+                      "assert", "assertAst", "message", "deferred", "deferredWhy", "snapshotFields",
                       /* unique mode (@UVUNIQUE) */
                       "uniqueWith", "uniqueScope", "uniqueSurveys",
                       /* choices mode (@UVCHOICES) */

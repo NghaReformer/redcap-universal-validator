@@ -169,14 +169,36 @@ Semantics worth knowing before relying on it:
     browser re-checks as you type. This requires you to be entitled to read that
     instrument — authenticated data entry, with REDCap rights to it. On a survey,
     or without those rights, the value is withheld and the rule is **deferred**
-    (no verdict, never blocks; the audit enforces).
+    (no verdict, never blocks — what that costs is spelled out under `@UVASSERT`
+    below).
 
   So the page carries field names, your own literals, booleans — and, only in the
   live case, values you already have the right to read. A survey respondent, or a
   user without rights to that instrument, never receives one. A brand-new record
-  has no saved values yet, so such refs resolve as `''`. Off-instrument
-  resolution is scoped to the **event being rendered**: a ref to a field on
-  another event reads as empty, in the browser and in the audit alike.
+  has no saved values yet, so such refs resolve as `''`.
+- **A reference the module cannot resolve is refused, not guessed** (1.6.1).
+  Until then an unreadable reference looked exactly like a genuine blank, and the
+  rule was checked against a `''` that had never been read. Three cases are now
+  detected positively:
+  - **A different repeating instrument.** Instance 3 of form A has no defined
+    counterpart in form B, so a reference across two independently repeating
+    instruments is treated as a configuration problem: the rule stops checking
+    and says why. Everything else still resolves — a repeating form reading a
+    non-repeating one, the event's base row, two fields in the same repeating
+    instrument, and repeating **events**.
+  - **A different event.** Where the module can read the project's
+    instrument-event mapping, a reference to a field on a form that is not
+    designated for the event being saved is refused the same way. Where that
+    mapping cannot be established (a classic project, or a REDCap build that does
+    not expose it), the reference still reads as empty — keep both fields in the
+    same event.
+  - **A read that failed.** A `getData` error or a malformed result defers the
+    rule instead of treating the missing value as blank.
+
+  In each case the browser shows no verdict and never blocks, and the reason
+  names the field and the fix. For `@UVASSERT` the server reports it too: a
+  `uvalidate-unconfigurable` module-log entry after a save, and a *Rule problems*
+  line on the Validation scan page.
 - **A false condition skips the rule — it never erases the value.** That is
   the deliberate difference from REDCap's own field branching, which erases
   hidden fields on save. Combine `when` with normal field branching if you
@@ -258,14 +280,24 @@ enforced with the same message/confirm/block modes as everything else:
   instrument in the same event. When you are entitled to read that field —
   staff data entry, with REDCap rights to its instrument — its value is resolved
   on the server and baked into the condition, so the check stays **live** as you
-  type and blocks exactly as a same-instrument one does. On a **survey**, or for
-  a user **without rights** to the referenced instrument, the value is never sent
-  to the page (SEC-005): the rule is then **deferred** — the browser shows no
-  verdict and never blocks, and the post-save audit plus the Validation scan
-  enforce it. Deferring costs live feedback, never enforcement.
-- **One event.** A reference to a field on a *different event* is not supported:
-  it reads as empty, so the constraint silently passes in the browser and in the
-  audit. Keep both fields in the same event.
+  type and blocks exactly as a same-instrument one does. A failure names the
+  off-page field it was compared against and says the value was read when the
+  page opened, so a stale snapshot (someone edited that form in another tab) is
+  distinguishable from a real violation — reload and it re-reads. Survey
+  respondents see the plain message, without field names.
+- **Deferred means detection, not prevention.** On a **survey**, or for a user
+  **without rights** to the referenced instrument, the value is never sent to the
+  page (SEC-005) and the rule is **deferred**: the browser shows no verdict and
+  never blocks, so the save is **accepted**. `redcap_save_record` fires *after*
+  the write, so the audit logs the violation to the module log once it has
+  happened, and the Validation scan can find it later. Deferring buys privacy at
+  the cost of both live feedback and the block — someone has to read the log or
+  run the scan.
+- **A reference the module cannot resolve is refused** (1.6.1) — a field on a
+  different repeating instrument, a field not collected in this event, or a read
+  that failed. The rule stops checking, and the reason names the field instead of
+  comparing against a blank that was never read; see the `when` section above for
+  the three cases and what still resolves normally.
 
 ## Conditional required — the `@UVREQUIRED` tag
 

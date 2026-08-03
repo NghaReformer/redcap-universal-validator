@@ -116,6 +116,45 @@ class UniversalValidator extends AbstractExternalModule
                     $fields[$f] = true;
                 }
             }
+
+            // REVERSE DEPENDENCIES (H-02). A cross-form constraint lives on the
+            // instrument carrying the tag, so editing only the REFERENCED side
+            // used to change the relationship with nothing checking it: the
+            // referenced form installs no client validator, and the audit's
+            // instrument scope excluded the dependent rule. Silent corruption of
+            // a previously valid pair, findable only by re-saving the host form
+            // or running the manual scan.
+            //
+            // A rule is a dependant of this save when its own field is NOT on the
+            // saved instrument but its assert/when REFERENCES a field that is.
+            // Those rules — and only those — are added back, so PER-001 still
+            // holds: an unrelated instrument with no dependants reads no data and
+            // audits nothing, exactly as before.
+            $dependents = [];
+            if ($onForm !== null) {
+                foreach ($rules as $ruleIndex => $r) {
+                    if (!empty($r['configError'])) continue;
+                    $ownFieldOnForm = false;
+                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                        if (isset($onForm[$f])) { $ownFieldOnForm = true; break; }
+                    }
+                    if ($ownFieldOnForm) continue;      // already audited by the normal scope
+                    $touches = false;
+                    foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
+                        $p = Logic::parse($cond);
+                        if (empty($p['ok'])) continue;
+                        foreach (Logic::referencedFields($p['ast']) as $ref) {
+                            if (isset($onForm[$ref[0]])) { $touches = true; break 2; }
+                        }
+                    }
+                    if (!$touches) continue;
+                    $dependents[$ruleIndex] = true;
+                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                        if (isset($dupes[$f])) continue;
+                        $fields[$f] = true;
+                    }
+                }
+            }
             if (!$fields) return;
 
             // Parse each live rule's "when" condition ONCE (false sentinel for a
@@ -169,15 +208,41 @@ class UniversalValidator extends AbstractExternalModule
             // Read every audited + condition-referenced field for this exact
             // record/event/instance in ONE getData call instead of one call per
             // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
-            $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true);
+            $auditResolution = [];
+            $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true, $auditResolution);
+
+            // A FAILED read yields an empty value map, and an empty value map is
+            // indistinguishable from "every field is blank" to every rule kind —
+            // not just constraints. @UVREQUIRED would report a populated field as
+            // blank, and a check rule would silently pass an invalid ID. There is
+            // nothing to audit, so say so loudly and stop, rather than auditing
+            // data we do not have (H-04).
+            foreach ($auditResolution as $rstate) {
+                if ($rstate === 'unreadable') {
+                    $this->logAuditError($logMode, $project_id, $record, $instrument,
+                        new \RuntimeException('the saved values could not be read, so no rule was checked for this save'),
+                        'audit');
+                    return;
+                }
+            }
 
             foreach ($rules as $ruleIndex => $rule) {
                 if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
                 // Each rule is isolated: one rule blowing up must not silently
                 // abort the audit of every later rule (COR-002).
                 try {
-                    $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null);
+                    // A dependant's own field is by definition NOT on the saved
+                    // instrument, so widen the scope with just that rule's fields
+                    // — never with the whole project, which is what PER-001
+                    // exists to prevent.
+                    $scope = $onForm;
+                    if (isset($dependents[$ruleIndex]) && $scope !== null) {
+                        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $df) {
+                            $scope[$df] = true;
+                        }
+                    }
+                    $this->auditRule($rule, $ruleIndex, $values, $dupes, $scope, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution);
                 } catch (\Throwable $e) {
                     $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
                 }
@@ -194,9 +259,9 @@ class UniversalValidator extends AbstractExternalModule
      * the ONE dispatch shared with the project scan page — the hook and the
      * scan can never disagree about what a violation is.
      */
-    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null)
+    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null, array $resolution = [])
     {
-        $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst);
+        $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution);
         foreach ($f['unconfigurable'] as $u) {
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
         }
@@ -217,7 +282,7 @@ class UniversalValidator extends AbstractExternalModule
      *   ['invalid'         => [ ['field','value','algo','type','reason'], ... ],
      *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ]]
      */
-    private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null)
+    private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null, array $resolution = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
 
@@ -270,7 +335,7 @@ class UniversalValidator extends AbstractExternalModule
                 'type'   => isset($rule['type']) ? $rule['type'] : 'single',
                 'fields' => $rule['fields'],
             ], $branch);
-            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null);
+            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution);
         }
 
         $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
@@ -302,6 +367,19 @@ class UniversalValidator extends AbstractExternalModule
             if (!is_array($whenAst)) {
                 $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "when" condition cannot be evaluated — rule skipped'];
                 return $out;
+            }
+            // The gate gets the SAME resolution guard as the assert below. A
+            // "when" over a reference this context could not resolve (off-event,
+            // a different repeating instrument, a failed read) would otherwise be
+            // evaluated against a '' that was never read, silently turning the
+            // rule off — or on — for the wrong reason. Surface it instead.
+            foreach (Logic::referencedFields($whenAst) as $ref) {
+                $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'the "when" condition ' . self::resolutionProblem($state, $ref[0])];
+                    return $out;
+                }
             }
             if (!Logic::evaluate($whenAst, $values)) return $out;
         }
@@ -415,11 +493,32 @@ class UniversalValidator extends AbstractExternalModule
                 $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "assert" condition cannot be evaluated — field skipped'];
                 return $out;
             }
+            // A reference the context could not actually RESOLVE (off-event, on
+            // a different repeating instrument, or a failed read) must not be
+            // evaluated: Logic::operandValue would render it '' and the assert
+            // would "fail" against a value we never read, logging a violation
+            // for correct data on every save and every scan (H-01/H-04/M-01).
+            // Surface it instead — the module's rule is that nothing fails
+            // silently (M-05).
+            foreach (Logic::referencedFields($a['ast']) as $ref) {
+                $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'the "assert" condition ' . self::resolutionProblem($state, $ref[0])];
+                    return $out;
+                }
+            }
             foreach ($rule['fields'] as $field) {
                 if (isset($dupes[$field])) continue;
                 if ($onForm !== null && !isset($onForm[$field])) continue;
                 $value = isset($values[$field]) ? $values[$field] : null;
-                if ($value === null || $value === '' || is_array($value)) continue; // inert when empty (or non-scalar)
+                // Inert when blank. Whitespace-only counts as blank on BOTH
+                // sides now: the client already trims with this charlist before
+                // deciding inertness, and the two evaluators trim with it before
+                // comparing, so anything else made the browser silent while the
+                // server logged a violation (M-04).
+                if ($value === null || is_array($value)) continue;
+                if (trim((string) $value, " \t\r\n") === '') continue;
                 if (!Logic::evaluate($a['ast'], $values)) {
                     $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . $rule['assert']];
                 }
@@ -751,21 +850,27 @@ class UniversalValidator extends AbstractExternalModule
         }
         if (!$asts) return $rules;
 
-        // Fields the browser can read on this page. Unknown instrument (should
-        // not happen on the page hooks) => fold nothing rather than fold a
-        // field the user is about to edit; off-page refs then read '' in the
-        // browser and the server audit stays the backstop.
+        // Fields the browser can read on this page. An UNKNOWN instrument means
+        // the dictionary is unavailable, so we cannot tell what is on the page:
+        // nothing is live, and every rule is deferred below. Declaring the refs
+        // live instead (the pre-1.6.1 fallback) shipped live ['ref', …] operands
+        // for fields that are not in the DOM, which the browser then read as ''
+        // and validated against — a verdict computed from a value it never had
+        // (M-03). $live = [] alone is not enough: with no live side fold() never
+        // sets $frozen, so the deferral has to be forced explicitly.
         $live = $this->fieldsOnInstrument($pid, $instrument);
-        if ($live === null) $live = $refs;
+        $unknownForm = ($live === null);
+        if ($unknownForm) $live = [];
 
         $values = [];
+        $resolution = [];
         if ($refs && $record !== null && $record !== '') {
             try {
-                $values = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true);
+                $values = $this->readValues($pid, $record, array_keys($refs), $event_id, $instrument, $repeat_instance, true, $resolution);
             } catch (\Throwable $e) {
-                // no values: every off-page comparison folds against '' — the
-                // conservative direction (a rule that does not fire never traps
-                // a save) and the audit still sees the truth.
+                // readValues already reports 'unreadable' per field for a failed
+                // read; this catch only covers a throw from outside it.
+                foreach (array_keys($refs) as $rf) $resolution[$rf] = 'unreadable';
             }
         }
 
@@ -774,33 +879,90 @@ class UniversalValidator extends AbstractExternalModule
         // stays LIVE instead of freezing at page-load truth (see Logic::fold).
         $disclosable = $this->disclosableFields($pid, $context, array_keys($refs), $instrument);
 
+        // A field we could not actually resolve must never be baked and must
+        // never be evaluated: baking it would ship ['lit',''] and validate the
+        // user's keystrokes against a value we never read, which is exactly the
+        // frozen-verdict class 1.6.0 set out to remove (H-01/H-04/M-01).
+        $unresolved = [];
+        foreach ($resolution as $f => $state) {
+            if ($state !== 'ok') {
+                $unresolved[$f] = $state;
+                unset($disclosable[$f]);
+            }
+        }
+
         $folded = [];
-        $frozen = [];   // condition text => the live side had to be given up
+        $frozen = [];   // condition text => a live side had to be given up
+        $blocked = [];  // condition text => field => why it could not be resolved
+        $snapshot = []; // condition text => off-page fields baked at render time
         foreach ($asts as $w => $ast) {
             $f = false;
-            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f);
-            $frozen[$w] = $f;
+            $b = [];
+            $sn = [];
+            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn);
+            $frozen[$w] = $f || $unknownForm;
+            $blocked[$w] = $b;
+            $snapshot[$w] = $sn;
         }
+        // Surface every unresolved reference as a visible configuration notice
+        // rather than a silent non-verdict. Reasons are collected PER RULE: a
+        // page-global list assigned to whichever rule deferred first blamed that
+        // rule for a field its own condition never mentions, and told the rule
+        // whose problem it actually was nothing at all.
+        $notes = [];    // rule index => [reason, ...]
+        $noteFor = function ($i, $cond) use ($blocked, &$notes) {
+            foreach (isset($blocked[$cond]) ? $blocked[$cond] : [] as $field => $state) {
+                $notes[$i][$field . '|' . $state] = self::resolutionProblem($state, $field);
+            }
+        };
         foreach ($rules as $i => $r) {
             if (!empty($r['configError'])) continue;
             if (isset($r['when']) && isset($folded[$r['when']])) {
                 $rules[$i]['whenAst'] = $folded[$r['when']];
+                // An unresolvable "when" gates on a value we never read, so the
+                // rule must not act on it either.
+                if (!empty($blocked[$r['when']])) { $rules[$i]['deferred'] = true; $noteFor($i, $r['when']); }
             }
             if (isset($r['assert']) && isset($folded[$r['assert']])) {
                 $rules[$i]['assertAst'] = $folded[$r['assert']];
                 // A frozen ASSERT must never block: its verdict is stale the
-                // moment the user types. The post-save audit still enforces it.
+                // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
+                if (!empty($blocked[$r['assert']])) $noteFor($i, $r['assert']);
+                // Off-page operands are read ONCE, when the page is built. If
+                // someone edits that other form in another tab the verdict here
+                // goes stale, and a wrong HARD block would otherwise be a dead
+                // end with no explanation (M-02). Name the fields so the client
+                // can tell the user to reload.
+                if (!empty($snapshot[$r['assert']])) {
+                    $rules[$i]['snapshotFields'] = array_keys($snapshot[$r['assert']]);
+                }
             }
             if (isset($r['branches']) && is_array($r['branches'])) {
                 foreach ($r['branches'] as $bi => $b) {
                     if (isset($b['when']) && isset($folded[$b['when']])) {
                         $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']];
+                        if (!empty($blocked[$b['when']])) { $rules[$i]['branches'][$bi]['deferred'] = true; $noteFor($i, $b['when']); }
                     }
                     if (isset($b['assert']) && isset($folded[$b['assert']])) {
                         $rules[$i]['branches'][$bi]['assertAst'] = $folded[$b['assert']];
                         if (!empty($frozen[$b['assert']])) $rules[$i]['branches'][$bi]['deferred'] = true;
+                        if (!empty($blocked[$b['assert']])) $noteFor($i, $b['assert']);
                     }
+                }
+            }
+        }
+        foreach ($notes as $i => $why) {
+            if (isset($rules[$i])) $rules[$i]['deferredWhy'] = array_values($why);
+        }
+        // A rule deferred ONLY because the dictionary was unavailable has no
+        // blocked field to name, but the designer still deserves a reason.
+        if ($unknownForm) {
+            foreach ($rules as $i => $r) {
+                if (!empty($r['deferred']) && empty($rules[$i]['deferredWhy'])) {
+                    $rules[$i]['deferredWhy'] = ['could not read the data dictionary for this project, so the '
+                        . 'fields on this form are unknown — the rule is not checked here rather than '
+                        . 'checked against values that may not be on the page.'];
                 }
             }
         }
@@ -1850,7 +2012,7 @@ class UniversalValidator extends AbstractExternalModule
                             self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $dupes);
                             continue;
                         }
-                        $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, null, $pid, $rec, $ctx['event_id'], null);
+                        $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, null, $pid, $rec, $ctx['event_id'], null, self::contextResolution($ctx));
                         foreach ($f['invalid'] as $v) {
                             $result['violations'][] = [
                                 'record' => (string) $rec, 'event_id' => $ctx['event_id'],
@@ -1898,23 +2060,62 @@ class UniversalValidator extends AbstractExternalModule
         $out = [];
         foreach ($recordNode as $k => $node) {
             if ($k === 'repeat_instances' || !is_array($node)) continue;
-            $out[] = ['event_id' => $k, 'instance' => 1, 'values' => self::cleanRow($node)];
+            // 'instrument' => null: the base event row is not instrument-scoped,
+            // so any field present here is unambiguously resolvable.
+            $out[] = ['event_id' => $k, 'instance' => 1, 'instrument' => null,
+                      'values' => self::cleanRow($node), 'repeatForms' => []];
         }
         if (isset($recordNode['repeat_instances']) && is_array($recordNode['repeat_instances'])) {
             foreach ($recordNode['repeat_instances'] as $evt => $byInstr) {
                 if (!is_array($byInstr)) continue;
                 $base = (isset($recordNode[$evt]) && is_array($recordNode[$evt])) ? self::cleanRow($recordNode[$evt]) : [];
-                foreach ($byInstr as $byInst) {
+                // Every field that lives in SOME repeating instrument of this
+                // event, mapped to the instrument that owns it. A context built
+                // for instrument A must treat a field owned by repeating
+                // instrument B as unresolvable rather than silently missing —
+                // otherwise the scan reports a violation for correct data on
+                // every cross-repeat rule (H-01, scan half).
+                $repeatForms = [];
+                foreach ($byInstr as $formKey => $byInst) {
+                    if ($formKey === '' || !is_array($byInst)) continue;
+                    foreach ($byInst as $row) {
+                        if (!is_array($row)) continue;
+                        foreach ($row as $fld => $_) $repeatForms[$fld] = $formKey;
+                    }
+                }
+                foreach ($byInstr as $formKey => $byInst) {
                     if (!is_array($byInst)) continue;
                     foreach ($byInst as $inst => $row) {
                         if (!is_array($row)) continue;
                         $out[] = ['event_id' => $evt, 'instance' => $inst,
+                                  // '' is the repeating-EVENT bucket: shared by
+                                  // every form in the event, so nothing is
+                                  // ambiguous within it.
+                                  'instrument'  => ($formKey === '' ? null : $formKey),
+                                  'repeatForms' => ($formKey === '' ? [] : $repeatForms),
                                   'values' => array_merge($base, self::cleanRow($row))];
                     }
                 }
             }
         }
         return $out;
+    }
+
+    /**
+     * Resolution states for ONE scan context, keyed by field: 'ambiguous' for a
+     * field owned by a repeating instrument other than this context's, 'ok'
+     * otherwise. The scan reads the whole record in one pass, so a field that is
+     * simply absent is a genuine blank here — unlike readValues(), which is
+     * scoped to a single event and can therefore also see 'missing'.
+     */
+    private static function contextResolution(array $ctx)
+    {
+        $res = [];
+        $mine = isset($ctx['instrument']) ? $ctx['instrument'] : null;
+        foreach ((isset($ctx['repeatForms']) && is_array($ctx['repeatForms'])) ? $ctx['repeatForms'] : [] as $field => $form) {
+            if ($mine !== null && $form !== $mine) $res[$field] = 'ambiguous';
+        }
+        return $res;
     }
 
     /** Drop empty values from a data row (mirrors readValues: missing == empty). */
@@ -2431,9 +2632,34 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Returns a map of field => string value (only fields that had a value).
      */
-    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance, $keepArrays = false)
+    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance, $keepArrays = false, array &$resolution = null)
     {
+        // THREE-STATE RESOLUTION (1.6.1). $resolution, when the caller passes
+        // it, reports for every requested field exactly one of:
+        //   'ok'        - located in a node this context may read (value may be
+        //                 empty; a saved blank IS a value and folds as '')
+        //   'missing'   - the read succeeded but the field was not present in
+        //                 any node scoped to this record/event/instance. That
+        //                 covers a field collected only on ANOTHER event.
+        //   'ambiguous' - the field lives in a repeating instrument OTHER than
+        //                 the one being rendered/saved, so which instance pairs
+        //                 with this one is undefined (see below).
+        //   'unreadable'- the read itself failed or came back malformed.
+        //
+        // Callers must treat anything other than 'ok' as "no answer" and refuse
+        // to validate on it. Before 1.6.1 all four collapsed to "absent from the
+        // map", which Logic::operandValue then rendered as '' — so a failed
+        // read, an off-event field and a cross-repeat reference were all
+        // indistinguishable from a genuine blank, and the module confidently
+        // validated against a value it had never read (H-01/H-04/M-01).
+        $resolution = [];
         if (!$fields) return [];
+        // Default 'ok'. In REDCap a blank field is simply ABSENT from getData
+        // output, so absence must NOT by itself mean unresolvable - that would
+        // defer every legitimately empty reference. Only a positively
+        // established problem downgrades a field.
+        foreach ($fields as $f) $resolution[$f] = 'ok';
+
         $params = [
             'project_id'    => $project_id,
             'return_format' => 'array',
@@ -2441,62 +2667,231 @@ class UniversalValidator extends AbstractExternalModule
             'fields'        => $fields,
         ];
         if ($event_id) $params['events'] = [$event_id];
+        // A throw is deliberately NOT caught here: redcap_save_record's outer
+        // handler turns it into a visible audit-error log entry, and
+        // foldRuleConditions marks every field 'unreadable' in its own catch.
         $data = \REDCap::getData($params);
-        $rec = (is_array($data) && isset($data[$record])) ? $data[$record] : null;
-        if (!is_array($rec)) return [];
+        // A non-array result, or a record node that is not an array, is a failed
+        // read — NOT an empty record. Both used to return [] indistinguishably.
+        if (!is_array($data)) {
+            foreach ($fields as $f) $resolution[$f] = 'unreadable';
+            return [];
+        }
+        if (!isset($data[$record]) || !is_array($data[$record])) {
+            foreach ($fields as $f) $resolution[$f] = 'unreadable';
+            return [];
+        }
+        $rec = $data[$record];
+
+        // field => the instrument that owns it, so a reference is resolved
+        // through ITS OWN form rather than through whichever form happens to be
+        // rendering. Unknown dictionary => no map; every repeat bucket other
+        // than the rendered one is then treated as ambiguous, which is the
+        // conservative direction.
+        $formOf = [];
+        $dd = $this->dataDictionary($project_id);
+        if ($dd) {
+            foreach ($fields as $f) {
+                if (isset($dd[$f]['form_name'])) $formOf[$f] = $dd[$f]['form_name'];
+            }
+        }
+
+        // Which forms this event actually collects. A reference to a field on a
+        // form NOT designated for this event can never be read here, so it is
+        // 'missing' (M-01) - that is a positive fact from the project's
+        // instrument-event mapping, unlike mere absence from the data, which is
+        // just a blank. NULL when the mapping cannot be established (classic
+        // projects, or an API that is unavailable): we then never claim
+        // 'missing', which fails open to pre-1.6.1 behaviour rather than
+        // deferring rules wrongly.
+        $eventForms = $this->formsForEvent($project_id, $event_id);
+        if ($eventForms !== null) {
+            foreach ($fields as $f) {
+                if (!isset($formOf[$f])) continue;
+                if (!isset($eventForms[$formOf[$f]])) $resolution[$f] = 'missing';
+            }
+        }
 
         $inst = (int) ($repeat_instance ?: 1);
         $out = [];
         foreach ($fields as $f) {
+            if ($resolution[$f] === 'missing') continue;   // not collected here at all
             $val = null;
+            $found = false;
 
-            // repeating instrument / repeating event
+            // Repeating instrument / repeating event.
             if (isset($rec['repeat_instances']) && is_array($rec['repeat_instances'])) {
                 $ri = $rec['repeat_instances'];
                 $byEvent = null;
                 if ($event_id && isset($ri[$event_id])) $byEvent = $ri[$event_id];
                 elseif (!$event_id && count($ri)) $byEvent = reset($ri);
                 if (is_array($byEvent)) {
-                    // key is the instrument name (repeating instrument) or "" (repeating event)
+                    // "" is the repeating-EVENT bucket: every form in the event
+                    // shares the instance, so it is unambiguous for any field.
+                    // A bucket keyed by the RENDERED instrument is likewise
+                    // unambiguous (same form, same instance).
                     foreach ([$instrument, ''] as $ik) {
+                        if ($ik === null) continue;
                         if (isset($byEvent[$ik][$inst]) && is_array($byEvent[$ik][$inst])
                             && array_key_exists($f, $byEvent[$ik][$inst])) {
                             $val = $byEvent[$ik][$inst][$f];
+                            $found = true;
                             break;
+                        }
+                    }
+                    // Not in ours: does it live in a DIFFERENT repeating
+                    // instrument? Instance N of form A has no defined
+                    // counterpart in form B — REDCap itself requires explicit
+                    // [instrument][instance] smart variables to cross that
+                    // boundary. Refuse rather than guess (H-01).
+                    if (!$found) {
+                        $own = isset($formOf[$f]) ? $formOf[$f] : null;
+                        foreach ($byEvent as $ik => $byInst) {
+                            if ($ik === $instrument || $ik === '') continue;
+                            if (!is_array($byInst)) continue;
+                            if ($own !== null && $ik !== $own) continue;
+                            foreach ($byInst as $row) {
+                                if (is_array($row) && array_key_exists($f, $row)) {
+                                    $resolution[$f] = 'ambiguous';
+                                    break 2;
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // non-repeating, specific event
-            if ($val === null && $event_id && isset($rec[$event_id])
+            // Non-repeating, specific event.
+            if (!$found && $event_id && isset($rec[$event_id])
                 && is_array($rec[$event_id]) && array_key_exists($f, $rec[$event_id])) {
                 $val = $rec[$event_id][$f];
+                $found = true;
             }
 
             // No-event-context fallback ONLY: scan the record's nodes when the
             // hook gave us no event ID to scope by. With an event ID present, a
             // miss means "no value on this event" — auditing another event's
             // value here logged the wrong event's data (COR-001).
-            if ($val === null && !$event_id) {
+            if (!$found && !$event_id) {
                 foreach ($rec as $k => $node) {
                     if ($k === 'repeat_instances') continue;
-                    if (is_array($node) && array_key_exists($f, $node)) { $val = $node[$f]; break; }
+                    if (is_array($node) && array_key_exists($f, $node)) {
+                        $val = $node[$f];
+                        $found = true;
+                        break;
+                    }
                 }
             }
 
-            if ($val !== null && $val !== '') {
-                if (is_array($val)) {
-                    // Checkbox fields arrive as code => '0'/'1' maps. Kept only
-                    // when the caller asked for them ("when" condition refs);
-                    // validated fields are Text/Notes, so an array can never
-                    // reach the per-field audit loop.
-                    if ($keepArrays) $out[$f] = $val;
-                } else {
-                    $out[$f] = is_string($val) ? $val : (string) $val;
+            if ($found) {
+                // Located. A saved blank is a real answer and stays 'ok'; it is
+                // simply absent from $out, which operandValue renders as ''.
+                if ($resolution[$f] === 'ok' || $resolution[$f] === 'missing') $resolution[$f] = 'ok';
+                if ($val !== null && $val !== '') {
+                    if (is_array($val)) {
+                        // Checkbox fields arrive as code => '0'/'1' maps. Kept
+                        // only when the caller asked for them ("when" refs);
+                        // validated fields are Text/Notes, so an array can never
+                        // reach the per-field audit loop.
+                        if ($keepArrays) $out[$f] = $val;
+                    } else {
+                        $out[$f] = is_string($val) ? $val : (string) $val;
+                    }
                 }
             }
         }
         return $out;
+    }
+
+    /**
+     * The set (form_name => true) of instruments designated for $event_id, or
+     * NULL when that cannot be established — a classic (non-longitudinal)
+     * project, or a REDCap build that does not expose the mapping.
+     *
+     * NULL means "do not claim a field is off-event", which fails OPEN to
+     * pre-1.6.1 behaviour. That is the right direction: wrongly claiming a
+     * field is off-event would defer a rule that works today, whereas failing
+     * to claim it leaves exactly the M-01 gap the docs now describe.
+     *
+     * Cached per (pid, event) for the request — the save audit and every scan
+     * context ask repeatedly.
+     */
+    private $eventFormsCache = [];
+    private function formsForEvent($project_id, $event_id)
+    {
+        if (!$event_id) return null;                 // classic / no event context
+        $key = $project_id . '|' . $event_id;
+        if (array_key_exists($key, $this->eventFormsCache)) return $this->eventFormsCache[$key];
+        $out = null;
+        try {
+            // REDCap keys the mapping by unique_event_name ("event_1_arm_1"),
+            // NOT by the numeric event_id the hooks hand us, so the numeric id
+            // must be translated first or nothing ever matches and this whole
+            // check silently becomes dead code.
+            $unique = null;
+            if (is_callable(['\REDCap', 'getEventNames'])) {
+                $u = \REDCap::getEventNames(true, false, $event_id);
+                if (is_string($u) && $u !== '') $unique = $u;
+                elseif (is_array($u) && isset($u[$event_id]) && is_string($u[$event_id])) $unique = $u[$event_id];
+            }
+            if (is_callable(['\REDCap', 'getInstrumentEventMappings'])) {
+                $map = \REDCap::getInstrumentEventMappings($project_id);
+                if (is_array($map)) {
+                    // Rows may be flat, or nested one level per arm. Accept both,
+                    // and match on EITHER key so a build that exposes event_id
+                    // directly also works.
+                    $rows = [];
+                    foreach ($map as $entry) {
+                        if (!is_array($entry)) continue;
+                        if (isset($entry['form']) || isset($entry['form_name'])) $rows[] = $entry;
+                        else foreach ($entry as $sub) if (is_array($sub)) $rows[] = $sub;
+                    }
+                    $sawThisEvent = false;
+                    $acc = [];
+                    foreach ($rows as $row) {
+                        $fm = isset($row['form']) ? $row['form']
+                            : (isset($row['form_name']) ? $row['form_name'] : null);
+                        if ($fm === null) continue;
+                        $match = false;
+                        if (isset($row['event_id']) && (string) $row['event_id'] === (string) $event_id) $match = true;
+                        if (!$match && $unique !== null && isset($row['unique_event_name'])
+                            && (string) $row['unique_event_name'] === (string) $unique) $match = true;
+                        if ($match) { $sawThisEvent = true; $acc[$fm] = true; }
+                    }
+                    // Only trust a mapping that actually mentions THIS event. A
+                    // mapping we could not locate ourselves in stays NULL, which
+                    // fails open rather than declaring every field off-event.
+                    if ($sawThisEvent && $acc) $out = $acc;
+                }
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        $this->eventFormsCache[$key] = $out;
+        return $out;
+    }
+
+    /**
+     * Human wording for a non-'ok' resolution state, used both in the visible
+     * config-error notice and in the scan's "unconfigurable" list so a designer
+     * is told WHY a rule stopped checking instead of silently getting no
+     * verdict (the module's M-05 "nothing fails silently" rule).
+     */
+    private static function resolutionProblem($state, $field)
+    {
+        switch ($state) {
+            case 'ambiguous':
+                return 'references "[' . $field . ']", which is on a different repeating instrument — '
+                     . 'there is no defined pairing between instances of two repeating forms, so this '
+                     . 'value is not checked. Put both fields on the same instrument, or reference a '
+                     . 'field that does not repeat.';
+            case 'missing':
+                return 'references "[' . $field . ']", which is not collected in this event — the value '
+                     . 'cannot be read here, so this rule is not checked. Keep both fields in the same event.';
+            case 'unreadable':
+                return 'references "[' . $field . ']", but reading its saved value failed — the rule is '
+                     . 'not checked rather than checked against a blank.';
+        }
+        return 'references "[' . $field . ']", which could not be resolved.';
     }
 }

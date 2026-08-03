@@ -31,6 +31,8 @@ jobs:
         run: node tests/risky_js.cjs
       - name: JS "when" condition evaluator vs fixture
         run: node tests/when_js.cjs
+      - name: JS exact-decimal comparator vs fixture (2^53, 400-digit, long fractions)
+        run: node tests/numeric_js.cjs
       - name: JS "when" fuzz fixture is up to date
         run: |
           node tests/gen_when_fuzz.cjs
@@ -88,6 +90,8 @@ jobs:
         run: php tests/risky_php.php
       - name: PHP "when" condition evaluator vs fixture
         run: php tests/when_php.php
+      - name: PHP exact-decimal comparator vs fixture (2^53, 400-digit, long fractions)
+        run: php tests/numeric_php.php
       - name: PHP branch resolver (shared-field rules)
         run: php tests/branching_php.php
       - name: PHP "when" engine vs the JS twin (differential fuzz)
@@ -102,6 +106,8 @@ jobs:
         run: php tests/crossform_php.php
       - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)
         run: php tests/crossform_adversarial_php.php
+      - name: PHP cross-form resolution (cross-repeat, failed read, off-event, reverse deps)
+        run: php tests/crossform_resolution_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 

@@ -172,16 +172,46 @@ On Record B, Modes Test:
 
 ## 7. SEC-005 sweep for the new modes
 
-1. **Assert refs fold.** Record with `uht_code` saved: open Modes Test,
-   View Source → `ZZTOPSECRET77` must NOT appear anywhere; the `umt_offref`
-   rule in `inspire-validator-config` carries a folded `assertAst` (constants
-   in place of the off-instrument comparison), not the value.
+1. **Assert refs fold — and since 1.6.0 the answer depends on WHO is looking.**
+   `umt_offref` carries `@UVASSERT={"assert":"[umt_offref]=[uht_code]"}`: a
+   comparison mixing a field on this page with one on the Hidden Test form. The
+   1.4.x rule "the value must never appear in the page source" now holds for
+   **surveys and users without rights only** — an entitled staff viewer is
+   *supposed* to receive it, as a baked literal, because that is what makes the
+   check live. **Both paths must be run**; either one alone proves nothing.
+
+   Probe (same snippet for both):
    ```js
    const c = JSON.parse(document.getElementById('inspire-validator-config').textContent);
-   ({ leak: document.documentElement.outerHTML.includes('ZZTOPSECRET77'),
-      offref: c.rules.find(r => (r.fields||[]).includes('umt_offref')) })
+   const r = c.rules.find(x => (x.fields||[]).includes('umt_offref'));
+   ({ inPage:    document.documentElement.outerHTML.includes('ZZTOPSECRET77'),
+      assertAst: r && r.assertAst,
+      deferred:  !!(r && r.deferred),
+      snapshot:  r && r.snapshotFields })
    ```
-   Want `leak: false`.
+
+   **7.1a — entitled staff (value present, by design).** As a user WITH rights
+   to `uv_hidden_test`, on the record whose `uht_code` = `ZZTOPSECRET77`, open
+   Modes Test:
+   - `assertAst` is `["cmp","=",["ref","umt_offref",null],["lit","ZZTOPSECRET77"]]`
+     — the off-page operand baked in as a literal;
+   - `deferred` is `false` and `snapshot` is `["uht_code"]`;
+   - `inPage: true` is **correct here**, and the value must appear only inside
+     that baked literal — not in a field note, label, or any other module output;
+   - typing `ZZTOPSECRET77` shows OK live; anything else fails live, and the red
+     message ends with *"(compared against uht_code, read when this page was
+     opened — reload if it has changed since.)"* (M-02).
+
+   **7.1b — survey, and a staff user WITHOUT rights (value withheld).** Open the
+   Modes Test **survey**, then repeat as a test account with no rights to
+   `uv_hidden_test`:
+   - `inPage: false` — `ZZTOPSECRET77` appears nowhere in the page (SEC-005);
+   - `assertAst` is a settled `["const", …]` boolean — no operands, no value —
+     and `deferred` is `true`; no `snapshot`;
+   - the field shows **no verdict at all** (not a warning) and the save/submit is
+     **accepted** — deferral is detection, not prevention. Save a mismatching
+     value deliberately: §8 must then show the `type: constraint` audit entry,
+     and §6's scan must list the same violation.
 2. **jsmoName scoping.** On Modes Test (has unique rules) the config carries
    `jsmoName`; on `id_validation_test` (none) it must NOT, and no JSMO
    bootstrap script is injected there.
@@ -272,7 +302,7 @@ that is the first thing to fix, not the test.
 | 1 | §1–§4 all pass (constraints, required, compose, dialog) | ☐ |
 | 2 | §5 transport proven live (incl. fail-open + race) | ☐ |
 | 3 | §6 scan proven live (incl. the import case) | ☐ |
-| 4 | §7 SEC-005 sweep clean on form AND survey | ☐ |
+| 4 | §7 SEC-005 sweep: withheld on survey/no-rights (§7.1b), baked only for an entitled staff viewer (§7.1a) | ☐ |
 | 5 | §8 audit entries present with correct privacy handling | ☐ |
 | 6 | §9 regression clean | ☐ |
 | 7 | §6.7 performance spot-check on 1000+ records | ☐ |
@@ -306,6 +336,11 @@ it is required and never piped. Two consequences:
 - When grepping a page for a leak, use a value that appears in no note,
   label, or condition literal (`ZZTOPSECRET77`), or you cannot tell a leak
   from your own documentation.
+- Since 1.6.0 a hit is no longer automatically a leak: for a viewer entitled to
+  read the referenced instrument, the module bakes that value into the condition
+  on purpose (§7.1a). Read the `assertAst`, not just the page text — a value
+  inside a `["lit", …]` operand of a rule you have rights to is expected; the
+  same value on a survey, or for a user without those rights, is the failure.
 - The module is not the only way data reaches a page — piping, `@DEFAULT`,
   smart variables and custom JS all do too. SEC-005 is about what the MODULE
   ships (`inspire-validator-config` and, since 1.3.0, the AJAX responses);
