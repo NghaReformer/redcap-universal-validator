@@ -282,6 +282,8 @@ function submitEv() {
     singleFields: [], pooledFields: [],
     rules: [{ type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]',
               assertAst: ['cmp', '>=', ['ref', 'end_date', null], ['lit', '2026-05-10']],
+              /* the server always emits this alongside a baked literal */
+              snapshotFields: ['start_date'],
               message: 'End date must be on or after the start date', blockSave: 'hard' }],
   });
   const msg = cMsg(env, 'end_date');
@@ -296,13 +298,18 @@ function submitEv() {
   check('cross-form: a correct save is allowed (was hard-blocked before 1.6.0)',
     ev._prevented === false);
 
-  // and a wrong value must still be caught, live
+  // and a wrong value must still be FLAGGED live, though advisory-only
   end.value = '2020-01-01';
   end.fire('change');
   check('cross-form: an invalid value is flagged live',
     /on or after the start date/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
-  check('cross-form: a bad save is blocked', ev._prevented === true);
+  /* ADVISORY: the referenced value is a page-load snapshot, so it never drives
+     a block even at blockSave:"hard". The audit is the enforcement record. */
+  check('cross-form: flagging it does NOT block the save (advisory)',
+    ev._prevented === false);
+  check('cross-form: the message names the snapshot field and says it does not block',
+    /start_date/.test(msg.innerHTML) && /does not block/.test(msg.innerHTML));
 
   // back and forth keeps working (the verdict is not frozen)
   end.value = '2026-07-07';
@@ -540,8 +547,14 @@ function submitEv() {
   check('M-02 survey: no "read when this page was opened" detail either',
     !/page was opened/.test(msg.innerHTML));
   const ev = submitEv(); env.doc.fire('submit', ev);
-  check('M-02 survey: muting the wording does NOT mute the enforcement',
-    ev._prevented === true);
+  /* Advisory-only: a snapshot never blocks, on a survey or a staff form. The
+     verdict is stale the moment the other form changes, and nothing on this
+     page can refresh it, so the save proceeds and the post-save audit is the
+     record. The respondent still SEES the designer's message. */
+  check('M-02 survey: a snapshot rule does not block the save',
+    ev._prevented === false);
+  check('M-02 survey: but the message is still shown',
+    /on or after the start date/.test(msg.innerHTML));
 }
 
 // ---- 16) deferredWhy: shown to STAFF, withheld from survey respondents.
@@ -584,13 +597,77 @@ function submitEv() {
   d.v.fire('change');
   check('deferredWhy: staff DO see the reason on a data-entry form',
     /designated for this event/.test(d.msg.innerHTML));
-  check('deferredWhy: staff are told the check still happens after the save',
-    /after the save/i.test(d.msg.innerHTML));
+  /* The wording must NOT promise a later check. A rule deferred for an
+     unresolved reference is skipped by the audit too (it emits an
+     "unconfigurable" note and returns), so "still checked after the save" was
+     false — the same overstatement class as calling deferral "enforcement". */
+  check('deferredWhy: staff are told the rule is NOT checked',
+    /not being checked/i.test(d.msg.innerHTML));
+  check('deferredWhy: and that saving does not check it either',
+    /not checked after saving/i.test(d.msg.innerHTML));
+  check('deferredWhy: it does NOT promise a post-save check',
+    !/still checked after the save/i.test(d.msg.innerHTML));
+  check('deferredWhy: it points at the study team, who must fix the rule',
+    /study team/i.test(d.msg.innerHTML));
   check('deferredWhy: it is shown as a notice, not as a pass/fail verdict',
     !/OK\./.test(d.msg.innerHTML) && d.v.getAttribute('aria-invalid') !== 'true');
   const ev = submitEv(); d.env.doc.fire('submit', ev);
   check('deferredWhy: the deferred rule still never blocks the save',
     ev._prevented === false);
+}
+
+// ---- 17) H-01: an unresolved BRANCH SELECTOR must not hand control to the
+//          fallback. A false gate is merely inert for a plain rule, but for a
+//          branched one it ACTIVATES the else branch, which then enforced --
+//          flagging the field and blocking the save for a rule the designer
+//          never meant to apply here. The server now marks every branch (and the
+//          rule) deferred; the client must honour that on all of them.
+{
+  const WHY = ['references "[b_open]", which is on a different repeating instrument.'];
+  const v = makeEl('input'); v.name = 'a_val'; v.value = 'X';
+  const env = boot([v], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['a_val'], deferred: true, deferredWhy: WHY,
+      branches: [
+        { when: "[b_open]='SPECIAL'", assert: "[a_val]='X'", assertAst: ['cmp','=',['ref','a_val',null],['lit','X']],
+          whenAst: ['const', false], deferred: true, deferredWhy: WHY,
+          message: 'SPECIAL-branch', blockSave: 'hard' },
+        { when: null, assert: "[a_val]='Y'", assertAst: ['cmp','=',['ref','a_val',null],['lit','Y']],
+          deferred: true, deferredWhy: WHY,
+          message: 'FALLBACK-else', blockSave: 'hard' },
+      ] }],
+  });
+  const msg = cMsg(env, 'a_val');
+  check('H-01: the fallback branch does NOT flag the field',
+    !/FALLBACK-else/.test(msg.innerHTML));
+  check('H-01: aria-invalid is not asserted', v.getAttribute('aria-invalid') !== 'true');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('H-01: the fallback branch does NOT block the save', ev._prevented === false);
+  check('H-01: staff are told the rule is not being checked',
+    /not being checked/i.test(msg.innerHTML));
+  check('H-01: and the reason names the blocking field',
+    /b_open/.test(msg.innerHTML));
+}
+
+// ---- 18) the same, on a SURVEY: still no block, and no field names leak -----
+{
+  const WHY = ['references "[b_open]", which is on a different repeating instrument.'];
+  const v = makeEl('input'); v.name = 'a_val'; v.value = 'X';
+  const env = boot([v], {
+    singleFields: [], pooledFields: [], context: 'survey',
+    rules: [{ type: 'constraint', fields: ['a_val'], deferred: true, deferredWhy: WHY,
+      branches: [
+        { when: "[b_open]='SPECIAL'", assert: "[a_val]='X'", assertAst: ['cmp','=',['ref','a_val',null],['lit','X']],
+          whenAst: ['const', false], deferred: true, deferredWhy: WHY,
+          message: 'SPECIAL-branch', blockSave: 'hard' },
+        { when: null, assert: "[a_val]='Y'", assertAst: ['cmp','=',['ref','a_val',null],['lit','Y']],
+          deferred: true, deferredWhy: WHY, message: 'FALLBACK-else', blockSave: 'hard' },
+      ] }],
+  });
+  const msg = cMsg(env, 'a_val');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('H-01 survey: no block', ev._prevented === false);
+  check('H-01 survey: no off-page field name leaks', !/b_open/.test(msg.innerHTML));
 }
 
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);

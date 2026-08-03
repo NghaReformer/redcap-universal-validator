@@ -326,7 +326,7 @@ Note the two conditions do different jobs: `assert` is the **test**, `when` is t
   module log once it has happened, and the Validation scan finds it later on demand.
   Deferring costs live feedback **and** the block; someone has to read the log or run
   the scan.
-- **Unresolvable references are refused, not guessed (1.6.1).** See
+- **Unresolvable references are refused, not guessed (1.6.0).** See
   [the condition language](#the-when-condition-language) for the three cases — a
   different repeating instrument, a field not collected in this event, and a failed
   read — and what still resolves normally.
@@ -654,8 +654,8 @@ Semantics:
   live case, values you already have the right to read. A survey respondent, or a user
   without rights to that instrument, never receives one. A brand-new record has no saved
   values, so such references resolve as `''`.
-- **A reference the module cannot resolve is refused, not treated as blank (1.6.1).**
-  Before 1.6.1 an unreadable reference was indistinguishable from a genuine blank, so a
+- **A reference the module cannot resolve is refused, not treated as blank (1.6.0).**
+  Before 1.6.0 an unreadable reference was indistinguishable from a genuine blank, so a
   rule could be checked against a `''` that had never been read, in the browser and in
   the audit alike. Three cases are now detected positively:
 
@@ -1390,7 +1390,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 ---
 
-*Documents Universal Field Validator v1.5.0. For the full training
+*Documents Universal Field Validator v1.6.0. For the full training
 guide see [`USER_GUIDE.md`](USER_GUIDE.md); for installation see
 [`INSTALL.md`](INSTALL.md); for the manual REDCap test checklist see
 [`TESTING.md`](TESTING.md); for the product overview see the [README](../README.md).*

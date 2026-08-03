@@ -50,7 +50,10 @@ function detail(msg) {
 }
 
 /* The six verdicts a single -1/0/1 comparison has to produce. */
-function verdictFor(op, cmp) {
+function verdictFor(op, cmp, pathKind) {
+  /* MIXED domains have no ordering — see the fixture spec. Parameter is NOT
+     called "path": that would shadow the require('path') module used above. */
+  if (pathKind === 'mixed' && (op === '<' || op === '>' || op === '<=' || op === '>=')) return false;
   switch (op) {
     case '=':  return cmp === 0;
     case '<>': return cmp !== 0;
@@ -117,7 +120,7 @@ for (const c of fx.cases) {
   // double on the way in and the fixture would lose the very digits it pins.
   check('case is well formed: ' + label,
     typeof c.a === 'string' && typeof c.b === 'string'
-    && (c.path === 'numeric' || c.path === 'string')
+    && ['numeric', 'string', 'mixed'].includes(c.path)
     && (c.cmp === -1 || c.cmp === 0 || c.cmp === 1));
   names.push(label);
 }
@@ -138,7 +141,7 @@ for (const c of fx.cases) {
         operandNode(kinds[0], 'a', c.a),
         operandNode(kinds[1], 'b', c.b)];
       const got = W.evaluate(ast, values);
-      const want = verdictFor(op, c.cmp);
+      const want = verdictFor(op, c.cmp, c.path);
       if (got !== want) {
         detail(c.name + ' [' + shape + '] ' + JSON.stringify(c.a) + ' ' + op + ' '
           + JSON.stringify(c.b) + ' => ' + JSON.stringify(got)
@@ -149,8 +152,9 @@ for (const c of fx.cases) {
     }
   }
 
-  // A string-path case is pinned to plain code-point order, computed independently.
-  if (c.path === 'string') {
+  // A string- OR mixed-path case is pinned to plain code-point order, computed
+  // independently (for mixed, that order still governs = and <>).
+  if (c.path === 'string' || c.path === 'mixed') {
     check('string path is code-point order: ' + c.name, codePointCmp(c.a, c.b) === c.cmp);
   }
 

@@ -1,5 +1,5 @@
 {
-  "spec": "Exact-decimal comparison contract (H-03). Both runtimes compare NUM_RE-shaped operands as decimal STRINGS - no float, no bcmath, no BigInt - because the IEEE-754 cast silently merged distinct values above 2^53 and truncated long fractions, so @UVASSERT=\"[id]=[id_confirm]\" accepted two different identifiers. Logic::decCmp in php/Logic.php and QRID_whenDecCmp in js/engine.js are the twins; tests/numeric_php.php and tests/numeric_js.cjs drive them over this file. Each case declares one comparison: \"cmp\" is -1/0/1 for a<b, a==b, a>b and the six verdicts are derived from it, so every op is pinned per case. \"path\" says which branch of compare() must be taken - \"numeric\" when BOTH trimmed operands are NUM_RE-shaped, \"string\" otherwise; string-path cases are re-checked against an independent byte/code-point comparison written in each test, which is what proves the engine really fell through. \"floatTrap\" marks the cases where the old float cast gave a DIFFERENT answer; each test recomputes the float verdict and fails if it agrees, so these stay genuine H-03 sentinels. \"digest\" is the sha256 of every verdict both runtimes produce, so PHP and JS cannot drift case-for-case even if someone edits one expectation.",
+  "spec": "Exact-decimal comparison contract (H-03). Both runtimes compare NUM_RE-shaped operands as decimal STRINGS - no float, no bcmath, no BigInt - because the IEEE-754 cast silently merged distinct values above 2^53 and truncated long fractions, so @UVASSERT=\"[id]=[id_confirm]\" accepted two different identifiers. Logic::decCmp in php/Logic.php and QRID_whenDecCmp in js/engine.js are the twins; tests/numeric_php.php and tests/numeric_js.cjs drive them over this file. Each case declares one comparison: \"cmp\" is -1/0/1 for a<b, a==b, a>b and the six verdicts are derived from it, so every op is pinned per case. \"path\" says which branch of compare() must be taken - \"numeric\" when BOTH trimmed operands are NUM_RE-shaped, \"string\" otherwise; string-path cases are re-checked against an independent byte/code-point comparison written in each test, which is what proves the engine really fell through. \"floatTrap\" marks the cases where the old float cast gave a DIFFERENT answer; each test recomputes the float verdict and fails if it agrees, so these stay genuine H-03 sentinels. \"digest\" is the sha256 of every verdict both runtimes produce, so PHP and JS cannot drift case-for-case even if someone edits one expectation. A \"mixed\" case has one NUM_RE operand and one not, with neither blank: ordering is undefined across domains, so < > <= >= are all false while = and <> still follow byte equality. Choosing the comparator per PAIR made ordering non-transitive (\"2\"<=\"10\", \"10\"<=\"1e1\", \"2\">\"1e1\" all true at once).",
   "ops": [
     "=",
     "<>",
@@ -30,7 +30,7 @@
     "sci_1e3_vs_1000",
     "hex_0x1f_vs_31"
   ],
-  "digest": "265f409383841646bcaa154bdb8c334b08f4610d28814dc3d51702fe69c4fbd2",
+  "digest": "0e163147bad66fcafe38d302518e728af26e38b5f2c38b0713e01a615de8080c",
   "cases": [
     {
       "name": "h03_counterexample",
@@ -419,7 +419,7 @@
       "name": "ws_vertical_tab_not_trimmed",
       "a": "\u000b5",
       "b": "5",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1,
       "note": "vertical tab is NOT in the charlist, so the value stays non-numeric"
     },
@@ -427,7 +427,7 @@
       "name": "ws_form_feed_not_trimmed",
       "a": "\f5",
       "b": "5",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1
     },
     {
@@ -455,7 +455,7 @@
       "name": "sci_1e3_vs_1000",
       "a": "1e3",
       "b": "1000",
-      "path": "string",
+      "path": "mixed",
       "cmp": 1,
       "note": "scientific notation is not NUM_RE-shaped: byte order puts \"1e3\" AFTER \"1000\", where a numeric read would call them equal"
     },
@@ -470,7 +470,7 @@
       "name": "sci_one_side_only",
       "a": "10",
       "b": "1e1",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1,
       "note": "one non-numeric side is enough"
     },
@@ -478,7 +478,7 @@
       "name": "hex_0x1f_vs_31",
       "a": "0x1F",
       "b": "31",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1
     },
     {
@@ -499,14 +499,14 @@
       "name": "double_sign",
       "a": "++5",
       "b": "5",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1
     },
     {
       "name": "lone_dot",
       "a": ".",
       "b": "0",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1
     },
     {
@@ -521,28 +521,28 @@
       "name": "infinity_text_vs_big_int",
       "a": "Infinity",
       "b": "9007199254740993",
-      "path": "string",
+      "path": "mixed",
       "cmp": 1
     },
     {
       "name": "thousands_comma",
       "a": "1,000",
       "b": "1000",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1
     },
     {
       "name": "underscore_separator",
       "a": "1_000",
       "b": "1000",
-      "path": "string",
+      "path": "mixed",
       "cmp": 1
     },
     {
       "name": "inner_space",
       "a": "1 000",
       "b": "1000",
-      "path": "string",
+      "path": "mixed",
       "cmp": -1,
       "note": "the inner space survives the trim"
     },
@@ -550,14 +550,14 @@
       "name": "trailing_unit",
       "a": "5kg",
       "b": "5",
-      "path": "string",
+      "path": "mixed",
       "cmp": 1
     },
     {
       "name": "sci_negative_exponent",
       "a": "1e-3",
       "b": "0.001",
-      "path": "string",
+      "path": "mixed",
       "cmp": 1
     }
   ]

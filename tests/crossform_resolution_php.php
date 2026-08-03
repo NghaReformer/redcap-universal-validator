@@ -1,6 +1,6 @@
 <?php
 /**
- * crossform_resolution_php.php — the THREE-STATE resolution work (v1.6.1).
+ * crossform_resolution_php.php — the THREE-STATE resolution work (v1.6.0).
  *
  * v1.6.0 shipped cross-instrument @UVASSERT by reading the referenced field's
  * saved value on the server. readValues() returned a plain field => value map,
@@ -9,7 +9,7 @@
  * rendered both as ''. The module then validated confidently against a value it
  * had never seen.
  *
- * 1.6.1 makes the read report a per-field RESOLUTION:
+ * 1.6.0 makes the read report a per-field RESOLUTION:
  *
  *   'ok'         located in a node this context may read (the value may be
  *                empty — a saved blank IS an answer and folds as ['lit',''])
@@ -34,7 +34,7 @@
  *         the whole point of the distinction
  *   M-03  an unknown data dictionary means nothing is live AND forces deferral
  *   M-01  a field on a form not designated for this event defers, and the
- *         fail-open path (mapping unavailable) keeps pre-1.6.1 behaviour
+ *         fail-open path (mapping unavailable) keeps pre-1.6.0 behaviour
  *   H-02  saving the REFERENCED instrument audits the dependent constraint,
  *         while an unrelated instrument still reads ZERO data (PER-001)
  *
@@ -210,7 +210,7 @@ namespace {
         // fa instance 1 pairs with fb instance 1 only by coincidence of numbering.
         // REDCap defines no such pairing, so the module must refuse — even though
         // every pair here MATCHES, which is what makes the old behaviour a FALSE
-        // violation rather than a lucky pass: pre-1.6.1 b_open read as '' and
+        // violation rather than a lucky pass: pre-1.6.0 b_open read as '' and
         // "PAIR-ONE" = "" was logged on every save.
         $matched = [1 => [
             1 => ['record_id' => '1'],
@@ -438,7 +438,7 @@ namespace {
      * ===================================================================== */
     {
         // With no dictionary the module cannot tell which fields are on the
-        // page. Pre-1.6.1 it declared every reference live, so the browser read
+        // page. Pre-1.6.0 it declared every reference live, so the browser read
         // fields that are not in the DOM as '' and validated against them. The
         // rule now comes from the settings dialog, which survives a missing
         // dictionary — an annotation rule could not, since annotations LIVE in
@@ -524,7 +524,7 @@ namespace {
         check('M-01 control: and is not deferred', empty(ruleOf($p3, 'a_val')['deferred']));
 
         // FAIL-OPEN: no usable mapping must NOT be read as "missing". Classic
-        // projects and builds without the API keep pre-1.6.1 behaviour.
+        // projects and builds without the API keep pre-1.6.0 behaviour.
         $m4 = mkMod($D, $RIGHTS, $data);   // mkMod resets $eventMappings to null
         $p4 = render($m4, 'fa', '1', 1, 1);
         $r4 = ruleOf($p4, 'a_val');
@@ -540,7 +540,7 @@ namespace {
 
         // The exact cost of failing open, pinned rather than implied: with no
         // mapping the same absent value IS evaluated as a blank and IS logged.
-        // That is pre-1.6.1 behaviour, deliberately preserved — deferring on a
+        // That is pre-1.6.0 behaviour, deliberately preserved — deferring on a
         // guess would silence rules that work today.
         $m6 = mkMod($D, $RIGHTS, $noValue);
         $m6->redcap_save_record(PID, '1', 'fa', 1, null, null, null, 1);
@@ -560,7 +560,7 @@ namespace {
         $valid  = [1 => [1 => ['record_id' => '1', 'a_val' => 'AAA', 'b_open' => 'AAA', 'c_other' => 'CCC']]];
 
         // Saving the REFERENCED instrument breaks a pair that the host form's
-        // own save left valid. Before 1.6.1 nothing checked it.
+        // own save left valid. Before 1.6.0 nothing checked it.
         $m = mkMod($D, $RIGHTS, $broken);
         $m->redcap_save_record(PID, '1', 'fb', 1, null, null, null, 1);
         check('H-02: saving the REFERENCED instrument audits the dependent constraint',

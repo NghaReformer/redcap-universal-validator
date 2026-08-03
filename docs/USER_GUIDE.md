@@ -512,7 +512,7 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
   verdict (and any *Compulsory* block) appears or clears at once. Fields on
   **other instruments** use their **saved** values (a brand-new record has none
   yet, so those references read as empty).
-- **A reference that cannot be resolved is refused, not read as blank** (1.6.1):
+- **A reference that cannot be resolved is refused, not read as blank** (1.6.0):
   a field on a different repeating instrument, a field not collected in this
   event, or a read that failed. The rule stops checking and reports why — see the
   cross-instrument question in [Part 8](#part-8-troubleshooting-and-faq).
@@ -750,7 +750,7 @@ the write, so it can only log the violation to the module log once it has
 happened; the **Validation scan** page finds it later on demand. That is
 detection, not prevention — someone has to read the log or run the scan.
 
-Third, some references cannot be resolved at all, and since 1.6.1 those are
+Third, some references cannot be resolved at all, and since 1.6.0 those are
 **refused rather than guessed**: a field on a *different repeating instrument*
 (instance 3 of one form has no defined counterpart in another), a field not
 collected in *this event* (where the module can read the project's

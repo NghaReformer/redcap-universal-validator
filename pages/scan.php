@@ -74,7 +74,17 @@ if ($run || $csv) {
 if ($csv) {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="validation_scan_pid' . (int) $pid . '_' . date('Ymd_His') . '.csv"');
-    $rows = ['record,event_id,instance,field,rule,type,reason'];
+    $rows = [];
+    // The CSV is the artefact people file and cite, so an incomplete pass has to
+    // say so IN the file. A downloaded "0 violations" from a scan that could not
+    // read half the project would otherwise circulate as a clean result.
+    if (!empty($result['incomplete']) || (isset($result['status']) && $result['status'] !== 'complete')) {
+        $rows[] = '# INCOMPLETE SCAN - this file does NOT certify the project as clean';
+        foreach (array_slice($result['incomplete'], 0, 50) as $why) {
+            $rows[] = '# ' . str_replace(["\r", "\n", ','], ' ', $why);
+        }
+    }
+    $rows[] = 'record,event_id,instance,field,rule,type,reason';
     foreach ($result['violations'] as $v) {
         $rows[] = implode(',', [uv_csv($v['record']), uv_csv($v['event_id']), uv_csv($v['instance']),
             uv_csv($v['field']), uv_csv($v['rule']), uv_csv($v['type']), uv_csv($v['reason'])]);
@@ -117,6 +127,24 @@ project the scan may take a while — leave the page open until the table appear
   &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo uv_h($self . '&run=1'); ?>">Re-run</a>
 </p>
 
+<?php if (!empty($result['incomplete']) || (isset($result['status']) && $result['status'] !== 'complete')) { ?>
+<div style="margin:8px 0;padding:8px 12px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;border-radius:4px;max-width:760px">
+  <b>&#9888; This scan did not cover the whole project.</b>
+  <p style="margin:4px 0 0">Treat the result below as partial. Re-run the scan; if it keeps
+  failing, the records it could not read are still unchecked.</p>
+  <?php if (!empty($result['incomplete'])) { ?>
+  <ul style="margin:4px 0 0 18px">
+    <?php foreach (array_slice($result['incomplete'], 0, 20) as $why) { ?>
+      <li><?php echo uv_h($why); ?></li>
+    <?php } ?>
+    <?php if (count($result['incomplete']) > 20) { ?>
+      <li>&hellip; and <?php echo (int) (count($result['incomplete']) - 20); ?> more</li>
+    <?php } ?>
+  </ul>
+  <?php } ?>
+</div>
+<?php } ?>
+
 <?php if ($result['unconfigurable']) { ?>
 <div style="margin:8px 0;padding:8px 12px;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828;border-radius:4px;max-width:760px">
   <b>&#9888; Rule problems (these rules could not be fully evaluated):</b>
@@ -148,6 +176,12 @@ project the scan may take a while — leave the page open until the table appear
   <?php } ?>
   </tbody>
 </table>
+<?php } elseif (isset($result['status']) && $result['status'] !== 'complete') { ?>
+<?php /* A scan that could not read everything must never read as a clean bill of
+         health: "no violations" from an incomplete pass is an assurance the scan
+         did not earn. */ ?>
+<p style="color:#8a6d00"><b>&#9888; No violations found in the part of the project that could be
+read &mdash; but this scan did not complete, so the project is NOT certified clean.</b></p>
 <?php } else { ?>
 <p style="color:#2e7d32"><b>&#10003; No violations found.</b></p>
 <?php } ?>

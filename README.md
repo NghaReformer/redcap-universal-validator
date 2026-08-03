@@ -176,7 +176,7 @@ Semantics worth knowing before relying on it:
   live case, values you already have the right to read. A survey respondent, or a
   user without rights to that instrument, never receives one. A brand-new record
   has no saved values yet, so such refs resolve as `''`.
-- **A reference the module cannot resolve is refused, not guessed** (1.6.1).
+- **A reference the module cannot resolve is refused, not guessed** (1.6.0).
   Until then an unreadable reference looked exactly like a genuine blank, and the
   rule was checked against a `''` that had never been read. Three cases are now
   detected positively:
@@ -276,15 +276,19 @@ enforced with the same message/confirm/block modes as everything else:
   all must pass; each keeps an independent save-block state.
 - The server audit honors the constraint against saved values (logged as
   `type: constraint`).
-- **Across instruments (1.6.0).** The condition may reference a field on another
-  instrument in the same event. When you are entitled to read that field —
-  staff data entry, with REDCap rights to its instrument — its value is resolved
-  on the server and baked into the condition, so the check stays **live** as you
-  type and blocks exactly as a same-instrument one does. A failure names the
-  off-page field it was compared against and says the value was read when the
-  page opened, so a stale snapshot (someone edited that form in another tab) is
-  distinguishable from a real violation — reload and it re-reads. Survey
-  respondents see the plain message, without field names.
+- **Across instruments (1.6.0) — live, but ADVISORY.** The condition may reference a
+  field on another instrument in the same event. When you are entitled to read that
+  field — staff data entry, with REDCap rights to its instrument — its value is
+  resolved on the server and baked into the condition, so the check stays **live**
+  as you type. It does **not** block the save, at any `blockSave` setting: that
+  value is read once, when the page opens, and nothing can refresh it while you
+  type, so a concurrent edit on the other form would otherwise produce a wrong
+  block, or a wrong pass, with no way to tell which. A failure names the off-page
+  field and says when it was read, so you know to reload; the post-save audit and
+  the Validation scan are the enforcement record. Survey respondents see the plain
+  message, without field names.
+- **Rules whose fields are all on THIS instrument are unaffected** and still block
+  exactly as before — both sides are live in the form, so nothing is a snapshot.
 - **Deferred means detection, not prevention.** On a **survey**, or for a user
   **without rights** to the referenced instrument, the value is never sent to the
   page (SEC-005) and the rule is **deferred**: the browser shows no verdict and
@@ -293,7 +297,7 @@ enforced with the same message/confirm/block modes as everything else:
   happened, and the Validation scan can find it later. Deferring buys privacy at
   the cost of both live feedback and the block — someone has to read the log or
   run the scan.
-- **A reference the module cannot resolve is refused** (1.6.1) — a field on a
+- **A reference the module cannot resolve is refused** (1.6.0) — a field on a
   different repeating instrument, a field not collected in this event, or a read
   that failed. The rule stops checking, and the reason names the field instead of
   comparing against a blank that was never read; see the `when` section above for

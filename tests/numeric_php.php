@@ -44,8 +44,11 @@ function detail($msg)
 }
 
 /** The six verdicts a single -1/0/1 comparison has to produce. */
-function verdictFor($op, $cmp)
+function verdictFor($op, $cmp, $path = 'numeric')
 {
+    // MIXED domains have no ordering: < > <= >= are false whichever way round
+    // they are asked, so no cycle can form. Equality is unaffected.
+    if ($path === 'mixed' && in_array($op, ['<', '>', '<=', '>='], true)) return false;
     switch ($op) {
         case '=':  return $cmp === 0;
         case '<>': return $cmp !== 0;
@@ -105,7 +108,7 @@ foreach ($fx['cases'] as $c) {
     check("case is well formed: $label",
         isset($c['name'], $c['a'], $c['b'], $c['path'], $c['cmp'])
         && is_string($c['a']) && is_string($c['b'])
-        && ($c['path'] === 'numeric' || $c['path'] === 'string')
+        && in_array($c['path'], ['numeric', 'string', 'mixed'], true)
         && in_array($c['cmp'], [-1, 0, 1], true));
     $names[] = $label;
 }
@@ -127,7 +130,7 @@ foreach ($fx['cases'] as $c) {
                 operandNode($lk, 'a', $c['a']),
                 operandNode($rk, 'b', $c['b'])];
             $got = Logic::evaluate($ast, $values);
-            $want = verdictFor($op, $cmp);
+            $want = verdictFor($op, $cmp, $c['path']);
             if ($got !== $want) {
                 detail("{$c['name']} [$shape] " . json_encode($c['a']) . " $op "
                     . json_encode($c['b']) . " => " . json_encode($got)
@@ -146,7 +149,7 @@ foreach ($fx['cases'] as $c) {
     check("path {$c['name']}", $bothNumeric === ($c['path'] === 'numeric'));
 
     // A string-path case is pinned to plain byte order, computed independently.
-    if ($c['path'] === 'string') {
+    if ($c['path'] === 'string' || $c['path'] === 'mixed') {
         check("string path is byte order: {$c['name']}", byteCmp($c['a'], $c['b']) === $cmp);
     }
 

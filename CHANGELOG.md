@@ -8,6 +8,62 @@
 > nine were independently reproduced with executable probes before anything was changed. The
 > sections below fold those fixes into 1.6.0 rather than shipping a broken tag and superseding it.
 
+### Cross-instrument checks are ADVISORY
+
+An off-page value is read once, when the page is built, and nothing can refresh it while the page
+is open. A concurrent edit on the other form therefore makes the verdict stale — and a stale
+verdict that PASSES is silent, while a stale one that FAILS was a dead end. `redcap_save_record`
+runs after the write and can recover neither.
+
+A snapshot no longer drives a save block, at any `blockSave` setting. Cross-instrument rules give
+live feedback as you type, name the field they were compared against and when it was read, and the
+post-save audit and Validation scan are the enforcement record. Same-instrument rules are
+unchanged: both sides are live in the DOM, so nothing there is a snapshot.
+
+### One resolver, shared by the browser, the audit and the scan
+
+The form hooks, the save audit and the scan each worked out where a referenced value lived, and
+disagreed: the scan reported a hard violation for data the save path called unconfigurable, and
+neither noticed a value on a different repeating instrument when that value happened to be blank.
+`resolveOne()` is now the only place that decides, and all three call it.
+
+Ownership comes from **metadata**, never from whether a value happens to be present. REDCap omits
+blank fields from `getData` output, so "the field's key is in this repeat row" answers *does it
+have a value*, not *does it live here* — reading ownership off that made a blank field on another
+repeating instrument look like a resolved blank. Ownership now comes from the dictionary plus
+whether that form repeats (`getRepeatingFormsEvents`, then `isRepeatingForm`), with repeat-bucket
+presence as a third signal; any one of them saying "repeats" is enough to refuse the pairing.
+
+### An unresolvable branch selector no longer elects the fallback
+
+A false `when` merely leaves a plain rule inert, but for a branched rule it **activates** the
+fallback, which then enforced — flagging the field, blocking the save, and logging a violation of a
+rule the designer never meant to apply. Worse, client and server picked differently: the browser
+could show "OK, save allowed" while the same save logged a violation of a *different* branch.
+Branch selection now consults the resolution first and refuses the whole decision if any selector
+is unresolved. This is shared machinery, so it covered `@UVREQUIRED` too — that factory had no
+notion of deferral at all and now honours it.
+
+### A scan that did not finish cannot look clean
+
+`scanProject` returns `complete` / `incomplete` / `failed`. A chunk that fails or throws, a record
+that was requested but not returned, a record-list read that fails, and a dictionary failure are all
+recorded instead of skipped in silence. The page shows a banner and refuses the green tick, and the
+CSV carries an `# INCOMPLETE SCAN` header — a downloaded "0 violations" from a partial pass would
+otherwise circulate as a clean result.
+
+### Ordering is defined only within a domain
+
+Choosing the comparator per PAIR made ordering non-transitive: `"2" <= "10"`, `"10" <= "1e1"` and
+`"2" > "1e1"` were all true at once, because `1e1` fails `NUM_RE` and fell to byte order. Ordered
+comparisons now require both operands in the same domain — both numeric or neither — and are false
+otherwise, whichever way round they are asked, so no cycle can form. Equality is untouched. Blank is
+exempt: it is absence, not a rival domain, so `[end_date]>=[start_date]` with `start_date` not yet
+entered still passes rather than inventing a violation.
+
+Verified independently: 4374 verdicts across 27 operand shapes, **0 PHP/JS disagreements**, and
+**0 ordering cycles** across 19,683 triples.
+
 ### Resolution is now three-state, not "value or blank"
 
 Four findings (H-01, H-04, M-01, M-03) had one root cause: `readValues()` could not distinguish

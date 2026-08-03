@@ -1220,13 +1220,21 @@ function QRID_whenCompare(op, a, b){
     }
     return false;
   }
+  /* MIXED DOMAINS in an ORDERED comparison are not comparable (M-02). Twin of
+     Logic::compare — the comparator used to be chosen per PAIR, so "2"<="10",
+     "10"<="1e1" and "2">"1e1" were all true at once. Ordering is defined only
+     within a domain; one-of-each is false either way round, so no cycle forms.
+     Equality is untouched. */
+  /* EMPTY is exempt: absence, not a competing domain. See Logic::compare. */
+  var mixed = (a !== "" && b !== "") &&
+              (QRID_WHEN_NUM_RE.test(a) !== QRID_WHEN_NUM_RE.test(b));
   switch(op){
     case "=":  return a === b;
     case "<>": return a !== b;
-    case ">":  return QRID_cmpStr(a, b) > 0;
-    case "<":  return QRID_cmpStr(a, b) < 0;
-    case ">=": return QRID_cmpStr(a, b) >= 0;
-    case "<=": return QRID_cmpStr(a, b) <= 0;
+    case ">":  return !mixed && QRID_cmpStr(a, b) > 0;
+    case "<":  return !mixed && QRID_cmpStr(a, b) < 0;
+    case ">=": return !mixed && QRID_cmpStr(a, b) >= 0;
+    case "<=": return !mixed && QRID_cmpStr(a, b) <= 0;
   }
   return false;
 }
@@ -2041,6 +2049,19 @@ function QRIDConstraintInit(QRID_CONFIG){
        and logs any violation (type: constraint). See php/Logic.php fold(). */
     var DEFERRED = !configError && !!cfg.deferred;
     if(DEFERRED) BLOCK = "off";
+    /* ADVISORY-ONLY CROSS-FORM (policy decision, 1.6.0).
+       An off-page operand is resolved ONCE, when the page is built. Nothing can
+       refresh it while the page is open, so a concurrent edit on the other form
+       makes this verdict stale — and a stale verdict that PASSES is silent, while
+       a stale one that FAILS was a dead end. redcap_save_record runs after the
+       write and cannot recover either case.
+       A snapshot therefore never drives a save block. Cross-form rules give live
+       feedback as you type and the post-save audit and Validation scan remain the
+       enforcement record; the module does not claim a guarantee a page-load
+       snapshot cannot support. Same-instrument rules are unaffected — both sides
+       are live in the DOM, so nothing there is a snapshot. */
+    var SNAPSHOT_ADVISORY = !configError && cfg.snapshotFields && cfg.snapshotFields.length;
+    if(SNAPSHOT_ADVISORY) BLOCK = "off";
     /* Off-page operands are resolved once, when the page is built. Naming them
        on a failure lets the user tell a real violation from a stale snapshot
        (someone edited the other form in another tab) and reload — without it a
@@ -2107,9 +2128,16 @@ function QRIDConstraintInit(QRID_CONFIG){
         if(V.deferredWhy && !QRID_IS_SURVEY){
           msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
             "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
-          msg.innerHTML = "&#9888; Not checked here — " +
+          /* Wording matters and was wrong once already. A rule deferred for an
+             UNRESOLVED reference is NOT re-checked after the save: the audit
+             emits an "unconfigurable" note and returns, and an unreadable read
+             aborts the audit outright. Promising a later check would be the same
+             overstatement as calling the deferred path "enforcement". Say what is
+             true: this rule is not checking anything, anywhere, until the study
+             team fixes the configuration. */
+          msg.innerHTML = "&#9888; This rule is not being checked — " +
             QRID_escapeHtml(V.deferredWhy.join(" ")) +
-            " The value is still checked after the save.";
+            " It is not checked after saving either; the study team needs to correct the rule.";
           input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null);
           return;
         }
@@ -2135,7 +2163,8 @@ function QRIDConstraintInit(QRID_CONFIG){
       if(!ok && V.snapshot && !QRID_IS_SURVEY){
         base += ' <span style="opacity:.8">(compared against ' +
           QRID_escapeHtml(V.snapshot.join(", ")) +
-          ", read when this page was opened — reload if it has changed since.)</span>";
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
       }
       msg.innerHTML = ok ? "&#10003; OK." : "&#10007; " + base;
     }
@@ -2201,7 +2230,15 @@ function QRIDRequiredInit(QRID_CONFIG){
       configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
     }
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* requirement gate */
+    /* A rule the server could not resolve must not enforce here either. Branch
+       machinery is shared by every mode, so an unresolved SELECTOR would
+       otherwise hand control to the fallback branch and make its requiredness
+       stick (H-01) — this factory previously had no notion of deferral at all. */
+    var DEFERRED = !configError && !!cfg.deferred;
+    if(DEFERRED) BLOCK = "off";
     return { configError: configError, gate: GATE, blockSave: BLOCK,
+             deferred: DEFERRED,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { required: true } };
@@ -2242,6 +2279,21 @@ function QRIDRequiredInit(QRID_CONFIG){
         input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
       }
       var V = act[0];
+      /* deferred: the server could not resolve this rule's references (or its
+         branch selector), so it enforces nothing here. Say why on staff forms;
+         never block. Mirrors QRIDConstraintInit. */
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+            "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+          msg.innerHTML = "&#9888; This rule is not being checked — " +
+            QRID_escapeHtml(V.deferredWhy.join(" ")) +
+            " It is not checked after saving either; the study team needs to correct the rule.";
+        } else {
+          msg.style.display = "none"; msg.innerHTML = "";
+        }
+        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+      }
       var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === "";
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);

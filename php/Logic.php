@@ -211,7 +211,7 @@ class Logic
                     $op = $ast[$slot];
                     if ($op[0] !== 'ref') continue;
                     $refs++;
-                    // UNRESOLVED (1.6.1): the caller could not actually read this
+                    // UNRESOLVED (1.6.0): the caller could not actually read this
                     // field — off-event, on another repeating instrument, or the
                     // read failed. Evaluating it would compare against a '' we
                     // never saw, so this comparison is settled to a constant AND
@@ -573,13 +573,30 @@ class Logic
             }
             return false;
         }
+        // MIXED DOMAINS in an ORDERED comparison are not comparable (M-02).
+        // The comparator used to be chosen per PAIR, so ordering depended on
+        // which two values met: with a="2", b="10", c="1e1" both runtimes
+        // agreed that a<=b, b<=c AND a>c — "10" vs "1e1" fell to bytes because
+        // "1e1" fails NUM_RE, while "2" vs "10" compared numerically. That is a
+        // cycle, and a rule built on it is unsatisfiable in a way no message
+        // could explain.
+        // Ordering is therefore defined only WITHIN a domain: both numeric, or
+        // neither. One-of-each yields false for < > <= >=, whichever way round
+        // it is asked, so no cycle can form. Equality is unaffected — "2" and
+        // "1e1" are simply different strings, which is exactly right.
+        // EMPTY is exempt: it is absence, not a competing numeric domain.
+        // Without this, [end_date]>=[start_date] with start_date legitimately
+        // blank would flip from passing to failing and invent a violation on
+        // every record where the field simply has not been entered yet.
+        $mixed = ($a !== '' && $b !== '')
+               && ((bool) preg_match(self::NUM_RE, $a) !== (bool) preg_match(self::NUM_RE, $b));
         switch ($op) {
             case '=':  return $a === $b;
             case '<>': return $a !== $b;
-            case '>':  return strcmp($a, $b) > 0;
-            case '<':  return strcmp($a, $b) < 0;
-            case '>=': return strcmp($a, $b) >= 0;
-            case '<=': return strcmp($a, $b) <= 0;
+            case '>':  return !$mixed && strcmp($a, $b) > 0;
+            case '<':  return !$mixed && strcmp($a, $b) < 0;
+            case '>=': return !$mixed && strcmp($a, $b) >= 0;
+            case '<=': return !$mixed && strcmp($a, $b) <= 0;
         }
         return false;
     }
