@@ -519,7 +519,11 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
 - **The server audit honors the same condition**, so the browser and the audit
   agree on when a rule applies.
 - Comparisons are numeric when both sides look numeric (`[age]>'9'` with age `10`
-  is true), otherwise exact case-sensitive text. A missing or empty field reads
+  is true), and exact case-sensitive text when neither does. If the sides are in
+  different domains — one numeric, one not, both filled in — `=` and `<>` still
+  answer, but `<` `>` `<=` `>=` come back false either way round; ordering across
+  domains is not defined. An empty side is exempt, so `[end]>=[start]` with
+  `start` still blank passes rather than failing. A missing or empty field reads
   as empty; a checkbox reference reads `'1'` or `'0'`.
 - References are checked against the data dictionary when you save — an unknown
   field or a wrong checkbox code is a configuration error, not a silent surprise.

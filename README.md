@@ -150,9 +150,15 @@ logic**:
 Semantics worth knowing before relying on it:
 
 - **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with
-  age `10` is true, not a lexicographic accident), otherwise exact,
-  case-sensitive string comparison. A missing or empty field reads as `''`; a
-  checkbox reference reads `'1'`/`'0'`.
+  age `10` is true, not a lexicographic accident), and exact case-sensitive
+  string comparison when neither side does. When the two sides are in
+  **different domains** — one numeric, one not, both non-empty — `=` and `<>`
+  still answer by string identity, but `<` `>` `<=` `>=` are false whichever way
+  round you ask: ordering across domains produced cycles (`'2' <= '10'`,
+  `'10' <= '1e1'` and `'2' > '1e1'` were all true at once). An **empty** side is
+  exempt, because empty is absence rather than a rival domain — `[end]>=[start]`
+  with `start` not yet entered still passes. A missing or empty field reads as
+  `''`; a checkbox reference reads `'1'`/`'0'`.
 - **Referenced fields on the same instrument react live**: pick the right
   dropdown option and the gated field's verdict appears or clears immediately —
   including a *Compulsory* save block. A calc field updates without DOM events,

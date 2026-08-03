@@ -71,6 +71,13 @@ if ($run || $csv) {
     $result = $module->scanProject($pid, $dagFilter);
 }
 
+$complete = isset($result['status']) && $result['status'] === 'complete';
+// A clean bill of health needs all three: the scan finished, it found nothing,
+// and no rule was left unevaluated. A project whose every rule is broken has
+// zero violations and is not clean — the green tick belonged to the violation
+// count alone, which is the narrower claim (M-02).
+$clean = $complete && !$result['violations'] && !$result['unconfigurable'];
+
 if ($csv) {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="validation_scan_pid' . (int) $pid . '_' . date('Ymd_His') . '.csv"');
@@ -78,16 +85,28 @@ if ($csv) {
     // The CSV is the artefact people file and cite, so an incomplete pass has to
     // say so IN the file. A downloaded "0 violations" from a scan that could not
     // read half the project would otherwise circulate as a clean result.
-    if (!empty($result['incomplete']) || (isset($result['status']) && $result['status'] !== 'complete')) {
+    if (!$complete) {
         $rows[] = '# INCOMPLETE SCAN - this file does NOT certify the project as clean';
         foreach (array_slice($result['incomplete'], 0, 50) as $why) {
             $rows[] = '# ' . str_replace(["\r", "\n", ','], ' ', $why);
         }
     }
-    $rows[] = 'record,event_id,instance,field,rule,type,reason';
+    // Three sections, because a violation is not the only finding a scan
+    // produces. Exporting violations alone made a rule that could not be
+    // evaluated at all — the one an auditor most needs to see — visible only on
+    // screen, and invisible in the file that gets filed (M-02).
+    $rows[] = 'section,record,event_id,instance,field,rule,type,reason';
     foreach ($result['violations'] as $v) {
-        $rows[] = implode(',', [uv_csv($v['record']), uv_csv($v['event_id']), uv_csv($v['instance']),
+        $rows[] = implode(',', [uv_csv('violation'), uv_csv($v['record']), uv_csv($v['event_id']), uv_csv($v['instance']),
             uv_csv($v['field']), uv_csv($v['rule']), uv_csv($v['type']), uv_csv($v['reason'])]);
+    }
+    foreach ($result['unconfigurable'] as $u) {
+        $rows[] = implode(',', [uv_csv('rule-problem'), uv_csv(''), uv_csv(''), uv_csv(''),
+            uv_csv(implode(' ', $u['fields'])), uv_csv($u['rule']), uv_csv('unconfigurable'), uv_csv($u['why'])]);
+    }
+    foreach ($result['incomplete'] as $why) {
+        $rows[] = implode(',', [uv_csv('not-scanned'), uv_csv(''), uv_csv(''), uv_csv(''),
+            uv_csv(''), uv_csv(''), uv_csv($result['status']), uv_csv($why)]);
     }
     echo implode("\n", $rows) . "\n";
     exit;
@@ -95,10 +114,10 @@ if ($csv) {
 
 $self = $module->getUrl('pages/scan.php');
 ?>
-<h4 style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Regex &amp; Check-Character Validator</h4>
+<h4 style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
 <p style="max-width:760px">
-Runs <b>every configured rule</b> (check-character / format, constraint, required, unique)
-over <b>every saved record</b> and lists each violation. This covers what live
+Runs <b>every configured rule</b> (check-character / format, constraint, required, unique,
+choice filter) over <b>every saved record</b> and lists each violation. This covers what live
 form validation cannot: values imported through the Data Import Tool or the API,
 and records entered before a rule existed. The report shows <i>where</i> each
 problem is — never the stored value itself.
@@ -119,15 +138,20 @@ project the scan may take a while — leave the page open until the table appear
   Scanned <b><?php echo (int) $result['stats']['records']; ?></b> record(s),
   <b><?php echo (int) $result['stats']['contexts']; ?></b> row(s), against
   <b><?php echo (int) $result['stats']['rules']; ?></b> rule(s) —
-  <b style="color:<?php echo $result['violations'] ? '#c62828' : '#2e7d32'; ?>">
-    <?php echo count($result['violations']); ?> violation(s)</b>.
-  <?php if ($result['violations']) { ?>
-    &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo uv_h($self . '&csv=1'); ?>">Download CSV</a>
-  <?php } ?>
+  <?php /* Green is a claim about the PROJECT, not about the violation count. A
+           scan that could not read everything has not earned it — colouring an
+           incomplete pass green put the reassuring number first and the caveat
+           below the fold (M-02). */ ?>
+  <b style="color:<?php echo ($clean ? '#2e7d32' : '#c62828'); ?>">
+    <?php echo count($result['violations']); ?> violation(s)</b><?php echo $complete ? '' : ' so far'; ?>.
+  <?php /* Every executed scan offers its evidence file, not only the ones that
+           found something: "0 violations, incomplete, and here is why" is a
+           result worth filing. */ ?>
+  &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo uv_h($self . '&csv=1'); ?>">Download CSV</a>
   &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo uv_h($self . '&run=1'); ?>">Re-run</a>
 </p>
 
-<?php if (!empty($result['incomplete']) || (isset($result['status']) && $result['status'] !== 'complete')) { ?>
+<?php if (!$complete) { ?>
 <div style="margin:8px 0;padding:8px 12px;border:1px solid #d9a441;background:#fdf6e3;color:#7a5c00;border-radius:4px;max-width:760px">
   <b>&#9888; This scan did not cover the whole project.</b>
   <p style="margin:4px 0 0">Treat the result below as partial. Re-run the scan; if it keeps
@@ -176,12 +200,15 @@ project the scan may take a while — leave the page open until the table appear
   <?php } ?>
   </tbody>
 </table>
-<?php } elseif (isset($result['status']) && $result['status'] !== 'complete') { ?>
+<?php } elseif (!$complete) { ?>
 <?php /* A scan that could not read everything must never read as a clean bill of
          health: "no violations" from an incomplete pass is an assurance the scan
          did not earn. */ ?>
 <p style="color:#8a6d00"><b>&#9888; No violations found in the part of the project that could be
 read &mdash; but this scan did not complete, so the project is NOT certified clean.</b></p>
+<?php } elseif (!$clean) { ?>
+<p style="color:#8a6d00"><b>&#9888; No violations found among the rules that could be evaluated
+&mdash; but the rule problems above were not checked at all.</b></p>
 <?php } else { ?>
 <p style="color:#2e7d32"><b>&#10003; No violations found.</b></p>
 <?php } ?>

@@ -236,6 +236,7 @@ class UniversalValidator extends AbstractExternalModule
             // The whole record is read ONCE, and only when a dependant exists, so
             // an unrelated instrument still reads nothing at all (PER-001).
             $hostContexts = null;
+            $depResolution = [];    // host context key => resolution states, computed once
             if ($dependents) {
                 try {
                     $whole = \REDCap::getData([
@@ -262,22 +263,36 @@ class UniversalValidator extends AbstractExternalModule
                 try {
                     if (isset($dependents[$ruleIndex])) {
                         if ($hostContexts === null) continue;   // could not enumerate; already logged
-                        $ownFields = [];
-                        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $df) {
-                            $ownFields[$df] = true;
+                        // The dependant is evaluated where it LIVES, once per host
+                        // row. Running it over every same-event context instead
+                        // turned one base-form violation into one log per unrelated
+                        // repeat row of an unrelated instrument, each attributed to
+                        // a form the rule has nothing to do with, and added a
+                        // spurious "unconfigurable" for the trigger form's base row
+                        // whenever the host repeated (H-03).
+                        $h = $this->ruleHostForms($rule, $project_id);
+                        if ($h['unknown']) {
+                            $this->logUnconfigurable($ruleIndex, $h['unknown'],
+                                'the instrument that owns this rule\'s field(s) could not be determined, so the '
+                                . 'change on "' . (string) $instrument . '" could not be re-checked against it',
+                                $instrument, $event_id, $repeat_instance);
                         }
-                        foreach ($hostContexts as $hctx) {
+                        foreach ($h['forms'] as $hostForm => $ownList) {
                             // Scope to the dependant's OWN fields, never the whole
                             // project, and report the HOST's instrument/instance so
                             // the log points at the field that is actually wrong
                             // rather than at whichever form happened to be saved
                             // (M-03).
-                            $hostInstrument = isset($hctx['instrument']) && $hctx['instrument'] !== null
-                                ? $hctx['instrument'] : $instrument;
-                            $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
-                                $project_id, $record, $hostInstrument, $hctx['event_id'], $hctx['instance'],
-                                isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
-                                $this->contextResolution($hctx, array_keys($readSet), $project_id));
+                            $ownFields = array_fill_keys($ownList, true);
+                            foreach ($this->hostContextsFor($hostContexts, $hostForm, $project_id) as $hk => $hctx) {
+                                if (!isset($depResolution[$hk])) {
+                                    $depResolution[$hk] = $this->contextResolution($hctx, array_keys($readSet), $project_id);
+                                }
+                                $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
+                                    $project_id, $record, $hostForm, $hctx['event_id'], $hctx['instance'],
+                                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
+                                    $depResolution[$hk]);
+                            }
                         }
                         continue;
                     }
@@ -961,6 +976,12 @@ class UniversalValidator extends AbstractExternalModule
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
         }
+        // With the form unknown, NOTHING is live — not because these fields are
+        // genuinely elsewhere but because we cannot see the page at all. Every
+        // comparison therefore looks fully off-page. Naming those fields as a
+        // snapshot would dress "we cannot tell" up as a freshness warning; the
+        // rule is deferred below with its own, accurate reason.
+        if ($unknownForm) foreach ($snapshot as $w => $_) $snapshot[$w] = [];
         // Surface every unresolved reference as a visible configuration notice
         // rather than a silent non-verdict. Reasons are collected PER RULE: a
         // page-global list assigned to whichever rule deferred first blamed that
@@ -974,11 +995,25 @@ class UniversalValidator extends AbstractExternalModule
         };
         foreach ($rules as $i => $r) {
             if (!empty($r['configError'])) continue;
+            // Off-page operands are read ONCE, when the page is built. If someone
+            // edits that other form in another tab the verdict here goes stale,
+            // and a wrong HARD block would otherwise be a dead end with no
+            // explanation (M-02). Name the fields so the client can downgrade the
+            // rule to advisory and tell the user to reload. The set is collected
+            // across the "when" AND the "assert": staleness in the gate decides
+            // whether the rule APPLIES, which is exactly as wrong as a stale
+            // verdict, and a rule-level key is written once at the end so the
+            // second condition cannot overwrite the first's fields (H-01).
+            $snapFields = [];
             if (isset($r['when']) && isset($folded[$r['when']])) {
                 $rules[$i]['whenAst'] = $folded[$r['when']];
                 // An unresolvable "when" gates on a value we never read, so the
                 // rule must not act on it either.
                 if (!empty($blocked[$r['when']])) { $rules[$i]['deferred'] = true; $noteFor($i, $r['when']); }
+                // A gate that had to give up a live side is stale in the same way
+                // an assert is: defer rather than gate on page-load truth.
+                if (!empty($frozen[$r['when']])) $rules[$i]['deferred'] = true;
+                foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) $snapFields[$sf] = true;
             }
             if (isset($r['assert']) && isset($folded[$r['assert']])) {
                 $rules[$i]['assertAst'] = $folded[$r['assert']];
@@ -986,28 +1021,31 @@ class UniversalValidator extends AbstractExternalModule
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
                 if (!empty($blocked[$r['assert']])) $noteFor($i, $r['assert']);
-                // Off-page operands are read ONCE, when the page is built. If
-                // someone edits that other form in another tab the verdict here
-                // goes stale, and a wrong HARD block would otherwise be a dead
-                // end with no explanation (M-02). Name the fields so the client
-                // can tell the user to reload.
-                if (!empty($snapshot[$r['assert']])) {
-                    $rules[$i]['snapshotFields'] = array_keys($snapshot[$r['assert']]);
-                }
+                foreach (isset($snapshot[$r['assert']]) ? $snapshot[$r['assert']] : [] as $sf => $_) $snapFields[$sf] = true;
             }
+            if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
             if (isset($r['branches']) && is_array($r['branches'])) {
                 // An unresolved SELECTOR makes the branch decision undecidable, and
                 // the client would otherwise fall through to the fallback branch and
                 // enforce it (H-01). Mark EVERY branch deferred, not just the blocked
                 // one, so no branch can be selected and enforced on this page.
                 $selectorBlocked = [];
+                // A SELECTOR settled on the server picks the branch from page-load
+                // truth. Whichever branch that turns out to be, its verdict rests
+                // on a value that may already have changed, so the staleness
+                // belongs to the whole rule — every branch is marked, because only
+                // the selected one's BLOCK setting is ever consulted (H-01).
+                $selectorSnapshot = [];
                 foreach ($r['branches'] as $bi => $b) {
-                    if (isset($b['when']) && $b['when'] !== '' && !empty($blocked[$b['when']])) {
+                    if (!isset($b['when']) || $b['when'] === '') continue;
+                    if (!empty($blocked[$b['when']])) {
                         foreach ($blocked[$b['when']] as $bf => $bstate) $selectorBlocked[$bf] = $bstate;
                     }
+                    foreach (isset($snapshot[$b['when']]) ? $snapshot[$b['when']] : [] as $sf => $_) $selectorSnapshot[$sf] = true;
                 }
                 foreach ($r['branches'] as $bi => $b) {
                     $bWhy = [];
+                    $bSnap = $selectorSnapshot;
                     if (isset($b['when']) && isset($folded[$b['when']])) {
                         $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']];
                         if (!empty($blocked[$b['when']])) {
@@ -1015,6 +1053,7 @@ class UniversalValidator extends AbstractExternalModule
                             $noteFor($i, $b['when']);
                             foreach ($blocked[$b['when']] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                         }
+                        if (!empty($frozen[$b['when']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                     }
                     if (isset($b['assert']) && isset($folded[$b['assert']])) {
                         $rules[$i]['branches'][$bi]['assertAst'] = $folded[$b['assert']];
@@ -1023,13 +1062,12 @@ class UniversalValidator extends AbstractExternalModule
                             $noteFor($i, $b['assert']);
                             foreach ($blocked[$b['assert']] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                         }
-                        // M-01: branch configs never inherit rule-level keys on the
-                        // client, so a branch's snapshot/deferral diagnostics have to
-                        // be written ONTO the branch or they are silently dropped.
-                        if (!empty($snapshot[$b['assert']])) {
-                            $rules[$i]['branches'][$bi]['snapshotFields'] = array_keys($snapshot[$b['assert']]);
-                        }
+                        foreach (isset($snapshot[$b['assert']]) ? $snapshot[$b['assert']] : [] as $sf => $_) $bSnap[$sf] = true;
                     }
+                    // M-01: branch configs never inherit rule-level keys on the
+                    // client, so a branch's snapshot/deferral diagnostics have to
+                    // be written ONTO the branch or they are silently dropped.
+                    if ($bSnap) $rules[$i]['branches'][$bi]['snapshotFields'] = array_keys($bSnap);
                     if ($selectorBlocked) {
                         $rules[$i]['branches'][$bi]['deferred'] = true;
                         foreach ($selectorBlocked as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
@@ -1066,7 +1104,8 @@ class UniversalValidator extends AbstractExternalModule
      * The off-page fields whose SAVED VALUE may be baked into this page's
      * conditions, as (field => true). Everything here fails CLOSED: any doubt
      * returns the field as non-disclosable, which costs only live reactivity
-     * (the rule goes advisory and the server audit still enforces it), whereas
+     * (the rule goes advisory and the server audit still RECORDS a violation
+     * after the write — detection, not prevention), whereas
      * a wrong "yes" would put a record value in front of someone with no right
      * to it — the SEC-005 leak this module exists to prevent.
      *
@@ -2025,18 +2064,30 @@ class UniversalValidator extends AbstractExternalModule
         $result = ['violations' => [], 'unconfigurable' => [], 'incomplete' => [],
                    'status' => 'failed',
                    'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0]];
-        $rules = $this->getRules($pid);
-        if (!$rules) {
-            // No rules could be DISCOVERED. That is a clean project only if the
-            // dictionary was actually readable; a failed dictionary read makes
-            // annotation rules vanish and would otherwise render as 'no rules,
-            // no violations'.
-            $result['status'] = $this->dataDictionary($pid) ? 'complete' : 'failed';
-            if ($result['status'] !== 'complete') {
-                $result['incomplete'][] = 'the project data dictionary could not be read, so the rule list is unknown';
-            }
+        // Rule DISCOVERY is a read like any other and can throw: a settings
+        // backend failure used to escape scanProject entirely, so the operator
+        // got a PHP error page instead of a scan result and nothing recorded
+        // that the project had not been examined (M-03).
+        try {
+            $rules = $this->getRules($pid);
+        } catch (\Throwable $e) {
+            $result['incomplete'][] = 'the rule list could not be read: ' . get_class($e);
             return $result;
         }
+        if (!is_array($rules)) $rules = [];
+
+        // The dictionary is load-bearing twice: annotation rules are READ from
+        // it, and every rule has to be located on an instrument before it can be
+        // evaluated at all. Establish that independently of whether any rule
+        // survived — a failed read that left one settings rule standing used to
+        // scan that rule and report 'complete' while every annotation rule had
+        // silently vanished from the list (H-05).
+        if (!$this->dataDictionary($pid)) {
+            $result['incomplete'][] = 'the project data dictionary could not be read, so the rule list is '
+                . 'incomplete and no rule can be located on an instrument';
+            return $result;                  // status stays 'failed'
+        }
+        if (!$rules) { $result['status'] = 'complete'; return $result; }
         $live = [];
         $unconf = [];   // dedupe rule-problem notes by rule+why (config errors AND runtime)
         foreach ($rules as $i => $r) {
@@ -2061,10 +2112,25 @@ class UniversalValidator extends AbstractExternalModule
         // the M-05 silent-failure the feature exists to prevent). The final assignment
         // on the full path re-attaches $unconf with any runtime additions.
         $result['unconfigurable'] = array_values($unconf);
-        if (!$live) return $result;
+        if (!$live) { $result['status'] = 'complete'; return $result; }
 
         $dupes = [];
         foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
+
+        // WHERE each rule lives, computed once. A rule whose field cannot be
+        // located on any instrument is not evaluated in some arbitrary context
+        // and hoped for — it is reported, because a guessed location produces
+        // confident nonsense rather than a near miss (H-02).
+        $hostFields = [];
+        foreach ($live as $i => $r) {
+            $h = $this->ruleHostForms($r, $pid);
+            if ($h['unknown']) {
+                $unconf[$i . '|unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
+                    'why' => 'the instrument that owns this rule\'s field(s) could not be determined from the '
+                           . 'data dictionary, so there is no context in which to check them — the field is not scanned'];
+            }
+            $hostFields[$i] = $h['forms'];
+        }
 
         // Everything the evaluation needs to read: rule fields + when/assert
         // refs + composite unique keys.
@@ -2139,26 +2205,49 @@ class UniversalValidator extends AbstractExternalModule
                     continue;
                 }
                 $recDag = self::dagOfRecordNode($data[$rec]);
-                foreach (self::recordContexts($data[$rec]) as $ctx) {
-                    $result['stats']['contexts']++;
-                    foreach ($live as $i => $r) {
-                        $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
-                        if ($mode === 'unique') {
-                            self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $dupes);
-                            continue;
+                $ctxAll = self::recordContexts($data[$rec]);
+                if (!$ctxAll) {
+                    // REDCap returned the record with no event row at all. There is
+                    // nothing to evaluate, and nothing that says the record is
+                    // clean — certifying it was the same silent skip as an
+                    // unreadable chunk, one step further down (H-05).
+                    $result['incomplete'][] = 'record ' . (string) $rec . ' was returned with no data rows, so it was not checked';
+                    continue;
+                }
+                $result['stats']['contexts'] += count($ctxAll);
+                // Resolution is a property of the CONTEXT, not of the rule that
+                // happens to be asking. Computing it per rule re-derived the same
+                // ownership map contexts x rules times (M-05).
+                $resCache = [];
+                $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
+                foreach ($live as $i => $r) {
+                    $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+                    foreach ($hostFields[$i] as $hostForm => $ownFields) {
+                        $onForm = array_fill_keys($ownFields, true);
+                        if (!isset($hostCache[$hostForm])) {
+                            $hostCache[$hostForm] = $this->hostContextsFor($ctxAll, $hostForm, $pid);
                         }
-                        $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, null, $pid, $rec, $ctx['event_id'], null, $this->contextResolution($ctx, array_keys($readSet), $pid));
-                        foreach ($f['invalid'] as $v) {
-                            $result['violations'][] = [
-                                'record' => (string) $rec, 'event_id' => $ctx['event_id'],
-                                'instance' => $ctx['instance'], 'field' => $v['field'],
-                                'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
-                            ];
-                        }
-                        foreach ($f['unconfigurable'] as $u) {
-                            $key = $i . '|' . $u['why'];
-                            if (!isset($unconf[$key])) {
-                                $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
+                        foreach ($hostCache[$hostForm] as $ck => $ctx) {
+                            if (!isset($resCache[$ck])) {
+                                $resCache[$ck] = $this->contextResolution($ctx, array_keys($readSet), $pid);
+                            }
+                            if ($mode === 'unique') {
+                                self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $dupes, $onForm, $resCache[$ck]);
+                                continue;
+                            }
+                            $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
+                            foreach ($f['invalid'] as $v) {
+                                $result['violations'][] = [
+                                    'record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                                    'instance' => $ctx['instance'], 'field' => $v['field'],
+                                    'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
+                                ];
+                            }
+                            foreach ($f['unconfigurable'] as $u) {
+                                $key = $i . '|' . $u['why'];
+                                if (!isset($unconf[$key])) {
+                                    $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
+                                }
                             }
                         }
                     }
@@ -2169,11 +2258,19 @@ class UniversalValidator extends AbstractExternalModule
         // Aggregate duplicate detection: a group is a violation when TWO OR
         // MORE DISTINCT RECORDS share the key (same-record repeats mirror the
         // endpoint/audit, which only compare against OTHER records).
+        $emitted = [];
         foreach ($uniqueSeen as $entries) {
             $records = [];
             foreach ($entries as $e) $records[$e['record']] = true;
             if (count($records) < 2) continue;
             foreach ($entries as $e) {
+                // One row, one finding. Host scoping already stops a rule being
+                // collected from contexts it does not live in; this is the belt to
+                // that brace, so a row can never be listed twice for one rule
+                // whatever the record shape (H-04).
+                $at = $e['rule'] . '|' . $e['record'] . '|' . $e['event_id'] . '|' . $e['instance'] . '|' . $e['field'];
+                if (isset($emitted[$at])) continue;
+                $emitted[$at] = true;
                 $result['violations'][] = [
                     'record' => $e['record'], 'event_id' => $e['event_id'],
                     'instance' => $e['instance'], 'field' => $e['field'],
@@ -2198,6 +2295,15 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($recordNode as $k => $node) {
             if ($k === 'repeat_instances' || !is_array($node)) continue;
             $out[] = ['event_id' => $k, 'instance' => 1, 'instrument' => null,
+                      // 'repeatKey' is the raw bucket this row came from: null for
+                      // the event's base row, '' for a repeating EVENT instance,
+                      // the form name for a repeating FORM instance. 'instrument'
+                      // cannot carry that distinction — it is deliberately null for
+                      // the repeating-event bucket (every form shares it), which
+                      // makes a repeating-event row indistinguishable from a base
+                      // row. hostContextsFor() needs to tell them apart to decide
+                      // where a rule actually lives (H-02).
+                      'repeatKey' => null,
                       'node' => $recordNode, 'values' => self::cleanRow($node)];
         }
         if (isset($recordNode['repeat_instances']) && is_array($recordNode['repeat_instances'])) {
@@ -2212,11 +2318,94 @@ class UniversalValidator extends AbstractExternalModule
                                   // '' is the repeating-EVENT bucket: shared by
                                   // every form, so nothing is instrument-scoped.
                                   'instrument' => ($formKey === '' ? null : $formKey),
+                                  'repeatKey' => $formKey,
                                   'node'   => $recordNode,
                                   'values' => array_merge($base, self::cleanRow($row))];
                     }
                 }
             }
+        }
+        return $out;
+    }
+
+    /**
+     * The instruments that HOST one rule, as form_name => [its fields], plus the
+     * fields whose owning form could not be determined.
+     *
+     * A rule lives where its OWN fields live — not wherever the caller happened
+     * to be standing. Evaluating a rule in an arbitrary context is not a
+     * near-miss, it produces confident nonsense: a populated repeating field
+     * reported blank because the base row was examined, a populated event-1
+     * field reported blank in event 2, and the same rule declared both
+     * unconfigurable and hard-violated for one record (H-02). The save audit's
+     * reverse-dependency pass had the same defect in a different shape, logging
+     * one copy of a base-form violation per unrelated repeat row (H-03), and the
+     * unique aggregator inherited it too (H-04).
+     *
+     * A rule may legitimately span forms (a pooled rule over fields on two
+     * instruments); each host is returned separately so the rule is evaluated
+     * once per host, over that host's fields only.
+     */
+    private function ruleHostForms(array $rule, $pid)
+    {
+        $out = ['forms' => [], 'unknown' => []];
+        $dd = $this->dataDictionary($pid);
+        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $f) {
+            $form = ($dd && isset($dd[$f]['form_name']) && $dd[$f]['form_name'] !== '') ? $dd[$f]['form_name'] : null;
+            if ($form === null) { $out['unknown'][] = $f; continue; }
+            $out['forms'][$form][] = $f;
+        }
+        return $out;
+    }
+
+    /**
+     * Of one record's contexts, the ones in which $form's fields actually live,
+     * keys preserved so the caller can reuse a per-context resolution cache.
+     *
+     * Three questions, answered from the SAME signals resolveOne() uses so the
+     * two can never disagree: is $form designated for this event at all; does
+     * the EVENT repeat; does $form itself repeat here.
+     */
+    private function hostContextsFor(array $contexts, $form, $pid)
+    {
+        $out = [];
+        $shape = [];    // event id => ['repeats' => bool|null, 'eventRepeats' => bool, 'mapped' => bool]
+        foreach ($contexts as $k => $ctx) {
+            $evt = $ctx['event_id'];
+            if (!isset($shape[$evt])) {
+                $rec = (isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : [];
+                $byEvent = (isset($rec['repeat_instances'][$evt]) && is_array($rec['repeat_instances'][$evt]))
+                    ? $rec['repeat_instances'][$evt] : null;
+                $eventForms = $this->formsForEvent($pid, $evt);
+                $repeating  = $this->repeatingFormsForEvent($pid, $evt, [$form]);
+                $byMeta   = is_array($repeating) ? isset($repeating[$form]) : null;
+                $byBucket = is_array($byEvent) ? array_key_exists($form, $byEvent) : null;
+                $repeats = null;
+                if ($byMeta === true || $byBucket === true) $repeats = true;
+                elseif ($byMeta === false || $byBucket === false) $repeats = false;
+                $shape[$evt] = [
+                    // A NULL mapping means "cannot tell" (classic project, or a
+                    // build without the API) and must fail OPEN, exactly as
+                    // contextResolution's own off-event check does.
+                    'mapped'       => ($eventForms === null) ? true : isset($eventForms[$form]),
+                    'eventRepeats' => is_array($byEvent) && array_key_exists('', $byEvent),
+                    'repeats'      => $repeats,
+                ];
+            }
+            $s = $shape[$evt];
+            if (!$s['mapped']) continue;                       // this form is not collected in this event
+            $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
+            if ($s['eventRepeats']) {
+                // Every form in a repeating event is instance-scoped; the base row
+                // is folded into each instance, so evaluating it too would double
+                // every finding.
+                if ($rk !== '') continue;
+            } elseif ($s['repeats'] === true) {
+                if ($rk !== $form) continue;                   // only this form's own instances
+            } else {
+                if ($rk !== null) continue;                    // base row only
+            }
+            $out[$k] = $ctx;
         }
         return $out;
     }
@@ -2281,8 +2470,27 @@ class UniversalValidator extends AbstractExternalModule
      * for scope=event, the record's DAG for scope=dag). Branch rules resolve
      * their active branch against this context first.
      */
-    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes)
+    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [])
     {
+        // Every reference this aggregation consumes goes through the SAME
+        // resolution the rest of the scan uses. Without it the composite key was
+        // built by substituting '' for anything unresolvable, so two records whose
+        // composite field lives on an independently repeating instrument — with no
+        // defined pairing between their instances — collapsed to the same key and
+        // were reported as duplicates of each other, with nothing said about why
+        // (H-04). An undefined pairing is refused, never guessed.
+        $refuse = function ($why, $suffix) use (&$unconf, $ruleIndex, $rule) {
+            $unconf[$ruleIndex . '|unique-' . $suffix] = ['rule' => $ruleIndex + 1,
+                'fields' => $rule['fields'], 'why' => $why];
+        };
+        $unresolved = function (array $ast) use ($resolution) {
+            foreach (Logic::referencedFields($ast) as $ref) {
+                $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+                if ($state !== 'ok') return [$state, $ref[0]];
+            }
+            return null;
+        };
+
         $cfg = $rule;
         if (isset($rule['branches']) && is_array($rule['branches'])) {
             $active = [];
@@ -2293,8 +2501,12 @@ class UniversalValidator extends AbstractExternalModule
                 if (empty($p['ok'])) {
                     // A branch condition that no longer parses means the value is not
                     // checked here — surface it rather than a silent skip (M-05).
-                    $unconf[$ruleIndex . '|unique-branch-unparseable'] = ['rule' => $ruleIndex + 1,
-                        'fields' => $rule['fields'], 'why' => 'a unique-rule branch "when" cannot be evaluated — the value is not checked'];
+                    $refuse('a unique-rule branch "when" cannot be evaluated — the value is not checked', 'branch-unparseable');
+                    return;
+                }
+                if (($u = $unresolved($p['ast'])) !== null) {
+                    $refuse('a unique-rule branch "when" condition ' . self::resolutionProblem($u[0], $u[1])
+                        . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
                 if (Logic::evaluate($p['ast'], $ctx['values'])) $active[] = $bi;
@@ -2307,8 +2519,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (count($active) > 1) {
                     // Two branch conditions true at once — mirror the non-unique scan
                     // and the live client, which report this rather than guess (M-05).
-                    $unconf[$ruleIndex . '|unique-branch-conflict'] = ['rule' => $ruleIndex + 1,
-                        'fields' => $rule['fields'], 'why' => 'more than one unique-rule "when" is true for a record (branch conflict) — the value is not checked'];
+                    $refuse('more than one unique-rule "when" is true for a record (branch conflict) — the value is not checked', 'branch-conflict');
                 }
                 return;
             }
@@ -2318,12 +2529,35 @@ class UniversalValidator extends AbstractExternalModule
         }
         if (isset($cfg['when']) && is_string($cfg['when']) && $cfg['when'] !== '') {
             $p = Logic::parse($cfg['when']);
-            if (empty($p['ok']) || !Logic::evaluate($p['ast'], $ctx['values'])) return;
+            if (empty($p['ok'])) {
+                $refuse('the unique rule\'s "when" condition cannot be evaluated — the value is not checked', 'when-unparseable');
+                return;
+            }
+            if (($u = $unresolved($p['ast'])) !== null) {
+                $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
+                return;
+            }
+            if (!Logic::evaluate($p['ast'], $ctx['values'])) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
+        // A composite key is only meaningful when every part of it was actually
+        // read for THIS row. One unreadable part makes the whole tuple undefined.
+        foreach ($with as $w) {
+            $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
+            if ($state !== 'ok') {
+                $refuse('the unique rule\'s composite key ' . self::resolutionProblem($state, $w), 'with-unresolved');
+                return;
+            }
+        }
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $state = isset($resolution[$field]) ? $resolution[$field] : 'ok';
+            if ($state !== 'ok') {
+                $refuse('the unique rule ' . self::resolutionProblem($state, $field), 'field-unresolved');
+                continue;
+            }
             $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
             if ($v === null || is_array($v) || trim((string) $v) === '') continue;
             // Collision-free, LOSSLESS composite key (L-01, L01-UTF8-COLLAPSE): a raw

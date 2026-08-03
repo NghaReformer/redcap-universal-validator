@@ -629,8 +629,15 @@ A bare `[field]` with no comparison is an error — write `[field]<>''`.
 Semantics:
 
 - **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with age `10` is
-  true, not a lexicographic accident); otherwise the comparison is exact and
-  case-sensitive.
+  true, not a lexicographic accident), and exact case-sensitive text when neither side
+  does.
+- **Mixed domains do not order.** One numeric side and one non-numeric side, both filled
+  in: `=` and `<>` still answer by string identity, but `<` `>` `<=` `>=` are false
+  whichever way round you ask them. Ordering across domains produced cycles — with
+  `'2'`, `'10'` and `'1e1'` every one of `a<=b`, `b<=c` and `a>c` was true — and a rule
+  built on that is unsatisfiable in a way no message can explain. An **empty** side is
+  exempt: empty is absence, not a rival domain, so `[end_date]>=[start_date]` with
+  `start_date` not yet entered still passes.
 - A missing or empty field reads as `''`. A checkbox reference `[f(code)]` reads `'1'`
   when checked, `'0'` otherwise.
 - **Fields on the same instrument react live.** A calc field updates without DOM events,
@@ -640,7 +647,12 @@ Semantics:
   the shape of the comparison:
   - Compared against a **literal** (`[baseline_eligible]='1'`) there is no live side at
     all, so the whole comparison is settled on the server and sent as a `true`/`false`.
-    Correct as of page load; nothing on this page can change it.
+    Correct as of page load, and nothing on this page can change it — which is exactly
+    why it never blocks a save (1.6.0). Someone editing that other form in another tab
+    makes the constant stale, and a stale `true` would silently accept an invalid save
+    while a stale `false` would block a valid one with no way out. The rule stays
+    advisory and names the fields it was read from, so you can reload if they have
+    changed since.
   - Compared against a field **on this instrument** (`[end_date]>=[start_date]`) the
     comparison is kept **live** since 1.6.0: the off-page value is baked in as a literal
     and the browser re-checks on every keystroke, exactly like a same-instrument rule.
@@ -680,6 +692,11 @@ Semantics:
   as well: a `uvalidate-unconfigurable` module-log entry after a save (all three cases),
   and a *Rule problems* line on the Validation scan page (the cross-repeating-instrument
   case — the scan reads a whole record at once, so the other two cannot arise there).
+- **A `when` gate on another instrument makes the rule advisory too.** Stale applicability
+  is as wrong as a stale verdict: the gate decides whether the rule applies at all, and it
+  was read once when the page opened. The rule still gives live feedback; it does not
+  block. Same for a branched rule whose branch selector lives off-page — the branch that
+  gets chosen rests on page-load truth, so no branch of that rule blocks.
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
   branching if you also want erasure.

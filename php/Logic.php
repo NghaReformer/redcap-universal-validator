@@ -49,9 +49,17 @@
  *   - comparison is numeric (EXACT decimal, never floats — see decCmp; a float
  *     cast merged distinct integers above 2^53) iff BOTH resolved sides match
  *     ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$ after ASCII trimming — deliberately
- *     no exponents or hex, where PHP and JavaScript number parsing diverge —
- *     otherwise an exact, case-sensitive string comparison (strcmp ordering;
- *     identical to JavaScript's relational operators on ASCII).
+ *     no exponents or hex, where PHP and JavaScript number parsing diverge;
+ *   - both sides non-numeric: exact, case-sensitive string comparison (strcmp
+ *     ordering; identical to JavaScript's relational operators on ASCII);
+ *   - MIXED (one numeric, one not, both non-empty): = and <> still answer, by
+ *     string identity. The ORDERED operators < > <= >= are false whichever way
+ *     round they are asked, because a per-pair comparator produced ordering
+ *     CYCLES (a<=b, b<=c and a>c all true for "2", "10", "1e1") that no error
+ *     message could explain;
+ *   - EMPTY is exempt from that rule: it is absence, not a rival domain, so
+ *     [end]>=[start] with start not yet entered still passes rather than
+ *     inventing a violation on every part-filled record.
  *
  * Caps (parse errors beyond): MAX_EXPR_LEN chars, MAX_REFS field references,
  * MAX_DEPTH nesting levels (parentheses + not).
@@ -248,7 +256,27 @@ class Logic
                     }
                     $frozen = true;   // a live side existed but had to be given up
                 }
-                // otherwise the browser could never resolve it: settle it here
+                // Otherwise the browser could never resolve it: settle it here.
+                //
+                // The constant that comes back is a SNAPSHOT — every operand was
+                // read on the SERVER when the page was built. Shipping it bare
+                // said "this is simply true/false", so a rule with a fully
+                // off-page condition (`[b_open]='1'`, every ref on another form)
+                // kept its configured HARD block and enforced a verdict that went
+                // stale the instant anyone edited the other form in another tab:
+                // a stale false hard-blocked a valid save, a stale true silently
+                // accepted an invalid one, and a stale gate switched an unrelated
+                // rule on or off (H-01). Name the fields instead, so the caller
+                // can downgrade the rule to advisory and tell the user to reload.
+                //
+                // Only when a reference is actually involved: a literal-only
+                // comparison ('1'='1') has no record value behind it and can
+                // never go stale.
+                if ($refs > 0 && $live === 0) {
+                    foreach ([2, 3] as $slot) {
+                        if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
+                    }
+                }
                 return ['const', self::evaluate($ast, $values)];
         }
         return $ast;   // 'const' (already folded) and anything unknown

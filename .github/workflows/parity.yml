@@ -108,6 +108,8 @@ jobs:
         run: php tests/crossform_adversarial_php.php
       - name: PHP cross-form resolution (cross-repeat, failed read, off-event, reverse deps)
         run: php tests/crossform_resolution_php.php
+      - name: PHP rule hosting (where a rule runs; stale gates; what a scan may certify)
+        run: php tests/hosting_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 

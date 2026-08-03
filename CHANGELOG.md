@@ -7,6 +7,76 @@
 > produced false passes, false failures and false audit entries. Nine findings were filed; all
 > nine were independently reproduced with executable probes before anything was changed. The
 > sections below fold those fixes into 1.6.0 rather than shipping a broken tag and superseding it.
+>
+> Two further adversarial reviews of the repaired tree followed, each rejecting it again. The
+> second found the paths that had not been moved onto the shared resolver; the third found that
+> having a shared resolver was not enough, because nothing said which CONTEXTS a rule belongs to —
+> see *Rules are evaluated where they live* below. Every finding of all three rounds is folded in
+> here, and `tests/hosting_php.php` locks the third round's scenarios (21 of its 32 checks fail on
+> the tree that was reviewed).
+
+### Rules are evaluated where they live
+
+The module knew how to resolve a reference *for a given context*; nothing decided which contexts a
+rule belongs to. Each caller therefore chose its own, and each chose wrongly in a different way:
+the scan ran every rule in every context of every record, and the save audit's reverse-dependency
+pass ran a dependant in every same-event context of the record it had just read. The symptoms
+looked unrelated but were one defect:
+
+- a populated field on a repeating form reported **blank**, because the rule was also evaluated in
+  the record's base row;
+- a field collected only in event 1 reported **blank in event 2**;
+- one rule reporting **both** "unconfigurable" and a hard violation, for one record;
+- a base-form violation logged **four times** — once per unrelated repeat row of an unrelated
+  instrument — and attributed to instruments the rule has nothing to do with;
+- two records whose composite unique key lives on an independently repeating form reported as
+  **duplicates of each other**, because unresolvable parts of the key were substituted with `''`.
+
+`ruleHostForms()` locates a rule from the data dictionary and `hostContextsFor()` returns the
+contexts that form actually occupies in a record — answered from the same signals `resolveOne()`
+uses, so the two cannot drift. A base form is evaluated once per event it is mapped to; a
+repeating form once per instance; a repeating event once per event instance; a form not designated
+for an event is not evaluated there at all. The scan, the save audit's dependency pass and the
+unique aggregator all go through it. A rule whose field cannot be located on any instrument is
+**reported**, not evaluated somewhere hopeful.
+
+The unique aggregator also runs its `when`, branch selectors and composite `uniqueWith` fields
+through the resolver: an undefined pairing is refused with a stated reason instead of keyed as `''`.
+
+### A settled condition is a snapshot, not a fact
+
+A condition whose operands are *all* off-page was folded to a bare `["const", …]` and shipped with
+its configured **hard** block intact. That constant is page-load truth: a stale `false` blocked a
+valid save with no way out, and a stale `true` silently accepted an invalid one. The fold now names
+the fields the constant was read from, which is what makes the rule advisory.
+
+The same treatment now covers the applicability **gate** and branch **selectors**, not just the
+assert. A stale `when` switches a rule on or off, and a stale selector decides which branch runs —
+both are exactly as wrong as a stale verdict, and both previously kept the block.
+
+### A scan may certify only what it actually read
+
+Three more ways a scan could claim completeness it had not earned:
+
+- the dictionary read failing while one settings rule survived — every annotation rule silently
+  vanished from the list and the survivor was scanned and reported `complete`. Dictionary success
+  is now established independently of whether any rule was found, and the scan cannot proceed
+  without it (a rule cannot be located on an instrument otherwise);
+- a record returned by REDCap with no event rows at all — zero contexts is not zero violations;
+- rule **discovery** throwing, which escaped `scanProject()` entirely and produced a PHP error
+  page rather than a scan result.
+
+The scan page no longer colours an incomplete result green, offers its evidence CSV for every
+executed scan rather than only when violations were found, and exports rule problems and
+not-scanned reasons alongside the violations.
+
+### A rule that stops checking says so, even with no branch to show
+
+When every branch of a rule was deferred and there was no fallback, no variant was active and the
+client fell straight through to its inert path — clearing the field silently, with the reason the
+server had built for exactly this case discarded. The rule-level notice is now rendered whenever
+zero variants are active *because* the rule was deferred, across all five validator kinds. An
+ordinary "no branch applies here" is unchanged.
 
 ### Cross-instrument checks are ADVISORY
 

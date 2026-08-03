@@ -1656,6 +1656,35 @@ function QRID_renderConflict(msg, input, act){
   input.style.outline = ""; input.__qridInvalid = false;
   QRID_setInvalidState(input, null);
 }
+/* NO variant is active AND the server deferred the whole rule. That is not the
+   ordinary "no branch applies here" — it means every branch SELECTOR rested on
+   a value the server could not resolve, so no branch can be chosen and the
+   field stopped being checked. Falling straight through to inert() left the
+   person typing with no indication whatsoever that validation had gone away
+   (M-01), which is the silent failure the reasons exist to prevent.
+   Survey respondents still get nothing: the reasons name other instruments and
+   fields they must not learn about, and they could not act on a design problem
+   anyway. Returns true when it rendered the notice; false leaves the caller's
+   own inert path untouched, so an ordinary inapplicable rule is unchanged. */
+function QRID_renderRuleDeferral(msg, input, cfg){
+  if(QRID_IS_SURVEY || !cfg || !cfg.deferred) return false;
+  var why = cfg.deferredWhy;
+  if(!why || !why.length) return false;
+  QRID_renderDeferralNotice(msg, input, why);
+  return true;
+}
+/* The one wording for "this rule is not being checked", shared by the rule-level
+   notice above and every validator's per-variant deferral. It was wrong once
+   already — it promised the value would still be checked after saving, which the
+   audit does not do for an unresolved reference — so there is exactly one copy. */
+function QRID_renderDeferralNotice(msg, input, why){
+  msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+    "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+  msg.innerHTML = "&#9888; This rule is not being checked — " +
+    QRID_escapeHtml(why.join(" ")) +
+    " It is not checked after saving either; the study team needs to correct the rule.";
+  input.style.outline = "";
+}
 function QRIDSingleInit(QRID_CONFIG){
 
   function styleMsg(el, kind){   /* kind: true=ok, false=bad, "info"=typing, "err"=config error */
@@ -1918,8 +1947,12 @@ function QRIDSingleInit(QRID_CONFIG){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no condition is true -> the field is inert: clear any verdict and
-           never hold the save (the submit guard reads only __qridInvalid). */
-        msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+           never hold the save (the submit guard reads only __qridInvalid).
+           Unless no branch could be CHOSEN at all, which is a rule problem and
+           has to be said out loud (M-01). */
+        input.__qridInvalid = false;
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ QRID_setInvalidState(input, null); return; }
+        msg.style.display = "none"; input.style.outline = "";
         QRID_setInvalidState(input, null);
         return;
       }
@@ -2045,8 +2078,10 @@ function QRIDConstraintInit(QRID_CONFIG){
        the viewer may not read, so the condition had to be frozen at page-load
        truth. A frozen verdict is wrong in BOTH directions once the user types —
        it would flag a correct value and pass a wrong one — so the browser states
-       no verdict at all and never blocks. redcap_save_record still enforces it
-       and logs any violation (type: constraint). See php/Logic.php fold(). */
+       no verdict at all and never blocks. Where the reference itself could not be
+       RESOLVED nothing re-checks it later either — the audit reports the rule as
+       unconfigurable and returns — which is why the notice says so plainly rather
+       than promising a post-save check. See php/Logic.php fold(). */
     var DEFERRED = !configError && !!cfg.deferred;
     if(DEFERRED) BLOCK = "off";
     /* ADVISORY-ONLY CROSS-FORM (policy decision, 1.6.0).
@@ -2056,10 +2091,13 @@ function QRIDConstraintInit(QRID_CONFIG){
        a stale one that FAILS was a dead end. redcap_save_record runs after the
        write and cannot recover either case.
        A snapshot therefore never drives a save block. Cross-form rules give live
-       feedback as you type and the post-save audit and Validation scan remain the
-       enforcement record; the module does not claim a guarantee a page-load
-       snapshot cannot support. Same-instrument rules are unaffected — both sides
-       are live in the DOM, so nothing there is a snapshot. */
+       feedback as you type; the post-save audit and the Validation scan RECORD
+       violations after the fact, which is a detection record and not enforcement.
+       The module does not claim a guarantee a page-load snapshot cannot support.
+       This covers the applicability GATE as well as the assert: a stale "when"
+       switches a rule on or off, which is as wrong as a stale verdict.
+       Same-instrument rules are unaffected — both sides are live in the DOM, so
+       nothing there is a snapshot. */
     var SNAPSHOT_ADVISORY = !configError && cfg.snapshotFields && cfg.snapshotFields.length;
     if(SNAPSHOT_ADVISORY) BLOCK = "off";
     /* Off-page operands are resolved once, when the page is built. Naming them
@@ -2104,7 +2142,12 @@ function QRIDConstraintInit(QRID_CONFIG){
     function inert(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
     function check(){
       var act = QRID_activeVariants(VS);
-      if(!act.length){ inert(); return; }              /* no applicability gate true -> inert */
+      if(!act.length){
+        /* no applicability gate true -> inert, unless no branch could be CHOSEN
+           at all, which is a rule problem and has to be said out loud (M-01). */
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        inert(); return;
+      }
       if(act.length > 1){                               /* branch conflict: show, validate nothing, never block */
         styleMsg(msg, false);
         msg.innerHTML = QRID_IS_SURVEY
@@ -2126,8 +2169,6 @@ function QRIDConstraintInit(QRID_CONFIG){
          not act on a design problem anyway. Never blocks either way. */
       if(V.deferred){
         if(V.deferredWhy && !QRID_IS_SURVEY){
-          msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
-            "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
           /* Wording matters and was wrong once already. A rule deferred for an
              UNRESOLVED reference is NOT re-checked after the save: the audit
              emits an "unconfigurable" note and returns, and an unreadable read
@@ -2135,10 +2176,8 @@ function QRIDConstraintInit(QRID_CONFIG){
              overstatement as calling the deferred path "enforcement". Say what is
              true: this rule is not checking anything, anywhere, until the study
              team fixes the configuration. */
-          msg.innerHTML = "&#9888; This rule is not being checked — " +
-            QRID_escapeHtml(V.deferredWhy.join(" ")) +
-            " It is not checked after saving either; the study team needs to correct the rule.";
-          input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null);
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy);
+          setGuard(false); QRID_setInvalidState(input, null);
           return;
         }
         inert(); return;
@@ -2268,7 +2307,12 @@ function QRIDRequiredInit(QRID_CONFIG){
     function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
     function check(){
       var act = QRID_activeVariants(VS);
-      if(!act.length){ clear(); return; }              /* no requirement in force */
+      if(!act.length){
+        /* no requirement in force — unless no branch could be CHOSEN at all,
+           which is a rule problem and has to be said out loud (M-01). */
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        clear(); return;
+      }
       if(act.length > 1){                               /* branch conflict: show, never block */
         styleMsg(msg);
         msg.innerHTML = QRID_IS_SURVEY
@@ -2284,11 +2328,7 @@ function QRIDRequiredInit(QRID_CONFIG){
          never block. Mirrors QRIDConstraintInit. */
       if(V.deferred){
         if(V.deferredWhy && !QRID_IS_SURVEY){
-          msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
-            "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
-          msg.innerHTML = "&#9888; This rule is not being checked — " +
-            QRID_escapeHtml(V.deferredWhy.join(" ")) +
-            " It is not checked after saving either; the study team needs to correct the rule.";
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy);
         } else {
           msg.style.display = "none"; msg.innerHTML = "";
         }
@@ -2545,7 +2585,13 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
     function check(){
       var act = QRID_activeVariants(VS);
-      if(!act.length){ render(NONE); clear(); return; }   /* no filter in force — everything shown */
+      if(!act.length){
+        /* no filter in force — everything shown. Unless no branch could be
+           CHOSEN at all, which is a rule problem, not an empty filter (M-01). */
+        render(NONE);
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        clear(); return;
+      }
       if(act.length > 1){                                  /* branch conflict: show, never filter, never block */
         render(NONE);
         styleMsg(msg);
@@ -2718,7 +2764,11 @@ function QRIDUniqueInit(QRID_CONFIG){
     }
     function check(){
       var act = QRID_activeVariants(VS);
-      if(!act.length){ inert(); return; }
+      if(!act.length){
+        /* inert — unless no branch could be CHOSEN at all (M-01). */
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        inert(); return;
+      }
       if(act.length > 1){
         styleMsg(msg, false);
         msg.innerHTML = QRID_IS_SURVEY
@@ -3146,7 +3196,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     /* which variant applies right now? (see the single factory) */
     var act = QRID_activeVariants(VS);
     if(!act.length){
-      msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
+      input.__qridInvalid = false;
+      /* inert — unless no branch could be CHOSEN at all (M-01). */
+      if(QRID_renderRuleDeferral(msg, input, QRID_MULTI_CONFIG)){ QRID_setInvalidState(input, null); return; }
+      msg.style.display = "none"; input.style.outline = "";
       QRID_setInvalidState(input, null);
       return;
     }
