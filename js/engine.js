@@ -2000,8 +2000,17 @@ function QRIDConstraintInit(QRID_CONFIG){
     if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
       configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
     }
+    /* DEFERRED (server set it): this assert compares against an off-page field
+       the viewer may not read, so the condition had to be frozen at page-load
+       truth. A frozen verdict is wrong in BOTH directions once the user types —
+       it would flag a correct value and pass a wrong one — so the browser states
+       no verdict at all and never blocks. redcap_save_record still enforces it
+       and logs any violation (type: constraint). See php/Logic.php fold(). */
+    var DEFERRED = !configError && !!cfg.deferred;
+    if(DEFERRED) BLOCK = "off";
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* applicability */
     return { configError: configError, assertGate: assertGate, gate: GATE, blockSave: BLOCK,
+             deferred: DEFERRED,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { constraint: true } };
@@ -2045,6 +2054,8 @@ function QRIDConstraintInit(QRID_CONFIG){
         input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
       }
       var V = act[0];
+      /* frozen assert: state no verdict rather than a stale one (see makeVariant) */
+      if(V.deferred){ inert(); return; }
       var val = QRID_WHEN.readRef(fieldName, null);
       if(val === null || String(val).trim() === ""){ inert(); return; }   /* empty field is inert */
       var ok = true;
@@ -3134,8 +3145,11 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
                       "blockSave", "when", "whenAst",
-                      /* constraint mode (@UVASSERT) */
-                      "assert", "assertAst", "message",
+                      /* constraint mode (@UVASSERT). "deferred" marks an assert
+                         the server had to freeze (an off-page ref this viewer may
+                         not read): the verdict is stale the moment the user types,
+                         so the client shows it as advisory and never blocks. */
+                      "assert", "assertAst", "message", "deferred",
                       /* unique mode (@UVUNIQUE) */
                       "uniqueWith", "uniqueScope", "uniqueSurveys",
                       /* choices mode (@UVCHOICES) */

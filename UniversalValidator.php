@@ -710,7 +710,7 @@ class UniversalValidator extends AbstractExternalModule
             'rules'        => $rules,
         ]);
 
-        $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance);
+        $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
         return $config;
     }
 
@@ -731,7 +731,7 @@ class UniversalValidator extends AbstractExternalModule
      * (a brand-new form) there is nothing to read and every off-page
      * comparison folds against '' — exactly what REDCap's own branching sees.
      */
-    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance)
+    private function foldRuleConditions(array $rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context = 'form')
     {
         // condition text => parsed AST, for every live rule/branch on the page
         $asts = [];
@@ -769,9 +769,17 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // Off-page fields this viewer is already entitled to read. Their values
+        // may be baked into the shipped condition so a cross-form comparison
+        // stays LIVE instead of freezing at page-load truth (see Logic::fold).
+        $disclosable = $this->disclosableFields($pid, $context, array_keys($refs), $instrument);
+
         $folded = [];
+        $frozen = [];   // condition text => the live side had to be given up
         foreach ($asts as $w => $ast) {
-            $folded[$w] = Logic::fold($ast, $values, $live);
+            $f = false;
+            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f);
+            $frozen[$w] = $f;
         }
         foreach ($rules as $i => $r) {
             if (!empty($r['configError'])) continue;
@@ -780,6 +788,9 @@ class UniversalValidator extends AbstractExternalModule
             }
             if (isset($r['assert']) && isset($folded[$r['assert']])) {
                 $rules[$i]['assertAst'] = $folded[$r['assert']];
+                // A frozen ASSERT must never block: its verdict is stale the
+                // moment the user types. The post-save audit still enforces it.
+                if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
             }
             if (isset($r['branches']) && is_array($r['branches'])) {
                 foreach ($r['branches'] as $bi => $b) {
@@ -788,11 +799,128 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     if (isset($b['assert']) && isset($folded[$b['assert']])) {
                         $rules[$i]['branches'][$bi]['assertAst'] = $folded[$b['assert']];
+                        if (!empty($frozen[$b['assert']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                     }
                 }
             }
         }
         return $rules;
+    }
+
+    /**
+     * The off-page fields whose SAVED VALUE may be baked into this page's
+     * conditions, as (field => true). Everything here fails CLOSED: any doubt
+     * returns the field as non-disclosable, which costs only live reactivity
+     * (the rule goes advisory and the server audit still enforces it), whereas
+     * a wrong "yes" would put a record value in front of someone with no right
+     * to it — the SEC-005 leak this module exists to prevent.
+     *
+     * Three gates, all required:
+     *   1. Data entry only. A survey page is rendered for an unauthenticated
+     *      respondent, so nothing is ever disclosable there.
+     *   2. A REDCap-authenticated username.
+     *   3. Per-INSTRUMENT rights for that user: REDCap's own granularity. A
+     *      form the user may open is one whose values they can already read,
+     *      so baking a value in discloses nothing new — this is exactly what
+     *      REDCap's stock branching logic already ships to the page.
+     *
+     * Fields of the rendered instrument are excluded: they are live refs
+     * already and never need a baked literal.
+     */
+    private function disclosableFields($pid, $context, array $refs, $instrument = null)
+    {
+        if ($context !== 'form' || !$refs) return [];
+        try {
+            $forms = $this->userFormRights($pid);
+            if ($forms === null) return [];
+            $dd = $this->dataDictionary($pid);
+            if (!$dd) return [];
+            $out = [];
+            foreach ($refs as $f) {
+                if (!isset($dd[$f]['form_name'])) continue;          // unknown field -> no
+                $form = $dd[$f]['form_name'];
+                if ($instrument !== null && $form === $instrument) continue;  // already live
+                if (!array_key_exists($form, $forms)) continue;      // no entry -> no
+                // REDCap form rights: 0 = no access. 1 view/edit, 2 read-only,
+                // 3 edit survey responses all imply the user can read the form.
+                if ((string) $forms[$form] === '0') continue;
+                $out[$f] = true;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return [];   // fail closed
+        }
+    }
+
+    /**
+     * This user's per-instrument rights for $pid as (form_name => level), or
+     * NULL when they cannot be established — which callers must treat as "no
+     * rights", never as "all rights".
+     *
+     * Deliberately does NOT call \REDCap::getUserRights($pid) as the primary
+     * source. That method's FIRST parameter is the user list, not the project
+     * id, so passing a pid there returns rights for a user named "151" —
+     * i.e. nothing — and the whole feature would go quietly inert on a real
+     * REDCap while every mock passed. That is precisely how @UVUNIQUE shipped
+     * dead in v1.4.0 (see the is_callable/method_exists note above), so the
+     * framework-native User::getRights($pid) is tried FIRST and the static is
+     * only a fallback, called with no arguments and filtered here by username.
+     */
+    private function userFormRights($pid)
+    {
+        $user = $this->currentUsername();
+        if ($user === null) return null;
+
+        // 1. Framework-native: an unambiguous, project-scoped signature.
+        try {
+            if (is_callable([$this, 'getUser'])) {
+                $u = $this->getUser();
+                if ($u && method_exists($u, 'getRights')) {
+                    $r = $u->getRights($pid);
+                    if (is_array($r) && isset($r['forms']) && is_array($r['forms'])) return $r['forms'];
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+
+        // 2. Fallback: the static, called with NO arguments so the parameter
+        //    order cannot be got wrong, then keyed by username.
+        try {
+            if (is_callable(['\REDCap', 'getUserRights'])) {
+                $all = \REDCap::getUserRights();
+                if (is_array($all) && isset($all[$user]) && is_array($all[$user])
+                    && isset($all[$user]['forms']) && is_array($all[$user]['forms'])) {
+                    return $all[$user]['forms'];
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;   // fail closed
+    }
+
+    /**
+     * The authenticated username, or null when this request has none (survey
+     * respondent, cron, API). Tries the External Modules user object first and
+     * falls back to REDCap's USERID constant; both are guarded because neither
+     * exists in every context this module runs in.
+     */
+    private function currentUsername()
+    {
+        try {
+            if (is_callable([$this, 'getUser'])) {
+                $u = $this->getUser();
+                if ($u && method_exists($u, 'getUsername')) {
+                    $name = $u->getUsername();
+                    if (is_string($name) && $name !== '') return $name;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        if (defined('USERID')) {
+            $name = constant('USERID');
+            if (is_string($name) && $name !== '') return $name;
+        }
+        return null;
     }
 
     /** Every non-empty "when" a rule carries (its own, and its branches'). */

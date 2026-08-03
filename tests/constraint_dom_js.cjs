@@ -267,5 +267,161 @@ function submitEv() {
   check('no message: generic wording shown, still flagged', /fails its validation rule/.test(msg.innerHTML));
 }
 
+// ---- 9) CROSS-FORM, entitled viewer: the server bakes the off-page value in
+//         as a ['lit', …] operand and the comparison stays LIVE. Only end_date
+//         is in the DOM — start_date lives on another instrument. -----------
+{
+  const end = makeEl('input'); end.name = 'end_date'; end.value = '';
+  const env = boot([end], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]',
+              assertAst: ['cmp', '>=', ['ref', 'end_date', null], ['lit', '2026-05-10']],
+              message: 'End date must be on or after the start date', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 'end_date');
+  check('cross-form: blank field is inert', msg.style.display === 'none');
+
+  // the regression that started this: typing a CORRECT value must clear
+  end.value = '2026-06-01';
+  end.fire('change');
+  check('cross-form: a valid value shows OK (was falsely flagged before 1.6.0)',
+    /OK/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('cross-form: a correct save is allowed (was hard-blocked before 1.6.0)',
+    ev._prevented === false);
+
+  // and a wrong value must still be caught, live
+  end.value = '2020-01-01';
+  end.fire('change');
+  check('cross-form: an invalid value is flagged live',
+    /on or after the start date/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('cross-form: a bad save is blocked', ev._prevented === true);
+
+  // back and forth keeps working (the verdict is not frozen)
+  end.value = '2026-07-07';
+  end.fire('change');
+  check('cross-form: verdict tracks the field both ways', /OK/.test(msg.innerHTML));
+}
+
+// ---- 10) DEFERRED (survey, or no rights to the referenced form): the server
+//          could not disclose the value, so the client states no verdict and
+//          never blocks. The post-save audit is the enforcement point. ------
+{
+  const end = makeEl('input'); end.name = 'end_date'; end.value = '';
+  const env = boot([end], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['end_date'], assert: '[end_date]>=[start_date]',
+              assertAst: ['const', false], deferred: true,
+              message: 'End date must be on or after the start date', blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 'end_date');
+  check('deferred: inert at load', msg.style.display === 'none');
+
+  end.value = '2026-06-01';
+  end.fire('change');
+  check('deferred: a correct value is NOT falsely flagged', !/on or after/.test(msg.innerHTML));
+  check('deferred: no verdict is stated at all', msg.style.display === 'none');
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('deferred: the save is never blocked, whatever blockSave said',
+    ev._prevented === false);
+
+  // even a value the frozen const would have called invalid must not block
+  end.value = '2020-01-01';
+  end.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('deferred: still never blocks (server audit enforces)', ev._prevented === false);
+  check('deferred: aria-invalid is not asserted', end.getAttribute('aria-invalid') !== 'true');
+
+  /* A deferred rule forces blockSave to "off" in makeVariant, so firstBlock is
+     "off" and the factory registers NO save-guard entry for the field at all.
+     inert() would keep the guard disarmed anyway, but that belt-and-braces is
+     exactly why this needs its own assertion: without it, dropping the
+     blockSave override is a silent no-op that leaves a phantom blocker in the
+     guard for every deferred field on the page. */
+  const items = (env.NS.guard && env.NS.guard.items) || [];
+  check('deferred: registers no save-guard entry at all',
+    items.filter((i) => i.__qridFieldName === 'end_date').length === 0);
+}
+
+// ---- 11) BRANCHED cross-form: deferral is per BRANCH, not per rule --------
+//          branch t=1 references a field this viewer may not read (deferred);
+//          branch t=2 references one they may (baked literal, live).
+{
+  const t = makeEl('input'); t.name = 't'; t.value = '1';
+  const v = makeEl('input'); v.name = 'v'; v.value = '';
+  const env = boot([t, v], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['v'], branches: [
+      { when: "[t]='1'", assert: '[v]=[secret]', assertAst: ['const', false], deferred: true,
+        message: 'secret branch', blockSave: 'hard' },
+      { when: "[t]='2'", assert: '[v]=[open]',
+        assertAst: ['cmp', '=', ['ref', 'v', null], ['lit', 'OPENVAL']],
+        message: 'open branch', blockSave: 'hard' },
+    ] }],
+  });
+  const msg = cMsg(env, 'v');
+
+  // branch 1 active (deferred): anything typed is inert and never blocks
+  v.value = 'ANYTHING'; v.fire('change');
+  check('branch deferral: the deferred branch states no verdict',
+    msg.style.display === 'none');
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('branch deferral: the deferred branch never blocks', ev._prevented === false);
+
+  // switch to branch 2 (live): the same field now validates for real
+  t.value = '2'; t.fire('change');
+  v.value = 'WRONGVAL'; v.fire('change');
+  check('branch deferral: the live branch flags a wrong value',
+    /open branch/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('branch deferral: the live branch DOES block', ev._prevented === true);
+
+  v.value = 'OPENVAL'; v.fire('change');
+  check('branch deferral: the live branch clears on the right value', /OK/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('branch deferral: and allows the save', ev._prevented === false);
+
+  // back to the deferred branch — the block must not linger from branch 2
+  t.value = '1'; t.fire('change');
+  v.value = 'WRONGVAL'; v.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('branch deferral: switching back to deferred releases the block',
+    ev._prevented === false);
+}
+
+// ---- 12) a DEFERRED constraint must not disarm a COMPOSED check rule ------
+//          modes compose and keep independent block state: deferring the
+//          constraint must not buy the check rule a free pass.
+{
+  const f = makeEl('input'); f.name = 'idf'; f.value = '';
+  const env = boot([f], {
+    singleFields: [], pooledFields: [],
+    rules: [
+      { type: 'constraint', fields: ['idf'], assert: '[idf]=[secret]',
+        assertAst: ['const', false], deferred: true,
+        message: 'deferred constraint', blockSave: 'hard' },
+      // pattern-only (algorithm "none") so this half of the test turns purely
+      // on the composed rule being satisfiable, not on check-character
+      // arithmetic that a future scheme change could invalidate.
+      { type: 'single', fields: ['idf'], algorithm: 'none',
+        idPattern: '[1-8][A-Z]{3}-[0-9A-Z]{6}', blockSave: 'hard' },
+    ],
+  });
+  f.value = 'NOT-A-VALID-ID'; f.fire('change');
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('compose: a deferred constraint does NOT release the check rule\'s block',
+    ev._prevented === true);
+
+  // The discriminating half: with the pattern satisfied, the ONLY thing that
+  // could still hold the save is the deferred constraint (frozen const false).
+  // If deferral regressed this would block, so this half fails where the first
+  // half cannot.
+  f.value = '8QRS-55555E'; f.fire('change');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('compose: with the check rule satisfied, the deferred constraint alone never blocks',
+    ev._prevented === false);
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -161,31 +161,70 @@ class Logic
      * folded constant still reveals is one bit ("this comparison held"), which
      * the feature inherently reveals anyway by validating or not.
      *
-     * A comparison that MIXES a live and a non-live reference is folded whole
-     * (it cannot be resolved in the browser at all): it is then correct as of
-     * page load but does not react live — put both fields on one instrument
-     * for live reaction.
+     * CROSS-FORM (v1.6.0). A comparison that MIXES a live and an off-page
+     * reference — `[end_date]>=[start_date]` with start_date on another
+     * instrument — used to be folded WHOLE, which froze the verdict at the
+     * SAVED value of the field the user is about to type into. That is wrong
+     * in both directions: a blank field folded to false hard-blocked a
+     * perfectly correct entry, and a value that was valid at load stayed "OK"
+     * however badly it was then edited.
+     *
+     * Such a comparison is now kept LIVE whenever the off-page field is one
+     * this viewer is already entitled to read ($disclosable — see
+     * UniversalValidator::disclosableFields: authenticated data entry only,
+     * never a survey, and only instruments the user has rights to). The
+     * off-page ref is replaced by ['lit', <resolved value>] — an operand node
+     * the parser already produces for the designer's own literals, so both
+     * evaluators and the ref-collector handle it unchanged, and the browser
+     * watches only the field it can actually see.
+     *
+     * When the off-page field is NOT disclosable (survey respondent, or a user
+     * without rights to that instrument) the comparison is still folded whole
+     * — the privacy rule wins — and $frozen is set so the caller can mark the
+     * rule advisory instead of letting a stale verdict block a save.
+     *
+     * $frozen is set ONLY for a comparison that had a live side to lose. One
+     * with no live ref at all cannot react anyway, so folding it is both
+     * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields)
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false)
     {
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen);
                 return [$ast[0], $out];
             case 'not':
-                return ['not', self::fold($ast[1], $values, $liveFields)];
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
-                foreach ([$ast[2], $ast[3]] as $op) {
+                $offPage = [];                       // operand slots (2|3) needing the server
+                foreach ([2, 3] as $slot) {
+                    $op = $ast[$slot];
                     if ($op[0] !== 'ref') continue;
                     $refs++;
                     if (isset($liveFields[$op[1]])) $live++;
+                    else $offPage[] = $slot;
                 }
                 // all references readable in the browser -> keep it live
                 if ($refs > 0 && $refs === $live) return $ast;
+                // MIXED, and every off-page field is one this viewer may read ->
+                // bake those in as literals and keep the comparison live.
+                if ($live > 0 && $offPage) {
+                    $ok = true;
+                    foreach ($offPage as $slot) {
+                        if (!isset($disclosable[$ast[$slot][1]])) { $ok = false; break; }
+                    }
+                    if ($ok) {
+                        foreach ($offPage as $slot) {
+                            $ast[$slot] = ['lit', self::operandValue($ast[$slot], $values)];
+                        }
+                        return $ast;
+                    }
+                    $frozen = true;   // a live side existed but had to be given up
+                }
                 // otherwise the browser could never resolve it: settle it here
                 return ['const', self::evaluate($ast, $values)];
         }

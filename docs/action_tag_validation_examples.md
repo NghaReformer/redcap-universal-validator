@@ -306,9 +306,19 @@ Note the two conditions do different jobs: `assert` is the **test**, `when` is t
   Any field type — including checkbox and file — may be *referenced* inside the
   condition; the restriction is only on the field the tag sits on.
 - The server audit honors the constraint against saved values (logged as
-  `type: constraint`), so the browser and the audit agree.
-- Off-instrument references are resolved on the server and folded to constants, so no
-  record value reaches the page.
+  `type: constraint`).
+- **Cross-form (1.6.0).** A comparison between the field you are typing in and a field
+  on **another instrument in the same event** is checked **live**, provided you are
+  entitled to read that instrument — staff data entry, with REDCap rights to it. The
+  value is resolved on the server and baked into the condition, so the check reacts to
+  every keystroke exactly as a same-instrument one does.
+- On a **survey**, or for a user **without rights** to the referenced instrument, the
+  value is never sent to the page. The rule is then **deferred**: the browser shows no
+  verdict and never blocks, and the post-save audit plus the Validation scan enforce it.
+  Deferring costs live feedback, never enforcement.
+- **One event only.** A reference to a field on a *different event* reads as empty, so
+  the constraint silently passes in the browser *and* in the audit. Keep both fields in
+  the same event.
 
 ### `@UVASSERT` JSON keys
 
@@ -510,8 +520,9 @@ three-level cascade is this same pattern on two fields: `region` branches on
   whether the save is challenged. The module never erases an entered value.
 - A value outside the field's choice list entirely (a missing-data code such
   as `-99`) is out of the filter's scope and never flagged.
-- Conditions may reference fields on other instruments; they are resolved
-  server-side against saved values.
+- Conditions may reference fields on other instruments in the same event; they
+  are resolved server-side against saved values (see the `when` semantics above
+  for when such a comparison stays live and when it is settled at page load).
 - Not available on yes/no, true/false, sql, or matrix fields — the tag is
   refused there with a configuration error.
 - The post-save audit logs a saved hidden choice as `type: choices`,
@@ -613,15 +624,26 @@ Semantics:
   when checked, `'0'` otherwise.
 - **Fields on the same instrument react live.** A calc field updates without DOM events,
   so a calc reference refreshes at the next event on any watched field.
-- **Fields on other instruments are resolved on the server, never sent to the browser.**
-  Such a field cannot change while the page is open, so the server settles that part of
-  the condition against the record's saved values and sends only the result. The page
-  carries field names, your literals and booleans — never a record value, so a survey
-  respondent (or a user without rights to that instrument) cannot read one out of the
-  page source. A comparison mixing an on-instrument and an off-instrument field is
-  settled the same way: correct as of page load, but it does **not** react live. Put both
-  fields on one instrument if you need that. A brand-new record has no saved values, so
-  such references resolve as `''`.
+- **Fields on other instruments.** Such a field cannot change while this page is open, so
+  the server resolves it against the record's saved values. What happens next depends on
+  the shape of the comparison:
+  - Compared against a **literal** (`[baseline_eligible]='1'`) there is no live side at
+    all, so the whole comparison is settled on the server and sent as a `true`/`false`.
+    Correct as of page load; nothing on this page can change it.
+  - Compared against a field **on this instrument** (`[end_date]>=[start_date]`) the
+    comparison is kept **live** since 1.6.0: the off-page value is baked in as a literal
+    and the browser re-checks on every keystroke, exactly like a same-instrument rule.
+    This only happens when you are entitled to read that instrument — authenticated data
+    entry, with REDCap rights to it. Otherwise the value is withheld and the rule is
+    **deferred** (no verdict, never blocks; the audit enforces).
+
+  Either way the page carries field names, your literals and booleans — plus, for the
+  live case, values you already have the right to read. A survey respondent, or a user
+  without rights to that instrument, never receives one. A brand-new record has no saved
+  values, so such references resolve as `''`.
+- **Same event.** Off-instrument resolution is scoped to the event being rendered. A
+  reference to a field on a *different event* reads as empty, in the browser and in the
+  audit alike.
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
   branching if you also want erasure.
@@ -909,22 +931,49 @@ it looks: the tag validates the field it sits on, and that is where the message 
 
 #### Referencing a field on another instrument
 
+There are two shapes, and they behave differently. Both need the referenced field to be
+in the **same event**.
+
+**1. Off-instrument field compared against a literal** — no live side, so the server
+settles it and sends a `true`/`false`:
+
 ```text
 # on: enrollment_id — baseline_eligible lives on the screening form
 @UVASSERT={"assert":"[baseline_eligible]='1'","message":"This participant was not marked eligible at screening"}
 ```
 
-Two behaviors are specific to off-instrument references, and both are deliberate:
+- Correct as of page load; nothing on this page can change it, so it does not react live
+  (and does not need to). The screening value never reaches the browser.
+- On a **brand-new record** there are no saved values, so the reference resolves to `''`
+  and the assertion is false — on a form where the host field is filled, every new record
+  shows the message. Gate it (`{"when":"[record_status]<>''"}`) if that is not what you
+  want.
 
-- **The comparison is settled on the server and folded to a boolean** before the page is
-  built, so the screening value never reaches the browser. The page carries field names,
-  your literals, and a `true`/`false`.
-- **It is therefore correct as of page load, but does not react live.** Nothing on this
-  page can change it. On a **brand-new record** there are no saved values yet, so the
-  reference resolves to `''` and the assertion is false — which, on a form where the
-  host field is filled, means every new record shows the message. Gate it
-  (`{"when":"[record_status]<>''"}`) or put both fields on one instrument if that is not
-  what you want.
+**2. Off-instrument field compared against a field on THIS form** — checked **live**
+since 1.6.0:
+
+```text
+# on: dx_specimen_date (diagnosis form) — scr_screen_date lives on screening
+@UVASSERT={"assert":"[dx_specimen_date]>=[scr_screen_date]","message":"Specimen cannot be collected before the screening date","blockSave":"hard"}
+```
+
+- The screening date is resolved on the server and baked into the condition, so the check
+  re-runs on every keystroke and blocks exactly like a same-instrument rule. Before 1.6.0
+  this was frozen at page load, which rejected correct entries outright.
+- This requires you to be entitled to read the screening form: authenticated data entry,
+  with REDCap rights to that instrument. On a **survey**, or without those rights, the
+  value is withheld and the rule is **deferred** — the browser states no verdict and never
+  blocks, and the post-save audit plus the Validation scan enforce it instead.
+- **One unreadable instrument defers the whole rule**, not just that term. A condition
+  spanning two other forms where you can read only one goes advisory in its entirety.
+
+`and` / `or` / `not` combine as many of these as you like — a single rule may span several
+instruments:
+
+```text
+# on: tx_start_date (treatment) — dx_* on diagnosis, scr_* on screening
+@UVASSERT={"assert":"[tx_start_date]>=[dx_result_date] and [tx_daily_dose_mg]<=[scr_max_daily_dose]","message":"Check the start date and dose against baseline","blockSave":"hard"}
+```
 
 ### `@UVREQUIRED` recipes
 

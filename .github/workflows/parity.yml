@@ -98,6 +98,10 @@ jobs:
         run: php tests/choices_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
+      - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)
+        run: php tests/crossform_php.php
+      - name: PHP cross-form red-team (checkboxes, branches, nesting, repeats)
+        run: php tests/crossform_adversarial_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 

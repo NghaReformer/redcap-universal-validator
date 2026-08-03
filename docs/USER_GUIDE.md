@@ -729,6 +729,19 @@ is true, checked live and enforceable with a real save block. And since 1.1.0
 a **Required** rule (`@UVREQUIRED`) demands a value, optionally only while a
 condition is true. See the README sections on both tags.
 
+**Can the two fields be on different instruments?**
+Yes, since 1.6.0, as long as they are in the **same event** — and it is checked
+live as you type, the same as a same-instrument rule. Combine as many as you
+like with `and` / `or` / `not`; one rule may span several forms.
+
+Two things to know. First, live checking needs you to be **entitled to read**
+the referenced instrument (staff data entry, with REDCap rights to it). On a
+survey, or without those rights, the value is never sent to the page: the rule
+is then **deferred** — no verdict is shown and the save is never blocked, and
+the post-save audit and Validation scan enforce it instead. Second, a reference
+to a field on a **different event** reads as empty, so the check silently
+passes everywhere; keep both fields in one event.
+
 **Does it block API or Data Import Tool writes?**
 No. Enforcement is a browser behavior only. Those paths may be *audited* after the
 fact, but coverage is version-dependent — see [Part 7](#part-7-server-side-audit-and-privacy).

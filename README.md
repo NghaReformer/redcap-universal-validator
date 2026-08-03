@@ -158,16 +158,25 @@ Semantics worth knowing before relying on it:
   including a *Compulsory* save block. A calc field updates without DOM events,
   so a calc ref refreshes at the next event on any watched field — the manual
   check for this is in [`docs/TESTING.md`](docs/TESTING.md).
-- **Fields on other instruments are resolved on the server, never sent to the
-  browser.** Such a field cannot change while the page is open, so the server
-  settles that part of the condition against the record's saved values and
-  sends only the result. The page carries field names, your own literals, and
-  booleans — never a record value, so a survey respondent (or a user without
-  rights to that instrument) cannot read one out of the page source. A
-  comparison mixing an on-instrument and an off-instrument field is settled the
-  same way, which means it is correct as of page load but does **not** react
-  live; put both fields on one instrument if you need that. A brand-new record
-  has no saved values yet, so such refs resolve as `''`.
+- **Fields on other instruments** are resolved on the server against the record's
+  saved values, since such a field cannot change while this page is open. What
+  the page then receives depends on the comparison:
+  - Against a **literal** (`[baseline_eligible]='1'`) there is no live side, so
+    the whole comparison is settled here and sent as a `true`/`false` — correct
+    as of page load, and nothing on this page can change it.
+  - Against a field **on this instrument** (`[end_date]>=[start_date]`) the
+    comparison is kept **live** (1.6.0): the off-page value is baked in and the
+    browser re-checks as you type. This requires you to be entitled to read that
+    instrument — authenticated data entry, with REDCap rights to it. On a survey,
+    or without those rights, the value is withheld and the rule is **deferred**
+    (no verdict, never blocks; the audit enforces).
+
+  So the page carries field names, your own literals, booleans — and, only in the
+  live case, values you already have the right to read. A survey respondent, or a
+  user without rights to that instrument, never receives one. A brand-new record
+  has no saved values yet, so such refs resolve as `''`. Off-instrument
+  resolution is scoped to the **event being rendered**: a ref to a field on
+  another event reads as empty, in the browser and in the audit alike.
 - **A false condition skips the rule — it never erases the value.** That is
   the deliberate difference from REDCap's own field branching, which erases
   hidden fields on save. Combine `when` with normal field branching if you
@@ -244,8 +253,19 @@ enforced with the same message/confirm/block modes as everything else:
   `@UVASSERT` **alongside** `@UVALIDATE` and other modes — they **compose**, and
   all must pass; each keeps an independent save-block state.
 - The server audit honors the constraint against saved values (logged as
-  `type: constraint`), so browser and audit agree. Off-instrument refs are
-  server-`fold()`ed to constants, so no record value reaches the page (SEC-005).
+  `type: constraint`).
+- **Across instruments (1.6.0).** The condition may reference a field on another
+  instrument in the same event. When you are entitled to read that field —
+  staff data entry, with REDCap rights to its instrument — its value is resolved
+  on the server and baked into the condition, so the check stays **live** as you
+  type and blocks exactly as a same-instrument one does. On a **survey**, or for
+  a user **without rights** to the referenced instrument, the value is never sent
+  to the page (SEC-005): the rule is then **deferred** — the browser shows no
+  verdict and never blocks, and the post-save audit plus the Validation scan
+  enforce it. Deferring costs live feedback, never enforcement.
+- **One event.** A reference to a field on a *different event* is not supported:
+  it reads as empty, so the constraint silently passes in the browser and in the
+  audit. Keep both fields in the same event.
 
 ## Conditional required — the `@UVREQUIRED` tag
 

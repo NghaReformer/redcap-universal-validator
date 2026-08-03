@@ -410,11 +410,17 @@
     { "name": "not_const", "ast": ["not", ["const", false]], "values": {}, "expect": true },
     { "name": "const_beside_live_ref_true", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", true]]], "values": { "a": "1" }, "expect": true },
     { "name": "const_beside_live_ref_false", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", false]]], "values": { "a": "1" }, "expect": false },
-    { "name": "const_short_circuits_or", "ast": ["or", [["const", true], ["cmp", "=", ["ref", "a", null], ["lit", "9"]]]], "values": { "a": "1" }, "expect": true }
+    { "name": "const_short_circuits_or", "ast": ["or", [["const", true], ["cmp", "=", ["ref", "a", null], ["lit", "9"]]]], "values": { "a": "1" }, "expect": true },
+    { "name": "fold_lit_substituted_ref_true", "ast": ["cmp", ">=", ["ref", "end_date", null], ["lit", "2026-05-10"]], "values": { "end_date": "2026-06-01" }, "expect": true },
+    { "name": "fold_lit_substituted_ref_false", "ast": ["cmp", ">=", ["ref", "end_date", null], ["lit", "2026-05-10"]], "values": { "end_date": "2026-05-09" }, "expect": false },
+    { "name": "fold_lit_substituted_ref_boundary", "ast": ["cmp", ">=", ["ref", "end_date", null], ["lit", "2026-05-10"]], "values": { "end_date": "2026-05-10" }, "expect": true },
+    { "name": "fold_lit_numeric_leading_zero", "ast": ["cmp", "=", ["ref", "age", null], ["lit", "34"]], "values": { "age": "034" }, "expect": true },
+    { "name": "fold_lit_empty_value", "ast": ["cmp", "=", ["ref", "x", null], ["lit", ""]], "values": { "x": "" }, "expect": true }
   ],
   "astRefs": [
     { "name": "const_has_no_refs", "ast": ["const", true], "expect": [] },
-    { "name": "refs_beside_a_const", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", false]]], "expect": [["a", null]] }
+    { "name": "refs_beside_a_const", "ast": ["and", [["cmp", "=", ["ref", "a", null], ["lit", "1"]], ["const", false]]], "expect": [["a", null]] },
+    { "name": "fold_lit_leaves_only_the_live_ref", "ast": ["cmp", ">=", ["ref", "end_date", null], ["lit", "2026-05-10"]], "expect": [["end_date", null]] }
   ],
   "refs": [
     {

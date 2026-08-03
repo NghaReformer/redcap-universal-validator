@@ -1,5 +1,81 @@
 # Changelog
 
+## 1.6.0 — cross-form `@UVASSERT` actually works in the browser
+
+A constraint whose `assert` referenced a field on **another instrument** was folded whole to a
+boolean at page load, freezing the verdict against the **saved** value of the field the user was
+about to type into. `Logic::fold()` did this deliberately — shipping the other form's value would
+reopen SEC-005 — but the consequence was never measured, and it is wrong in **both** directions:
+
+- The asserted field **blank** at load folded `"" >= "…"` to `false`, so typing a **correct** value
+  produced an error that **hard-blocked the save** and that no amount of retyping could clear.
+  Cross-form data entry was impossible.
+- A value that was **valid** at load froze to `true`, so it could then be replaced with anything at
+  all and the browser still showed "OK" and let the save through.
+
+Both reproduced on live REDCap 17.0.6 (pid 149, `umt_offref` → `uht_code`): the deployed module
+shipped `assertAst: ["const", true]` and a deliberately wrong value showed "✓ OK.".
+
+**The fix.** A comparison mixing a live and an off-page reference is now kept **live** by replacing
+the off-page ref with a `['lit', <value>]` operand — a node the parser already produces for the
+designer's own literals, so both evaluators and the ref-collector handle it unchanged and the
+browser watches only the field it can actually see.
+
+That value is baked in **only when the viewer is already entitled to read it**
+(`disclosableFields()`): data entry only — never a survey page — an authenticated username, and
+REDCap form-level rights to the referenced instrument. Every gate fails **closed**; a field the
+viewer may not read discloses nothing, exactly as before. This is the same information REDCap's own
+branching logic already ships to the page.
+
+When the value is **not** disclosable the old fold stands and the rule is marked `deferred`: the
+client states **no verdict and never blocks** (a stale verdict is wrong both ways, and a frozen
+`false` blocking a correct entry is the bug above), while `redcap_save_record` still enforces the
+constraint and logs any violation as `type: constraint`. Deferring costs live feedback, never
+enforcement.
+
+- `php/Logic.php` — `fold()` takes `$disclosable` and reports `$frozen`.
+- `UniversalValidator.php` — `disclosableFields()` / `userFormRights()` / `currentUsername()`;
+  `foldRuleConditions()` threads the page context and marks deferred rules (branches included).
+- `js/engine.js` — `deferred` joins `DEFAULT_KEYS`; the constraint factory forces `blockSave` off
+  and states no verdict for a deferred rule.
+
+**Rights are read through the framework-native `User::getRights($pid)` first.**
+`\REDCap::getUserRights()`'s FIRST parameter is the user list, not the project id, so
+`getUserRights($pid)` would silently return rights for a user named after the pid — the feature
+would go quietly inert on a real REDCap while every mock passed, exactly how `@UVUNIQUE` shipped
+dead in 1.4.0. The static is only a fallback, and is called with **no arguments** so the parameter
+order cannot be got wrong, then filtered by username here.
+
+Tests: `tests/crossform_php.php` (new, 41 checks) covers the entitled path, both un-entitled paths,
+three fail-closed paths, read-only rights, script-breakout of a hostile baked literal, that a
+deferred rule is still audited, **both rights sources reaching the same verdict**, and that a
+pid-keyed rights table grants nothing. `tests/crossform_adversarial_php.php` (new, 44 checks)
+red-teams the edges: checkbox refs, `$frozen` escaping and/or/not nesting, a condition mixing a
+disclosable and a non-disclosable ref, per-branch deferral, a frozen `when` with a live assert,
+condition-text de-duplication, empty values, repeating instances, unknown refs, and the other four
+rule modes. `tests/constraint_dom_js.cjs` gains 22 checks (live cross-form contract, the deferred
+contract, per-branch deferral, and mode composition). `tests/when_fixture.json` gains six
+cross-runtime cases pinning the `['lit', …]`-substituted operand.
+
+Every gate was mutation-tested — survey gate, rights level, fail-closed catch, `$frozen`,
+the disclosable check, the literal substitution, `deferred` in `DEFAULT_KEYS`, and the client
+`deferred` short-circuit — and each mutant is caught by at least one check.
+
+**Deploy both `UniversalValidator.php` and `js/engine.js`.** The deployed engine ignores `deferred`
+(verified live), so a PHP-only deploy fixes the entitled path but leaves the un-entitled path
+hard-blocking as before.
+
+Docs updated for the new capability and the two limits: the `@UVASSERT` and `when` sections of
+`README.md`, the `@UVASSERT` summary / `when` semantics / "Referencing a field on another
+instrument" recipe in `docs/action_tag_validation_examples.md` (which now separates the two
+comparison shapes — off-page-vs-literal still settles at page load, off-page-vs-on-form is live),
+and a new cross-instrument entry in the `docs/USER_GUIDE.md` FAQ. Every `@UVASSERT` condition
+printed in the docs was re-parsed with the module's own dialect parser (88 conditions, 0 errors).
+
+Still **not** supported, and now stated plainly rather than failing silently: a reference to a field
+on **another event**. `readValues()` scopes `getData` to the hook's `event_id`, so an off-event ref
+reads `''` and the assert passes — in the browser *and* in the audit. Keep both fields in one event.
+
 ## 1.5.8 — hardening from an adversarial red-team of the 1.5.3–1.5.7 fixes
 
 A red-team / wargaming pass over every 1.5.3–1.5.7 change (each candidate independently
