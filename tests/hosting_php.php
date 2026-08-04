@@ -69,7 +69,54 @@ namespace {
         /** [ ['event_id'=>.., 'form'=>..], ... ] or null = mapping unavailable. */
         public static $eventMappings = null;
 
-        public static function getData($p) { return self::$data; }
+        /**
+         * H-06. Off by default so every scenario above keeps its exact behaviour.
+         * When on, getData models REDCap faithfully: a BLANK field is omitted from
+         * the output, and a record left with no rows at all is omitted entirely.
+         * That is what made "record absent" indistinguishable from "read failed".
+         */
+        public static $filterByFields = false;
+        /** 'ok' | 'nonarray' | 'otherrecords' — the two shapes that ARE failures. */
+        public static $getDataMode = 'ok';
+        /** A build where the record-id field cannot be established. */
+        public static $pkAvailable = true;
+
+        public static function getData($p) {
+            if (self::$getDataMode === 'nonarray') return false;
+            if (self::$getDataMode === 'otherrecords') return ['999' => [1 => ['record_id' => '999']]];
+            if (!self::$filterByFields || empty($p['fields'])) return self::$data;
+            $want = array_flip($p['fields']);
+            $strip = function (array $row) use ($want) {
+                $r = [];
+                foreach ($row as $f => $v) {
+                    if (isset($want[$f]) && $v !== '' && $v !== null) $r[$f] = $v;
+                }
+                return $r;
+            };
+            $out = [];
+            foreach (self::$data as $rec => $node) {
+                $keep = [];
+                foreach ($node as $k => $sub) {
+                    if ($k === 'repeat_instances' || !is_array($sub)) continue;
+                    $row = $strip($sub);
+                    if ($row) $keep[$k] = $row;
+                }
+                if (isset($node['repeat_instances']) && is_array($node['repeat_instances'])) {
+                    $ri = [];
+                    foreach ($node['repeat_instances'] as $evt => $byForm) {
+                        foreach ((is_array($byForm) ? $byForm : []) as $form => $byInst) {
+                            foreach ((is_array($byInst) ? $byInst : []) as $i => $row) {
+                                $r = $strip(is_array($row) ? $row : []);
+                                if ($r) $ri[$evt][$form][$i] = $r;
+                            }
+                        }
+                    }
+                    if ($ri) $keep['repeat_instances'] = $ri;
+                }
+                if ($keep) $out[$rec] = $keep;
+            }
+            return $out;
+        }
         public static function getDataDictionary($pid, $f = 'array') {
             if (self::$dictThrow) throw new \RuntimeException('simulated dictionary failure');
             return self::$dictionary;
@@ -78,7 +125,7 @@ namespace {
             return ['nurse' => ['forms' => ['fa' => '1', 'fb' => '1', 'fc' => '1', 'fr' => '1', 'f1' => '1']]];
         }
         public static function getGroupNames($a = false, $b = null) { return ''; }
-        public static function getRecordIdField() { return 'record_id'; }
+        public static function getRecordIdField() { return self::$pkAvailable ? 'record_id' : ''; }
         public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
         public static function getEventNames($u = false, $x = false, $evt = null) { return 'event_' . $evt . '_arm_1'; }
         public static function getRepeatingFormsEvents($pid = null) { return self::$repeating; }
@@ -113,6 +160,7 @@ namespace {
         \REDCap::$dictionary = $dict; \REDCap::$data = $data;
         \REDCap::$repeating = $repeating; \REDCap::$eventMappings = $mappings;
         \REDCap::$dictThrow = false;
+        \REDCap::$filterByFields = false; \REDCap::$getDataMode = 'ok'; \REDCap::$pkAvailable = true;
         return $m;
     }
     function viols($m) { return array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved'; })); }
@@ -396,6 +444,98 @@ namespace {
         $res = mkMod($D, [1 => [1 => ['record_id' => '1', 'a_val' => 'X']]])->scanProject(PID);
         check('H-05 control: a fully readable clean project IS complete',
             $res['status'] === 'complete' && !$res['violations']);
+    }
+
+    /* =====================================================================
+     * H-06  an existing record whose requested fields are all still BLANK
+     *
+     * Found on a live REDCap 17.0.6 project (pid 151), not by a mock. A
+     * same-form control pair — both fields on the page being rendered,
+     * blockSave "hard" — shipped as ["const",false] with deferred:true and
+     * "reading its saved value failed", because REDCap omits blank fields from
+     * getData and therefore returned no node for the record at all. Entering a
+     * value of 5 against a minimum of 10 produced no verdict and saved cleanly.
+     * Saving once so the fields held values made the same page validate and
+     * block correctly, which is what identified the trigger.
+     * ===================================================================== */
+    {
+        $D = dict([
+            'record_id' => ['fa'],
+            'other'     => ['fa'],
+            'a_val'     => ['fa', '@UVASSERT={"assert":"[a_val]>=[a_min]","message":"control","blockSave":"hard"}'],
+            'a_min'     => ['fa'],
+        ]);
+        // The record EXISTS and holds data — but not in either field the rule names.
+        $data = [1 => [1 => ['record_id' => '1', 'other' => 'X', 'a_val' => '', 'a_min' => '']]];
+
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;              // model REDCap: blanks are omitted
+        $r = ruleOf(render($m, 'fa'), 'a_val');
+        check('H-06: a blank-so-far same-form rule is NOT deferred',
+            $r !== null && empty($r['deferred']));
+        check('H-06: and it ships LIVE refs, not a settled constant',
+            $r !== null && isset($r['assertAst']) && $r['assertAst'][0] === 'cmp');
+        check('H-06: both operands stay live (nothing was baked or frozen)',
+            $r !== null && $r['assertAst'][2][0] === 'ref' && $r['assertAst'][3][0] === 'ref');
+        check('H-06: no "reading its saved value failed" is claimed',
+            $r !== null && empty($r['deferredWhy']));
+        check('H-06: the configured hard block survives',
+            $r !== null && $r['blockSave'] === 'hard');
+
+        // The same, on a build where the record-id field cannot be established:
+        // the read then genuinely returns nothing, and an EMPTY result still has
+        // to mean "all blank", not "the read failed".
+        $m2 = mkMod($D, $data);
+        \REDCap::$filterByFields = true; \REDCap::$pkAvailable = false;
+        $r2 = ruleOf(render($m2, 'fa'), 'a_val');
+        check('H-06: with no record-id field to lean on, an EMPTY result is still blank, not failed',
+            $r2 !== null && empty($r2['deferred']) && $r2['assertAst'][0] === 'cmp');
+
+        // CONTRAST 1: a read that genuinely fails must STILL defer. Without this
+        // the fix would just be H-04 reopened — a failed read judged as blank.
+        $m3 = mkMod($D, $data);
+        \REDCap::$filterByFields = true; \REDCap::$getDataMode = 'nonarray';
+        $r3 = ruleOf(render($m3, 'fa'), 'a_val');
+        check('H-06 contrast: a non-array result is still unreadable, and defers',
+            $r3 !== null && !empty($r3['deferred'])
+            && !empty($r3['deferredWhy']) && strpos($r3['deferredWhy'][0], 'reading its saved value failed') !== false);
+
+        // CONTRAST 2: a result carrying OTHER records but not the one asked for is
+        // anomalous — REDCap answered a question we did not ask — and must not be
+        // read as "our record is blank".
+        $m4 = mkMod($D, $data);
+        \REDCap::$filterByFields = true; \REDCap::$getDataMode = 'otherrecords';
+        $r4 = ruleOf(render($m4, 'fa'), 'a_val');
+        check('H-06 contrast: a result for a DIFFERENT record is still unreadable',
+            $r4 !== null && !empty($r4['deferred']));
+
+        // The rule must actually WORK once it is live: a real violation is caught.
+        $bad = [1 => [1 => ['record_id' => '1', 'a_val' => '5', 'a_min' => '10']]];
+        $m5 = mkMod($D, $bad);
+        \REDCap::$filterByFields = true;
+        $m5->redcap_save_record(PID, '1', 'fa', 1, null, null, null, 1);
+        check('H-06: and the audit still catches the violation it describes',
+            count(viols($m5)) === 1 && viols($m5)[0][1]['field'] === 'a_val');
+
+        // A blank-so-far CROSS-repeat reference must still be refused, not read as
+        // a resolved blank — the record-id field keeps the repeat buckets in the
+        // result, which is what resolveOne needs to see the other instrument.
+        $DR = dict([
+            'record_id' => ['fa'],
+            'a_val'     => ['fa', '@UVASSERT={"assert":"[a_val]=[b_rep]","message":"x","blockSave":"hard"}'],
+            'b_rep'     => ['fb'],
+        ]);
+        $rdata = [1 => [
+            1 => ['record_id' => '1', 'a_val' => ''],
+            'repeat_instances' => [1 => ['fb' => [1 => ['b_rep' => '']]]],
+        ]];
+        $m6 = mkMod($DR, $rdata, [1 => ['fb' => null]]);
+        \REDCap::$filterByFields = true;
+        $r6 = ruleOf(render($m6, 'fa'), 'a_val');
+        check('H-06: a blank reference on another repeating instrument is still refused',
+            $r6 !== null && !empty($r6['deferred'])
+            && !empty($r6['deferredWhy'])
+            && strpos($r6['deferredWhy'][0], 'different repeating instrument') !== false);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

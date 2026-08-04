@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.6.1 — a blank field is not a failed read
+
+Found on a live REDCap 17.0.6 project while testing the 1.6.0 deployment, not by a test.
+
+A same-form rule — both operands on the page being rendered, `blockSave:"hard"` — shipped as
+`["const", false]` with `deferred: true` and the reason *"reading its saved value failed"*.
+Nothing had failed. Both fields were simply **blank**. Entering `5` against a minimum of `10`
+produced no verdict, no outline, and saved cleanly. Saving once so the fields held values made the
+same page validate and block correctly, which is what identified the trigger.
+
+REDCap omits a blank field from `getData` output, so a record whose every REQUESTED field is blank
+comes back with **no node at all** — and `readValues()` read that absence as a failed read. This is
+the same principle the per-field default already rests on ("absence is not, by itself, unresolvable"),
+applied one level up: it was right for fields and wrong for the record node.
+
+Two changes, because the fix must not reopen H-04 — a read that genuinely fails still must not be
+judged as blank:
+
+- The **record id field is requested alongside** the caller's fields. It is stored for every existing
+  record and is never blank, so a returned node becomes a positive fact rather than an inference. It
+  also keeps the `repeat_instances` buckets in the result, which is what `resolveOne()` needs to tell
+  a genuine blank from a value on another repeating instrument — without them, a blank cross-repeat
+  reference resolved as a plain blank.
+- A record still absent is then read by the shape of the result: an **empty** result means REDCap
+  holds nothing for this record, so every field is blank and every state stays `ok`; a result
+  carrying **other** records but not the one asked for is anomalous and stays `unreadable`, as does a
+  non-array result.
+
+Scope of the defect: an existing record where *every* field referenced by that page's rules was
+blank — typically the first pass at a form on a record created elsewhere. New records were never
+affected (REDCap passes no record, so no read happens), nor were pages whose rules reference a mix of
+blank and filled fields. The post-save audit was unaffected throughout, because it runs after the
+write when the values exist; it logged the violation the browser had failed to block.
+
+`tests/hosting_php.php` gains the H-06 section: 10 checks, 6 of which fail on 1.6.0, including both
+contrast cases that must keep deferring.
+
 ## 1.6.0 — cross-form `@UVASSERT`
 
 > The first cut of this release (local tag, never pushed) was reviewed and rejected: cross-form

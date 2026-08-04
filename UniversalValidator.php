@@ -3039,11 +3039,32 @@ class UniversalValidator extends AbstractExternalModule
         // established problem downgrades a field.
         foreach ($fields as $f) $resolution[$f] = 'ok';
 
+        // Ask for the RECORD ID field alongside the requested ones. REDCap omits
+        // a blank field from getData output, so a record whose every REQUESTED
+        // field is blank comes back with no node at all — indistinguishable, from
+        // the outside, from a read that failed. The record id is stored for every
+        // existing record and is never blank, so requesting it turns "did this
+        // read work" into a positive fact instead of an inference (H-06).
+        // It also keeps the repeat_instances buckets in the result, which is what
+        // resolveOne() needs to tell a genuine blank from a value on another
+        // repeating instrument — without them an all-blank read would resolve
+        // 'ok' where it should be 'ambiguous'.
+        // $fields is deliberately NOT widened: it keys $resolution and the value
+        // map, and the caller asked about its own fields only.
+        $pk = null;
+        try {
+            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
+        } catch (\Throwable $e) {
+            $pk = null;     // not exposed on this build; the guard below still holds
+        }
+        $readFields = $fields;
+        if (is_string($pk) && $pk !== '' && !in_array($pk, $readFields, true)) $readFields[] = $pk;
+
         $params = [
             'project_id'    => $project_id,
             'return_format' => 'array',
             'records'       => [$record],
-            'fields'        => $fields,
+            'fields'        => $readFields,
         ];
         if ($event_id) $params['events'] = [$event_id];
         // A throw is deliberately NOT caught here: redcap_save_record's outer
@@ -3056,8 +3077,25 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($fields as $f) $resolution[$f] = 'unreadable';
             return [];
         }
-        if (!isset($data[$record]) || !is_array($data[$record])) {
+        // The record is not in the result. That is TWO different situations, and
+        // collapsing them switched working rules off (H-06): an EMPTY result means
+        // REDCap holds nothing for this record — every requested field is simply
+        // blank, which is an answer — whereas a result carrying OTHER records but
+        // not the one asked for is anomalous and must not be read as blank.
+        //
+        // This is the same principle the per-field default above rests on, applied
+        // one level up: absence is not, by itself, a failed read. Getting it wrong
+        // here deferred every rule on a form whose referenced fields were all still
+        // empty — telling the user "reading its saved value failed" when nothing had
+        // failed, and silently demoting a blockSave:"hard" rule to advisory on
+        // exactly the pass where the field is first filled in.
+        if (!isset($data[$record])) {
+            if (!$data) return [];      // nothing stored for this record: all blank, all 'ok'
             foreach ($fields as $f) $resolution[$f] = 'unreadable';
+            return [];
+        }
+        if (!is_array($data[$record])) {
+            foreach ($fields as $f) $resolution[$f] = 'unreadable';   // malformed node
             return [];
         }
         $rec = $data[$record];
