@@ -77,9 +77,15 @@ $R['meta']['memory_limit'] = ini_get('memory_limit');
 $R['meta']['max_execution_time'] = ini_get('max_execution_time');
 $R['meta']['record_limit'] = $limit ?: 'none (whole project)';
 
-/** Wall-clock + peak-memory around one callable. Never lets a probe kill the page. */
-function uv_time($label, callable $fn, array &$R)
-{
+/**
+ * Wall-clock + peak-memory around one callable. Never lets a probe kill the page.
+ *
+ * A CLOSURE, not a named function, for the same reason uv_h() and uv_csv() left
+ * pages/scan.php in 1.6.2: a namespace-level function makes a second include in
+ * one process a fatal redeclare, which on a server you never notice and in a
+ * harness you cannot work around.
+ */
+$uv_time = function ($label, callable $fn, array &$R) {
     $m0 = memory_get_usage(true);
     $p0 = memory_get_peak_usage(true);
     $t0 = microtime(true);
@@ -93,7 +99,7 @@ function uv_time($label, callable $fn, array &$R)
     if ($err !== null) $rec['error'] = $err;
     $R['timings'][$label] = $rec;
     return $out;
-}
+};
 
 // ---------------------------------------------------------------------------
 // Project shape
@@ -115,7 +121,7 @@ $R['shape']['record_id_field'] = $pk ?: '(UNAVAILABLE — the :2160 fallback wou
 // ---------------------------------------------------------------------------
 // #2  the whole-project record-id read
 // ---------------------------------------------------------------------------
-$ids = uv_time('id_read', function () use ($pid, $pk) {
+$ids = $uv_time('id_read', function () use ($pid, $pk) {
     $d = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
         'fields' => $pk ? [$pk] : [], 'exportDataAccessGroups' => true]);
     return is_array($d) ? array_keys($d) : [];
@@ -141,14 +147,14 @@ $chunks = array_chunk($ids, $CHUNK);
 $R['gate']['chunk_size'] = $CHUNK;
 $R['gate']['chunk_count'] = count($chunks);
 
-uv_time('reads_lower_bound_1_field', function () use ($chunks, $pid, $pk) {
+$uv_time('reads_lower_bound_1_field', function () use ($chunks, $pid, $pk) {
     foreach ($chunks as $c) {
         \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
             'records' => $c, 'fields' => $pk ? [$pk] : [], 'exportDataAccessGroups' => true]);
     }
 }, $R);
 
-uv_time('reads_upper_bound_all_fields', function () use ($chunks, $pid, $dd) {
+$uv_time('reads_upper_bound_all_fields', function () use ($chunks, $pid, $dd) {
     $all = array_keys((array) $dd);
     foreach ($chunks as $c) {
         \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
@@ -158,7 +164,7 @@ uv_time('reads_upper_bound_all_fields', function () use ($chunks, $pid, $dd) {
 
 // The scan itself. DAG filter deliberately null: we are measuring cost, and a
 // confined scan would measure a subset.
-$res = uv_time('scanProject_total', function () use ($module, $pid, $limit) {
+$res = $uv_time('scanProject_total', function () use ($module, $pid, $limit) {
     return $module->scanProject($pid);
 }, $R);
 
@@ -205,7 +211,7 @@ $R['gate']['VERDICT'] =
 //     setup (dictionary + rules + event mappings). That is what every AJAX
 //     batch would repay, and it is what sets the batch size.
 // ---------------------------------------------------------------------------
-uv_time('one_record_scan_setup_dominated', function () use ($module, $pid) {
+$uv_time('one_record_scan_setup_dominated', function () use ($module, $pid) {
     return $module->scanProject($pid, '__uv_measure_no_such_dag__');
 }, $R);
 $R['gate']['fixed_setup_ms_approx'] = isset($R['timings']['one_record_scan_setup_dominated']['ms'])
@@ -223,7 +229,7 @@ $cf = [];
 foreach ($forms as $f) $cf[] = $f . '_complete';
 $buckets = ['absent' => 0, 'blank' => 0, 'zero' => 0, 'one' => 0, 'two' => 0, 'other' => 0];
 $perForm = [];
-uv_time('complete_status_read', function () use ($chunks, $pid, $cf, &$buckets, &$perForm, $forms) {
+$uv_time('complete_status_read', function () use ($chunks, $pid, $cf, &$buckets, &$perForm, $forms) {
     foreach ($chunks as $c) {
         $d = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
             'records' => $c, 'fields' => $cf]);
@@ -285,7 +291,7 @@ if ($doGrants) {
 // that fires when getRecordIdField() is unavailable.
 // ---------------------------------------------------------------------------
 if ($doFallback) {
-    uv_time('pk_fallback_full_export_DANGEROUS', function () use ($pid, $dd, $ids) {
+    $uv_time('pk_fallback_full_export_DANGEROUS', function () use ($pid, $dd, $ids) {
         $d = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array',
             'records' => $ids, 'fields' => array_keys((array) $dd), 'exportDataAccessGroups' => true]);
         return is_array($d) ? count($d) : 0;
