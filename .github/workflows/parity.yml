@@ -135,7 +135,7 @@ jobs:
           for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php pages/scan.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
-          for d in .github reports; do
+          for d in .github reports tools; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }
           done
           python3 -m json.tool config.json > /dev/null
