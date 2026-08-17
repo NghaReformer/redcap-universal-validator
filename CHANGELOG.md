@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.6.4 — the scan stops on its own terms
+
+Measured on a live REDCap 17.0.6 project rather than estimated: 39 records, 329
+rules, 1,914 violations, **~20 seconds warm** — and the scan reported itself
+incomplete on both runs, because one record with a hyphenated id was requested
+and not returned. Twenty seconds for thirty-nine records is roughly 0.5s per
+record. A project of four thousand does not finish inside a default execution
+limit, and the module had no idea: a repo-wide grep for `set_time_limit`,
+`max_execution_time`, `memory_get_usage` or `memory_limit` returned nothing.
+
+Both limits kill PHP with an **uncatchable fatal**. The process stops before
+`scanProject()` can return, the page renders nothing, and nothing anywhere
+records that the project was not examined — no status, no `incomplete` entry,
+just a blank screen indistinguishable from a dropped connection. That is the one
+failure the whole status contract cannot express (M-03), and it is now the
+*expected* exit on a real project rather than a pathological one.
+
+The chunk loop takes a budget: 75% of `max_execution_time`, 70% of
+`memory_limit`. Crossing either stops the sweep, records how many records were
+not checked, and leaves the status `incomplete`. It is checked **between chunks
+and nowhere else** — stopping part-way through a record would leave it
+half-examined with nothing written down, which is the silent skip the guard
+exists to prevent (H-05). A limit that cannot be read imposes no cap at all,
+because a guard that fires on a misparse would stop healthy scans and report
+them as incomplete.
+
+A short run also under-reports **duplicates** specifically, since uniqueness is
+the one check that needs the whole project. That is a wrong negative rather than
+a missing row, so it gets its own sentence in the report instead of hiding under
+the general warning.
+
+- The record-list pre-read no longer falls back to exporting **every rule field
+  for every record in one unchunked call** when `getRecordIdField()` is
+  unavailable. That put the whole project in memory before a single record had
+  been examined and defeated the chunk loop entirely. REDCap's first
+  data-dictionary field *is* the record identifier, so it is derived from there;
+  only if that also fails does the scan refuse, and say why.
+- `$idData` is released once the id list is built, and each chunk's rows before
+  the next read allocates. Previously both were held to the return.
+
+> The Tier 1 hoists planned for this release — memoizing `Logic::parse` and the
+> check-character pattern analysis — were **dropped on the measurement**. They
+> were costed in single-digit seconds at four thousand records against a budget
+> we now know is exceeded roughly sixtyfold. 39 records x 329 rules x ~1 context
+> is ~12,800 rule evaluations in 20 seconds, or 1.5ms each; nothing in a regex
+> or a date comparison costs that, so the time is structural and the hoists
+> cannot reach it. Where it actually goes is being measured before any more of
+> it is optimised.
+
+`tests/hosting_php.php` gains the H-08 and H-09 sections: 70 checks total, 17 of
+which fail on 1.6.3. The halt decision and the byte-size parser are driven
+directly rather than through the ini, because making PHP enforce a real
+execution limit inside a test kills the test process, and `ini_set` refuses any
+`memory_limit` below current usage — a test that went through the ini would
+quietly assert against whatever the limit already was.
+
 ## 1.6.3 — the chunking tests could not fail
 
 No behaviour change. This closes a hole in the test suite that would have hidden the next release's

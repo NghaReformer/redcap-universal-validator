@@ -2152,13 +2152,29 @@ class UniversalValidator extends AbstractExternalModule
             if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
         } catch (\Throwable $e) {
         }
+        if (!is_string($pk) || $pk === '') {
+            // REDCap's FIRST data-dictionary field is the record identifier, so
+            // derive it rather than fall back to what this used to do: ask for
+            // every rule field for every record in ONE unchunked call. On a large
+            // project that is the whole project in memory before a single record
+            // has been examined, which defeats the chunk loop below entirely and
+            // fails as an uncatchable OOM rather than as a reported result.
+            $ddPk = $this->dataDictionary($pid);
+            $ddKeys = is_array($ddPk) ? array_keys($ddPk) : [];
+            $pk = isset($ddKeys[0]) ? (string) $ddKeys[0] : '';
+        }
+        if ($pk === '') {
+            $result['incomplete'][] = 'the record identifier field could not be determined, so the '
+                . 'record list could not be read without exporting the whole project';
+            return $result;              // status stays 'failed'
+        }
         // A throw here used to escape scanProject entirely, so the operator saw a
         // PHP error page rather than a scan result - and nothing recorded that
         // the project had not been examined.
         try {
             $idData = \REDCap::getData([
                 'project_id' => $pid, 'return_format' => 'array',
-                'fields' => $pk ? [$pk] : array_keys($readSet),
+                'fields' => [$pk],
                 'exportDataAccessGroups' => true,
             ]);
         } catch (\Throwable $e) {
@@ -2175,12 +2191,52 @@ class UniversalValidator extends AbstractExternalModule
             $ids[] = $rec;
         }
         $result['stats']['records'] = count($ids);
+        unset($idData);                  // dead from here; it was held to the return
         if (!$ids) { $result['status'] = 'complete'; return $result; }
 
         $uniqueSeen = [];   // aggregate pass: groupKey => [ [record,event,instance,field,rule], ... ]
         // $unconf was declared above (it already holds any config-error rules)
 
+        // The budget. This runs synchronously inside one page request, so the two
+        // ways it actually dies are the execution limit and the memory limit —
+        // and BOTH are uncatchable fatals. The process stops before the return
+        // below, the page renders nothing, and NOTHING records that the project
+        // was not examined: no status, no 'incomplete' entry, just a blank screen
+        // that looks the same as a network failure. Stopping short and SAYING so
+        // is the entire contract (M-03).
+        //
+        // Measured on a live 39-record project with 329 rules: ~20s warm. A
+        // project an order of magnitude larger does not fit in a default
+        // execution limit, so this is the expected exit on real data, not a
+        // pathological one.
+        $tStart   = microtime(true);
+        $maxSec   = (int) ini_get('max_execution_time');          // 0 = no limit (CLI)
+        $deadline = $maxSec > 0 ? $tStart + ($maxSec * 0.75) : null;
+        $memLimit = self::memoryLimitBytes();
+        $memCap   = $memLimit > 0 ? (int) ($memLimit * 0.70) : null;
+        $reached  = 0;
+
         foreach (array_chunk($ids, max(1, (int) $chunkSize)) as $chunk) {
+            // Checked BETWEEN chunks and nowhere else. Stopping part-way through
+            // a record would leave it half-checked with nothing written down,
+            // which is the silent skip this guard exists to prevent (H-05).
+            $why = self::scanHalt($deadline, $memCap, microtime(true), memory_get_usage(true));
+            if ($why !== null) {
+                $halt = ($why === 'time')
+                    ? 'the scan stopped after ' . $reached . ' record(s) to stay inside the server '
+                      . 'execution limit of ' . $maxSec . 's'
+                    : 'the scan stopped after ' . $reached . ' record(s) to avoid exhausting the '
+                      . 'server memory limit of ' . ini_get('memory_limit');
+                $result['incomplete'][] = $halt . '; ' . (count($ids) - $reached)
+                    . ' record(s) were not checked';
+                // Duplicate detection is the one check that needs the WHOLE
+                // project, so a short run under-reports it. That is a wrong
+                // negative rather than a missing row, and the operator has to be
+                // told which it is.
+                $result['incomplete'][] = 'because the scan stopped early, duplicate values are '
+                    . 'under-reported: a value is only seen as duplicated if both records were reached';
+                break;
+            }
             // A chunk that cannot be read is RECORDED, never skipped in silence:
             // skipping it produced a green "No violations found" for records that
             // were never examined, which is the worst possible failure for a tool
@@ -2254,6 +2310,11 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
+            // The chunk's rows are dead now. Releasing them before the next
+            // getData allocates means the two do not coexist, which halves the
+            // read peak; without it the last chunk is also held to the return.
+            $reached += count($chunk);
+            unset($data);
         }
 
         // Aggregate duplicate detection: a group is a violation when TWO OR
@@ -2283,6 +2344,58 @@ class UniversalValidator extends AbstractExternalModule
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
         return $result;
+    }
+
+    /**
+     * 'time' | 'memory' | null — why the chunk loop must stop now.
+     *
+     * Split out from the loop so the decision can be tested WITHOUT asking PHP
+     * to enforce a real limit: setting max_execution_time inside a test kills
+     * the test process (the timer is wall-clock on Windows and does not reset),
+     * and setting memory_limit low enough to trip is one allocation away from a
+     * fatal. A null bound means "no limit known", which never halts — declining
+     * to guess, because a guard that fires on a misread would stop healthy scans
+     * and report them as incomplete.
+     */
+    private static function scanHalt($deadline, $memCap, $now, $usage)
+    {
+        if ($deadline !== null && $now >= $deadline) return 'time';
+        if ($memCap !== null && $usage >= $memCap) return 'memory';
+        return null;
+    }
+
+    /**
+     * PHP's memory_limit in bytes, or 0 when there is no limit or it cannot be
+     * read. Shorthand suffixes are case-insensitive and BINARY (1M = 1048576),
+     * per PHP's own ini parser; a bare number is already bytes, and -1 means
+     * unlimited. Returning 0 for "unknown" is deliberate: the caller then
+     * imposes no cap, because a guard that fires on a misparse would stop
+     * healthy scans and report them as incomplete.
+     */
+    private static function memoryLimitBytes()
+    {
+        return self::parseByteSize((string) ini_get('memory_limit'));
+    }
+
+    /**
+     * One PHP shorthand byte size in bytes; 0 for unlimited or unreadable.
+     * Pure, and separate from memoryLimitBytes() so it can be tested directly:
+     * ini_set('memory_limit', ...) REFUSES any value below current usage, so a
+     * test that went through the ini would silently assert against whatever the
+     * limit already was.
+     */
+    private static function parseByteSize($raw)
+    {
+        $raw = trim($raw);
+        if ($raw === '' || $raw === '-1') return 0;
+        if (!preg_match('/^(\d+(?:\.\d+)?)\s*([KMG])?$/i', $raw, $m)) return 0;
+        $n = (float) $m[1];
+        switch (isset($m[2]) ? strtoupper($m[2]) : '') {
+            case 'G': $n *= 1024; // fall through
+            case 'M': $n *= 1024; // fall through
+            case 'K': $n *= 1024;
+        }
+        return (int) $n;
     }
 
     /**

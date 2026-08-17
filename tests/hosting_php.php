@@ -94,8 +94,18 @@ namespace {
          * given. Off by default so every scenario above keeps its exact behaviour.
          */
         public static $repeatMapAvailable = true;
+        /**
+         * H-08. Microseconds to stall on every read, so a test can walk the scan
+         * into its own execution deadline without needing a large fixture.
+         */
+        public static $sleepPerRead = 0;
+        /** H-09. Every getData call's params, so a test can prove WHAT was asked for. */
+        public static $getDataCalls = [];
 
         public static function getData($p) {
+            self::$getDataCalls[] = ['fields' => isset($p['fields']) ? array_values((array) $p['fields']) : null,
+                                     'records' => isset($p['records']) ? count($p['records']) : 0];
+            if (self::$sleepPerRead > 0) usleep(self::$sleepPerRead);
             if (self::$getDataMode === 'nonarray') return false;
             if (self::$getDataMode === 'otherrecords') return ['999' => [1 => ['record_id' => '999']]];
             // A chunk read names the records it wants and gets ONLY those. Until
@@ -191,6 +201,7 @@ namespace {
         \REDCap::$repeating = $repeating; \REDCap::$eventMappings = $mappings;
         \REDCap::$dictThrow = false;
         \REDCap::$filterByFields = false; \REDCap::$getDataMode = 'ok'; \REDCap::$pkAvailable = true;
+        REDCap::$sleepPerRead = 0; REDCap::$getDataCalls = [];
         \REDCap::$repeatMapAvailable = true;
         return $m;
     }
@@ -656,6 +667,145 @@ namespace {
         $ans = $probe4->invoke($m4, PID, 1, ['fa', 'fb']);
         check('H-07 contrast: a non-repeating form is still absent from the set',
             is_array($ans) && !isset($ans['fa']) && isset($ans['fb']));
+    }
+
+    /* =========================================================================
+     * H-08  the scan stops on its own terms, and says so
+     *
+     * Measured on a live 39-record project with 329 rules: ~20s warm. An order
+     * of magnitude more records does not fit in a default execution limit, so
+     * running out of time is the EXPECTED exit on real data. Both limits kill
+     * PHP with an uncatchable fatal: the process stops before scanProject can
+     * return, the page renders nothing, and nothing anywhere records that the
+     * project was not examined. That is the one failure mode the whole status
+     * contract cannot express (M-03), so the scan has to stop before it hits
+     * either wall and report what it did not reach.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
+        $mkData = function ($n) {
+            $d = [];
+            for ($i = 1; $i <= $n; $i++) $d[$i] = [1 => ['record_id' => (string) $i, 'a_val' => '']];
+            return $d;
+        };
+
+        // -- the halt decision --------------------------------------------------
+        // Driven directly. Making PHP enforce a real execution limit inside a
+        // test kills the test process, so the decision is a unit and the wiring
+        // is proved separately by the memory path below.
+        // Guarded so a tree without the method FAILS these checks rather than
+        // dying on a ReflectionException — a fatal here would take every later
+        // section with it and hide whether they pass.
+        $UVC = '\INSPIRE\UniversalValidator\UniversalValidator';
+        $halt = function ($deadline, $memCap, $now, $usage) use ($UVC) {
+            if (!method_exists($UVC, 'scanHalt')) return '__no-such-method__';
+            $r = new \ReflectionMethod($UVC, 'scanHalt'); $r->setAccessible(true);
+            return $r->invoke(null, $deadline, $memCap, $now, $usage);
+        };
+        check('H-08: inside both bounds the scan continues',
+            $halt(100.0, 1000, 50.0, 500) === null);
+        check('H-08: past the deadline it stops for time',
+            $halt(100.0, 1000, 100.0, 500) === 'time');
+        check('H-08: at or over the memory cap it stops for memory',
+            $halt(100.0, 1000, 50.0, 1000) === 'memory');
+        // No limit known must never halt: a guard that fires on an unreadable
+        // limit would stop healthy scans and report them as incomplete.
+        check('H-08: with no limits known it never halts',
+            $halt(null, null, 1e12, PHP_INT_MAX) === null);
+        check('H-08: an unknown time limit does not mask a real memory one',
+            $halt(null, 1000, 1e12, 1000) === 'memory');
+        check('H-08: an unknown memory limit does not mask a real deadline',
+            $halt(100.0, null, 100.0, PHP_INT_MAX) === 'time');
+
+        // -- the memory limit, end to end ---------------------------------------
+        // Hold a real allocation, then set a limit whose 70% sits below it. The
+        // limit stays comfortably above ACTUAL usage, so nothing fatals; only
+        // the guard's threshold is crossed.
+        $ballast = str_repeat('x', 20 * 1024 * 1024);
+        $oldMem = ini_get('memory_limit');
+        ini_set('memory_limit', '30M');              // cap = 21M, usage > 21M
+        $res3 = mkMod($D, $mkData(4))->scanProject(PID, null, 1);
+        ini_set('memory_limit', (string) $oldMem);
+        unset($ballast);
+
+        check('H-08: a scan near the memory limit reports incomplete, never complete',
+            $res3['status'] === 'incomplete');
+        check('H-08: and it names the memory limit as the reason',
+            (bool) array_filter($res3['incomplete'], function ($s) {
+                return strpos($s, 'memory limit') !== false;
+            }));
+        check('H-08: and it counts the records it did not check',
+            (bool) array_filter($res3['incomplete'], function ($s) {
+                return strpos($s, 'record(s) were not checked') !== false;
+            }));
+        // A short run under-reports DUPLICATES specifically: that is a wrong
+        // negative rather than a missing row, and it has to be said out loud.
+        check('H-08: and it warns that duplicates are under-reported',
+            (bool) array_filter($res3['incomplete'], function ($s) {
+                return strpos($s, 'duplicate values are under-reported') !== false;
+            }));
+
+        // CONTRAST: the same scan with headroom completes.
+        $res4 = mkMod($D, $mkData(4))->scanProject(PID, null, 1);
+        check('H-08 contrast: with memory headroom the same scan completes',
+            $res4['status'] === 'complete');
+
+        // -- the limit parser ---------------------------------------------------
+        // Driven directly, NOT through ini_set: PHP refuses to set memory_limit
+        // below current usage, so a test that went through the ini would quietly
+        // assert against whatever the limit already was and pass on anything.
+        $parse = function ($v) use ($UVC) {
+            if (!method_exists($UVC, 'parseByteSize')) return -1;
+            $r = new \ReflectionMethod($UVC, 'parseByteSize'); $r->setAccessible(true);
+            return $r->invoke(null, $v);
+        };
+        check('H-08: memory_limit -1 means no cap', $parse('-1') === 0);
+        check('H-08: shorthand suffixes are binary, not decimal',
+            $parse('128M') === 134217728 && $parse('1G') === 1073741824 && $parse('512K') === 524288);
+        check('H-08: a bare number is already bytes', $parse('67108864') === 67108864);
+        check('H-08: a lower-case suffix parses the same', $parse('128m') === 134217728);
+        // An unreadable limit must impose NO cap. A guard that fires on a
+        // misparse would stop healthy scans and report them as incomplete —
+        // failing safe here means declining to guess.
+        check('H-08: an unparseable limit imposes no cap, rather than a wrong one',
+            $parse('garbage') === 0);
+    }
+
+    /* =========================================================================
+     * H-09  the record list is read as a list, never as the whole project
+     *
+     * When getRecordIdField() was unavailable the pre-read asked for every rule
+     * field for every record in ONE unchunked call — the whole project in memory
+     * before a single record had been examined, which defeats the chunk loop
+     * entirely and dies as an OOM rather than as a reported result.
+     * ===================================================================== */
+    {
+        // THREE rule fields, so "one field was requested" is falsifiable: with a
+        // single-field read set the old whole-read-set fallback also asked for
+        // exactly one field and this section passed for the wrong reason.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED'],
+                   'b_val' => ['fb', '@UVREQUIRED'], 'c_val' => ['fb', '@UVREQUIRED']]);
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => '', 'c_val' => '']]];
+
+        // Set the scenario AFTER mkMod, never before: mkMod resets pkAvailable
+        // to true, so setting it first is silently undone and the scan runs the
+        // ordinary path. Same shape as the render() reset that made an earlier
+        // check unfalsifiable — the helper always wins.
+        $m = mkMod($D, $data);
+        \REDCap::$pkAvailable = false;
+        \REDCap::$getDataCalls = [];
+        $res = $m->scanProject(PID);
+        \REDCap::$pkAvailable = true;
+
+        check('H-09: the scan still runs when getRecordIdField() is unavailable',
+            $res['status'] === 'complete');
+        $first = isset(\REDCap::$getDataCalls[0]['fields']) ? \REDCap::$getDataCalls[0]['fields'] : null;
+        check('H-09: and the record list is read with ONE field, not the whole read set',
+            is_array($first) && count($first) === 1);
+        check('H-09: which is the dictionary\'s first field — REDCap\'s record id',
+            is_array($first) && $first[0] === 'record_id');
+        check('H-09: and the scan still finds the violations it should',
+            count($res['violations']) === 3);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";
