@@ -26,61 +26,11 @@ $pid = $module->getProjectId();
 if (!$pid) { echo 'This page only works inside a project.'; return; }
 
 // -- rights: design rights, and DAG confinement ------------------------------
-$dagFilter = null;
-try {
-    $user = $module->getUser();
-    // is_callable, NEVER method_exists. The framework serves some methods through
-    // __call(), for which method_exists() answers false — and gating a SECURITY
-    // decision on it makes that decision fail OPEN. The same probe silently
-    // disabled @UVUNIQUE in production in v1.4.0 while every mocked test passed
-    // (UniversalValidator.php:815-822); here the cost would be a DAG-bound user
-    // scanning, and displaying, every other group's records.
-    if (!$user || !is_callable([$user, 'hasDesignRights']) || !$user->hasDesignRights()) {
-        ScanPageView::refuse('You need project design rights to run the validation scan.');
-        return;
-    }
-    // Whether this user is confined to a Data Access Group decides what the scan
-    // may read. An answer we cannot read must therefore never be taken to mean
-    // "not confined" — that is the fail-open direction.
-    if (!is_callable([$user, 'getRights'])) {
-        ScanPageView::refuse('Your Data Access Group could not be established, so the validation scan was not run.');
-        return;
-    }
-    $rights = $user->getRights($pid);
-    // Some framework builds key the rights by project id. Read through that shape
-    // rather than past it: $rights['group_id'] on a pid-keyed array is simply
-    // unset, which reads as "no DAG" and confines nothing.
-    if (is_array($rights) && isset($rights[$pid]) && is_array($rights[$pid])) $rights = $rights[$pid];
-    if (!is_array($rights)) {
-        ScanPageView::refuse('Your Data Access Group could not be established, so the validation scan was not run.');
-        return;
-    }
-    if (!empty($rights['group_id'])) {
-        $gd = null;
-        try {
-            if (is_callable(['\REDCap', 'getGroupNames'])) {
-                $g = \REDCap::getGroupNames(true, $rights['group_id']);
-                if (is_string($g) && $g !== '') $gd = $g;
-            }
-        } catch (\Throwable $e) {
-        }
-        if ($gd === null) {
-            // This used to set an '__unresolvable__' sentinel and scan on. The
-            // sentinel matched no record, so the scan read nothing, reported
-            // 'complete', and rendered the green tick over zero records — a clean
-            // bill of health for a project it never examined, and a CSV with no
-            // incomplete banner at all. Refusing is the only honest answer: there
-            // is no scope, so there is nothing to certify.
-            ScanPageView::refuse('Your Data Access Group could not be resolved, so there is no scope to scan. '
-                . 'The validation scan was not run.');
-            return;
-        }
-        $dagFilter = $gd;
-    }
-} catch (\Throwable $e) {
-    ScanPageView::refuse('Could not verify your rights — scan not run.');
-    return;
-}
+// One implementation, shared with pages/export.php. A second copy of a security
+// decision is a second copy that ages differently from the first.
+$scope = ScanPageView::scanScope($module, $pid);
+if (!$scope['ok']) { ScanPageView::refuse($scope['why']); return; }
+$dagFilter = $scope['dag'];
 
 $run = isset($_GET['run']) && $_GET['run'] === '1';
 $csv = isset($_GET['csv']) && $_GET['csv'] === '1';

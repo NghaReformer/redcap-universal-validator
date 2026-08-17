@@ -517,6 +517,95 @@ namespace {
             && class_exists('INSPIRE\\UniversalValidator\\ScanPageView'));
     }
 
+
+    /* =====================================================================
+     * EXPORT  pages/export.php — the report as a real CSV
+     *
+     * A page that is NOT a declared project link is never wrapped in REDCap's
+     * chrome, so its header() calls fire with nothing buffered and there is no
+     * output buffer to tear down. That is the structural version of the fix
+     * scan.php makes by hand.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [
+            1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']],
+            2 => [1 => ['record_id' => '2', 'code' => 'yes',  'want' => 'yes']],
+        ];
+
+        $exp = function ($user, $dict, $rows, $opts = []) {
+            $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+            $m->projectIdReturn = PID;
+            $m->projectSettings = isset($opts['settings']) ? $opts['settings'] : [];
+            $m->subSettings = [];
+            $m->userReturn = $user;
+            \REDCap::$dictionary = $dict;
+            \REDCap::$data = $rows;
+            \REDCap::$groupThrows = !empty($opts['groupThrows']);
+            \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
+            $GLOBALS['uv_headers'] = [];
+            $module = $m;
+            ob_start();
+            include __DIR__ . '/../pages/export.php';
+            return [ob_get_clean(), $GLOBALS['uv_headers']];
+        };
+
+        list($out, $hdr) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data);
+        $names = [];
+        foreach ($hdr as $h) $names[] = $h['h'];
+
+        check('export: a CSV content-type header is sent',
+            (bool) preg_grep('~^Content-Type: text/csv~', $names));
+        check('export: as an attachment with a filename',
+            (bool) preg_grep('~^Content-Disposition: attachment.*validation_scan_pid~', $names));
+        // The whole point of the separate page: nothing was buffered when the
+        // headers fired, so no chrome can have preceded them.
+        check('export: the headers fire with NOTHING already buffered',
+            count($hdr) >= 2 && (int) $hdr[0]['buffered'] === 0);
+        check('export: and no page chrome appears in the body',
+            strpos($out, '<!DOCTYPE') === false && strpos($out, '<html') === false);
+
+        check('export: the new columns are present in the header row',
+            strpos($out, '"Instrument"') !== false && strpos($out, '"Value"') !== false
+            && strpos($out, '"What is wrong"') !== false && strpos($out, '"Rule name"') !== false);
+        check('export: the offending value is carried', strpos($out, '"nope"') !== false);
+        check('export: the finding is explained in words, not just coded',
+            strpos($out, 'does not satisfy') !== false);
+        check('export: a clean run is not labelled incomplete',
+            strpos($out, 'INCOMPLETE SCAN') === false);
+        check('export: and the metadata line records scope and counts',
+            strpos($out, 'scope: whole project') !== false && strpos($out, '# scan of project') !== false);
+
+        // Refusal must NOT be saved as a file.
+        list($out2, $hdr2) = $exp(new \ExternalModules\NoRightsMethodUser(), $D, $data);
+        $names2 = [];
+        foreach ($hdr2 as $h) $names2[] = $h['h'];
+        check('export: a refused export says so', strpos($out2, 'EXPORT REFUSED') !== false);
+        check('export: and is NOT offered as a download',
+            !preg_grep('~Content-Disposition~', $names2));
+
+        // An incomplete scan is marked three independent ways.
+        list($out3, $hdr3) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
+            ['dropFromChunk' => 2]);
+        $names3 = [];
+        foreach ($hdr3 as $h) $names3[] = $h['h'];
+        check('export: an incomplete scan carries the banner',
+            strpos($out3, 'INCOMPLETE SCAN') !== false);
+        check('export: names it in the FILENAME, which survives forwarding',
+            (bool) preg_grep('~filename=.*_INCOMPLETE\.csv~', $names3));
+        check('export: and in a terminal data row, which survives deleting the # lines',
+            strpos($out3, '"INCOMPLETE"') !== false);
+        check('export: the unreadable record is named as data, not only as a comment',
+            strpos($out3, '"not-scanned"') !== false);
+
+        // Values honour the policy here too.
+        list($out4, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
+            ['settings' => ['scan-value-storage' => 'none']]);
+        check('export: locations-only mode carries no value',
+            strpos($out4, '"nope"') === false && strpos($out4, '"Value"') !== false);
+    }
+
     echo "scan_page_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

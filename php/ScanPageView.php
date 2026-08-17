@@ -53,4 +53,74 @@ class ScanPageView
     {
         echo '<div class="red" style="margin:20px;padding:10px">' . self::h($why) . '</div>';
     }
+
+    /**
+     * Who this user may scan, decided ONCE and shared by every page that scans.
+     *
+     * Extracted so pages/export.php cannot drift from pages/scan.php. An export
+     * route is reached by URL and is not a configured project link, so it never
+     * passes through redcap_module_link_check_display — it has to re-derive
+     * rights itself, and "re-derive" must not mean "a second copy that ages
+     * differently from the first".
+     *
+     * @return array{ok: bool, dag: ?string, why: ?string}
+     *         ok=false means REFUSE and say why. dag=null means unconfined.
+     */
+    public static function scanScope($module, $pid)
+    {
+        $no = function ($why) { return ['ok' => false, 'dag' => null, 'why' => $why]; };
+        try {
+            $user = $module->getUser();
+            // is_callable, NEVER method_exists. The framework serves some methods
+            // through __call(), for which method_exists() answers false — and
+            // gating a SECURITY decision on it makes that decision fail OPEN.
+            if (!$user || !is_callable([$user, 'hasDesignRights']) || !$user->hasDesignRights()) {
+                return $no('You need project design rights to run the validation scan.');
+            }
+            // Whether this user is confined to a Data Access Group decides what
+            // may be read, so an answer we cannot read must never be taken to
+            // mean "not confined" — that is the fail-open direction.
+            if (!is_callable([$user, 'getRights'])) {
+                return $no('Your Data Access Group could not be established, so the validation scan was not run.');
+            }
+            $rights = $user->getRights($pid);
+            // Some framework builds key rights by project id. Read THROUGH that
+            // shape, not past it: $rights['group_id'] on a pid-keyed array is
+            // simply unset, which reads as "no DAG" and confines nothing.
+            if (is_array($rights) && isset($rights[$pid]) && is_array($rights[$pid])) $rights = $rights[$pid];
+            if (!is_array($rights)) {
+                return $no('Your Data Access Group could not be established, so the validation scan was not run.');
+            }
+            if (empty($rights['group_id'])) return ['ok' => true, 'dag' => null, 'why' => null];
+
+            $gd = null;
+            try {
+                if (is_callable(['\REDCap', 'getGroupNames'])) {
+                    $g = \REDCap::getGroupNames(true, $rights['group_id']);
+                    if (is_string($g) && $g !== '') $gd = $g;
+                }
+            } catch (\Throwable $e) {
+            }
+            if ($gd === null) {
+                // This used to set an '__unresolvable__' sentinel and scan on.
+                // The sentinel matched no record, so the scan read nothing,
+                // reported 'complete', and rendered a green tick over zero
+                // records. Refusing is the only honest answer: no scope, nothing
+                // to certify.
+                return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
+                         . 'The validation scan was not run.');
+            }
+            return ['ok' => true, 'dag' => $gd, 'why' => null];
+        } catch (\Throwable $e) {
+            return $no('Could not verify your rights — scan not run.');
+        }
+    }
+
+    /** One CSV line from a list of values, each quoted and formula-defused. */
+    public static function csvRow(array $vals)
+    {
+        $out = [];
+        foreach ($vals as $v) $out[] = self::csv($v);
+        return implode(',', $out);
+    }
 }

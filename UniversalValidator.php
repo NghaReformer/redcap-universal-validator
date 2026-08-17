@@ -26,6 +26,10 @@ require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
+require_once __DIR__ . '/php/ScanCapabilities.php';
+require_once __DIR__ . '/php/ScanDimensions.php';
+require_once __DIR__ . '/php/MessageCatalog.php';
+require_once __DIR__ . '/php/ScanColumns.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -1420,6 +1424,14 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($s['message']) && trim((string) $s['message']) !== '') {
                 $rule['message'] = trim((string) $s['message']);
             }
+            // The author's own name for this rule. config.json has offered
+            // 'rule-note' since the dialog existed and nothing ever read it, so
+            // a designer could name a rule and never see the name again. The
+            // scan report cites rules by ordinal ("Rule 12"), which means
+            // nothing a week later; the label is what makes it legible.
+            if (isset($s['rule-note']) && trim((string) $s['rule-note']) !== '') {
+                $rule['note'] = trim((string) $s['rule-note']);
+            }
             if (!empty($s['block-save'])) $rule['blockSave'] = $s['block-save'];
             if (isset($s['when']) && trim((string) $s['when']) !== '') $rule['when'] = trim((string) $s['when']);
 
@@ -2240,10 +2252,12 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($emitted[$at])) continue;
                 $emitted[$at] = true;
                 $sink->violation([
-                    'record' => $e['record'], 'event_id' => $e['event_id'],
+                    'record' => $this->reportRecordId($plan, $e['record']), 'event_id' => $e['event_id'],
                     'instance' => $e['instance'], 'field' => $e['field'],
                     'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
                     'value' => self::reportValue($e, $plan),
+                    'instrument' => isset($e['instrument']) ? $e['instrument'] : null,
+                    'dag' => isset($e['dag']) ? $e['dag'] : null,
                 ]);
             }
         }
@@ -2257,6 +2271,33 @@ class UniversalValidator extends AbstractExternalModule
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
         return $result;
+    }
+
+    /**
+     * The label snapshot a report needs, for THIS project.
+     *
+     * Public because the export page needs it and the pieces it is built from
+     * are private. By the time a report asks, the scan has already read both the
+     * dictionary and the rules, so this is a memory read rather than a second
+     * pass over the project.
+     */
+    public function scanDimensions($pid)
+    {
+        $dd = $this->dataDictionary($pid);
+        $rules = [];
+        try { $rules = $this->getRules($pid); } catch (\Throwable $e) { $rules = []; }
+        return ScanDimensions::build($pid, is_array($dd) ? $dd : [], is_array($rules) ? $rules : []);
+    }
+
+    /** The record id as the report may show it, honouring the log-values posture. */
+    private function reportRecordId(array $plan, $rec)
+    {
+        if (empty($plan['hashRecordIds'])) return (string) $rec;
+        try {
+            return $this->hashedIdentifier($plan['pid'], (string) $rec);
+        } catch (\Throwable $e) {
+            return '[record id withheld]';      // never fall back to the raw id
+        }
     }
 
     /** Longest value the report will carry. A report is not a second copy of the project. */
@@ -2353,12 +2394,16 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function scanPlan($pid)
     {
-        $out = ['fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+        $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
                 'valueMode' => $this->scanValueMode($pid),
-                'identifiers' => $this->projectIdentifierFields($pid)];
+                'identifiers' => $this->projectIdentifierFields($pid),
+                // 'none' is the log mode for sites where the RECORD ID is itself
+                // identifying. The report is a new surface and must not
+                // contradict the posture the audit already applies.
+                'hashRecordIds' => ($this->logMode($pid) === 'none')];
 
         // Rule DISCOVERY is a read like any other and can throw: a settings
         // backend failure used to escape scanProject entirely, so the operator
@@ -2484,16 +2529,21 @@ class UniversalValidator extends AbstractExternalModule
                         $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
                     }
                     if ($mode === 'unique') {
-                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck]);
+                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm);
                         continue;
                     }
                     $f = $this->ruleFindings($r, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
                     foreach ($f['invalid'] as $v) {
                         $sink->violation([
-                            'record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                            'record' => $this->reportRecordId($plan, $rec), 'event_id' => $ctx['event_id'],
                             'instance' => $ctx['instance'], 'field' => $v['field'],
                             'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
                             'value' => self::reportValue($v, $plan),
+                            // $hostForm, NOT $ctx['instrument']: that is null for
+                            // every base row (:2297) and deliberately null for a
+                            // repeating-EVENT context (:2320), which between them
+                            // is most projects.
+                            'instrument' => $hostForm, 'dag' => $recDag,
                         ]);
                     }
                     foreach ($f['unconfigurable'] as $u) {
@@ -2746,7 +2796,7 @@ class UniversalValidator extends AbstractExternalModule
      * for scope=event, the record's DAG for scope=dag). Branch rules resolve
      * their active branch against this context first.
      */
-    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [])
+    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null)
     {
         // Every reference this aggregation consumes goes through the SAME
         // resolution the rest of the scan uses. Without it the composite key was
@@ -2857,7 +2907,8 @@ class UniversalValidator extends AbstractExternalModule
                              // Kept RAW here and filtered at emit time: the value
                              // is already inside $key, so this costs nothing, and
                              // the report policy lives where the plan is in scope.
-                             'value' => $v];
+                             'value' => $v,
+                             'instrument' => $hostForm, 'dag' => $recDag];
         }
     }
 

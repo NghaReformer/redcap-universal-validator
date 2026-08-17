@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Plain-language wording for a validation finding, keyed <type>/<reason>.",
+    "",
+    "DATA, not code, because two runtimes need the same words: js/engine.js says",
+    "them to a person filling in a form, and the scan report says them to whoever",
+    "cleans the data afterwards. PHP re-implementing the browser's strings is",
+    "drift by construction. tests/messages_fixture.json freezes the rendering so",
+    "CI fails the moment the two disagree - the same mechanism php/CheckCharacter",
+    "already uses to keep the pooled parser honest across runtimes.",
+    "",
+    "{placeholders} are substituted from the finding. A placeholder with no value",
+    "is dropped along with the sentence fragment around it, never printed raw.",
+    "",
+    "'staff' is what a data manager reads. 'survey' is what a respondent reads:",
+    "shorter, no field names, no rule numbers. A report renders staff wording, but",
+    "shows the survey line too where it differs, because a designer needs to know",
+    "what the respondent actually saw and nothing else surfaces it."
+  ],
+
+  "required/required-blank": {
+    "staff":  "This field must not be left blank.",
+    "survey": "This field is required."
+  },
+  "unique/duplicate-value": {
+    "staff":  "This value is already recorded on another record.",
+    "survey": "This value is already recorded."
+  },
+  "choices/hidden-choice": {
+    "staff":  "The saved answer is no longer one of the available choices for this field.",
+    "survey": "The selected choice is no longer available."
+  },
+  "constraint/assert": {
+    "staff":  "The value does not satisfy this rule's condition.",
+    "survey": "This entry is not valid together with the other answers."
+  },
+  "single/format": {
+    "staff":  "The value does not match the format this field requires.",
+    "survey": "This entry is not in the expected format."
+  },
+  "single/check-character": {
+    "staff":  "The format is right but the check character does not match, so one character is mistyped.",
+    "survey": "This ID looks mistyped - please check it."
+  },
+  "pooled/no-id": {
+    "staff":  "No recognisable ID could be found in this field.",
+    "survey": "No ID was found here."
+  },
+  "pooled/junk": {
+    "staff":  "This field contains text that is not a recognisable ID.",
+    "survey": "Some of this entry is not a recognisable ID."
+  },
+  "pooled/duplicate": {
+    "staff":  "The same ID appears more than once in this field.",
+    "survey": "The same ID appears more than once."
+  },
+  "pooled/count": {
+    "staff":  "This field does not hold the expected number of IDs.",
+    "survey": "This entry does not hold the expected number of IDs."
+  },
+
+  "single/*": {
+    "staff":  "This value failed the ID check configured for the field.",
+    "survey": "This entry is not valid."
+  },
+  "pooled/*": {
+    "staff":  "One or more IDs in this field are not valid.",
+    "survey": "One or more IDs here are not valid."
+  },
+
+  "*/*": {
+    "staff":  "Rule {rule} reported \"{reason}\" for this value. No wording is configured for this kind of finding.",
+    "survey": "This entry is not valid."
+  }
+}
