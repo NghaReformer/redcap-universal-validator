@@ -54,29 +54,42 @@ if ($spool === false) {
     return;
 }
 
-$dims = null;
-$cols = null;
+// Built BEFORE the scan, unconditionally. Building it lazily on the first
+// finding left $dims null on a CLEAN project — the callback never fires, so
+// nothing constructed it — and the metadata block below then fatalled on
+// keyLegend(null). A clean project is the most common happy path and the one no
+// test exported, so a 500 on "download my clean report" shipped unnoticed.
+$dims = $module->scanDimensions($pid);
+$cols = ScanColumns::all($dims);
 $rows = 0;
+$sinkError = null;
 
-$sink = new CallbackFindingSink(function (array $f) use (&$dims, &$cols, &$rows, $spool, $module, $pid) {
-    if ($dims === null) {
-        // Built on the first finding, not before the scan: by now the scan has
-        // already read the dictionary and the rules, so this is a memory read.
-        $dims = $module->scanDimensions($pid);
-        $cols = ScanColumns::all($dims);
-        fwrite($spool, ScanPageView::csvRow(ScanColumns::headers($cols)) . "\n");
-    }
+$sink = new CallbackFindingSink(function (array $f) use ($dims, $cols, &$rows, $spool) {
     $row = ScanColumns::row($f, $dims, $cols);
     fwrite($spool, ScanPageView::csvRow(array_values($row)) . "\n");
     $rows++;
 });
 
-$result = $module->scanProject($pid, $scope['dag'], 200, $sink,
-    ['valueCeiling' => $scope['valueCeiling']]);
+// A sink that throws would otherwise escape scanProject entirely: the page would
+// have sent no headers, produced no file, and recorded nothing about the rows it
+// had already written. Caught here so the file still arrives and SAYS it is short.
+try {
+    $result = $module->scanProject($pid, $scope['dag'], 200, $sink,
+        ['valueCeiling' => $scope['valueCeiling']]);
+} catch (\Throwable $e) {
+    $sinkError = get_class($e);
+    $result = ['status' => 'failed', 'violations' => [], 'unconfigurable' => [],
+               'incomplete' => ['the scan stopped on an error while writing the report: ' . get_class($e)],
+               'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => $rows]];
+}
 
+// The SAME predicate pages/scan.php uses. Rule problems do not affect status,
+// so a project where every rule is a configuration error is 'complete' - and the
+// export, which is the artefact people file and cite, was the weaker of the two.
 $complete = ($result['status'] === 'complete');
+$clean    = $complete && $result['stats']['violations'] === 0 && !$result['unconfigurable'];
 $stamp    = date('Ymd_His');
-$suffix   = $complete ? '' : '_INCOMPLETE';
+$suffix   = $clean ? '' : ($complete ? '_NOT-CLEAN' : '_INCOMPLETE');
 $name     = 'validation_scan_pid' . $pid . '_' . $stamp . $suffix . '.csv';
 
 header('Content-Type: text/csv; charset=UTF-8');

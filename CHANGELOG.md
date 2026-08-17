@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.8.3 — the battle-test findings
+
+An adversarial battle-test (`reports/scan-wargame-2026-08-17.md`) ran probes
+rather than arguments and found six criticals the first review missed, plus
+reproductions of what it had argued. A seventh is mine, found while fixing them.
+
+**A clean project's export crashed.** The dimensions were built lazily inside
+the sink callback, which never fires when there are no findings, so `$dims`
+stayed null and the metadata block fatalled on `keyLegend(null)`. Downloading a
+clean report returned a 500. This was introduced in 1.8.2 and no test caught it
+because every export test uses data with a violation. Built eagerly now.
+
+**A halted scan reported the manifest as the headline.** `stats['records']` was
+set before the chunk loop and never revised, so a scan that stopped at the first
+boundary printed "Scanned 400 record(s)" in bold and `| records 400` in the
+export, with the truth in a bullet inside a warning box. The count is now what
+was examined; the manifest size keeps its own name. The whole point of 1.6.4 is
+that a stopped scan says so, and it was saying the opposite in larger type.
+
+**Hashed-record-id mode leaked the raw ids.** `log-values = none` exists for
+sites where the record id is itself identifying. Findings were hashed; the
+`incomplete` notes naming the same records were not — and those are rendered on
+the page and written into the CSV twice, for exactly the records a site is
+chasing.
+
+**A project-scope `@UVUNIQUE` was silently wrong under a DAG scope.** The scan
+reads one group, so a duplicate in another group is invisible and the rule
+reports nothing — with status `complete` and no note anywhere. The live
+unique-check endpoint queries the whole project and would flag it, so the two
+disagreed and the scan was both wrong and the one issuing certificates. It is
+now reported as a rule that could not be evaluated.
+
+**The dialog's Rule label and Message were discarded for check-character and
+pooled rules** — the two kinds the module is named after. Both were read inside
+the `constraint | required | unique` branch only. So the Rule name column added
+in 1.8.0 was permanently blank for them, `MessageCatalog`'s first tier (the
+author's own wording) was unreachable for them, and `docs/TESTING.md` told a
+tester to verify a label that could never appear on the most common rule kind.
+
+**Losing the HMAC key emptied the Record column.** `reportRecordId()` guarded
+with a `catch`, but `hashedIdentifier()` returns null rather than throwing, so
+the documented `[record id withheld]` fallback could never fire. Every finding
+rendered with a blank Record cell — on screen, a table of violations with no way
+to reach any of them.
+
+**The export certified projects that enforce nothing.** `pages/scan.php` builds
+its clean predicate from status, findings and rule problems; the export used
+status alone. A project where every rule is a configuration error exported as
+"No violations found." with no marker in the filename. One predicate now, and a
+`_NOT-CLEAN` suffix for the case where the scan completed but the rules did not.
+
 ## 1.8.2 — the fifteen medium findings
 
 The rest of the implementation review, grouped by what was actually wrong.

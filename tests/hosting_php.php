@@ -730,6 +730,16 @@ namespace {
 
         check('H-08: a scan near the memory limit reports incomplete, never complete',
             $res3['status'] === 'incomplete');
+        // X1. The headline count used to be the MANIFEST, set before the loop and
+        // never revised: a scan halted at the first chunk boundary reported
+        // "Scanned 400 record(s)" in bold while the truth sat in a bullet inside
+        // a warning box, and the export's metadata line said 400 too.
+        check('X1: a halted scan reports what it EXAMINED as the record count',
+            $res3['stats']['records'] < 4);
+        check('X1: while the manifest size stays available under its own name',
+            isset($res3['stats']['manifest']) && $res3['stats']['manifest'] === 4);
+        check('X1: so the two can never be read as the same number',
+            $res3['stats']['records'] !== $res3['stats']['manifest']);
         check('H-08: and it names the memory limit as the reason',
             (bool) array_filter($res3['incomplete'], function ($s) {
                 return strpos($s, 'memory limit') !== false;
@@ -1050,6 +1060,91 @@ namespace {
         $res3 = mkMod($D, $clean)->scanProject(PID, 'north');
         check('H-10 contrast: a matching DAG with clean data still completes',
             $res3['status'] === 'complete' && count($res3['violations']) === 0);
+    }
+
+
+    /* =========================================================================
+     * X  the adversarial battle-test findings
+     * (reports/scan-wargame-2026-08-17.md)
+     * ===================================================================== */
+    {
+        $UVC = '\INSPIRE\UniversalValidator\UniversalValidator';
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
+        $mk = function ($n) {
+            $d = [];
+            for ($i = 1; $i <= $n; $i++) $d[$i] = [1 => ['record_id' => (string) $i, 'a_val' => '']];
+            return $d;
+        };
+
+        // X1's halt case lives in the H-08 memory block above, where a halt
+        // provably fires; by this point in the file memory_get_usage is already
+        // past 30M, so ini_set silently refuses and nothing would trip.
+        $ok = mkMod($D, $mk(6))->scanProject(PID, null, 1);
+        check('X1: a complete scan reports every record it examined',
+            $ok['stats']['records'] === 6);
+        check('X1: and carries the manifest size under its OWN name, never sharing a label',
+            isset($ok['stats']['manifest']) && $ok['stats']['manifest'] === 6);
+
+        // X2. 'none' is the mode for sites where the RECORD ID is identifying.
+        // Findings were hashed; the incomplete notes that name the same records
+        // were not, and they are rendered on the page and written to the CSV.
+        $m = mkMod($D, [1 => [1 => ['record_id' => '1', 'a_val' => '']], 2 => []]);
+        $m->projectSettings = ['log-values' => 'none'];
+        $res2 = $m->scanProject(PID);
+        $notes = implode(' | ', $res2['incomplete']);
+        check('X2: a note about an unreadable record does not name it in the clear',
+            strpos($notes, 'record 2 ') === false);
+        check('X2: and the note is still produced, not dropped',
+            (bool) array_filter($res2['incomplete'], function ($x) {
+                return strpos($x, 'no data rows') !== false || strpos($x, 'not returned') !== false;
+            }));
+
+        // X5. hashedIdentifier RETURNS null when no key can be had - it catches
+        // its own failure - so the documented '[record id withheld]' fallback
+        // could never fire and every Record cell rendered EMPTY.
+        $rid = new \ReflectionMethod($UVC, 'reportRecordId');
+        $rid->setAccessible(true);
+        $m2 = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $out = $rid->invoke($m2, ['pid' => PID, 'hashRecordIds' => true], 'PATIENT-8');
+        check('X5: an unavailable hash key never yields a blank Record cell',
+            is_string($out) && $out !== '');
+        check('X5: and never falls back to the raw id',
+            strpos((string) $out, 'PATIENT-8') === false);
+
+        // X3. A project-scope unique rule cannot be judged from one DAG.
+        $DU = dict(['record_id' => ['fa'], 'sid' => ['fa', '@UVUNIQUE']]);
+        $du = [
+            1 => [1 => ['record_id' => '1', 'sid' => 'SAME', 'redcap_data_access_group' => 'north']],
+            2 => [1 => ['record_id' => '2', 'sid' => 'SAME', 'redcap_data_access_group' => 'south']],
+        ];
+        $whole = mkMod($DU, $du)->scanProject(PID);
+        check('X3: project-wide, the cross-group duplicate IS found',
+            count(array_filter($whole['violations'], function ($v) { return $v['type'] === 'unique'; })) === 2);
+        $scoped = mkMod($DU, $du)->scanProject(PID, 'north');
+        check('X3: DAG-scoped, the rule is reported as unevaluable rather than silently passing',
+            (bool) array_filter($scoped['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'whole project') !== false;
+            }));
+        check('X3: so the DAG scan can no longer read as clean',
+            !empty($scoped['unconfigurable']));
+
+        // X4. The author's label and message belong to EVERY rule kind. They
+        // were read in the constraint|required|unique branch only, so the
+        // check-character and pooled kinds the module is named after lost both.
+        $ap = new \ReflectionMethod($UVC, 'applyAuthoring');
+        $ap->setAccessible(true);
+        $row = ['rule-note' => 'Specimen IDs', 'message' => 'Must be a valid specimen ID'];
+        $r = $ap->invoke(null, ['type' => 'single', 'fields' => ['sid']], $row);
+        check('X4: a single (check-character) rule keeps its author label',
+            isset($r['note']) && $r['note'] === 'Specimen IDs');
+        check('X4: and its author message, so MessageCatalog tier 1 is reachable',
+            isset($r['message']) && $r['message'] === 'Must be a valid specimen ID');
+        $r2 = $ap->invoke(null, ['type' => 'pooled', 'fields' => ['ids']], $row);
+        check('X4: a pooled rule keeps them too',
+            isset($r2['note']) && isset($r2['message']));
+        $r3 = $ap->invoke(null, ['type' => 'required', 'fields' => ['x']], []);
+        check('X4: and an unset label leaves the key unset rather than blank',
+            !isset($r3['note']) && !isset($r3['message']));
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

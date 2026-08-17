@@ -1324,6 +1324,27 @@ class UniversalValidator extends AbstractExternalModule
      * two can never disagree about what a valid rule is. Returns null for a row
      * with nothing to say, otherwise a rule array (with configError when bad).
      */
+    /**
+     * The author's own label and message, which belong to EVERY rule kind.
+     *
+     * These were read inside the constraint|required|unique branch only, so a
+     * single or pooled rule - the check-character and ID kinds the module is
+     * named after - silently discarded both. The Rule name column was therefore
+     * permanently blank for them, MessageCatalog's first tier (the author's own
+     * wording) was unreachable for them, and docs/TESTING.md told a tester to
+     * verify a label that could never appear on the most common rule kind.
+     */
+    private static function applyAuthoring(array $rule, array $s)
+    {
+        if (isset($s['message']) && trim((string) $s['message']) !== '') {
+            $rule['message'] = trim((string) $s['message']);
+        }
+        if (isset($s['rule-note']) && trim((string) $s['rule-note']) !== '') {
+            $rule['note'] = trim((string) $s['rule-note']);
+        }
+        return $rule;
+    }
+
     private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
@@ -1438,17 +1459,9 @@ class UniversalValidator extends AbstractExternalModule
                     $rule['uniqueSurveys'] = true;
                 }
             }
-            if (isset($s['message']) && trim((string) $s['message']) !== '') {
-                $rule['message'] = trim((string) $s['message']);
-            }
+
             // The author's own name for this rule. config.json has offered
-            // 'rule-note' since the dialog existed and nothing ever read it, so
-            // a designer could name a rule and never see the name again. The
-            // scan report cites rules by ordinal ("Rule 12"), which means
-            // nothing a week later; the label is what makes it legible.
-            if (isset($s['rule-note']) && trim((string) $s['rule-note']) !== '') {
-                $rule['note'] = trim((string) $s['rule-note']);
-            }
+
             if (!empty($s['block-save'])) $rule['blockSave'] = $s['block-save'];
             if (isset($s['when']) && trim((string) $s['when']) !== '') $rule['when'] = trim((string) $s['when']);
 
@@ -1491,7 +1504,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             if ($errors) $rule['configError'] = implode(' ', $errors);
-            return $rule;
+            return self::applyAuthoring($rule, $s);
         }
 
         $rule = [
@@ -1570,7 +1583,7 @@ class UniversalValidator extends AbstractExternalModule
 
         if ($errors) $rule['configError'] = implode(' ', $errors);
 
-        return $rule;
+        return self::applyAuthoring($rule, $s);
     }
 
     /**
@@ -2105,7 +2118,7 @@ class UniversalValidator extends AbstractExternalModule
         $collect = ($sink === null);
         if ($collect) $sink = new ArrayFindingSink();
 
-        $plan = $this->scanPlan($pid, $opts);
+        $plan = $this->scanPlan($pid, $opts, $dagFilter);
         if ($plan['fatal'] !== null) {
             $result['incomplete'][] = $plan['fatal'];
             return $result;                  // status stays 'failed'
@@ -2169,6 +2182,12 @@ class UniversalValidator extends AbstractExternalModule
             if ($dagFilter !== null && is_array($node) && self::dagOfRecordNode($node) !== $dagFilter) continue;
             $ids[] = $rec;
         }
+        // The MANIFEST size. The headline count is set at the end, from what was
+        // actually reached: a scan halted at the first chunk boundary used to
+        // report the full manifest as "Scanned 400 record(s)" in bold while the
+        // truth sat in a bullet inside a warning box. The whole point of the
+        // 1.6.4 halt guard is that a stopped scan says so.
+        $result['stats']['manifest'] = count($ids);
         $result['stats']['records'] = count($ids);
         unset($idData);                  // dead from here; it was held to the return
         if (!$ids) {
@@ -2253,7 +2272,12 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach ($chunk as $rec) {
                 if (!isset($data[$rec]) || !is_array($data[$rec])) {
-                    $result['incomplete'][] = 'record ' . (string) $rec . ' was requested but not returned';
+                    // The SAME record-id posture the findings use. 'none' mode
+                    // exists for sites where the record id is itself identifying,
+                    // and these notes are rendered on the page and written into
+                    // the CSV twice - for exactly the records a site is chasing.
+                    $result['incomplete'][] = 'record ' . $this->reportRecordId($plan, $rec)
+                        . ' was requested but not returned';
                     continue;
                 }
                 $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
@@ -2305,6 +2329,12 @@ class UniversalValidator extends AbstractExternalModule
         // caller can still say how many findings there were — and so 'no
         // violations' is never inferred from an empty array that was never
         // filled in the first place (M-02).
+        // What was EXAMINED, not what was listed. Set before the loop and never
+        // revised, this reported the full manifest as the headline on a scan
+        // that had halted at the first chunk boundary — "Scanned 400 record(s)"
+        // in bold, with the truth in a bullet inside a warning box, and the same
+        // 400 on the export's metadata line.
+        $result['stats']['records'] = $reached;
         $result['stats']['violations'] = $sink->count();
         if ($collect) $result['violations'] = $sink->violations;
         // Only now can the scan claim it saw everything.
@@ -2333,10 +2363,17 @@ class UniversalValidator extends AbstractExternalModule
     {
         if (empty($plan['hashRecordIds'])) return (string) $rec;
         try {
-            return $this->hashedIdentifier($plan['pid'], (string) $rec);
+            $h = $this->hashedIdentifier($plan['pid'], (string) $rec);
         } catch (\Throwable $e) {
-            return '[record id withheld]';      // never fall back to the raw id
+            $h = null;
         }
+        // hashedIdentifier RETURNS null when no key can be obtained - it catches
+        // its own failure rather than throwing - so a catch alone never fired and
+        // every Record cell rendered EMPTY. On screen that is a table of
+        // violations with no way to reach any of them; in a CSV it reads as a
+        // fault in the reader's own export. Never the raw id, but never blank
+        // either: say that it was withheld.
+        return ($h === null || $h === '') ? '[record id unavailable]' : $h;
     }
 
     /** Longest value the report will carry. A report is not a second copy of the project. */
@@ -2458,7 +2495,7 @@ class UniversalValidator extends AbstractExternalModule
      * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
      *               readSet: array, dupes: array, unconf: array}
      */
-    private function scanPlan($pid, array $opts = [])
+    private function scanPlan($pid, array $opts = [], $dagFilter = null)
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
@@ -2555,6 +2592,30 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
         }
+        // A project-scope unique rule cannot be evaluated from a DAG-confined
+        // scan: the scan reads one group, so a value duplicated ACROSS groups is
+        // invisible and the rule reports nothing. The live unique-check endpoint
+        // queries the whole project and WOULD flag it, so the two disagree and
+        // the scan is the one issuing certificates. Every other unevaluable
+        // condition in this module lands in 'unconfigurable'; this one was
+        // silent, which is the one outcome the contract forbids.
+        if ($dagFilter !== null) {
+            foreach ($live as $i => $r) {
+                if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+                $scope = isset($r['uniqueScope']) ? strtolower((string) $r['uniqueScope']) : 'project';
+                if ($scope !== 'project') continue;      // 'dag' and 'event' ARE evaluable here
+                $unconf[$i . '|dag-scoped-unique'] = [
+                    'rule' => $i + 1,
+                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                    'why' => 'this rule requires values to be unique across the WHOLE project, but this scan '
+                           . 'is confined to one Data Access Group - a duplicate in another group cannot be '
+                           . 'seen from here, so the rule was NOT evaluated. Run the scan without a group '
+                           . 'scope to check it.',
+                ];
+            }
+            $out['unconf'] = $unconf;
+        }
+
         $out['readSet'] = $readSet;
         return $out;
     }
@@ -2580,7 +2641,8 @@ class UniversalValidator extends AbstractExternalModule
             // clean — certifying it was the same silent skip as an
             // unreadable chunk, one step further down (H-05).
             return ['contexts' => 0,
-                    'why' => 'record ' . (string) $rec . ' was returned with no data rows, so it was not checked'];
+                    'why' => 'record ' . $this->reportRecordId($plan, $rec)
+                           . ' was returned with no data rows, so it was not checked'];
         }
         $recDag = self::dagOfRecordNode($node);
         // Resolution is a property of the CONTEXT, not of the rule that
