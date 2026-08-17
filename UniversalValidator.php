@@ -24,6 +24,7 @@ require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/Branching.php';
+require_once __DIR__ . '/php/ScanPageView.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -1169,7 +1170,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             if (is_callable([$this, 'getUser'])) {
                 $u = $this->getUser();
-                if ($u && method_exists($u, 'getRights')) {
+                if ($u && is_callable([$u, 'getRights'])) {
                     $r = $u->getRights($pid);
                     if (is_array($r) && isset($r['forms']) && is_array($r['forms'])) return $r['forms'];
                 }
@@ -1203,7 +1204,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             if (is_callable([$this, 'getUser'])) {
                 $u = $this->getUser();
-                if ($u && method_exists($u, 'getUsername')) {
+                if ($u && is_callable([$u, 'getUsername'])) {
                     $name = $u->getUsername();
                     if (is_string($name) && $name !== '') return $name;
                 }
@@ -2027,7 +2028,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         try {
             $user = $this->getUser();
-            if ($user && method_exists($user, 'hasDesignRights') && $user->hasDesignRights()) return $link;
+            if ($user && is_callable([$user, 'hasDesignRights']) && $user->hasDesignRights()) return $link;
         } catch (\Throwable $e) {
         }
         return null;
@@ -3266,14 +3267,83 @@ class UniversalValidator extends AbstractExternalModule
      * NULL when that cannot be established. NULL makes resolveOne() fall back
      * to repeat-bucket presence, which is weaker but still ownership-based.
      */
-    private $repeatFormsCache = [];
+    /**
+     * TWO caches, because the two sources below do not answer the same question.
+     * Source 1 reads the whole event's map and is independent of $forms, so its
+     * answer may be served to any caller. Source 2 probes ONE FORM AT A TIME and
+     * its answer describes only the forms it was given — caching that under the
+     * bare (pid|event) key silently reports every form the first caller did not
+     * ask about as non-repeating. That is reachable in the scan today:
+     * hostContextsFor() asks about a single host form and runs BEFORE
+     * contextResolution() asks about the whole read set, so on any build without
+     * getRepeatingFormsEvents the one-form answer was served to the all-forms
+     * call and a genuinely repeating form read as a resolved blank — H-02 again,
+     * by way of the cache. Neither source caches a NULL: a failed or unavailable
+     * read must not harden into a permanent verdict (H-06), and the old code's
+     * "write null, then refuse to serve it" achieved the same thing by a longer
+     * route.
+     */
+    private $repeatFormsCache = [];   // pid|event         => set, from the whole-event map
+    private $repeatProbeCache = [];   // pid|event|forms    => set, from the per-form probe
     private function repeatingFormsForEvent($project_id, $event_id, array $forms = [])
     {
         $key = $project_id . '|' . $event_id;
+        // Source 1's answer — INCLUDING its null — is cached, because it is a
+        // property of the event and not of $forms: null here means "this build
+        // does not expose the whole-event map", which cannot change within a
+        // request. Caching it is what stops the map being re-queried once per
+        // context on such a build; it does not harden a verdict, because a null
+        // still falls through to source 2 and then to the caller's own
+        // bucket-presence fallback exactly as before.
         if (array_key_exists($key, $this->repeatFormsCache)) {
-            $cached = $this->repeatFormsCache[$key];
-            if ($cached !== null) return $cached;
+            $out = $this->repeatFormsCache[$key];
+            if ($out !== null) return $out;
+        } else {
+            $out = $this->repeatingFormsFromMap($project_id, $event_id);
+            $this->repeatFormsCache[$key] = $out;
+            if ($out !== null) return $out;
         }
+        // Second source. getRepeatingFormsEvents is not exposed on every build;
+        // isRepeatingForm answers the same question one form at a time. Without
+        // one of them the only signal left is whether a repeat BUCKET exists,
+        // which cannot see a repeating form that has no instances yet - exactly
+        // the case where a blank reference looks like a resolved blank (H-02).
+        if (!$forms) return null;
+        $probe = [];
+        foreach ($forms as $form) if (is_string($form) && $form !== '') $probe[$form] = true;
+        if (!$probe) return null;
+        $probe = array_keys($probe);
+        // Canonical order so ['a','b'] and ['b','a'] share one entry. The probe
+        // result does not depend on the order: any NULL answer abandons the whole
+        // set, whichever form produced it. \x1F separates, because a form name
+        // may legitimately contain any other punctuation - the same reason the
+        // unique group key avoids a printable delimiter (L-01).
+        sort($probe);
+        $pkey = $key . '|' . implode("\x1F", $probe);
+        if (array_key_exists($pkey, $this->repeatProbeCache)) return $this->repeatProbeCache[$pkey];
+        $out = null;
+        try {
+            if (is_callable(['\REDCap', 'isRepeatingForm'])) {
+                $set = [];
+                $any = false;
+                foreach ($probe as $form) {
+                    $r = \REDCap::isRepeatingForm($event_id, (string) $form);
+                    if ($r === null) { $any = false; break; }
+                    $any = true;
+                    if ($r) $set[$form] = true;
+                }
+                if ($any) $out = $set;
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        if ($out !== null) $this->repeatProbeCache[$pkey] = $out;
+        return $out;
+    }
+
+    /** Source 1 alone: the whole-event repeating-form map, or null. */
+    private function repeatingFormsFromMap($project_id, $event_id)
+    {
         $out = null;
         try {
             if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) {
@@ -3294,30 +3364,6 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             $out = null;
         }
-        // Second source. getRepeatingFormsEvents is not exposed on every build;
-        // isRepeatingForm answers the same question one form at a time. Without
-        // one of them the only signal left is whether a repeat BUCKET exists,
-        // which cannot see a repeating form that has no instances yet - exactly
-        // the case where a blank reference looks like a resolved blank (H-02).
-        if ($out === null && $forms) {
-            try {
-                if (is_callable(['\REDCap', 'isRepeatingForm'])) {
-                    $set = [];
-                    $any = false;
-                    foreach (array_unique($forms) as $form) {
-                        if (!is_string($form) || $form === '') continue;
-                        $r = \REDCap::isRepeatingForm($event_id, $form);
-                        if ($r === null) { $any = false; break; }
-                        $any = true;
-                        if ($r) $set[$form] = true;
-                    }
-                    if ($any) $out = $set;
-                }
-            } catch (\Throwable $e) {
-                $out = null;
-            }
-        }
-        $this->repeatFormsCache[$key] = $out;
         return $out;
     }
 

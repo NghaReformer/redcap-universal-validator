@@ -675,6 +675,15 @@ the **Validation scan** page (left project menu, design rights) re-runs every
 rule over every saved record on demand — run it after bulk imports and before
 data locks/exports, and work through its CSV.
 
+Two things about that page, both since 1.6.2. If you work inside a **Data Access
+Group** and the page says *"Your Data Access Group could not be resolved, so
+there is no scope to scan"*, that is deliberate and it is not a bug in your
+project: the page cannot work out which records are yours, and it will refuse
+rather than scan nothing and report the project clean. Ask an administrator to
+check your group assignment. And the on-screen table stops at **1,000 rows** on
+projects with more violations than that — the count above the table, and the
+downloaded CSV, always cover every violation found.
+
 ### Privacy modes for the log
 
 The project-level setting **How to log invalid values caught by the post-save

@@ -1,5 +1,79 @@
 # Changelog
 
+## 1.6.2 — the scan page gets a test, and stops certifying scans it never ran
+
+Found by reviewing the validation scan for a project expecting 100,000 records. `pages/scan.php`
+turned out to be the only PHP in the module that CI never linted, the package never asserted, and no
+test ever executed — and it could not *be* tested: it declared `uv_h()` and `uv_csv()` as
+namespace-level functions, so a second include in one process was a fatal redeclare.
+
+Four defects, three of which the page could hide because nothing was watching it:
+
+- **An unresolvable Data Access Group certified a scan of zero records.** A DAG-bound user whose
+  group name could not be resolved got an `'__unresolvable__'` sentinel. It matched no record, so
+  the scan read nothing, reported `'complete'`, and rendered the green **✓ No violations found** —
+  a clean bill of health for a project it never examined. The downloaded CSV was worse: with the
+  status `'complete'` it carried no `# INCOMPLETE SCAN` banner at all. The conservative intent was
+  right; the outcome inverted it. There is no scope, so there is nothing to certify: the page now
+  refuses. This is M-02 in a place M-02 had not been looked for.
+- **The rights probes failed open.** DAG confinement was gated on
+  `method_exists($user, 'getRights')`. The framework serves methods through `__call()`, for which
+  `method_exists()` answers false — the same probe that silently disabled `@UVUNIQUE` in production
+  in v1.4.0 while every mocked test passed. A false answer here skipped the DAG block entirely, left
+  the filter null, and let a DAG-bound user scan and display every other group's records.
+
+  Whether that fires on a given REDCap build depends on whether `ExternalModules\User` declares
+  those methods or proxies them, which cannot be determined from this repository — the framework
+  source is not vendored, and every `TestUser` stub in `tests/` declares them for real, so no test
+  here can tell the two apart. That is exactly the blind spot the v1.4.0 postmortem describes.
+  Treated as a live fail-open on that basis rather than argued down.
+
+  Every `method_exists` probe on a user object is now `is_callable`, not just the two on the scan
+  page: `redcap_module_link_check_display` (fails closed, hides the menu link) and the two
+  entitlement probes behind cross-form `@UVASSERT` (fail closed into the
+  `\REDCap::getUserRights()` fallback) carried the same defect at lower severity. Separately,
+  `getRights()` returns a
+  **project-keyed** array on some builds, where `$rights['group_id']` is simply unset and reads as
+  "not confined" — the same leak by a different route. The page now reads through that shape, and
+  refuses outright when scope cannot be established rather than assuming there is none.
+- **The CSV was not a CSV.** `config.json` sets `"show-header-and-footer": true`, so REDCap emits
+  its entire page before this file runs and the `header()` calls were ignored. A downloaded report
+  was ~3,000 lines of HTML with the data starting at line 1,089 — unusable in Excel, and the reason
+  this release exists. The buffered chrome is now discarded before the headers, and the rows are
+  written straight to `php://output` instead of being accumulated as an array of lines and then
+  imploded into one string: the report used to exist three times over in memory before a byte was
+  sent.
+- **The repeat-metadata cache answered a question it was never asked** (H-07, and H-02 for the sixth
+  time). `repeatingFormsForEvent()` has two sources: a whole-event map, and a per-form probe used
+  when the build does not expose the map. The per-form answer describes only the forms it was
+  handed, but it was cached under a form-independent key — and in the scan, `hostContextsFor()` asks
+  about a single host form *before* `contextResolution()` asks about the whole read set. The
+  one-form answer was therefore served to the all-forms caller, and every form it had not asked
+  about read as non-repeating. An instrument that repeats but has no instances yet then resolved as
+  a plain blank, and the scan reported a **hard-blocking violation against a value it had never
+  read**. The two sources now have two caches. The deliberate null fall-through is kept: a source
+  that could not answer must not harden into a permanent verdict (H-06).
+
+The rendered violation table is also capped at 1,000 rows — it was one `<tr>` per violation, which
+is ~25 MB of markup on a 4,000-record project. The count beside it is **not** capped, so a truncated
+view can never read as a smaller problem than the scan found, and the CSV still carries every row.
+
+`uv_h()`/`uv_csv()` are now `ScanPageView::h()`/`ScanPageView::csv()` in `php/ScanPageView.php`.
+`pages/scan.php` and `php/ScanPageView.php` join the CI lint list and the package assertion.
+
+Two smaller things the CSV rewrite needed. If an output buffer cannot be deleted — one opened with
+a callback, or without the erasable flag — the rows would simply be appended to the chrome still
+sitting in it, reproducing the same hybrid silently; that case now refuses alongside the
+already-flushed one. And the per-form probe cache key joins form names with `\x1F` rather than a
+comma, for the same reason the unique group key avoids printable delimiters (L-01).
+
+`tests/scan_page_php.php` is new — the page's first coverage: 54 checks, 13 of which fail on 1.6.1
+with the helper refactor applied but the rights and DAG fixes reverted, including both cases that
+print another group's record ids. It asserts the CSV headers fire with *nothing* already buffered,
+which is the actual defect rather than its symptom, and it drives the CSV in a subprocess because
+that path ends in `exit`. `tests/hosting_php.php` gains the H-07 section: 50 checks total, 3 of
+which fail on 1.6.1 — one naming the mechanism and two the harm.
+
 ## 1.6.1 — a blank field is not a failed read
 
 Found on a live REDCap 17.0.6 project while testing the 1.6.0 deployment, not by a test.

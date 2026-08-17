@@ -20,6 +20,13 @@
  *   H-05  a scan certified 'complete' with the dictionary unread, with a record
  *         returned empty, and could not survive a throw from rule discovery
  *
+ * H-07 is the same defect a sixth time, one layer down: the repeat-metadata
+ * cache stored a PER-FORM answer under a form-independent key, so on a build
+ * without getRepeatingFormsEvents the single-form probe made by hostContextsFor()
+ * became the answer given to contextResolution() for every other form. An
+ * instance-less repeating instrument then read as a resolved blank and the scan
+ * reported a HARD violation against a value it had never read.
+ *
  * Every check below fails on the pre-fix tree. The counts are exact — "not
  * zero" would pass on the amplification bug that produced four logs where one
  * was due.
@@ -80,6 +87,13 @@ namespace {
         public static $getDataMode = 'ok';
         /** A build where the record-id field cannot be established. */
         public static $pkAvailable = true;
+        /**
+         * H-07. A build that exposes isRepeatingForm but NOT the whole-event map.
+         * That is the shape which forces repeatingFormsForEvent() onto its second,
+         * PER-FORM source — the one whose answer describes only the forms it was
+         * given. Off by default so every scenario above keeps its exact behaviour.
+         */
+        public static $repeatMapAvailable = true;
 
         public static function getData($p) {
             if (self::$getDataMode === 'nonarray') return false;
@@ -128,7 +142,9 @@ namespace {
         public static function getRecordIdField() { return self::$pkAvailable ? 'record_id' : ''; }
         public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
         public static function getEventNames($u = false, $x = false, $evt = null) { return 'event_' . $evt . '_arm_1'; }
-        public static function getRepeatingFormsEvents($pid = null) { return self::$repeating; }
+        public static function getRepeatingFormsEvents($pid = null) {
+            return self::$repeatMapAvailable ? self::$repeating : null;
+        }
         public static function isRepeatingForm($e = null, $f = null) {
             if (self::$repeating === null) return null;
             return isset(self::$repeating[$e][$f]);
@@ -161,6 +177,7 @@ namespace {
         \REDCap::$repeating = $repeating; \REDCap::$eventMappings = $mappings;
         \REDCap::$dictThrow = false;
         \REDCap::$filterByFields = false; \REDCap::$getDataMode = 'ok'; \REDCap::$pkAvailable = true;
+        \REDCap::$repeatMapAvailable = true;
         return $m;
     }
     function viols($m) { return array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved'; })); }
@@ -536,6 +553,95 @@ namespace {
             $r6 !== null && !empty($r6['deferred'])
             && !empty($r6['deferredWhy'])
             && strpos($r6['deferredWhy'][0], 'different repeating instrument') !== false);
+    }
+
+    /* =====================================================================
+     * H-07  the repeat-metadata cache answered a question it was never asked
+     * ===================================================================== */
+    {
+        // repeatingFormsForEvent() has two sources. The first reads the whole
+        // event's map and is independent of $forms. The second probes ONE FORM AT
+        // A TIME, so its answer describes only the forms it was handed — and it
+        // was cached under the bare (pid|event) key. In the scan, hostContextsFor()
+        // asks about a single host form and runs BEFORE contextResolution() asks
+        // about the whole read set, so on any build without getRepeatingFormsEvents
+        // the one-form answer was served to the all-forms caller and every form it
+        // had not asked about read as NON-repeating.
+        //
+        // The fixture is the H-02 cross-repeat assert. fb repeats but has NO
+        // instances yet — the one case the bucket-presence fallback is blind to,
+        // and therefore the case where the poisoned answer does real harm. The
+        // verdict must not depend on WHICH metadata source answered.
+        $D = dict([
+            'record_id' => ['fa'],
+            'a_val'     => ['fa', '@UVASSERT={"assert":"[a_val]=[b_rep]","message":"x","blockSave":"hard"}'],
+            'b_rep'     => ['fb'],
+        ]);
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => 'X']]];
+
+        // Control: the whole-event map IS available. This is the H-02 verdict.
+        $res = mkMod($D, $data, [1 => ['fb' => 1]])->scanProject(PID);
+        check('H-07 control: with the event map, an instance-less repeating reference is a rule problem',
+            vcount($res) === 0 && count($res['unconfigurable']) === 1);
+
+        // The same project on a build that exposes only isRepeatingForm. Before
+        // the fix this reported a HARD violation against a value it never read,
+        // and dropped the rule problem that should have been raised instead.
+        $m = mkMod($D, $data, [1 => ['fb' => 1]]);
+        \REDCap::$repeatMapAvailable = false;
+        $res = $m->scanProject(PID);
+        check('H-07: the per-form probe invents no violation against an unread reference',
+            vcount($res) === 0);
+        check('H-07: and still reports the undefined pairing as a rule problem',
+            count($res['unconfigurable']) === 1);
+        check('H-07: and the scan still completes', $res['status'] === 'complete');
+
+        // The same fixture WITH an instance present, both ways round: the bucket
+        // fallback covered this case even before the fix, so it is the control
+        // that proves the two sources agree rather than that one was disabled.
+        $inst = [1 => [
+            1 => ['record_id' => '1', 'a_val' => 'X'],
+            'repeat_instances' => [1 => ['fb' => [1 => ['b_rep' => 'Y']]]],
+        ]];
+        $m = mkMod($D, $inst, [1 => ['fb' => 1]]);
+        \REDCap::$repeatMapAvailable = false;
+        $res = $m->scanProject(PID);
+        check('H-07 control: a populated cross-repeat reference is unchanged either way',
+            vcount($res) === 0 && count($res['unconfigurable']) === 1);
+
+        // Direct probe of the mechanism, in the scan's real call order: one host
+        // form first, then the whole read set. Both forms repeat, so the second
+        // answer must name both — serving the first answer hides 'fb'.
+        $m2 = mkMod($D, $data, [1 => ['fa' => 1, 'fb' => 1]]);
+        \REDCap::$repeatMapAvailable = false;
+        $probe = new \ReflectionMethod($m2, 'repeatingFormsForEvent');
+        $probe->setAccessible(true);
+        $one = $probe->invoke($m2, PID, 1, ['fa']);          // hostContextsFor()
+        $all = $probe->invoke($m2, PID, 1, ['fa', 'fb']);    // contextResolution()
+        check('H-07: a one-form answer does not become the answer for every form',
+            is_array($one) && isset($one['fa']) && !isset($one['fb'])
+            && is_array($all) && isset($all['fa']) && isset($all['fb']));
+
+        // CONTRAST: the fix must not turn "cannot tell" into "nothing repeats".
+        // With NEITHER source available the answer is still null, so resolveOne
+        // keeps falling back to bucket presence rather than reading a resolved
+        // blank — the H-02 posture the null return exists to protect.
+        $m3 = mkMod($D, $data, null);
+        \REDCap::$repeatMapAvailable = false;
+        $probe3 = new \ReflectionMethod($m3, 'repeatingFormsForEvent');
+        $probe3->setAccessible(true);
+        check('H-07 contrast: with no metadata source at all the answer is still null',
+            $probe3->invoke($m3, PID, 1, ['fa', 'fb']) === null);
+
+        // CONTRAST: a form that genuinely does not repeat is still reported as
+        // not repeating — otherwise the fix is just a disabled check.
+        $m4 = mkMod($D, $data, [1 => ['fb' => 1]]);
+        \REDCap::$repeatMapAvailable = false;
+        $probe4 = new \ReflectionMethod($m4, 'repeatingFormsForEvent');
+        $probe4->setAccessible(true);
+        $ans = $probe4->invoke($m4, PID, 1, ['fa', 'fb']);
+        check('H-07 contrast: a non-repeating form is still absent from the set',
+            is_array($ans) && !isset($ans['fa']) && isset($ans['fb']));
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

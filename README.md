@@ -430,8 +430,15 @@ rule — check-character/format, constraint, required, unique, and choice
 filtering — over every saved record and lists each violation with a CSV export.
 
 - **Where:** the "Validation scan" link on the project's left menu (visible to
-  users with design rights; the page re-checks). Records are read in chunks,
-  so large projects scan without exhausting memory.
+  users with design rights; the page re-checks). Records are read in chunks, so
+  the amount of *record data* held at once does not grow with the project —
+  but the findings themselves are accumulated in memory until the scan ends,
+  so a project with very many violations is bounded by PHP's `memory_limit`.
+  The on-screen table is capped at 1,000 rows; the count beside it and the CSV
+  always cover every violation found.
+- **Scope must be knowable.** A user confined to a Data Access Group whose
+  group name cannot be resolved is **refused**, not silently scoped to
+  nothing: a scan of zero records is not a clean project.
 - **Same engine, same verdicts.** The scan evaluates through the exact
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one
