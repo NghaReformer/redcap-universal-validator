@@ -431,9 +431,16 @@ filtering — over every saved record and lists each violation with a CSV export
 
 - **Where:** the "Validation scan" link on the project's left menu (visible to
   users with design rights; the page re-checks). Records are read in chunks, and
-  since 1.7.0 findings can be handed out as they are produced rather than
-  accumulated, so the download holds one row at a time however many the project
-  produces. The scan also takes a **budget** — 75% of the server's execution
+  since 1.7.0 findings are handed to the writer as they are produced rather than
+  collected into one array first.
+- **It is still bounded by the project, and that is not yet fixed.** Three things
+  still grow with the data and are held until the scan ends: the record-id list,
+  the unique-rule candidates, and one note per record that could not be read. The
+  export additionally spools the whole report to a temporary file before sending
+  a byte, so it needs disk for the full report and produces no output until the
+  scan finishes. On a project large enough for that to matter the request will
+  reach a proxy timeout first. Removing these is the durable-scan work, not
+  something this release did. The scan takes a **budget** — 75% of the server's execution
   limit, 70% of its memory limit — and stops rather than being killed: both
   limits are uncatchable fatals that would otherwise render a blank page with
   nothing recording that the project was not examined. A stopped scan reports

@@ -571,9 +571,19 @@ namespace {
         check('export: and no page chrome appears in the body',
             strpos($out, '<!DOCTYPE') === false && strpos($out, '<html') === false);
 
-        check('export: the new columns are present in the header row',
-            strpos($out, '"Instrument"') !== false && strpos($out, '"Value"') !== false
-            && strpos($out, '"What is wrong"') !== false && strpos($out, '"Rule name"') !== false);
+        // The header row is a CONTRACT, so it carries stable KEYS. Emitting
+        // labels meant any wording change silently broke every consumer.
+        check('export: the header row carries stable keys, not labels',
+            strpos($out, '"instrument"') !== false && strpos($out, '"value"') !== false
+            && strpos($out, '"problem"') !== false && strpos($out, '"rule_label"') !== false
+            && strpos($out, '"Rule name"') === false);
+        check('export: and a comment line maps those keys to labels for a human',
+            strpos($out, '# columns: ') !== false && strpos($out, 'rule_label=Rule name') !== false);
+        check('export: the reason code and the rule KIND survive to the report',
+            strpos($out, '"reason"') !== false && strpos($out, '"check"') !== false
+            && strpos($out, '"constraint"') !== false);
+        check('export: the header row is present even before any finding row',
+            strpos($out, '"issue","record"') !== false);
         check('export: the offending value is carried', strpos($out, '"nope"') !== false);
         check('export: the finding is explained in words, not just coded',
             strpos($out, 'does not satisfy') !== false);
@@ -607,8 +617,13 @@ namespace {
         // Values honour the policy here too.
         list($out4, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
             ['settings' => ['scan-value-storage' => 'locations']]);
+        // Withheld must not render as the empty cell a genuinely blank field
+        // produces — otherwise the omission is invisible, which is what the
+        // docs already claimed was not the case.
         check('export: locations-only mode carries no value',
-            strpos($out4, '"nope"') === false && strpos($out4, '"Value"') !== false);
+            strpos($out4, '"nope"') === false);
+        check('export: and says the value was withheld rather than leaving a blank',
+            strpos($out4, '[withheld by policy]') !== false);
 
         // An un-reconfigured project is what EVERY project looks like on
         // upgrade. It must disclose nothing until someone decides otherwise.
@@ -623,7 +638,7 @@ namespace {
         $noExport->export = '0';
         list($out6, ) = $exp($noExport, $D, $data, $RAW);
         check('export: a reader with NO export rights never sees a value, whatever the project set',
-            strpos($out6, '"nope"') === false && strpos($out6, '"Value"') !== false);
+            strpos($out6, '"nope"') === false && strpos($out6, '[withheld by policy]') !== false);
 
         $deident = new \ExternalModules\PlainUser(true, null);
         $deident->export = '2';

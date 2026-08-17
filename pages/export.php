@@ -96,12 +96,26 @@ if (!$complete) {
         echo '# ...and ' . (count($result['incomplete']) - 50) . " more\n";
     }
 }
+echo '# columns: ' . ScanColumns::keyLegend($cols) . "
+";
+if ($dims->isDegraded()) echo '# ' . $dims->degradedSummary() . "
+";
+if ($sinkError !== null) {
+    echo "# ROWS WERE LOST - this file is not a complete report: " . $sinkError . "
+";
+}
 echo '# scan of project ' . $pid . ' at ' . date('c')
    . ($scope['dag'] !== null ? ' | scope: Data Access Group "' . $scope['dag'] . '" ONLY' : ' | scope: whole project')
    . ' | records ' . $result['stats']['records']
    . ' | rules ' . $result['stats']['rules']
    . ' | findings ' . $result['stats']['violations']
    . "\n";
+
+// Unconditionally, so a clean scan still produces a parseable file. Emitting
+// it only when a finding existed meant the easiest files to handle were the
+// ones a header-driven consumer broke on.
+echo ScanPageView::csvRow(ScanColumns::headers($cols)) . "
+";
 
 rewind($spool);
 while (!feof($spool)) {
@@ -111,20 +125,29 @@ while (!feof($spool)) {
 }
 fclose($spool);
 
+// Every trailer row is padded to the finding-row width. Mixed arity in one file
+// is not valid rectangular CSV, and these rows are shorter than a finding.
+$pad = function (array $vals) use ($cols) {
+    return array_pad($vals, count($cols), '');
+};
+
 if ($rows === 0) {
-    echo '"' . ($complete ? 'No violations found.' : 'No violations among the records that could be read.') . "\"\n";
+    echo ScanPageView::csvRow($pad([$complete
+        ? 'No violations found.'
+        : 'No violations among the records that could be read.'])) . "\n";
 }
 
 // Rule problems and unreadable records, after the findings, as data rows rather
 // than comments — a reader who strips the # lines still sees them.
 foreach ($result['unconfigurable'] as $u) {
-    echo ScanPageView::csvRow(['rule-problem', 'rule ' . $u['rule'], implode(' ', (array) $u['fields']), $u['why']]) . "\n";
+    echo ScanPageView::csvRow($pad(['rule-problem', 'rule ' . $u['rule'],
+        implode(' ', (array) $u['fields']), $u['why']])) . "\n";
 }
 foreach ($result['incomplete'] as $why) {
-    echo ScanPageView::csvRow(['not-scanned', '', '', $why]) . "\n";
+    echo ScanPageView::csvRow($pad(['not-scanned', '', '', $why])) . "\n";
 }
 if (!$complete) {
-    echo ScanPageView::csvRow(['INCOMPLETE', '', '',
+    echo ScanPageView::csvRow($pad(['INCOMPLETE', '', '',
         'This scan did not cover the whole project. Rows above are real findings over the records that WERE read; '
-        . 'absence of a row is not evidence a record is clean.']) . "\n";
+        . 'absence of a row is not evidence a record is clean.'])) . "\n";
 }

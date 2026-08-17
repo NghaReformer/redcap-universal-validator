@@ -40,7 +40,20 @@ class ScanPageView
     public static function csv($s)
     {
         $s = (string) $s;
-        if ($s !== '' && strpos('=+-@', $s[0]) !== false) $s = "'" . $s;
+        // Excel and Sheets strip leading whitespace, tabs, carriage returns and a
+        // BOM BEFORE deciding whether a cell is a formula, so inspecting byte zero
+        // alone is not enough: " =cmd|'/c calc'", a tab- or CR-prefixed payload,
+        // and a BOM-prefixed one all reach the formula parser. Find the first byte
+        // the spreadsheet would actually look at.
+        $skip = [' ', "\t", "\r", "\n", "\0", "\x0B", "\x0C"];
+        $i = 0;
+        $len = strlen($s);
+        while ($i < $len) {
+            if (in_array($s[$i], $skip, true)) { $i++; continue; }
+            if (substr($s, $i, 3) === "\xEF\xBB\xBF") { $i += 3; continue; }   // UTF-8 BOM
+            break;
+        }
+        if ($i < $len && strpos('=+-@', $s[$i]) !== false) $s = "'" . $s;
         return '"' . str_replace('"', '""', $s) . '"';
     }
 

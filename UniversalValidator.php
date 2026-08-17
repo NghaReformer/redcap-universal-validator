@@ -1273,14 +1273,31 @@ class UniversalValidator extends AbstractExternalModule
      * A field claimed by more than one rule gets a duplicate-rule config error on
      * the client, so the two channels cannot silently fight over a field.
      */
+    /** @var array|null per-request memo: pid => resolved rule list */
+    private $rulesMemo = [];
+
     private function getRules($pid = null)
     {
+        // Memoized per request. A finding cites a rule by ORDINAL, and the
+        // report resolves that ordinal against getRules() again; unmemoized,
+        // those were two independent reads, and anything that changed the rule
+        // list between them shifted every ordinal so that every label, message
+        // and assertion in the report attached to the wrong rule with nothing to
+        // detect it. Stable rule identity is Tasks 5-6; this closes the window
+        // in the meantime.
+        $key = (string) ($pid === null ? '' : $pid);
+        if (array_key_exists($key, $this->rulesMemo)) return $this->rulesMemo[$key];
+
         $out = $this->getSettingRules($pid);
         foreach ($this->getAnnotationRules($pid) as $r) $out[] = $r;
         // Shared fields become explicit per-field branch rules (or config
         // errors when the sharing is illegal), so the client engine, the
         // audit, and the snapshot all consume one resolved structure.
-        return Branching::resolve($out);
+        //
+        // Stored only on success: a throw must NOT be memoized as an answer,
+        // because a failed read judged as "no rules" is the H-05 mistake.
+        $this->rulesMemo[$key] = Branching::resolve($out);
+        return $this->rulesMemo[$key];
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
@@ -2269,11 +2286,15 @@ class UniversalValidator extends AbstractExternalModule
                 $at = $e['rule'] . '|' . $e['record'] . '|' . $e['event_id'] . '|' . $e['instance'] . '|' . $e['field'];
                 if (isset($emitted[$at])) continue;
                 $emitted[$at] = true;
+                // Already filtered at collection time (see collectUniqueCandidates):
+                // false means withheld by policy, null means there was nothing.
+                $rv = array_key_exists('value', $e) ? $e['value'] : null;
                 $sink->violation([
                     'record' => $this->reportRecordId($plan, $e['record']), 'event_id' => $e['event_id'],
                     'instance' => $e['instance'], 'field' => $e['field'],
                     'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
-                    'value' => self::reportValue($e, $plan),
+                    'value' => ($rv === false) ? null : $rv,
+                    'valueWithheld' => ($rv === false),
                     'instrument' => isset($e['instrument']) ? $e['instrument'] : null,
                     'dag' => isset($e['dag']) ? $e['dag'] : null,
                 ]);
@@ -2338,7 +2359,11 @@ class UniversalValidator extends AbstractExternalModule
     private static function reportValue(array $v, array $plan)
     {
         $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'raw';
-        if ($mode === 'locations') return null;
+        // 'locations' WITHHELD a value that exists; a finding with no value has
+        // nothing to withhold. Both used to return null and render as the same
+        // empty cell, which is exactly what a genuinely blank required field
+        // renders too.
+        if ($mode === 'locations') return array_key_exists('value', $v) ? false : null;
         if (!array_key_exists('value', $v)) return null;
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
@@ -2575,16 +2600,20 @@ class UniversalValidator extends AbstractExternalModule
                         $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
                     }
                     if ($mode === 'unique') {
-                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm);
+                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
                         continue;
                     }
                     $f = $this->ruleFindings($r, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
                     foreach ($f['invalid'] as $v) {
+                        // Computed ONCE, and compared with === false. A truthiness
+                        // test here would turn a legitimate value of '0' into null.
+                        $rv = self::reportValue($v, $plan);
                         $sink->violation([
                             'record' => $this->reportRecordId($plan, $rec), 'event_id' => $ctx['event_id'],
                             'instance' => $ctx['instance'], 'field' => $v['field'],
                             'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
-                            'value' => self::reportValue($v, $plan),
+                            'value' => ($rv === false) ? null : $rv,
+                            'valueWithheld' => ($rv === false),
                             // $hostForm, NOT $ctx['instrument']: that is null for
                             // every base row (:2297) and deliberately null for a
                             // repeating-EVENT context (:2320), which between them
@@ -2842,7 +2871,7 @@ class UniversalValidator extends AbstractExternalModule
      * for scope=event, the record's DAG for scope=dag). Branch rules resolve
      * their active branch against this context first.
      */
-    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null)
+    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null, array $plan = [])
     {
         // Every reference this aggregation consumes goes through the SAME
         // resolution the rest of the scan uses. Without it the composite key was
@@ -2953,7 +2982,15 @@ class UniversalValidator extends AbstractExternalModule
                              // Kept RAW here and filtered at emit time: the value
                              // is already inside $key, so this costs nothing, and
                              // the report policy lives where the plan is in scope.
-                             'value' => $v,
+                             // The REPORTABLE form, decided now rather than kept
+                             // raw to the end. The key above already carries
+                             // bin2hex(trim($v)), so holding the raw value too was
+                             // roughly three times the bytes per candidate,
+                             // retained project-wide - including in locations
+                             // mode, where it can never be shown at all. On a
+                             // @UVUNIQUE rule over a Notes field that was the most
+                             // expensive thing in the scan.
+                             'value' => self::reportValue(['field' => $field, 'value' => $v], $plan),
                              'instrument' => $hostForm, 'dag' => $recDag];
         }
     }

@@ -95,8 +95,38 @@ final class ScanColumns
             [
                 'key' => 'value', 'label' => 'Value', 'group' => 'problem',
                 'visible' => function () { return true; },
+                'render' => function (array $f, ScanDimensions $d) {
+                    if (isset($f['value']) && $f['value'] !== null) return (string) $f['value'];
+                    // An empty cell is what a genuinely blank field renders, so
+                    // "we are not allowed to show this" must look different from
+                    // "there is nothing to show".
+                    return (isset($f['valueWithheld']) && $f['valueWithheld'])
+                        ? '[withheld by policy]' : '';
+                },
+            ],
+            [
+                // The rule's KIND, kept verbatim. 'issue' folds five types into
+                // three words for triage; this keeps the distinction the data
+                // actually carries.
+                'key' => 'check', 'label' => 'Check', 'group' => 'problem',
+                'visible' => function () { return true; },
+                'render' => function (array $f) { return isset($f['type']) ? (string) $f['type'] : ''; },
+            ],
+            [
+                // The reason code, verbatim. Without it a single-value rule with
+                // both a pattern and a check-character algorithm, carrying an
+                // authored message, produced identical rows for a format failure
+                // and a mistyped check digit: the distinction exists in the data
+                // and was discarded on the way out.
+                'key' => 'reason', 'label' => 'Reason code', 'group' => 'problem',
+                'visible' => function () { return true; },
                 'render' => function (array $f) {
-                    return (isset($f['value']) && $f['value'] !== null) ? (string) $f['value'] : '';
+                    $r = isset($f['reason']) ? (string) $f['reason'] : '';
+                    // 'assert:<expression>' repeats the whole rule expression on
+                    // every finding; the expression belongs to the rule and is
+                    // shown once, from the rule snapshot.
+                    $i = strpos($r, ':');
+                    return $i === false ? $r : substr($r, 0, $i);
                 },
             ],
             [
@@ -152,11 +182,29 @@ final class ScanColumns
         return $row;
     }
 
-    /** @return string[] the header labels, in order */
+    /**
+     * The CSV header row: stable machine KEYS, not labels.
+     *
+     * The header is a contract with whatever parses the file. Emitting labels
+     * would mean any wording improvement silently breaks every downstream
+     * consumer — in the one class whose stated job is to stop the screen and the
+     * file drifting apart. Labels are for the screen; a `# columns:` comment
+     * line carries the mapping for a human reading the raw file.
+     *
+     * @return string[]
+     */
     public static function headers(array $cols)
     {
         $h = [];
-        foreach ($cols as $c) $h[] = $c['label'];
+        foreach ($cols as $c) $h[] = $c['key'];
         return $h;
+    }
+
+    /** `key=Label` pairs, for the export's comment header. */
+    public static function keyLegend(array $cols)
+    {
+        $out = [];
+        foreach ($cols as $c) $out[] = $c['key'] . '=' . $c['label'];
+        return implode(', ', $out);
     }
 }

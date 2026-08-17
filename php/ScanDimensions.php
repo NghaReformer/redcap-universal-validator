@@ -72,7 +72,30 @@ final class ScanDimensions
                 $d->degraded['events'] = 'reading event names failed: ' . get_class($e);
             }
         }
+        // From the project's SHAPE, not from whether the label read succeeded.
+        // Deriving it from count($d->events) meant an unavailable getEventNames
+        // dropped the Event column on a longitudinal project, so two findings on
+        // the same field in different events rendered as identical rows with
+        // nothing saying anything was lost. event() already falls back to the raw
+        // id, which is the correct degradation.
         $d->longitudinal = count($d->events) > 1;
+        try {
+            if (is_callable(['\REDCap', 'getEventNames'])) {
+                $all = \REDCap::getEventNames(true);
+                if (is_array($all) && count($all) > 1) $d->longitudinal = true;
+            }
+            if (!$d->longitudinal && is_callable(['\REDCap', 'getInstrumentEventMappings'])) {
+                $mapEv = \REDCap::getInstrumentEventMappings($pid);
+                if (is_array($mapEv)) {
+                    $seen = [];
+                    foreach ($mapEv as $row) {
+                        if (is_array($row) && isset($row['event_id'])) $seen[$row['event_id']] = true;
+                    }
+                    if (count($seen) > 1) $d->longitudinal = true;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
 
         // Instrument labels.
         try {
@@ -92,7 +115,15 @@ final class ScanDimensions
         } else {
             try {
                 $g = \REDCap::getGroupNames(true);
-                if (is_array($g) && $g) $d->hasDags = true;
+                if (is_array($g)) {
+                    $d->hasDags = (bool) $g;          // an empty array really is "no groups"
+                } else {
+                    // A non-array is a FAILED read, and it must not look like a
+                    // project that simply has no groups. Only a throw was caught
+                    // before, so this vanished silently.
+                    $d->degraded['dags'] = 'Data Access Groups could not be read, so the DAG column '
+                        . 'is omitted — this is not evidence the project has no groups';
+                }
             } catch (\Throwable $e) {
                 $d->degraded['dags'] = 'reading Data Access Groups failed: ' . get_class($e);
             }
@@ -138,5 +169,25 @@ final class ScanDimensions
         return isset($this->rules[$ordinal])
             ? $this->rules[$ordinal]
             : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+    }
+
+    /** True when any label source could not be read. */
+    public function isDegraded()
+    {
+        return (bool) $this->degraded;
+    }
+
+    /**
+     * One sentence naming every label source that could not be read.
+     *
+     * degraded[] was populated in four places and read in none, which made the
+     * class docblock's promise — "degradation nobody can see is the failure this
+     * module exists to prevent" — untrue of the class itself.
+     */
+    public function degradedSummary()
+    {
+        if (!$this->degraded) return '';
+        return 'Some labels could not be read, so raw identifiers are shown instead: '
+             . implode('; ', $this->degraded);
     }
 }

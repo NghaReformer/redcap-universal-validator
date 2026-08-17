@@ -1,5 +1,78 @@
 # Changelog
 
+## 1.8.2 — the fifteen medium findings
+
+The rest of the implementation review, grouped by what was actually wrong.
+
+**Things the report silently dropped.** The reason code and the rule's kind were
+folded away entirely: `issue` maps five rule types onto three words, and the
+reason reached the reader only through the message catalog, whose first tier is
+the author's own message and therefore wins for every finding of that rule. A
+single-value rule carrying both a pattern and a check-character algorithm
+produced identical rows for a format failure and a mistyped check digit. `check`
+and `reason` are columns again.
+
+**Withheld no longer looks like blank.** `reportValue()` returned null for
+"policy says never", for "this finding has no value", and for an empty string
+alike, so a locations-only report rendered an empty Value cell — exactly what a
+genuinely blank required field renders. The column now shows
+`[withheld by policy]`.
+
+**Degradation nobody could see.** `ScanDimensions::degraded[]` was written in
+four places and read in none, which made its own docblock untrue; the export
+prints it. Two of those writers were also wrong. Column visibility came from
+whether the label READ succeeded rather than from the project's shape, so an
+unavailable `getEventNames` deleted the Event column from a longitudinal project
+and two findings on the same field in different events rendered identically. And
+a non-array `getGroupNames` return recorded nothing, so a failed DAG read was
+indistinguishable from a project with no groups.
+
+**CSV integrity.** Formula defusing inspected byte zero only, so a leading
+space, tab, carriage return or BOM carried a payload straight to the spreadsheet
+parser. The header row emitted labels rather than stable keys, so any wording
+improvement would have broken every downstream consumer; it now emits keys, with
+a `# columns:` line mapping them for a human. A clean scan produced a file with
+no header row at all, and the trailer rows were shorter than the finding rows —
+the header is unconditional now and the trailers are padded, so the file is
+rectangular.
+
+**A fatal path in the export.** The sink callback built the label snapshot
+lazily on the first finding, which put `getRules()` and `Branching::resolve()`
+on a path called from inside `scanRecord()`, where a throw escapes
+`scanProject()` past both `try/catch` blocks and fatals with nothing recorded
+about the project not being examined. It is built up front, the callback catches
+its own failures and reports them in the file, and the page ends in `exit` so
+nothing the router emits afterwards lands inside the CSV.
+
+**Two independent reads of the rule list.** A finding cites a rule by ordinal,
+and the report resolved that ordinal against a second `getRules()` call that was
+not memoized. Anything changing the rule list between the two shifted every
+ordinal, attaching every label and message to the wrong rule undetectably.
+`getRules()` is now memoized per request — on success only, because a memoized
+throw would be the H-05 mistake. Stable rule identity remains Tasks 5–6.
+
+**Probes that proved nothing.** `schemaPrivilege` substring-matched `CREATE`, so
+`CREATE TEMPORARY TABLES`, `CREATE VIEW` and `CREATE ROUTINE` all passed, as did
+any database or user name containing the word; it parses the privilege list now
+and accepts only a plain `CREATE`. `recordEnumeration` returned available when
+two prerequisites existed without ever issuing a query — a gate that passes on
+prerequisites is not a gate — and probes both sources for real. `sourceFence`
+claimed a fence as soon as a log table name resolved, checking neither retention
+nor the event taxonomy, which would have handed `complete-through-fence` to
+nearly every installation the moment `policy()` is wired up; it refuses and says
+what has to be verified first.
+
+**Unique candidates.** Each held the raw value alongside a key that already
+contained its hex form — roughly three times the bytes, project-wide, held to
+the end, and even in locations mode where it can never be shown. The reportable
+form is decided at collection time instead.
+
+**The README overclaimed.** It said the download holds one row at a time. The
+row buffer does; the scan behind it still accumulates the record list, the
+unique candidates and one note per unreadable record, and the export spools the
+whole report to disk before sending a byte. That is now stated as unfinished
+work rather than implied to be solved.
+
 ## 1.8.1 — values are a decision, not a default
 
 An implementation review against the rebuild plan (`reports/scan-implementation-review-2026-08-17.md`)

@@ -59,8 +59,13 @@ final class ScanCapabilities
     {
         // Preferred: REDCap's own record list, which carries record + DAG and no
         // data, so it can be walked by keyset in constant memory.
+        // A table EXISTING does not mean it is populated for this project, so
+        // the preferred source is probed for a row before it is trusted.
         $probe = self::tableExists($module, 'redcap_record_list');
-        if ($probe['state'] === self::OK) return self::yes('redcap_record_list');
+        if ($probe['state'] === self::OK) {
+            $walk = self::probeRecordList($module, $pid);
+            if ($walk['state'] === self::OK) return $walk;
+        }
 
         // Fallback: a keyset walk of redcap_data restricted to the record-id
         // field. Bounded, but it needs both a usable query API and a known
@@ -72,7 +77,11 @@ final class ScanCapabilities
         if (!self::recordIdField($pid)) {
             return self::no('no paged record-list source, and the record-id field could not be determined');
         }
-        return self::yes('redcap_data keyset walk');
+        // Prove the walk, do not infer it. Bounded record enumeration is the
+        // hard implementation gate; a gate that passes because two
+        // prerequisites exist is not a gate. One bounded probe query costs
+        // nothing and answers the actual question.
+        return self::probeKeysetWalk($module, $pid);
     }
 
     /**
@@ -115,10 +124,22 @@ final class ScanCapabilities
             while ($row = self::fetchRow($q)) $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
             $all = strtoupper($all);
             if ($all === '') return self::no('SHOW GRANTS returned no rows');
-            if (strpos($all, 'ALL PRIVILEGES') !== false || strpos($all, 'CREATE') !== false) {
-                return self::yes('SHOW GRANTS');
+            // Only the privilege LIST is searched, never the ON/TO clauses: a
+            // database or user name containing "CREATE" would otherwise match.
+            // And bare CREATE is the only grant that permits CREATE TABLE -
+            // CREATE TEMPORARY TABLES, CREATE VIEW and CREATE ROUTINE do not.
+            foreach (explode(' | ', $all) as $line) {
+                if (!preg_match('/^\s*GRANT\s+(.*?)\s+ON\s/i', $line, $m)) continue;
+                $privs = preg_split('/\s*,\s*/', $m[1]);
+                foreach ($privs as $priv) {
+                    $priv = trim($priv);
+                    if ($priv === 'ALL PRIVILEGES' || $priv === 'ALL') return self::yes('SHOW GRANTS');
+                    if ($priv === 'CREATE') return self::yes('SHOW GRANTS');
+                }
             }
-            return self::no('the database user has no CREATE grant; an administrator must install the schema');
+            return self::no('the database user holds no plain CREATE grant, so it cannot create '
+                . 'the module\'s tables (CREATE TEMPORARY TABLES, CREATE VIEW and CREATE ROUTINE '
+                . 'do not suffice); an administrator must install the schema');
         } catch (\Throwable $e) {
             return self::no('SHOW GRANTS failed: ' . get_class($e));
         }
@@ -292,5 +313,38 @@ final class ScanCapabilities
         } catch (\Throwable $e) {
         }
         return null;
+    }
+
+    /** One bounded read of redcap_record_list, to prove it answers for THIS project. */
+    private static function probeRecordList($module, $pid)
+    {
+        try {
+            $q = $module->query('SELECT record FROM redcap_record_list WHERE project_id = ? LIMIT 1', [$pid]);
+            if (!$q) return self::no('redcap_record_list exists but returned nothing for this project');
+            $row = self::fetchRow($q);
+            if (!$row) {
+                return self::no('redcap_record_list exists but holds no row for this project, so it '
+                    . 'cannot be used to enumerate records here');
+            }
+            return self::yes('redcap_record_list (probed)');
+        } catch (\Throwable $e) {
+            return self::no('reading redcap_record_list failed: ' . get_class($e));
+        }
+    }
+
+    /** One bounded keyset read of redcap_data, to prove the fallback walk works. */
+    private static function probeKeysetWalk($module, $pid)
+    {
+        $pk = self::recordIdField($pid);
+        try {
+            $q = $module->query(
+                'SELECT record FROM redcap_data WHERE project_id = ? AND field_name = ? '
+                . 'ORDER BY record LIMIT 1', [$pid, $pk]);
+            if (!$q) return self::no('the redcap_data keyset walk returned nothing');
+            self::fetchRow($q);      // an empty project is legitimate; the QUERY working is the point
+            return self::yes('redcap_data keyset walk (probed)');
+        } catch (\Throwable $e) {
+            return self::no('the redcap_data keyset walk failed: ' . get_class($e));
+        }
     }
 }
