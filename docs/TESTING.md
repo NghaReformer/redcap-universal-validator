@@ -235,3 +235,80 @@ assistive technology actually announces.
       (the work caps allow at most 64-character IDs).
 - [ ] Run REDCap's built-in External Module security scan (Control Center) and
       review its findings.
+
+## Validation scan and its report
+
+No mock can prove this section. The suite stands up a fake `REDCap` class, so it
+proves the module's logic and nothing about whether the real one behaves the way
+the module assumes. Everything below has to be done on a server.
+
+Run these on a project with **several instruments, at least one rule of each
+kind, and at least one Data Access Group**.
+
+### The scan itself
+
+- [ ] The **Validation scan** link appears for a design-rights user and is absent
+      for one without. Open it directly by URL as a non-design user — it refuses.
+- [ ] Run the scan. The summary line reports records, rows, rules and findings,
+      and the counts are plausible for the project.
+- [ ] **Time it.** Note the wall clock and divide by the record count. If a
+      project ten times larger would not finish inside the server's
+      `max_execution_time`, say so in the release notes rather than discovering
+      it in production.
+- [ ] Re-run immediately. The second run should be markedly faster (caches warm);
+      if it is not, the cost is I/O rather than computation, which changes what is
+      worth optimising.
+- [ ] A project with **no rules** reports complete with nothing found, not an
+      error.
+
+### What a scan may claim
+
+- [ ] Take a project where one record cannot be read (a DAG with no records, or a
+      record deleted mid-run). The scan reports **incomplete**, names the records
+      it did not reach, and the green tick does **not** appear.
+- [ ] The same run's download carries `_INCOMPLETE` in the filename, the banner
+      at the top, and a terminal `INCOMPLETE` row at the bottom.
+- [ ] As a user confined to a Data Access Group, run the scan. Only that group's
+      records appear, and the export header says the scope was that group.
+- [ ] Confirm no record id from another group appears anywhere in the file.
+
+### The report
+
+- [ ] **Download CSV** produces a file that opens in Excel as columns, not as one
+      cell of HTML. Check the first bytes are the BOM and the header row, not
+      `<!DOCTYPE`.
+- [ ] The Instrument column is populated on a **classic** project and on a
+      project with a **repeating event** — this is where a wrong implementation
+      shows blanks, because the context's own instrument is null in both.
+- [ ] Event column is absent on a classic project and present on a longitudinal
+      one. DAG column is absent when the project has no groups.
+- [ ] The **What is wrong** column reads as a sentence for every row. Any row
+      whose *Wording from* column says `fallback` is a rule with no authored
+      message and no catalog entry — note the reason code so one can be added.
+- [ ] Set a rule's **Rule label** in the dialog; it appears in the Rule name
+      column.
+
+### Values and redaction
+
+- [ ] With **Validation scan report** left at its default, the offending value
+      appears. A required-blank shows no value, because there is none.
+- [ ] Set it to redact Identifiers, mark a field as an Identifier in the Online
+      Designer, re-run: that field's value reads `[identifier withheld]` while
+      other fields still show values.
+- [ ] Set it to locations only: no value appears anywhere, and the Value column
+      is still present so the omission is visible rather than silent.
+- [ ] Put a value longer than 120 characters in a field and confirm the report
+      truncates it and says so.
+- [ ] Set **log-values** to the strict record-id mode and confirm the report's
+      record ids are hashed there too — the report must not contradict the audit.
+
+### Capability degradation
+
+The module probes what the installation supports rather than assuming it. These
+confirm the probes match reality on this build.
+
+- [ ] Compare `php/ScanCapabilities.php`'s verdicts against the server: are event
+      names, DAG names and repeat metadata actually resolvable here?
+- [ ] If any probe reports unavailable, confirm the report shows the raw key
+      (event id rather than a name) and says a column is degraded — never a blank
+      that looks like an absent value.

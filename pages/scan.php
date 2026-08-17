@@ -118,6 +118,13 @@ if ($csv) {
 }
 
 $self = $module->getUrl('pages/scan.php');
+// The download goes to a page that is NOT a declared project link, so the
+// router never wraps it in REDCap's chrome and its headers fire with nothing
+// buffered — no buffer teardown, and no way for that teardown to go wrong.
+// The &csv=1 route on THIS page still works and is still tested; it is
+// deprecated and no longer linked, and it goes once export.php has been
+// exercised on a live server.
+$exportUrl = $module->getUrl('pages/export.php');
 ?>
 <h4 style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
 <p style="max-width:760px">
@@ -152,7 +159,7 @@ project the scan may take a while — leave the page open until the table appear
   <?php /* Every executed scan offers its evidence file, not only the ones that
            found something: "0 violations, incomplete, and here is why" is a
            result worth filing. */ ?>
-  &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo ScanPageView::h($self . '&csv=1'); ?>">Download CSV</a>
+  &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo ScanPageView::h($exportUrl); ?>">Download CSV</a>
   &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo ScanPageView::h($self . '&run=1'); ?>">Re-run</a>
 </p>
 
@@ -197,19 +204,20 @@ project the scan may take a while — leave the page open until the table appear
     $hidden = count($result['violations']) - count($shown);
 ?>
 <table class="table table-striped table-sm" style="max-width:900px">
+  <?php
+    // The SAME descriptor list the export uses. One declaration of what a report
+    // shows, so the screen and the file can never disagree about it, and adding
+    // a column never means editing this markup.
+    $dims = $module->scanDimensions($pid);
+    $cols = ScanColumns::all($dims);
+  ?>
   <thead><tr>
-    <th>Record</th><th>Event</th><th>Instance</th><th>Field</th><th>Rule</th><th>Kind</th><th>Reason</th>
+    <?php foreach ($cols as $c) { ?><th><?php echo ScanPageView::h($c['label']); ?></th><?php } ?>
   </tr></thead>
   <tbody>
-  <?php foreach ($shown as $v) { ?>
+  <?php foreach ($shown as $v) { $row = ScanColumns::row($v, $dims, $cols); ?>
     <tr>
-      <td><?php echo ScanPageView::h($v['record']); ?></td>
-      <td><?php echo ScanPageView::h($v['event_id']); ?></td>
-      <td><?php echo ScanPageView::h($v['instance']); ?></td>
-      <td><?php echo ScanPageView::h($v['field']); ?></td>
-      <td><?php echo (int) $v['rule']; ?></td>
-      <td><?php echo ScanPageView::h($v['type']); ?></td>
-      <td><?php echo ScanPageView::h($v['reason']); ?></td>
+      <?php foreach ($cols as $c) { ?><td><?php echo ScanPageView::h($row[$c['key']]); ?></td><?php } ?>
     </tr>
   <?php } ?>
   </tbody>

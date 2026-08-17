@@ -606,6 +606,40 @@ namespace {
             strpos($out4, '"nope"') === false && strpos($out4, '"Value"') !== false);
     }
 
+
+    /* =====================================================================
+     * COLUMNS  the screen and the file show the SAME thing
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
+        \REDCap::$groupNames = [];
+        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1']);
+
+        check('columns: the table shows the instrument', strpos($html, '<th>Instrument</th>') !== false);
+        check('columns: and the value', strpos($html, '<th>Value</th>') !== false);
+        check('columns: and a plain-language explanation',
+            strpos($html, '<th>What is wrong</th>') !== false
+            && strpos($html, 'does not satisfy') !== false);
+        check('columns: and the rule name', strpos($html, '<th>Rule name</th>') !== false);
+        check('columns: the offending value is rendered in a cell',
+            strpos($html, '<td>nope</td>') !== false);
+        // A classic project has ONE event, so the column is absent rather than
+        // present-and-empty. Same for a project with no Data Access Groups.
+        check('columns: a classic project shows no Event column',
+            strpos($html, '<th>Event</th>') === false);
+        check('columns: a project with no DAGs shows no DAG column',
+            strpos($html, '<th>Data Access Group</th>') === false);
+        // The escaping still applies to every generated cell.
+        $D2 = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data2 = [1 => [1 => ['record_id' => '1', 'code' => '<img src=x>', 'want' => 'yes']]];
+        list($html2, ) = render(new \ExternalModules\PlainUser(true, null), $D2, $data2, ['run' => '1']);
+        check('columns: a value containing markup is escaped, not rendered',
+            strpos($html2, '<img src=x>') === false && strpos($html2, '&lt;img') !== false);
+    }
+
     echo "scan_page_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

@@ -430,12 +430,31 @@ rule — check-character/format, constraint, required, unique, and choice
 filtering — over every saved record and lists each violation with a CSV export.
 
 - **Where:** the "Validation scan" link on the project's left menu (visible to
-  users with design rights; the page re-checks). Records are read in chunks, so
-  the amount of *record data* held at once does not grow with the project —
-  but the findings themselves are accumulated in memory until the scan ends,
-  so a project with very many violations is bounded by PHP's `memory_limit`.
-  The on-screen table is capped at 1,000 rows; the count beside it and the CSV
-  always cover every violation found.
+  users with design rights; the page re-checks). Records are read in chunks, and
+  since 1.7.0 findings can be handed out as they are produced rather than
+  accumulated, so the download holds one row at a time however many the project
+  produces. The scan also takes a **budget** — 75% of the server's execution
+  limit, 70% of its memory limit — and stops rather than being killed: both
+  limits are uncatchable fatals that would otherwise render a blank page with
+  nothing recording that the project was not examined. A stopped scan reports
+  `incomplete`, counts the records it did not reach, and says plainly that
+  duplicates are under-reported, because uniqueness is the one check that needs
+  the whole project.
+- **What the report says.** Record, Data Access Group, event, instrument,
+  instance, field and field label; the **offending value**; the rule number, the
+  rule's own name, and **what is wrong in plain English** rather than a reason
+  code. Columns that do not apply to a project's shape are absent rather than
+  empty: a classic project has no Event column, a project without groups has no
+  DAG column. The wording comes from `php/messages/catalog.json`, which the
+  browser and the server both read, so the sentence a respondent saw and the
+  sentence in the report cannot drift apart.
+- **Values are a policy choice.** *Validation scan report* in the module's
+  project settings: show every value (default), redact the fields REDCap marks
+  as an **Identifier**, or show locations only. Redaction **fails closed** — if
+  the data dictionary cannot be read, every value is withheld, because a
+  dictionary that cannot be read cannot clear a field. A report is readable by
+  anyone with design rights, which is a wider audience than REDCap's
+  record-level access control, so choose accordingly.
 - **Scope must be knowable.** A user confined to a Data Access Group whose
   group name cannot be resolved is **refused**, not silently scoped to
   nothing: a scan of zero records is not a clean project.
@@ -443,11 +462,14 @@ filtering — over every saved record and lists each violation with a CSV export
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one
   aggregate pass over the scanned data (project/DAG/event scopes honored).
-- **Privacy by construction.** The report names *where* each problem is —
-  record, event, instance, field, rule, reason — **never the stored value**;
-  staff open the record itself under REDCap's own access control to see and
-  fix it. A user working inside a Data Access Group only ever scans their own
-  group's records. CSV cells are quoted and formula-defused.
+- **A file that cannot certify says so three ways.** The download is a real CSV
+  from its own page, so REDCap's page chrome can never precede it. An incomplete
+  scan is marked by a banner at the top, by a terminal data row that survives
+  deleting the comment lines or sorting the sheet, and by `_INCOMPLETE` in the
+  filename, which survives the file being renamed and forwarded. A refused
+  export is not offered as a download at all. CSV cells are quoted and
+  formula-defused, and record ids follow the same privacy mode the audit log
+  uses.
 
 ## Methods supported
 
