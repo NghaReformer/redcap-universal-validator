@@ -909,6 +909,88 @@ namespace {
         }
     }
 
+    /* =========================================================================
+     * VALUE  the report shows the offending value, under an explicit policy
+     *
+     * Until 1.8.0 the scan deliberately withheld every value. That was honest
+     * and not actionable: a data manager could not tell a typo from a systematic
+     * import bug without opening each record. It is now a project setting.
+     *
+     * The rule that matters is the FAIL-CLOSED one. isIdentifier() answers "is
+     * this field known to be an identifier", so an unreadable dictionary means
+     * "nothing is" — correct for refusing to enable a survey feature, and exactly
+     * backwards here, where it would mean "redact nothing". mustRedact() inverts
+     * that: a dictionary we cannot read cannot clear a field, so it withholds
+     * everything.
+     * ===================================================================== */
+    {
+        $UVC = '\INSPIRE\UniversalValidator\UniversalValidator';
+        $red = function ($ids, $field, $mode) use ($UVC) {
+            if (!method_exists($UVC, 'mustRedact')) return '__no-such-method__';
+            $r = new \ReflectionMethod($UVC, 'mustRedact'); $r->setAccessible(true);
+            return $r->invoke(null, $ids, $field, $mode);
+        };
+        check('value: locations-only withholds everything', $red(['a' => true], 'b', 'none') === true);
+        check('value: raw withholds nothing, even an identifier',
+            $red(['a' => true], 'a', 'raw') === false);
+        check('value: identifiers mode withholds a flagged field',
+            $red(['a' => true], 'a', 'identifiers') === true);
+        check('value: identifiers mode shows an unflagged field',
+            $red(['a' => true], 'b', 'identifiers') === false);
+        // The one that would leak. A null identifier set is what
+        // projectIdentifierFields() returns when the dictionary read FAILED.
+        check('value: an unreadable dictionary withholds EVERY value, not none',
+            $red(null, 'anything', 'identifiers') === true);
+        check('value: and raw mode is still explicit about it', $red(null, 'x', 'raw') === false);
+
+        // End to end, through a real scan.
+        $D = dict(['record_id' => ['fa'], 'secret' => ['fa', '@UVREQUIRED'],
+                   'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [1 => [1 => ['record_id' => '1', 'secret' => '', 'code' => 'nope', 'want' => 'yes']]];
+        $valOf = function ($res, $field) {
+            foreach ($res['violations'] as $v) if ($v['field'] === $field) return $v['value'];
+            return '__absent__';
+        };
+
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'raw'];
+        $res = $m->scanProject(PID);
+        check('value: raw mode shows the bad value', $valOf($res, 'code') === 'nope');
+        check('value: and a required-blank shows nothing, because there is nothing',
+            $valOf($res, 'secret') === null);
+
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'none'];
+        $res = $m->scanProject(PID);
+        check('value: locations-only shows no value at all', $valOf($res, 'code') === null);
+
+        // An unset setting must land on the documented default, not on nothing.
+        $m = mkMod($D, $data);
+        $m->projectSettings = [];
+        $res = $m->scanProject(PID);
+        check('value: an unset setting uses the documented default (raw)',
+            $valOf($res, 'code') === 'nope');
+
+        // Truncation and non-text bytes are MARKED, never silently dropped or
+        // pasted into a CSV where they would corrupt the file.
+        $rv = function ($v, $plan) use ($UVC) {
+            $r = new \ReflectionMethod($UVC, 'reportValue'); $r->setAccessible(true);
+            return $r->invoke(null, $v, $plan);
+        };
+        $plan = ['valueMode' => 'raw', 'identifiers' => []];
+        $long = str_repeat('x', 200);
+        $out = $rv(['field' => 'f', 'value' => $long], $plan);
+        check('value: an over-long value is truncated and says so',
+            strpos($out, '(truncated)') !== false && mb_strlen($out, 'UTF-8') < 200);
+        check('value: invalid UTF-8 is reported as bytes, not pasted into the report',
+            strpos($rv(['field' => 'f', 'value' => "ab\xFF\xFEcd"], $plan), 'not valid text') !== false);
+        check('value: a checkbox array is flattened rather than stringified as "Array"',
+            $rv(['field' => 'f', 'value' => ['1', '2']], $plan) === '1, 2');
+        check('value: a finding with no value key yields null',
+            $rv(['field' => 'f'], $plan) === null);
+    }
+
     echo "hosting_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

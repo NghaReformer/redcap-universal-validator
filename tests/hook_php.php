@@ -1443,8 +1443,21 @@ namespace {
     sort($unqRecs);
     check('scan: duplicate pair flagged on BOTH records',
         count($unq) === 2 && $unqRecs === ['1', '2'] && $unq[0]['field'] === 'sid');
-    check('scan: no value is ever in the report',
-        !array_filter($res['violations'], function ($v) { return isset($v['value']); }));
+    // 1.8.0 REVERSED this. The report withheld the value entirely, which made it
+    // honest but not actionable: a data manager could not tell a typo from a
+    // systematic import bug without opening every record. The value is now shown
+    // under an explicit project setting, defaulting to 'raw' — see the
+    // scan-value-storage section below for the redaction and fail-closed cases.
+    check('scan: the report now carries the offending value',
+        (bool) array_filter($res['violations'], function ($v) { return isset($v['value']); }));
+    check('scan: and a required-blank still shows no value, because there is none',
+        (bool) array_filter($res['violations'], function ($v) {
+            return $v['reason'] === 'required-blank' && $v['value'] === null;
+        }));
+    check('scan: while the duplicate shows the value that duplicated',
+        (bool) array_filter($res['violations'], function ($v) {
+            return $v['type'] === 'unique' && $v['value'] !== null && $v['value'] !== '';
+        }));
 
     // DAG filter: scanning as a 'north' user sees only north records — and the
     // duplicate pair (split across DAGs, project scope) is NOT reported because

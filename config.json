@@ -72,6 +72,16 @@
       ]
     },
     {
+      "key": "scan-value-storage",
+      "name": "Validation scan report: whether the offending VALUE appears beside each finding. This is a SEPARATE store from the audit log above and is governed separately — the scan report is generated on demand and downloaded, it is not retained by the module. A report is readable by anyone with project design rights, which is a wider audience than REDCap's record-level access control, so choose 'Locations only' if your governance requires that values never leave the record.",
+      "type": "dropdown",
+      "choices": [
+        { "value": "raw", "name": "Show every value (default — the report is fully actionable offline; only choose this if design-rights users may see every field's contents)" },
+        { "value": "identifiers", "name": "Show values, but redact fields REDCap marks as an Identifier (fails closed: if the data dictionary cannot be read, EVERY value is redacted)" },
+        { "value": "none", "name": "Locations only: never show a value, only where the problem is (the pre-1.8.0 behaviour)" }
+      ]
+    },
+    {
       "key": "debug-log",
       "name": "Debug: include exception messages in audit-error log entries. Leave OFF in production — exception text can quote data values.",
       "type": "checkbox"

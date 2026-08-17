@@ -2243,6 +2243,7 @@ class UniversalValidator extends AbstractExternalModule
                     'record' => $e['record'], 'event_id' => $e['event_id'],
                     'instance' => $e['instance'], 'field' => $e['field'],
                     'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
+                    'value' => self::reportValue($e, $plan),
                 ]);
             }
         }
@@ -2256,6 +2257,84 @@ class UniversalValidator extends AbstractExternalModule
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
         return $result;
+    }
+
+    /** Longest value the report will carry. A report is not a second copy of the project. */
+    const REPORT_VALUE_MAX = 120;
+
+    /**
+     * The value to show beside one finding, or null to show nothing.
+     *
+     * Four things can stop a value reaching the report, and they are NOT the
+     * same and must not look the same to a reader:
+     *   - policy says never          -> null
+     *   - the finding has no value   -> null (a required-blank IS the blank)
+     *   - the field is an Identifier -> a marker, so the reader knows a value
+     *                                   exists and was withheld rather than absent
+     *   - the bytes are not text     -> a marker with the length. The module's own
+     *                                   L-01 comment records that values can carry
+     *                                   invalid UTF-8 from a Latin-1 import, and
+     *                                   pasting those into a CSV corrupts the file.
+     */
+    private static function reportValue(array $v, array $plan)
+    {
+        $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'raw';
+        if ($mode === 'none') return null;
+        if (!array_key_exists('value', $v)) return null;
+        $field = isset($v['field']) ? (string) $v['field'] : '';
+        $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
+        if (self::mustRedact($ids, $field, $mode)) return '[identifier withheld]';
+
+        $val = $v['value'];
+        if (is_array($val)) $val = implode(', ', array_map('strval', $val));   // a checkbox
+        $val = (string) $val;
+        if ($val === '') return null;
+        if (!mb_check_encoding($val, 'UTF-8')) {
+            return '[' . strlen($val) . ' bytes, not valid text]';
+        }
+        if (mb_strlen($val, 'UTF-8') > self::REPORT_VALUE_MAX) {
+            return mb_substr($val, 0, self::REPORT_VALUE_MAX, 'UTF-8') . '… (truncated)';
+        }
+        return $val;
+    }
+
+    /**
+     * How the scan report may show values: 'raw' | 'identifiers' | 'none'.
+     *
+     * A settings read that throws must not decide between showing values and
+     * withholding them, so a failure lands on the most permissive documented
+     * default rather than silently switching policy — the same posture logMode()
+     * takes, and for the same reason: a quietly-changed privacy mode is worse
+     * than a wrong one, because nobody can tell it happened.
+     */
+    private function scanValueMode($pid)
+    {
+        try {
+            $m = $this->getProjectSetting('scan-value-storage', $pid);
+            if ($m === 'identifiers' || $m === 'none' || $m === 'raw') return $m;
+        } catch (\Throwable $e) {
+        }
+        return 'raw';
+    }
+
+    /**
+     * TRUE when this field's value must NOT appear in the report.
+     *
+     * The INVERSE of isIdentifier()'s posture, deliberately. That helper answers
+     * "is this field known to be an identifier", so an unreadable dictionary
+     * means "nothing is" — right for refusing to enable a survey feature, and
+     * catastrophic here, where it would mean "redact nothing". A dictionary we
+     * cannot read is a dictionary that cannot clear a field, so in 'identifiers'
+     * mode an unreadable one redacts EVERYTHING.
+     *
+     * @param array|null $ids projectIdentifierFields(), which returns null on a failed read
+     */
+    private static function mustRedact($ids, $field, $mode)
+    {
+        if ($mode === 'none') return true;
+        if ($mode === 'raw')  return false;
+        if (!is_array($ids))  return true;          // cannot clear it -> withhold it
+        return isset($ids[$field]);
     }
 
     /**
@@ -2275,7 +2354,11 @@ class UniversalValidator extends AbstractExternalModule
     private function scanPlan($pid)
     {
         $out = ['fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
-                'readSet' => [], 'dupes' => [], 'unconf' => []];
+                'readSet' => [], 'dupes' => [], 'unconf' => [],
+                // Resolved once: the policy cannot change mid-scan, and the
+                // identifier set is a dictionary read we already paid for.
+                'valueMode' => $this->scanValueMode($pid),
+                'identifiers' => $this->projectIdentifierFields($pid)];
 
         // Rule DISCOVERY is a read like any other and can throw: a settings
         // backend failure used to escape scanProject entirely, so the operator
@@ -2410,6 +2493,7 @@ class UniversalValidator extends AbstractExternalModule
                             'record' => (string) $rec, 'event_id' => $ctx['event_id'],
                             'instance' => $ctx['instance'], 'field' => $v['field'],
                             'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
+                            'value' => self::reportValue($v, $plan),
                         ]);
                     }
                     foreach ($f['unconfigurable'] as $u) {
@@ -2769,7 +2853,11 @@ class UniversalValidator extends AbstractExternalModule
             $key = '';
             foreach ($keyParts as $kp) $key .= bin2hex($kp) . '.';
             $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
-                             'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1];
+                             'instance' => $ctx['instance'], 'field' => $field, 'rule' => $ruleIndex + 1,
+                             // Kept RAW here and filtered at emit time: the value
+                             // is already inside $key, so this costs nothing, and
+                             // the report policy lives where the plan is in scope.
+                             'value' => $v];
         }
     }
 
