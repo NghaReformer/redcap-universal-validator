@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.8.4 — a scan may only claim what the server can prove
+
+The plan's central safety property, unmet since it was written: *"`complete`
+means every in-scope record was stably validated at or beyond a recorded
+source-change fence… If a reliable source fence cannot be proven, the strongest
+terminal coverage state is `manifest-complete`; it must never render as complete
+or clean."* `ScanCapabilities::policy()` computed exactly that cap, and **nothing
+called it** — a correct, tested implementation of the module's own contract that
+production never consulted, which is worse than not having written it, because
+the suite reported the property as covered.
+
+**The fence is now proved, not inferred.** `sourceFence()` returned available
+the moment a table NAME matched a pattern — it never asked whether the table had
+the columns a fence needs, whether this project had any rows, or whether the
+ordering column was usable. `policy()` turns that answer into
+`complete-through-fence` and `incremental = true`, so a name that merely looked
+right licensed both. One bounded query answers it properly; a project with no
+log history, a non-numeric ordering column, an unqueryable log or a throwing
+probe are each reported as what they are.
+
+**COVERAGE is now a separate axis from STATUS.** Status says whether the sweep
+finished. Coverage says what finishing is worth on this installation. A run that
+read every record on its opening list, on a server that cannot prove the project
+did not move underneath it, is `manifest-complete` — and the green tick, the
+green count and the unsuffixed filename are all withheld from it, with the
+reason stated rather than the verdict simply missing.
+
+Two ordering mistakes of my own, both found by probing rather than by reading:
+the coverage verdict consulted `$result['status']` one line before status was
+assigned, so every run came back `partial` and the tick was withheld from scans
+that had earned it; and the early `nothingToScan` return carried no coverage at
+all.
+
+The page mock gains a `query()` that can answer the fence probe, so the tick is
+reachable in a test and its absence means something. Without that, "no tick"
+would pass for the wrong reason — the same trap the battle-test found in the
+event and DAG column checks, where the mocks returned strings where arrays were
+required and neither column had ever been rendered.
+
+`tests/scan_capabilities_php.php` gains C-08: a proved fence, an empty log, a
+non-monotonic ordering column, a silent module and a throwing probe, plus the
+consequence each has for `maxCompletion` and incremental mode. The old fixture
+reported a fence on a module whose every query returned nothing.
+
 ## 1.8.3 — the battle-test findings
 
 An adversarial battle-test (`reports/scan-wargame-2026-08-17.md`) ran probes

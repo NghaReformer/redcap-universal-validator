@@ -108,6 +108,11 @@ namespace {
         $m->canned = [
             'SHOW TABLES'  => [['redcap_record_list']],
             'log_event_table' => [['redcap_log_event7']],
+            // A fence is PROVED, not inferred from a table name: the probe asks
+            // the log for a monotonic maximum and a row count. Before that, a
+            // name matching the pattern was the whole check, so this fixture
+            // reported a fence on a module whose every query returned nothing.
+            'MAX(log_event_id)' => [['918273', '4412']],
             'SHOW GRANTS'  => [['GRANT SELECT, INSERT, UPDATE, DELETE, CREATE, DROP ON `rc`.* TO `u`@`h`']],
         ];
         return $m;
@@ -282,8 +287,13 @@ namespace {
         $m = fullyCapable();
         // A shard name is legitimate...
         $m->canned['log_event_table'] = [['redcap_log_event12']];
+        // 'via' now carries the PROOF as well as the name — the fence is
+        // established by querying the log, not by the name matching a pattern —
+        // so this asserts the name reached SQL rather than that it is the whole
+        // answer. A rejected name refuses outright, so state still discriminates.
+        $shard = $C::sourceFence($m, PID);
         check('C-05: a sharded log table is accepted',
-            $C::sourceFence($m, PID)['via'] === 'redcap_log_event12');
+            $shard['state'] === $OK && strpos((string) $shard['via'], 'redcap_log_event12') === 0);
         // ...anything else is not, however it got there.
         // An INTERNAL newline is the one that matters: a purely trailing one is
         // removed by trim() and the remaining name is legitimate, but a newline
@@ -330,6 +340,61 @@ namespace {
             strpos($code, 'method_exists') === false && strpos($code, 'is_callable') !== false);
         check('C-06: the comment-stripper actually stripped something',
             strlen($code) < strlen($src) - 500);
+    }
+
+
+    /* =====================================================================
+     * C-08  the fence is PROVED, never inferred from a table name
+     *
+     * policy() turns an available fence into maxCompletion
+     * 'complete-through-fence' and incremental = true. Returning available
+     * because a name matched a pattern licensed both from a string.
+     * ===================================================================== */
+    {
+        $ok = fullyCapable();
+        check('C-08: a log with entries and a numeric maximum IS a fence',
+            $C::sourceFence($ok, PID)['state'] === $OK);
+
+        // Empty log: not an error, and not a fence either.
+        $empty = fullyCapable();
+        $empty->canned['MAX(log_event_id)'] = [[null, '0']];
+        $r = $C::sourceFence($empty, PID);
+        check('C-08: a log with no entries for this project is NOT a fence',
+            $r['state'] === $NO);
+        check('C-08: and it says which part failed',
+            strpos($r['why'], 'no entries') !== false);
+
+        // A non-numeric maximum cannot order anything.
+        $bad = fullyCapable();
+        $bad->canned['MAX(log_event_id)'] = [['not-a-number', '10']];
+        $r2 = $C::sourceFence($bad, PID);
+        check('C-08: a non-monotonic ordering column is NOT a fence', $r2['state'] === $NO);
+        check('C-08: and it names the ordering as the reason',
+            strpos($r2['why'], 'monotonic') !== false);
+
+        // A query that returns nothing at all - the shape the old fixture had.
+        $silent = fullyCapable();
+        $silent->canned = ['SHOW TABLES' => [['redcap_record_list']],
+                           'log_event_table' => [['redcap_log_event7']]];
+        check('C-08: a module whose log query answers nothing has NO fence',
+            $C::sourceFence($silent, PID)['state'] === $NO);
+
+        // A throwing probe is not a fence either.
+        $boom = fullyCapable();
+        $boom->throwOn = 'MAX(log_event_id)';
+        $r3 = $C::sourceFence($boom, PID);
+        $boom->throwOn = null;
+        check('C-08: a probe that throws is not a fence', $r3['state'] === $NO);
+
+        // And the consequence that matters: no fence, no completion claim.
+        $caps = $C::all($silent, PID);
+        $pol  = $C::policy($caps);
+        check('C-08: without a proved fence, completion is capped at manifest-complete',
+            $pol['maxCompletion'] === 'manifest-complete');
+        check('C-08: and incremental mode is refused', $pol['incremental'] === false);
+        $polOk = $C::policy($C::all($ok, PID));
+        check('C-08 contrast: with a proved fence, completion may reach the fence',
+            $polOk['maxCompletion'] === 'complete-through-fence');
     }
 
     echo "scan_capabilities_php: $n checks, $fail failure(s)\n";

@@ -2131,7 +2131,13 @@ class UniversalValidator extends AbstractExternalModule
         // on the full path re-attaches $unconf with any runtime additions.
         $unconf = $plan['unconf'];
         $result['unconfigurable'] = array_values($unconf);
-        if ($plan['nothingToScan']) { $result['status'] = 'complete'; return $result; }
+        if ($plan['nothingToScan']) {
+            $result['status'] = 'complete';
+            $result['coverage'] = isset($plan['policy']['maxCompletion'])
+                ? $plan['policy']['maxCompletion'] : 'manifest-complete';
+            $result['limits'] = isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [];
+            return $result;
+        }
 
         $live       = $plan['live'];
         $hostFields = $plan['hostFields'];
@@ -2336,9 +2342,21 @@ class UniversalValidator extends AbstractExternalModule
         // 400 on the export's metadata line.
         $result['stats']['records'] = $reached;
         $result['stats']['violations'] = $sink->count();
+        // COVERAGE is a separate axis from STATUS. Status says whether the sweep
+        // finished; coverage says what finishing is worth on this installation.
+        // A run that read every record on its opening list, on a server where no
+        // change fence can be proved, is 'manifest-complete': it cannot know the
+        // project did not move underneath it, and per the plan that must never
+        // render as complete or clean.
+        $result['limits'] = isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [];
         if ($collect) $result['violations'] = $sink->violations;
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
+        // AFTER the status, never before: read a line too early this consulted
+        // the initial 'failed' and every run came back 'partial', which silently
+        // withheld the tick from scans that had earned it.
+        $maxCov = isset($plan['policy']['maxCompletion']) ? $plan['policy']['maxCompletion'] : 'manifest-complete';
+        $result['coverage'] = ($result['status'] === 'complete') ? $maxCov : 'partial';
         return $result;
     }
 
@@ -2512,6 +2530,23 @@ class UniversalValidator extends AbstractExternalModule
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
                 'hashRecordIds' => ($this->logMode($pid) === 'none')];
+
+        // What this installation can actually support, and therefore what a run
+        // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
+        // start and nothing consulted it, so the module contained a correct,
+        // tested implementation of its own central safety property and did not
+        // call it - which is worse than not having written it, because the suite
+        // reported the property as covered.
+        try {
+            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid));
+        } catch (\Throwable $e) {
+            // A probe layer that fails cannot license a claim. Cap at the
+            // weakest coverage rather than assume the strongest.
+            $out['policy'] = ['mayScan' => true, 'maxCompletion' => 'manifest-complete',
+                              'incremental' => false,
+                              'limits' => ['the capabilities of this installation could not be '
+                                           . 'established: ' . get_class($e)]];
+        }
 
         // Rule DISCOVERY is a read like any other and can throw: a settings
         // backend failure used to escape scanProject entirely, so the operator

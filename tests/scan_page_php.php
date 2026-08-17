@@ -56,6 +56,28 @@ namespace ExternalModules {
         public function getUrl($p) { return '/x/' . $p; }
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
         public function getUser() { return $this->userReturn; }
+        /**
+         * A server WITH a proved change fence, unless a scenario says otherwise.
+         * Without this every scan is 'manifest-complete' and the green tick is
+         * unreachable - which would make "no tick" pass for the wrong reason,
+         * exactly the trap the wargame found in the event/DAG column checks.
+         */
+        public $fenced = true;
+        public function query($sql, $params = []) {
+            if (!$this->fenced) return null;
+            if (strpos($sql, 'SHOW TABLES') !== false)      return new \ExternalModules\FakeRes([['redcap_record_list']]);
+            if (strpos($sql, 'log_event_table') !== false)  return new \ExternalModules\FakeRes([['redcap_log_event7']]);
+            if (strpos($sql, 'MAX(log_event_id)') !== false) return new \ExternalModules\FakeRes([['918273', '4412']]);
+            if (strpos($sql, 'SHOW GRANTS') !== false)      return new \ExternalModules\FakeRes([['GRANT ALL PRIVILEGES ON `rc`.* TO `u`@`h`']]);
+            if (strpos($sql, 'FROM redcap_record_list') !== false) return new \ExternalModules\FakeRes([['1']]);
+            if (strpos($sql, 'FROM redcap_data') !== false) return new \ExternalModules\FakeRes([['1']]);
+            return new \ExternalModules\FakeRes([]);
+        }
+    }
+    class FakeRes {
+        private $rows; private $i = 0;
+        public function __construct($rows) { $this->rows = $rows; }
+        public function fetch_row() { return isset($this->rows[$this->i]) ? $this->rows[$this->i++] : null; }
     }
     /** An ordinary user object: both methods are genuinely declared. */
     class PlainUser {
@@ -205,6 +227,7 @@ namespace {
         $m->projectSettings = isset($opts['settings']) ? $opts['settings'] : ['log-values' => ''];
         $m->subSettings = [];
         $m->userReturn = $user;
+        $m->fenced = empty($opts['unfenced']);
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -681,6 +704,39 @@ namespace {
             ['settings' => ['scan-value-storage' => 'raw']]);
         check('columns: a value containing markup is escaped, not rendered',
             strpos($html2, '<img src=x>') === false && strpos($html2, '&lt;img') !== false);
+    }
+
+
+    /* =====================================================================
+     * FENCE  what a scan may CLAIM is capped by what the server can prove
+     *
+     * ScanCapabilities computed this cap from the day it was written and
+     * nothing consulted it, so the module held a correct, tested implementation
+     * of its own central safety property and did not call it - which is worse
+     * than not having written it, because the suite reported it as covered.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
+        $cleanData = [1 => [1 => ['record_id' => '1', 'val' => 'X']]];
+        \REDCap::$groupNames = [];
+
+        // A server that CAN prove a fence: the tick is reachable.
+        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $cleanData, ['run' => '1']);
+        check('fence: with a proved change fence a clean project earns the tick',
+            strpos($html, W_TICK) !== false);
+
+        // The same clean project on a server that cannot prove one.
+        list($html2, $m2) = render(new \ExternalModules\PlainUser(true, null), $D, $cleanData,
+            ['run' => '1'], ['unfenced' => true]);
+        check('fence: without one, the SAME clean project does not earn the tick',
+            strpos($html2, W_TICK) === false);
+        check('fence: and it says why, rather than just withholding it',
+            strpos($html2, 'cannot prove the project did not change') !== false);
+        check('fence: while still reporting that nothing was found',
+            strpos($html2, 'No violations found') !== false);
+        // The distinction has to be legible, not merely present.
+        check('fence: the unfenced verdict is not coloured as a pass',
+            strpos($html2, '#2e7d32') === false);
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)\n";

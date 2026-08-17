@@ -55,7 +55,13 @@ $complete = is_array($result) && isset($result['status']) && $result['status'] =
 // and no rule was left unevaluated. A project whose every rule is broken has
 // zero violations and is not clean — the green tick belonged to the violation
 // count alone, which is the narrower claim (M-02).
-$clean = $complete && !$result['violations'] && !$result['unconfigurable'];
+// COVERAGE is a separate axis from status. A run that read every record on its
+// opening list, on a server where no change fence can be proved, is
+// 'manifest-complete': it cannot know the project did not move underneath it,
+// and per the rebuild plan that must never render as complete or clean.
+$coverage = isset($result['coverage']) ? $result['coverage'] : 'partial';
+$fenced   = ($coverage === 'complete-through-fence');
+$clean    = $complete && $fenced && !$result['violations'] && !$result['unconfigurable'];
 
 if ($csv) {
     // config.json declares "show-header-and-footer": true for this page, so the
@@ -237,9 +243,24 @@ project the scan may take a while — leave the page open until the table appear
          did not earn. */ ?>
 <p style="color:#8a6d00"><b>&#9888; No violations found in the part of the project that could be
 read &mdash; but this scan did not complete, so the project is NOT certified clean.</b></p>
-<?php } elseif (!$clean) { ?>
+<?php } elseif ($result['unconfigurable']) { ?>
 <p style="color:#8a6d00"><b>&#9888; No violations found among the rules that could be evaluated
 &mdash; but the rule problems above were not checked at all.</b></p>
+<?php } elseif (!$fenced) { ?>
+<?php /* Every record on the opening list was examined, and that is all this
+         server can prove. Without a change fence the scan cannot know a record
+         was not added or edited while it read, so "clean" is a claim it has not
+         earned — however complete the sweep looked. */ ?>
+<p style="color:#8a6d00"><b>&#9888; No violations found in the <?php echo (int) $result['stats']['records']; ?>
+record(s) examined &mdash; but this server cannot prove the project did not change during the
+scan, so the result is NOT a whole-project certification.</b></p>
+<?php if (!empty($result['limits'])) { ?>
+<ul style="color:#8a6d00;max-width:760px">
+  <?php foreach (array_slice($result['limits'], 0, 6) as $lim) { ?>
+  <li><?php echo ScanPageView::h($lim); ?></li>
+  <?php } ?>
+</ul>
+<?php } ?>
 <?php } else { ?>
 <p style="color:#2e7d32"><b>&#10003; No violations found.</b></p>
 <?php } ?>

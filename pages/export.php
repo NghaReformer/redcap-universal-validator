@@ -87,9 +87,10 @@ try {
 // so a project where every rule is a configuration error is 'complete' - and the
 // export, which is the artefact people file and cite, was the weaker of the two.
 $complete = ($result['status'] === 'complete');
-$clean    = $complete && $result['stats']['violations'] === 0 && !$result['unconfigurable'];
+$fenced   = (isset($result['coverage']) && $result['coverage'] === 'complete-through-fence');
+$clean    = $complete && $fenced && $result['stats']['violations'] === 0 && !$result['unconfigurable'];
 $stamp    = date('Ymd_His');
-$suffix   = $clean ? '' : ($complete ? '_NOT-CLEAN' : '_INCOMPLETE');
+$suffix   = $clean ? '' : ($complete ? '_NOT-CERTIFIED' : '_INCOMPLETE');
 $name     = 'validation_scan_pid' . $pid . '_' . $stamp . $suffix . '.csv';
 
 header('Content-Type: text/csv; charset=UTF-8');
@@ -115,6 +116,13 @@ if ($dims->isDegraded()) echo '# ' . $dims->degradedSummary() . "
 ";
 if ($sinkError !== null) {
     echo "# ROWS WERE LOST - this file is not a complete report: " . $sinkError . "
+";
+}
+echo '# coverage: ' . (isset($result['coverage']) ? $result['coverage'] : 'partial') . "
+";
+foreach (array_slice(isset($result['limits']) ? $result['limits'] : [], 0, 10) as $lim) {
+    echo '# limit: ' . str_replace(["", "
+"], ' ', $lim) . "
 ";
 }
 echo '# scan of project ' . $pid . ' at ' . date('c')
@@ -145,9 +153,15 @@ $pad = function (array $vals) use ($cols) {
 };
 
 if ($rows === 0) {
-    echo ScanPageView::csvRow($pad([$complete
-        ? 'No violations found.'
-        : 'No violations among the records that could be read.'])) . "\n";
+    // Four different reasons a file can have no finding rows, and they are not
+    // the same claim. Only the first is a certification.
+    echo ScanPageView::csvRow($pad([
+        $clean      ? 'No violations found.'
+      : (!$complete ? 'No violations among the records that could be read.'
+      : ($result['unconfigurable']
+            ? 'No violations found, but this project has rule problems listed below - some rules enforce nothing.'
+            : 'No violations found in the records examined, but this server cannot prove the project did not '
+              . 'change during the scan, so this is not a whole-project certification.'))])) . "\n";
 }
 
 // Rule problems and unreadable records, after the findings, as data rows rather

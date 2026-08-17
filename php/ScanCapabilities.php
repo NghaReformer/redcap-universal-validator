@@ -102,7 +102,44 @@ final class ScanCapabilities
             return self::no('the project\'s log-event table could not be resolved, so record '
                 . 'changes cannot be detected');
         }
-        return self::yes($tbl);
+        // PROVE the fence, do not infer it from a name.
+        //
+        // Returning available here because a table name matched a pattern was
+        // the whole check: it never asked whether the table has the columns a
+        // fence needs, whether this project has any rows in it, or whether the
+        // ordering column is usable. policy() turns this answer into
+        // maxCompletion = 'complete-through-fence' and incremental = true, so a
+        // name that merely LOOKS right would license both — which is the same
+        // shape as the hard gate passing because two prerequisites exist.
+        //
+        // One bounded query answers it. A project with rows and a readable
+        // maximum ordering value has a fence; anything else does not, and says
+        // which part failed.
+        try {
+            $q = $module->query(
+                'SELECT MAX(log_event_id), COUNT(*) FROM ' . $tbl . ' WHERE project_id = ?', [$pid]);
+            if (!$q) return self::no('the change log ' . $tbl . ' could not be queried, so a '
+                . 'record cannot be proved unchanged across a read');
+            $row = self::fetchRow($q);
+            if (!$row) return self::no('the change log ' . $tbl . ' returned no result, so a '
+                . 'record cannot be proved unchanged across a read');
+            $maxId = isset($row[0]) ? $row[0] : null;
+            $rows  = isset($row[1]) ? (int) $row[1] : 0;
+            if ($rows === 0 || $maxId === null || $maxId === '') {
+                // Not an error, and not a fence either. A project with no log
+                // history cannot be fenced, and saying so is the point.
+                return self::no('the change log ' . $tbl . ' holds no entries for this project, so '
+                    . 'there is no ordering to fence a scan against');
+            }
+            if (!ctype_digit((string) $maxId)) {
+                return self::no('the change log ' . $tbl . ' has no usable monotonic ordering '
+                    . '(log_event_id was not numeric), so reads cannot be fenced');
+            }
+            return self::yes($tbl . ' (fenced on log_event_id, ' . $rows . ' entries)');
+        } catch (\Throwable $e) {
+            return self::no('probing the change log ' . $tbl . ' failed (' . get_class($e)
+                . '), so a record cannot be proved unchanged across a read');
+        }
     }
 
     /**
