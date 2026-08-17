@@ -54,6 +54,14 @@ class ScanPageView
             break;
         }
         if ($i < $len && strpos('=+-@', $s[$i]) !== false) $s = "'" . $s;
+        // Control bytes are removed, not quoted around. A NUL truncates the cell
+        // in several readers,  is end-of-file to some importers, and ESC
+        // begins a terminal escape sequence for anyone who cats the file - so a
+        // value carrying them is a value that reads differently depending on
+        // what opens it. TAB, CR and LF are kept: they are legitimate inside a
+        // quoted CSV field and the quoting below contains them.
+        $s = str_replace([chr(0), chr(26)], '', $s);
+        $s = preg_replace('/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $s);
         return '"' . str_replace('"', '""', $s) . '"';
     }
 

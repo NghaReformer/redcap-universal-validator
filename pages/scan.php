@@ -64,66 +64,27 @@ $fenced   = ($coverage === 'complete-through-fence');
 $clean    = $complete && $fenced && !$result['violations'] && !$result['unconfigurable'];
 
 if ($csv) {
-    // config.json declares "show-header-and-footer": true for this page, so the
-    // External Modules router has ALREADY emitted REDCap's entire page — doctype,
-    // nav, script bundles — before a line of this file runs. The two header()
-    // calls below were therefore ignored, and the artefact people filed was a
-    // 3,000-line HTML page with the data appended after line ~1,089. Discard the
-    // buffered chrome first.
+    // DEPRECATED, and now a redirect rather than a second exporter.
     //
-    // ob_end_CLEAN, never ob_end_flush: flushing would push the chrome out AHEAD
-    // of the rows and corrupt the file a different way.
+    // This route emitted a DIFFERENT schema from pages/export.php - unquoted
+    // section/record/event_id columns, no value, no plain-language explanation,
+    // no BOM and no _INCOMPLETE filename suffix - so two live formats answered
+    // the same question differently and any consumer had to know which URL
+    // produced its file. One exporter now, reached both ways.
+    //
+    // The buffer teardown stays because a Location: header is a header like any
+    // other: the router has already emitted REDCap's whole page, so without
+    // discarding it the redirect is ignored exactly as the CSV headers were.
     while (ob_get_level() > 0) {
-        if (!@ob_end_clean()) break;    // a buffer that refuses to be deleted
+        if (!@ob_end_clean()) break;
     }
-    // Two ways the chrome can still be there, and BOTH must stop the download.
-    // A buffer that refused to be deleted (ob_start() with a callback, or one
-    // opened without the erasable flag) still holds everything REDCap wrote, and
-    // the rows below would simply be appended to it — the same HTML-plus-CSV
-    // hybrid this release exists to remove, only now silently. And if the chrome
-    // was already flushed to the client there is nothing left to salvage at all.
-    // Say so rather than hand over a file that looks like a report and is not one.
     if (ob_get_level() > 0 || headers_sent()) {
-        ScanPageView::refuse('The report could not be sent as a file because this page had already '
-            . 'started sending output. Re-run the scan and use Download CSV again; if it keeps '
-            . 'happening, report it — the on-screen table above is still accurate.');
+        ScanPageView::refuse('This download link has moved. Use the Download CSV button on the '
+            . 'scan page, which points at the current exporter.');
         return;
     }
-    header('Content-Type: text/csv; charset=utf-8');
-    header('Content-Disposition: attachment; filename="validation_scan_pid' . (int) $pid . '_' . date('Ymd_His') . '.csv"');
-    // Streamed a row at a time. This used to build one array of formatted lines
-    // and then implode it into a single contiguous string, so the whole report
-    // existed three times over — as findings, as lines, and as one blob — before
-    // a byte was written. Memory here is now flat in the number of findings.
-    $fh = fopen('php://output', 'w');
-    // The CSV is the artefact people file and cite, so an incomplete pass has to
-    // say so IN the file. A downloaded "0 violations" from a scan that could not
-    // read half the project would otherwise circulate as a clean result.
-    if (!$complete) {
-        fwrite($fh, "# INCOMPLETE SCAN - this file does NOT certify the project as clean\n");
-        foreach (array_slice($result['incomplete'], 0, 50) as $why) {
-            fwrite($fh, '# ' . str_replace(["\r", "\n", ','], ' ', $why) . "\n");
-        }
-    }
-    // Three sections, because a violation is not the only finding a scan
-    // produces. Exporting violations alone made a rule that could not be
-    // evaluated at all — the one an auditor most needs to see — visible only on
-    // screen, and invisible in the file that gets filed (M-02).
-    fwrite($fh, "section,record,event_id,instance,field,rule,type,reason\n");
-    foreach ($result['violations'] as $v) {
-        fwrite($fh, implode(',', [ScanPageView::csv('violation'), ScanPageView::csv($v['record']), ScanPageView::csv($v['event_id']), ScanPageView::csv($v['instance']),
-            ScanPageView::csv($v['field']), ScanPageView::csv($v['rule']), ScanPageView::csv($v['type']), ScanPageView::csv($v['reason'])]) . "\n");
-    }
-    foreach ($result['unconfigurable'] as $u) {
-        fwrite($fh, implode(',', [ScanPageView::csv('rule-problem'), ScanPageView::csv(''), ScanPageView::csv(''), ScanPageView::csv(''),
-            ScanPageView::csv(implode(' ', $u['fields'])), ScanPageView::csv($u['rule']), ScanPageView::csv('unconfigurable'), ScanPageView::csv($u['why'])]) . "\n");
-    }
-    foreach ($result['incomplete'] as $why) {
-        fwrite($fh, implode(',', [ScanPageView::csv('not-scanned'), ScanPageView::csv(''), ScanPageView::csv(''), ScanPageView::csv(''),
-            ScanPageView::csv(''), ScanPageView::csv(''), ScanPageView::csv($result['status']), ScanPageView::csv($why)]) . "\n");
-    }
-    fclose($fh);
-    exit;
+    header('Location: ' . $module->getUrl('pages/export.php'), true, 302);
+    return;
 }
 
 $self = $module->getUrl('pages/scan.php');
@@ -218,9 +179,19 @@ project the scan may take a while — leave the page open until the table appear
     // The SAME descriptor list the export uses. One declaration of what a report
     // shows, so the screen and the file can never disagree about it, and adding
     // a column never means editing this markup.
-    $dims = $module->scanDimensions($pid);
+    $dims = $module->scanDimensions($pid, isset($result['rules']) ? $result['rules'] : null);
     $cols = ScanColumns::all($dims);
   ?>
+  <?php if ($dims->isDegraded()) { ?>
+  <?php /* A label source that could not be read falls back to the RAW key - an
+           event id instead of a name - which on screen is indistinguishable
+           from data. degraded[] recorded why from the start and nothing ever
+           displayed it, so the fallback was invisible: the one outcome this
+           module rejects everywhere else. */ ?>
+  <p style="max-width:760px;color:#8a6d00"><b>&#9888; Some labels could not be read,
+  so the columns below show raw identifiers rather than names:</b>
+  <?php echo ScanPageView::h($dims->degradedSummary()); ?></p>
+  <?php } ?>
   <thead><tr>
     <?php foreach ($cols as $c) { ?><th><?php echo ScanPageView::h($c['label']); ?></th><?php } ?>
   </tr></thead>

@@ -173,12 +173,32 @@ namespace {
         }
         public static function getDataDictionary($pid, $f = 'array') { return self::$dictionary; }
         public static function getRecordIdField() { return 'record_id'; }
+        /**
+         * REDCap answers these TWO ways and the module branches on the
+         * difference: called with an id it returns ONE name as a string; called
+         * without, it returns the whole map as an ARRAY. This mock only ever
+         * returned the string, so ScanDimensions - which needs the array - always
+         * saw nothing. 'events' was therefore always empty and 'hasDags' always
+         * false, and the two column-shape assertions passed because the labels
+         * were UNREADABLE, not because of project shape. Neither column had ever
+         * been rendered by a test. Same defect class as the chunk mocks 1.6.3
+         * was written to fix.
+         */
         public static function getGroupNames($unique = false, $gid = null) {
             if (self::$groupThrows) throw new \RuntimeException('simulated DAG lookup failure');
+            if ($gid === null) return self::$groupNames;      // the whole map
             return isset(self::$groupNames[$gid]) ? self::$groupNames[$gid] : '';
         }
         public static function getInstrumentEventMappings($pid = null) { return null; }
-        public static function getEventNames($u = false, $x = false, $evt = null) { return 'event_' . $evt . '_arm_1'; }
+        /** event_id => unique name. Empty means a classic (single-event) project. */
+        public static $eventNames = [];
+        public static function getEventNames($u = false, $x = false, $evt = null) {
+            if ($evt === null) return self::$eventNames;      // the whole map
+            return isset(self::$eventNames[$evt]) ? self::$eventNames[$evt] : ('event_' . $evt . '_arm_1');
+        }
+        public static function getInstrumentNames($pid = null) { return self::$formNames; }
+        /** form => label. Empty means labels are unavailable. */
+        public static $formNames = [];
         public static function getRepeatingFormsEvents($pid = null) { return null; }
         public static function isRepeatingForm($e = null, $f = null) { return null; }
     }
@@ -235,6 +255,8 @@ namespace {
         // \REDCap::$groupThrows and then had render() clear it, so the throw never
         // fired and the check passed for the wrong reason.
         \REDCap::$groupThrows  = !empty($opts['groupThrows']);
+        \REDCap::$eventNames   = isset($opts['events']) ? $opts['events'] : [];
+        \REDCap::$formNames    = isset($opts['forms']) ? $opts['forms'] : [];
         \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
         $GLOBALS['uv_headers'] = [];
         $_GET = $get;
@@ -445,34 +467,23 @@ namespace {
      * S-04  the CSV is a CSV  (subprocess: that path ends in exit)
      * ===================================================================== */
     {
+        // The legacy route is now a REDIRECT, not a second exporter. It used to
+        // emit a different schema from pages/export.php - unquoted columns, no
+        // value, no explanation, no BOM, no _INCOMPLETE suffix - so two live
+        // formats answered the same question differently. The header assertions
+        // that used to live here moved to the EXPORT section, which tests the
+        // one exporter both routes now reach.
         list($out, $hdr) = csvChild('chrome');
-        check('S-04: the CSV scenario actually ran in a child process', $out !== null);
-        check('S-04: the CSV carries the column header', strpos((string) $out, CSV_HEADER) !== false);
-        check('S-04: and none of REDCap\'s page chrome',
-            strpos((string) $out, '<!DOCTYPE') === false && strpos((string) $out, '<html') === false);
-        check('S-04: the file BEGINS with the report, not with markup',
-            strncmp(ltrim((string) $out), CSV_HEADER, strlen(CSV_HEADER)) === 0
-            || strncmp(ltrim((string) $out), CSV_BANNER, strlen(CSV_BANNER)) === 0);
-        check('S-04: and it contains the violation row',
-            strpos((string) $out, '"violation","1"') !== false);
-
-        // The headers themselves. This is what the header() shim was recording
-        // and what nothing was reading: the whole defect was headers sent AFTER
-        // output had begun, so "buffered === 0 when it fired" is the property.
+        check('S-04: the legacy csv route still runs in a child process', $out !== null);
         $names = [];
         foreach ((array) $hdr as $h) $names[] = $h['h'];
-        check('S-04: the CSV content-type header was actually sent',
-            (bool) preg_grep('~^Content-Type: text/csv~', $names));
-        check('S-04: with a filename attachment header',
-            (bool) preg_grep('~^Content-Disposition: attachment~', $names));
-        check('S-04: and both fired with NOTHING already buffered — the actual bug',
-            $hdr && count($hdr) >= 2
-            && (int) $hdr[0]['buffered'] === 0 && (int) $hdr[0]['level'] === 0);
-
-        // The formula defusing must survive the rewrite to streamed writes.
-        list($out, $hdr) = csvChild('formula');
-        check('S-04: a record id that opens with = is still defused',
-            strpos((string) $out, '"\'=cmd"') !== false);
+        check('S-04: it redirects rather than emitting a second format',
+            (bool) preg_grep('~^Location: .*export\.php~', $names));
+        check('S-04: and the redirect fires with NOTHING already buffered, or it is ignored',
+            $hdr && (int) $hdr[0]['buffered'] === 0 && (int) $hdr[0]['level'] === 0);
+        check('S-04: it emits no CSV of its own',
+            !preg_grep('~^Content-Disposition~', $names)
+            && strpos((string) $out, CSV_HEADER) === false);
     }
 
     /* =====================================================================
@@ -737,6 +748,67 @@ namespace {
         // The distinction has to be legible, not merely present.
         check('fence: the unfenced verdict is not coloured as a pass',
             strpos($html2, '#2e7d32') === false);
+    }
+
+
+    /* =====================================================================
+     * SHAPE  the Event and DAG columns, rendered for the first time
+     *
+     * These two were "covered" by assertions that they were ABSENT — which
+     * passed because the mock returned a string where ScanDimensions needs an
+     * array, so the labels were unreadable and the columns dropped for the wrong
+     * reason. Absence has to be proved against a project shape, not against a
+     * broken read, or the assertion is satisfied by the bug.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes',
+                             'redcap_data_access_group' => 'north']]];
+        $RAW = ['settings' => ['scan-value-storage' => 'raw']];
+
+        // A LONGITUDINAL project: two events, so the column belongs.
+        \REDCap::$groupNames = [];
+        list($h1, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            array_merge($RAW, ['events' => [1 => 'baseline_arm_1', 2 => 'followup_arm_1']]));
+        check('shape: a longitudinal project RENDERS the Event column',
+            strpos($h1, '<th>Event</th>') !== false);
+        check('shape: and the event is named, not shown as a raw id',
+            strpos($h1, 'baseline_arm_1') !== false);
+
+        // A CLASSIC project: one event, so the column is absent — and now that
+        // is absence by shape, with the label source working.
+        list($h2, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            array_merge($RAW, ['events' => [1 => 'baseline_arm_1']]));
+        check('shape: a classic project omits the Event column BY SHAPE',
+            strpos($h2, '<th>Event</th>') === false);
+
+        // Groups present: the DAG column belongs and carries the group.
+        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
+        // groupNames was reset above; set it for this scenario only.
+        \REDCap::$groupNames = [7 => 'north', 8 => 'south'];
+        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
+        check('shape: a project WITH groups renders the DAG column',
+            strpos($h3, '<th>Data Access Group</th>') !== false);
+        check('shape: and the record\'s group appears in it',
+            strpos($h3, '>north<') !== false);
+
+        // No groups: absent by shape, with getGroupNames answering normally.
+        \REDCap::$groupNames = [];
+        list($h4, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
+        check('shape: a project with no groups omits the DAG column BY SHAPE',
+            strpos($h4, '<th>Data Access Group</th>') === false);
+
+        // Instrument labels, when readable, are shown instead of form names.
+        list($h5, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            array_merge($RAW, ['forms' => ['fa' => 'Enrolment']]));
+        check('shape: an instrument label is preferred over its machine name',
+            strpos($h5, '>Enrolment<') !== false);
+
+        // W8: a label source that cannot be read is SAID, not silently dropped.
+        list($h6, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
+        check('shape: unreadable label sources are reported on the page',
+            strpos($h6, 'Some labels could not be read') !== false);
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)\n";

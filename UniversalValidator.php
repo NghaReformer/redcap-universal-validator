@@ -2236,7 +2236,15 @@ class UniversalValidator extends AbstractExternalModule
         $memCap   = $memLimit > 0 ? (int) ($memLimit * 0.70) : null;
         $reached  = 0;
 
-        foreach (array_chunk($ids, max(1, (int) $chunkSize)) as $chunk) {
+        // Sliced, not array_chunk()'d. array_chunk builds a SECOND copy of every
+        // id up front and holds it for the whole scan, so a 200,000-record
+        // project paid for its record list twice before examining anything.
+        // array_slice hands back one chunk at a time and the previous one is
+        // released as the loop turns.
+        $chunkSize = max(1, (int) $chunkSize);
+        $total = count($ids);
+        for ($offset = 0; $offset < $total; $offset += $chunkSize) {
+            $chunk = array_slice($ids, $offset, $chunkSize);
             // Checked BETWEEN chunks and nowhere else. Stopping part-way through
             // a record would leave it half-checked with nothing written down,
             // which is the silent skip this guard exists to prevent (H-05).
@@ -2286,7 +2294,19 @@ class UniversalValidator extends AbstractExternalModule
                         . ' was requested but not returned';
                     continue;
                 }
-                $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
+                try {
+                    $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
+                } catch (\Throwable $e) {
+                    // The SINK is a caller-supplied consumer - it writes to a
+                    // spool, a socket, a table. When it threw, the exception
+                    // escaped scanProject entirely and took the result with it:
+                    // no status, no incomplete list, nothing recording that the
+                    // project had not been examined, which is the one failure
+                    // this contract exists to prevent (M-03).
+                    $result['incomplete'][] = 'record ' . $this->reportRecordId($plan, $rec)
+                        . ' could not be reported: ' . get_class($e);
+                    continue;
+                }
                 if ($one['why'] !== null) {
                     $result['incomplete'][] = $one['why'];
                     continue;
@@ -2357,6 +2377,12 @@ class UniversalValidator extends AbstractExternalModule
         // withheld the tick from scans that had earned it.
         $maxCov = isset($plan['policy']['maxCompletion']) ? $plan['policy']['maxCompletion'] : 'manifest-complete';
         $result['coverage'] = ($result['status'] === 'complete') ? $maxCov : 'partial';
+        // The rule list the ordinals in these findings refer to. A report that
+        // re-read getRules() to resolve 'Rule 12' was joining two INDEPENDENT
+        // reads by array position: add or reorder a rule between them and every
+        // label lands on the wrong finding, silently. Bounded by the rule count,
+        // never by the data.
+        $result['rules'] = isset($plan['allRules']) ? $plan['allRules'] : [];
         return $result;
     }
 
@@ -2368,11 +2394,16 @@ class UniversalValidator extends AbstractExternalModule
      * dictionary and the rules, so this is a memory read rather than a second
      * pass over the project.
      */
-    public function scanDimensions($pid)
+    public function scanDimensions($pid, array $rules = null)
     {
         $dd = $this->dataDictionary($pid);
-        $rules = [];
-        try { $rules = $this->getRules($pid); } catch (\Throwable $e) { $rules = []; }
+        // Prefer the snapshot the scan actually used. Re-reading here joined the
+        // findings to a SECOND read by array position, so a rule added or
+        // reordered between the two moved every label onto the wrong finding.
+        if ($rules === null) {
+            $rules = [];
+            try { $rules = $this->getRules($pid); } catch (\Throwable $e) { $rules = []; }
+        }
         return ScanDimensions::build($pid, is_array($dd) ? $dd : [], is_array($rules) ? $rules : []);
     }
 
@@ -2592,6 +2623,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $out['live']   = $live;
         $out['unconf'] = $unconf;
+        $out['allRules'] = $rules;   // the list the ordinals in findings refer to
         if (!$live) { $out['nothingToScan'] = true; return $out; }
 
         $dupes = [];

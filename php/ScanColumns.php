@@ -43,7 +43,16 @@ final class ScanColumns
                 // Derived, never switched on: the map has a default, so an
                 // unknown type still lands somewhere truthful.
                 'render' => function (array $f) {
-                    $map = ['required' => 'Missing value', 'unique' => 'Duplicate value'];
+                    // 'choices' is NOT a wrong value: the code was a legal
+                    // option when it was saved and the rule list changed under
+                    // it. Filing it beside a mistyped ID sends it to the wrong
+                    // person - one is a data-entry error, the other a design
+                    // change with existing data behind it.
+                    $map = [
+                        'required' => 'Missing value',
+                        'unique'   => 'Duplicate value',
+                        'choices'  => 'No longer an allowed choice',
+                    ];
                     $t = isset($f['type']) ? $f['type'] : '';
                     return isset($map[$t]) ? $map[$t] : 'Wrong value';
                 },

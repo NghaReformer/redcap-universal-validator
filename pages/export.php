@@ -59,6 +59,8 @@ if ($spool === false) {
 // nothing constructed it — and the metadata block below then fatalled on
 // keyLegend(null). A clean project is the most common happy path and the one no
 // test exported, so a 500 on "download my clean report" shipped unnoticed.
+// Built before the scan for the header, then REBUILT from the scan's own
+// rule snapshot below, so labels and ordinals come from one read.
 $dims = $module->scanDimensions($pid);
 $cols = ScanColumns::all($dims);
 $rows = 0;
@@ -86,6 +88,12 @@ try {
 // The SAME predicate pages/scan.php uses. Rule problems do not affect status,
 // so a project where every rule is a configuration error is 'complete' - and the
 // export, which is the artefact people file and cite, was the weaker of the two.
+// Re-derive the labels from the rule list the scan USED, so 'Rule 12' in a row
+// and 'Rule 12' in the label table are the same rule.
+if (!empty($result['rules'])) {
+    $dims = $module->scanDimensions($pid, $result['rules']);
+    $cols = ScanColumns::all($dims);
+}
 $complete = ($result['status'] === 'complete');
 $fenced   = (isset($result['coverage']) && $result['coverage'] === 'complete-through-fence');
 $clean    = $complete && $fenced && $result['stats']['violations'] === 0 && !$result['unconfigurable'];
@@ -121,7 +129,8 @@ if ($sinkError !== null) {
 echo '# coverage: ' . (isset($result['coverage']) ? $result['coverage'] : 'partial') . "
 ";
 foreach (array_slice(isset($result['limits']) ? $result['limits'] : [], 0, 10) as $lim) {
-    echo '# limit: ' . str_replace(["", "
+    echo '# limit: ' . str_replace(["
+", "
 "], ' ', $lim) . "
 ";
 }

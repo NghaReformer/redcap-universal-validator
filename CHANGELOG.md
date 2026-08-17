@@ -1,5 +1,68 @@
 # Changelog
 
+## 1.8.5 — the rest of the battle-test list
+
+**Control bytes no longer reach a cell.** Formula defusing already looked past
+leading whitespace and a BOM, but nothing removed NUL, SUB or ESC from a value:
+a NUL truncates the cell in several readers, `` is end-of-file to some
+importers, and ESC begins a terminal escape sequence for anyone who `cat`s the
+file — so one value read differently depending on what opened it. TAB, CR and LF
+are kept, because they are legitimate inside a quoted field.
+
+**A sink that throws no longer escapes the scan.** The sink is a caller-supplied
+consumer — a spool, a socket, a table. When it threw, the exception took the
+whole result with it: no status, no incomplete list, nothing recording that the
+project had not been examined, which is the one failure the contract exists to
+prevent. The record is now named as unreportable and the sweep continues.
+
+**One exporter, reached two ways.** The legacy `?csv=1` route emitted a
+different schema from `pages/export.php` — unquoted columns, no value, no
+explanation, no BOM, no `_INCOMPLETE` suffix — so two live formats answered the
+same question differently and a consumer had to know which URL made its file. It
+now redirects. The buffer teardown stays, because a `Location:` header is a
+header like any other and would otherwise be ignored exactly as the CSV headers
+were.
+
+**Findings and labels come from one rule read.** A report resolved "Rule 12"
+through a second, independent `getRules()` call and joined the two by array
+position, so a rule added or reordered between them moved every label onto the
+wrong finding, silently. The scan now carries the rule list its ordinals refer
+to, and both pages resolve against that.
+
+**A hidden choice is no longer filed as a wrong value.** The code was a legal
+option when it was saved and the rule list changed under it — a design change
+with existing data behind it, not a data-entry error, and it goes to a different
+person.
+
+**Unreadable label sources are stated on the page.** `degraded[]` recorded from
+the start why a column had fallen back to raw ids, and nothing ever displayed
+it, so an event id shown in place of a name was indistinguishable from data.
+
+**The record list is sliced, not `array_chunk`ed** — that built a second copy of
+every id up front and held it for the whole scan.
+
+### The test-quality defect underneath several of these
+
+`getEventNames()` and `getGroupNames()` answer two ways: called with an id they
+return one name as a string, called without they return the whole map as an
+array. The page mocks only ever returned the string, so `ScanDimensions` — which
+needs the array — always saw nothing. `events` was therefore always empty and
+`hasDags` always false, and the two assertions that a classic project shows no
+Event column and a group-less project no DAG column passed **because the labels
+were unreadable, not because of project shape**. Neither column had ever been
+rendered by a test. That is the same defect class 1.6.3 fixed in the chunk
+mocks, in a new place.
+
+The mocks answer both shapes now, and the SHAPE section renders both columns for
+the first time: a longitudinal project showing a named event, a classic one
+omitting the column by shape, a project with groups showing the group, one
+without omitting it, and an instrument label preferred over its machine name.
+
+> One of my own fixes was PHP-8-only. The control-byte pattern was written into
+> the file as REAL control bytes rather than escape sequences; PCRE2 tolerated
+> it and 7.4 refused a NUL in a pattern, taking 18 checks with it. Caught by the
+> 7.4 leg of the matrix, which is the entire reason it runs.
+
 ## 1.8.4 — a scan may only claim what the server can prove
 
 The plan's central safety property, unmet since it was written: *"`complete`
