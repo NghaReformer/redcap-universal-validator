@@ -98,7 +98,21 @@ namespace {
         public static function getData($p) {
             if (self::$getDataMode === 'nonarray') return false;
             if (self::$getDataMode === 'otherrecords') return ['999' => [1 => ['record_id' => '999']]];
-            if (!self::$filterByFields || empty($p['fields'])) return self::$data;
+            // A chunk read names the records it wants and gets ONLY those. Until
+            // 1.6.3 this mock returned the whole project regardless, so a caller
+            // that asked for the wrong slice still saw every record and behaved
+            // identically — which made scanProject's chunking (the array_chunk at
+            // :2182 and the chunk read at :2188) unfalsifiable. The record list
+            // itself is read WITHOUT 'records', so the pre-read is unaffected.
+            $src = self::$data;
+            if (!empty($p['records'])) {
+                $only = [];
+                foreach ($p['records'] as $r) {
+                    if (array_key_exists($r, self::$data)) $only[$r] = self::$data[$r];
+                }
+                $src = $only;
+            }
+            if (!self::$filterByFields || empty($p['fields'])) return $src;
             $want = array_flip($p['fields']);
             $strip = function (array $row) use ($want) {
                 $r = [];
@@ -108,7 +122,7 @@ namespace {
                 return $r;
             };
             $out = [];
-            foreach (self::$data as $rec => $node) {
+            foreach ($src as $rec => $node) {
                 $keep = [];
                 foreach ($node as $k => $sub) {
                     if ($k === 'repeat_instances' || !is_array($sub)) continue;

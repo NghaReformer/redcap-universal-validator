@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.6.3 — the chunking tests could not fail
+
+No behaviour change. This closes a hole in the test suite that would have hidden the next release's
+work, which is why it lands before that work and not after it.
+
+`scanProject()` reads records in chunks: `array_chunk($ids, $chunkSize)` and then one
+`REDCap::getData(['records' => $chunk, ...])` per chunk. Both test mocks ignored
+`$params['records']` and returned the whole project on every call — `tests/hook_php.php` returned
+`self::$data` outright, and `tests/hosting_php.php` filtered on `fields` only. So the one existing
+chunking test, `scanProject(149, null, 1)`, proved that the loop ITERATED and nothing whatsoever
+about which records each iteration asked for. A scan that requested the wrong slice every time, or
+the same slice three times, still saw every record and produced identical findings.
+
+Both mocks now honour `records`. The record list is read without that key, so the pre-read is
+unaffected; only chunk reads narrow.
+
+Nothing in the module was wrong — the suite stayed green. That is worth stating precisely, because
+"we changed the mock and nothing broke" is not evidence that the mock now matters. A mutation
+answers it: with the chunk read rewritten to request `array_slice($ids, 0, 1)` instead of `$chunk`,
+
+- against the OLD mocks, **1** check failed, and it was one of the new ones added here;
+- against the fixed mocks, **7** failed, six of them assertions that already existed — H-03's
+  cross-instrument duplicate, H-04's once-per-record rule, and both L-01 sanity controls.
+
+Those six were written to defend correctness properties that a wrong-slice batch read violates, and
+until now none of them could see it.
+
+`tests/hook_php.php` gains five checks that read what the chunk reads actually asked for — one
+chunk read per record, one record per chunk, every record covered exactly once, one unfiltered
+pre-read — plus the differential property that chunk sizes 1 and 500 produce identical findings and
+status. That last one is the invariant a batched scan will have to keep, so it is pinned now while
+it is still cheap to check. 283 checks total.
+
 ## 1.6.2 — the scan page gets a test, and stops certifying scans it never ran
 
 Found by reviewing the validation scan for a project expecting 100,000 records. `pages/scan.php`

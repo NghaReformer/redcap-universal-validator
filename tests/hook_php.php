@@ -59,10 +59,23 @@ namespace {
         public static $dictionary = [];
         public static $dataThrows = false;
         public static $lastGetDataParams = null;
+        /** Every getData call, so a test can prove WHICH records each chunk asked for. */
+        public static $getDataCalls = [];
         public static function getData($params) {
             self::$lastGetDataParams = $params;
+            self::$getDataCalls[] = $params;
             if (self::$dataThrows) throw new \RuntimeException('simulated getData failure: value=SECRET123');
-            return self::$data;
+            // A chunk read names the records it wants and gets ONLY those. Until
+            // 1.6.3 this returned the whole project regardless, so scanProject's
+            // chunking was unfalsifiable: a caller that requested the wrong slice
+            // still saw every record and produced identical findings. The record
+            // list is read WITHOUT 'records', so the pre-read is unaffected.
+            if (empty($params['records'])) return self::$data;
+            $out = [];
+            foreach ($params['records'] as $r) {
+                if (array_key_exists($r, self::$data)) $out[$r] = self::$data[$r];
+            }
+            return $out;
         }
         public static function getDataDictionary($pid, $format = 'array') {
             if (!$pid) throw new \RuntimeException('getDataDictionary requires a pid');
@@ -1464,11 +1477,45 @@ namespace {
     check('scan: repeat instance violation carries its instance number',
         count($con) === 1 && $con[0]['instance'] === 2 && $con[0]['record'] === '1');
 
-    // chunking: a small chunk size still scans every record
+    // ---- chunking (1.6.3) ----------------------------------------------------
+    // Until 1.6.3 the getData mock ignored $params['records'] and returned the
+    // whole project on every call, so this section proved only that the loop
+    // ITERATED. A scan that requested the wrong slice each time — or the same
+    // slice three times — still saw every record and produced identical output.
+    // The mock now honours 'records', and these checks read what was asked for.
+    \REDCap::$getDataCalls = [];
     $m = newModule([], $scDict, $scData, 149);
     $res = $m->scanProject(149, null, 1);
     check('scan: chunked read covers all records',
         $res['stats']['records'] === 3 && count(scanHits($res, 'unique')) === 2);
+
+    $chunked = [];
+    foreach (\REDCap::$getDataCalls as $c) if (!empty($c['records'])) $chunked[] = $c['records'];
+    check('scan: chunkSize=1 issues exactly one chunk read per record',
+        count($chunked) === 3);
+    check('scan: and each chunk asks for exactly one record',
+        count(array_filter($chunked, function ($r) { return count($r) === 1; })) === 3);
+    $asked = [];
+    foreach ($chunked as $r) foreach ($r as $x) $asked[(string) $x] = true;
+    check('scan: and the chunks together ask for every record, none twice',
+        count($asked) === 3 && isset($asked['1']) && isset($asked['2']) && isset($asked['3']));
+    $preReads = 0;
+    foreach (\REDCap::$getDataCalls as $c) if (empty($c['records'])) $preReads++;
+    check('scan: the record list is read once, without a records filter',
+        $preReads === 1);
+
+    // The differential property: chunk size must not change the answer. This is
+    // what a batched implementation will have to keep true, so pin it now.
+    \REDCap::$getDataCalls = [];
+    $m = newModule([], $scDict, $scData, 149);
+    $whole = $m->scanProject(149, null, 500);
+    $norm = function ($r) {
+        $v = $r['violations'];
+        usort($v, function ($a, $b) { return strcmp(json_encode($a), json_encode($b)); });
+        return [json_encode($v), $r['status'], $r['stats']['records'], $r['stats']['contexts']];
+    };
+    check('scan: chunk size 1 and 500 produce identical findings and status',
+        $norm($whole) === $norm($res));
 
     // unconfigurable rules are reported once, not per record
     $scDictU = $scDict;
