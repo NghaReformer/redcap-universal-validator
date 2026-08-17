@@ -1,0 +1,296 @@
+<?php
+
+namespace INSPIRE\UniversalValidator;
+
+/**
+ * What this REDCap installation can actually support, and what a scan run on it
+ * is therefore ALLOWED TO CLAIM.
+ *
+ * The scan rebuild rests on three things that are not guaranteed to exist:
+ *
+ *   - a way to walk the record list in BOUNDED memory, rather than exporting
+ *     the project to find out what is in it;
+ *   - a monotonic source of "did this record change while I was reading it",
+ *     with a change log retained long enough to cover the scan;
+ *   - permission to create the module's own tables.
+ *
+ * Each is probed here, and each probe answers in three states: available, or
+ * unavailable WITH A REASON. There is no fourth state where the module guesses.
+ * That is the whole point — the module's contract is that a scan which could not
+ * see everything must never be presentable as a clean bill of health, and a
+ * capability the module merely ASSUMED is the quietest way to break it.
+ *
+ * The v1.4.0 precedent is why every probe here uses is_callable() rather than
+ * method_exists(): the framework serves methods through __call(), for which
+ * method_exists() answers false, and that silently disabled @UVUNIQUE in
+ * production while every mocked test passed.
+ *
+ * Read-only throughout. The schema probe asks SHOW GRANTS; it never attempts a
+ * trial CREATE TABLE, because a probe with side effects is not a probe.
+ */
+final class ScanCapabilities
+{
+    /** A capability that is present. */
+    const OK = 'available';
+    /** A capability that is absent, degraded, or unprovable. */
+    const NO = 'unavailable';
+
+    /** @return array{state:string, via:?string, why:?string} */
+    private static function yes($via)
+    {
+        return ['state' => self::OK, 'via' => $via, 'why' => null];
+    }
+
+    /** @return array{state:string, via:?string, why:?string} */
+    private static function no($why)
+    {
+        return ['state' => self::NO, 'via' => null, 'why' => $why];
+    }
+
+    /**
+     * Can the record list be walked in bounded memory?
+     *
+     * This is the HARD gate. Without it the only way to learn which records
+     * exist is to export them, which is the failure the whole rebuild exists to
+     * remove — so an unavailable answer here must stop a scan, never soften into
+     * "export everything and hope".
+     */
+    public static function recordEnumeration($module, $pid)
+    {
+        // Preferred: REDCap's own record list, which carries record + DAG and no
+        // data, so it can be walked by keyset in constant memory.
+        $probe = self::tableExists($module, 'redcap_record_list');
+        if ($probe['state'] === self::OK) return self::yes('redcap_record_list');
+
+        // Fallback: a keyset walk of redcap_data restricted to the record-id
+        // field. Bounded, but it needs both a usable query API and a known
+        // record-id field.
+        $canQuery = self::canQuery($module);
+        if ($canQuery['state'] !== self::OK) {
+            return self::no('no paged record-list source, and ' . $canQuery['why']);
+        }
+        if (!self::recordIdField($pid)) {
+            return self::no('no paged record-list source, and the record-id field could not be determined');
+        }
+        return self::yes('redcap_data keyset walk');
+    }
+
+    /**
+     * Can a record be proved unchanged across a read, and can changes since a
+     * point in time be enumerated?
+     *
+     * Without this a run may still examine every record, but it cannot claim the
+     * project did not move underneath it — so completion is capped and
+     * incremental mode is refused outright.
+     */
+    public static function sourceFence($module, $pid)
+    {
+        $canQuery = self::canQuery($module);
+        if ($canQuery['state'] !== self::OK) return self::no($canQuery['why']);
+
+        $tbl = self::logEventTable($module, $pid);
+        if ($tbl === null) {
+            return self::no('the project\'s log-event table could not be resolved, so record '
+                . 'changes cannot be detected');
+        }
+        return self::yes($tbl);
+    }
+
+    /**
+     * May the module create its own tables?
+     *
+     * Answered from SHOW GRANTS, which is read-only and therefore honest about
+     * being an inference: a grant line implies permission, it does not prove the
+     * statement would succeed. An unavailable answer is not fatal — the schema
+     * can be installed by an administrator — so this reports rather than blocks.
+     */
+    public static function schemaPrivilege($module)
+    {
+        $canQuery = self::canQuery($module);
+        if ($canQuery['state'] !== self::OK) return self::no($canQuery['why']);
+        try {
+            $q = $module->query('SHOW GRANTS FOR CURRENT_USER()', []);
+            if (!$q) return self::no('SHOW GRANTS returned nothing');
+            $all = '';
+            while ($row = self::fetchRow($q)) $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
+            $all = strtoupper($all);
+            if ($all === '') return self::no('SHOW GRANTS returned no rows');
+            if (strpos($all, 'ALL PRIVILEGES') !== false || strpos($all, 'CREATE') !== false) {
+                return self::yes('SHOW GRANTS');
+            }
+            return self::no('the database user has no CREATE grant; an administrator must install the schema');
+        } catch (\Throwable $e) {
+            return self::no('SHOW GRANTS failed: ' . get_class($e));
+        }
+    }
+
+    /** Is repeating-instrument metadata available for host resolution? */
+    public static function repeatMetadata()
+    {
+        if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return self::yes('getRepeatingFormsEvents');
+        if (is_callable(['\REDCap', 'isRepeatingForm'])) return self::yes('isRepeatingForm (per form)');
+        return self::no('neither repeat-metadata API is exposed; repeat state falls back to bucket presence');
+    }
+
+    /** Are event names resolvable, so a report can name an event rather than an id? */
+    public static function eventNames()
+    {
+        if (is_callable(['\REDCap', 'getEventNames'])) return self::yes('getEventNames');
+        return self::no('getEventNames is not exposed; events can only be identified by id');
+    }
+
+    /** Are DAG names resolvable, so a report can name a group rather than an id? */
+    public static function dagNames()
+    {
+        if (is_callable(['\REDCap', 'getGroupNames'])) return self::yes('getGroupNames');
+        return self::no('getGroupNames is not exposed; groups can only be identified by id');
+    }
+
+    /** Every probe, in one call. */
+    public static function all($module, $pid)
+    {
+        return [
+            'recordEnumeration' => self::recordEnumeration($module, $pid),
+            'sourceFence'       => self::sourceFence($module, $pid),
+            'schemaPrivilege'   => self::schemaPrivilege($module),
+            'repeatMetadata'    => self::repeatMetadata(),
+            'eventNames'        => self::eventNames(),
+            'dagNames'          => self::dagNames(),
+        ];
+    }
+
+    /**
+     * What the capabilities permit a run to claim.
+     *
+     * The only direction this function moves is DOWN. A missing capability can
+     * lower what a run may say about itself and can never raise it, which is the
+     * property that makes "we did not check" impossible to launder into "there
+     * was nothing to find".
+     *
+     * maxCompletion:
+     *   'complete-through-fence'  every record examined AND proved stable
+     *   'manifest-complete'       every record in the opening list examined,
+     *                             with no claim about what moved underneath
+     *   'partial'                 neither
+     *
+     * @return array{mayScan:bool, maxCompletion:string, incremental:bool, limits:string[]}
+     */
+    public static function policy(array $caps)
+    {
+        $limits = [];
+        $ok = function ($c) use ($caps) {
+            return isset($caps[$c]['state']) && $caps[$c]['state'] === self::OK;
+        };
+
+        // The hard gate. Nothing downstream is meaningful without it.
+        $mayScan = $ok('recordEnumeration');
+        if (!$mayScan) {
+            $limits[] = 'the record list cannot be read in bounded memory, so no scan may run: '
+                . (isset($caps['recordEnumeration']['why']) ? $caps['recordEnumeration']['why'] : 'unknown');
+            return ['mayScan' => false, 'maxCompletion' => 'partial', 'incremental' => false,
+                    'limits' => $limits];
+        }
+
+        $fenced = $ok('sourceFence');
+        if (!$fenced) {
+            $limits[] = 'records cannot be proved unchanged during the scan, so a run can claim at '
+                . 'most that it examined every record on its opening list';
+        }
+        if (!$ok('repeatMetadata')) {
+            $limits[] = 'repeating-instrument metadata is unavailable, so a repeating form with no '
+                . 'instances yet cannot be distinguished from an absent one';
+        }
+        if (!$ok('eventNames')) $limits[] = 'events will be reported by id rather than by name';
+        if (!$ok('dagNames'))   $limits[] = 'groups will be reported by id rather than by name';
+        if (!$ok('schemaPrivilege')) {
+            $limits[] = 'the module cannot create its own tables; an administrator must install the schema';
+        }
+
+        return [
+            'mayScan'       => true,
+            'maxCompletion' => $fenced ? 'complete-through-fence' : 'manifest-complete',
+            'incremental'   => $fenced,
+            'limits'        => $limits,
+        ];
+    }
+
+    // -- probes -------------------------------------------------------------
+
+    /** Is $module->query() usable at all on this framework version? */
+    private static function canQuery($module)
+    {
+        if (!is_object($module) || !is_callable([$module, 'query'])) {
+            return self::no('the framework does not expose query()');
+        }
+        return self::yes('query()');
+    }
+
+    private static function tableExists($module, $name)
+    {
+        $canQuery = self::canQuery($module);
+        if ($canQuery['state'] !== self::OK) return self::no($canQuery['why']);
+        // The name is a literal here, never caller-supplied, but validate anyway:
+        // a table name cannot be a bound parameter, so the habit matters more
+        // than this one call site.
+        if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $name)) return self::no('unusable table name');
+        try {
+            $q = $module->query('SHOW TABLES LIKE ?', [$name]);
+            if (!$q) return self::no($name . ' not found');
+            $row = self::fetchRow($q);
+            return $row ? self::yes($name) : self::no($name . ' not found');
+        } catch (\Throwable $e) {
+            return self::no($name . ' could not be checked: ' . get_class($e));
+        }
+    }
+
+    /** The project's log-event table, validated before it could ever be interpolated. */
+    private static function logEventTable($module, $pid)
+    {
+        try {
+            $q = $module->query('SELECT log_event_table FROM redcap_projects WHERE project_id = ?', [$pid]);
+            if (!$q) return null;
+            $row = self::fetchRow($q);
+            // NOT trimmed. A log-table name arriving from redcap_projects with
+            // surrounding whitespace is anomalous, and trimming it would both
+            // hide that and make the anchor below unobservable — with trim in
+            // front of it, '$' and '\z' accept exactly the same set, so nothing
+            // could tell a correct pattern from a subtly wrong one.
+            $tbl = ($row && isset($row[0])) ? (string) $row[0] : '';
+            // REDCap shards this table on large installations. A table name can
+            // never be a bound parameter, so it is whitelisted by shape rather
+            // than trusted because of where it came from.
+            // Anchored with \z rather than $, because PHP's $ ALSO matches
+            // immediately before a trailing newline: with $ a value ending in a
+            // newline would be accepted. This value cannot be a bound parameter
+            // — a table name never can — so it is interpolated, and the anchor
+            // is the only thing standing between the log table and the query.
+            if ($tbl === '' || !preg_match('/^redcap_log_event[0-9]*\z/', $tbl)) return null;
+            return $tbl;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    private static function recordIdField($pid)
+    {
+        try {
+            if (is_callable(['\REDCap', 'getRecordIdField'])) {
+                $pk = \REDCap::getRecordIdField();
+                if (is_string($pk) && $pk !== '') return $pk;
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+
+    /** mysqli_result, or anything else that can hand back one row. */
+    private static function fetchRow($q)
+    {
+        try {
+            if (is_object($q) && is_callable([$q, 'fetch_row'])) return $q->fetch_row();
+            if (is_array($q)) return array_shift($q);
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+}

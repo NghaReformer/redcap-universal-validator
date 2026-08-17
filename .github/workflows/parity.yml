@@ -82,6 +82,8 @@ jobs:
           php -l php/Logic.php
           php -l php/Branching.php
           php -l php/ScanPageView.php
+          php -l php/FindingSink.php
+          php -l php/ScanCapabilities.php
           php -l UniversalValidator.php
           php -l pages/scan.php
       - name: PHP port vs fixture (compute + normalize + scheme_ops)
@@ -114,6 +116,8 @@ jobs:
         run: php tests/hosting_php.php
       - name: PHP validation scan page (rights fail-open, unresolvable DAG, CSV, table cap)
         run: php tests/scan_page_php.php
+      - name: Scan capabilities (what an installation may claim)
+        run: php tests/scan_capabilities_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 
@@ -132,7 +136,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php pages/scan.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php pages/scan.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports tools; do
