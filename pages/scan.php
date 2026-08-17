@@ -10,7 +10,9 @@
  * Access: design rights required (re-checked here; the sidebar link is
  * already limited by redcap_module_link_check_display). A user working
  * inside a Data Access Group only ever sees their own group's records.
- * Stored VALUES are deliberately not shown — the report names where the
+ * Values are shown or withheld per the scan-value-storage project setting; see
+ * UniversalValidator::mustRedact(), which fails CLOSED. Before 1.8.0 the report
+ * named where the
  * problem is (record / event / instance / field / reason); the value itself
  * stays behind REDCap's own access control on the record pages.
  *
@@ -44,7 +46,8 @@ $csv = isset($_GET['csv']) && $_GET['csv'] === '1';
 
 $result = null;
 if ($run || $csv) {
-    $result = $module->scanProject($pid, $dagFilter);
+    $result = $module->scanProject($pid, $dagFilter, 200, null,
+        ['valueCeiling' => $scope['valueCeiling']]);
 }
 
 $complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
@@ -132,7 +135,8 @@ Runs <b>every configured rule</b> (check-character / format, constraint, require
 choice filter) over <b>every saved record</b> and lists each violation. This covers what live
 form validation cannot: values imported through the Data Import Tool or the API,
 and records entered before a rule existed. The report shows <i>where</i> each
-problem is — never the stored value itself.
+problem is, and — depending on this project's <b>Validation scan report</b>
+setting — the offending value beside it.
 <?php if ($dagFilter !== null) { ?>
 <br><b>Scope:</b> records in your Data Access Group only.
 <?php } ?>

@@ -1423,6 +1423,11 @@ namespace {
                         'redcap_data_access_group' => 'north']],
     ];
     $m = newModule([], $scDict, $scData, 149);
+    // Showing a value is now an explicit project decision: the setting defaults
+    // to locations-only, because an External Modules dropdown stores nothing
+    // until the dialog is saved and landing on 'raw' would switch every
+    // un-reconfigured project to full disclosure on upgrade.
+    $m->projectSettings['scan-value-storage'] = 'raw';
     $res = $m->scanProject(149);
     check('scan: stats count records and rules', $res['stats']['records'] === 3 && $res['stats']['rules'] === 4);
     function scanHits($res, $type) {
@@ -1453,6 +1458,12 @@ namespace {
     check('scan: and a required-blank still shows no value, because there is none',
         (bool) array_filter($res['violations'], function ($v) {
             return $v['reason'] === 'required-blank' && $v['value'] === null;
+        }));
+    $mDef = newModule([], $scDict, $scData, 149);
+    $resDef = $mDef->scanProject(149);
+    check('scan: a project nobody has configured discloses no value at all',
+        !array_filter($resDef['violations'], function ($v) {
+            return isset($v['value']) && $v['value'] !== null;
         }));
     check('scan: while the duplicate shows the value that duplicated',
         (bool) array_filter($res['violations'], function ($v) {

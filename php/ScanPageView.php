@@ -68,7 +68,9 @@ class ScanPageView
      */
     public static function scanScope($module, $pid)
     {
-        $no = function ($why) { return ['ok' => false, 'dag' => null, 'why' => $why]; };
+        $no = function ($why) {
+            return ['ok' => false, 'dag' => null, 'why' => $why, 'valueCeiling' => 'locations'];
+        };
         try {
             $user = $module->getUser();
             // is_callable, NEVER method_exists. The framework serves some methods
@@ -91,7 +93,10 @@ class ScanPageView
             if (!is_array($rights)) {
                 return $no('Your Data Access Group could not be established, so the validation scan was not run.');
             }
-            if (empty($rights['group_id'])) return ['ok' => true, 'dag' => null, 'why' => null];
+            $ceiling = self::valueCeilingFor($rights);
+            if (empty($rights['group_id'])) {
+                return ['ok' => true, 'dag' => null, 'why' => null, 'valueCeiling' => $ceiling];
+            }
 
             $gd = null;
             try {
@@ -110,7 +115,7 @@ class ScanPageView
                 return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
                          . 'The validation scan was not run.');
             }
-            return ['ok' => true, 'dag' => $gd, 'why' => null];
+            return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');
         }
@@ -122,5 +127,29 @@ class ScanPageView
         $out = [];
         foreach ($vals as $v) $out[] = self::csv($v);
         return implode(',', $out);
+    }
+
+    /**
+     * The most a reader may be shown, from their own REDCap export rights.
+     *
+     * Design rights are INDEPENDENT of form-level access and of export rights.
+     * Before the report carried values that did not matter; it does now. A user
+     * with design rights, No Access on an instrument and De-Identified export
+     * rights would otherwise download every field's raw value for every record
+     * from one URL, because the scan reads through \REDCap::getData() with a
+     * project id and no user, which bypasses per-user rights entirely.
+     *
+     * REDCap's data_export_tool: 0 no access, 1 full data set, 2 de-identified,
+     * 3 remove identifiers. Only a full-data-set user may see a raw value; an
+     * unreadable or absent right is treated as no export right at all, because
+     * the direction that fails safe is the restrictive one.
+     */
+    public static function valueCeilingFor($rights)
+    {
+        if (!is_array($rights) || !array_key_exists('data_export_tool', $rights)) return 'locations';
+        $dx = (string) $rights['data_export_tool'];
+        if ($dx === '1') return 'raw';
+        if ($dx === '2' || $dx === '3') return 'identifier-redacted';
+        return 'locations';                      // '0', '', or anything unrecognised
     }
 }

@@ -64,7 +64,11 @@ namespace ExternalModules {
             $this->design = $design; $this->groupId = $groupId;
         }
         public function hasDesignRights() { return $this->design; }
-        public function getRights($pid = null) { return ['group_id' => $this->groupId]; }
+        /** data_export_tool 1 = Full Data Set, which is what raw values require. */
+        public $export = '1';
+        public function getRights($pid = null) {
+            return ['group_id' => $this->groupId, 'data_export_tool' => $this->export];
+        }
     }
     /**
      * S-01. The v1.4.0 shape: the methods exist only through __call(), so
@@ -198,7 +202,7 @@ namespace {
     function render($user, $dict = [], $data = [], $get = [], $opts = []) {
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = PID;
-        $m->projectSettings = ['log-values' => ''];
+        $m->projectSettings = isset($opts['settings']) ? $opts['settings'] : ['log-values' => ''];
         $m->subSettings = [];
         $m->userReturn = $user;
         \REDCap::$dictionary = $dict;
@@ -551,7 +555,8 @@ namespace {
             return [ob_get_clean(), $GLOBALS['uv_headers']];
         };
 
-        list($out, $hdr) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data);
+        $RAW = ['settings' => ['scan-value-storage' => 'raw']];
+        list($out, $hdr) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data, $RAW);
         $names = [];
         foreach ($hdr as $h) $names[] = $h['h'];
 
@@ -601,9 +606,30 @@ namespace {
 
         // Values honour the policy here too.
         list($out4, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
-            ['settings' => ['scan-value-storage' => 'none']]);
+            ['settings' => ['scan-value-storage' => 'locations']]);
         check('export: locations-only mode carries no value',
             strpos($out4, '"nope"') === false && strpos($out4, '"Value"') !== false);
+
+        // An un-reconfigured project is what EVERY project looks like on
+        // upgrade. It must disclose nothing until someone decides otherwise.
+        list($out5, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data);
+        check('export: a project nobody has configured discloses no value',
+            strpos($out5, '"nope"') === false);
+
+        // The reader's own export rights cap the project's choice. Design rights
+        // are independent of export rights in REDCap, and the scan reads through
+        // getData() with no user, so nothing else would stop this.
+        $noExport = new \ExternalModules\PlainUser(true, null);
+        $noExport->export = '0';
+        list($out6, ) = $exp($noExport, $D, $data, $RAW);
+        check('export: a reader with NO export rights never sees a value, whatever the project set',
+            strpos($out6, '"nope"') === false && strpos($out6, '"Value"') !== false);
+
+        $deident = new \ExternalModules\PlainUser(true, null);
+        $deident->export = '2';
+        list($out7, ) = $exp($deident, $D, $data, $RAW);
+        check('export: a de-identified reader is capped at redaction, not raw',
+            strpos($out7, '"nope"') !== false);   // 'code' is not an Identifier field
     }
 
 
@@ -615,7 +641,8 @@ namespace {
                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
         $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
         \REDCap::$groupNames = [];
-        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1']);
+        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            ['settings' => ['scan-value-storage' => 'raw']]);
 
         check('columns: the table shows the instrument', strpos($html, '<th>Instrument</th>') !== false);
         check('columns: and the value', strpos($html, '<th>Value</th>') !== false);
@@ -635,7 +662,8 @@ namespace {
         $D2 = dict(['record_id' => ['fa'], 'want' => ['fa'],
                     'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
         $data2 = [1 => [1 => ['record_id' => '1', 'code' => '<img src=x>', 'want' => 'yes']]];
-        list($html2, ) = render(new \ExternalModules\PlainUser(true, null), $D2, $data2, ['run' => '1']);
+        list($html2, ) = render(new \ExternalModules\PlainUser(true, null), $D2, $data2, ['run' => '1'],
+            ['settings' => ['scan-value-storage' => 'raw']]);
         check('columns: a value containing markup is escaped, not rendered',
             strpos($html2, '<img src=x>') === false && strpos($html2, '&lt;img') !== false);
     }

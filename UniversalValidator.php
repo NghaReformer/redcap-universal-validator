@@ -2067,10 +2067,12 @@ class UniversalValidator extends AbstractExternalModule
      * Returns ['violations' => [ ['record','event_id','instance','field',
      * 'type','reason','rule' => 1-based index], ... ], 'unconfigurable' =>
      * [ ['rule','fields','why'], ... ] (deduplicated), 'stats' => [...]].
-     * Stored VALUES are deliberately not returned: the report names where the
-     * problem is; the value itself stays behind REDCap's own access control.
-     */
-    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, FindingSink $sink = null)
+     * Values are returned per the scan-value-storage project setting: shown,
+     * redacted for fields REDCap marks as an Identifier, or withheld entirely.
+     * Redaction fails CLOSED — an unreadable dictionary withholds everything,
+     * because a dictionary that cannot be read cannot clear a field.
+*/
+    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, FindingSink $sink = null, array $opts = [])
     {
         // 'status' is part of the contract: a scan that could not read everything
         // must never be presentable as a clean bill of health. 'complete' is
@@ -2086,7 +2088,7 @@ class UniversalValidator extends AbstractExternalModule
         $collect = ($sink === null);
         if ($collect) $sink = new ArrayFindingSink();
 
-        $plan = $this->scanPlan($pid);
+        $plan = $this->scanPlan($pid, $opts);
         if ($plan['fatal'] !== null) {
             $result['incomplete'][] = $plan['fatal'];
             return $result;                  // status stays 'failed'
@@ -2152,7 +2154,23 @@ class UniversalValidator extends AbstractExternalModule
         }
         $result['stats']['records'] = count($ids);
         unset($idData);                  // dead from here; it was held to the return
-        if (!$ids) { $result['status'] = 'complete'; return $result; }
+        if (!$ids) {
+            // Zero records IN SCOPE is not a clean project, and the three ways
+            // to reach it are indistinguishable from here: the group genuinely
+            // has no records; exportDataAccessGroups was not honoured so no
+            // record carried a group at all; or the DAG name and the exported
+            // group label disagree. All three used to render the green tick over
+            // "Scanned 0 record(s)". That is S-03 — the defect 1.6.2 exists to
+            // fix — reached by a different route: 1.6.2 refused when the DAG
+            // NAME could not be resolved, not when it resolved and matched
+            // nothing.
+            $result['incomplete'][] = $dagFilter === null
+                ? 'the project contains no records, so there was nothing to examine'
+                : 'no record was in scope for Data Access Group "' . $dagFilter . '", so nothing was '
+                  . 'examined — this is not evidence that the group\'s data is clean';
+            $result['status'] = 'incomplete';
+            return $result;
+        }
 
         $uniqueSeen = [];   // aggregate pass: groupKey => [ [record,event,instance,field,rule], ... ]
         // $unconf was declared above (it already holds any config-error rules)
@@ -2320,7 +2338,7 @@ class UniversalValidator extends AbstractExternalModule
     private static function reportValue(array $v, array $plan)
     {
         $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'raw';
-        if ($mode === 'none') return null;
+        if ($mode === 'locations') return null;
         if (!array_key_exists('value', $v)) return null;
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
@@ -2340,7 +2358,24 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * How the scan report may show values: 'raw' | 'identifiers' | 'none'.
+     * How disclosing a value mode is. Higher shows more. Unknown ranks LOWEST,
+     * so anything unrecognised is treated as the least disclosing option rather
+     * than the most.
+     */
+    private static function valueRank($mode, $unknown = 0)
+    {
+        $r = ['locations' => 0, 'identifier-redacted' => 1, 'raw' => 2];
+        return isset($r[$mode]) ? $r[$mode] : $unknown;
+    }
+
+    /** The less disclosing of two modes. */
+    private static function valueFloor($a, $b)
+    {
+        return self::valueRank($a) <= self::valueRank($b) ? $a : $b;
+    }
+
+    /**
+     * How the scan report may show values: 'raw' | 'identifier-redacted' | 'locations'.
      *
      * A settings read that throws must not decide between showing values and
      * withholding them, so a failure lands on the most permissive documented
@@ -2352,10 +2387,16 @@ class UniversalValidator extends AbstractExternalModule
     {
         try {
             $m = $this->getProjectSetting('scan-value-storage', $pid);
-            if ($m === 'identifiers' || $m === 'none' || $m === 'raw') return $m;
+            if (self::valueRank($m, -1) >= 0) return $m;
         } catch (\Throwable $e) {
         }
-        return 'raw';
+        // An External Modules dropdown stores NOTHING until the settings dialog
+        // is saved, so this is null on every project nobody has reconfigured -
+        // which is most of them, and all of them on upgrade. Landing on 'raw'
+        // there would switch every existing installation from locations-only to
+        // full disclosure with nobody having decided anything. Unknown or
+        // unreadable settings fail toward LESS disclosure.
+        return 'locations';
     }
 
     /**
@@ -2372,9 +2413,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function mustRedact($ids, $field, $mode)
     {
-        if ($mode === 'none') return true;
-        if ($mode === 'raw')  return false;
-        if (!is_array($ids))  return true;          // cannot clear it -> withhold it
+        if ($mode === 'locations') return true;
+        if ($mode === 'raw')       return false;
+        if (!is_array($ids))       return true;     // cannot clear it -> withhold it
         return isset($ids[$field]);
     }
 
@@ -2392,13 +2433,18 @@ class UniversalValidator extends AbstractExternalModule
      * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
      *               readSet: array, dupes: array, unconf: array}
      */
-    private function scanPlan($pid)
+    private function scanPlan($pid, array $opts = [])
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
-                'valueMode' => $this->scanValueMode($pid),
+                // The PROJECT's setting, capped by what THIS READER is entitled
+                // to see. The project decides how disclosing the report may be;
+                // the reader's own export rights decide how disclosing it
+                // actually is. Neither can raise the other.
+                'valueMode' => self::valueFloor($this->scanValueMode($pid),
+                                                isset($opts['valueCeiling']) ? $opts['valueCeiling'] : 'raw'),
                 'identifiers' => $this->projectIdentifierFields($pid),
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not

@@ -930,17 +930,17 @@ namespace {
             $r = new \ReflectionMethod($UVC, 'mustRedact'); $r->setAccessible(true);
             return $r->invoke(null, $ids, $field, $mode);
         };
-        check('value: locations-only withholds everything', $red(['a' => true], 'b', 'none') === true);
+        check('value: locations-only withholds everything', $red(['a' => true], 'b', 'locations') === true);
         check('value: raw withholds nothing, even an identifier',
             $red(['a' => true], 'a', 'raw') === false);
         check('value: identifiers mode withholds a flagged field',
-            $red(['a' => true], 'a', 'identifiers') === true);
+            $red(['a' => true], 'a', 'identifier-redacted') === true);
         check('value: identifiers mode shows an unflagged field',
-            $red(['a' => true], 'b', 'identifiers') === false);
+            $red(['a' => true], 'b', 'identifier-redacted') === false);
         // The one that would leak. A null identifier set is what
         // projectIdentifierFields() returns when the dictionary read FAILED.
         check('value: an unreadable dictionary withholds EVERY value, not none',
-            $red(null, 'anything', 'identifiers') === true);
+            $red(null, 'anything', 'identifier-redacted') === true);
         check('value: and raw mode is still explicit about it', $red(null, 'x', 'raw') === false);
 
         // End to end, through a real scan.
@@ -961,16 +961,39 @@ namespace {
             $valOf($res, 'secret') === null);
 
         $m = mkMod($D, $data);
-        $m->projectSettings = ['scan-value-storage' => 'none'];
+        $m->projectSettings = ['scan-value-storage' => 'locations'];
         $res = $m->scanProject(PID);
         check('value: locations-only shows no value at all', $valOf($res, 'code') === null);
 
-        // An unset setting must land on the documented default, not on nothing.
+        // An External Modules dropdown stores NOTHING until the dialog is saved,
+        // so an unset setting is what EVERY un-reconfigured project looks like,
+        // and what every project looks like on upgrade. Landing on 'raw' there
+        // would switch them all to full disclosure with nobody deciding.
         $m = mkMod($D, $data);
         $m->projectSettings = [];
         $res = $m->scanProject(PID);
-        check('value: an unset setting uses the documented default (raw)',
-            $valOf($res, 'code') === 'nope');
+        check('value: an unset setting discloses NOTHING, not everything',
+            $valOf($res, 'code') === null);
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'wat'];
+        check('value: an unrecognised setting also discloses nothing',
+            $valOf($m->scanProject(PID), 'code') === null);
+
+        // The reader's own export rights cap whatever the project chose.
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'raw'];
+        check('value: a reader without full export rights never sees a raw value',
+            $valOf($m->scanProject(PID, null, 200, null, ['valueCeiling' => 'locations']), 'code') === null);
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'raw'];
+        check('value: and a de-identified reader is capped at redaction, not raw',
+            $valOf($m->scanProject(PID, null, 200, null,
+                ['valueCeiling' => 'identifier-redacted']), 'code') === 'nope');
+        // A ceiling can only lower, never raise.
+        $m = mkMod($D, $data);
+        $m->projectSettings = ['scan-value-storage' => 'locations'];
+        check('value: a permissive reader cannot raise a restrictive project setting',
+            $valOf($m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']), 'code') === null);
 
         // Truncation and non-text bytes are MARKED, never silently dropped or
         // pasted into a CSV where they would corrupt the file.
@@ -989,6 +1012,44 @@ namespace {
             $rv(['field' => 'f', 'value' => ['1', '2']], $plan) === '1, 2');
         check('value: a finding with no value key yields null',
             $rv(['field' => 'f'], $plan) === null);
+    }
+
+
+    /* =========================================================================
+     * H-10  zero records IN SCOPE is not a clean project
+     *
+     * S-03 by a different route. 1.6.2 refused when the DAG NAME could not be
+     * resolved; it did not refuse when the name resolved and matched nothing.
+     * Three causes are indistinguishable from inside the scan - the group really
+     * has no records, exportDataAccessGroups was not honoured, or the DAG name
+     * and the exported group label disagree - and all three used to render the
+     * green tick over "Scanned 0 record(s)".
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'redcap_data_access_group' => 'north']]];
+
+        $res = mkMod($D, $data)->scanProject(PID, 'south');
+        check('H-10: a DAG that matches no record is NOT reported complete',
+            $res['status'] === 'incomplete');
+        check('H-10: and it says the group had nothing in scope',
+            (bool) array_filter($res['incomplete'], function ($s) {
+                return strpos($s, 'no record was in scope') !== false;
+            }));
+        check('H-10: and says so is not evidence the data is clean',
+            (bool) array_filter($res['incomplete'], function ($s) {
+                return strpos($s, 'not evidence') !== false;
+            }));
+
+        $res2 = mkMod($D, [])->scanProject(PID);
+        check('H-10: an empty project is reported, not certified',
+            $res2['status'] === 'incomplete');
+
+        // CONTRAST: a DAG that DOES match still scans and can still be clean.
+        $clean = [1 => [1 => ['record_id' => '1', 'a_val' => 'ok', 'redcap_data_access_group' => 'north']]];
+        $res3 = mkMod($D, $clean)->scanProject(PID, 'north');
+        check('H-10 contrast: a matching DAG with clean data still completes',
+            $res3['status'] === 'complete' && count($res3['violations']) === 0);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

@@ -35,7 +35,12 @@ if (!$scope['ok']) {
     return;
 }
 
-@set_time_limit(0);
+// NO set_time_limit(0) here. scanProject() derives its halt deadline from
+// ini_get('max_execution_time'); lifting the limit sets that to 0, which makes
+// the deadline null and silently disables the guard added in 1.6.4. The screen
+// scan would then stop for time and report 'incomplete' while the export of
+// "the same" scan ran on and reported 'complete' — two coverage claims, two
+// answers, and no way for the reader to know which one they are holding.
 
 // Rows are spooled, not accumulated. php://temp keeps a couple of megabytes in
 // memory and spills the rest to a temp file, so the export costs the same on a
@@ -66,7 +71,8 @@ $sink = new CallbackFindingSink(function (array $f) use (&$dims, &$cols, &$rows,
     $rows++;
 });
 
-$result = $module->scanProject($pid, $scope['dag'], 200, $sink);
+$result = $module->scanProject($pid, $scope['dag'], 200, $sink,
+    ['valueCeiling' => $scope['valueCeiling']]);
 
 $complete = ($result['status'] === 'complete');
 $stamp    = date('Ymd_His');

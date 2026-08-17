@@ -1,5 +1,65 @@
 # Changelog
 
+## 1.8.1 — values are a decision, not a default
+
+An implementation review against the rebuild plan (`reports/scan-implementation-review-2026-08-17.md`)
+found seven blocking items in the 1.8.0 work. Five are fixed here; two are
+recorded deviations.
+
+**The value default is inverted.** 1.8.0 defaulted `scan-value-storage` to `raw`.
+An External Modules dropdown stores nothing until its settings dialog is saved,
+so `getProjectSetting` returns null on every project nobody has reconfigured —
+which is all of them, on upgrade. That default would have switched every
+existing installation from locations-only to full raw disclosure with nobody
+deciding anything. The default is now `locations`, an unreadable or
+unrecognised setting resolves to `locations`, and the modes carry the plan's
+names: `locations` / `identifier-redacted` / `raw`.
+
+**A reader's export rights now cap what the project chose.** Design rights are
+independent of form-level access and of export rights in REDCap, and the scan
+reads through `\REDCap::getData()` with a project id and no user, which bypasses
+per-user rights entirely. A design-rights user with **No Access** on an
+instrument and **De-Identified** export rights could therefore download raw
+values for every field of every record. `data_export_tool` now sets a ceiling —
+full data set for `raw`, de-identified or remove-identifiers capped at
+redaction, anything else at locations-only — and the ceiling can only lower the
+project's setting, never raise it.
+
+**Zero records in scope is no longer certified clean.** `if (!$ids)` reported
+`complete`, so a DAG filter that resolved but matched nothing rendered the green
+tick over "Scanned 0 record(s)". That is S-03, the defect 1.6.2 exists to fix,
+by a different route: 1.6.2 refused when the DAG *name* could not be resolved,
+not when it resolved and matched nothing. The three causes — an empty group, an
+export that did not carry groups, a name that disagrees with the exported label
+— are indistinguishable from inside the scan, so the run reports incomplete and
+says so.
+
+**The export ran a different scan from the screen.** `pages/export.php` called
+`set_time_limit(0)`, which sets `max_execution_time` to 0, which makes
+`scanProject`'s deadline null and silently disables the halt guard added in
+1.6.4. The screen could stop for time and report `incomplete` while the export
+of "the same" scan ran on and reported `complete`. The call is gone.
+
+**Three places still promised the report never shows a value** — the scan page's
+docblock, the paragraph the operator actually reads above the table, and
+`scanProject`'s own docblock. The README was corrected in 1.8.0; these were not.
+
+### Recorded deviations from the plan
+
+> **Task 1's disabling of the legacy scan is deliberately not done.** The plan
+> says to refuse `run=1` and `csv=1` and show a notice until the durable path
+> exists. The durable path is blocked on measurements that need a live server,
+> and disabling the only working feature in the meantime leaves operators with
+> nothing. The GET-triggered scan and both export routes stay live, reviewed and
+> chosen rather than overlooked. `pages/export.php` is a third entry point added
+> in 1.8.0 and is in the same position.
+>
+> **`ScanCapabilities::policy()` is still not consulted in production.** The
+> module contains a correct, tested implementation of the completion cap and
+> does not call it, so `complete` is still claimed with no source fence. That is
+> the plan's central safety property and it remains unmet; it is listed here so
+> the test suite's green does not read as coverage of it.
+
 ## 1.7.0 — findings can leave the scan as they are found
 
 `scanProject()` appended every violation to one array and returned it whole.
