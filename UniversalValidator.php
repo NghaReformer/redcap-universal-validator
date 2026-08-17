@@ -25,6 +25,7 @@ require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
+require_once __DIR__ . '/php/FindingSink.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -2057,94 +2058,41 @@ class UniversalValidator extends AbstractExternalModule
      * Stored VALUES are deliberately not returned: the report names where the
      * problem is; the value itself stays behind REDCap's own access control.
      */
-    public function scanProject($pid, $dagFilter = null, $chunkSize = 200)
+    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, FindingSink $sink = null)
     {
         // 'status' is part of the contract: a scan that could not read everything
         // must never be presentable as a clean bill of health. 'complete' is
         // only ever set at the very end of the full path.
         $result = ['violations' => [], 'unconfigurable' => [], 'incomplete' => [],
                    'status' => 'failed',
-                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0]];
-        // Rule DISCOVERY is a read like any other and can throw: a settings
-        // backend failure used to escape scanProject entirely, so the operator
-        // got a PHP error page instead of a scan result and nothing recorded
-        // that the project had not been examined (M-03).
-        try {
-            $rules = $this->getRules($pid);
-        } catch (\Throwable $e) {
-            $result['incomplete'][] = 'the rule list could not be read: ' . get_class($e);
-            return $result;
-        }
-        if (!is_array($rules)) $rules = [];
+                   'stats' => ['records' => 0, 'contexts' => 0, 'rules' => 0, 'violations' => 0]];
 
-        // The dictionary is load-bearing twice: annotation rules are READ from
-        // it, and every rule has to be located on an instrument before it can be
-        // evaluated at all. Establish that independently of whether any rule
-        // survived — a failed read that left one settings rule standing used to
-        // scan that rule and report 'complete' while every annotation rule had
-        // silently vanished from the list (H-05).
-        if (!$this->dataDictionary($pid)) {
-            $result['incomplete'][] = 'the project data dictionary could not be read, so the rule list is '
-                . 'incomplete and no rule can be located on an instrument';
+        // Violations are the only channel that grows with the DATA, so they are
+        // the only thing handed out as they are found. Without a sink the
+        // findings are collected here and returned, which is what every caller
+        // before 1.7.0 expected and what every test still asserts against.
+        $collect = ($sink === null);
+        if ($collect) $sink = new ArrayFindingSink();
+
+        $plan = $this->scanPlan($pid);
+        if ($plan['fatal'] !== null) {
+            $result['incomplete'][] = $plan['fatal'];
             return $result;                  // status stays 'failed'
         }
-        if (!$rules) { $result['status'] = 'complete'; return $result; }
-        $live = [];
-        $unconf = [];   // dedupe rule-problem notes by rule+why (config errors AND runtime)
-        foreach ($rules as $i => $r) {
-            if (!empty($r['configError'])) {
-                // A config-broken rule enforces NOTHING. Surface it in the scan
-                // rather than imply a clean project — the module's rule is that
-                // nothing fails silently (M-05). It also shows on the data-entry
-                // form, but a scan operator would not otherwise know a rule is inert.
-                $unconf[$i . '|configError'] = [
-                    'rule'   => $i + 1,
-                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                    'why'    => 'configuration error — this rule validates nothing: ' . $r['configError'],
-                ];
-                continue;
-            }
-            $live[$i] = $r;
-        }
-        $result['stats']['rules'] = count($live);
+        $result['stats']['rules'] = count($plan['live']);
         // Attach the config-error notices NOW so EVERY subsequent return carries them
         // — the empty-idData and no-records early returns below would otherwise drop
         // them, reporting a clean project when a rule is actually inert (UV-1553-01,
         // the M-05 silent-failure the feature exists to prevent). The final assignment
         // on the full path re-attaches $unconf with any runtime additions.
+        $unconf = $plan['unconf'];
         $result['unconfigurable'] = array_values($unconf);
-        if (!$live) { $result['status'] = 'complete'; return $result; }
+        if ($plan['nothingToScan']) { $result['status'] = 'complete'; return $result; }
 
-        $dupes = [];
-        foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
-
-        // WHERE each rule lives, computed once. A rule whose field cannot be
-        // located on any instrument is not evaluated in some arbitrary context
-        // and hoped for — it is reported, because a guessed location produces
-        // confident nonsense rather than a near miss (H-02).
-        $hostFields = [];
-        foreach ($live as $i => $r) {
-            $h = $this->ruleHostForms($r, $pid);
-            if ($h['unknown']) {
-                $unconf[$i . '|unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
-                    'why' => 'the instrument that owns this rule\'s field(s) could not be determined from the '
-                           . 'data dictionary, so there is no context in which to check them — the field is not scanned'];
-            }
-            $hostFields[$i] = $h['forms'];
-        }
-
-        // Everything the evaluation needs to read: rule fields + when/assert
-        // refs + composite unique keys.
-        $readSet = [];
-        foreach ($live as $r) {
-            foreach ($r['fields'] as $f) $readSet[$f] = true;
-            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
-                $p = Logic::parse($cond);
-                if (empty($p['ok'])) continue;
-                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
-            }
-            foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
-        }
+        $live       = $plan['live'];
+        $hostFields = $plan['hostFields'];
+        $readSet    = $plan['readSet'];
+        $dupes      = $plan['dupes'];
 
         // Record list first (ids only), then chunked full reads.
         $pk = null;
@@ -2261,54 +2209,12 @@ class UniversalValidator extends AbstractExternalModule
                     $result['incomplete'][] = 'record ' . (string) $rec . ' was requested but not returned';
                     continue;
                 }
-                $recDag = self::dagOfRecordNode($data[$rec]);
-                $ctxAll = self::recordContexts($data[$rec]);
-                if (!$ctxAll) {
-                    // REDCap returned the record with no event row at all. There is
-                    // nothing to evaluate, and nothing that says the record is
-                    // clean — certifying it was the same silent skip as an
-                    // unreadable chunk, one step further down (H-05).
-                    $result['incomplete'][] = 'record ' . (string) $rec . ' was returned with no data rows, so it was not checked';
+                $one = $this->scanRecord($plan, $pid, $rec, $data[$rec], $sink, $uniqueSeen, $unconf);
+                if ($one['why'] !== null) {
+                    $result['incomplete'][] = $one['why'];
                     continue;
                 }
-                $result['stats']['contexts'] += count($ctxAll);
-                // Resolution is a property of the CONTEXT, not of the rule that
-                // happens to be asking. Computing it per rule re-derived the same
-                // ownership map contexts x rules times (M-05).
-                $resCache = [];
-                $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
-                foreach ($live as $i => $r) {
-                    $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
-                    foreach ($hostFields[$i] as $hostForm => $ownFields) {
-                        $onForm = array_fill_keys($ownFields, true);
-                        if (!isset($hostCache[$hostForm])) {
-                            $hostCache[$hostForm] = $this->hostContextsFor($ctxAll, $hostForm, $pid);
-                        }
-                        foreach ($hostCache[$hostForm] as $ck => $ctx) {
-                            if (!isset($resCache[$ck])) {
-                                $resCache[$ck] = $this->contextResolution($ctx, array_keys($readSet), $pid);
-                            }
-                            if ($mode === 'unique') {
-                                self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $dupes, $onForm, $resCache[$ck]);
-                                continue;
-                            }
-                            $f = $this->ruleFindings($r, $i, $ctx['values'], $dupes, $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
-                            foreach ($f['invalid'] as $v) {
-                                $result['violations'][] = [
-                                    'record' => (string) $rec, 'event_id' => $ctx['event_id'],
-                                    'instance' => $ctx['instance'], 'field' => $v['field'],
-                                    'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
-                                ];
-                            }
-                            foreach ($f['unconfigurable'] as $u) {
-                                $key = $i . '|' . $u['why'];
-                                if (!isset($unconf[$key])) {
-                                    $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
-                                }
-                            }
-                        }
-                    }
-                }
+                $result['stats']['contexts'] += $one['contexts'];
             }
             // The chunk's rows are dead now. Releasing them before the next
             // getData allocates means the two do not coexist, which halves the
@@ -2333,17 +2239,189 @@ class UniversalValidator extends AbstractExternalModule
                 $at = $e['rule'] . '|' . $e['record'] . '|' . $e['event_id'] . '|' . $e['instance'] . '|' . $e['field'];
                 if (isset($emitted[$at])) continue;
                 $emitted[$at] = true;
-                $result['violations'][] = [
+                $sink->violation([
                     'record' => $e['record'], 'event_id' => $e['event_id'],
                     'instance' => $e['instance'], 'field' => $e['field'],
                     'type' => 'unique', 'reason' => 'duplicate-value', 'rule' => $e['rule'],
-                ];
+                ]);
             }
         }
         $result['unconfigurable'] = array_values($unconf);
+        // The count is kept whatever the sink does with the rows, so a streaming
+        // caller can still say how many findings there were — and so 'no
+        // violations' is never inferred from an empty array that was never
+        // filled in the first place (M-02).
+        $result['stats']['violations'] = $sink->count();
+        if ($collect) $result['violations'] = $sink->violations;
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
         return $result;
+    }
+
+    /**
+     * Everything a scan needs to know before it reads its first record: which
+     * rules are live, where each one lives, what has to be read, and which rule
+     * problems are already known. Computed once per scan.
+     *
+     * Lifted out of scanProject() whole in 1.7.0. It is the half that does not
+     * depend on the data, so a caller that scans a project in slices computes it
+     * once rather than per slice — and it is the half whose failures are FATAL,
+     * which is why they come back as one 'fatal' string rather than being mixed
+     * in with per-record notes.
+     *
+     * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
+     *               readSet: array, dupes: array, unconf: array}
+     */
+    private function scanPlan($pid)
+    {
+        $out = ['fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+                'readSet' => [], 'dupes' => [], 'unconf' => []];
+
+        // Rule DISCOVERY is a read like any other and can throw: a settings
+        // backend failure used to escape scanProject entirely, so the operator
+        // got a PHP error page instead of a scan result and nothing recorded
+        // that the project had not been examined (M-03).
+        try {
+            $rules = $this->getRules($pid);
+        } catch (\Throwable $e) {
+            $out['fatal'] = 'the rule list could not be read: ' . get_class($e);
+            return $out;
+        }
+        if (!is_array($rules)) $rules = [];
+
+        // The dictionary is load-bearing twice: annotation rules are READ from
+        // it, and every rule has to be located on an instrument before it can be
+        // evaluated at all. Establish that independently of whether any rule
+        // survived — a failed read that left one settings rule standing used to
+        // scan that rule and report 'complete' while every annotation rule had
+        // silently vanished from the list (H-05).
+        if (!$this->dataDictionary($pid)) {
+            $out['fatal'] = 'the project data dictionary could not be read, so the rule list is '
+                . 'incomplete and no rule can be located on an instrument';
+            return $out;
+        }
+        if (!$rules) { $out['nothingToScan'] = true; return $out; }
+
+        $live = [];
+        $unconf = [];   // dedupe rule-problem notes by rule+why (config errors AND runtime)
+        foreach ($rules as $i => $r) {
+            if (!empty($r['configError'])) {
+                // A config-broken rule enforces NOTHING. Surface it in the scan
+                // rather than imply a clean project — the module's rule is that
+                // nothing fails silently (M-05). It also shows on the data-entry
+                // form, but a scan operator would not otherwise know a rule is inert.
+                $unconf[$i . '|configError'] = [
+                    'rule'   => $i + 1,
+                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                    'why'    => 'configuration error — this rule validates nothing: ' . $r['configError'],
+                ];
+                continue;
+            }
+            $live[$i] = $r;
+        }
+        $out['live']   = $live;
+        $out['unconf'] = $unconf;
+        if (!$live) { $out['nothingToScan'] = true; return $out; }
+
+        $dupes = [];
+        foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
+        $out['dupes'] = $dupes;
+
+        // WHERE each rule lives, computed once. A rule whose field cannot be
+        // located on any instrument is not evaluated in some arbitrary context
+        // and hoped for — it is reported, because a guessed location produces
+        // confident nonsense rather than a near miss (H-02).
+        $hostFields = [];
+        foreach ($live as $i => $r) {
+            $h = $this->ruleHostForms($r, $pid);
+            if ($h['unknown']) {
+                $unconf[$i . '|unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
+                    'why' => 'the instrument that owns this rule\'s field(s) could not be determined from the '
+                           . 'data dictionary, so there is no context in which to check them — the field is not scanned'];
+            }
+            $hostFields[$i] = $h['forms'];
+        }
+        $out['hostFields'] = $hostFields;
+        $out['unconf']     = $unconf;
+
+        // Everything the evaluation needs to read: rule fields + when/assert
+        // refs + composite unique keys.
+        $readSet = [];
+        foreach ($live as $r) {
+            foreach ($r['fields'] as $f) $readSet[$f] = true;
+            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
+                $p = Logic::parse($cond);
+                if (empty($p['ok'])) continue;
+                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+            }
+            foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
+        }
+        $out['readSet'] = $readSet;
+        return $out;
+    }
+
+    /**
+     * Evaluate every live rule against ONE record, handing findings to the sink.
+     *
+     * Lifted out of scanProject()'s chunk loop in 1.7.0, unchanged. Everything
+     * it needs that outlives the record — the whole-project unique candidates
+     * and the deduped rule problems — is threaded by reference, because both are
+     * bounded by the RULE list rather than by the data.
+     *
+     * @return array{contexts: int, why: ?string}  'why' is set when the record
+     *         could not be examined at all, which is reported, never assumed clean.
+     */
+    private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
+                                array &$uniqueSeen, array &$unconf)
+    {
+        $ctxAll = self::recordContexts($node);
+        if (!$ctxAll) {
+            // REDCap returned the record with no event row at all. There is
+            // nothing to evaluate, and nothing that says the record is
+            // clean — certifying it was the same silent skip as an
+            // unreadable chunk, one step further down (H-05).
+            return ['contexts' => 0,
+                    'why' => 'record ' . (string) $rec . ' was returned with no data rows, so it was not checked'];
+        }
+        $recDag = self::dagOfRecordNode($node);
+        // Resolution is a property of the CONTEXT, not of the rule that
+        // happens to be asking. Computing it per rule re-derived the same
+        // ownership map contexts x rules times (M-05).
+        $resCache = [];
+        $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
+        foreach ($plan['live'] as $i => $r) {
+            $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+            foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
+                $onForm = array_fill_keys($ownFields, true);
+                if (!isset($hostCache[$hostForm])) {
+                    $hostCache[$hostForm] = $this->hostContextsFor($ctxAll, $hostForm, $pid);
+                }
+                foreach ($hostCache[$hostForm] as $ck => $ctx) {
+                    if (!isset($resCache[$ck])) {
+                        $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
+                    }
+                    if ($mode === 'unique') {
+                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck]);
+                        continue;
+                    }
+                    $f = $this->ruleFindings($r, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
+                    foreach ($f['invalid'] as $v) {
+                        $sink->violation([
+                            'record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                            'instance' => $ctx['instance'], 'field' => $v['field'],
+                            'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
+                        ]);
+                    }
+                    foreach ($f['unconfigurable'] as $u) {
+                        $key = $i . '|' . $u['why'];
+                        if (!isset($unconf[$key])) {
+                            $unconf[$key] = ['rule' => $i + 1, 'fields' => $u['fields'], 'why' => $u['why']];
+                        }
+                    }
+                }
+            }
+        }
+        return ['contexts' => count($ctxAll), 'why' => null];
     }
 
     /**

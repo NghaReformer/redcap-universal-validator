@@ -1,5 +1,56 @@
 # Changelog
 
+## 1.7.0 — findings can leave the scan as they are found
+
+`scanProject()` appended every violation to one array and returned it whole.
+That array is the scan's dominant cost — ~440 bytes a row, and the live project
+measured in 1.6.4 produces ~49 rows per record — so it grows with the project
+and nothing ever flushes it. Past a certain size the scan dies of memory
+exhaustion, which is an uncatchable fatal: the process stops before the return,
+the page renders nothing, and nothing records that the project was not examined.
+1.6.4 put a guard in front of that wall. This release moves the wall.
+
+The scan is now three pieces:
+
+- **`scanPlan()`** — which rules are live, where each lives, what has to be
+  read. The half that does not depend on the data, so a caller working through a
+  project in slices computes it once rather than per slice. Its failures are
+  fatal by nature, so they come back as one reason rather than mixed in with
+  per-record notes.
+- **`scanRecord()`** — every live rule against one record, unchanged. The
+  whole-project state it needs, the unique candidates and the deduped rule
+  problems, is threaded by reference; both are bounded by the RULE list rather
+  than by the data.
+- **`FindingSink`** — where violations go as they are found. `ArrayFindingSink`
+  collects them exactly as before and is the default. `CallbackFindingSink`
+  hands each row straight on and keeps none. `CountingFindingSink` keeps only
+  the count, which is the cheapest honest answer to "how many would this project
+  produce".
+
+**`scanProject()` keeps its signature and its return shape.** Every existing
+caller and all 26 call sites are untouched; the sink is a fourth, optional
+argument. `stats` gains a `violations` count for everyone, so a streaming caller
+can still say how many findings there were — "no violations" must never be
+inferred from an array that was simply never filled (M-02).
+
+Only violations stream. Rule problems are bounded by the rule list and
+`incomplete` notes by the number of unreadable records, so both stay on the
+returned result where every caller and test already reads them.
+
+`tests/hosting_php.php` gains the SINK section: **107 checks total**, and the
+existing 70 pass unchanged — which is exactly the trap, because passing proves
+the ARRAY path is unchanged and says nothing about the streaming one a large
+project will actually use. So four scenarios — ordinary findings, the
+whole-project duplicate tail, a record that cannot be examined, and a project
+with nothing live — each run through both sinks and every field of the result is
+compared. That is the same differential shape already used to stop the PHP and
+JS condition engines drifting apart.
+
+> `uniqueGroupKey()` was listed for this release and is **not** extracted. Its
+> purpose is to let an in-memory and a durable path share one key construction,
+> and there is no durable path yet; pulling it out now would be a second caller
+> that does not exist. It goes in when persistence does.
+
 ## 1.6.4 — the scan stops on its own terms
 
 Measured on a live REDCap 17.0.6 project rather than estimated: 39 records, 329

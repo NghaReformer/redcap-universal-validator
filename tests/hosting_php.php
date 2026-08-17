@@ -808,6 +808,107 @@ namespace {
             count($res['violations']) === 3);
     }
 
+    /* =========================================================================
+     * SINK  the extraction changed nothing
+     *
+     * 1.7.0 split scanProject() into scanPlan() + scanRecord() + a FindingSink,
+     * so violations can be consumed as they are found rather than accumulated.
+     * scanProject() keeps its signature and return shape, which means every
+     * check above still passes — and that is the trap: passing proves the ARRAY
+     * path is unchanged and says nothing about the streaming one, which is the
+     * path a large project will actually use.
+     *
+     * So every scenario runs through BOTH and the results are compared. This is
+     * the same differential shape the repo already uses to stop the PHP and JS
+     * condition engines drifting apart (tests/when_fuzz_php.php).
+     * ===================================================================== */
+    {
+        $UVC = '\INSPIRE\UniversalValidator\UniversalValidator';
+        $hasSink = interface_exists('\INSPIRE\UniversalValidator\FindingSink');
+        check('sink: the FindingSink seam exists', $hasSink);
+        // Guarded: constructing the sinks on a tree without them is a fatal,
+        // which would take every check after this point down with it.
+        if (!$hasSink) {
+            check('sink: the differential cannot run without the seam', false);
+        } else {
+
+        // Four shapes, chosen because they exercise different emit paths: the
+        // ordinary per-record one, the whole-project unique tail, a record that
+        // cannot be examined, and a project with nothing live to scan.
+        $D  = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED'],
+                    'b_val' => ['fb', '@UVUNIQUE']]);
+        $scenarios = [
+            'plain violations' => [$D, [
+                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X']],
+                2 => [1 => ['record_id' => '2', 'a_val' => '', 'b_val' => 'Y']],
+            ]],
+            'unique duplicates across records' => [$D, [
+                1 => [1 => ['record_id' => '1', 'a_val' => 'ok', 'b_val' => 'SAME']],
+                2 => [1 => ['record_id' => '2', 'a_val' => 'ok', 'b_val' => 'SAME']],
+            ]],
+            'a record with no rows' => [$D, [
+                1 => [1 => ['record_id' => '1', 'a_val' => '', 'b_val' => 'X']],
+                2 => [],
+            ]],
+            'nothing live to scan' => [dict(['record_id' => ['fa'], 'plain' => ['fa']]), [
+                1 => [1 => ['record_id' => '1', 'plain' => 'x']],
+            ]],
+        ];
+
+        foreach ($scenarios as $name => $sc) {
+            list($dd, $data) = $sc;
+
+            $viaArray = mkMod($dd, $data)->scanProject(PID);
+
+            $streamed = [];
+            $cb = new \INSPIRE\UniversalValidator\CallbackFindingSink(
+                function (array $v) use (&$streamed) { $streamed[] = $v; });
+            $viaStream = mkMod($dd, $data)->scanProject(PID, null, 200, $cb);
+
+            $counting = new \INSPIRE\UniversalValidator\CountingFindingSink();
+            $viaCount = mkMod($dd, $data)->scanProject(PID, null, 200, $counting);
+
+            check("sink [$name]: the streamed findings are identical, in the same order",
+                $streamed === $viaArray['violations']);
+            check("sink [$name]: status agrees",
+                $viaStream['status'] === $viaArray['status']);
+            check("sink [$name]: the incomplete notes agree",
+                $viaStream['incomplete'] === $viaArray['incomplete']);
+            check("sink [$name]: the rule problems agree",
+                $viaStream['unconfigurable'] === $viaArray['unconfigurable']);
+            check("sink [$name]: records, contexts and rules agree",
+                $viaStream['stats']['records'] === $viaArray['stats']['records']
+                && $viaStream['stats']['contexts'] === $viaArray['stats']['contexts']
+                && $viaStream['stats']['rules'] === $viaArray['stats']['rules']);
+            // The point of streaming: the rows are NOT kept...
+            check("sink [$name]: a streaming scan keeps no rows in the result",
+                $viaStream['violations'] === []);
+            // ...but the COUNT survives, so "no violations" is never inferred
+            // from an array that was simply never filled (M-02).
+            check("sink [$name]: and the count survives anyway",
+                $viaStream['stats']['violations'] === count($viaArray['violations']));
+            check("sink [$name]: a counting sink agrees with both",
+                $viaCount['stats']['violations'] === count($viaArray['violations']));
+        }
+
+        // A scenario that actually produced findings, so the comparison above is
+        // not four rounds of comparing nothing to nothing.
+        $probe = mkMod($D, $scenarios['plain violations'][1])->scanProject(PID);
+        check('sink: the differential ran against real findings',
+            count($probe['violations']) >= 2);
+        $dup = mkMod($D, $scenarios['unique duplicates across records'][1])->scanProject(PID);
+        check('sink: including duplicate findings from the whole-project tail',
+            (bool) array_filter($dup['violations'], function ($v) { return $v['type'] === 'unique'; }));
+
+        // The default is still the array sink: an existing caller that passes no
+        // sink gets exactly what it always got.
+        check('sink: the default keeps collecting, so old callers are unchanged',
+            is_array($probe['violations']) && $probe['violations'] !== []);
+        check('sink: and stats gained a violation count for everyone',
+            $probe['stats']['violations'] === count($probe['violations']));
+        }
+    }
+
     echo "hosting_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }
