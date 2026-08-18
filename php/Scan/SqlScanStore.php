@@ -399,6 +399,15 @@ final class SqlScanStore implements ScanStore
             foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
                 $this->insertFinding($f);
             }
+            // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
+            // the record states. A uniqueness verdict is the only thing in the
+            // scan that depends on records other than the one being examined, so
+            // a candidate written outside the batch that produced it could
+            // survive a rolled-back batch and make a record look like a
+            // duplicate of a reading that was discarded.
+            foreach (isset($batch['candidates']) ? $batch['candidates'] : [] as $c) {
+                $this->insertCandidate($c);
+            }
             $applied = 0;
             foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
                 // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
@@ -442,16 +451,51 @@ final class SqlScanStore implements ScanStore
         }
     }
 
+    /**
+     * One uniqueness candidate.
+     *
+     * ON DUPLICATE KEY UPDATE rather than plain INSERT, because a record
+     * requeued by the stable-read protocol is evaluated again and offers its
+     * candidates again. The unique key makes the second offer land on the same
+     * row; `INSERT IGNORE` would do that too and would also swallow a value too
+     * long for its column, which is the failure worth keeping loud.
+     *
+     * THE VALUE IS NOT STORED. Only the keyed group hash is, because a Notes
+     * field can be 64 KB and a candidate per record would be a second copy of
+     * the project. A group that actually collides is re-read from the source.
+     */
+    private function insertCandidate(array $c)
+    {
+        $this->db->exec('INSERT INTO ' . Schema::table('unique_candidate') . '
+            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned)', [
+            $c['generation_id'], $c['rule_source_id'], $c['rule_revision'], $c['group_hmac'],
+            isset($c['scope_key']) ? $c['scope_key'] : '',
+            $c['record_hash'], $c['record_id_bin'],
+            isset($c['event_id']) ? $c['event_id'] : null,
+            isset($c['instance']) ? $c['instance'] : 1,
+            $c['host_form'], $c['field'],
+            isset($c['version']) ? $c['version'] : null,
+        ]);
+    }
+
     private function insertFinding(array $f)
     {
+        // A STAGED row is written with active_slot NULL and is invisible to every
+        // report query until the finalizer publishes its group. Ordinary
+        // findings are active from the moment they are written.
+        $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
         $this->db->exec('INSERT INTO ' . Schema::table('finding') . '
             (generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
              record_id_bin, event_id, arm_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity, dag_key,
              status_key, value_bin, value_len, value_fingerprint, value_truncated, value_binary,
-             value_expires_at)
-            VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-            $f['generation_id'], $f['identity'], $f['seq'], $f['record_hash'], $f['record_id_bin'],
+             value_expires_at, group_hmac, stage_epoch)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+            $f['generation_id'], $f['identity'], $f['seq'], $staged ? null : 1,
+            $f['record_hash'], $f['record_id_bin'],
             isset($f['event_id']) ? $f['event_id'] : null,
             isset($f['arm_id']) ? $f['arm_id'] : null,
             isset($f['instance']) ? $f['instance'] : 1,
@@ -468,6 +512,8 @@ final class SqlScanStore implements ScanStore
             isset($f['value_truncated']) ? $f['value_truncated'] : 0,
             isset($f['value_binary']) ? $f['value_binary'] : 0,
             isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
+            isset($f['group_hmac']) ? $f['group_hmac'] : null,
+            $staged ? $f['stage_epoch'] : null,
         ]);
     }
 

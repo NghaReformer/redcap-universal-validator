@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.8.23 - deciding duplicates without holding the project
+
+Uniqueness is the only check this module makes that is a property of the whole
+project rather than of one record - no record is a duplicate on its own
+evidence - so it is the only one that cannot be finished while scanning. It now
+has its own phase, and `UniqueFinalizer` runs it.
+
+**The group is a keyed hash, never the value.** A `@UVUNIQUE` rule can sit on a
+Notes field, and a Notes field is up to 64 KB; a value per candidate would be a
+second copy of the project sitting in a table more people can read than can read
+the project. Candidates carry a project-scoped HMAC and a location, and the
+values are re-read from the source only for the groups that turn out to hold
+more than one record.
+
+**And the hash is verified rather than trusted.** Two different values sharing a
+SHA-256 HMAC is not something data entry can produce, and it is checked anyway,
+because the alternative to checking is asserting - and the assertion is "these
+two participants have the same hospital number", about people. When a group's
+values disagree, the group is marked undecidable and NO verdict is emitted for
+it. Partitioning the group by value is the tempting response and would turn a
+hash failure into a confident wrong report. Values that could not be re-read at
+all block the group the same way, for the same reason.
+
+**Bounded, including the pathological case.** A rule on a field where every
+record holds the same value puts every record in one group. Verification and
+emission both page by keyset and persist their cursor, so nothing accumulates a
+group. The database matrix finalizes a 20,000-candidate group and compares its
+peak memory against a group 400 times smaller: they are within a few megabytes
+of each other, which is the property - the page size sets the footprint, not the
+group.
+
+**Staged, then published.** Duplicate findings are written with no active slot,
+so no report can see them, and the group's published epoch is what makes them
+visible. Half a duplicate group is a report naming one of two matching records
+and not the other, which is worse than naming neither. A record edited during
+finalization moves the group's candidate epoch, abandons its staged rows and
+starts the group again; the abandoned rows are swept in bounded pages.
+
+**A unique key the active-identity one could not supply.** Staged rows are keyed
+by (generation, identity, staging epoch). The active-identity key cannot do this
+job: a staged row has no active slot, MySQL counts every NULL in a unique index
+as distinct, and a retried emission page would therefore insert a second copy of
+every row it had already written. The test that re-emits a published group
+exists to hold that.
+
+**The worker will not walk past a finalizer nobody configured.** Advancing would
+turn a wiring mistake into a report containing no duplicate findings at all,
+which reads exactly like a project that has none. It stops and says so.
+
+Two changes to the finding table, and one note about why they are still version
+1: nothing in the module calls `migrate()` yet, so no installation has this
+schema, and adding a version 2 would ship an upgrade path nobody could take
+while hiding the real shape behind it. The moment a release enables the scan,
+every change becomes a new version.
+
+Emission writes one statement per page rather than one per finding, which took
+the 20,000-candidate group from minutes to seconds. 314 fast checks and 241 in
+the database matrix, on both engines under both isolation levels.
+
 ## 1.8.22 - the worker: prove it held still, look, and commit or commit nothing
 
 `ScanWorker` is the durable scan's engine, and `WorkBudget` is what stops it

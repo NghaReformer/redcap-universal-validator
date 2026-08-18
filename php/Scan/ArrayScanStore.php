@@ -29,6 +29,7 @@ final class ArrayScanStore implements ScanStore
     private $runs = [];        // run_id => row
     private $records = [];     // run_id => [ordinal => row]
     private $findings = [];    // list
+    private $candidates = [];  // uniqueness candidates, keyed as the UNIQUE index is
     private $slots = [];       // slot_no => row
     private $aggregates = [];  // run_id => list
     private $audits = [];
@@ -186,6 +187,15 @@ final class ArrayScanStore implements ScanStore
         foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
             $this->findings[] = $f;
         }
+        // In the same commit as the findings, for the reason in SqlScanStore:
+        // a candidate that outlived a rolled-back batch would make a record a
+        // duplicate of a reading that was discarded.
+        foreach (isset($batch['candidates']) ? $batch['candidates'] : [] as $c) {
+            $k = $c['group_hmac'] . '|' . $c['record_hash'] . '|' . $c['field'] . '|'
+               . (isset($c['event_id']) ? $c['event_id'] : '') . '|'
+               . (isset($c['instance']) ? $c['instance'] : 1);
+            $this->candidates[$k] = $c;
+        }
         $applied = 0;
         foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
             $o = $rec['ordinal'];
@@ -217,6 +227,12 @@ final class ArrayScanStore implements ScanStore
         return ['ordinal' => $rec['ordinal'], 'id_bin' => $rec['id_bin'],
                 'hash' => $rec['hash'], 'dag' => $rec['dag'],
                 'attempts' => (int) $rec['attempts'], 'version' => $rec['version']];
+    }
+
+    /** Uniqueness candidates written so far. For assertions, not for production. */
+    public function candidates()
+    {
+        return array_values($this->candidates);
     }
 
     /** A predicate over states, exactly as the SQL store computes it. */

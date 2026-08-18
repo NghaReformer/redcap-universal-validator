@@ -37,6 +37,15 @@ final class Schema
      */
     const VERSION = 1;
 
+    // WHY VERSION 1 STILL CHANGES. The durable scan has never been enabled on
+    // any installation - nothing in the module calls migrate(), the feature
+    // flag does not exist yet, and the tables are created only by tests. So
+    // there is no installation to migrate FROM, and adding a version 2 would
+    // mean shipping an upgrade path that no installation could ever take while
+    // hiding the real shape of the schema behind it. The moment the first
+    // release enables the scan, this stops being true and every change becomes
+    // a new version.
+
     /**
      * Table prefix. One constant, because the plan requires the installation's
      * confirmed convention and this is the single place to change it if a site's
@@ -223,9 +232,25 @@ final class Schema
             value_truncated TINYINT UNSIGNED NOT NULL DEFAULT 0,
             value_binary TINYINT UNSIGNED NOT NULL DEFAULT 0,
             value_expires_at DATETIME NULL,
+            -- Duplicate findings are produced by a finalizer that may have to
+            -- restart a group, so they carry which group they belong to and
+            -- which finalizer pass wrote them. A staged row has active_slot NULL
+            -- and is invisible to every report query; publication flips it. Both
+            -- are NULL for every ordinary finding, which is most of them.
+            group_hmac BINARY(32) NULL,
+            stage_epoch BIGINT UNSIGNED NULL,
             PRIMARY KEY (finding_id),
             UNIQUE KEY uq_active_identity (generation_id, finding_identity, active_slot),
+            -- ONE STAGED ROW PER IDENTITY PER FINALIZER PASS. The active-identity
+            -- key above cannot do this job: a staged row has active_slot NULL,
+            -- and MySQL treats every NULL in a unique index as distinct, so a
+            -- retried emission page would insert a second copy of every row it
+            -- had already written. Ordinary findings have a NULL stage_epoch and
+            -- are unconstrained by this key, which is exactly right - their
+            -- uniqueness is the active one.
+            UNIQUE KEY uq_staged_identity (generation_id, finding_identity, stage_epoch),
             KEY ix_page (generation_id, active_slot, finding_id),
+            KEY ix_group_stage (generation_id, group_hmac, stage_epoch, finding_id),
             KEY ix_filter_form (generation_id, active_slot, host_form, finding_id),
             KEY ix_filter_reason (generation_id, active_slot, reason_code, finding_id),
             KEY ix_filter_dag (generation_id, active_slot, dag_key, finding_id),

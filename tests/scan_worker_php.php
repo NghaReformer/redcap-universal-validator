@@ -33,6 +33,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
 
     $n = 0; $fail = 0;
@@ -632,6 +633,31 @@ namespace INSPIRE\UniversalValidator\Scan {
         }
     }
 
+    /**
+     * A duplicate finalizer a test can hold at whatever answer it needs.
+     *
+     * The real one is 400 lines of SQL and is checked against four servers. What
+     * belongs HERE is the worker's behaviour around it: that a phase with
+     * nothing to do is still entered, and that a finalizer nobody configured
+     * stops the run rather than being walked past.
+     */
+    class Finalizer implements DuplicateFinalizer
+    {
+        public $calls = 0;
+        public $rounds = 1;       // how many steps before it reports itself done
+        public $emitted = 0;
+        public $collisions = 0;
+
+        public function step($generationId, $limit = 500)
+        {
+            $this->calls++;
+            $done = $this->calls >= $this->rounds;
+            return ['done' => $done, 'groups' => 0, 'verified' => 0,
+                    'emitted' => $done ? $this->emitted : 0, 'published' => $done ? 1 : 0,
+                    'collisions' => $done ? $this->collisions : 0, 'why' => null];
+        }
+    }
+
     /** A run with a frozen manifest, ready to be worked. */
     $fixture = function ($ids, $pid = 800) {
         $store = new ArrayScanStore(2);
@@ -665,12 +691,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     $wide = function () { return new WorkBudget(['mode' => 'cron', 'memoryLimit' => null,
         'timeLimit' => null, 'min' => 1, 'max' => 100, 'first' => 10,
         'startedAt' => microtime(true)]); };
+    $fin = function () { return new Finalizer(); };
 
     // -- the ordinary case ---------------------------------------------------
     list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
     $ver = new Versions();
     $w = new ScanWorker($store, ['fence' => $ver, 'read' => $reader, 'evaluate' => $finder(1),
-        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: every record is examined', $res['worked'] === 5);
     check('worker: and every finding kept', $res['findings'] === 5);
@@ -697,7 +724,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         return $reader($ids);
     };
     $w = new ScanWorker($store, ['fence' => $ver, 'read' => $racing, 'evaluate' => $finder(1),
-        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: a record edited during the read is requeued, not reported',
         $res['requeued'] === 1);
@@ -711,7 +738,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $ver = new Versions();
     $ver->bumpOnRead = ['HOT' => true];
     $w = new ScanWorker($store, ['fence' => $ver, 'read' => $reader, 'evaluate' => $finder(1),
-        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: a record edited on every look is eventually reported, not retried forever',
         $res['blocked'] === 1);
@@ -736,7 +763,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         return ['ok' => true, 'data' => $data, 'why' => null];
     };
     $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $partial,
-        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2]);
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: a record that vanished mid-run reaches a terminal state',
         $store->manifestComplete($runId) === true);
@@ -752,7 +779,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         return ['ok' => false, 'data' => [], 'why' => 'the export timed out'];
     };
     $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $broken,
-        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: a failed read commits nothing', $res['worked'] === 0
         && (int) $store->run(800, $runId)['detail_rows'] === 0);
@@ -767,7 +794,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         return $f($id, $node);
     };
     $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
-        'evaluate' => $throwing, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'evaluate' => $throwing, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: one record that cannot be examined does not lose the batch',
         $res['worked'] === 2 && $res['findings'] === 2);
@@ -783,7 +810,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         return $f($id, $node);
     };
     $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
-        'evaluate' => $cancelling, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+        'evaluate' => $cancelling, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin()]);
     $res = $w->work(800, $runId);
     check('worker: a cancelled worker fails its fence rather than committing',
         $res['ok'] === false && $res['stop'] === 'fenced');
@@ -846,6 +873,49 @@ namespace INSPIRE\UniversalValidator\Scan {
         $res['done'] === false && $store->run(800, $runId)['phase'] === 'scanning');
     check('worker: and says the scan continues rather than that it failed',
         strpos($res['why'], 'continues in the next one') !== false);
+
+    // -- the duplicate phase is entered, not skipped -------------------------
+    //
+    // A project with no unique rules still passes through it. "We checked and
+    // there were no duplicates" and "nobody checked" must not be the same stored
+    // fact, which is the whole reason the phase chain forbids skipping.
+    list($store, $runId) = $fixture(['A', 'B']);
+    $ff = new Finalizer();
+    $ff->rounds = 3;                     // needs several bounded steps to settle
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $ff]);
+    $res = $w->work(800, $runId);
+    check('worker: the duplicate finalizer is run even when there is nothing to find',
+        $ff->calls === 3);
+    check('worker: and the run only moves on once it says it is settled',
+        $res['phase'] === 'rollup-finalize' && $res['done'] === true);
+
+    // A finalizer that could not decide a group contributes a blocking
+    // exclusion, which is what stops the run claiming it covered the project.
+    list($store, $runId) = $fixture(['A']);
+    $fc = new Finalizer();
+    $fc->collisions = 2;
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fc]);
+    $res = $w->work(800, $runId);
+    check('worker: a group the finalizer could not decide counts as blocking',
+        $res['blocked'] === 2);
+
+    // AND A FINALIZER NOBODY CONFIGURED STOPS THE RUN. Walking past it would
+    // turn a wiring mistake into a report that silently contains no duplicate
+    // findings at all, which reads exactly like a project that has none.
+    list($store, $runId) = $fixture(['A']);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: with no way to decide duplicates the run stops rather than advancing',
+        $res['ok'] === false && $res['stop'] === 'unconfigured');
+    check('worker: and says so, rather than reporting that it found none',
+        strpos($res['why'], 'reporting that it found none') !== false);
+    check('worker: the run is left where it stopped, not finished',
+        $store->run(800, $runId)['phase'] === 'unique-finalize');
 
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);

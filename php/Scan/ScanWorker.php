@@ -137,7 +137,8 @@ final class ScanWorker
         }
 
         try {
-            return $this->loop($pid, $runId, $phase, $epoch, $opts);
+            return $this->loop($pid, $runId, $phase, $epoch,
+                (int) $run['generation_id'], $opts);
         } finally {
             if ($slot !== null && $slots instanceof WorkerSlots) {
                 $slots->release($slot['slot_no'], $this->owner(), $slot['epoch']);
@@ -146,7 +147,7 @@ final class ScanWorker
     }
 
     /** Claim, evaluate and commit until the budget says stop or the phase is empty. */
-    private function loop($pid, $runId, $phase, $epoch, array $opts)
+    private function loop($pid, $runId, $phase, $epoch, $generationId, array $opts)
     {
         $budget = isset($this->deps['budget']) ? $this->deps['budget'] : new WorkBudget();
         $worked = 0; $requeued = 0; $blocked = 0; $found = 0; $stop = null; $why = null;
@@ -157,6 +158,45 @@ final class ScanWorker
             if ($stop !== null) {
                 $why = ($stop === 'time') ? WorkBudget::OUT_OF_TIME : WorkBudget::OUT_OF_MEMORY;
                 break;
+            }
+
+            // UNIQUENESS IS NOT A RECORD-AT-A-TIME PHASE. No record is a
+            // duplicate on its own evidence, so this phase works over candidate
+            // GROUPS and has its own bounded step.
+            if ($phase === ScanPhase::UNIQUE) {
+                $fin = isset($this->deps['finalizer']) ? $this->deps['finalizer'] : null;
+                if (!($fin instanceof DuplicateFinalizer)) {
+                    // Advancing past a finalizer that was never configured would
+                    // make "we checked and found no duplicates" and "nobody
+                    // checked" the same stored fact. Stop instead.
+                    return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                            'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
+                            'done' => false, 'stop' => 'unconfigured',
+                            'why' => 'this scan has no way to decide duplicate values, so it '
+                                   . 'stopped rather than reporting that it found none'];
+                }
+                $t0 = microtime(true);
+                $m0 = memory_get_usage(true);
+                $r = $fin->step($generationId, $budget->claim());
+                $found += $r['emitted'];
+                $blocked += $r['collisions'];
+                if ($r['done']) {
+                    $next = ScanPhase::next($phase);
+                    if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
+                        $phase = $next;
+                        continue;
+                    }
+                    $done = true;
+                    break;
+                }
+                $adj = $budget->next([
+                    'records' => max(1, $r['verified'] + $r['emitted'] + $r['groups']),
+                    'seconds' => microtime(true) - $t0,
+                    'memoryDelta' => max(0, memory_get_usage(true) - $m0),
+                    'usage' => memory_get_usage(true),
+                ]);
+                if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
+                continue;
             }
 
             $claimed = ($phase === ScanPhase::SCANNING)
@@ -245,7 +285,7 @@ final class ScanWorker
         $after = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
         $maxAttempts = isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
-        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
         $worked = 0; $requeued = 0; $blocked = 0;
 
         foreach ($claimed as $c) {
@@ -301,6 +341,16 @@ final class ScanWorker
             foreach ($ev['findings'] as $f) {
                 $batch['findings'][] = $f;
             }
+            // A uniqueness rule produces a CANDIDATE rather than a finding: no
+            // record can be a duplicate on its own evidence. They travel in the
+            // same batch so that a rolled-back read leaves no candidate behind
+            // to make some other record look like a duplicate of it.
+            if (isset($ev['candidates']) && is_array($ev['candidates'])) {
+                foreach ($ev['candidates'] as $c) {
+                    if (!isset($c['version'])) $c['version'] = isset($after[$id]) ? $after[$id] : null;
+                    $batch['candidates'][] = $c;
+                }
+            }
             $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
                                    'version' => isset($after[$id]) ? $after[$id] : null];
@@ -314,7 +364,8 @@ final class ScanWorker
                            . 'examined, so nothing from them was kept'];
         }
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued, 'blocked' => $blocked,
-                'findings' => count($batch['findings']), 'why' => null];
+                'findings' => count($batch['findings']),
+                'candidates' => count($batch['candidates']), 'why' => null];
     }
 
     /** Evaluate one record, turning any throw into a reported failure. */
