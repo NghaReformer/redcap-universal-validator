@@ -183,7 +183,7 @@ final class ScanColumns
     }
 
     /** One finding as a flat row of strings, keyed by column key. */
-    public static function row(array $finding, ScanDimensions $d, array $cols = null)
+    public static function row(array $finding, ScanDimensions $d, ?array $cols = null)
     {
         if ($cols === null) $cols = self::all($d);
         $row = [];

@@ -2187,7 +2187,7 @@ class UniversalValidator extends AbstractExternalModule
      * Redaction fails CLOSED — an unreadable dictionary withholds everything,
      * because a dictionary that cannot be read cannot clear a field.
 */
-    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, FindingSink $sink = null, array $opts = [])
+    public function scanProject($pid, $dagFilter = null, $chunkSize = 200, ?FindingSink $sink = null, array $opts = [])
     {
         // 'status' is part of the contract: a scan that could not read everything
         // must never be presentable as a clean bill of health. 'complete' is
@@ -2527,7 +2527,7 @@ class UniversalValidator extends AbstractExternalModule
      * dictionary and the rules, so this is a memory read rather than a second
      * pass over the project.
      */
-    public function scanDimensions($pid, array $rules = null)
+    public function scanDimensions($pid, ?array $rules = null)
     {
         $dd = $this->dataDictionary($pid);
         // Prefer the snapshot the scan actually used. Re-reading here joined the
@@ -3843,7 +3843,7 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Returns a map of field => string value (only fields that had a value).
      */
-    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance, $keepArrays = false, array &$resolution = null)
+    private function readValues($project_id, $record, array $fields, $event_id, $instrument, $repeat_instance, $keepArrays = false, ?array &$resolution = null)
     {
         // THREE-STATE RESOLUTION (1.6.0). $resolution, when the caller passes
         // it, reports for every requested field exactly one of:
