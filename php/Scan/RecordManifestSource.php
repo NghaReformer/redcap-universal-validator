@@ -133,6 +133,95 @@ final class RecordManifestSource
         return ['ok' => true, 'source' => $s, 'why' => null];
     }
 
+    /**
+     * Which of these record ids the project still holds.
+     *
+     * Reconciliation needs this to tell a DELETION from an EDIT, and the two get
+     * opposite treatment: a deleted record is tombstoned and a run can finish
+     * over it, while an edited one is requeued. Guessing either way is a defect
+     * - guess "deleted" and a record silently leaves the scan; guess "edited"
+     * and the run waits forever for a record that will never be readable.
+     *
+     * FAILS TOWARD "STILL THERE", which is the requeue side: a read error costs
+     * one wasted attempt, and the attempt limit turns a genuinely unreadable
+     * record into a reported exclusion. The other direction would erase a record
+     * from a report because a query timed out.
+     *
+     * @param string[] $ids
+     * @return array<string,bool>
+     */
+    public function exist(array $ids)
+    {
+        $out = array_fill_keys(array_map('strval', $ids), true);
+        if (!$ids) return $out;
+        try {
+            $marks = implode(',', array_fill(0, count($ids), '?'));
+            $sql = 'SELECT ' . $this->recordCol . ' FROM ' . $this->table
+                 . ' WHERE project_id = ?';
+            $params = [$this->pid];
+            if ($this->pkField !== null) {
+                $sql .= ' AND field_name = ?';
+                $params[] = $this->pkField;
+            }
+            $sql .= ' AND ' . $this->recordCol . ' IN (' . $marks . ')';
+            foreach ($ids as $id) $params[] = (string) $id;
+
+            $seen = [];
+            foreach ($this->db->select($sql, $params) as $row) $seen[(string) $row[0]] = true;
+            foreach ($out as $id => $_) $out[$id] = isset($seen[$id]);
+            return $out;
+        } catch (\Throwable $e) {
+            return array_fill_keys(array_map('strval', $ids), true);
+        }
+    }
+
+    /** Each record's group, or null. Null both for "no group" and for "cannot tell". */
+    public function dagsOf(array $ids)
+    {
+        $out = array_fill_keys(array_map('strval', $ids), null);
+        if (!$ids || $this->dagCol === null) return $out;
+        try {
+            $marks = implode(',', array_fill(0, count($ids), '?'));
+            $params = [$this->pid];
+            foreach ($ids as $id) $params[] = (string) $id;
+            foreach ($this->db->select('SELECT ' . $this->recordCol . ', ' . $this->dagCol
+                    . ' FROM ' . $this->table . ' WHERE project_id = ? AND ' . $this->recordCol
+                    . ' IN (' . $marks . ')', $params) as $row) {
+                $out[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return $out;
+        }
+    }
+
+    /**
+     * Is each record inside a run scoped to $dag?
+     *
+     * FAILS CLOSED, unlike exist(). A record whose group cannot be established
+     * is NOT admitted to a group-scoped run: admitting it would put another
+     * group's record into a report its reader is not entitled to, which is the
+     * same fail-open the page-level DAG filter was hardened against. Leaving it
+     * out costs coverage, and coverage is reported.
+     *
+     * @return array<string,bool>
+     */
+    public function inScope(array $ids, $dag = null)
+    {
+        if ($dag === null) {
+            // An unscoped run admits everything the project holds.
+            return array_fill_keys(array_map('strval', $ids), true);
+        }
+        if ($this->dagCol === null) {
+            return array_fill_keys(array_map('strval', $ids), false);
+        }
+        $out = [];
+        foreach ($this->dagsOf($ids) as $id => $g) {
+            $out[$id] = ($g !== null && (string) $g === (string) $dag);
+        }
+        return $out;
+    }
+
     /** Which source this walk reads, for the run's record of itself. */
     public function via()
     {

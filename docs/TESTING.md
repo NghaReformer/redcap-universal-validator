@@ -236,6 +236,78 @@ assistive technology actually announces.
 - [ ] Run REDCap's built-in External Module security scan (Control Center) and
       review its findings.
 
+## Durable validation scan — the pilot before it is enabled anywhere
+
+**The scan ships disabled. Two switches must both be on before anything runs:**
+the system setting *Validation scan — enable the durable, resumable scan on this
+installation*, and the project setting *use the durable scan for this project*.
+Until then the page explains that it is unavailable and no records are read.
+
+That is deliberate, and this section is the reason. The concurrency and
+stability machinery this scan rests on cannot be proved by any mock: the suite
+stands up a fake `REDCap` class, so it proves the module's logic and nothing
+about whether the real one behaves the way the module assumes. v1.4.0 shipped a
+production-inert `@UVUNIQUE` with every mocked test green, because the framework
+serves some methods through `__call()` and `method_exists()` answers false for
+those. This is the same class of gap, over more surface.
+
+Do the pilot on a **copy** of a real project, or on a project whose data you can
+afford to have read repeatedly.
+
+### Before turning it on
+
+- [ ] The module's database user can `CREATE TABLE`. Without it, migration fails
+      closed and the page says so — confirm that it says so rather than erroring.
+- [ ] After enabling, ten tables named `uv_*` exist. The page reports the schema
+      as ready.
+- [ ] Turn the SYSTEM switch on and leave the project switch off. The page still
+      says unavailable. Then the reverse. Both are required.
+
+### One run, watched
+
+- [ ] Start a scan. The phase text moves through *Listing the records*,
+      *Checking records*, *Checking what changed while it ran*, *Looking for
+      duplicate values*, *Building the summary*, *Finished*. A phase that never
+      appears is a phase that was skipped, and skipping is supposed to be
+      impossible.
+- [ ] **Close the tab mid-scan.** Reopen the page. It offers to continue, and
+      continuing resumes rather than restarting — the record count does not go
+      back to zero.
+- [ ] Open the page in **two tabs** and press Continue in both. One works; the
+      other is told the scan is busy or takes over cleanly. Neither doubles the
+      finding count.
+- [ ] Press **Stop**. The run reaches a terminal state within one batch, reports
+      *cancelled*, and the project can start a new scan immediately afterwards.
+- [ ] **Time one batch.** A browser batch should take about three seconds. If it
+      takes thirty, the adaptive sizing is not reading this server correctly and
+      that is worth knowing before a 100,000-record project meets it.
+
+### What it may claim
+
+- [ ] **Edit a record while the scan is running.** The run still finishes, and
+      the record is re-examined rather than reported from a half-read state.
+- [ ] **Create a record while the scan is running.** The final count is larger
+      than the count the scan started with, and the run does not claim to have
+      covered a project it never saw that record in.
+- [ ] **Delete a record while the scan is running.** The run finishes. It does
+      not sit forever waiting for a record that no longer exists.
+- [ ] On a project with a duplicate value, the finding appears for **every**
+      record in the group, not just one of them.
+- [ ] As a user confined to a Data Access Group, start a scan. Only that group's
+      records are counted. Confirm no other group's record id appears anywhere.
+- [ ] As a user **without Full Data Set export rights**, the scan refuses to
+      start and says why.
+- [ ] Revoke a user's rights while their run is going. Their next request is
+      refused; the run id does not restore access.
+
+### Record what you measured
+
+Elapsed time, peak memory, storage bytes, query counts, retries, and the final
+fence. Those numbers are the input to enabling this by default, and an
+unmeasured pilot is an opinion.
+
+---
+
 ## Validation scan and its report
 
 No mock can prove this section. The suite stands up a fake `REDCap` class, so it

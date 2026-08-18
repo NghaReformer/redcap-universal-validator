@@ -30,6 +30,31 @@ require_once __DIR__ . '/php/ScanCapabilities.php';
 require_once __DIR__ . '/php/ScanDimensions.php';
 require_once __DIR__ . '/php/MessageCatalog.php';
 require_once __DIR__ . '/php/ScanColumns.php';
+// The durable scan. Loaded here rather than lazily because a partial load is
+// how a class that decides an authorisation ends up absent at the moment it is
+// asked - and the framework has no autoloader to fall back on.
+require_once __DIR__ . '/php/Scan/Schema.php';
+require_once __DIR__ . '/php/Scan/ScanDb.php';
+require_once __DIR__ . '/php/Scan/ScanStore.php';
+require_once __DIR__ . '/php/Scan/ScanOutcome.php';
+require_once __DIR__ . '/php/Scan/ScanPhase.php';
+require_once __DIR__ . '/php/Scan/ScanPolicy.php';
+require_once __DIR__ . '/php/Scan/ScanAuthorization.php';
+require_once __DIR__ . '/php/Scan/Hmac.php';
+require_once __DIR__ . '/php/Scan/ReasonCode.php';
+require_once __DIR__ . '/php/Scan/SqlScanStore.php';
+require_once __DIR__ . '/php/Scan/WorkerSlots.php';
+require_once __DIR__ . '/php/Scan/ScanRetention.php';
+require_once __DIR__ . '/php/Scan/RecordManifestSource.php';
+require_once __DIR__ . '/php/Scan/SourceFence.php';
+require_once __DIR__ . '/php/Scan/ScanPlanner.php';
+require_once __DIR__ . '/php/Scan/WorkBudget.php';
+require_once __DIR__ . '/php/Scan/UniqueFinalizer.php';
+require_once __DIR__ . '/php/Scan/CatchUp.php';
+require_once __DIR__ . '/php/Scan/RollupBuilder.php';
+require_once __DIR__ . '/php/Scan/ScanPromotion.php';
+require_once __DIR__ . '/php/Scan/ScanWorker.php';
+require_once __DIR__ . '/php/Scan/ScanService.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
@@ -2678,6 +2703,187 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The one seam between this framework adapter and the durable scan.
+     *
+     * WHY A SINGLE METHOD RATHER THAN PUBLIC ACCESSORS. Everything under
+     * php/Scan/ is written to be testable without REDCap; the moment it can
+     * reach into this class it stops being. So the durable side asks once, gets
+     * closures, and never learns what a data dictionary is. scanPlan() and
+     * scanRecord() stay private, which also means the legacy synchronous path
+     * and the durable one cannot drift into two different ideas of what a rule
+     * means - they run the same two methods.
+     *
+     * WHAT IT REFUSES. A plan with a fatal problem does not become a run with a
+     * caveat: a scan that cannot resolve its own rules has nothing true to say
+     * about the project, and starting one would produce a report whose emptiness
+     * looks like good news.
+     *
+     * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
+     *               read:?callable, rules:array, ownership:array}
+     */
+    public function durableScanContext($pid, array $opts = [], $dagFilter = null)
+    {
+        $plan = $this->scanPlan($pid, $opts, $dagFilter);
+        if ($plan['fatal'] !== null) {
+            return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
+                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => []];
+        }
+        if (!empty($plan['nothingToScan'])) {
+            return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
+                    'plan' => null, 'evaluate' => null, 'read' => null,
+                    'rules' => [], 'ownership' => []];
+        }
+
+        $key = $this->hmacKey();
+        $gen = isset($opts['generation']) ? (int) $opts['generation'] : 1;
+        $ids = Scan\ScanPlanner::identifyAll($plan['live'],
+            isset($opts['settingsCount']) ? (int) $opts['settingsCount'] : 0);
+
+        // Which instrument owns which field, for the fingerprint. Computed here
+        // because it comes from the plan, and recomputed nowhere else.
+        $ownership = [];
+        foreach ($plan['hostFields'] as $i => $hosts) {
+            foreach ($hosts as $form => $fields) {
+                foreach ($fields as $f) $ownership[$f] = $form;
+            }
+        }
+
+        $module = $this;
+        $evaluate = function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids) {
+            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids);
+        };
+
+        // The read the worker performs. Explicit records, and only the fields
+        // the plan actually needs - the same narrowing the chunked legacy path
+        // does, for the same reason.
+        $fields = array_keys($plan['readSet']);
+        $read = function (array $recordIds) use ($pid, $fields) {
+            try {
+                if (!is_callable(['\REDCap', 'getData'])) {
+                    return ['ok' => false, 'data' => [],
+                            'why' => 'this installation does not expose a record read'];
+                }
+                $data = \REDCap::getData([
+                    'project_id' => $pid, 'return_format' => 'array',
+                    'records' => array_values($recordIds), 'fields' => $fields,
+                    'exportDataAccessGroups' => true,
+                ]);
+                if (!is_array($data)) {
+                    return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
+                }
+                return ['ok' => true, 'data' => $data, 'why' => null];
+            } catch (\Throwable $e) {
+                // A FAILED READ IS NOT AN EMPTY ONE. The worker requeues on
+                // false and would commit "examined, nothing found" on an empty
+                // success - which is the difference this return exists to keep.
+                return ['ok' => false, 'data' => [],
+                        'why' => 'the records could not be read (' . get_class($e) . ')'];
+            }
+        };
+
+        return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
+                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership];
+    }
+
+    /**
+     * One record, turned into durable rows.
+     *
+     * Public only because the closure above needs it; it is not part of any
+     * contract and takes the plan it was built from. Everything it maps is a
+     * decision already made elsewhere - reportValue() decides disclosure, the
+     * rule identities come from the planner - so this method chooses nothing and
+     * exists to translate.
+     *
+     * @return array{findings:array, candidates:array, bytes:int, contexts:int,
+     *               problems:array, why:?string}
+     */
+    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key, array $ids)
+    {
+        $found = [];
+        $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
+        $seen = [];
+        $unconf = [];
+        $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
+        if ($r['why'] !== null) {
+            return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
+                    'problems' => [], 'why' => $r['why']];
+        }
+
+        $recHash = Scan\Hmac::raw(Scan\Hmac::P_RECORD, $pid, (string) $recordId, $key);
+        $rule = function ($ord) use ($ids) {
+            $i = ((int) $ord) - 1;
+            // A rule the planner could not name is still reported, under a name
+            // that says so. Dropping the finding would be the silent skip.
+            return isset($ids[$i]) ? $ids[$i]
+                 : ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
+        };
+
+        $findings = [];
+        $bytes = 0;
+        $seq = 0;
+        foreach ($found as $v) {
+            $id = $rule($v['rule']);
+            $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
+                    'instance' => $v['instance'], 'host_form' => $v['instrument'],
+                    'field' => $v['field'], 'rule_source_id' => $id['source_id'],
+                    'reason_code' => Scan\ReasonCode::code($v['reason'])];
+            $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
+            $blob = ($val === null) ? null : substr((string) $val, 0, 255);
+            if ($blob !== null) $bytes += strlen($blob);
+            $findings[] = [
+                'generation_id' => $gen,
+                'identity' => Scan\Hmac::findingIdentity($pid, $loc, $key),
+                'seq' => ++$seq,
+                'record_hash' => $recHash,
+                'record_id_bin' => (string) $recordId,
+                'event_id' => $v['event_id'],
+                'instance' => $v['instance'],
+                'host_form' => (string) $v['instrument'],
+                'field' => (string) $v['field'],
+                'rule_source_id' => $id['source_id'],
+                'rule_revision' => $id['revision'],
+                'rule_ord' => (int) $v['rule'],
+                'check_type' => (string) $v['type'],
+                'reason_code' => Scan\ReasonCode::code($v['reason']),
+                'dag_key' => isset($v['dag']) ? $v['dag'] : null,
+                'value_bin' => $blob,
+                'value_len' => ($val === null) ? null : strlen((string) $val),
+                'value_truncated' => ($val !== null && strlen((string) $val) > 255) ? 1 : 0,
+                'value_fingerprint' => ($val === null) ? null
+                    : Scan\Hmac::raw(Scan\Hmac::P_VALUE, $pid, (string) $val, $key),
+            ];
+        }
+
+        // Uniqueness produces CANDIDATES, never findings: no record is a
+        // duplicate on its own evidence. The composite key built by the legacy
+        // path is reused verbatim and then keyed, so the live check, the audit
+        // and the scan all agree about what "the same value" means.
+        $candidates = [];
+        foreach ($seen as $groupKey => $rows) {
+            $g = Scan\Hmac::raw(Scan\Hmac::P_UNIQUE, $pid, (string) $groupKey, $key);
+            foreach ($rows as $row) {
+                $id = $rule($row['rule']);
+                $candidates[] = [
+                    'generation_id' => $gen,
+                    'rule_source_id' => $id['source_id'],
+                    'rule_revision' => $id['revision'],
+                    'group_hmac' => $g,
+                    'scope_key' => 'project',
+                    'record_hash' => $recHash,
+                    'record_id_bin' => (string) $recordId,
+                    'event_id' => $row['event_id'],
+                    'instance' => $row['instance'],
+                    'host_form' => (string) $row['instrument'],
+                    'field' => (string) $row['field'],
+                ];
+            }
+        }
+
+        return ['findings' => $findings, 'candidates' => $candidates, 'bytes' => $bytes,
+                'contexts' => $r['contexts'], 'problems' => array_values($unconf), 'why' => null];
+    }
+
+    /**
      * Everything a scan needs to know before it reads its first record: which
      * rules are live, where each one lives, what has to be read, and which rule
      * problems are already known. Computed once per scan.
@@ -3416,6 +3622,47 @@ class UniversalValidator extends AbstractExternalModule
     // -- uniqueness (@UVUNIQUE): live endpoint + shared lookup ---------------
 
     /**
+     * The durable scan's AJAX verbs.
+     *
+     * Thin on purpose. Everything that decides anything - the feature flags,
+     * the schema health, the rights, the scope, the run's own state - lives in
+     * ScanService, so this method reads a run id, calls one of four things, and
+     * hands back what it said. A handler that made decisions would be a second
+     * place those decisions live.
+     *
+     * THE RUN ID IS A LOCATOR, NEVER AN AUTHORISATION. It is cast to an integer
+     * and bound to $project_id inside the service before any answer can
+     * distinguish "no such run" from "not yours" - which is why every refusal
+     * below shares one sentence.
+     */
+    private function scanAction($action, $project_id, $payload)
+    {
+        try {
+            $svc = new Scan\ScanService($this);
+            $runId = (isset($payload['run_id']) && is_scalar($payload['run_id']))
+                   ? (int) $payload['run_id'] : 0;
+
+            if ($action === 'scan-start') {
+                return $svc->start($project_id);
+            }
+            if ($runId <= 0) {
+                return ['ok' => false, 'why' => Scan\ScanService::NO_RUN];
+            }
+            if ($action === 'scan-work')   return $svc->work($project_id, $runId, 'browser');
+            if ($action === 'scan-status') return $svc->status($project_id, $runId);
+            if ($action === 'scan-cancel') return $svc->cancel($project_id, $runId);
+            return ['ok' => false, 'why' => 'unknown action'];
+        } catch (\Throwable $e) {
+            // Never leaks the exception. A class name or a message from here can
+            // describe the installation's schema and its database user, to a
+            // caller who has just been told the answer is no.
+            return ['ok' => false,
+                    'why' => 'the validation scan could not be reached; ask an administrator to '
+                           . 'check the module log'];
+        }
+    }
+
+    /**
      * Live uniqueness endpoint (framework AJAX). The client sends the field
      * name and the CANDIDATE values (the field's own, plus the composite
      * "with" fields'); everything else — scope, composite key, eligibility —
@@ -3431,6 +3678,23 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_ajax($action, $payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $response_id, $survey_queue_hash, $page, $page_full, $user_id, $group_id)
     {
+        // THE DURABLE SCAN'S FOUR VERBS. Declared in auth-ajax-actions ONLY - a
+        // scan reads and stores record values, so there is no version of it an
+        // unauthenticated caller may reach. $user_id is the only value here that
+        // means REDCap authenticated this caller; the framework's own action
+        // list is a first gate, and this is the second, because
+        // redcap_module_ajax() guards the action NAME and hands the identity
+        // straight through without checking it.
+        if (in_array($action, ['scan-start', 'scan-work', 'scan-status', 'scan-cancel'], true)) {
+            if ($user_id === null || $user_id === '') {
+                return ['ok' => false, 'why' => 'you are not signed in'];
+            }
+            if (!$project_id) {
+                return ['ok' => false, 'why' => 'this action only works inside a project'];
+            }
+            return $this->scanAction($action, $project_id, $payload);
+        }
+
         if ($action !== 'unique-check') return ['error' => 'unknown action'];
         try {
             // AUTHENTICATION, not survey-ness, decides which guards apply.

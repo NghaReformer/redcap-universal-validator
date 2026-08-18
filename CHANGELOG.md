@@ -1,5 +1,63 @@
 # Changelog
 
+## 1.9.0 - the scan runs again, behind a switch
+
+Task 6 of the rebuild plan is complete. The durable scan has entrypoints, a
+client, and two switches that are both off.
+
+**Four AJAX verbs, in `auth-ajax-actions` only.** `scan-start`, `scan-work`,
+`scan-status`, `scan-cancel`. A scan reads and stores record values, so there is
+no version of it an unauthenticated caller may reach. Each verb re-checks the
+signed-in user itself rather than trusting the framework's action list, because
+`redcap_module_ajax()` guards the action NAME and hands the caller's identity
+straight through without checking it.
+
+**`ScanService` is where the fourteen classes are assembled.** Each of them
+knows one thing and none of them know how to find the others; if that wiring
+lived in the AJAX handler then the AJAX handler would be the design. The handler
+is now nine lines that read a run id and call one of four methods.
+
+**One seam into the module.** `durableScanContext()` hands the durable side
+closures and nothing else, so `php/Scan/` never learns what a data dictionary
+is. `scanPlan()` and `scanRecord()` stay private, which also means the legacy
+synchronous path and the durable one cannot drift into two ideas of what a rule
+means — they run the same two methods.
+
+**`ReasonCode` makes the reason a column.** `assert:` embeds the whole
+assertion, up to 507 characters, in every finding that rule produces; that is a
+property of the rule, and per-finding it is up to a gigabyte of one repeated
+sentence that also destroys the index and the `GROUP BY` the summary needs. The
+code is now the kind, and `pooled:` becomes a five-bit mask over a closed set.
+An unknown reason passes through truncated and marked, never dropped: a future
+rule type must degrade to generic wording, not to a silent hole.
+
+**`js/scan.js` drives a loop and decides nothing.** It sends a run id and
+nothing else; the server re-derives the project, the user, the group and the
+entitlement on every request. A refused batch ends the loop and says why, a busy
+server is a wait rather than a failure, a dropped connection retries because the
+run on the server is untouched — and completion comes from the server saying
+terminal, never from the counts looking finished. Catch-up, the duplicate
+finalizer and the summary all run after the last record, so a client that
+stopped at `done === total` would call a scan finished while it was still
+deciding whether two records share a hospital number.
+
+**Two switches, both off.** A system administrator enables the durable scan for
+the installation and a project enables it for itself; either off and the page
+shows the notice it has shown since Task 1. `docs/TESTING.md` gains the pilot
+checklist that has to pass before either is turned on anywhere — closing the tab
+mid-scan, two tabs racing, editing and deleting records while it runs, and the
+numbers to record. A flag that defaults on is not a flag, and the reason this
+one exists is v1.4.0: a production-inert `@UVUNIQUE` shipped with every mocked
+test green, because the framework serves some methods through `__call()`.
+
+The page renders the run's state before any script runs, so somebody with
+scripting disabled sees whether their scan is going rather than an empty panel.
+
+836 checks across the seven scan suites on PHP 7.4 and 8.4, 33 more in the
+browser client, and 269 in the database matrix on MySQL 5.7/8.0 and MariaDB
+10.5/10.11 under both isolation levels. The whole repository suite is green on
+both PHP versions and on Node.
+
 ## 1.8.24 - a finished manifest is not a finished scan
 
 Catch-up, the summary, and the one place a run is allowed to say it finished.

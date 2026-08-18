@@ -12,7 +12,7 @@
   ],
   "framework-version": 14,
 
-  "auth-ajax-actions": ["unique-check"],
+  "auth-ajax-actions": ["unique-check", "scan-start", "scan-work", "scan-status", "scan-cancel"],
   "no-auth-ajax-actions": ["unique-check"],
 
   "links": {
@@ -55,6 +55,11 @@
   ],
 
   "system-settings": [
+    {
+      "key": "scan-system-enable-durable",
+      "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> The scan creates its own tables, runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",
+      "type": "checkbox"
+    },
     {
       "key": "scan-system-max-value-retention-days",
       "name": "<b>Validation scan</b> \u2014 maximum days a stored value preview may be kept, across every project. A project may choose FEWER days, never more. Default 30. A stored value outlives the export rights of whoever caused it to be stored, which is why this has a ceiling at all.",
@@ -108,6 +113,11 @@
         { "value": "raw", "name": "Raw value + raw record ID (only if your data-governance policy allows identifiers in module logs)" },
         { "value": "off", "name": "Do not log detections at all (audit ERRORS are still logged, without any record identifier)" }
       ]
+    },
+    {
+      "key": "scan-enable-durable",
+      "name": "<b>Validation scan</b> — use the durable scan for this project. Requires the installation-wide switch to be on as well. The scan runs in bounded batches, survives closing the tab, and can be resumed or stopped; while this is off, the Validation scan page explains that it is unavailable and nothing is scanned.",
+      "type": "checkbox"
     },
     {
       "key": "scan-value-storage",

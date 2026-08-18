@@ -180,7 +180,7 @@ class ScanPageView
     {
         $no = function ($why) {
             return ['ok' => false, 'dag' => null, 'why' => $why, 'valueCeiling' => 'locations',
-                    'mayExport' => false];
+                    'mayExport' => false, 'rights' => null];
         };
         try {
             $user = $module->getUser();
@@ -207,8 +207,13 @@ class ScanPageView
             $ceiling = self::valueCeilingFor($rights);
             $mayExport = self::mayExportFor($rights);
             if (empty($rights['group_id'])) {
+                // The rights array travels with the answer, because the durable
+                // scan re-checks the SAME array against its entitlement form set
+                // and a second read of getRights() could legitimately differ
+                // from this one - which would mean the scope and the entitlement
+                // were decided from two different readings of the same user.
                 return ['ok' => true, 'dag' => null, 'why' => null, 'valueCeiling' => $ceiling,
-                        'mayExport' => $mayExport];
+                        'mayExport' => $mayExport, 'rights' => $rights];
             }
 
             $gd = null;
@@ -229,7 +234,7 @@ class ScanPageView
                          . 'The validation scan was not run.');
             }
             return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling,
-                    'mayExport' => $mayExport];
+                    'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');
         }
