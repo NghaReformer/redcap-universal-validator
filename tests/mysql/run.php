@@ -64,6 +64,61 @@ try {
 
 echo 'server: ' . $A->server_info . "\n";
 
+// ISOLATION, honoured rather than merely announced.
+//
+// The workflow ran this file twice and set UV_DB_ISOLATION on the second pass,
+// but nothing here read it - so the "Same invariants under READ COMMITTED" step
+// re-ran the DEFAULT isolation and reported a pass for a level it had never
+// selected. A test that names a condition it does not create is worse than an
+// absent one, because the job's green tick claims the coverage.
+//
+// Allowlisted rather than interpolated: an isolation level cannot be a bound
+// parameter, so it has to be one of a known set before it reaches a statement.
+$iso = getenv('UV_DB_ISOLATION');
+if ($iso !== false && $iso !== '') {
+    $allowed = ['READ COMMITTED', 'REPEATABLE READ', 'SERIALIZABLE', 'READ UNCOMMITTED'];
+    $iso = strtoupper(trim($iso));
+    if (!in_array($iso, $allowed, true)) {
+        fwrite(STDERR, "unknown isolation level: $iso\n");
+        exit(2);
+    }
+    foreach (array($A, $B) as $conn) {
+        $conn->query('SET SESSION TRANSACTION ISOLATION LEVEL ' . $iso);
+    }
+    echo 'isolation: ' . $iso . "\n";
+    // PROVED, not assumed. A SET that silently did nothing would put the job
+    // straight back to claiming a level it never selected - which is the defect
+    // this block exists to remove, so it must not be reintroduced one line down.
+    foreach (array(array('A', $A), array('B', $B)) as $pair) {
+        $q = $pair[1]->query('SELECT @@transaction_isolation');
+        $row = $q ? $q->fetch_row() : null;
+        $got = $row ? str_replace('-', ' ', strtoupper((string) $row[0])) : '';
+        check('isolation: connection ' . $pair[0] . ' really is ' . $iso, $got === $iso);
+    }
+} else {
+    echo "isolation: server default\n";
+}
+
+/**
+ * Bind a list of values without hand-counting a type string.
+ *
+ * mysqli wants a type character per variable, and getting that wrong is an
+ * ArgumentCountError that kills the process - so it does not fail one check, it
+ * silently un-runs every check after it. Hand-counting produced exactly that
+ * twice here (nine characters for ten variables, then eleven), and each attempt
+ * cost a CI round trip to discover.
+ *
+ * Everything binds as 's'. The server casts on the way in, and these are test
+ * fixtures rather than a performance path; what matters is that the arity is
+ * derived rather than asserted.
+ */
+function bindAll($st, array $vals) {
+    $refs = [];
+    foreach ($vals as $k => $v) $refs[$k] = &$vals[$k];
+    array_unshift($refs, str_repeat('s', count($vals)));
+    call_user_func_array([$st, 'bind_param'], $refs);
+}
+
 /** A module stand-in over one connection, matching the framework's query(). */
 class Conn {
     private $c;
@@ -74,8 +129,7 @@ class Conn {
             return $r === true ? [] : $this->rows($r);
         }
         $st = $this->c->prepare($sql);
-        $types = str_repeat('s', count($params));
-        $st->bind_param($types, ...array_map(function ($p) { return $p; }, $params));
+        bindAll($st, array_values($params));
         $st->execute();
         $r = $st->get_result();
         $out = $r === false ? [] : $this->rows($r);
@@ -129,8 +183,7 @@ $ins = function ($conn, $pid, $uuid, $slot) use ($run) {
     $b = ['uuid' => $uuid, 'pid' => $pid, 'by' => 'tester', 'sk' => 'global', 'rk' => 'full',
           'ph' => 'planning', 'cov' => 'partial', 'det' => 'complete', 'vs' => 'none',
           'pj' => '{}', 'fp' => str_repeat('a', 64), 'c' => $now, 'u' => $now, 'slot' => $slot];
-    $st->bind_param('sissssssssssss', $b['uuid'], $b['pid'], $b['by'], $b['sk'], $b['rk'],
-        $b['ph'], $b['cov'], $b['det'], $b['vs'], $b['pj'], $b['fp'], $b['c'], $b['u'], $b['slot']);
+    bindAll($st, array_values($b));
     try { $st->execute(); $st->close(); return true; }
     catch (\Throwable $e) { $st->close(); return false; }
 };
@@ -217,11 +270,7 @@ $insF = function ($conn, $identity, $slot) use ($fnd) {
     $st = $conn->raw()->prepare($sql);
     $rh = hash('sha256', 'r1', true); $rid = 'r1'; $hf = 'fa'; $f = 'x';
     $rs = 'rule1'; $rv = str_repeat('b', 64); $ct = 'required'; $rc = 'required-blank';
-    // Ten variables need ten type characters. The previous nine produced an
-    // ArgumentCountError that killed the run BEFORE the finding-version checks,
-    // so those never executed and the job's only real signal was the health
-    // failure above it.
-    $st->bind_param('sisssssssss', $identity, $slot, $rh, $rid, $hf, $f, $rs, $rv, $ct, $rc);
+    bindAll($st, [$identity, $slot, $rh, $rid, $hf, $f, $rs, $rv, $ct, $rc]);
     try { $st->execute(); $st->close(); return true; }
     catch (\Throwable $e) { $st->close(); return false; }
 };

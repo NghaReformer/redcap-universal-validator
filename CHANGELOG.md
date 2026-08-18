@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.8.14 - a test that named a condition it never created
+
+Round two of the database matrix. The `information_schema` fix from 1.8.13 held -
+health passed on every server - and two further defects surfaced, both in the
+harness rather than in the schema.
+
+**The type string was hand-counted, twice, wrongly.** `mysqli::bind_param` wants
+one type character per variable, and getting it wrong is a fatal rather than a
+failed check: it does not fail one assertion, it silently un-runs every assertion
+after it. I wrote nine characters for ten variables, then corrected to eleven,
+and each attempt cost a full CI round trip to discover because the fatal killed
+the process before anything downstream could report. There is now one `bindAll()`
+helper that derives the type string from the value list, and zero hand-written
+type strings remain in the file.
+
+**The READ COMMITTED step never selected READ COMMITTED.** The workflow ran the
+suite twice and set `UV_DB_ISOLATION` on the second pass; nothing in `run.php`
+read it. So the step re-ran the server default and reported a pass for a level it
+had never selected - a green tick claiming coverage that did not exist, which is
+worse than an absent test. The level is now applied from an allowlist (it cannot
+be a bound parameter, so it must be one of a known set) and then **verified**
+against `@@transaction_isolation` on both connections, because a `SET` that
+silently did nothing would put the job straight back to claiming a level it never
+chose.
+
+Nothing in `php/` changed in this release. Both defects were in the instrument,
+and both were the kind that reports success.
+
 ## 1.8.13 - what the database matrix found on its first run
 
 `.github/workflows/scan-database.yml` ran for the first time and failed on MySQL
