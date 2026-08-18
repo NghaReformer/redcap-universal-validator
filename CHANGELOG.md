@@ -1,5 +1,52 @@
 # Changelog
 
+## 1.8.19 - Task 6 begins: the phase a run is in, and the phases it may reach
+
+`ScanPhase` is the durable scan's state machine. Seven phases, and a transition
+table that decides which writes are allowed rather than leaving it to whichever
+of five callers - the planner, the browser worker, the cron worker, both
+finalizers and the canceller - happens to be writing.
+
+**The chain is strictly forward, one step at a time:** planning, scanning,
+catch-up, unique-finalize, rollup-finalize. No skipping, and that is the design
+rather than a restriction. A run with no unique rules still passes through
+`unique-finalize` and records that it had nothing to do, because promotion
+requires both finalizers to have completed and "completed" must not be
+satisfiable by never having started. Allowing the skip would make "nothing to
+do" and "never ran" the same stored fact, and only one of those may certify a
+project. There is no backward step either: catch-up requeues manifest rows and
+processes them itself, so a stuck run is always stuck somewhere identifiable.
+
+**Two escapes.** Any active phase may go to `cancelling`, and any phase may go
+to `terminal` - a store failure has to be recordable from wherever it happened.
+`cancelling` exists so the epoch bump and the terminal write are separate
+events, which is what lets a worker mid-evaluation discover it has lost the run
+before anything it buffered can reach the tables. A cancelling run only
+finishes; it never returns to work. A finished run is never reopened, because a
+retried finaliser would otherwise overwrite a terminal state a report has
+already been exported against.
+
+**The nullable terminal is a correctness rule, not tidiness.** `terminal IS
+NULL` is how every read path asks whether a run is still going, so a row
+carrying a terminal state while still working would read as finished to a query
+that never looked at the phase. `consistent()` refuses both halves of that
+mistake, on write and on read - the read direction because a row written by a
+different build must not be interpreted by whichever column the reading code
+consulted first.
+
+**How it is checked.** `tests/scan_worker_php.php` asserts all 49 (from, to)
+pairs against a matrix written out by hand, so a change to `ScanPhase` that its
+author believed was equivalent has to be made twice before it passes - the same
+differential technique that holds the PHP and JavaScript engines together. Every
+refusal must also explain itself; a refusal nobody can debug is a refusal that
+gets removed. The file also transcribes the rebuild plan's terminal-derivation
+table row for row, checking all five columns at once, so a change that satisfies
+one prose assertion elsewhere while breaking a row of the specification still
+fails. 186 checks, green on PHP 7.4, 8.3 and 8.4.
+
+Nothing here runs a scan. The page still renders its unavailable notice; the
+feature turns on in 1.9.0, behind a flag, after the worker exists.
+
 ## 1.8.18 - Task 5 complete: slots, retention, and a fault that is real
 
 `WorkerSlots` and `ScanRetention` are now their own classes rather than methods
