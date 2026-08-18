@@ -1,5 +1,33 @@
 # Changelog
 
+## 1.8.12 - Task 5: the settings the policy resolver reads
+
+Seven system settings and four project settings, matching the plan's table. The
+split is the point: a project may always ask for LESS than the server allows and
+never more, so every retention and budget limit exists twice - a system maximum
+an administrator sets once, and a project request that can only tighten it.
+Concurrency and retry limits are system-only, because they ration the server
+rather than the project.
+
+The four project settings are declared BEFORE the repeatable rule list rather
+than after it. External Modules renders settings in declaration order, and
+burying a retention control under a list that grows to three hundred entries is
+how a privacy control goes unread.
+
+`config.json` is edited textually rather than re-serialised: a round trip through
+a JSON encoder reformats all 199 lines and buries a 58-line addition in a diff
+nobody can review.
+
+**A drift check, because this failure is silent.** `ScanPolicy` reading a key
+that `config.json` does not declare returns the default forever - the setting
+appears in no interface, changes nothing, and nothing fails. Twelve checks now
+assert that every key the resolver reads is declared, and that each system
+maximum is declared as a SYSTEM setting: declared per project, a project could
+raise its own ceiling, which is the one thing they exist to prevent.
+
+`tests/scan_security_php.php` 121 -> 140 checks. Suite green on PHP 7.4, 8.3 and
+8.4, and on Node.
+
 ## 1.8.11 - Task 5: the permission matrix, the outcome table, and the keys
 
 Four classes that are load-bearing for everything in Tasks 6 and 7, and all four
