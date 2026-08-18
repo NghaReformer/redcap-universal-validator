@@ -106,16 +106,23 @@ final class SqlScanStore implements ScanStore
      */
     public function run($pid, $runId)
     {
+        // fence_open/fence_target and cancel_requested_at are here because
+        // ScanPromotion reads the run row to decide what it may claim: a fence
+        // it cannot see is a fence it treats as absent, which silently
+        // downgrades every fenced run to manifest-complete. The in-memory store
+        // disagreed with this one about exactly these three columns and the
+        // promotion test is what said so.
         $r = $this->db->select('SELECT run_id, project_id, scope_dag, phase, terminal, coverage,
             detail, values_state, policy_revision, fingerprint, manifest_total, manifest_done,
-            cursor_ordinal, lease_epoch, generation_id, created_by, detail_rows, detail_bytes
+            cursor_ordinal, lease_epoch, generation_id, created_by, detail_rows, detail_bytes,
+            fence_open, fence_target, cancel_requested_at
             FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?',
             [$runId, $pid]);
         if (!isset($r[0])) return null;
         $k = ['run_id', 'project_id', 'scope_dag', 'phase', 'terminal', 'coverage', 'detail',
               'values_state', 'policy_revision', 'fingerprint', 'manifest_total', 'manifest_done',
               'cursor_ordinal', 'lease_epoch', 'generation_id', 'created_by', 'detail_rows',
-              'detail_bytes'];
+              'detail_bytes', 'fence_open', 'fence_target', 'cancel_requested_at'];
         return array_combine($k, $r[0]);
     }
 
@@ -651,11 +658,25 @@ final class SqlScanStore implements ScanStore
         return $this->db->select($sql, $params);
     }
 
+    /**
+     * Keyed rows, not the positional ones the driver returns.
+     *
+     * The in-memory store answered with named keys and this one with numeric
+     * ones, and every caller happened to be written against whichever it was
+     * developed on. The shared contract said nothing about the shape until it
+     * asked both the same question - which is the whole reason the contract is
+     * one file run twice.
+     */
     public function aggregates($runId)
     {
-        return $this->db->select('SELECT kind, axis1, axis2, cnt, samples, blocks_coverage
-            FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ? ORDER BY kind, axis1',
-            [$runId]);
+        $out = [];
+        foreach ($this->db->select('SELECT kind, axis1, axis2, cnt, samples, blocks_coverage
+                FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ? ORDER BY kind, axis1',
+                [$runId]) as $r) {
+            $out[] = ['kind' => $r[0], 'axis1' => $r[1], 'axis2' => $r[2],
+                      'cnt' => (int) $r[3], 'samples' => $r[4], 'blocks' => (int) $r[5]];
+        }
+        return $out;
     }
 
     // -- retention ----------------------------------------------------------
@@ -692,6 +713,210 @@ final class SqlScanStore implements ScanStore
             $n++;
         }
         return $n;
+    }
+
+    // -- reconciliation ------------------------------------------------------
+
+    /**
+     * Add records reconciliation found, and republish the total.
+     *
+     * Deliberately NOT a relaxation of appendManifest()'s planning guard. A
+     * separate method with its own phase check keeps "the manifest is frozen"
+     * true as a rule with one named exception, rather than true as a rule the
+     * planning path happens to enforce.
+     *
+     * The total is recounted rather than incremented, for the reason
+     * freezeManifest() gives: a total added up while writing disagrees with the
+     * manifest the moment an insert is ignored, and nothing notices.
+     */
+    public function reconcileAdd($runId, $epoch, array $records)
+    {
+        if (!$records) return 0;
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
+                    || (int) $r[0][1] !== (int) $epoch) {
+                $this->db->rollback();
+                return 0;
+            }
+            $t = Schema::table('scan_record');
+            $m = $this->db->select('SELECT COALESCE(MAX(ordinal), 0) FROM ' . $t
+                . ' WHERE run_id = ?', [$runId]);
+            $ord = isset($m[0][0]) ? (int) $m[0][0] : 0;
+            $now = self::now();
+            $chunk = [];
+            $added = 0;
+            foreach ($records as $rec) {
+                $ord++;
+                $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
+                            isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
+                if (count($chunk) >= 500) {
+                    $this->insertRecords($t, $chunk);
+                    $added += $this->db->affected();
+                    $chunk = [];
+                }
+            }
+            if ($chunk) {
+                $this->insertRecords($t, $chunk);
+                $added += $this->db->affected();
+            }
+            $c = $this->db->select('SELECT COUNT(*) FROM ' . $t . ' WHERE run_id = ?', [$runId]);
+            $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                . ' SET manifest_total = ?, updated_at = ? WHERE run_id = ?',
+                [isset($c[0][0]) ? (int) $c[0][0] : 0, $now, $runId]);
+            $this->db->commit();
+            return $added;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
+
+    /**
+     * Send terminal records back to pending.
+     *
+     * The attempt counter is untouched on purpose. A record somebody is editing
+     * every few seconds would otherwise be requeued forever with a counter that
+     * keeps resetting, and the run would never end - so the limit that turns it
+     * into a reported exclusion has to survive reconciliation.
+     */
+    public function requeue($runId, $epoch, array $recordIds)
+    {
+        if (!$recordIds) return 0;
+        return $this->reState($runId, $epoch, $recordIds, self::REC_PENDING, true);
+    }
+
+    /**
+     * Mark records the project no longer holds.
+     *
+     * Without this a deleted record can never reach a terminal state and holds
+     * the run incomplete forever, which C3 called the worse half of the frozen-
+     * manifest problem: the false-complete case at least finishes.
+     */
+    public function tombstone($runId, $epoch, array $recordIds)
+    {
+        if (!$recordIds) return 0;
+        return $this->reState($runId, $epoch, $recordIds, self::REC_TOMBSTONE, false);
+    }
+
+    private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
+    {
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::CATCH_UP
+                    || (int) $r[0][1] !== (int) $epoch) {
+                $this->db->rollback();
+                return 0;
+            }
+            $marks = implode(',', array_fill(0, count($recordIds), '?'));
+            $params = [$state, self::now()];
+            foreach ($recordIds as $id) $params[] = $id;
+            $params[] = $runId;
+            $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '') . 'updated_at = ?
+                WHERE record_id_bin IN (' . $marks . ') AND run_id = ?', $params);
+            $n = $this->db->affected();
+            // manifest_done is a counter and this moved rows out of (or into) a
+            // terminal state, so it is recounted rather than adjusted.
+            $d = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+                . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
+            $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
+                [isset($d[0][0]) ? (int) $d[0][0] : 0, self::now(), $runId]);
+            $this->db->commit();
+            return $n;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
+
+    public function recordStates($runId)
+    {
+        $out = [];
+        foreach ($this->db->select('SELECT state, COUNT(*) FROM ' . Schema::table('scan_record')
+                . ' WHERE run_id = ? GROUP BY state', [$runId]) as $r) {
+            $out[(int) $r[0]] = (int) $r[1];
+        }
+        return $out;
+    }
+
+    public function scannedVersions($runId, array $recordIds)
+    {
+        if (!$recordIds) return [];
+        $marks = implode(',', array_fill(0, count($recordIds), '?'));
+        $params = [$runId];
+        foreach ($recordIds as $id) $params[] = $id;
+        $out = [];
+        foreach ($this->db->select('SELECT record_id_bin, version_scanned, state FROM '
+                . Schema::table('scan_record') . ' WHERE run_id = ? AND record_id_bin IN ('
+                . $marks . ')', $params) as $r) {
+            $out[(string) $r[0]] = ['version' => $r[1], 'state' => (int) $r[2]];
+        }
+        return $out;
+    }
+
+    public function progressState($runId)
+    {
+        $r = $this->db->select('SELECT catchup_cursor, catchup_round, catchup_dirty,
+            rollup_cursor, fence_open, fence_target FROM ' . Schema::table('scan_run')
+            . ' WHERE run_id = ?', [$runId]);
+        if (!isset($r[0])) return null;
+        return ['catchupCursor' => $r[0][0], 'catchupRound' => (int) $r[0][1],
+                'catchupDirty' => (int) $r[0][2], 'rollupCursor' => (int) $r[0][3],
+                'fenceOpen' => $r[0][4], 'fenceTarget' => $r[0][5]];
+    }
+
+    public function setProgressState($runId, $epoch, array $st)
+    {
+        $sets = [];
+        $params = [];
+        $map = ['catchupCursor' => 'catchup_cursor', 'catchupRound' => 'catchup_round',
+                'catchupDirty' => 'catchup_dirty', 'rollupCursor' => 'rollup_cursor',
+                'fenceTarget' => 'fence_target'];
+        foreach ($map as $k => $col) {
+            if (!array_key_exists($k, $st)) continue;
+            $sets[] = $col . ' = ?';
+            $params[] = $st[$k];
+        }
+        if (!$sets) return false;
+        $sets[] = 'updated_at = ?';
+        $params[] = self::now();
+        $params[] = $runId;
+        $params[] = $epoch;
+        $this->db->exec('UPDATE ' . Schema::table('scan_run') . ' SET ' . implode(', ', $sets)
+            . ' WHERE run_id = ? AND lease_epoch = ?', $params);
+        // Not affected() === 1. Writing a cursor that already holds the value it
+        // is being set to changes no row, and MySQL reports rows CHANGED - the
+        // trap this file has hit three times. Ask instead.
+        if ($this->db->affected() === 1) return true;
+        $r = $this->db->select('SELECT 1 FROM ' . Schema::table('scan_run')
+            . ' WHERE run_id = ? AND lease_epoch = ?', [$runId, $epoch]);
+        return isset($r[0]);
+    }
+
+    public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
+    {
+        $this->db->exec('INSERT INTO ' . Schema::table('scan_aggregate') . '
+            (run_id, kind, axis1, axis2, cnt, samples, blocks_coverage)
+            VALUES (?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE cnt = cnt + VALUES(cnt),
+                                    blocks_coverage = GREATEST(blocks_coverage, VALUES(blocks_coverage)),
+                                    samples = COALESCE(samples, VALUES(samples))',
+            [$runId, $kind, (string) $axis1, (string) $axis2, (int) $cnt, $samples,
+             $blocks ? 1 : 0]);
+        return true;
+    }
+
+    public function blockingAggregates($runId)
+    {
+        $r = $this->db->select('SELECT COALESCE(SUM(cnt), 0) FROM ' . Schema::table('scan_aggregate')
+            . ' WHERE run_id = ? AND blocks_coverage = 1', [$runId]);
+        return isset($r[0][0]) ? (int) $r[0][0] : 0;
     }
 
     public function audit($pid, $runId, $event, $actor, $detail)

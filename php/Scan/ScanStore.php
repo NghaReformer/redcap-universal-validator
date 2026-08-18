@@ -178,4 +178,66 @@ interface ScanStore
 
     /** Record an audit event. Never per page fetch - see the plan's §4 note. */
     public function audit($pid, $runId, $event, $actor, $detail);
+
+    // -- reconciliation ------------------------------------------------------
+    //
+    // The manifest is frozen at the end of planning so that a run cannot
+    // redefine what "all" means while it works. Catch-up is the ONE sanctioned
+    // exception, and it is a separate set of methods rather than a relaxation of
+    // the planning ones precisely so the exception is visible: every one of
+    // these refuses outside the `catch-up` phase and outside the run's current
+    // lease epoch.
+
+    /**
+     * Add records discovered by reconciliation, and republish the total.
+     *
+     * A record created after the manifest was frozen is not "extra"; it is a
+     * record the run would otherwise certify a project without having examined
+     * (C3). The total moves with it, because a total that did not would make
+     * completeness a comparison against a number the run knows to be wrong.
+     */
+    public function reconcileAdd($runId, $epoch, array $records);
+
+    /**
+     * Send terminal records back to pending, because the source moved.
+     *
+     * The attempt counter is NOT reset: a record that keeps being edited must
+     * still reach its attempt limit and become a blocking exclusion, or a
+     * project someone is actively working in could hold a run open forever.
+     */
+    public function requeue($runId, $epoch, array $recordIds);
+
+    /**
+     * Mark records that no longer exist in the project.
+     *
+     * A deleted record can never reach `done`, so without a terminal state of
+     * its own it would hold the run incomplete forever - the mirror of the
+     * false-complete case, and the reason C3 called it worse.
+     */
+    public function tombstone($runId, $epoch, array $recordIds);
+
+    /** How many manifest rows are in each state. The input to the coverage predicate. */
+    public function recordStates($runId);
+
+    /** The source version each named record was last scanned at, keyed by id. */
+    public function scannedVersions($runId, array $recordIds);
+
+    /** Where reconciliation and rollup had reached. Survives the request. */
+    public function progressState($runId);
+
+    /** Move those cursors, fenced on the lease epoch. */
+    public function setProgressState($runId, $epoch, array $state);
+
+    /**
+     * Add to a counted aggregate.
+     *
+     * ADDS rather than sets, because an aggregate is built from bounded pages
+     * and a page that set the value would report only its own page. Callers that
+     * can be retried must write it inside the same transaction as the cursor
+     * that says the page is done.
+     */
+    public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null);
+
+    /** How many aggregate kinds block coverage. Zero is the only value that permits complete. */
+    public function blockingAggregates($runId);
 }

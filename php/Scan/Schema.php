@@ -160,6 +160,15 @@ final class Schema
             manifest_total BIGINT UNSIGNED NOT NULL DEFAULT 0,
             manifest_done BIGINT UNSIGNED NOT NULL DEFAULT 0,
             cursor_ordinal BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            -- Catch-up walks the change log by record id and rolls up findings
+            -- by finding id, and both must survive the request they started in.
+            -- A cursor that lived only in a variable would make every reconciler
+            -- restart from the beginning, which on a project with a long change
+            -- log is a phase that never finishes.
+            catchup_cursor VARBINARY(255) NULL,
+            catchup_round SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+            catchup_dirty TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            rollup_cursor BIGINT UNSIGNED NOT NULL DEFAULT 0,
             detail_rows BIGINT UNSIGNED NOT NULL DEFAULT 0,
             detail_bytes BIGINT UNSIGNED NOT NULL DEFAULT 0,
             lease_owner VARBINARY(64) NULL,
@@ -317,8 +326,16 @@ final class Schema
             aggregate_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             run_id BIGINT UNSIGNED NOT NULL,
             kind VARCHAR(48) NOT NULL,
-            axis1 VARCHAR(255) NULL,
-            axis2 VARCHAR(255) NULL,
+            -- NOT NULL with an empty default, and that is correctness rather
+            -- than tidiness. The unique key below is what makes an aggregate
+            -- ACCUMULATE across bounded pages, and MySQL counts every NULL in a
+            -- unique index as distinct - so a nullable axis would give every
+            -- page a row of its own and the summary would report the count of
+            -- one page as the whole. No Data Access Group is a real answer and
+            -- the empty string is how it is written. (Second time this trap has
+            -- been found here; the first was the staged findings key.)
+            axis1 VARCHAR(255) NOT NULL DEFAULT \'\',
+            axis2 VARCHAR(255) NOT NULL DEFAULT \'\',
             cnt BIGINT UNSIGNED NOT NULL DEFAULT 0,
             samples TEXT NULL,
             blocks_coverage TINYINT UNSIGNED NOT NULL DEFAULT 0,

@@ -199,9 +199,76 @@ final class ScanWorker
                 continue;
             }
 
-            $claimed = ($phase === ScanPhase::SCANNING)
-                ? $this->store->claim($runId, $this->owner(), $epoch, $budget->claim())
-                : $this->store->claimPending($runId, $this->owner(), $epoch, $budget->claim());
+            // THE SUMMARY, built once at the end from bounded pages. Nothing
+            // here reads a record; it reads the findings the earlier phases
+            // wrote, which is why it is a phase of its own and not a step in
+            // the commit path.
+            if ($phase === ScanPhase::ROLLUP) {
+                $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
+                if ($roll instanceof RollupBuilder) {
+                    $t0 = microtime(true);
+                    $m0 = memory_get_usage(true);
+                    $r = $roll->step($runId, $epoch, $generationId, $budget->claim());
+                    if (!$r['done']) {
+                        if ($r['rows'] === 0 && $r['why'] !== null) {
+                            // The lease moved under us. Its page was discarded
+                            // rather than counted twice; stopping is the rest of
+                            // that decision.
+                            return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                                    'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
+                                    'done' => false, 'stop' => 'fenced', 'why' => $r['why']];
+                        }
+                        $adj = $budget->next([
+                            'records' => max(1, $r['rows']), 'seconds' => microtime(true) - $t0,
+                            'memoryDelta' => max(0, memory_get_usage(true) - $m0),
+                            'usage' => memory_get_usage(true),
+                        ]);
+                        if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
+                        continue;
+                    }
+                }
+                // End of the chain. Whether the run may FINISH is not this
+                // method's decision either - ScanPromotion owns that, and it
+                // asks questions this loop deliberately never sees.
+                $done = true;
+                break;
+            }
+
+            // WHAT THE PROJECT DID WHILE WE READ IT. Pending rows first, so a
+            // record this reconciler requeued a moment ago is examined before
+            // the next page of the window is walked; otherwise the confirming
+            // round would find it unchanged and settle over work not yet done.
+            if ($phase === ScanPhase::CATCH_UP) {
+                $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
+                                                      $budget->claim());
+                if (!$claimed) {
+                    $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
+                    if ($cu instanceof CatchUp) {
+                        $t0 = microtime(true);
+                        $m0 = memory_get_usage(true);
+                        $r = $cu->step($pid, $runId, $epoch, $budget->claim());
+                        if (!$r['done']) {
+                            $adj = $budget->next([
+                                'records' => max(1, $r['scanned']),
+                                'seconds' => microtime(true) - $t0,
+                                'memoryDelta' => max(0, memory_get_usage(true) - $m0),
+                                'usage' => memory_get_usage(true),
+                            ]);
+                            if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
+                            continue;
+                        }
+                    }
+                    $next = ScanPhase::next($phase);
+                    if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
+                        $phase = $next;
+                        continue;
+                    }
+                    $done = true;
+                    break;
+                }
+            } else {
+                $claimed = $this->store->claim($runId, $this->owner(), $epoch, $budget->claim());
+            }
 
             if (!$claimed) {
                 // Nothing left in this phase. Whether that means the run is
@@ -209,9 +276,10 @@ final class ScanWorker
                 // what comes next, and a phase that has nothing to do still has
                 // to be entered so that "it ran and found nothing" is
                 // distinguishable from "it never ran".
-                if ($phase === ScanPhase::SCANNING && !$this->store->manifestComplete($runId)) {
+                if (!$this->store->manifestComplete($runId)) {
                     // The cursor reached the end with rows still unfinished:
-                    // stragglers, which the next phase sweeps by state.
+                    // stragglers, which catch-up sweeps by state rather than by
+                    // position.
                     $done = false;
                 }
                 $next = ScanPhase::next($phase);

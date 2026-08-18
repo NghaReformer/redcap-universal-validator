@@ -78,7 +78,51 @@ function storeContract(callable $newStore, $label)
                                 'rule_source_id' => 'r1',
                                 'rule_revision' => str_repeat('c', 64)];
     }
+    foreach ($batch['records'] as $i => $rec) {
+        // The source version each record was examined AT travels with its
+        // state. Catch-up compares it against the change log to decide whether
+        // an edit is already inside the reading we hold, so a store that
+        // dropped it would requeue every record the log mentions on every run.
+        $batch['records'][$i]['version'] = '700';
+    }
     $C('a fenced batch commits', $s->commitBatch($runId, 'w1', $epoch, 0, $batch) === true);
+    $seen = $s->scannedVersions($runId, ['REC-1', 'REC-2']);
+    $C('and each record remembers the version it was examined at',
+        isset($seen['REC-1']['version']) && $seen['REC-1']['version'] === '700');
+    $C('with its terminal state beside it',
+        (int) $seen['REC-1']['state'] === ScanStore::REC_DONE);
+    $C('a record nobody has reached yet reports no version',
+        $s->scannedVersions($runId, ['REC-5'])['REC-5']['version'] === null);
+
+    // The state census is what the coverage predicate reads. Counted from the
+    // rows, never accumulated: a counter can be incremented twice.
+    $st = $s->recordStates($runId);
+    $C('the state census counts what was finished',
+        isset($st[ScanStore::REC_DONE]) && (int) $st[ScanStore::REC_DONE] === 2);
+    $C('and what is still waiting',
+        isset($st[ScanStore::REC_PENDING]) && (int) $st[ScanStore::REC_PENDING] === 3);
+
+    // Reconciliation refuses outside the catch-up phase. The manifest is frozen
+    // for a reason, and this is the ONE sanctioned exception - so it is only
+    // available where it is sanctioned.
+    $C('records may not be added while the run is still scanning',
+        $s->reconcileAdd($runId, $epoch, [['id_bin' => 'REC-9',
+            'hash' => hash('sha256', 'REC-9', true), 'dag' => null]]) === 0);
+    $C('nor may a finished record be requeued from outside catch-up',
+        $s->requeue($runId, $epoch, ['REC-1']) === 0);
+
+    // Aggregates ADD. A page that set the value would report only its own page.
+    $s->addAggregate($runId, 'collection-gap', 'chest_xray', null, 3860);
+    $s->addAggregate($runId, 'collection-gap', 'chest_xray', null, 140);
+    $found = null;
+    foreach ($s->aggregates($runId) as $a) {
+        if ($a['kind'] === 'collection-gap' && $a['axis1'] === 'chest_xray') $found = $a;
+    }
+    $C('an aggregate accumulates across pages', $found !== null && (int) $found['cnt'] === 4000);
+    $C('and a non-blocking one does not block',
+        $s->blockingAggregates($runId) === 0);
+    $s->addAggregate($runId, 'unread-record', null, null, 1, 1);
+    $C('while a blocking one does', $s->blockingAggregates($runId) === 1);
     $run = $s->run(700, $runId);
     $C('advancing manifest_done by what it finished', (int) $run['manifest_done'] === 2);
     $C('and counting the findings it retained', (int) $run['detail_rows'] === 2);

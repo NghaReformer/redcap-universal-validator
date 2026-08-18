@@ -110,6 +110,9 @@ jobs:
           php -l php/Scan/WorkBudget.php
           php -l php/Scan/ScanWorker.php
           php -l php/Scan/UniqueFinalizer.php
+          php -l php/Scan/CatchUp.php
+          php -l php/Scan/RollupBuilder.php
+          php -l php/Scan/ScanPromotion.php
           php -l UniversalValidator.php
           php -l pages/scan.php
           php -l pages/export.php
@@ -151,7 +154,7 @@ jobs:
         run: php tests/scan_security_php.php
       - name: Durable scan store contract (in-memory; the SQL store runs it in scan-database)
         run: php tests/scan_store_php.php
-      - name: Durable scan worker (phase machine, stable reads, adaptive sizing)
+      - name: Durable scan worker (phases, stable reads, catch-up, promotion)
         run: php tests/scan_worker_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
@@ -171,7 +174,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/messages/catalog.json pages/scan.php pages/export.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/messages/catalog.json pages/scan.php pages/export.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports tools; do

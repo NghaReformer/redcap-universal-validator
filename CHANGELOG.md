@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.8.24 - a finished manifest is not a finished scan
+
+Catch-up, the summary, and the one place a run is allowed to say it finished.
+
+**The reconciler.** Planning freezes a list of record ids so ordinals mean
+something and progress is a cursor. The moment it is frozen it starts going out
+of date, and a run that finished the frozen list and called that complete would
+certify a project it provably had not seen - which is C3 in the review, and the
+review's point was that FULL runs acquire that defect the instant the list is
+frozen, not only incremental ones.
+
+So between a finished manifest and a finished scan sits a fixed window,
+(opening fence, target fence], walked to its end. The window is captured once,
+and that is what makes the phase terminate: a window that moved every round
+would be a phase chasing a project people are still using.
+
+A changed record is one of four things and they are not the same. Created
+during the run: added, and the total moves with it, because completeness
+measured against a number known to be wrong is not a measurement. Created but
+out of scope: not added, because a DAG-scoped run that widened itself here would
+put another group's records in front of a reader who may not see them. Deleted:
+tombstoned, never requeued - a deleted record can never be read, so requeueing
+it holds the run open forever, which is C3's mirror case. Edited after we read
+it: requeued. Edited before we read it: nothing, and that branch is what makes
+the confirming round cheap.
+
+When the change log no longer reaches back to the opening fence there is no
+window and no honest way to enumerate what moved. That is not a failure - the
+records were examined - but it is not a fence either, so the run keeps
+`manifest-complete` and says it cannot prove the project stood still.
+
+**The summary** is built once at the end from bounded keyset pages, not by
+`GROUP BY` at read time: the summary is the first thing rendered, so a report
+that recomputed it per page would put its slowest query in front of every
+reader. The counters ADD, which is why each page writes its counts and its
+cursor in one transaction - a crash between them inflates the summary against
+the findings it describes, and nothing downstream could detect that. Superseded
+finding versions are excluded, or the same problem is counted twice.
+
+**Promotion** is now one file, and it is the file this whole rebuild is for. The
+legacy scan assigned `complete` at the bottom of a loop a `continue` could skip,
+so a run that examined nothing produced the same string as one that examined
+everything. `ScanPromotion::facts()` is a pure function from run state to the
+inputs of `ScanOutcome::derive()`, which is what makes the hard decisions -
+whether a tombstone blocks, whether a pending finalizer means "not yet" or
+"nothing to do" - testable as a table rather than buried in a transaction.
+Nothing promotes over an unfinished manifest, an unread or unstable record, an
+undecidable duplicate group, an unfinished finalizer, a changed fingerprint or
+policy. A cancellation or an unrecoverable failure ends the run whatever is
+outstanding, because waiting for a finalizer on a run nobody wants is how a
+cancelled scan keeps its project slot.
+
+**Three defects the tests found, all of them disagreements between the two
+stores.** The in-memory store dropped the source version a record was scanned
+at, which would have requeued every record the change log mentions on every
+run. `SqlScanStore::run()` never selected `fence_target`, so promotion could not
+see a fence it had just written and would have downgraded every fenced run to
+manifest-complete. And the two stores returned different SHAPES from
+`aggregates()` - named keys from one, numeric from the other - with every caller
+written against whichever it was developed on. All three are now in the shared
+contract, which is the point of running one assertion set twice.
+
+**And the NULL-in-a-unique-index trap, for the second time in two releases.**
+`uv_scan_aggregate` keyed on `(run_id, kind, axis1, axis2)` with nullable axes.
+MySQL counts every NULL in a unique index as distinct, so `ON DUPLICATE KEY
+UPDATE` never fired, every page got a row of its own, and the summary would have
+reported one page as the whole. The axes are NOT NULL with an empty default now,
+which is also the honest representation: "no Data Access Group" is an answer.
+The in-memory store keyed by string concatenation and merged them happily; four
+real servers did not.
+
+365 fast checks and 269 in the database matrix, on both engines under both
+isolation levels. Still nothing user-visible: the scan page renders its
+unavailable notice, and no entrypoint reaches any of this.
+
 ## 1.8.23 - deciding duplicates without holding the project
 
 Uniqueness is the only check this module makes that is a property of the whole

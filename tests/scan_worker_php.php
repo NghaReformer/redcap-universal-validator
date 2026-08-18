@@ -34,6 +34,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
+    require_once __DIR__ . '/../php/Scan/CatchUp.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
 
     $n = 0; $fail = 0;
@@ -916,6 +918,357 @@ namespace INSPIRE\UniversalValidator\Scan {
         strpos($res['why'], 'reporting that it found none') !== false);
     check('worker: the run is left where it stopped, not finished',
         $store->run(800, $runId)['phase'] === 'unique-finalize');
+
+    // -- catch-up: what the project did while we were reading it -------------
+    //
+    // A finished manifest is not a finished scan. Everything below is one of the
+    // four things a changed record can be, and the point is that they are NOT
+    // the same thing - treating a deletion as an edit holds the run open
+    // forever, and treating an addition as noise certifies a project containing
+    // a record nobody looked at.
+
+    /** A change log a test drives directly. */
+    class Log implements ChangeLog
+    {
+        public $top = '500';
+        public $keeps = true;
+        public $changed = [];        // [id => version] inside the window
+        public $calls = 0;
+
+        public function now() { return $this->top; }
+        public function retained($open)
+        {
+            return $this->keeps ? ['ok' => true, 'why' => null]
+                 : ['ok' => false, 'why' => 'part of the change log covering this scan has been '
+                                          . 'removed since the run opened'];
+        }
+        public function changedSince($after, $upTo, $afterId, $limit)
+        {
+            $this->calls++;
+            $out = [];
+            $ids = array_keys($this->changed);
+            sort($ids);
+            foreach ($ids as $id) {
+                if ($afterId !== null && strcmp((string) $id, (string) $afterId) <= 0) continue;
+                $out[] = ['id' => (string) $id, 'version' => (string) $this->changed[$id]];
+                if (count($out) >= $limit) break;
+            }
+            return $out;
+        }
+    }
+
+    /** A run sitting in catch-up with its records already scanned. */
+    $hash = function ($id) { return hash('sha256', $id, true); };
+    $inCatchUp = function (array $ids, $scannedAt = '100') use ($hash) {
+        $store = new ArrayScanStore(2);
+        $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => '1']);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach ($ids as $id) $recs[] = ['id_bin' => $id, 'hash' => $hash($id), 'dag' => null];
+        $store->writeManifest($runId, $recs);
+        $epoch = (int) $store->run(800, $runId)['lease_epoch'];
+        // Scan them all, so the manifest is finished and the versions are known.
+        $claimed = $store->claim($runId, 'w1', $epoch, count($ids));
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($claimed as $c) {
+            $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                                   'version' => $scannedAt];
+        }
+        $store->commitBatch($runId, 'w1', $epoch, 0, $batch);
+        $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+        return [$store, $runId, $epoch];
+    };
+
+    // EDITED AFTER WE READ IT -> requeued.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B', 'C']);
+    $log = new Log();
+    $log->changed = ['B' => '400'];                 // scanned at 100, edited at 400
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a record edited after it was read is sent back to be read again',
+        $r['requeued'] === 1);
+    check('catchup: and it is the one that changed',
+        $store->recordState($runId, 2) === ScanStore::REC_PENDING
+        && $store->recordState($runId, 1) === ScanStore::REC_DONE);
+    check('catchup: which un-finishes the manifest', $store->manifestComplete($runId) === false);
+
+    // CHANGED BEFORE WE READ IT -> nothing to do. This is the branch that makes
+    // the confirming round cheap, and getting it wrong would requeue the whole
+    // project on every run.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $log = new Log();
+    $log->changed = ['A' => '400', 'B' => '500'];   // both older than the scan
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a change already inside the reading we have is not re-read',
+        $r['requeued'] === 0);
+
+    // CREATED DURING THE RUN -> added. This is C3: without it the run certifies
+    // a project containing a record it provably never examined.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->changed = ['A' => '50', 'NEW' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a record created during the run is added to the manifest', $r['added'] === 1);
+    check('catchup: the total moves with it, so completeness is not measured '
+        . 'against a number known to be wrong',
+        (int) $store->run(800, $runId)['manifest_total'] === 2);
+    check('catchup: and the run is no longer finished', $store->manifestComplete($runId) === false);
+
+    // ...BUT NOT IF IT IS OUT OF SCOPE. A DAG-scoped run that widened itself
+    // here would put another group's records into a report its reader may not
+    // see - the same leak the page-level DAG filter exists to prevent.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->changed = ['OTHERDAG' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash,
+        'scope' => function ($ids) { return array_fill_keys($ids, false); }]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a new record outside this run\'s scope is NOT added', $r['added'] === 0);
+
+    // DELETED DURING THE RUN -> tombstoned, never requeued. A deleted record can
+    // never be read, so requeueing it holds the run open forever.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B']);
+    $log = new Log();
+    $log->changed = ['B' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash,
+        'exists' => function ($ids) {
+            $o = []; foreach ($ids as $i) $o[$i] = ($i !== 'B'); return $o;
+        }]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a record deleted during the run is tombstoned', $r['gone'] === 1);
+    check('catchup: not requeued, which would hold the run open forever',
+        $r['requeued'] === 0 && $store->recordState($runId, 2) === ScanStore::REC_TOMBSTONE);
+    check('catchup: and a tombstone still counts as finished',
+        $store->manifestComplete($runId) === true);
+
+    // -- rounds ---------------------------------------------------------------
+    //
+    // A round that changed something must be followed by another, because the
+    // records it requeued are scanned AFTER this reconciler saw them. A round
+    // that changed nothing is the proof that the window is settled.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->changed = ['A' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $r1 = $cu->step(800, $runId, $epoch, 100);        // page: requeues A
+    check('catchup: the first page requeues', $r1['requeued'] === 1 && $r1['done'] === false);
+    $r2 = $cu->step(800, $runId, $epoch, 100);        // page: end of window, dirty -> round 2
+    check('catchup: reaching the end of a dirty window starts another round',
+        $r2['done'] === false && $store->progressState($runId)['catchupRound'] === 2);
+    // Pretend the worker re-scanned it at a version past the change.
+    $store->requeue($runId, $epoch, []);
+    $claimed = $store->claimPending($runId, 'w1', $epoch, 10);
+    $store->commitBatch($runId, 'w1', $epoch, 0, ['bytes' => 0, 'findings' => [],
+        'records' => [['ordinal' => $claimed[0]['ordinal'], 'state' => ScanStore::REC_DONE,
+                       'version' => '400']]]);
+    $r3 = $cu->step(800, $runId, $epoch, 100);        // page: A now settled
+    $r4 = $cu->step(800, $runId, $epoch, 100);        // end of a clean round
+    check('catchup: a round that changes nothing settles the phase', $r4['done'] === true);
+
+    // A record ALREADY waiting to be re-read is not requeued a second time, and
+    // that is what lets the round settle rather than spin: the reconciler has
+    // nothing left to say about it, and the worker has not got to it yet.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->changed = ['A' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    for ($i = 0; $i < 10; $i++) { $r = $cu->step(800, $runId, $epoch, 100); if ($r['done']) break; }
+    check('catchup: a record already queued for re-reading settles the round',
+        $r['done'] === true && $r['why'] === null);
+    check('catchup: without the run being finishable, because it is still pending',
+        $store->manifestComplete($runId) === false);
+
+    // THE BACKSTOP. Records changing inside a FIXED window faster than they can
+    // be re-scanned should be impossible, so it is reported rather than retried.
+    // Driven properly: the worker re-scans, and the project edits it again
+    // before the next round looks.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->changed = ['A' => '400'];
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $bump = 400;
+    $r = ['done' => false, 'why' => null];
+    for ($i = 0; $i < 40; $i++) {
+        $r = $cu->step(800, $runId, $epoch, 100);
+        if ($r['done']) break;
+        // Stand in for the worker: scan the pending record, then let the
+        // project edit it again inside the same window.
+        $claimed = $store->claimPending($runId, 'w1', $epoch, 10);
+        if ($claimed) {
+            $store->commitBatch($runId, 'w1', $epoch, 0, ['bytes' => 0, 'findings' => [],
+                'records' => [['ordinal' => $claimed[0]['ordinal'],
+                               'state' => ScanStore::REC_DONE, 'version' => (string) $bump]]]);
+            $bump += 100;
+            $log->changed = ['A' => (string) $bump];
+        }
+    }
+    check('catchup: an unsettleable window ends rather than looping', $r['done'] === true);
+    check('catchup: and says why', strpos((string) $r['why'], 'kept changing') !== false);
+    check('catchup: as a BLOCKING exclusion, so the run cannot claim coverage',
+        $store->blockingAggregates($runId) > 0);
+
+    // -- no window at all -----------------------------------------------------
+    //
+    // Not a failure: the records were examined. It is the difference between
+    // "this is the project" and "this is the list we opened with", and the run
+    // is required to be able to tell a reader which.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $cu = new CatchUp($store, ['hash' => $hash]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: with no change log the phase settles at once',
+        $r['done'] === true && $r['fenced'] === false);
+    check('catchup: recording that the project could not be proved still, not blocking it',
+        $store->blockingAggregates($runId) === 0);
+    $kinds = [];
+    foreach ($store->aggregates($runId) as $a) $kinds[] = $a['kind'];
+    check('catchup: as a visible reason rather than a silent absence',
+        in_array(CatchUp::K_NOFENCE, $kinds, true));
+
+    // A log that no longer reaches back to the opening fence is the same answer:
+    // there is a window, and nobody can see into it.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->keeps = false;
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $r = $cu->step(800, $runId, $epoch, 100);
+    check('catchup: a change log that no longer covers the run proves no fence',
+        $r['done'] === true && $r['fenced'] === false);
+    check('catchup: and no target fence is recorded, so nothing later reads one',
+        $store->progressState($runId)['fenceTarget'] === null);
+
+    // The window is captured ONCE. A window that moved every round would be a
+    // phase chasing a project people are still using.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+    $cu->step(800, $runId, $epoch, 100);
+    $first = $store->progressState($runId)['fenceTarget'];
+    $log->top = '9999';
+    $cu->step(800, $runId, $epoch, 100);
+    check('catchup: the target fence is captured once and does not chase the project',
+        $store->progressState($runId)['fenceTarget'] === $first);
+
+    // -- promotion: the one place a run may become finished -------------------
+    //
+    // This is the file the whole rebuild is for. The legacy scan assigned
+    // 'complete' at the bottom of a loop a `continue` could skip, so a run that
+    // examined nothing produced the same string as one that examined everything.
+    $ok = ['blockingAggregates' => 0, 'gapCount' => 0, 'ruleProblems' => 0,
+           'uniqueDone' => true, 'uniqueBlocking' => 0, 'rollupDone' => true];
+    $run = ['phase' => ScanPhase::ROLLUP, 'fingerprint' => str_repeat('a', 64),
+            'policy_revision' => 3, 'fence_target' => '500', 'detail_rows' => 0,
+            'detail_bytes' => 0, 'cancel_requested_at' => null];
+    $all = [ScanStore::REC_DONE => 10];
+
+    $f = ScanPromotion::facts($run, $all, $ok);
+    check('promote: a fenced, finished, unblocked run is ready', $f['ready'] === true);
+    check('promote: and earns complete coverage through its fence',
+        ScanOutcome::derive($f['facts'])['coverage'] === ScanOutcome::FENCED);
+
+    // Each of these on its own must stop it, and each is a defect the review
+    // named by number.
+    $no = function ($states, $in, $label) use ($run, $ok, &$n, &$fail) {
+        $f = ScanPromotion::facts($run, $states, array_merge($ok, $in));
+        \check($label, $f['ready'] === false && is_string($f['why']));
+    };
+    $no([ScanStore::REC_DONE => 9, ScanStore::REC_PENDING => 1], [],
+        'promote: a manifest with a record still waiting is not ready');
+    $no([ScanStore::REC_DONE => 9, ScanStore::REC_CLAIMED => 1], [],
+        'promote: nor one with a record claimed but never committed');
+    $no($all, ['uniqueDone' => false],
+        'promote: nor a run whose duplicate groups are still being decided');
+    $no($all, ['rollupDone' => false], 'promote: nor one whose summary is unfinished');
+
+    // Ready, but with much less to claim.
+    $blocked = ScanPromotion::facts($run, [ScanStore::REC_DONE => 9,
+        ScanStore::REC_UNREADABLE => 1], $ok);
+    check('promote: an unreadable record still finishes the run', $blocked['ready'] === true);
+    $o = ScanOutcome::derive($blocked['facts']);
+    check('promote: as PARTIAL coverage, never complete',
+        $o['coverage'] === ScanOutcome::COV_PARTIAL && ScanOutcome::mayClaimClean($o) === false);
+
+    $uns = ScanPromotion::facts($run, [ScanStore::REC_DONE => 9,
+        ScanStore::REC_UNSTABLE => 1], $ok);
+    check('promote: so does a record that would not hold still',
+        ScanOutcome::derive($uns['facts'])['coverage'] === ScanOutcome::COV_PARTIAL);
+
+    // A TOMBSTONE IS NOT A HOLE. A record deleted during the run cannot be read
+    // and never will be; requiring it to reach `done` holds the run open
+    // forever, which is C3's mirror case.
+    $tomb = ScanPromotion::facts($run, [ScanStore::REC_DONE => 9,
+        ScanStore::REC_TOMBSTONE => 1], $ok);
+    check('promote: a deleted record does not hold the run open', $tomb['ready'] === true);
+    check('promote: and does not block its coverage either',
+        ScanOutcome::derive($tomb['facts'])['coverage'] === ScanOutcome::FENCED);
+
+    $ug = ScanPromotion::facts($run, $all, array_merge($ok, ['uniqueBlocking' => 1]));
+    check('promote: a duplicate group nobody could decide caps coverage',
+        ScanOutcome::derive($ug['facts'])['coverage'] === ScanOutcome::COV_PARTIAL);
+
+    // No target fence: every record examined, and no proof the project stood
+    // still. That is manifest-complete, and it is a different sentence.
+    $nf = ScanPromotion::facts(array_merge($run, ['fence_target' => null]), $all, $ok);
+    check('promote: without a proved window the run is manifest-complete, not complete',
+        ScanOutcome::derive($nf['facts'])['coverage'] === ScanOutcome::MANIFEST);
+
+    // The configuration moved: FAILED, not partial. A run half-checked against
+    // rules that no longer exist describes the project under neither.
+    $fp = ScanPromotion::facts($run, $all,
+        array_merge($ok, ['fingerprintNow' => str_repeat('b', 64)]));
+    check('promote: a changed fingerprint fails the run',
+        ScanOutcome::derive($fp['facts'])['terminal'] === ScanOutcome::FAILED);
+    $pol = ScanPromotion::facts($run, $all, array_merge($ok, ['policyRevisionNow' => 4]));
+    check('promote: so does a privacy policy that tightened mid-run',
+        ScanOutcome::derive($pol['facts'])['terminal'] === ScanOutcome::FAILED);
+
+    // A cancelled or failed run ends WHATEVER is outstanding. Waiting for a
+    // finalizer on a run nobody wants is how a cancelled scan keeps its slot.
+    $can = ScanPromotion::facts(array_merge($run, ['cancel_requested_at' => '2026-01-01']),
+        [ScanStore::REC_DONE => 5, ScanStore::REC_PENDING => 5],
+        array_merge($ok, ['uniqueDone' => false, 'rollupDone' => false]));
+    check('promote: a cancelled run finishes even with work outstanding', $can['ready'] === true);
+    check('promote: as cancelled',
+        ScanOutcome::derive($can['facts'])['terminal'] === ScanOutcome::CANCELLED);
+
+    // The detail budget: every record examined, and the report the reader holds
+    // is not the report the run produced.
+    $tr = ScanPromotion::facts(array_merge($run, ['detail_rows' => 1000]), $all,
+        array_merge($ok, ['maxFindings' => 1000]));
+    $o = ScanOutcome::derive($tr['facts']);
+    check('promote: a truncated detail budget keeps full coverage',
+        $o['coverage'] === ScanOutcome::FENCED);
+    check('promote: but forbids clean and says _TRUNCATED',
+        ScanOutcome::mayClaimClean($o) === false && ScanOutcome::suffix($o) === '_TRUNCATED');
+
+    // Gaps are reported, never violations, and never blocking.
+    $gp = ScanPromotion::facts($run, $all, array_merge($ok, ['gapCount' => 3860]));
+    $o = ScanOutcome::derive($gp['facts']);
+    check('promote: collection gaps do not stop a clean result',
+        ScanOutcome::mayClaimClean($o) === true);
+    check('promote: but a caller may not render it without mentioning them',
+        $o['mustShowGaps'] === true);
+
+    // -- promotion end to end, through a real store --------------------------
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B']);
+    $store->advancePhase($runId, $epoch, ScanPhase::UNIQUE);
+    $store->advancePhase($runId, $epoch, ScanPhase::ROLLUP);
+    $store->setProgressState($runId, $epoch, ['fenceTarget' => '500']);
+    $p = ScanPromotion::promote($store, 800, $runId, $ok);
+    check('promote: the run finishes', $p['promoted'] === true);
+    check('promote: with a terminal state stored',
+        $store->run(800, $runId)['terminal'] === ScanOutcome::COMPLETE);
+    check('promote: and the project slot released for the next scan',
+        $store->startRun(800, ['created_by' => 'bob'])['ok'] === true);
+    $again = ScanPromotion::promote($store, 800, $runId, $ok);
+    check('promote: a retried finaliser cannot reopen it',
+        $again['promoted'] === false && strpos($again['why'], 'already finished') !== false);
+
+    // A run id from another project is not a locator here either.
+    $p = ScanPromotion::promote($store, 801, $runId, $ok);
+    check('promote: a cross-project run id is refused with the "no such run" wording',
+        $p['promoted'] === false && strpos($p['why'], 'no scan with that reference') !== false);
 
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);

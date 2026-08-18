@@ -63,8 +63,15 @@ final class ArrayScanStore implements ScanStore
             'lease_epoch' => 0, 'generation_id' => 1, 'created_by' => '',
             'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
+            // Reconciliation state. Present from the start so progressState()
+            // reads the same shape on a run that has not reached catch-up as on
+            // one that has - an absent key and a null one are the same value
+            // here, and only one of them is safe to read.
+            'fence_open' => null, 'fence_target' => null, 'catchup_cursor' => null,
+            'catchup_round' => 0, 'catchup_dirty' => 0, 'rollup_cursor' => 0,
         ], array_intersect_key($run, array_flip(
-            ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint'])));
+            ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
+             'fence_open'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->runs[$id], 'why' => null];
     }
@@ -206,6 +213,13 @@ final class ArrayScanStore implements ScanStore
             if ($this->records[$runId][$o]['state'] >= self::REC_DONE) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
             $this->records[$runId][$o]['attempts']++;
+            // The source version this record was examined AT. Catch-up compares
+            // it against the change log to decide whether an edit is already
+            // inside the reading we hold; a store that dropped it would requeue
+            // every record the log mentions, on every run.
+            if (array_key_exists('version', $rec)) {
+                $this->records[$runId][$o]['version'] = $rec['version'];
+            }
             // Terminal rows only: a requeue changes the row without finishing it.
             if ((int) $rec['state'] >= self::REC_DONE) $applied++;
         }
@@ -359,6 +373,153 @@ final class ArrayScanStore implements ScanStore
     {
         $this->audits[] = ['pid' => $pid, 'run_id' => $runId, 'event' => $event,
                            'actor' => $actor, 'detail' => $detail];
+    }
+
+    // -- reconciliation ------------------------------------------------------
+
+    public function reconcileAdd($runId, $epoch, array $records)
+    {
+        if (!isset($this->runs[$runId])) return 0;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::CATCH_UP || (int) $r['lease_epoch'] !== (int) $epoch) {
+            return 0;
+        }
+        $have = [];
+        foreach ($this->records[$runId] as $row) $have[$row['id_bin']] = true;
+        $ord = 0;
+        foreach ($this->records[$runId] as $o => $row) $ord = max($ord, (int) $o);
+        $added = 0;
+        foreach ($records as $rec) {
+            if (isset($have[$rec['id_bin']])) continue;
+            $ord++;
+            $this->records[$runId][$ord] = ['ordinal' => $ord, 'id_bin' => $rec['id_bin'],
+                'hash' => $rec['hash'], 'dag' => isset($rec['dag']) ? $rec['dag'] : null,
+                'state' => ScanStore::REC_PENDING, 'attempts' => 0, 'version' => null,
+                'owner' => null];
+            $have[$rec['id_bin']] = true;
+            $added++;
+        }
+        $this->runs[$runId]['manifest_total'] = count($this->records[$runId]);
+        return $added;
+    }
+
+    public function requeue($runId, $epoch, array $recordIds)
+    {
+        return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_PENDING, true);
+    }
+
+    public function tombstone($runId, $epoch, array $recordIds)
+    {
+        return $this->reState($runId, $epoch, $recordIds, ScanStore::REC_TOMBSTONE, false);
+    }
+
+    private function reState($runId, $epoch, array $recordIds, $state, $clearScan)
+    {
+        if (!isset($this->runs[$runId])) return 0;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::CATCH_UP || (int) $r['lease_epoch'] !== (int) $epoch) {
+            return 0;
+        }
+        $want = array_fill_keys(array_map('strval', $recordIds), true);
+        $n = 0;
+        foreach ($this->records[$runId] as $o => $row) {
+            if (!isset($want[(string) $row['id_bin']])) continue;
+            if ((int) $row['state'] === (int) $state) continue;
+            $this->records[$runId][$o]['state'] = $state;
+            // Attempts survive on purpose: see the SQL store's note. A record
+            // being edited constantly must still reach its limit.
+            if ($clearScan) $this->records[$runId][$o]['version'] = null;
+            $this->records[$runId][$o]['owner'] = null;
+            $n++;
+        }
+        $done = 0;
+        foreach ($this->records[$runId] as $row) {
+            if ((int) $row['state'] >= ScanStore::REC_DONE) $done++;
+        }
+        $this->runs[$runId]['manifest_done'] = $done;
+        return $n;
+    }
+
+    public function recordStates($runId)
+    {
+        $out = [];
+        if (!isset($this->records[$runId])) return $out;
+        foreach ($this->records[$runId] as $row) {
+            $k = (int) $row['state'];
+            $out[$k] = (isset($out[$k]) ? $out[$k] : 0) + 1;
+        }
+        return $out;
+    }
+
+    public function scannedVersions($runId, array $recordIds)
+    {
+        $want = array_fill_keys(array_map('strval', $recordIds), true);
+        $out = [];
+        if (!isset($this->records[$runId])) return $out;
+        foreach ($this->records[$runId] as $row) {
+            if (!isset($want[(string) $row['id_bin']])) continue;
+            $out[(string) $row['id_bin']] = ['version' => $row['version'],
+                                             'state' => (int) $row['state']];
+        }
+        return $out;
+    }
+
+    public function progressState($runId)
+    {
+        if (!isset($this->runs[$runId])) return null;
+        $r = $this->runs[$runId];
+        $get = function ($k, $d) use ($r) { return array_key_exists($k, $r) ? $r[$k] : $d; };
+        return ['catchupCursor' => $get('catchup_cursor', null),
+                'catchupRound' => (int) $get('catchup_round', 0),
+                'catchupDirty' => (int) $get('catchup_dirty', 0),
+                'rollupCursor' => (int) $get('rollup_cursor', 0),
+                'fenceOpen' => $get('fence_open', null),
+                'fenceTarget' => $get('fence_target', null)];
+    }
+
+    public function setProgressState($runId, $epoch, array $st)
+    {
+        if (!isset($this->runs[$runId])) return false;
+        if ((int) $this->runs[$runId]['lease_epoch'] !== (int) $epoch) return false;
+        // Mapped to the STORAGE names, not written through as they arrive. The
+        // caller speaks in the contract's names and the run row is read back by
+        // ScanPromotion in the column names, so a store that kept both would be
+        // a store where a fence written by one method is invisible to the other
+        // - which is exactly what happened before this map existed.
+        $map = ['catchupCursor' => 'catchup_cursor', 'catchupRound' => 'catchup_round',
+                'catchupDirty' => 'catchup_dirty', 'rollupCursor' => 'rollup_cursor',
+                'fenceTarget' => 'fence_target'];
+        foreach ($st as $k => $v) {
+            if (!isset($map[$k])) continue;
+            $this->runs[$runId][$map[$k]] = $v;
+        }
+        return true;
+    }
+
+    public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
+    {
+        // Coerced to strings exactly as the column is declared NOT NULL. A store
+        // that kept null here would merge rows the server keeps apart.
+        $axis1 = (string) $axis1;
+        $axis2 = (string) $axis2;
+        $k = $kind . '|' . $axis1 . '|' . $axis2;
+        if (!isset($this->aggregates[$runId][$k])) {
+            $this->aggregates[$runId][$k] = ['kind' => $kind, 'axis1' => $axis1, 'axis2' => $axis2,
+                                             'cnt' => 0, 'blocks' => 0, 'samples' => $samples];
+        }
+        $this->aggregates[$runId][$k]['cnt'] += (int) $cnt;
+        $this->aggregates[$runId][$k]['blocks'] = max($this->aggregates[$runId][$k]['blocks'],
+                                                      $blocks ? 1 : 0);
+        return true;
+    }
+
+    public function blockingAggregates($runId)
+    {
+        $n = 0;
+        foreach ($this->aggregates($runId) as $a) {
+            if (!empty($a['blocks'])) $n += (int) $a['cnt'];
+        }
+        return $n;
     }
 
     /** Test accessors. Deliberately not part of ScanStore. */

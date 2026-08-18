@@ -54,7 +54,28 @@ interface RecordVersions
  *
  * PHP 7.4.
  */
-final class SourceFence implements RecordVersions
+/**
+ * The change log, as catch-up needs it.
+ *
+ * Extracted for the same reason as RecordVersions: reconciliation's decisions -
+ * what an addition is, what a deletion is, when a round has settled - are worth
+ * testing exhaustively, and none of them are about SQL. SourceFence is the only
+ * production implementation, and its own queries are checked against four real
+ * servers where the questions are about collations and bigints instead.
+ */
+interface ChangeLog
+{
+    /** The current top of the log as a decimal string, or null when unreadable. */
+    public function now();
+
+    /** Does the log still reach back to $open? @return array{ok:bool, why:?string} */
+    public function retained($open);
+
+    /** One keyset page of records changed in ($after, $upTo]. */
+    public function changedSince($after, $upTo, $afterId, $limit);
+}
+
+final class SourceFence implements RecordVersions, ChangeLog
 {
     /** @var ScanDb */
     private $db;
