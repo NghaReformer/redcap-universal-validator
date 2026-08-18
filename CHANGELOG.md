@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.9.1 - the tables nothing created
+
+The first live pilot of 1.9.0 found a defect the whole test suite was green
+over: **`Schema::migrate()` had no caller.** The migration was written, the
+health check was written, and nothing anywhere invoked the one to satisfy the
+other. With both switches on, the scan page correctly reported "10 table(s) are
+missing; the durable scan stays disabled" — and would have reported it forever.
+
+Every scan test built its tables directly, which is why 836 checks passed over a
+feature that could not install itself. That is the v1.4.0 shape exactly: a
+production-inert feature behind a green suite, found only by running it on a
+real server. It is also the argument for the pilot gate, made a second time.
+
+**The trigger is the administrator's explicit action, not a page view.** Ticking
+the installation-wide switch and pressing Save is the choice, so
+`redcap_module_save_configuration()` installs the schema, and
+`redcap_module_system_enable()` covers the reinstall and upgrade paths that
+never pass through a settings save. A project saving its own settings installs
+nothing: the schema is an installation-level object, and a project administrator
+is not the person who decides the database gains ten tables.
+
+Nothing is installed while the switch is off, so an administrator who never
+asked for the feature never gets its tables.
+
+**A migration that fails must not fail the save.** It runs inside the settings
+hook, so a throw would tell an administrator their settings could not be stored
+— wrong, and unactionable. The failure is swallowed there and reported where it
+is legible: the scan page names the missing tables, and the attempt is written
+to the module log either way.
+
+Seven new checks in `tests/hosting_php.php`, verified by removing the trigger
+and watching two of them fail.
+
 ## 1.9.0 - the scan runs again, behind a switch
 
 Task 6 of the rebuild plan is complete. The durable scan has entrypoints, a

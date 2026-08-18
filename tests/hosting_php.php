@@ -50,8 +50,18 @@ namespace ExternalModules {
             if (!$e) return null;
             return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null;
         }
-        public function getSystemSetting($k) { return null; }
-        public function setSystemSetting($k, $v) {}
+        /** Settable, so the durable-scan switch can be turned on in a test. */
+        public function getSystemSetting($k) {
+            return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
+        }
+        public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
+        /** Every statement the module issues, so a migration is observable. */
+        public $sql = [];
+        public function query($sql, $params = []) {
+            $this->sql[] = $sql;
+            if (strpos($sql, 'MAX(version)') !== false) return [[0]];
+            return [];
+        }
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
@@ -1424,6 +1434,82 @@ namespace {
         $m9->scanProject(PID);
         check('A4: a successful read is still cached for the request',
             $afterFirst > 0 && \REDCap::$dictCalls === $afterFirst);
+    }
+
+    // -- the durable scan's tables have to be CREATED by something -----------
+    //
+    // FOUND BY A LIVE PILOT, NOT BY THIS SUITE. Every scan test built its tables
+    // directly, so the whole repository was green over a module that had no path
+    // to create them at all: both switches on, and the page correctly reported
+    // "10 table(s) are missing" forever. That is the v1.4.0 shape exactly - a
+    // production-inert feature behind a green suite - and this is the assertion
+    // that would have caught it.
+    {
+        $creates = function ($m) {
+            return count(array_filter($m->sql, function ($q) {
+                return stripos($q, 'CREATE TABLE') !== false;
+            }));
+        };
+        $mig = new \INSPIRE\UniversalValidator\UniversalValidator();
+
+        // OFF: nothing is installed. Ten tables in the database of an
+        // administrator who never asked for the feature is not a default.
+        $mig->sql = [];
+        $mig->redcap_module_save_configuration(null);
+        check('migrate: with the switch off, no table is created', $creates($mig) === 0);
+
+        // ON: the administrator ticked the box and pressed Save, which IS the
+        // choice, so the schema is installed.
+        $mig->systemSettings['scan-system-enable-durable'] = '1';
+        $mig->sql = [];
+        $mig->redcap_module_save_configuration(null);
+        $made = array_values(array_filter($mig->sql, function ($q) {
+            return stripos($q, 'CREATE TABLE') !== false;
+        }));
+        check('migrate: saving the system settings with the switch on installs the schema',
+            count($made) === count(\INSPIRE\UniversalValidator\Scan\Schema::tables()));
+        check('migrate: every statement is IF NOT EXISTS, so a re-save is a no-op',
+            count(array_filter($made, function ($q) {
+                return stripos($q, 'IF NOT EXISTS') !== false;
+            })) === count($made));
+        check('migrate: and it records that it ran, either way',
+            (bool) array_filter($mig->logCalls, function ($l) {
+                return $l[0] === 'scan-schema-migrate';
+            }));
+
+        // A PROJECT saving its own settings installs nothing. The schema is an
+        // installation-level object, and a project administrator is not the
+        // person who decides the database gains ten tables.
+        $mig->sql = [];
+        $mig->redcap_module_save_configuration(135);
+        check('migrate: a project saving its settings installs nothing', $creates($mig) === 0);
+
+        // Enabling the module while the switch is already on never passes
+        // through a settings save, so it needs its own trigger.
+        $mig->sql = [];
+        $mig->redcap_module_system_enable('1.9.1');
+        check('migrate: enabling the module with the switch already on also installs',
+            $creates($mig) > 0);
+
+        // A migration that throws must not fail the SAVE. An administrator
+        // ticking a box would otherwise be told their settings could not be
+        // stored, which is both wrong and unactionable.
+        // Anonymous, and declared HERE rather than at file scope: the parent
+        // class is only loaded once the fake framework above exists.
+        $boom = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+            public function query($sql, $params = []) {
+                throw new \RuntimeException('no CREATE grant');
+            }
+        };
+        $boom->systemSettings['scan-system-enable-durable'] = '1';
+        $threw = false;
+        try {
+            $boom->redcap_module_save_configuration(null);
+        } catch (\Throwable $e) {
+            $threw = true;
+        }
+        check('migrate: a database that refuses does not break saving the settings',
+            $threw === false);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

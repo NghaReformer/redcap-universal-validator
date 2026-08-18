@@ -2173,6 +2173,81 @@ class UniversalValidator extends AbstractExternalModule
     // -- project scan (retrospective validation report) ----------------------
 
     /**
+     * Install the durable scan's tables when an administrator asks for them.
+     *
+     * WHY IT IS TIED TO SAVING THE SETTING, and not to anything else. The
+     * schema is ten tables; creating them on every installation that merely has
+     * this module enabled would put ten tables into databases whose owners
+     * never asked for the feature. Creating them lazily when somebody OPENS a
+     * page would be worse - ScanService says so in as many words: a migration
+     * that runs because someone opened a page is a migration nobody chose.
+     *
+     * Ticking the installation-wide switch and pressing Save IS the choice, so
+     * that is where it happens. The statements are all CREATE TABLE IF NOT
+     * EXISTS, so saving the settings again is a no-op, and a migration that
+     * fails leaves the feature disabled with a health check that says which
+     * tables are missing.
+     *
+     * FOUND BY THE PILOT, NOT BY THE SUITE. Every test built its tables
+     * directly, so the whole suite was green over a module that had no way to
+     * create them at all - the same shape as v1.4.0's production-inert
+     * @UVUNIQUE, and the reason the plan asks for a real-server pilot before
+     * this is enabled anywhere.
+     *
+     * @param ?int $project_id null when the SYSTEM configuration was saved
+     */
+    public function redcap_module_save_configuration($project_id = null)
+    {
+        if ($project_id !== null) return;          // project settings install nothing
+        $this->installScanSchema();
+    }
+
+    /**
+     * The same install, on the other administrator action that can request it.
+     *
+     * A module enabled while its switch is already on - a reinstall, or a
+     * version upgrade - never passes through save_configuration, so the schema
+     * would stay missing until somebody happened to re-save a setting they had
+     * not changed.
+     */
+    public function redcap_module_system_enable($version = null)
+    {
+        $this->installScanSchema();
+    }
+
+    /**
+     * Migrate, but only when the installation has asked for the feature.
+     *
+     * Returns nothing and throws nothing: this runs inside a framework hook
+     * during a settings save, and an exception here would fail the SAVE - so an
+     * administrator ticking a box would be told their settings could not be
+     * stored, which is both wrong and unactionable. The health check on the
+     * scan page is where a failure is reported, and it names the tables.
+     */
+    private function installScanSchema()
+    {
+        try {
+            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) return;
+            $r = Scan\Schema::migrate($this);
+            // Recorded either way. A migration is the one thing here that
+            // changes the database, and "it was attempted and this happened" is
+            // what an administrator needs when the page later says the tables
+            // are not ready.
+            $this->log('scan-schema-migrate', [
+                'ok' => empty($r['ok']) ? 0 : 1,
+                'from' => isset($r['from']) ? (string) $r['from'] : '?',
+                'to' => isset($r['to']) ? (string) $r['to'] : '?',
+                'applied' => isset($r['applied']) ? (int) $r['applied'] : 0,
+                'why' => isset($r['why']) ? (string) $r['why'] : '',
+            ]);
+        } catch (Throwable $e) {
+            // Swallowed on purpose - see the docblock. The scan stays disabled
+            // and the page explains itself.
+        }
+    }
+
+    /**
      * Show the "Validation scan" project link only to users who can already
      * see the whole design (design rights). The page re-checks; this only
      * governs the sidebar link.
