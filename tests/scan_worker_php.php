@@ -31,6 +31,9 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+    require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/ScanWorker.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -466,6 +469,392 @@ namespace INSPIRE\UniversalValidator\Scan {
         strpos($noSource['why'], 'without exporting it') !== false);
     check('plan: refusing is not the same as being busy',
         $noSource['busy'] === false && $noSource['run'] === null);
+
+    // ======================================================================
+    // WorkBudget: how much a request may take on, and when it must stop
+    // ======================================================================
+
+    // -- reading the two ini values ------------------------------------------
+    //
+    // Both have a value that means "no limit" and reads as a very small number
+    // if taken literally. A memory limit of minus one byte refuses every batch;
+    // a time budget of zero seconds stops the scan before it starts. Neither
+    // failure announces itself - the scan simply never progresses.
+    check('budget: -1 memory means no limit, not a limit of -1',
+        WorkBudget::bytes('-1') === null);
+    check('budget: 0 seconds means no limit, not no time',
+        WorkBudget::seconds('0') === null && WorkBudget::seconds(0) === null);
+    check('budget: suffixes are bytes, kilobytes, megabytes, gigabytes',
+        WorkBudget::bytes('128M') === 134217728
+        && WorkBudget::bytes('512K') === 524288
+        && WorkBudget::bytes('1G') === 1073741824
+        && WorkBudget::bytes('1024') === 1024);
+    check('budget: case and spacing do not change the answer',
+        WorkBudget::bytes('128m') === WorkBudget::bytes('128M')
+        && WorkBudget::bytes(' 128M ') === WorkBudget::bytes('128M'));
+    check('budget: an unreadable value is unknown rather than zero',
+        WorkBudget::bytes('lots') === null && WorkBudget::bytes('') === null
+        && WorkBudget::seconds('soon') === null);
+    check('budget: a real time limit is read as itself',
+        WorkBudget::seconds('30') === 30 && WorkBudget::seconds(30) === 30);
+
+    // -- what the two modes aim at -------------------------------------------
+    $browser = new WorkBudget(['mode' => 'browser', 'memoryLimit' => '128M',
+                               'timeLimit' => null, 'startedAt' => 1000.0]);
+    $cron    = new WorkBudget(['mode' => 'cron', 'memoryLimit' => '128M',
+                               'timeLimit' => null, 'startedAt' => 1000.0]);
+    check('budget: a browser batch aims at a few seconds', $browser->target() === 3.0);
+    check('budget: a cron batch aims at much longer, because nobody is watching',
+        $cron->target() === 20.0);
+    // The remainder of the limit is what COMMITS the batch. A batch that ran out
+    // of time before committing did its work for nothing.
+    $tight = new WorkBudget(['mode' => 'cron', 'memoryLimit' => '128M', 'timeLimit' => 10,
+                             'startedAt' => 1000.0]);
+    check('budget: and never aims past the share of the limit it may spend',
+        $tight->target() === 8.0);
+
+    // A run's first batch has no measurement behind it, so it is a guess, and a
+    // guess that is too large is an OOM while one that is too small costs a
+    // round trip.
+    check('budget: the first batch is deliberately small', $browser->claim() === 25);
+
+    // -- sizing from what the last batch actually cost ------------------------
+    $b = new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                         'min' => 1, 'max' => 500, 'first' => 25, 'startedAt' => microtime(true)]);
+    // 25 records in 5s is 0.2s each, so 20s of work is 100 - but growth is
+    // capped at double, because a first batch that hit a run of empty records
+    // measures a cost no later batch repeats.
+    $n1 = $b->next(['records' => 25, 'seconds' => 5.0, 'memoryDelta' => 0]);
+    check('budget: a fast batch grows the next one', $n1['claim'] > 25);
+    check('budget: but never by more than double in one step', $n1['claim'] === 50);
+    // A slow batch shrinks immediately and without a cap: shrinking is safe.
+    $b2 = new WorkBudget(['mode' => 'browser', 'memoryLimit' => null, 'timeLimit' => null,
+                          'min' => 1, 'max' => 500, 'first' => 200, 'startedAt' => microtime(true)]);
+    $n2 = $b2->next(['records' => 200, 'seconds' => 60.0, 'memoryDelta' => 0]);
+    check('budget: a slow batch shrinks the next one at once', $n2['claim'] === 10);
+
+    $b3 = new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                          'min' => 5, 'max' => 40, 'first' => 20, 'startedAt' => microtime(true)]);
+    check('budget: the configured maximum is respected however fast the batch was',
+        $b3->next(['records' => 20, 'seconds' => 0.001, 'memoryDelta' => 0])['claim'] === 40);
+    $b4 = new WorkBudget(['mode' => 'browser', 'memoryLimit' => null, 'timeLimit' => null,
+                          'min' => 5, 'max' => 40, 'first' => 20, 'startedAt' => microtime(true)]);
+    check('budget: and the configured minimum however slow',
+        $b4->next(['records' => 20, 'seconds' => 600.0, 'memoryDelta' => 0])['claim'] === 5);
+
+    // -- memory has the last word --------------------------------------------
+    //
+    // Time only makes a batch slow. Memory ends the request with no report at
+    // all, which is the one failure this module cannot narrate.
+    $mem = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * 1024 * 1024,
+                           'timeLimit' => null, 'min' => 1, 'max' => 500, 'first' => 10,
+                           'startedAt' => microtime(true)]);
+    // 40 MiB used of 100, so the usable ceiling is 60 MiB and 20 MiB remains.
+    // At 1 MiB a record that is 20 records, not the 100 the clock would allow.
+    $nm = $mem->next(['records' => 10, 'seconds' => 2.0, 'usage' => 40 * 1024 * 1024,
+                      'memoryDelta' => 10 * 1024 * 1024]);
+    check('budget: a memory-hungry batch is capped by memory, not by the clock',
+        $nm['claim'] === 20);
+
+    // ONE RECORD ALONE, never zero. A record too large to examine beside others
+    // may still be examinable by itself, and excluding it without trying would
+    // be a guess recorded as a fact.
+    $huge = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * 1024 * 1024,
+                            'timeLimit' => null, 'min' => 4, 'max' => 500, 'first' => 10,
+                            'startedAt' => microtime(true)]);
+    $nh = $huge->next(['records' => 10, 'seconds' => 1.0, 'usage' => 55 * 1024 * 1024,
+                       'memoryDelta' => 50 * 1024 * 1024]);
+    check('budget: an oversized record is examined on its own', $nh['claim'] === 1);
+    check('budget: which overrides even the configured minimum', $nh['claim'] < 4);
+    check('budget: and the reason is stated rather than left to be inferred',
+        strpos($nh['why'], 'one at a time') !== false);
+
+    // Past the reserve there is no batch small enough to be worth starting.
+    $full = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * 1024 * 1024,
+                            'timeLimit' => null, 'min' => 1, 'max' => 500, 'first' => 10,
+                            'startedAt' => microtime(true)]);
+    $nf = $full->next(['records' => 10, 'seconds' => 1.0, 'usage' => 95 * 1024 * 1024,
+                       'memoryDelta' => 1024]);
+    check('budget: beyond the reserve the request stops rather than claiming again',
+        $nf['stop'] === 'memory');
+    check('budget: and says the scan continues, not that it failed',
+        strpos($nf['why'], 'continues in the next one') !== false);
+
+    // -- when to stop asking for more ----------------------------------------
+    $st = new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * 1024 * 1024,
+                          'timeLimit' => null, 'startedAt' => 1000.0]);
+    check('budget: before the deadline there is time for another batch',
+        $st->mustStop(1002.0, 1024) === null);
+    check('budget: after it there is not', $st->mustStop(1003.5, 1024) === 'time');
+    check('budget: the reserve is 40 per cent of the limit, not the last byte of it',
+        $st->mustStop(1000.0, 59 * 1024 * 1024) === null
+        && $st->mustStop(1000.0, 61 * 1024 * 1024) === 'memory');
+
+    // A limit nobody could read must not stop a healthy scan: that is the same
+    // mistake as a failed read judged as a blank.
+    $unknown = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 'lots', 'timeLimit' => 'soon',
+                               'startedAt' => 1000.0]);
+    check('budget: an unknown memory limit never halts a scan',
+        $unknown->mustStop(1000.0, PHP_INT_MAX) === null);
+    check('budget: an unknown time limit still leaves the mode target in force',
+        $unknown->target() === 20.0 && $unknown->mustStop(1021.0, 0) === 'time');
+
+    // ======================================================================
+    // ScanWorker: claim, prove it held still, look, commit - or commit nothing
+    // ======================================================================
+
+    /**
+     * A version source a test can move.
+     *
+     * The race the stable-read protocol exists for is an edit landing BETWEEN
+     * the worker's two version reads, and that cannot be arranged against a real
+     * change log without racing the test itself. Here it is arranged exactly:
+     * `bump` names a record that changes on every second read, which is the
+     * worst case rather than a convenient one.
+     */
+    class Versions implements RecordVersions
+    {
+        public $v = [];          // record => current version
+        public $bumpOnRead = []; // record => bump its version on every read
+        public $reads = 0;
+
+        public function versions(array $ids)
+        {
+            $this->reads++;
+            $out = [];
+            foreach ($ids as $id) {
+                if (isset($this->bumpOnRead[$id])) {
+                    $this->v[$id] = (string) (((int) (isset($this->v[$id]) ? $this->v[$id] : 0)) + 1);
+                }
+                $out[(string) $id] = isset($this->v[$id]) ? $this->v[$id] : null;
+            }
+            return $out;
+        }
+    }
+
+    /** A run with a frozen manifest, ready to be worked. */
+    $fixture = function ($ids, $pid = 800) {
+        $store = new ArrayScanStore(2);
+        $r = $store->startRun($pid, ['created_by' => 'alice']);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach ($ids as $id) {
+            $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+        }
+        $store->writeManifest($runId, $recs);
+        return [$store, $runId];
+    };
+    $reader = function ($ids) {
+        $data = [];
+        foreach ($ids as $id) $data[$id] = ['1' => ['x' => 'v']];
+        return ['ok' => true, 'data' => $data, 'why' => null];
+    };
+    $finder = function ($n) {
+        return function ($id, $node) use ($n) {
+            $out = [];
+            for ($i = 0; $i < $n; $i++) {
+                $out[] = ['generation_id' => 1, 'identity' => hash('sha256', $id . $i, true),
+                          'seq' => 1, 'record_hash' => hash('sha256', $id, true),
+                          'record_id_bin' => $id, 'host_form' => 'f', 'field' => 'x',
+                          'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
+                          'check_type' => 'required', 'reason_code' => 'required-blank'];
+            }
+            return ['findings' => $out, 'bytes' => 10, 'contexts' => 1, 'why' => null];
+        };
+    };
+    $wide = function () { return new WorkBudget(['mode' => 'cron', 'memoryLimit' => null,
+        'timeLimit' => null, 'min' => 1, 'max' => 100, 'first' => 10,
+        'startedAt' => microtime(true)]); };
+
+    // -- the ordinary case ---------------------------------------------------
+    list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
+    $ver = new Versions();
+    $w = new ScanWorker($store, ['fence' => $ver, 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: every record is examined', $res['worked'] === 5);
+    check('worker: and every finding kept', $res['findings'] === 5);
+    check('worker: the manifest completes', $store->manifestComplete($runId) === true);
+    check('worker: and the run walks to the end of the phase chain',
+        $res['phase'] === 'rollup-finalize' && $res['done'] === true);
+    check('worker: progress matches the manifest, never exceeds it',
+        (int) $store->run(800, $runId)['manifest_done'] === 5);
+    // The versions are read once before and once after the data, every batch.
+    check('worker: each batch proves stability with two reads, not one',
+        $ver->reads >= 2 && $ver->reads % 2 === 0);
+
+    // -- an edit landing between the two version reads -----------------------
+    //
+    // THE RACE THE PROTOCOL EXISTS FOR. Without it this record is examined half
+    // in its old state and half in its new one, and the finding describes a
+    // state the project was never in.
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $ver = new Versions();
+    $ver->v = ['A' => '1', 'B' => '1', 'C' => '1'];
+    $moved = false;
+    $racing = function ($ids) use (&$ver, &$moved, $reader) {
+        if (!$moved) { $ver->v['B'] = '2'; $moved = true; }   // edited during the read
+        return $reader($ids);
+    };
+    $w = new ScanWorker($store, ['fence' => $ver, 'read' => $racing, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: a record edited during the read is requeued, not reported',
+        $res['requeued'] === 1);
+    check('worker: and is examined on the next pass instead', $res['worked'] === 3);
+    check('worker: so the manifest still completes', $store->manifestComplete($runId) === true);
+    check('worker: with no finding attributed to a state that never existed',
+        $res['findings'] === 3);
+
+    // -- a record that will not hold still -----------------------------------
+    list($store, $runId) = $fixture(['A', 'HOT']);
+    $ver = new Versions();
+    $ver->bumpOnRead = ['HOT' => true];
+    $w = new ScanWorker($store, ['fence' => $ver, 'read' => $reader, 'evaluate' => $finder(1),
+        'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: a record edited on every look is eventually reported, not retried forever',
+        $res['blocked'] === 1);
+    check('worker: while every other record is still examined', $res['worked'] === 1);
+    // A blocking exclusion is what stops the run claiming it covered the
+    // project. The run reaching a terminal state is not the same as a clean one.
+    check('worker: and the run can still finish rather than waiting forever',
+        $store->manifestComplete($runId) === true && $res['done'] === true);
+
+    // -- a record deleted mid-run --------------------------------------------
+    //
+    // Asked for and not returned. Without a terminal state for this the manifest
+    // could never complete and the run would hold the project's scan slot until
+    // something expired it.
+    list($store, $runId) = $fixture(['A', 'GONE']);
+    $partial = function ($ids) {
+        $data = [];
+        foreach ($ids as $id) {
+            if ($id === 'GONE') continue;
+            $data[$id] = ['1' => ['x' => 'v']];
+        }
+        return ['ok' => true, 'data' => $data, 'why' => null];
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $partial,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2]);
+    $res = $w->work(800, $runId);
+    check('worker: a record that vanished mid-run reaches a terminal state',
+        $store->manifestComplete($runId) === true);
+    check('worker: counted as blocking rather than as examined',
+        $res['blocked'] === 1 && $res['worked'] === 1);
+
+    // -- a read that fails outright ------------------------------------------
+    //
+    // A FAILED READ IS NOT AN EMPTY ONE. Committing these as examined-and-clean
+    // is the exact mistake this module exists to prevent.
+    list($store, $runId) = $fixture(['A', 'B']);
+    $broken = function ($ids) {
+        return ['ok' => false, 'data' => [], 'why' => 'the export timed out'];
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $broken,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: a failed read commits nothing', $res['worked'] === 0
+        && (int) $store->run(800, $runId)['detail_rows'] === 0);
+    check('worker: and does not mark the records examined',
+        $store->manifestComplete($runId) === false);
+
+    // -- an evaluator that throws --------------------------------------------
+    list($store, $runId) = $fixture(['A', 'BAD', 'C']);
+    $throwing = function ($id, $node) use ($finder) {
+        if ($id === 'BAD') throw new \RuntimeException('rule engine fell over');
+        $f = $finder(1);
+        return $f($id, $node);
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $throwing, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: one record that cannot be examined does not lose the batch',
+        $res['worked'] === 2 && $res['findings'] === 2);
+    check('worker: it is reported as unexamined rather than as clean',
+        $res['blocked'] === 1);
+    check('worker: and the throw never reaches the request', $res['ok'] === true);
+
+    // -- cancellation beats an in-flight worker ------------------------------
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $cancelling = function ($id, $node) use (&$store, $runId, $finder) {
+        $store->cancel(800, $runId, 'admin');    // arrives mid-evaluation
+        $f = $finder(1);
+        return $f($id, $node);
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $cancelling, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: a cancelled worker fails its fence rather than committing',
+        $res['ok'] === false && $res['stop'] === 'fenced');
+    check('worker: and everything it had buffered is discarded',
+        (int) $store->run(800, $runId)['detail_rows'] === 0
+        && (int) $store->run(800, $runId)['manifest_done'] === 0);
+    check('worker: it says what happened rather than reporting success',
+        strpos($res['why'], 'cancelled or taken over') !== false);
+
+    // -- the configuration moved underneath the run --------------------------
+    list($store, $runId) = $fixture(['A']);
+    $fpNow = str_repeat('a', 64);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'fingerprint' => $fpNow]);
+    $res = $w->work(800, $runId);
+    check('worker: a run whose rules changed is stopped, not continued',
+        $res['ok'] === false);
+    check('worker: and ends terminally rather than being left mid-phase',
+        $store->run(800, $runId)['phase'] === 'terminal'
+        && $store->run(800, $runId)['terminal'] === 'failed');
+    check('worker: releasing the project slot for the run that must replace it',
+        $store->startRun(800, [])['ok'] === true);
+
+    // -- the privacy policy tightened ----------------------------------------
+    //
+    // The run stores the policy it began under. Continuing would keep writing
+    // value previews the project has just decided it does not want.
+    list($store, $runId) = $fixture(['A'], 801);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'policyRevision' => 9]);
+    $res = $w->work(801, $runId);
+    check('worker: a tightened privacy policy stops the run at once', $res['ok'] === false);
+    check('worker: and the reason names the settings rather than a fault',
+        strpos($res['why'], 'privacy settings') !== false);
+    check('worker: nothing further was written',
+        (int) $store->run(801, $runId)['detail_rows'] === 0);
+
+    // -- what a worker is told about a run that is not its own ---------------
+    list($store, $runId) = $fixture(['A'], 802);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1']);
+    $wrong = $w->work(803, $runId);      // right run id, wrong project
+    check('worker: a run id from another project resolves to nothing',
+        $wrong['ok'] === false);
+    check('worker: worded identically to a run that does not exist, so it is not an oracle',
+        $wrong['why'] === $w->work(802, 999999)['why']);
+
+    // -- the budget stops the request, not the run ---------------------------
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $spent = new WorkBudget(['mode' => 'browser', 'memoryLimit' => null, 'timeLimit' => null,
+                             'startedAt' => microtime(true) - 3600]);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $spent, 'owner' => 'w1', 'attempts' => 3]);
+    $res = $w->work(800, $runId);
+    check('worker: a request out of time claims nothing', $res['worked'] === 0
+        && $res['stop'] === 'time');
+    check('worker: the run is left workable rather than finished',
+        $res['done'] === false && $store->run(800, $runId)['phase'] === 'scanning');
+    check('worker: and says the scan continues rather than that it failed',
+        strpos($res['why'], 'continues in the next one') !== false);
+
+    // -- a finished run takes no more work -----------------------------------
+    list($store, $runId) = $fixture(['A']);
+    $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1']);
+    $res = $w->work(800, $runId);
+    check('worker: a finished run is not reopened by a resumed browser tab',
+        $res['worked'] === 0 && $res['done'] === true && $res['phase'] === 'terminal');
 }
 
 namespace {

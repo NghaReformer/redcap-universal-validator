@@ -3,6 +3,21 @@
 namespace INSPIRE\UniversalValidator\Scan;
 
 /**
+ * The one question ScanWorker asks a fence.
+ *
+ * Split out so the worker's stable-read behaviour can be exercised against a
+ * version source a test drives directly - an edit landing exactly between the
+ * two reads is the race the protocol exists for, and it cannot be arranged
+ * against a real log without racing the test. SourceFence is the only
+ * production implementation; this is a seam, not a plug-in point.
+ */
+interface RecordVersions
+{
+    /** @return array<string,?string> record id => opaque version, null when unlogged */
+    public function versions(array $recordIds);
+}
+
+/**
  * Proof that a record did not move while we were reading it, and a list of the
  * ones that did.
  *
@@ -39,7 +54,7 @@ namespace INSPIRE\UniversalValidator\Scan;
  *
  * PHP 7.4.
  */
-final class SourceFence
+final class SourceFence implements RecordVersions
 {
     /** @var ScanDb */
     private $db;

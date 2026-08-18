@@ -136,6 +136,18 @@ interface ScanStore
     public function manifestComplete($runId);
 
     /**
+     * Move the run one step along the phase chain, fenced on the lease epoch.
+     *
+     * The transition is checked against ScanPhase before it is written, so a
+     * worker cannot advance a run past a phase that never ran. Fenced, because a
+     * cancelled or taken-over run must not be walked forward by whoever was
+     * working it a moment ago.
+     *
+     * @return bool false when the transition was refused or the fence had moved
+     */
+    public function advancePhase($runId, $epoch, $to);
+
+    /**
      * Move the run to a terminal state and release the project slot.
      *
      * Idempotent: calling it twice is not an error, because a retried finaliser

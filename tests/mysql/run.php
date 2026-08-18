@@ -36,6 +36,8 @@ require_once __DIR__ . '/../../php/Scan/RecordManifestSource.php';
 require_once __DIR__ . '/../../php/Scan/Hmac.php';
 require_once __DIR__ . '/../../php/Scan/ScanPolicy.php';
 require_once __DIR__ . '/../../php/Scan/ScanPlanner.php';
+require_once __DIR__ . '/../../php/Scan/WorkBudget.php';
+require_once __DIR__ . '/../../php/Scan/ScanWorker.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 
@@ -1050,6 +1052,155 @@ $fresh = function () use ($A, $storeA) {
         && strpos($noRules['why'], 'no validation rules') !== false);
     check('plan: and no run was created for it',
         $dbA->select('SELECT COUNT(*) FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run'))[0][0] === '0');
+
+
+    // -- the worker, against the real store and the real fence ---------------
+    //
+    // The fast suite drives ScanWorker against the in-memory store, where the
+    // fence is an array a test can move. What it cannot show is the worker
+    // meeting a real transaction: the commit that rolls back, the claim that a
+    // second connection cannot repeat, the version read that goes to a log
+    // table. Those are here.
+    $A->query('DELETE FROM redcap_record_list');
+    for ($i = 1; $i <= 12; $i++) {
+        $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (900, 'W"
+            . $i . "', NULL)");
+    }
+    $A->query('DELETE FROM redcap_log_event');
+    for ($i = 1; $i <= 12; $i++) {
+        $A->query('INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES ('
+            . (1000 + $i) . ", 900, 'W" . $i . "', 'UPDATE')");
+    }
+    foreach (array('scan_record', 'finding', 'scan_run') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+
+    $srcW = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, 900, array('pk' => 'record_id'));
+    $fenceW = \INSPIRE\UniversalValidator\Scan\SourceFence::forProject($dbA, 900);
+    check('worker: the run it will work has a real fence', $fenceW['ok'] === true);
+    $planned = $planner->plan(900, array_merge($baseReq, array(
+        'source' => $srcW['source'], 'fence' => $fenceW['fence'], 'pageSize' => 5)));
+    check('worker: and a manifest of every record',
+        $planned['ok'] === true && (int) $planned['run']['manifest_total'] === 12);
+    $wrid = (int) $planned['run']['run_id'];
+    $gen = (int) $planned['run']['generation_id'];
+
+    $readAll = function ($ids) {
+        $out = array();
+        foreach ($ids as $id) $out[$id] = array('1' => array('x' => ''));
+        return array('ok' => true, 'data' => $out, 'why' => null);
+    };
+    $findOne = function ($id, $node) use ($gen) {
+        return array('bytes' => 12, 'contexts' => 1, 'why' => null, 'findings' => array(array(
+            'generation_id' => $gen, 'identity' => hash('sha256', 'w' . $id, true), 'seq' => 1,
+            'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id,
+            'instance' => 1, 'host_form' => 'f', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => 'required-blank')));
+    };
+    $slots = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slots->provision(2);
+
+    $worker = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+        'slots' => $slots, 'fence' => $fenceW['fence'], 'read' => $readAll,
+        'evaluate' => $findOne, 'owner' => 'browser-1', 'attempts' => 3,
+        'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(array('mode' => 'cron', 'memoryLimit' => null,
+            'timeLimit' => null, 'min' => 1, 'max' => 5, 'first' => 5,
+            'startedAt' => microtime(true)))));
+    $wres = $worker->work(900, $wrid);
+    check('worker: every record is examined against a real store', $wres['worked'] === 12);
+    check('worker: and every finding is stored', $wres['findings'] === 12);
+    $stored = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE generation_id = ?', array($gen));
+    check('worker: the findings are really in the table', (int) $stored[0][0] === 12);
+    check('worker: the manifest is complete as a predicate over states',
+        $store->manifestComplete($wrid) === true);
+    check('worker: and progress equals the manifest, never more',
+        (int) $store->run(900, $wrid)['manifest_done'] === 12);
+    // The installation slot is a resource, not a lock the worker keeps.
+    check('worker: the installation slot is handed back when the request ends',
+        $slots->census()['held'] === 0);
+
+    // A REAL EDIT DURING A REAL RUN. The record is touched in the log between
+    // the worker's two version reads, which is the race the protocol exists for.
+    foreach (array('scan_record', 'finding', 'scan_run') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    $planned2 = $planner->plan(900, array_merge($baseReq, array(
+        'source' => $srcW['source'], 'fence' => $fenceW['fence'], 'pageSize' => 20)));
+    $wrid2 = (int) $planned2['run']['run_id'];
+    $gen2 = (int) $planned2['run']['generation_id'];
+    $touched = false;
+    $readAndEdit = function ($ids) use (&$touched, $A, $readAll) {
+        if (!$touched) {
+            $touched = true;
+            // Someone saves W3 while the export is running.
+            $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event)
+                VALUES (2000, 900, 'W3', 'UPDATE')");
+        }
+        return $readAll($ids);
+    };
+    $findNone = function ($id, $node) {
+        return array('bytes' => 0, 'contexts' => 1, 'why' => null, 'findings' => array());
+    };
+    $worker2 = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+        'slots' => $slots, 'fence' => $fenceW['fence'], 'read' => $readAndEdit,
+        'evaluate' => $findNone, 'owner' => 'browser-2', 'attempts' => 3,
+        'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(array('mode' => 'cron', 'memoryLimit' => null,
+            'timeLimit' => null, 'min' => 1, 'max' => 20, 'first' => 20,
+            'startedAt' => microtime(true)))));
+    $wres2 = $worker2->work(900, $wrid2);
+    check('worker: a record saved during the export is requeued rather than reported',
+        $wres2['requeued'] === 1);
+    check('worker: and examined once it is stable', $wres2['worked'] === 12);
+    check('worker: so the run still covers every record',
+        $store->manifestComplete($wrid2) === true);
+    $store->finish($wrid2, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('fenced' => true, 'manifestDone' => true)));
+
+    // A CANCEL FROM ANOTHER CONNECTION, arriving while this worker evaluates.
+    // The epoch bump is what makes it beat the worker; nothing the worker had
+    // buffered may reach the tables.
+    foreach (array('scan_record', 'finding', 'scan_run') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    $planned3 = $planner->plan(900, array_merge($baseReq, array(
+        'source' => $srcW['source'], 'fence' => $fenceW['fence'], 'pageSize' => 20)));
+    $wrid3 = (int) $planned3['run']['run_id'];
+    $gen3 = (int) $planned3['run']['generation_id'];
+    $storeB = new \INSPIRE\UniversalValidator\Scan\SqlScanStore(new MysqliDb($B));
+    $cancelMidway = function ($id, $node) use ($storeB, $wrid3, $gen3) {
+        // The SECOND connection cancels, exactly as an administrator's request
+        // in another tab would.
+        $storeB->cancel(900, $wrid3, 'admin');
+        return array('bytes' => 1, 'contexts' => 1, 'why' => null, 'findings' => array(array(
+            'generation_id' => $gen3, 'identity' => hash('sha256', 'c' . $id, true), 'seq' => 1,
+            'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id,
+            'instance' => 1, 'host_form' => 'f', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => 'required-blank')));
+    };
+    $worker3 = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+        'slots' => $slots, 'fence' => $fenceW['fence'], 'read' => $readAll,
+        'evaluate' => $cancelMidway, 'owner' => 'browser-3', 'attempts' => 3,
+        'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(array('mode' => 'cron', 'memoryLimit' => null,
+            'timeLimit' => null, 'min' => 1, 'max' => 20, 'first' => 20,
+            'startedAt' => microtime(true)))));
+    $wres3 = $worker3->work(900, $wrid3);
+    check('worker: a cancel from another connection stops the worker at its fence',
+        $wres3['ok'] === false && $wres3['stop'] === 'fenced');
+    $leftF = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE generation_id = ?', array($gen3));
+    check('worker: and not one buffered finding reached the table',
+        (int) $leftF[0][0] === 0);
+    $leftD = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? AND state >= ?', array($wrid3, \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE));
+    check('worker: nor was any record marked as examined', (int) $leftD[0][0] === 0);
+    check('worker: the slot is still returned when the worker stops early',
+        $slots->census()['held'] === 0);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET active_slot = NULL, phase = 'terminal', terminal = 'cancelled'
+            WHERE run_id = " . $wrid3);
 
     foreach (array('redcap_log_event', 'redcap_record_list', 'redcap_data',
                    'redcap_projects') as $t) {

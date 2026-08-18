@@ -196,7 +196,8 @@ final class ArrayScanStore implements ScanStore
             if ($this->records[$runId][$o]['state'] >= self::REC_DONE) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
             $this->records[$runId][$o]['attempts']++;
-            $applied++;
+            // Terminal rows only: a requeue changes the row without finishing it.
+            if ((int) $rec['state'] >= self::REC_DONE) $applied++;
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count(isset($batch['findings']) ? $batch['findings'] : []);
@@ -214,7 +215,8 @@ final class ArrayScanStore implements ScanStore
     private static function claimRow(array $rec)
     {
         return ['ordinal' => $rec['ordinal'], 'id_bin' => $rec['id_bin'],
-                'hash' => $rec['hash'], 'dag' => $rec['dag']];
+                'hash' => $rec['hash'], 'dag' => $rec['dag'],
+                'attempts' => (int) $rec['attempts'], 'version' => $rec['version']];
     }
 
     /** A predicate over states, exactly as the SQL store computes it. */
@@ -224,6 +226,17 @@ final class ArrayScanStore implements ScanStore
         foreach ($this->records[$runId] as $rec) {
             if ($rec['state'] < self::REC_DONE) return false;
         }
+        return true;
+    }
+
+    public function advancePhase($runId, $epoch, $to)
+    {
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return false;
+        if ($r['cancel_requested_at'] !== null) return false;
+        if (!ScanPhase::may($r['phase'], $to)) return false;
+        $this->runs[$runId]['phase'] = $to;
+        $this->runs[$runId]['cursor_ordinal'] = 0;
         return true;
     }
 

@@ -277,7 +277,8 @@ final class SqlScanStore implements ScanStore
             // the cursor by a COUNT would step over live rows and leave them
             // permanently unreachable. Take the next N pending rows in order and
             // move the cursor to the last one actually taken.
-            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence
+            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
+                attempts, version_scanned
                 FROM ' . Schema::table('scan_record') . '
                 WHERE run_id = ? AND ordinal > ? AND state = ?
                 ORDER BY ordinal LIMIT ' . $limit, [$runId, $from, self::REC_PENDING]);
@@ -285,7 +286,13 @@ final class SqlScanStore implements ScanStore
             $to = $from;
             foreach ($rows as $row) {
                 $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
-                          'hash' => $row[2], 'dag' => $row[3]];
+                          'hash' => $row[2], 'dag' => $row[3],
+                          // How many times this record has already been tried.
+                          // The worker needs it to decide between requeueing a
+                          // record that will not hold still and declaring it a
+                          // blocking exclusion - a decision it cannot make from
+                          // what it can see in one request.
+                          'attempts' => (int) $row[4], 'version' => $row[5]];
                 if ((int) $row[0] > $to) $to = (int) $row[0];
             }
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
@@ -323,7 +330,8 @@ final class SqlScanStore implements ScanStore
             }
             $t = Schema::table('scan_record');
             $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
-            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence
+            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
+                attempts, version_scanned
                 FROM ' . $t . '
                 WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
                 ORDER BY ordinal LIMIT ' . $limit,
@@ -331,7 +339,8 @@ final class SqlScanStore implements ScanStore
             $out = [];
             foreach ($rows as $row) {
                 $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
-                          'hash' => $row[2], 'dag' => $row[3]];
+                          'hash' => $row[2], 'dag' => $row[3],
+                          'attempts' => (int) $row[4], 'version' => $row[5]];
             }
             if ($out) {
                 $ords = [];
@@ -402,7 +411,12 @@ final class SqlScanStore implements ScanStore
                     WHERE run_id = ? AND ordinal = ? AND state < ?',
                     [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
                      $runId, $rec['ordinal'], self::REC_DONE]);
-                $applied += ($this->db->affected() === 1) ? 1 : 0;
+                // Terminal rows only. A requeued record is written back as
+                // pending, which changes its attempt count and its timestamp -
+                // so it affects a row without having been finished, and
+                // counting it would walk progress past the manifest total.
+                $applied += ($this->db->affected() === 1
+                    && (int) $rec['state'] >= self::REC_DONE) ? 1 : 0;
             }
             // Counters last, and NOT gated on affected(): a batch that finished
             // zero records and found zero findings changes no column, reports
@@ -475,6 +489,37 @@ final class SqlScanStore implements ScanStore
      * requires the slot to still be held, so a retried finaliser changes nothing
      * rather than reopening a finished run.
      */
+    public function advancePhase($runId, $epoch, $to)
+    {
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch, cancel_requested_at FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || (int) $r[0][1] !== (int) $epoch || $r[0][2] !== null) {
+                $this->db->rollback();
+                return false;
+            }
+            // The transition table decides, not the caller. A worker that has
+            // finished its own phase has no way of knowing whether the phase
+            // after it is the one that should run next.
+            if (!ScanPhase::may($r[0][0], $to)) {
+                $this->db->rollback();
+                return false;
+            }
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+                SET phase = ?, cursor_ordinal = ?, updated_at = ? WHERE run_id = ?',
+                // The cursor belongs to the phase that used it. Carrying it into
+                // catch-up would make the straggler sweep start part way through
+                // a manifest it walks by state rather than by position.
+                [$to, 0, self::now(), $runId]);
+            $this->db->commit();
+            return true;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            return false;
+        }
+    }
+
     public function finish($runId, array $outcome)
     {
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . '

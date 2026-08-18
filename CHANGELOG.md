@@ -1,5 +1,64 @@
 # Changelog
 
+## 1.8.22 - the worker: prove it held still, look, and commit or commit nothing
+
+`ScanWorker` is the durable scan's engine, and `WorkBudget` is what stops it
+exceeding a request.
+
+**The stable read is four steps rather than one.** Read each record's source
+version, read the records, read the versions again, keep only what did not
+move. A scan of 100,000 records reads a project people are still using; without
+this, a record edited during the read is examined half in its old state and half
+in its new one, and the finding describes a state the project was never in.
+Requeueing costs one re-read. Certifying costs the report its meaning. A record
+that will not hold still after the configured attempts becomes a reported
+blocking exclusion rather than being retried forever or quietly left out, and a
+record deleted mid-run reaches a tombstone so the manifest can still complete -
+otherwise the run waits forever while holding the project's scan slot.
+
+**Every failure has a state, and none of them is silent.** A read that fails
+commits nothing and leaves the rows claimable, because a failed read judged as
+an empty one is the mistake this module exists to prevent. An evaluator that
+throws costs one record, not the batch, and that record is reported unexamined
+rather than clean. A cancel arriving mid-evaluation is discovered at the final
+compare-and-set, and everything buffered is discarded - proved here against a
+real server with the cancel issued from a second connection.
+
+**Two things end a run rather than pausing it.** If the validation rules changed
+underneath it, there is no partial claim that would be true, so it finishes
+terminally and releases the slot for the run that must replace it. If the
+project's privacy settings were tightened, it stops before writing anything
+further - tightening takes effect at once by design, and the run stores the
+policy it began under.
+
+**`WorkBudget` is predictive, not reactive.** Noticing that memory is nearly
+exhausted is too late: the allocation that finishes the job is the one that
+kills it, and an OOM is the single failure mode a module built on "nothing
+fails silently" cannot narrate, because the process that would narrate it is
+gone. So each batch is sized from what the last one actually cost, growth is
+capped at double so one unrepresentative batch cannot produce a fatal next one,
+and a batch is refused unless its predicted peak leaves 40% of the limit free.
+A record too large to examine beside others is examined alone - never zero,
+because excluding it without trying records a guess as a fact.
+
+Both ini values have a setting that means "no limit" and reads as a very small
+number if taken literally: `memory_limit = -1` and `max_execution_time = 0`. A
+memory limit of minus one byte refuses every batch and a time budget of zero
+seconds stops the scan before it starts, and neither failure announces itself -
+the scan simply never progresses. Both are tested.
+
+**The store needed two more things.** `advancePhase()` walks a run along the
+chain with the transition table deciding rather than the caller, fenced on the
+lease epoch. And progress now counts only records that became TERMINAL: a
+requeued record is written back as pending, which changes its attempt count and
+its timestamp, so counting affected rows walked the figure past the manifest
+total.
+
+308 checks in the fast worker suite and 220 in the database matrix. Two
+mutations were run to confirm the tests bite: removing the stable-read guard
+fails three checks, and removing the commit fence fails ten. The scan still does
+not run - the entrypoints and the feature flag are next.
+
 ## 1.8.21 - planning: from a project to a frozen manifest
 
 `ScanPlanner::plan()` is the step that turns a project into a run: it names
