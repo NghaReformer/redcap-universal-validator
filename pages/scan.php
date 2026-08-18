@@ -44,25 +44,12 @@ $csv = isset($_GET['csv']) && $_GET['csv'] === '1';
 // (php/ScanPageView.php, require_once'd from the module), so the page can be
 // included as often as a test needs.
 
-$result = null;
-if ($run || $csv) {
-    $result = $module->scanProject($pid, $dagFilter, 200, null,
-        ['valueCeiling' => $scope['valueCeiling']]);
-}
-
-$complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
-// A clean bill of health needs all three: the scan finished, it found nothing,
-// and no rule was left unevaluated. A project whose every rule is broken has
-// zero violations and is not clean — the green tick belonged to the violation
-// count alone, which is the narrower claim (M-02).
-// COVERAGE is a separate axis from status. A run that read every record on its
-// opening list, on a server where no change fence can be proved, is
-// 'manifest-complete': it cannot know the project did not move underneath it,
-// and per the rebuild plan that must never render as complete or clean.
-$coverage = isset($result['coverage']) ? $result['coverage'] : 'partial';
-$fenced   = ($coverage === 'complete-through-fence');
-$clean    = $complete && $fenced && !$result['violations'] && !$result['unconfigurable'];
-
+// ORDER MATTERS. This block used to sit BELOW the scan, under a `$run || $csv`
+// run condition, so the deprecated download route ran a complete scan, threw the
+// result away unread, and redirected to a page that scanned the project again:
+// twice the database load and twice the wall clock for a file that could only
+// ever have come from the second run. The redirect needs nothing the scan
+// produces, so it belongs above it.
 if ($csv) {
     // DEPRECATED, and now a redirect rather than a second exporter.
     //
@@ -86,6 +73,25 @@ if ($csv) {
     header('Location: ' . $module->getUrl('pages/export.php'), true, 302);
     return;
 }
+
+$result = null;
+if ($run) {
+    $result = $module->scanProject($pid, $dagFilter, 200, null,
+        ['valueCeiling' => $scope['valueCeiling']]);
+}
+
+$complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
+// A clean bill of health needs all three: the scan finished, it found nothing,
+// and no rule was left unevaluated. A project whose every rule is broken has
+// zero violations and is not clean — the green tick belonged to the violation
+// count alone, which is the narrower claim (M-02).
+// COVERAGE is a separate axis from status. A run that read every record on its
+// opening list, on a server where no change fence can be proved, is
+// 'manifest-complete': it cannot know the project did not move underneath it,
+// and per the rebuild plan that must never render as complete or clean.
+$coverage = isset($result['coverage']) ? $result['coverage'] : 'partial';
+$fenced   = ($coverage === 'complete-through-fence');
+$clean    = $complete && $fenced && !$result['violations'] && !$result['unconfigurable'];
 
 $self = $module->getUrl('pages/scan.php');
 // The download goes to a page that is NOT a declared project link, so the

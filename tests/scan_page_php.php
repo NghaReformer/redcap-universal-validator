@@ -162,7 +162,15 @@ namespace {
         public static $groupThrows = false;
         /** A record REDCap lists but then does not return — forces 'incomplete'. */
         public static $dropFromChunk = null;
+        /**
+         * R3-2. Every getData call, so a test can prove a route did NO work.
+         * The deprecated ?csv=1 route ran a whole scan and threw the result
+         * away before redirecting to a page that scanned again - invisible to
+         * every assertion about output, because the output was identical.
+         */
+        public static $reads = 0;
         public static function getData($p) {
+            self::$reads++;
             if (empty($p['records'])) return self::$data;    // the id pre-read
             $out = [];
             foreach ($p['records'] as $r) {
@@ -258,6 +266,7 @@ namespace {
         \REDCap::$eventNames   = isset($opts['events']) ? $opts['events'] : [];
         \REDCap::$formNames    = isset($opts['forms']) ? $opts['forms'] : [];
         \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
+        \REDCap::$reads = 0;
         $GLOBALS['uv_headers'] = [];
         $_GET = $get;
         $module = $m;                       // the name pages/scan.php expects
@@ -281,9 +290,11 @@ namespace {
         $cmd = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg(__FILE__)
              . ' --csv-case=' . escapeshellarg($case) . ' --hdr-out=' . escapeshellarg($side);
         $out = (string) shell_exec($cmd);
-        $hdr = is_file($side) ? json_decode((string) file_get_contents($side), true) : null;
+        $side_json = is_file($side) ? json_decode((string) file_get_contents($side), true) : null;
         @unlink($side);
-        return [$out, $hdr];
+        $hdr   = isset($side_json['headers']) ? $side_json['headers'] : null;
+        $reads = isset($side_json['reads']) ? (int) $side_json['reads'] : -1;
+        return [$out, $hdr, $reads];
     }
 
     /* =====================================================================
@@ -299,7 +310,8 @@ namespace {
         // the recorded headers back out: shutdown handlers still run on exit.
         if ($hdrOut !== null) {
             register_shutdown_function(function () use ($hdrOut) {
-                @file_put_contents($hdrOut, json_encode($GLOBALS['uv_headers']));
+                @file_put_contents($hdrOut, json_encode(
+                    ['headers' => $GLOBALS['uv_headers'], 'reads' => \REDCap::$reads]));
             });
         }
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
@@ -473,8 +485,15 @@ namespace {
         // formats answered the same question differently. The header assertions
         // that used to live here moved to the EXPORT section, which tests the
         // one exporter both routes now reach.
-        list($out, $hdr) = csvChild('chrome');
+        list($out, $hdr, $reads) = csvChild('chrome');
         check('S-04: the legacy csv route still runs in a child process', $out !== null);
+        // R3-2. The redirect needs nothing the scan produces, so it must not run
+        // one. It used to sit BELOW a `$run || $csv` scan condition: the route
+        // scanned the whole project, discarded the result unread, and redirected
+        // to a page that scanned it again. Two full scans, one file, and no
+        // assertion about output could see it because the output was identical.
+        check('R3-2: the deprecated route performs NO reads before redirecting',
+            $reads === 0);
         $names = [];
         foreach ((array) $hdr as $h) $names[] = $h['h'];
         check('S-04: it redirects rather than emitting a second format',
@@ -690,8 +709,13 @@ namespace {
                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
         $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
         \REDCap::$groupNames = [];
+        // ONE event, not zero. A classic project's getEventNames() returns its
+        // single event; an EMPTY map means the read failed, which is a different
+        // project and a different report. This block used to leave it empty and
+        // assert the classic outcome, so it passed whichever of the two the code
+        // happened to implement.
         list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw']]);
+            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
 
         check('columns: the table shows the instrument', strpos($html, '<th>Instrument</th>') !== false);
         check('columns: and the value', strpos($html, '<th>Value</th>') !== false);
@@ -707,6 +731,23 @@ namespace {
             strpos($html, '<th>Event</th>') === false);
         check('columns: a project with no DAGs shows no DAG column',
             strpos($html, '<th>Data Access Group</th>') === false);
+
+        // R3-5. Dropping the Event column is the CLAIM "every finding here is in
+        // the same event", and an unreadable event map cannot support it. Two
+        // findings in different events used to render as byte-identical rows
+        // with nothing to tell them apart, while the degraded note said only
+        // that the NAMES were missing - it did not put the ids back.
+        $dataEv = [1 => [10 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes'],
+                         20 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
+        list($htmlEv, ) = render(new \ExternalModules\PlainUser(true, null), $D, $dataEv, ['run' => '1'],
+            ['settings' => ['scan-value-storage' => 'raw']]);   // no 'events' => the map is unreadable
+        check('R3-5: an unreadable event map KEEPS the Event column',
+            strpos($htmlEv, '<th>Event</th>') !== false);
+        check('R3-5: and falls back to the raw event id, so two events differ',
+            strpos($htmlEv, '<td>10</td>') !== false && strpos($htmlEv, '<td>20</td>') !== false);
+        check('R3-5: and says on the page WHY the ids are raw',
+            strpos($htmlEv, 'Some labels could not be read, so raw identifiers are shown instead') !== false
+            && strpos($htmlEv, 'no event names were returned') !== false);
         // The escaping still applies to every generated cell.
         $D2 = dict(['record_id' => ['fa'], 'want' => ['fa'],
                     'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
@@ -809,6 +850,68 @@ namespace {
         list($h6, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
         check('shape: unreadable label sources are reported on the page',
             strpos($h6, 'Some labels could not be read') !== false);
+    }
+
+    /* =====================================================================
+     * R3-3  the screen and the file scrub the same bytes
+     * ===================================================================== */
+    {
+        $V  = \INSPIRE\UniversalValidator\ScanPageView::class;
+        $ESC = "ok" . chr(0) . "NUL" . chr(27) . "ESC" . chr(26) . "SUB";
+        $h   = $V::h($ESC);
+        $csv = $V::csv($ESC);
+        check('R3-3: h() strips NUL, ESC and SUB, as csv() already did',
+            strpos($h, chr(0)) === false && strpos($h, chr(27)) === false
+            && strpos($h, chr(26)) === false);
+        check('R3-3: and keeps the text around them', strpos($h, 'okNULESCSUB') !== false);
+        check('R3-3: the file agrees byte for byte with the page',
+            trim($csv, '"') === $h);
+        // TAB, CR and LF are legitimate in both surfaces and must survive - a
+        // scrub that ate them would silently reflow a Notes field.
+        $keep = $V::h("a\tb\r\nc");
+        check('R3-3: TAB, CR and LF are kept',
+            strpos($keep, "\t") !== false && strpos($keep, "\n") !== false);
+
+        // End to end: the same value reaches the table scrubbed.
+        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [1 => [1 => ['record_id' => '1', 'code' => "bad" . chr(27) . "[2J", 'want' => 'yes']]];
+        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
+        check('R3-3: an ESC in a stored value never reaches the rendered page',
+            strpos($html, chr(27)) === false && strpos($html, 'bad[2J') !== false);
+    }
+
+    /* =====================================================================
+     * R3-7  one resolution per row, and never the previous row's sentence
+     * ===================================================================== */
+    {
+        $MC = \INSPIRE\UniversalValidator\MessageCatalog::class;
+        $fa = ['type' => 'required', 'reason' => 'required-blank', 'rule' => 1, 'field' => 'a'];
+        $fb = ['type' => 'single', 'reason' => 'check-character', 'rule' => 2, 'field' => 'b'];
+        $none = ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+
+        $a1 = $MC::explain($fa, $none, 'staff');
+        $a2 = $MC::explain($fa, $none, 'staff');
+        check('R3-7: the same finding resolves to the same answer', $a1 === $a2);
+        $b1 = $MC::explain($fb, $none, 'staff');
+        check('R3-7: a DIFFERENT finding immediately after gets its own answer',
+            $b1['text'] !== $a1['text']);
+        $a3 = $MC::explain($fa, $none, 'staff');
+        check('R3-7: and the first one still resolves correctly afterwards', $a3 === $a1);
+
+        // The memo is on the TEMPLATE, never on the finished sentence. The
+        // catalog is a data file: the day an entry uses {value} or {record}, a
+        // cache over the sentence would hand this row the previous row's value.
+        $r1 = $MC::explain(['type' => 'assert', 'reason' => 'assert:[a]=1', 'rule' => 7], $none, 'staff');
+        $r2 = $MC::explain(['type' => 'assert', 'reason' => 'assert:[b]=2', 'rule' => 7], $none, 'staff');
+        check('R3-7: two findings of the same rule are both resolved', $r1 && $r2);
+
+        // An AUTHORED message is verbatim: braces an author typed are their text.
+        $auth = ['type' => '', 'label' => '', 'message' => 'Use {site}-NNN', 'assert' => '', 'fields' => []];
+        $ex = $MC::explain($fa, $auth, 'staff');
+        check('R3-7: an authored message is returned verbatim, braces and all',
+            $ex['text'] === 'Use {site}-NNN' && $ex['source'] === 'rule-message');
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)\n";

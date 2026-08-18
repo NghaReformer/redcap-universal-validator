@@ -27,7 +27,34 @@ class ScanPageView
     /** HTML-escape for interpolation into the page. */
     public static function h($s)
     {
-        return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8');
+        return htmlspecialchars(self::scrub($s), ENT_QUOTES, 'UTF-8');
+    }
+
+    /**
+     * Control bytes out, in ONE place, because the screen and the file are two
+     * views of the same stored value and a byte dangerous in one is dangerous in
+     * the other.
+     *
+     * 1.8.5 added this to csv() only. The same value was therefore sanitised on
+     * its way into the download and passed through RAW into the HTML table - and
+     * ESC into a terminal, which is the case that motivated the CSV fix, is
+     * reached just as easily by viewing the page source or copying a cell out of
+     * it. Splitting the rule across two functions meant one of them was always
+     * going to be forgotten; there is now nothing to forget.
+     *
+     * A NUL truncates the cell in several readers, SUB is end-of-file to some
+     * importers, and ESC begins a terminal escape sequence. TAB, CR and LF are
+     * KEPT: they are legitimate inside a quoted CSV field and inside HTML, and
+     * the quoting and escaping around them contain them.
+     *
+     * NUL is removed by str_replace and not by the pattern: a literal \x00 in a
+     * PCRE pattern is a fatal "Null byte in regex" on PHP 7.4, which is the
+     * matrix leg that caught it.
+     */
+    public static function scrub($s)
+    {
+        $s = str_replace([chr(0), chr(26)], '', (string) $s);
+        return preg_replace('/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $s);
     }
 
     /**
@@ -54,15 +81,15 @@ class ScanPageView
             break;
         }
         if ($i < $len && strpos('=+-@', $s[$i]) !== false) $s = "'" . $s;
-        // Control bytes are removed, not quoted around. A NUL truncates the cell
-        // in several readers,  is end-of-file to some importers, and ESC
-        // begins a terminal escape sequence for anyone who cats the file - so a
-        // value carrying them is a value that reads differently depending on
-        // what opens it. TAB, CR and LF are kept: they are legitimate inside a
-        // quoted CSV field and the quoting below contains them.
-        $s = str_replace([chr(0), chr(26)], '', $s);
-        $s = preg_replace('/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/', '', $s);
-        return '"' . str_replace('"', '""', $s) . '"';
+        // Control bytes are removed, not quoted around - see scrub(), which the
+        // page shares, so one stored value cannot be sanitised in the download
+        // and passed through raw into the HTML table.
+        //
+        // The ORDER matters: the formula scan above runs on the bytes as stored,
+        // because that is what a spreadsheet's own parser sees. Scrubbing first
+        // could delete a control byte and expose a '=' that the pre-scrub scan
+        // had already accounted for.
+        return '"' . str_replace('"', '""', self::scrub($s)) . '"';
     }
 
     /**

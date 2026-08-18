@@ -72,8 +72,10 @@ final class ScanColumns
             ],
             [
                 'key' => 'event', 'label' => 'Event', 'group' => 'location',
-                // A classic project has one event and no Event column.
-                'visible' => function (ScanDimensions $d) { return $d->longitudinal; },
+                // A classic project has one event and no Event column - but
+                // "this project is classic" is a claim, and an unreadable event
+                // map cannot support it. See needsEventColumn().
+                'visible' => function (ScanDimensions $d) { return $d->needsEventColumn(); },
                 'render' => function (array $f, ScanDimensions $d) { return $d->event($f['event_id']); },
             ],
             [

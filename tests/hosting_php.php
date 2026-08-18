@@ -83,7 +83,15 @@ namespace {
          * That is what made "record absent" indistinguishable from "read failed".
          */
         public static $filterByFields = false;
-        /** 'ok' | 'nonarray' | 'otherrecords' — the two shapes that ARE failures. */
+        /**
+         * 'ok' | 'nonarray' | 'otherrecords' — the two shapes that ARE failures.
+         *
+         * R3-1 adds 'badnode': the call SUCCEEDS and returns an array, but one
+         * record's node is not one. That is the shape the DAG filter was written
+         * around rather than for — it could not be reached through 'nonarray',
+         * which fails the whole read, so the fail-open branch had no test that
+         * could see it.
+         */
         public static $getDataMode = 'ok';
         /** A build where the record-id field cannot be established. */
         public static $pkAvailable = true;
@@ -108,6 +116,14 @@ namespace {
             if (self::$sleepPerRead > 0) usleep(self::$sleepPerRead);
             if (self::$getDataMode === 'nonarray') return false;
             if (self::$getDataMode === 'otherrecords') return ['999' => [1 => ['record_id' => '999']]];
+            if (self::$getDataMode === 'badnode' && empty($p['records'])) {
+                // The id read only. Chunk reads stay normal, so a record that
+                // survives the filter is still scanned exactly as usual.
+                $out = [];
+                foreach (self::$data as $rec => $node) $out[$rec] = $node;
+                $out['9'] = 'not-an-array';
+                return $out;
+            }
             // A chunk read names the records it wants and gets ONLY those. Until
             // 1.6.3 this mock returned the whole project regardless, so a caller
             // that asked for the wrong slice still saw every record and behaved
@@ -1145,6 +1161,119 @@ namespace {
         $r3 = $ap->invoke(null, ['type' => 'required', 'fields' => ['x']], []);
         check('X4: and an unset label leaves the key unset rather than blank',
             !isset($r3['note']) && !isset($r3['message']));
+    }
+
+    /* =====================================================================
+     * R3  the round-3 wargame findings
+     *
+     * Each check asserts the PROPERTY that must now hold, not the absence of
+     * the old string. Round 3 recorded five of its own probes returning the
+     * wrong verdict because they matched yesterday's wording — including one
+     * that certified a fix which had not happened.
+     * ===================================================================== */
+    {
+        // R3-1. The DAG filter's exclusion test was
+        //   $dagFilter !== null && is_array($node) && dagOf($node) !== $dagFilter
+        // so a node REDCap did not return as an array failed the conjunction and
+        // was ADMITTED. A record whose group cannot be established then reached a
+        // group-scoped report, and its id was printed under a header saying the
+        // file covers one group only.
+        $DD = dict(['record_id' => ['fa'], 'code' => ['fa', '@UVASSERT={"assert":"[code]=\'ok\'"}']]);
+        $dagData = [
+            1 => [1 => ['record_id' => '1', 'code' => 'bad', 'redcap_data_access_group' => 'north']],
+            2 => [1 => ['record_id' => '2', 'code' => 'bad', 'redcap_data_access_group' => 'south']],
+        ];
+        $m = mkMod($DD, $dagData);
+        \REDCap::$getDataMode = 'badnode';
+        $res = $m->scanProject(PID, 'north');
+        $recs = [];
+        foreach ($res['violations'] as $v) $recs[(string) $v['record']] = true;
+        // On the MANIFEST, not on the violation rows. The unreadable record has
+        // no data behind it, so it produces no finding either way and a probe
+        // that only looked at findings passed on the unfixed tree. The manifest
+        // is where the admission actually shows: 2 records before, 1 after.
+        check('R3-1: a record whose node cannot be read is NOT admitted to a DAG-scoped scan',
+            $res['stats']['manifest'] === 1);
+        check('R3-1: and it produces no finding row either',
+            !isset($recs['9']));
+        check('R3-1: and its id never reaches the report through an unread-record note',
+            !array_filter($res['incomplete'], function ($w) { return strpos($w, '9') !== false; }));
+        check('R3-1: the in-group record is still scanned', isset($recs['1']));
+        check('R3-1: and the out-of-group record is still excluded', !isset($recs['2']));
+        check('R3-1: the exclusion is DISCLOSED rather than silent',
+            (bool) array_filter($res['incomplete'], function ($w) {
+                return stripos($w, 'Data Access Group') !== false && stripos($w, 'left OUT') !== false;
+            }));
+        check('R3-1: so a scan that dropped records cannot report complete',
+            $res['status'] !== 'complete');
+        \REDCap::$getDataMode = 'ok';
+
+        // Unfiltered, the same unreadable node changes nothing: there is no group
+        // question to answer, so nothing is excluded and nothing is noted.
+        $m2 = mkMod($DD, $dagData);
+        \REDCap::$getDataMode = 'badnode';
+        $res2 = $m2->scanProject(PID);
+        check('R3-1: with no DAG filter the unreadable node is neither excluded nor noted',
+            $res2['stats']['manifest'] === 3 && !array_filter($res2['incomplete'], function ($w) {
+                return stripos($w, 'Data Access Group') !== false;
+            }));
+        \REDCap::$getDataMode = 'ok';
+
+        // R3-4. 'locations' mode WITHHOLDS a value that exists. A required-blank
+        // has nothing to withhold — the blank IS the finding — and the code
+        // branched on the 'value' KEY existing, which ruleFindings() sets
+        // unconditionally for required. Every required-blank therefore claimed a
+        // value had been withheld: an affirmative false statement, made on the
+        // one finding type whose entire content is that the field is empty.
+        $DR = dict(['record_id' => ['fa'], 'need' => ['fa', '@UVREQUIRED'],
+                    'code' => ['fa', '@UVASSERT={"assert":"[code]=\'ok\'"}']]);
+        $rdata = [1 => [1 => ['record_id' => '1', 'need' => '', 'code' => 'bad']]];
+        $mr = mkMod($DR, $rdata);
+        $mr->projectSettings['scan-value-storage'] = 'locations';
+        $rres = $mr->scanProject(PID);
+        $byField = [];
+        foreach ($rres['violations'] as $v) $byField[$v['field']] = $v;
+        check('R3-4: a required-blank does not claim a value was withheld',
+            isset($byField['need']) && empty($byField['need']['valueWithheld'])
+            && ($byField['need']['value'] === null || $byField['need']['value'] === ''));
+        check('R3-4: a real value in locations mode IS marked withheld',
+            isset($byField['code']) && !empty($byField['code']['valueWithheld']));
+        check('R3-4: and the withheld value itself never reaches the finding',
+            isset($byField['code']) && $byField['code']['value'] === null);
+
+        // R3-6. A rule on an instrument designated to NO event can never run:
+        // hostContextsFor() drops every context for it, so there is no violation
+        // AND no rule problem, and the scan certifies the project. Every other
+        // unevaluable condition in this module says so out loud.
+        $DM = dict(['record_id' => ['fa'], 'orphan' => ['fz', '@UVREQUIRED'],
+                    'live' => ['fa', '@UVREQUIRED']]);
+        $mdata = [1 => [1 => ['record_id' => '1', 'live' => 'x']]];
+        $mres = mkMod($DM, $mdata, null, [['event_id' => 1, 'form' => 'fa']])->scanProject(PID);
+        check('R3-6: a rule whose instrument is on no event is reported unevaluable',
+            (bool) array_filter($mres['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'not designated to any event') !== false
+                    && in_array('orphan', (array) $u['fields'], true);
+            }));
+        check('R3-6: so the project can no longer read as clean', !empty($mres['unconfigurable']));
+        check('R3-6: and the mapped instrument is NOT reported',
+            !array_filter($mres['unconfigurable'], function ($u) {
+                return in_array('live', (array) $u['fields'], true)
+                    && stripos($u['why'], 'not designated to any event') !== false;
+            }));
+
+        // Fails OPEN. An unavailable or empty mapping is exactly what a classic
+        // project returns, and reading that as "no instrument is collected"
+        // would declare every rule in the project dead.
+        $mo = mkMod($DM, $mdata, null, null)->scanProject(PID);
+        check('R3-6: an unavailable mapping makes NO claim',
+            !array_filter($mo['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'not designated to any event') !== false;
+            }));
+        $me = mkMod($DM, $mdata, null, [])->scanProject(PID);
+        check('R3-6: an EMPTY mapping makes no claim either',
+            !array_filter($me['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'not designated to any event') !== false;
+            }));
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

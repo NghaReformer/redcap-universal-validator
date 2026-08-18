@@ -452,19 +452,34 @@ filtering — over every saved record and lists each violation with a CSV export
   rule's own name, and **what is wrong in plain English** rather than a reason
   code. Columns that do not apply to a project's shape are absent rather than
   empty: a classic project has no Event column, a project without groups has no
-  DAG column. The wording comes from `php/messages/catalog.json`, which the
+  DAG column. Dropping the Event column is a claim that every finding is in the
+  same event, so it is kept whenever the event map cannot be read — showing raw
+  event ids, and saying why. The wording comes from `php/messages/catalog.json`, which the
   browser and the server both read, so the sentence a respondent saw and the
   sentence in the report cannot drift apart.
 - **Values are a policy choice.** *Validation scan report* in the module's
-  project settings: show every value (default), redact the fields REDCap marks
-  as an **Identifier**, or show locations only. Redaction **fails closed** — if
-  the data dictionary cannot be read, every value is withheld, because a
-  dictionary that cannot be read cannot clear a field. A report is readable by
-  anyone with design rights, which is a wider audience than REDCap's
-  record-level access control, so choose accordingly.
+  project settings: show locations only (the default), redact the fields REDCap
+  marks as an **Identifier**, or show every value. Whatever the project chooses
+  is capped by the reader's own export rights: raw values reach a user with Full
+  Data Set export rights, and a user with no export rights never sees one.
+  Redaction **fails closed** — an unreadable data dictionary withholds every
+  value, because a dictionary that cannot be read cannot clear a field, and an
+  unreadable setting falls back to locations rather than to disclosure. A report
+  is readable by anyone with design rights, which is a wider audience than
+  REDCap's record-level access control, so choose accordingly. A finding with no
+  value to show, such as a blank required field, renders an empty cell — it never
+  claims something was withheld.
 - **Scope must be knowable.** A user confined to a Data Access Group whose
   group name cannot be resolved is **refused**, not silently scoped to
-  nothing: a scan of zero records is not a clean project.
+  nothing: a scan of zero records is not a clean project. Inside a group-scoped
+  scan, a record whose group cannot be established is left out rather than
+  admitted, the count of such records is stated, and the scan reports
+  `incomplete` — a group that cannot be read is not this group.
+- **Nothing is skipped in silence.** A rule the scan cannot evaluate is listed
+  as a rule problem with the reason: a broken configuration, a field that cannot
+  be located on any instrument, a project-scope uniqueness rule under a
+  group-scoped scan, or an instrument designated to no event, which collects
+  nothing and so can never fire the rules on it.
 - **Same engine, same verdicts.** The scan evaluates through the exact
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one

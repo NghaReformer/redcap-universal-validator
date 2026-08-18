@@ -1,10 +1,107 @@
 # Changelog
 
+## 1.8.6 — the round-three findings
+
+A fourth adversarial pass (`reports/scan-wargame-round3-2026-08-18.md`) re-ran
+the 1.8.1–1.8.5 fixes and asserted the property each was supposed to establish
+rather than the absence of the symptom it had shown. That method mattered: the
+report records five of its own earlier probes returning the wrong verdict, one
+of them certifying a fix that had never happened. Every check below was run
+against the pre-fix tree before it was kept — six fail in `hosting_php`, seven in
+`scan_page_php`.
+
+**A record whose group cannot be read no longer joins a group-scoped scan.** The
+DAG filter tested `$dagFilter !== null && is_array($node) && dagOf($node) !==
+$dagFilter` as one conjunction, so a record REDCap did not return as an array
+failed the test and was *admitted*. The record then reached a report whose header
+states it covers one group only, and its id was printed there through the
+unread-record note. A group that cannot be established is not this group: the
+record is excluded, the count of exclusions is stated, and no id is named. The
+scan says `incomplete`, because records it could not classify are records it did
+not cover. `tests/hosting_php.php` gained a `badnode` read shape for this — the
+existing `nonarray` shape fails the whole read, so the branch had no test that
+could reach it.
+
+**A required-blank no longer claims a value was withheld.** In locations mode the
+report shows a marker where a value exists and was withheld. The test for that
+was whether the finding carried a `value` key — and the required path sets
+`'value' => ''` unconditionally, so the key always exists and every
+required-blank rendered `[withheld by policy]`. That is an affirmative false
+statement, made on the one finding type whose entire content is that the field is
+empty, and it is worse than the empty cell it replaced. The test is now whether
+there is a value.
+
+**`reportValue()` no longer defaults to showing everything.** A missing
+`valueMode` fell back to `raw`, twenty lines below a docblock promising that
+anything unrecognised is treated as the least disclosing option. `scanPlan()`
+always sets the key, so nothing reached it — a default that is safe only because
+nobody takes it is not a safe default. It falls back to `locations`.
+
+**A rule on an instrument that is on no event now says so.** `hostContextsFor()`
+drops every context for an instrument designated to no event, so the rule
+produced no violation and, because nothing reached the evaluator, no rule problem
+either: the scan certified a project containing a rule that had enforced nothing
+since the day it was written. It is reported per host instrument, so a rule
+spanning two forms is still checked on the mapped one. The check fails open — an
+unavailable or empty instrument-event mapping is what a classic project returns,
+and reading that as "no instrument is collected" would declare every rule dead.
+
+**`?csv=1` no longer scans the project twice.** 1.8.5 replaced the second
+exporter with a redirect, and landed it below the `$run || $csv` condition that
+runs the scan. The deprecated route therefore scanned the whole project,
+discarded the result unread, and redirected to a page that scanned it again.
+No assertion about output could see it, because the output was identical; the
+page mock now counts reads, and the route performs none.
+
+**The screen and the file scrub the same bytes.** 1.8.5 removed NUL, SUB and ESC
+in `csv()` only, so one stored value was sanitised on its way into the download
+and passed through raw into the HTML table. Both now call one `scrub()`. Two
+things surfaced while doing it: `ScanPageView` held a raw SUB byte inside the
+comment explaining why SUB is removed, and writing the pattern with real control
+bytes rather than `\x` escapes is the PHP 7.4 "Null byte in regex" fatal that the
+7.4 matrix leg caught during 1.8.5.
+
+**The Event column survives an unreadable event map.** Dropping the column is the
+claim "every finding here is in the same event", and an unreadable map cannot
+support it. All three routes to the longitudinal flag failed together, the column
+was dropped anyway, and two findings in different events rendered as identical
+rows. The column is now shown whenever the project cannot be proved
+single-event; `event()` already fell back to the raw id.
+
+**One explanation resolution per row.** The "What is wrong" and "Wording from"
+columns are two views of one resolution and each walked the catalog chain
+separately. The memo is on the template, never on the finished sentence: the
+catalog is a data file, and a cache over the sentence would hand this row the
+previous row's value the day an entry uses `{value}`. An authored message is
+still returned verbatim, braces included.
+
+### Still open, and why
+
+The wargame's standing register lists four items this release does not close.
+Three need a decision about scope rather than a patch, and are recorded here so
+they are not mistaken for oversights.
+
+- **Never-started instruments emit one violation per record.** Aggregating them
+  into a collection-gap dimension changes `scanProject()`'s result contract and
+  both exporters. It belongs with the untouched-form gate in the rebuild plan.
+- **Design rights alone read forms the user cannot access.** `scanScope()` reads
+  `hasDesignRights` and `group_id`; `getData()` carries no `userid`. Adding one
+  changes what every scan sees, which is a deliberate change, not a patch.
+- **The record list is still materialised before any budget check**, which is the
+  rebuild plan's own subject.
+- **`@UVALIDATE` rejects `message`.** Annotation-configured check-character rules
+  are now the only rules with no wording channel.
+
+### Verification
+
+`hosting_php` 146 → 162 checks, `scan_page_php` 96 → 107. Full suite green on PHP
+7.4 and 8.3 and on Node: 17 PHP files and 17 JS files, 0 failures.
+
 ## 1.8.5 — the rest of the battle-test list
 
 **Control bytes no longer reach a cell.** Formula defusing already looked past
 leading whitespace and a BOM, but nothing removed NUL, SUB or ESC from a value:
-a NUL truncates the cell in several readers, `` is end-of-file to some
+a NUL truncates the cell in several readers, `SUB` is end-of-file to some
 importers, and ESC begins a terminal escape sequence for anyone who `cat`s the
 file — so one value read differently depending on what opened it. TAB, CR and LF
 are kept, because they are legitimate inside a quoted field.

@@ -2184,9 +2184,28 @@ class UniversalValidator extends AbstractExternalModule
             return $result;
         }
         $ids = [];
+        $ungrouped = 0;
         foreach ($idData as $rec => $node) {
-            if ($dagFilter !== null && is_array($node) && self::dagOfRecordNode($node) !== $dagFilter) continue;
+            if ($dagFilter !== null) {
+                // The SHAPE check is not part of the exclusion test. Written as
+                // one conjunction - is_array($node) && dagOf($node) !== $filter -
+                // a node REDCap did not return as an array failed the test and
+                // was therefore ADMITTED: a record whose group could not be
+                // established reached a DAG-scoped report, and its id was
+                // printed under a header stating the file covers one group only.
+                // A group that cannot be read is not this group.
+                if (!is_array($node)) { $ungrouped++; continue; }
+                if (self::dagOfRecordNode($node) !== $dagFilter) continue;
+            }
             $ids[] = $rec;
+        }
+        if ($ungrouped > 0) {
+            // Counted, never listed, and never named. One string per record is
+            // the unbounded accumulator this scan exists to avoid, and the id is
+            // the exact thing that must not cross the group boundary - so the
+            // note says how many and stops there.
+            $result['incomplete'][] = $ungrouped . ' record(s) could not be read well enough to '
+                . 'establish a Data Access Group, so they were left OUT of this group-scoped scan';
         }
         // The MANIFEST size. The headline count is set at the end, from what was
         // actually reached: a scan halted at the first chunk boundary used to
@@ -2433,7 +2452,7 @@ class UniversalValidator extends AbstractExternalModule
      *
      * Four things can stop a value reaching the report, and they are NOT the
      * same and must not look the same to a reader:
-     *   - policy says never          -> null
+     *   - policy says never          -> false, rendered as a marker
      *   - the finding has no value   -> null (a required-blank IS the blank)
      *   - the field is an Identifier -> a marker, so the reader knows a value
      *                                   exists and was withheld rather than absent
@@ -2444,21 +2463,35 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function reportValue(array $v, array $plan)
     {
-        $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'raw';
-        // 'locations' WITHHELD a value that exists; a finding with no value has
-        // nothing to withhold. Both used to return null and render as the same
-        // empty cell, which is exactly what a genuinely blank required field
-        // renders too.
-        if ($mode === 'locations') return array_key_exists('value', $v) ? false : null;
+        // Fail CLOSED on a missing key. This defaulted to 'raw', which put the
+        // MOST disclosing option twenty lines above valueRank()'s docblock
+        // promising that "anything unrecognised is treated as the least
+        // disclosing option" - a fail-open default in the one function whose
+        // entire job is to withhold. scanPlan() always sets the key today, so
+        // this was latent; a default that is only safe because nobody takes it
+        // is not a safe default.
+        $mode = isset($plan['valueMode']) ? $plan['valueMode'] : 'locations';
+
         if (!array_key_exists('value', $v)) return null;
+        $val = $v['value'];
+        if (is_array($val)) $val = implode(', ', array_map('strval', $val));   // a checkbox
+        $val = (string) $val;
+
+        // NOTHING TO WITHHOLD and WITHHELD are different claims, and telling
+        // them apart is the entire reason the marker exists. This branched on
+        // the KEY existing - but the required path sets 'value' => ''
+        // unconditionally (see ruleFindings above), so the key ALWAYS exists and
+        // every required-blank finding rendered '[withheld by policy]'. That is
+        // an affirmative false statement about a field that is empty, made on
+        // the one finding type whose whole content is that the field is empty.
+        // Branch on there being a value, which is what the sentence means.
+        if ($val === '') return null;
+        if ($mode === 'locations') return false;
+
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
         if (self::mustRedact($ids, $field, $mode)) return '[identifier withheld]';
 
-        $val = $v['value'];
-        if (is_array($val)) $val = implode(', ', array_map('strval', $val));   // a checkbox
-        $val = (string) $val;
-        if ($val === '') return null;
         if (!mb_check_encoding($val, 'UTF-8')) {
             return '[' . strlen($val) . ' bytes, not valid text]';
         }
@@ -2643,6 +2676,42 @@ class UniversalValidator extends AbstractExternalModule
                            . 'data dictionary, so there is no context in which to check them — the field is not scanned'];
             }
             $hostFields[$i] = $h['forms'];
+        }
+        // A rule whose instrument is designated for NO event can never run.
+        // hostContextsFor() drops every context for an unmapped form, so the
+        // rule yields no violation - and, because nothing ever reached the
+        // evaluator, no rule problem either. The scan then reports the project
+        // complete and clean while the rule has enforced nothing since the day
+        // it was written. Every OTHER unevaluable condition in this module says
+        // so out loud; this was the one that did not.
+        //
+        // Fails OPEN. A null map - a classic project, or a build that does not
+        // expose the mapping - makes NO claim, because wrongly declaring an
+        // instrument uncollected would suppress a rule that works. Only a
+        // mapping that actually names instruments is trusted, and then only to
+        // say that a form it does not name collects nothing.
+        $mapped = $this->mappedInstruments($pid);
+        if (is_array($mapped)) {
+            foreach ($hostFields as $i => $forms) {
+                $orphanForms = [];
+                $orphanFields = [];
+                foreach ($forms as $form => $ownFields) {
+                    if (isset($mapped[$form])) continue;
+                    $orphanForms[] = (string) $form;
+                    foreach ((array) $ownFields as $f) $orphanFields[] = (string) $f;
+                }
+                if (!$orphanForms) continue;
+                // Per HOST, not per rule: a rule spanning two instruments where
+                // only one is unmapped is still checked on the other, and saying
+                // the whole rule was skipped would be the opposite error (H-02).
+                $unconf[$i . '|unmapped-instrument'] = [
+                    'rule'   => $i + 1,
+                    'fields' => $orphanFields,
+                    'why'    => 'instrument ' . implode(', ', $orphanForms) . ' is not designated to any event, '
+                              . 'so no record can hold these field(s) and the rule was NOT evaluated on them. '
+                              . 'Assign the instrument to an event, or move the rule to an instrument that is.',
+                ];
+            }
         }
         $out['hostFields'] = $hostFields;
         $out['unconf']     = $unconf;
@@ -3974,6 +4043,57 @@ class UniversalValidator extends AbstractExternalModule
             $out = null;
         }
         $this->eventFormsCache[$key] = $out;
+        return $out;
+    }
+
+    /**
+     * The set (form_name => true) of instruments designated to AT LEAST ONE
+     * event, or NULL when that cannot be established.
+     *
+     * formsForEvent() answers the per-event question and needs a numeric event
+     * id; this answers "is this instrument collected anywhere at all", which is
+     * what decides whether a rule on it can ever run. Reading the mapping ONCE
+     * rather than once per event matters on a project with thirty events, where
+     * the per-event route would rebuild the same row list thirty times for an
+     * answer that does not depend on the event.
+     *
+     * NULL, not an empty set, when the mapping is unusable or names nothing: an
+     * empty result is exactly what a classic project returns, and treating that
+     * as "no instrument is collected" would declare every rule in the project
+     * dead. Only a mapping that names something is evidence.
+     */
+    private $mappedFormsCache = [];
+    private function mappedInstruments($project_id)
+    {
+        if (array_key_exists($project_id, $this->mappedFormsCache)) {
+            return $this->mappedFormsCache[$project_id];
+        }
+        $out = null;
+        try {
+            if (is_callable(['\REDCap', 'getInstrumentEventMappings'])) {
+                $map = \REDCap::getInstrumentEventMappings($project_id);
+                if (is_array($map)) {
+                    // Rows may be flat, or nested one level per arm - the same
+                    // two shapes formsForEvent() accepts, for the same reason.
+                    $acc = [];
+                    foreach ($map as $entry) {
+                        if (!is_array($entry)) continue;
+                        $rows = (isset($entry['form']) || isset($entry['form_name']))
+                              ? [$entry] : $entry;
+                        foreach ($rows as $row) {
+                            if (!is_array($row)) continue;
+                            $fm = isset($row['form']) ? $row['form']
+                                : (isset($row['form_name']) ? $row['form_name'] : null);
+                            if (is_string($fm) && $fm !== '') $acc[$fm] = true;
+                        }
+                    }
+                    if ($acc) $out = $acc;
+                }
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        $this->mappedFormsCache[$project_id] = $out;
         return $out;
     }
 

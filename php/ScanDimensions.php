@@ -143,6 +143,26 @@ final class ScanDimensions
         return $d;
     }
 
+    /**
+     * Whether the Event column has to be shown.
+     *
+     * Dropping it is a claim - "every finding in this report is in the same
+     * event, so the column would carry nothing" - and that claim needs the
+     * event metadata to be readable. When it is not, all three routes to
+     * $longitudinal fail and the column was dropped anyway, so two findings on
+     * the same field in DIFFERENT events rendered as byte-identical rows with
+     * nothing to tell them apart. The degraded note said the names were
+     * unreadable; it did not put the ids back.
+     *
+     * So: show the column whenever the project cannot be PROVED single-event.
+     * event() already falls back to the raw id, which is a worse label than a
+     * name and an infinitely better one than a missing column.
+     */
+    public function needsEventColumn()
+    {
+        return $this->longitudinal || isset($this->degraded['events']);
+    }
+
     /** The event's display name, or the raw id when names could not be read. */
     public function event($id)
     {
