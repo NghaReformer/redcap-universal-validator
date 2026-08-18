@@ -392,6 +392,40 @@ namespace INSPIRE\UniversalValidator\Scan {
             && ScanPolicy::budgetSpent(['maxFindings' => 10, 'maxBytes' => 1000], 9, 999) === false);
     }
 
+    /* =====================================================================
+     * DRIFT  every setting the policy reads must exist in config.json
+     *
+     * A resolver that reads a key nobody can set always returns its default, so
+     * the setting silently does not work - and nothing fails, which is exactly
+     * why this has to be asserted rather than noticed.
+     * ===================================================================== */
+    {
+        $cfg = json_decode(file_get_contents(__DIR__ . '/../config.json'), true);
+        $declared = [];
+        $sysKeys = [];
+        foreach (['system-settings', 'project-settings'] as $group) {
+            foreach (isset($cfg[$group]) ? $cfg[$group] : [] as $st) {
+                if (!isset($st['key'])) continue;
+                $declared[$st['key']] = true;
+                if ($group === 'system-settings') $sysKeys[$st['key']] = true;
+            }
+        }
+        $reads = ['scan-value-storage', 'scan-value-retention-days', 'scan-run-retention-days',
+                  'scan-max-detail-findings', 'scan-max-detail-bytes',
+                  'scan-system-max-value-retention-days', 'scan-system-max-run-retention-days',
+                  'scan-system-max-detail-findings', 'scan-system-max-detail-bytes',
+                  'scan-system-max-concurrent-projects', 'scan-system-stale-run-hours',
+                  'scan-system-record-attempts'];
+        foreach ($reads as $k) {
+            check("drift: config.json declares $k", isset($declared[$k]));
+            // A system maximum declared per project would let a project raise
+            // its own ceiling, which is the one thing these exist to prevent.
+            if (strpos($k, 'scan-system-') === 0) {
+                check("drift: $k is a SYSTEM setting, not a project one", isset($sysKeys[$k]));
+            }
+        }
+    }
+
     echo "scan_security_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

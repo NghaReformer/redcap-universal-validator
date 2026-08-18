@@ -54,6 +54,44 @@
     }
   ],
 
+  "system-settings": [
+    {
+      "key": "scan-system-max-value-retention-days",
+      "name": "<b>Validation scan</b> \u2014 maximum days a stored value preview may be kept, across every project. A project may choose FEWER days, never more. Default 30. A stored value outlives the export rights of whoever caused it to be stored, which is why this has a ceiling at all.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-max-run-retention-days",
+      "name": "<b>Validation scan</b> \u2014 maximum days a finished scan is kept before it is purged, across every project. A project may choose fewer days, never more. Default 90.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-max-detail-findings",
+      "name": "<b>Validation scan</b> \u2014 the most individual findings any one run may retain. Beyond it a run keeps COUNTING every finding and stops storing detail, and labels itself truncated; it never quietly shortens the report. Default 1000000.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-max-detail-bytes",
+      "name": "<b>Validation scan</b> \u2014 the most bytes of finding detail any one run may retain. Default 536870912 (512 MiB). Either this or the finding limit truncates the run.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-max-concurrent-projects",
+      "name": "<b>Validation scan</b> \u2014 how many projects may be scanned at the same time on this server. This rations the SERVER, so a project cannot raise it. Default 2.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-stale-run-hours",
+      "name": "<b>Validation scan</b> \u2014 hours after which a run that has stopped making progress is treated as abandoned, so its lease can be taken over and it is reported as expired rather than holding the project's scan slot forever. Default 24.",
+      "type": "text"
+    },
+    {
+      "key": "scan-system-record-attempts",
+      "name": "<b>Validation scan</b> \u2014 how many times a record that cannot be read, or cannot be held still long enough to read, is retried before the run records it as unread and reports itself incomplete. Default 3.",
+      "type": "text"
+    }
+  ],
+
   "project-settings": [
     {
       "key": "intro",
@@ -85,6 +123,26 @@
       "key": "debug-log",
       "name": "Debug: include exception messages in audit-error log entries. Leave OFF in production — exception text can quote data values.",
       "type": "checkbox"
+    },
+    {
+      "key": "scan-value-retention-days",
+      "name": "<b>Validation scan report</b> \u2014 days to keep a stored value preview before it expires. Blank uses the server default. You may choose FEWER days than the server allows, never more.",
+      "type": "text"
+    },
+    {
+      "key": "scan-run-retention-days",
+      "name": "<b>Validation scan report</b> \u2014 days to keep a finished scan before it is purged. Blank uses the server default. Fewer than the server allows, never more.",
+      "type": "text"
+    },
+    {
+      "key": "scan-max-detail-findings",
+      "name": "<b>Validation scan report</b> \u2014 the most individual findings this project's scans should retain. Blank uses the server default. A run that reaches the limit keeps COUNTING every finding, stops storing detail, and labels itself truncated.",
+      "type": "text"
+    },
+    {
+      "key": "scan-max-detail-bytes",
+      "name": "<b>Validation scan report</b> \u2014 the most bytes of finding detail this project's scans should retain. Blank uses the server default.",
+      "type": "text"
     },
     {
       "key": "rules",
