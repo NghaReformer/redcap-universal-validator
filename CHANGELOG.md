@@ -1,5 +1,69 @@
 # Changelog
 
+## 1.8.11 - Task 5: the permission matrix, the outcome table, and the keys
+
+Four classes that are load-bearing for everything in Tasks 6 and 7, and all four
+are PURE - they take rights arrays, run facts, bytes and settings and return
+answers. That is design, not luck: a security decision that needs a database to
+test is a security decision that will be tested against a mock of a database,
+which is how this module previously shipped a control that passed every test and
+did nothing in production.
+
+**`ScanAuthorization`** implements the plan's permission matrix. Starting a run
+needs design rights, readable access to EVERY instrument in the run's entitlement
+set, and **full identified-data export rights** - not merely some export rights,
+because the run STORES values and what is stored outlives the level the reader
+had when they asked. One inaccessible instrument refuses the whole report rather
+than narrowing it: filtering rows still leaks through the count, the rollup, the
+filter options, the cursor, the timing and the filename. A form with no entry in
+the rights row is barred, because a row that says nothing about an instrument is
+not a row that grants it.
+
+Every denial is non-disclosing. A DAG user asking about another group's run gets
+the same words as one asking about a run that does not exist - a distinct message
+would be an existence oracle. A busy project returns no run id, no owner, no
+scope and no digit at all. Before a DAG run reaches its target fence, status
+returns phase, heartbeat and the control flags and nothing that describes data,
+with an explicit `detail_withheld` flag so absence is not read as zero.
+
+**`ScanOutcome::derive()`** is the terminal-state table as one function, with
+four dimensions kept deliberately separate: terminal, coverage, detail and clean.
+A run can be complete and not clean; it can have zero violations and not be
+clean; it can be fenced and truncated. Collapsing any pair produces a sentence
+that is true of the run and false of the project. Failure outranks cancellation,
+which outranks expiry, and a blocked record caps coverage before the fence is
+even consulted - a proved fence over a manifest with a hole in it still has a
+hole in it. Export suffixes compose, because a reader who learns only one of
+`_MANIFEST_ONLY` and `_TRUNCATED` draws the wrong conclusion from the other.
+Label degradation stays non-blocking, or the tick is unreachable on any install
+with a metadata gap. Collection gaps never block clean and never go unmentioned:
+the obligation travels with the outcome as `mustShowGaps`.
+
+**`Hmac`** separates four hash spaces - record identity, finding identity, value
+fingerprint, uniqueness group - by purpose and by project. With one key and no
+purpose label those spaces coincide, and a value fingerprint equal to a record
+hash tells an observer that a field contains a record id. A missing key throws
+rather than falling back to an unkeyed hash, because an unkeyed hash of a record
+id is a lookup table for anyone holding the report. Finding identity is
+location plus rule plus reason and deliberately NOT the value, so a wrong value
+that changed to another wrong value stays the same finding instead of looking
+like churn on every re-scan.
+
+**`ScanPolicy`** resolves effective limits as min(system maximum, project
+request) - a project may always ask for less and never more - and every parse
+failure lands on the documented default rather than on "unlimited". Collection
+gaps are fixed at `separate` with no off switch, because a project that turned
+them back into violations would re-create the 95%-noise report the rebuild exists
+to remove. `tightened()` marks any reduction in disclosure or retention, which is
+what makes a privacy downgrade take effect immediately instead of at the next run.
+
+`ScanStore` is the storage contract with its six invariants written down where
+they belong - on the contract, not inside one implementation that a future store
+could quietly drop.
+
+`tests/scan_security_php.php`: 121 checks. Full suite green on PHP 7.4, 8.3 and
+8.4. The scan remains withdrawn; none of this is reachable by a user yet.
+
 ## 1.8.10 - Task 5, first slice: the schema, and where its invariants are proved
 
 The durable foundation, installed INERT. Tables exist and a health check answers;
