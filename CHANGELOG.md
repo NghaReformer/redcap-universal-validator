@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.8.8 - an empty event map is an answer, not a failure
+
+Found on the first live run of 1.8.7, on pid 135 (DARE-TB), a real classic
+project.
+
+1.8.6 made the Event column survive an unreadable event map, on the grounds that
+dropping it is the claim "every finding here is in the same event" and an
+unreadable map cannot support that claim. The reasoning holds; the
+implementation read an EMPTY answer as an unreadable one. REDCap returns no
+event names for a classic project because there are none to return, so every
+classic project grew an Event column carrying one repeated internal event id on
+every row, under a yellow warning that labels could not be read. Nothing had
+failed. That is noise on the majority of projects, and it was shipped by a
+change whose whole purpose was to stop a report saying something untrue.
+
+`getEventNames()` and `getInstrumentEventMappings()` return nothing in BOTH
+cases, so neither can tell them apart. REDCap's own project object carries the
+flag, and it is now asked first - guarded on the global existing, being an
+object, and being about THIS project, because a `$Proj` left over from another
+pid would answer confidently about the wrong one.
+
+Only an explicit "not longitudinal" clears the column and the warning. A null
+answer - no project object, an older build - leaves 1.8.6's behaviour standing,
+because "cannot tell" must not drop a column that may be the only thing
+separating two rows. Older builds that expose `numEvents` but not the flag are
+read through the count.
+
+`tests/scan_page_php.php` 111 -> 121 checks, with the mock gaining a stand-in for
+the project object; three of the new checks fail on the pre-fix tree. Full suite
+green on PHP 7.4 and 8.3 and on Node.
+
+### What the same live run confirmed
+
+Reported here because a fix nobody watched work is a fix nobody has evidence
+for. On pid 135, 39 records against 322 rules: all fifteen report columns
+present; the table capped at 1,000 rows with the count line still speaking for
+all 1,902; 929 required-blank rows carrying an EMPTY value cell and none
+claiming `[withheld by policy]`, against 71 real values that correctly carry it
+(1.8.6); authored rule messages reaching the "What is wrong" column with
+"Wording from" naming the tier. No rule was barred by the 1.8.7 instrument-rights
+gate for a full-rights user, and no instrument was wrongly reported as
+designated to no event - the two changes most likely to be inert or over-eager
+against a real REDCap rights row and a real event mapping.
+
 ## 1.8.7 — instrument rights, and a cache that could not recover
 
 A fifth pass (`reports/scan-wargame-round4-2026-08-18.md`) attacked surfaces the

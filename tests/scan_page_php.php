@@ -299,6 +299,14 @@ namespace {
         \REDCap::$formNames    = isset($opts['forms']) ? $opts['forms'] : [];
         \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
         \REDCap::$reads = 0;
+        // REDCap's own project object. Reset here and set from $opts, never by
+        // the caller before the call - the 1.8.5 lesson about helpers clearing
+        // the state a scenario had just set.
+        if (isset($opts['proj'])) {
+            $GLOBALS['Proj'] = (object) $opts['proj'];
+        } else {
+            unset($GLOBALS['Proj']);
+        }
         $GLOBALS['uv_headers'] = [];
         $_GET = $get;
         $module = $m;                       // the name pages/scan.php expects
@@ -960,6 +968,72 @@ namespace {
         $ex = $MC::explain($fa, $auth, 'staff');
         check('R3-7: an authored message is returned verbatim, braces and all',
             $ex['text'] === 'Use {site}-NNN' && $ex['source'] === 'rule-message');
+    }
+
+    /* =====================================================================
+     * CLASSIC  an empty event map is an ANSWER on a classic project
+     *
+     * Found live on pid 135 (DARE-TB), a real classic project: 1.8.6 made the
+     * Event column survive an unreadable event map, but read an EMPTY map as an
+     * unreadable one. REDCap returns nothing for a classic project because there
+     * is nothing to return, so the report grew a column of one repeated internal
+     * event id on every row, under a yellow warning that labels could not be
+     * read. Nothing had failed.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
+                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
+        $data = [1 => [271 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
+        \REDCap::$groupNames = [];
+        $RAWSET = ['settings' => ['scan-value-storage' => 'raw']];
+
+        // REDCap says classic. No column, and no warning about a read that did
+        // not fail.
+        list($h1, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            $RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => false]]);
+        check('CLASSIC: a project REDCap calls classic shows no Event column',
+            strpos($h1, '<th>Event</th>') === false);
+        // On the REASON, not on the banner: other label sources (instrument
+        // names, groups) degrade independently in this mock and legitimately
+        // raise the same banner. The claim under test is that the EVENT map is
+        // no longer reported as a failed read.
+        check('CLASSIC: and no longer reports the empty event map as a failed read',
+            strpos($h1, 'no event names were returned') === false);
+        check('CLASSIC: the rest of the report still renders',
+            strpos($h1, '<td>nope</td>') !== false);
+
+        // REDCap says longitudinal but the names are unreadable: R3-5's case,
+        // which must keep working. The column stays, with raw ids and a reason.
+        list($h2, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            $RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => true]]);
+        check('CLASSIC: a longitudinal project with unreadable names KEEPS the column',
+            strpos($h2, '<th>Event</th>') !== false);
+        check('CLASSIC: and still says why the ids are raw',
+            strpos($h2, 'Some labels could not be read') !== false);
+        check('CLASSIC: showing the raw event id', strpos($h2, '<td>271</td>') !== false);
+
+        // No project object at all - an older build, or a context REDCap did not
+        // set one for. "Cannot tell" must not drop a column that may be the only
+        // thing separating two rows, so 1.8.6's behaviour stands.
+        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAWSET);
+        check('CLASSIC: with no project object the column is kept, not dropped',
+            strpos($h3, '<th>Event</th>') !== false);
+
+        // A $Proj for ANOTHER project answers a question about the wrong one.
+        list($h4, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            $RAWSET + ['proj' => ['project_id' => PID + 1, 'longitudinal' => false]]);
+        check('CLASSIC: a project object for a DIFFERENT pid is not trusted',
+            strpos($h4, '<th>Event</th>') !== false);
+
+        // Older builds expose the count but not the flag.
+        list($h5, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            $RAWSET + ['proj' => ['project_id' => PID, 'numEvents' => 1]]);
+        check('CLASSIC: numEvents = 1 is read as classic when the flag is absent',
+            strpos($h5, '<th>Event</th>') === false);
+        list($h6, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
+            $RAWSET + ['proj' => ['project_id' => PID, 'numEvents' => 4]]);
+        check('CLASSIC: numEvents > 1 is read as longitudinal',
+            strpos($h6, '<th>Event</th>') !== false);
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)\n";

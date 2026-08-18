@@ -39,6 +39,12 @@ final class ScanDimensions
     public $hasDags = false;
     /** @var bool whether this project is longitudinal (more than one event) */
     public $longitudinal = false;
+
+    /**
+     * @var bool REDCap positively stated this project is classic. Distinct from
+     * !$longitudinal, which is also what "we could not tell" looks like.
+     */
+    public $singleEventProved = false;
     /** @var array source => why it could not be read */
     public $degraded = [];
 
@@ -60,6 +66,11 @@ final class ScanDimensions
         // names embed the arm (event_1_arm_2), which matters because two arms
         // routinely share a display label like "Baseline" — keying by id and
         // showing the unique name keeps two different visits from merging.
+        // REDCap's own answer to "is this project longitudinal", asked FIRST,
+        // because it decides whether an empty event map is a failure or the
+        // correct answer. A classic project has no event names to return.
+        $shape = self::projectIsLongitudinal($pid);
+
         $cap = ScanCapabilities::eventNames();
         if ($cap['state'] !== ScanCapabilities::OK) {
             $d->degraded['events'] = $cap['why'];
@@ -78,7 +89,26 @@ final class ScanDimensions
         // the same field in different events rendered as identical rows with
         // nothing saying anything was lost. event() already falls back to the raw
         // id, which is the correct degradation.
+        // A CLASSIC project returning no event names is not a degraded read.
+        //
+        // 1.8.6 made the Event column survive an unreadable event map, on the
+        // grounds that dropping it is the claim "every finding is in the same
+        // event". Correct - but it treated an EMPTY answer as an unreadable one,
+        // and on a classic project REDCap returns nothing because there is
+        // nothing to return. Live on a real classic project that produced a
+        // column of one repeated internal event id on every row, under a yellow
+        // warning that labels could not be read. Nothing had failed.
+        //
+        // Only REDCap saying "not longitudinal" clears it. A null answer - no
+        // project object, an older build - leaves 1.8.6's behaviour standing,
+        // because "cannot tell" must not silently drop a column that may be
+        // carrying the only thing separating two rows.
+        if ($shape === false) {
+            unset($d->degraded['events']);
+            $d->singleEventProved = true;
+        }
         $d->longitudinal = count($d->events) > 1;
+        if ($shape === true) $d->longitudinal = true;
         try {
             if (is_callable(['\REDCap', 'getEventNames'])) {
                 $all = \REDCap::getEventNames(true);
@@ -160,7 +190,36 @@ final class ScanDimensions
      */
     public function needsEventColumn()
     {
-        return $this->longitudinal || isset($this->degraded['events']);
+        if ($this->longitudinal) return true;
+        if ($this->singleEventProved) return false;   // REDCap says classic: nothing to show
+        return isset($this->degraded['events']);
+    }
+
+    /**
+     * REDCap's own answer to whether $pid is longitudinal: true, false, or NULL
+     * when it cannot be established.
+     *
+     * $Proj is REDCap's project object for the current request and carries the
+     * flag directly, which is the only source that distinguishes "classic" from
+     * "the event map could not be read" - getEventNames() and
+     * getInstrumentEventMappings() both return nothing in BOTH cases.
+     *
+     * Guarded three ways: the global must exist, be an object, and be about THIS
+     * project. A $Proj left over from another pid would answer a question about
+     * the wrong project, which is worse than not answering.
+     */
+    private static function projectIsLongitudinal($pid)
+    {
+        try {
+            if (!isset($GLOBALS['Proj']) || !is_object($GLOBALS['Proj'])) return null;
+            $p = $GLOBALS['Proj'];
+            if (!isset($p->project_id) || (string) $p->project_id !== (string) $pid) return null;
+            if (isset($p->longitudinal)) return (bool) $p->longitudinal;
+            // Older builds expose the count but not the flag.
+            if (isset($p->numEvents) && is_numeric($p->numEvents)) return ((int) $p->numEvents) > 1;
+        } catch (\Throwable $e) {
+        }
+        return null;
     }
 
     /** The event's display name, or the raw id when names could not be read. */
