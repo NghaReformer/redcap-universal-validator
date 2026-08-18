@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.9.2 - a panel nothing could drive
+
+Second defect from the same pilot, one click after the first. With the schema
+installed the panel rendered, and pressing Start threw `Cannot read properties
+of undefined (reading 'UniversalValidator')` before any request left the
+browser.
+
+The page printed the framework's JavaScript module object NAME without ever
+emitting the bootstrap that creates it. `ExternalModules` existed and held
+exactly one key; the module's own namespace was never built, because
+`initializeJavascriptModuleObject()` had not been called. The data-entry path
+has always done this properly - guarding with `is_callable`, supporting both the
+echo and return conventions, and logging a diagnosis when the transport is
+missing - and the scan page did none of it.
+
+**Why no test caught it.** Both switches default off, so every page scenario
+ever written rendered the UNAVAILABLE branch. The branch people will actually
+use had zero coverage, and the mocked client test supplied `UVScan.ajax`
+directly, so the real bootstrap was never exercised from either side. Fifteen
+new scenarios now render the panel, and two of them assert the bootstrap appears
+BEFORE the name it defines - verified by deleting it and watching them fail.
+
+**And a page that cannot drive a scan no longer offers one.** A build with no
+transport, or one that throws while starting it, now shows the unavailable
+notice naming the missing piece, rather than a Start button that cannot work.
+That is the same rule the rest of the module follows: a control that refuses is
+an invitation to file a bug.
+
+Both pilot defects are the same shape and neither was findable in CI: the first
+was a migration nothing called, the second a transport nothing started. Both
+were caught in the first ten minutes of running it on a real server, which is
+what the pilot gate is for.
+
 ## 1.9.1 - the tables nothing created
 
 The first live pilot of 1.9.0 found a defect the whole test suite was green

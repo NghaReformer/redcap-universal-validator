@@ -50,8 +50,31 @@ namespace ExternalModules {
         public function getProjectSetting($k, $pid = null) {
             return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null;
         }
-        public function getSystemSetting($k) { return null; }
-        public function setSystemSetting($k, $v) {}
+        public $systemSettings = [];
+        public function getSystemSetting($k) {
+            return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
+        }
+        public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
+
+        /**
+         * The framework's JavaScript transport, and the ability to NOT have one.
+         *
+         * Absent from this stub until the first live pilot, which is exactly why
+         * the panel shipped with a Start button that threw: the page printed the
+         * object NAME without ever emitting the bootstrap that creates it, and
+         * no test rendered that branch to notice.
+         */
+        public $jsmoAvailable = true;
+        public $jsmoName = 'ExternalModules.INSPIRE.UniversalValidator';
+        public $jsmoThrows = false;
+        public function initializeJavascriptModuleObject() {
+            if ($this->jsmoThrows) throw new \RuntimeException('transport failed');
+            if (!$this->jsmoAvailable) return null;
+            return '<script>/*JSMO-BOOT*/</script>';
+        }
+        public function getJavascriptModuleObjectName() {
+            return $this->jsmoAvailable ? $this->jsmoName : '';
+        }
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
@@ -63,6 +86,8 @@ namespace ExternalModules {
          * exactly the trap the wargame found in the event/DAG column checks.
          */
         public $fenced = true;
+        /** Whether the durable scan's ten tables exist on this installation. */
+        public $tablesInstalled = true;
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
             if (strpos($sql, 'SHOW TABLES') !== false)      return new \ExternalModules\FakeRes([['redcap_record_list']]);
@@ -71,6 +96,15 @@ namespace ExternalModules {
             if (strpos($sql, 'SHOW GRANTS') !== false)      return new \ExternalModules\FakeRes([['GRANT ALL PRIVILEGES ON `rc`.* TO `u`@`h`']]);
             if (strpos($sql, 'FROM redcap_record_list') !== false) return new \ExternalModules\FakeRes([['1']]);
             if (strpos($sql, 'FROM redcap_data') !== false) return new \ExternalModules\FakeRes([['1']]);
+            // The durable scan's own schema. `tablesInstalled = false` is a real
+            // installation state - the migration has not been run - and the page
+            // must refuse over it rather than offer a panel nothing can drive.
+            if (strpos($sql, 'MAX(version)') !== false) {
+                return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : null]]);
+            }
+            if (strpos($sql, 'information_schema.tables') !== false) {
+                return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : '0']]);
+            }
             return new \ExternalModules\FakeRes([]);
         }
     }
@@ -288,6 +322,10 @@ namespace {
         $m->subSettings = [];
         $m->userReturn = $user;
         $m->fenced = empty($opts['unfenced']);
+        $m->systemSettings = isset($opts['system']) ? $opts['system'] : [];
+        $m->tablesInstalled = !isset($opts['tables']) || $opts['tables'];
+        $m->jsmoAvailable = !isset($opts['jsmo']) || $opts['jsmo'];
+        $m->jsmoThrows = !empty($opts['jsmoThrows']);
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -1085,6 +1123,85 @@ namespace {
         check('CLASSIC: numEvents > 1 is read as longitudinal',
             in_array('event', $rep($RAWSET + ['proj' => ['project_id' => PID,
                 'numEvents' => 4]])['keys'], true));
+    }
+
+    /* =====================================================================
+     * THE PANEL — the branch no test had ever rendered.
+     *
+     * Every scenario above renders the UNAVAILABLE page, because both feature
+     * switches default off. That left the branch people will actually use with
+     * zero coverage, and the first live pilot found it in one click: the page
+     * printed the framework's JavaScript object NAME without emitting the
+     * bootstrap that creates it, so Start threw "Cannot read properties of
+     * undefined" before any request left the browser.
+     * ===================================================================== */
+    {
+        $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        \REDCap::$groupNames = [];
+        $U = function () { return new \ExternalModules\PlainUser(true, null); };
+        $on = function ($extra = []) {
+            return array_merge(['system' => ['scan-system-enable-durable' => '1'],
+                                'settings' => ['scan-enable-durable' => '1']], $extra);
+        };
+
+        list($html, ) = render($U(), $D, $data, [], $on());
+        check('PANEL: with both switches on the page offers a scan',
+            strpos($html, 'uv-scan-panel') !== false);
+        check('PANEL: and no longer says it is unavailable',
+            strpos($html, 'Scan unavailable') === false);
+        check('PANEL: with the controls a run needs',
+            strpos($html, 'uv-scan-start') !== false
+            && strpos($html, 'uv-scan-cancel') !== false
+            && strpos($html, 'uv-scan-resume') !== false);
+        check('PANEL: and the client that drives them', strpos($html, 'js/scan.js') !== false);
+
+        // THE BOOTSTRAP MUST COME FIRST. The object name exists only once
+        // initializeJavascriptModuleObject() has run, so printing the name above
+        // it is a panel whose every button throws.
+        $boot = strpos($html, 'JSMO-BOOT');
+        $use  = strpos($html, 'ExternalModules.INSPIRE.UniversalValidator');
+        check('PANEL: the JavaScript transport is bootstrapped', $boot !== false);
+        check('PANEL: BEFORE the name only the bootstrap defines',
+            $boot !== false && $use !== false && $boot < $use);
+
+        // With no transport there is nothing to drive the panel with, so the
+        // page explains rather than offering a control that cannot work.
+        list($noJs, ) = render($U(), $D, $data, [], $on(['jsmo' => false]));
+        check('PANEL: a build with no transport shows no panel',
+            strpos($noJs, 'uv-scan-panel') === false);
+        check('PANEL: it says the scan cannot be driven from this page',
+            strpos($noJs, 'cannot be driven') !== false);
+        check('PANEL: naming the missing piece for whoever has to fix it',
+            strpos($noJs, 'transport') !== false);
+
+        list($threw, ) = render($U(), $D, $data, [], $on(['jsmoThrows' => true]));
+        check('PANEL: a transport that throws is caught, not fatal',
+            strpos($threw, 'uv-scan-panel') === false
+            && strpos($threw, 'cannot be driven') !== false);
+
+        // Either switch off is the shipped state, and it must stay refusable.
+        list($sysOnly, ) = render($U(), $D, $data, [],
+            ['system' => ['scan-system-enable-durable' => '1']]);
+        check('PANEL: the system switch alone offers nothing',
+            strpos($sysOnly, 'uv-scan-panel') === false);
+        list($prjOnly, ) = render($U(), $D, $data, [],
+            ['settings' => ['scan-enable-durable' => '1']]);
+        check('PANEL: nor does the project switch alone',
+            strpos($prjOnly, 'uv-scan-panel') === false);
+
+        // Tables missing is the state the pilot actually hit first. The page
+        // refuses, and names which part is not ready.
+        list($noTbl, ) = render($U(), $D, $data, [], $on(['tables' => false]));
+        check('PANEL: an uninstalled schema offers no panel',
+            strpos($noTbl, 'uv-scan-panel') === false);
+        check('PANEL: and says the tables are the reason',
+            strpos($noTbl, 'tables are not ready') !== false);
+
+        // Rights still decide. The panel is not a way around them.
+        list($noRights, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, [], $on());
+        check('PANEL: a user without design rights gets no panel',
+            strpos($noRights, 'uv-scan-panel') === false);
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)

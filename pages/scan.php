@@ -52,6 +52,51 @@ $svc = new Scan\ScanService($module);
 $available = $svc->available($pid);
 $activeRun = $available['ok'] ? $svc->activeRun($pid) : null;
 
+// THE TRANSPORT, resolved BEFORE the page decides what to offer.
+//
+// The panel is useless without the framework's JavaScript module object: every
+// button on it is one AJAX call. The live-validation path has always
+// initialised it properly and this page did not, so the first real pilot loaded
+// a panel whose Start button threw "Cannot read properties of undefined" - the
+// namespace exists only once initializeJavascriptModuleObject() has run, and
+// nothing here had run it. The mocked page test supplied UVScan.ajax directly,
+// so it never exercised the bootstrap at all.
+//
+// Resolved here rather than inside the markup so that a build without the
+// transport shows the unavailable notice instead of a control that cannot work.
+$jsmo = null;
+$jsmoWhy = null;
+if ($available['ok']) {
+    try {
+        if (!is_callable([$module, 'initializeJavascriptModuleObject'])) {
+            $jsmoWhy = 'this REDCap build does not expose the module JavaScript transport';
+        } else {
+            $boot = $module->initializeJavascriptModuleObject();
+            $name = is_callable([$module, 'getJavascriptModuleObjectName'])
+                  ? $module->getJavascriptModuleObjectName() : null;
+            if (!is_string($name) || $name === '') {
+                $jsmoWhy = 'the framework started no JavaScript transport for this module '
+                         . '(it returned no module object name)';
+            } else {
+                // Older builds echo the bootstrap and return null; newer ones
+                // hand back the markup. Both are supported, exactly as the
+                // data-entry path supports them.
+                $jsmo = ['boot' => (is_string($boot) ? $boot : ''), 'name' => $name];
+            }
+        }
+    } catch (\Throwable $e) {
+        $jsmoWhy = 'the framework threw ' . get_class($e)
+                 . ' while starting the JavaScript transport';
+    }
+    if ($jsmo === null) {
+        // A panel nobody can drive is worse than an explanation.
+        $available = ['ok' => false,
+                      'why' => 'the scan cannot be driven from this page',
+                      'detail' => $jsmoWhy];
+        $activeRun = null;
+    }
+}
+
 // READ FROM BOTH METHODS. The legacy controls were GET-only, so a POST carrying
 // the same parameters would have missed a GET-only check and fallen through to
 // a page that looks like it simply found nothing. Whatever method asks for a
@@ -135,14 +180,17 @@ read a record, or could not decide whether two values are duplicates, says so in
 reporting a clean project.
 </p>
 
+<?php echo $jsmo['boot']; ?>
 <script src="<?php echo $module->getUrl('js/scan.js'); ?>"></script>
 <script>
 (function () {
     // The module's own AJAX transport. Given to the client rather than built by
     // it, so the page keeps the one route the framework authenticates and the
-    // client never constructs a URL of its own.
+    // client never constructs a URL of its own. The object name comes from the
+    // framework and the bootstrap above is what creates it - printing the name
+    // without the bootstrap is what broke the first pilot.
     window.UVScan.ajax = function (action, payload) {
-        return <?php echo $module->getJavascriptModuleObjectName(); ?>.ajax(action, payload);
+        return <?php echo $jsmo['name']; ?>.ajax(action, payload);
     };
     window.UVScan.attach({
         runId: <?php echo $activeRun === null ? 'null' : (int) $activeRun; ?>,
