@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.8.16 - SqlScanStore, and the fence that only a real server disproved
+
+Docker was available, and both portable PHP builds ship `php_mysqli.dll`, so the
+database matrix now runs locally in seconds against MySQL 8.0 and MariaDB 10.11
+containers before anything is pushed. That changed the economics immediately:
+the previous three defects each cost a CI round trip to find, and the one below
+was found and fixed twice over in the time one round trip takes.
+
+**`SqlScanStore`** implements the storage contract over `ScanDb`, a four-method
+adapter (`select`, `exec`, `affected`, transactions). The indirection is not
+taste: the framework's `query()` exposes no affected-row count, and every fenced
+update in this design is decided by exactly that number. It also means the
+database matrix exercises the *same* `SqlScanStore` REDCap will run, over a plain
+mysqli connection, rather than a second implementation that agrees with it.
+
+**The fence bug.** `commitBatch()` fenced itself with an UPDATE that set
+`updated_at` and required `affected() === 1`. MySQL reports rows **CHANGED**, not
+rows matched - so when the commit landed in the same second as the manifest
+write, the timestamp did not change, the statement reported zero, and a perfectly
+good batch rolled itself back. Intermittent by construction: it depended on
+whether the clock had ticked.
+
+MariaDB on default isolation passed while MySQL failed, so a single-engine test
+would have shipped a scan that silently discarded work under load. The fence is
+now `SELECT ... FOR UPDATE` with the epoch compared in PHP, which is what the old
+comment claimed and the old code did not do - the transaction really does hold
+the run row now, so a concurrent cancel serialises behind it instead of racing
+it. The counter update afterwards is deliberately *not* gated on `affected()`
+either: a batch that finished zero records changes no column and would have
+rolled itself back for having nothing to say.
+
+The class docblock now states the rule that generalises: **if success does not
+change a value, `affected()` cannot tell you whether it happened.** Single
+-statement mutations that necessarily change a column - claim, cancel, finish,
+lease, release - are still decided by the count; multi-statement transactions
+fence with a locking read.
+
+**What the store is now proved to do**, on MySQL 8.0 and MariaDB 10.11, under
+default isolation and READ COMMITTED: a second start returns busy without naming
+the run, its owner or its scope; a run id does not resolve across projects; the
+manifest publishes its total with its rows; a claim at a stale epoch returns
+nothing; an overtaken worker commits nothing and leaves its records re-claimable;
+a retried finaliser cannot reopen a finished run; slots hand out exactly the
+configured number and a stale holder releases nothing; and an expired value is
+cleared while its finding remains, because a report that shrinks as it ages reads
+as the project having improved.
+
+`tests/mysql/run.php` 27 -> 60 checks. Full suite green on PHP 7.4, 8.3 and 8.4.
+
 ## 1.8.15 - MySQL and MariaDB do not agree on what the variable is called
 
 **Both MySQL legs are green.** 5.7.44 and 8.0.46, under the server default and

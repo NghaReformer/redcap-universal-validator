@@ -24,6 +24,10 @@
  */
 
 require_once __DIR__ . '/../../php/Scan/Schema.php';
+require_once __DIR__ . '/../../php/Scan/ScanOutcome.php';
+require_once __DIR__ . '/../../php/Scan/ScanStore.php';
+require_once __DIR__ . '/../../php/Scan/ScanDb.php';
+require_once __DIR__ . '/../../php/Scan/SqlScanStore.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 
@@ -304,6 +308,179 @@ check('finding-versions: closing the old one lets the new generation insert',
 $cnt = (int) $ca->query('SELECT COUNT(*) FROM ' . $fnd . ' WHERE finding_identity = 0x'
     . bin2hex($id1), [])[0][0];
 check('finding-versions: history is retained, not replaced', $cnt === 2);
+
+// -- SqlScanStore: the SAME class the module runs -----------------------------
+//
+// Everything above asserts that the SCHEMA holds its invariants. This asserts
+// that the STORE uses them correctly, which is a different claim: a correct
+// UNIQUE key with a store that catches the wrong exception still lets two runs
+// start. Only ScanDb differs between here and REDCap.
+
+/** ScanDb over the raw mysqli connection. */
+class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
+    private $c; private $aff = 0;
+    public function __construct($c) { $this->c = $c; }
+    public function select($sql, array $params = []) {
+        if (!$params) {
+            $r = $this->c->query($sql);
+            return $r === true ? [] : $this->rows($r);
+        }
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $r = $st->get_result();
+        $out = $r === false ? [] : $this->rows($r);
+        $st->close();
+        return $out;
+    }
+    public function exec($sql, array $params = []) {
+        if (!$params) { $this->c->query($sql); $this->aff = $this->c->affected_rows; return; }
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $this->aff = $st->affected_rows;
+        $st->close();
+    }
+    public function affected() { return $this->aff; }
+    public function begin()    { $this->c->query('START TRANSACTION'); }
+    public function commit()   { $this->c->query('COMMIT'); }
+    public function rollback() { $this->c->query('ROLLBACK'); }
+    private function rows($r) {
+        $out = [];
+        while ($row = $r->fetch_row()) $out[] = $row;
+        $r->free();
+        return $out;
+    }
+}
+
+use INSPIRE\UniversalValidator\Scan\SqlScanStore;
+use INSPIRE\UniversalValidator\Scan\ScanStore;
+use INSPIRE\UniversalValidator\Scan\ScanOutcome;
+
+$A->query('DELETE FROM ' . Schema::table('scan_record'));
+$A->query('DELETE FROM ' . Schema::table('finding'));
+$A->query('DELETE FROM ' . Schema::table('scan_run'));
+$A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+$A->query('DELETE FROM ' . Schema::table('scan_audit'));
+for ($i = 1; $i <= 2; $i++) {
+    $A->query('INSERT INTO ' . Schema::table('scan_worker_slot') . ' (slot_no, epoch) VALUES (' . $i . ', 0)');
+}
+
+$storeA = new SqlScanStore(new MysqliDb($A));
+$storeB = new SqlScanStore(new MysqliDb($B));
+
+// START: one wins, the other is told busy WITHOUT being told anything else.
+$r1 = $storeA->startRun(700, ['created_by' => 'alice']);
+check('store: the first start succeeds', $r1['ok'] === true && $r1['busy'] === false);
+$runId = (int) $r1['run']['run_id'];
+$r2 = $storeB->startRun(700, ['created_by' => 'bob']);
+check('store: a second start on the same project is BUSY, not an error',
+    $r2['ok'] === false && $r2['busy'] === true && $r2['run'] === null);
+check('store: and busy names no run, owner or scope',
+    preg_match('/\d/', $r2['why']) === 0 && stripos($r2['why'], 'alice') === false);
+
+// The run id is a LOCATOR. It must not resolve across projects.
+check('store: a run id from another project does not resolve',
+    $storeB->run(701, $runId) === null);
+check('store: but resolves for its own', $storeA->run(700, $runId) !== null);
+
+// MANIFEST: totals are set with the rows, in one transaction.
+$recs = [];
+for ($i = 1; $i <= 7; $i++) {
+    $recs[] = ['id_bin' => 'REC-' . $i, 'hash' => hash('sha256', 'REC-' . $i, true),
+               'dag' => $i % 2 ? 'north' : null];
+}
+check('store: the manifest writes every record', $storeA->writeManifest($runId, $recs) === 7);
+$run = $storeA->run(700, $runId);
+check('store: and publishes the total with them', (int) $run['manifest_total'] === 7);
+check('store: leaving the run ready to scan', $run['phase'] === 'scanning');
+check('store: an empty manifest is not complete-by-vacuum',
+    $storeA->manifestComplete($runId) === false);
+
+// CLAIM: fenced on the epoch.
+$epoch = (int) $run['lease_epoch'];
+$claim = $storeA->claim($runId, 'workerA', $epoch, 3);
+check('store: a claim returns the requested range', count($claim) === 3);
+check('store: in ordinal order', $claim[0]['ordinal'] === 1 && $claim[2]['ordinal'] === 3);
+check('store: carrying the worker locator, not a hash',
+    $claim[0]['id_bin'] === 'REC-1');
+$stale = $storeB->claim($runId, 'workerB', $epoch - 1, 3);
+check('store: a claim at a STALE epoch gets nothing', $stale === []);
+
+// COMMIT: findings + record states + counters, atomically and fenced.
+$batch = ['bytes' => 40, 'records' => [], 'findings' => []];
+foreach ($claim as $c) {
+    $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                           'version' => 'v1'];
+    $batch['findings'][] = [
+        'generation_id' => 1, 'identity' => hash('sha256', 'f' . $c['ordinal'], true),
+        'seq' => 1, 'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+        'event_id' => null, 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
+        'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1,
+        'check_type' => 'required', 'reason_code' => 'required-blank',
+    ];
+}
+check('store: a fenced batch commits', $storeA->commitBatch($runId, 'workerA', $epoch, 0, $batch) === true);
+$run = $storeA->run(700, $runId);
+check('store: advancing manifest_done by the records it finished',
+    (int) $run['manifest_done'] === 3);
+check('store: and counting the findings it retained', (int) $run['detail_rows'] === 3);
+check('store: still not complete with four records left',
+    $storeA->manifestComplete($runId) === false);
+
+// A worker whose epoch moved must commit NOTHING - not "some of it".
+$storeB->cancel(700, $runId, 'admin');
+$after = $storeA->run(700, $runId);
+check('store: cancel bumps the epoch', (int) $after['lease_epoch'] === $epoch + 1);
+$rows0 = $storeA->run(700, $runId)['detail_rows'];
+$lost = ['bytes' => 10, 'records' => [['ordinal' => 4, 'state' => ScanStore::REC_DONE]],
+         'findings' => [[
+            'generation_id' => 1, 'identity' => hash('sha256', 'f-lost', true), 'seq' => 1,
+            'record_hash' => hash('sha256', 'REC-4', true), 'record_id_bin' => 'REC-4',
+            'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => 'required-blank']]];
+check('store: an overtaken worker cannot commit',
+    $storeA->commitBatch($runId, 'workerA', $epoch, 0, $lost) === false);
+check('store: and left NO finding behind',
+    (int) $storeA->run(700, $runId)['detail_rows'] === (int) $rows0);
+$left = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+    . " WHERE record_id_bin = 'REC-4'", []);
+check('store: the rolled-back finding row does not exist', (int) $left[0][0] === 0);
+$st4 = $ca->query('SELECT state FROM ' . Schema::table('scan_record')
+    . ' WHERE run_id = ' . $runId . ' AND ordinal = 4', []);
+check('store: and its record is still pending, so it can be re-claimed',
+    (int) $st4[0][0] === ScanStore::REC_PENDING);
+
+// FINISH: releases the slot, idempotently.
+$outcome = ScanOutcome::derive(['fenced' => true, 'manifestDone' => false, 'blocked' => true]);
+check('store: finishing a run succeeds once', $storeA->finish($runId, $outcome) === true);
+check('store: and a retried finaliser changes nothing',
+    $storeA->finish($runId, $outcome) === false);
+check('store: the slot is released, so the next scan may start',
+    $storeB->startRun(700, ['created_by' => 'carol'])['ok'] === true);
+
+// SLOTS through the store, with only two precreated.
+$s1 = $storeA->leaseSlot('w1', $runId, 60);
+$s2 = $storeB->leaseSlot('w2', $runId, 60);
+check('store: two slots lease', $s1 !== null && $s2 !== null);
+check('store: a third finds none free', $storeA->leaseSlot('w3', $runId, 60) === null);
+check('store: a stale holder releases nothing',
+    $storeA->releaseSlot($s1['slot_no'], 'w1', $s1['epoch'] + 5) === false);
+check('store: the real holder does', $storeA->releaseSlot($s1['slot_no'], 'w1', $s1['epoch']) === true);
+check('store: freeing it for the next worker', $storeA->leaseSlot('w3', $runId, 60) !== null);
+
+// RETENTION: a value expires without the finding disappearing.
+$A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'secret',
+    value_expires_at = '2000-01-01 00:00:00' WHERE record_id_bin = 'REC-1'");
+check('store: an expired value is cleared', $storeA->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
+$v = $ca->query('SELECT value_bin FROM ' . Schema::table('finding')
+    . " WHERE record_id_bin = 'REC-1'", []);
+check('store: the value is gone', $v[0][0] === null);
+$cnt = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+    . " WHERE record_id_bin = 'REC-1'", []);
+check('store: but the finding remains - a report must not shrink as it ages',
+    (int) $cnt[0][0] === 1);
 
 // -- teardown: exactly our tables, nothing else ------------------------------
 foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
