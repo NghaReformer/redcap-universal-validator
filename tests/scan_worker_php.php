@@ -23,6 +23,13 @@
 namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
+    require_once __DIR__ . '/../php/Scan/ScanStore.php';
+    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/../php/Scan/Hmac.php';
+    require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
+    require_once __DIR__ . '/../php/Scan/SourceFence.php';
+    require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
 
     $n = 0; $fail = 0;
@@ -440,6 +447,25 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScanPlanner::fingerprintMatches(null, $fp) === false
         && ScanPlanner::fingerprintMatches('', '') === false
         && ScanPlanner::fingerprintMatches('abc', 'abc') === false);
+
+    // -- planning refuses before a run exists --------------------------------
+    //
+    // The rest of plan() runs against a real record source and a real store in
+    // tests/mysql/run.php - a planner judged by a fake source would only prove
+    // that the fake agrees with it. What belongs here is the one refusal that
+    // needs neither: an installation that cannot list records at all.
+    //
+    // A refused start costs a message. An abandoned run costs the project its
+    // scan slot until something expires it, so every refusal that CAN happen
+    // before startRun() does.
+    $planner = new ScanPlanner(new ArrayScanStore(2), 'k');
+    $noSource = $planner->plan(1, ['rules' => [['type' => 'required', 'fields' => ['a']]]]);
+    check('plan: an installation that cannot list records is refused',
+        $noSource['ok'] === false && $noSource['busy'] === false);
+    check('plan: and told why, in terms of what it cannot do',
+        strpos($noSource['why'], 'without exporting it') !== false);
+    check('plan: refusing is not the same as being busy',
+        $noSource['busy'] === false && $noSource['run'] === null);
 }
 
 namespace {

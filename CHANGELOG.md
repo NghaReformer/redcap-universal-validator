@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.8.21 - planning: from a project to a frozen manifest
+
+`ScanPlanner::plan()` is the step that turns a project into a run: it names
+every rule, fingerprints the configuration, captures the opening fence, streams
+the record list into the manifest a page at a time, and freezes it.
+
+**Everything that can refuse does so before a run exists.** A refused start
+costs a message; an abandoned run costs the project its scan slot until
+something expires it. So an installation that cannot list records, a project
+with no rules, and a group-scoped request on an installation that cannot tell
+which group a record is in are all turned away before `startRun()`. Once a run
+does exist, every remaining failure FINISHES it terminally rather than leaving
+it - a planner that dies quietly is indistinguishable from one still working.
+That is asserted directly: after a planning run exhausts its time budget, the
+project has no active run and the next attempt is not told it is busy.
+
+**The opening fence is captured before the manifest, not after.** Captured
+after, a change during the walk falls outside the window the run believes it
+covers - which is the single gap a fence exists to close.
+
+**A group-scoped run gets a group-scoped manifest.** Building the whole project
+and filtering at display time is the leak the persisted store creates: the
+stored report outlives the request that produced it and is readable by whoever
+can open the page. The manifest is the right place for the scope, and the run
+records how many records it deliberately left out.
+
+Nothing accumulates during the walk: a page is read, hashed, written and
+dropped. That is the whole difference from the legacy path, which built the
+entire record set in PHP before examining any of it.
+
+Planning is tested against the real record source and the real store on all four
+database services rather than against a fake - a planner judged by a fake source
+proves only that the fake agrees with it. 205 checks in the database matrix, 247
+in the fast worker suite. The scan still does not run.
+
 ## 1.8.20 - naming a rule, walking a project, and fencing a read
 
 Three pieces of planning, and the store changes they forced.

@@ -72,6 +72,201 @@ final class ScanPlanner
         'wording'   => 'message wording cannot change which findings exist',
     ];
 
+    /** @var ScanStore */
+    private $store;
+    /** @var string the module's protected secret */
+    private $key;
+
+    public function __construct(ScanStore $store, $key)
+    {
+        $this->store = $store;
+        $this->key = $key;
+    }
+
+    /**
+     * Create a run, freeze its manifest, and hand it back ready to be worked.
+     *
+     * THE ORDER IS THE SAFETY. Everything that can refuse does so BEFORE a run
+     * exists, because a refused start costs a message and an abandoned run costs
+     * the project its scan slot until something expires it. Once the run does
+     * exist, every remaining failure finishes it terminally rather than leaving
+     * it - a planner that dies quietly is indistinguishable from one still
+     * working, and the difference is a project that cannot scan again.
+     *
+     * @param array $req {
+     *   source:        RecordManifestSource, required
+     *   fence:         ?SourceFence
+     *   rules:         array   the live rule list, as getRules() produced it
+     *   settingsCount: int     how many of those came from settings
+     *   ownership:     array   field => owning form
+     *   structure:     array   events, arms, repeating shape
+     *   choices:       array
+     *   policy:        array   from ScanPolicy::resolve()
+     *   engine:        string  the validation engine's version
+     *   dagFilter:     ?string scope this run to one group
+     *   createdBy:     string
+     *   generation:    int
+     *   pageSize:      int
+     *   deadline:      ?float  unix time planning must stop by
+     *   memCap:        ?int    bytes of resident memory planning must stay under
+     * }
+     * @return array{ok:bool, busy:bool, run:?array, why:?string, stats:array}
+     */
+    public function plan($pid, array $req)
+    {
+        $src = isset($req['source']) ? $req['source'] : null;
+        if (!($src instanceof RecordManifestSource)) {
+            return self::no('this installation cannot list the project\'s records without '
+                . 'exporting it, so no scan may start');
+        }
+        $dag = isset($req['dagFilter']) && $req['dagFilter'] !== '' ? $req['dagFilter'] : null;
+        if ($dag !== null && !$src->hasDag()) {
+            // Running anyway would build a project-wide manifest for a user
+            // entitled to one group. The persisted report is readable later by
+            // whoever can open the page, so the scope has to be right when the
+            // manifest is written, not when it is displayed.
+            return self::no('this installation cannot tell which group a record belongs to, so a '
+                . 'group-scoped scan cannot be run here');
+        }
+        $rules = isset($req['rules']) && is_array($req['rules']) ? $req['rules'] : [];
+        if (!$rules) {
+            return self::no('this project has no validation rules, so there is nothing to scan for');
+        }
+
+        // Names and revisions first: the fingerprint is computed OVER them, so a
+        // rule that cannot be named is a rule the fingerprint cannot cover.
+        $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : 0);
+        $ruleSpec = [];
+        foreach ($ids as $i => $id) {
+            $ruleSpec[] = ['id' => $id['source_id'], 'rev' => $id['revision'],
+                           'ord' => $i + 1, 'origin' => $id['origin']];
+        }
+        try {
+            $fp = self::fingerprint([
+                'engine'    => isset($req['engine']) ? $req['engine'] : '',
+                'rules'     => $ruleSpec,
+                'ownership' => isset($req['ownership']) ? $req['ownership'] : [],
+                'structure' => isset($req['structure']) ? $req['structure'] : [],
+                'choices'   => isset($req['choices']) ? $req['choices'] : [],
+                'gapPolicy' => isset($req['policy']['collectionGaps'])
+                               ? $req['policy']['collectionGaps'] : 'separate',
+                'valueMode' => isset($req['policy']['valueMode'])
+                               ? $req['policy']['valueMode'] : 'locations',
+            ]);
+        } catch (\InvalidArgumentException $e) {
+            // A fingerprint that could not be built is not a fingerprint that
+            // can be skipped: without one, a resumed run cannot tell whether the
+            // configuration moved underneath it.
+            return self::no('this run could not be described well enough to detect a later '
+                . 'configuration change, so it was not started');
+        }
+
+        // The opening fence, BEFORE the manifest. Captured after it, any change
+        // during the walk would fall outside the window the run believes it
+        // covers - which is the one gap a fence exists to close.
+        $fence = isset($req['fence']) && $req['fence'] instanceof SourceFence ? $req['fence'] : null;
+        $open = $fence === null ? null : $fence->now();
+
+        $started = $this->store->startRun($pid, [
+            'created_by'    => isset($req['createdBy']) ? $req['createdBy'] : '',
+            'scope_dag'     => $dag,
+            'generation_id' => isset($req['generation']) ? $req['generation'] : 1,
+            'fingerprint'   => $fp,
+            'fence_open'    => $open,
+            'policy_json'   => json_encode(isset($req['policy']) ? $req['policy'] : []),
+            'values_state'  => isset($req['policy']['valueMode'])
+                               ? $req['policy']['valueMode'] : 'none',
+        ]);
+        if (empty($started['ok'])) {
+            // Busy travels unchanged, including its deliberately uninformative
+            // wording: which run holds the slot is never disclosed.
+            return ['ok' => false, 'busy' => true, 'run' => null,
+                    'why' => isset($started['why']) ? $started['why'] : null, 'stats' => []];
+        }
+        $run = $started['run'];
+        $runId = (int) $run['run_id'];
+
+        $walk = $this->stream($runId, $src, $pid, $dag, $req);
+        if (!$walk['ok']) {
+            // Terminal, not abandoned. See the method note: an abandoned run
+            // holds the project's scan slot and looks like one still working.
+            $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+            return ['ok' => false, 'busy' => false, 'run' => null, 'why' => $walk['why'],
+                    'stats' => $walk['stats']];
+        }
+
+        $total = $this->store->freezeManifest($runId);
+        if ($total === false) {
+            $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+            return self::no('the record list could not be frozen, so the run was not started');
+        }
+        $walk['stats']['total'] = (int) $total;
+        return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
+                'why' => null, 'stats' => $walk['stats']];
+    }
+
+    /**
+     * Walk the record source into the manifest, one bounded page at a time.
+     *
+     * Nothing accumulates: a page is read, hashed, written and dropped. That is
+     * the whole difference between this and the legacy path, which built the
+     * entire record set in PHP before examining any of it.
+     */
+    private function stream($runId, RecordManifestSource $src, $pid, $dag, array $req)
+    {
+        $pageSize = isset($req['pageSize']) ? max(1, (int) $req['pageSize']) : 1000;
+        $deadline = isset($req['deadline']) ? $req['deadline'] : null;
+        $memCap   = isset($req['memCap']) ? $req['memCap'] : null;
+        $stats = ['pages' => 0, 'listed' => 0, 'appended' => 0, 'outOfScope' => 0];
+
+        $cursor = null;
+        $carry = [];
+        while (true) {
+            // Checked BETWEEN pages, never inside one. Stopping mid-page would
+            // leave a partly written page whose records are indistinguishable
+            // from records that do not exist.
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                return ['ok' => false, 'stats' => $stats,
+                        'why' => 'listing this project\'s records did not finish within the time '
+                               . 'this server allows for one request'];
+            }
+            if ($memCap !== null && memory_get_usage(true) >= $memCap) {
+                return ['ok' => false, 'stats' => $stats,
+                        'why' => 'listing this project\'s records did not finish within the memory '
+                               . 'this server allows for one request'];
+            }
+
+            $pg = $src->page($cursor, $carry, $pageSize);
+            if (!$pg['ok']) {
+                return ['ok' => false, 'stats' => $stats, 'why' => $pg['why']];
+            }
+            $stats['pages']++;
+            $batch = [];
+            foreach ($pg['rows'] as $row) {
+                $stats['listed']++;
+                if ($dag !== null && (string) $row['dag'] !== (string) $dag) {
+                    $stats['outOfScope']++;
+                    continue;
+                }
+                $batch[] = ['id_bin' => $row['id'],
+                            'hash' => Hmac::raw(Hmac::P_RECORD, $pid, $row['id'], $this->key),
+                            'dag' => $row['dag']];
+            }
+            if ($batch) {
+                $stats['appended'] += (int) $this->store->appendManifest($runId, $batch);
+            }
+            $cursor = $pg['cursor'];
+            $carry = $pg['emitted'];
+            if ($pg['done']) break;
+        }
+        return ['ok' => true, 'stats' => $stats, 'why' => null];
+    }
+
+    private static function no($why)
+    {
+        return ['ok' => false, 'busy' => false, 'run' => null, 'why' => $why, 'stats' => []];
+    }
+
     // -- canonical encoding --------------------------------------------------
 
     /**
