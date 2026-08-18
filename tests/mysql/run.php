@@ -482,6 +482,30 @@ $cnt = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
 check('store: but the finding remains - a report must not shrink as it ages',
     (int) $cnt[0][0] === 1);
 
+// -- the SHARED contract, against SqlScanStore --------------------------------
+//
+// The identical assertions run in the fast suite against ArrayScanStore. Two
+// independent implementations judged by one set disagree wherever the contract
+// is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug
+// would have surfaced, since an in-memory store has no notion of "rows changed".
+//
+// Each scenario needs a clean slate, so the factory truncates rather than
+// reconnecting: the contract must not know which store it is judging, and must
+// not be handed a store that remembers the previous scenario's run.
+require_once __DIR__ . '/../scan_store_contract.php';
+
+$fresh = function () use ($A, $storeA) {
+    foreach (array('scan_record', 'finding', 'scan_run', 'scan_worker_slot', 'scan_audit') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    for ($i = 1; $i <= 2; $i++) {
+        $A->query('INSERT INTO ' . Schema::table('scan_worker_slot')
+            . ' (slot_no, epoch) VALUES (' . $i . ', 0)');
+    }
+    return $storeA;
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store');
+
 // -- teardown: exactly our tables, nothing else ------------------------------
 foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
 

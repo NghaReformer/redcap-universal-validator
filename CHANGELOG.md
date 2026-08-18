@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.8.17 - one contract, two implementations
+
+`tests/scan_store_contract.php` holds 35 assertions about what a `ScanStore`
+must do. `ArrayScanStore` runs them in the fast suite in milliseconds;
+`SqlScanStore` runs the *same* 35 against MySQL 5.7/8.0 and MariaDB 10.5/10.11,
+under default isolation and READ COMMITTED. Both pass.
+
+`ArrayScanStore` is not a mock of the SQL store - it is an independent
+implementation of the same contract. That distinction is the whole value. A mock
+returns what the test told it to and proves only that the test agrees with
+itself; two implementations judged by one assertion set disagree wherever the
+contract is ambiguous, and ambiguity is where the bugs are. It is the technique
+this repository already uses to keep the PHP and JavaScript rule engines from
+drifting, applied to storage.
+
+The contract pins the behaviour that is easy to get subtly wrong: busy names no
+owner and carries no digit; a run id does not resolve under another project; a
+claim at a stale epoch returns nothing rather than a range it could not commit;
+an overtaken worker commits nothing *and* leaves its records re-claimable; a
+retried finaliser cannot reopen a finished run; a stale holder and an impostor
+both release no slot.
+
+**What the fast suite explicitly does NOT prove**, stated in both files so it
+cannot be misread: the concurrency invariants. Single-process PHP has no second
+connection, so "the engine refuses a second active run" is `ArrayScanStore`
+checking an array - a description of the intended behaviour, not evidence of it.
+The evidence is in the database matrix, and passing here is not a substitute.
+
+`tests/mysql/run.php` 60 -> 95 checks. New fast suite `tests/scan_store_php.php`
+at 35. Suite green on PHP 7.4, 8.3 and 8.4.
+
 ## 1.8.16 - SqlScanStore, and the fence that only a real server disproved
 
 Docker was available, and both portable PHP builds ship `php_mysqli.dll`, so the
