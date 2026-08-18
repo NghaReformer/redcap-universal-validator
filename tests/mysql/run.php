@@ -89,11 +89,30 @@ if ($iso !== false && $iso !== '') {
     // PROVED, not assumed. A SET that silently did nothing would put the job
     // straight back to claiming a level it never selected - which is the defect
     // this block exists to remove, so it must not be reintroduced one line down.
+    //
+    // The variable has TWO names across this matrix and neither server has both:
+    // MySQL 8.0 removed @@tx_isolation, and MariaDB 10.5/10.11 have not yet
+    // added @@transaction_isolation. Asking for the MySQL name alone was a fatal
+    // on both MariaDB legs - the SET had already succeeded, so what failed was
+    // the check that the SET worked. Try each, and treat "neither answered" as a
+    // failure rather than as a pass, or this lands back where it started.
+    $readIso = function ($conn) {
+        foreach (array('@@transaction_isolation', '@@tx_isolation') as $var) {
+            try {
+                $q = $conn->query('SELECT ' . $var);
+                $row = $q ? $q->fetch_row() : null;
+                if ($row && isset($row[0])) {
+                    return str_replace('-', ' ', strtoupper((string) $row[0]));
+                }
+            } catch (\Throwable $e) {
+                // This server names it the other way; try that.
+            }
+        }
+        return '';
+    };
     foreach (array(array('A', $A), array('B', $B)) as $pair) {
-        $q = $pair[1]->query('SELECT @@transaction_isolation');
-        $row = $q ? $q->fetch_row() : null;
-        $got = $row ? str_replace('-', ' ', strtoupper((string) $row[0])) : '';
-        check('isolation: connection ' . $pair[0] . ' really is ' . $iso, $got === $iso);
+        check('isolation: connection ' . $pair[0] . ' really is ' . $iso,
+            $readIso($pair[1]) === $iso);
     }
 } else {
     echo "isolation: server default\n";

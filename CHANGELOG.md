@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.8.15 - MySQL and MariaDB do not agree on what the variable is called
+
+**Both MySQL legs are green.** 5.7.44 and 8.0.46, under the server default and
+under READ COMMITTED, 25 and 27 checks with no failures. That is the first
+evidence any of this actually works: the schema installs on the oldest InnoDB
+default without truncating a binary key, `UNIQUE(project_id, active_slot)` really
+does permit unlimited NULLs so one active run per project is enforced by the
+engine, worker-slot limits of 1, 2 and 5 hand out exactly that many leases, an
+expired lease can be taken over and a live one cannot, a worker whose epoch moved
+changes nothing, a cancellation beats an in-flight worker to its compare-and-set,
+and closing a finding version lets the next generation insert while history is
+retained. All of it holds under READ COMMITTED as well as the default.
+
+**MariaDB failed on the verification query, not on the invariants.** The
+`SET SESSION TRANSACTION ISOLATION LEVEL` succeeded - the run printed
+`isolation: READ COMMITTED` - and then died reading `@@transaction_isolation`,
+which MariaDB 10.5 and 10.11 do not have. The variable has two names and neither
+server in this matrix has both: MySQL 8.0 removed `@@tx_isolation`, and MariaDB
+has not yet added `@@transaction_isolation`. It now tries each and treats
+"neither answered" as a failure rather than as a pass, because the alternative
+lands straight back on a check that reports success without checking anything.
+
+That is the third defect in a row found by running against real servers, and the
+third that a mock would have certified. The first two claimed a schema was broken
+when it was not and claimed an isolation level that was never selected; this one
+was a portability assumption baked into the instrument.
+
 ## 1.8.14 - a test that named a condition it never created
 
 Round two of the database matrix. The `information_schema` fix from 1.8.13 held -
