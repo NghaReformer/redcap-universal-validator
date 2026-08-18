@@ -28,6 +28,8 @@ require_once __DIR__ . '/../../php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/../../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../../php/Scan/ScanDb.php';
 require_once __DIR__ . '/../../php/Scan/SqlScanStore.php';
+require_once __DIR__ . '/../../php/Scan/WorkerSlots.php';
+require_once __DIR__ . '/../../php/Scan/ScanRetention.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 
@@ -505,6 +507,193 @@ $fresh = function () use ($A, $storeA) {
     return $storeA;
 };
 \INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store');
+
+// -- WorkerSlots: provisioning, renewal, and browser/cron overlap -------------
+{
+    $dbA = new MysqliDb($A);
+    $dbB = new MysqliDb($B);
+    $slotsA = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbA);
+    $slotsB = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbB);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+
+    check('slots: provisioning creates the configured number', $slotsA->provision(3) === 3);
+    check('slots: and is idempotent - saving settings twice adds nothing',
+        $slotsA->provision(3) === 0);
+    check('slots: raising the limit adds only the difference', $slotsA->provision(5) === 2);
+    // Additive only: lowering must not delete a row that may be leased right now.
+    check('slots: LOWERING the limit deletes nothing', $slotsA->provision(2) === 0);
+    $c = $slotsA->census();
+    check('slots: the census reports what exists', $c['total'] === 5 && $c['held'] === 0);
+    check('slots: and names which are idle above a reduced limit',
+        $slotsA->idleAbove(2) === [3, 4, 5]);
+
+    // BROWSER AND CRON COMPETE FOR THE SAME POOL. That is the point of an
+    // installation-wide semaphore: a cron that ignored browser leases would let
+    // the server run 2N workers whenever someone had a tab open.
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $slotsA->provision(2);
+    $browser = $slotsA->acquire('browser-1', 1, 60);
+    $cron    = $slotsB->acquire('cron-1', 1, 60);
+    check('slots: a browser worker and a cron worker share one pool',
+        $browser !== null && $cron !== null);
+    check('slots: and the third is refused whichever kind it is',
+        $slotsA->acquire('cron-2', 1, 60) === null);
+
+    check('slots: the holder may renew',
+        $slotsA->renew($browser['slot_no'], 'browser-1', $browser['epoch'], 60) === true);
+    check('slots: a stale epoch may not renew',
+        $slotsA->renew($browser['slot_no'], 'browser-1', $browser['epoch'] - 1, 60) === false);
+    check('slots: nor may someone else',
+        $slotsB->renew($browser['slot_no'], 'cron-1', $browser['epoch'], 60) === false);
+    check('slots: the census counts held leases',
+        $slotsA->census()['held'] === 2);
+
+    // EXPIRY IS WHAT MAKES THIS A SEMAPHORE RATHER THAN A LEAK: the browser
+    // closes and nobody runs any cleanup.
+    $A->query('UPDATE ' . Schema::table('scan_worker_slot')
+        . " SET expires_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 MINUTE)
+            WHERE owner = 'browser-1'");
+    $taken = $slotsB->acquire('cron-2', 1, 60);
+    check('slots: an abandoned lease returns to the pool on its own', $taken !== null);
+    check('slots: and the worker that lost it can no longer renew',
+        $slotsA->renew($browser['slot_no'], 'browser-1', $browser['epoch'], 60) === false);
+    check('slots: nor release it, which would hand away a LIVE lease',
+        $slotsA->release($browser['slot_no'], 'browser-1', $browser['epoch']) === false);
+}
+
+// -- ScanRetention: three clocks, and nothing silently loses a finding --------
+{
+    $dbA = new MysqliDb($A);
+    $ret = new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA);
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    foreach (array('scan_record', 'finding', 'scan_run', 'scan_audit') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+
+    $r = $store->startRun(800, array('created_by' => 'alice'));
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $store->writeManifest($rid, array(
+        array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null)));
+    $epoch = (int) $store->run(800, $rid)['lease_epoch'];
+    $store->claim($rid, 'w', $epoch, 1);
+    $store->commitBatch($rid, 'w', $epoch, 0, array(
+        'bytes' => 10,
+        'records' => array(array('ordinal' => 1, 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
+        'findings' => array(array(
+            'generation_id' => $gen, 'identity' => hash('sha256', 'x', true), 'seq' => 1,
+            'record_hash' => hash('sha256', 'R1', true), 'record_id_bin' => 'R1',
+            'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => 'required-blank', 'value_bin' => 'SECRET',
+            'value_expires_at' => '2000-01-01 00:00:00'))));
+
+    check('retention: nothing expires before its time',
+        $ret->expireValues('1999-01-01 00:00:00') === 0);
+    check('retention: an overdue value is cleared', $ret->expireValues() === 1);
+    $v = $ca->query('SELECT value_bin, value_expires_at FROM ' . Schema::table('finding'), array());
+    check('retention: the value is gone', $v[0][0] === null && $v[0][1] === null);
+    // The row survives: a report that shrinks as it ages reads as the project
+    // having improved, which is the misreading this module exists to prevent.
+    // NOT $n: check() keeps its counter in a global of that name, and assigning
+    // to it here silently replaced an integer with a result set - the suite then
+    // died incrementing an array, several checks later and nowhere near the
+    // cause. Test-local names in a file that uses globals are a hazard.
+    $kept = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'), array());
+    check('retention: but the FINDING remains', (int) $kept[0][0] === 1);
+
+    // An active run is never purged, however old it looks.
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET updated_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
+    check('retention: an ACTIVE run is never purged, whatever its age',
+        $ret->purgeRuns(800, 1) === 0);
+
+    // Abandonment: the lease lapsed and nothing has moved.
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET lease_expires_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
+    check('retention: an abandoned run is expired', $ret->expireAbandoned(1) === 1);
+    $ex = $store->run(800, $rid);
+    check('retention: as a real terminal state, never as complete',
+        $ex['terminal'] === \INSPIRE\UniversalValidator\Scan\ScanOutcome::EXPIRED
+        && $ex['coverage'] === \INSPIRE\UniversalValidator\Scan\ScanOutcome::COV_PARTIAL);
+    check('retention: releasing the project slot for the next scan',
+        $store->startRun(800, array('created_by' => 'bob'))['ok'] === true);
+    check('retention: and expiring it again does nothing', $ret->expireAbandoned(1) === 0);
+
+    // Purge cascades to every child table.
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET updated_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
+    check('retention: a finished, aged run purges', $ret->purgeRuns(800, 1) === 1);
+    $left = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ' . $rid, array());
+    check('retention: taking its manifest rows with it', (int) $left[0][0] === 0);
+    $lf = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE generation_id = ' . $gen, array());
+    check('retention: and its findings, so no orphan outlives its run',
+        (int) $lf[0][0] === 0);
+}
+
+// -- fault injection: what a real failure does -------------------------------
+//
+// The plan asks for injected database failures rather than mocked ones, because
+// the question is what the STORE does when the server says no - and a mock that
+// throws whatever the test chose proves only that the test can throw.
+{
+    $dbA = new MysqliDb($A);
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    foreach (array('scan_record', 'finding', 'scan_run') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    $r = $store->startRun(900, array('created_by' => 'alice'));
+    $rid = (int) $r['run']['run_id'];
+    $store->writeManifest($rid, array(
+        array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null),
+        array('id_bin' => 'R2', 'hash' => hash('sha256', 'R2', true), 'dag' => null)));
+    $epoch = (int) $store->run(900, $rid)['lease_epoch'];
+    $store->claim($rid, 'w', $epoch, 2);
+
+    // A finding whose reason_code exceeds its column. The batch must roll back
+    // ENTIRELY - a half-written batch would mark records done whose findings
+    // were never stored, which is the one outcome that produces a confidently
+    // clean report over unexamined data.
+    $bad = array(
+        'bytes' => 10,
+        'records' => array(array('ordinal' => 1, 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
+        'findings' => array(array(
+            'generation_id' => 1, 'identity' => hash('sha256', 'bad', true), 'seq' => 1,
+            'record_hash' => hash('sha256', 'R1', true), 'record_id_bin' => 'R1',
+            'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => str_repeat('z', 200))));   // column is VARCHAR(64)
+    check('fault: a batch whose write fails does not commit',
+        $store->commitBatch($rid, 'w', $epoch, 0, $bad) === false);
+    $f = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'), array());
+    check('fault: leaving no partial findings', (int) $f[0][0] === 0);
+    $st = $ca->query('SELECT state FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ' . $rid . ' AND ordinal = 1', array());
+    check('fault: and the record still PENDING, so the work is re-claimable',
+        (int) $st[0][0] === \INSPIRE\UniversalValidator\Scan\ScanStore::REC_PENDING);
+    check('fault: the run is not marked as having done it',
+        (int) $store->run(900, $rid)['manifest_done'] === 0);
+
+    // A revoked privilege is a failure the store cannot retry its way out of.
+    // It must report false rather than throw past its caller: the worker needs
+    // to stop, and a fatal would leave the run with no terminal state at all.
+    $A->query('CREATE TABLE IF NOT EXISTS uv_readonly_probe (id INT)');
+    $A->query('LOCK TABLES uv_readonly_probe READ');
+    $ok = true;
+    try {
+        // Writing to a table not named in LOCK TABLES is refused while the lock
+        // is held - a real server-side write failure, not a simulated one.
+        $store->commitBatch($rid, 'w', $epoch, 0, array(
+            'bytes' => 0, 'records' => array(), 'findings' => array()));
+    } catch (\Throwable $e) {
+        $ok = false;
+    }
+    $A->query('UNLOCK TABLES');
+    $A->query('DROP TABLE IF EXISTS uv_readonly_probe');
+    check('fault: a refused write returns rather than escaping as a fatal', $ok === true);
+}
 
 // -- teardown: exactly our tables, nothing else ------------------------------
 foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);

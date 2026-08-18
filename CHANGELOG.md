@@ -1,5 +1,57 @@
 # Changelog
 
+## 1.8.18 - Task 5 complete: slots, retention, and a fault that is real
+
+`WorkerSlots` and `ScanRetention` are now their own classes rather than methods
+on the store, and both gained the parts that were missing rather than just
+moving.
+
+**`WorkerSlots`** is the installation-wide semaphore. Provisioning is additive
+only: raising the limit adds rows, lowering it deletes none, because a row being
+deleted may be leased right now and its worker would carry on holding nothing.
+`idleAbove()` reports which slots could safely go, and leaves the decision to an
+operator. A browser worker and a cron worker compete for the same pool - that is
+the point of rationing the server rather than the project - and an abandoned
+lease returns to the pool on its own, which is the difference between a semaphore
+and a leak.
+
+**The CHANGED-versus-matched trap, a third time.** `renew()` wrote an expiry and
+asked `affected()`. A worker renewing twice in the same second with the same TTL
+writes the value it already had, changes nothing, and would be told it had lost
+its lease - so it would stop working while still holding a slot, leaking capacity
+and stalling the scan. Zero is genuinely ambiguous here, so `renew()` now asks
+rather than assumes: if the row is still ours at the same epoch, the no-op
+succeeded. A takeover in the gap answers false, which is the safe direction - a
+worker that stops unnecessarily costs one batch, and one that continues after
+losing its slot costs the limit the slot exists to enforce.
+
+**`ScanRetention`** keeps three clocks apart on purpose. Value previews expire
+soonest, because the value is the only participant data here; runs expire later,
+because a finished run is evidence of what was concluded; and abandoned runs
+expire much sooner still, because they hold a project's scan slot - that is a
+deadlock break wearing retention's clothes. An abandoned run becomes terminally
+`expired` with `partial` coverage, never `complete`. Purge cascades children
+before parents, because there are no foreign keys and that ORDER is the cascade.
+`revokePreviews()` bumps the policy revision first so previews stop being
+readable in the same request that tightened the policy, rather than whenever a
+cron next runs.
+
+**Fault injection, not simulated failure.** A finding whose `reason_code` exceeds
+its column makes the server refuse the write, and the batch rolls back entirely -
+no partial findings, the record still `PENDING` so the work is re-claimable, and
+`manifest_done` unmoved. A half-written batch would mark records done whose
+findings were never stored, which is the one outcome that produces a confidently
+clean report over unexamined data. A write refused under `LOCK TABLES` returns
+rather than escaping as a fatal, because a worker needs to stop and a fatal would
+leave the run with no terminal state at all.
+
+One test bug worth recording: a local `$n` in the retention block silently
+replaced `check()`'s global counter with a result set, and the suite died
+incrementing an array several checks later, nowhere near the cause.
+
+`tests/mysql/run.php` 95 -> 127 checks, green on MySQL 8.0 and MariaDB 10.11
+locally under both isolation levels. Suite green on PHP 7.4, 8.3 and 8.4.
+
 ## 1.8.17 - one contract, two implementations
 
 `tests/scan_store_contract.php` holds 35 assertions about what a `ScanStore`
