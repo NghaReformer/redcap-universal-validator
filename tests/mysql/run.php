@@ -25,11 +25,14 @@
 
 require_once __DIR__ . '/../../php/Scan/Schema.php';
 require_once __DIR__ . '/../../php/Scan/ScanOutcome.php';
+require_once __DIR__ . '/../../php/Scan/ScanPhase.php';
 require_once __DIR__ . '/../../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../../php/Scan/ScanDb.php';
 require_once __DIR__ . '/../../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../php/Scan/ScanRetention.php';
+require_once __DIR__ . '/../../php/Scan/SourceFence.php';
+require_once __DIR__ . '/../../php/Scan/RecordManifestSource.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 
@@ -693,6 +696,242 @@ $fresh = function () use ($A, $storeA) {
     $A->query('UNLOCK TABLES');
     $A->query('DROP TABLE IF EXISTS uv_readonly_probe');
     check('fault: a refused write returns rather than escaping as a fatal', $ok === true);
+}
+
+// -- the record walk and the source fence, against REDCap-shaped tables ------
+//
+// These two classes are almost entirely SQL, so a mock of them would be a mock
+// of the thing being tested. What they need instead is tables shaped like
+// REDCap's, on a real server, with a real collation - because the one behaviour
+// that decides whether a record can be silently skipped is how the server
+// compares two record ids, and no PHP fixture has an opinion about that.
+{
+    $dbA = new MysqliDb($A);
+
+    // Nothing exists yet: the walk must refuse BEFORE a run is created, rather
+    // than fall back to exporting the project - which is the failure the whole
+    // rebuild exists to remove.
+    foreach (array('redcap_record_list', 'redcap_data', 'redcap_projects',
+                   'redcap_log_event') as $t) {
+        $A->query('DROP TABLE IF EXISTS ' . $t);
+    }
+    $none = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, 42, array('pk' => 'record_id'));
+    check('walk: with no usable source the walk is refused, not softened',
+        $none['ok'] === false && $none['source'] === null);
+    check('walk: and the refusal says what is missing',
+        strpos($none['why'], 'without exporting the whole project') !== false);
+    $nf = \INSPIRE\UniversalValidator\Scan\SourceFence::forProject($dbA, 42);
+    check('fence: with no project row there is no fence', $nf['ok'] === false);
+
+    $A->query('CREATE TABLE redcap_projects (project_id INT PRIMARY KEY,
+        log_event_table VARCHAR(64) NULL, data_table VARCHAR(64) NULL) ENGINE=InnoDB');
+    // No UNIQUE key on (project_id, record) on purpose: the tie handling below
+    // is defensive code for a source that permits two ids the server considers
+    // equal, and a unique key would make that state unreachable - which is
+    // exactly why a real REDCap rarely produces it, and no reason to leave the
+    // handling untested.
+    $A->query('CREATE TABLE redcap_record_list (project_id INT NOT NULL,
+        record VARCHAR(100) NOT NULL, dag_id INT NULL, KEY (project_id, record)) ENGINE=InnoDB');
+    $A->query('CREATE TABLE redcap_data (project_id INT NOT NULL, event_id INT NOT NULL,
+        record VARCHAR(100) NOT NULL, field_name VARCHAR(100) NOT NULL,
+        `value` TEXT NULL, instance INT NULL,
+        KEY (project_id, field_name, record)) ENGINE=InnoDB');
+    $A->query("INSERT INTO redcap_projects (project_id, log_event_table, data_table)
+        VALUES (900, 'redcap_log_event', 'redcap_data')");
+
+    // 25 records, so paging is exercised rather than described.
+    for ($i = 1; $i <= 25; $i++) {
+        $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (900, '"
+            . sprintf('R%03d', $i) . "', " . ($i % 3 === 0 ? '7' : 'NULL') . ')');
+    }
+    $open = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, 900, array('pk' => 'record_id'));
+    check('walk: the record index is preferred when it answers for this project',
+        $open['ok'] === true && $open['source']->via() === 'redcap_record_list');
+    check('walk: and it can report which group a record is in',
+        $open['source']->hasDag() === true);
+
+    $src = $open['source'];
+    $seen = array();
+    $cursor = null; $carry = array(); $pages = 0;
+    while ($pages++ < 50) {
+        $pg = $src->page($cursor, $carry, 10);
+        if (!$pg['ok']) { check('walk: paging stayed usable', false); break; }
+        foreach ($pg['rows'] as $r) $seen[] = $r['id'];
+        $cursor = $pg['cursor']; $carry = $pg['emitted'];
+        if ($pg['done']) break;
+    }
+    check('walk: every record is listed', count($seen) === 25);
+    check('walk: exactly once', count(array_unique($seen)) === 25);
+    check('walk: in order', $seen === array_values($seen) && $seen[0] === 'R001'
+        && $seen[24] === 'R025');
+    check('walk: and it finished in bounded pages', $pages <= 5);
+
+    $pg = $src->page(null, array(), 3);
+    check('walk: a group is carried with the record it belongs to',
+        $pg['rows'][2]['id'] === 'R003' && $pg['rows'][2]['dag'] === '7');
+    check('walk: and an ungrouped record says so rather than guessing',
+        $pg['rows'][0]['dag'] === null);
+
+    // THE CASE THAT DECIDES WHETHER A RECORD CAN BE SKIPPED. utf8mb4_unicode_ci
+    // ignores trailing spaces, so the server considers 'T1' and 'T1 ' the same
+    // value while they are different records. A keyset walk using `>` would step
+    // over the second one and the run would certify a record it never read.
+    $A->query('DELETE FROM redcap_record_list');
+    // FORCED, not assumed. MySQL 8.0 defaults its schemas to utf8mb4_0900_ai_ci,
+    // which is NO PAD, so trailing spaces are significant there and this
+    // scenario would quietly test nothing; MariaDB 10.x defaults to a PAD SPACE
+    // collation, where they are not. Naming the collation makes the boundary
+    // machinery run on every server in the matrix rather than on whichever ones
+    // happen to pad - and it is a real collation a REDCap installation can have.
+    $A->query('ALTER TABLE redcap_record_list
+        MODIFY record VARCHAR(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL');
+    foreach (array('T1', 'T1 ', 'T1  ', 'T2') as $r) {
+        $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (900, '"
+            . $r . "', NULL)");
+    }
+    // THE COLUMN'S COLLATION, NOT THE CONNECTION'S - and the two really do
+    // disagree. This schema's columns are utf8mb4_unicode_ci, which pads; MySQL
+    // 8.0's default connection collation is utf8mb4_0900_ai_ci, which does not.
+    // So `SELECT 'T1' = 'T1 '` answers 0 on MySQL and 1 on MariaDB while the
+    // COLUMN answers the same on both. That is exactly why the page boundary is
+    // established by querying the source table rather than by comparing two
+    // bound parameters: the parameter form asks a different question that
+    // happens to have the same shape, and it would have passed on MariaDB.
+    $eq = $dbA->select("SELECT COUNT(*) FROM redcap_record_list
+        WHERE project_id = 900 AND record = 'T1'");
+    check('walk: the record COLUMN treats those three ids as one value',
+        isset($eq[0][0]) && (int) $eq[0][0] === 3);
+
+    $seen = array(); $cursor = null; $carry = array(); $pages = 0;
+    while ($pages++ < 20) {
+        $pg = $src->page($cursor, $carry, 1);      // one at a time: every page is a boundary
+        if (!$pg['ok']) { check('walk: tie paging stayed usable', false); break; }
+        foreach ($pg['rows'] as $r) $seen[] = $r['id'];
+        $cursor = $pg['cursor']; $carry = $pg['emitted'];
+        if ($pg['done']) break;
+    }
+    sort($seen);
+    check('walk: ids the server cannot tell apart are still all listed',
+        count($seen) === 4);
+    check('walk: exactly once each, by their real bytes',
+        $seen === array('T1', 'T1 ', 'T1  ', 'T2'));
+
+    // The fallback source: no record index for this project at all.
+    $A->query('DELETE FROM redcap_record_list');
+    for ($i = 1; $i <= 4; $i++) {
+        // Two events per record: the walk must list each record once, not once
+        // per event.
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (900, 1, 'D" . $i . "', 'record_id', 'D" . $i . "'),
+                   (900, 2, 'D" . $i . "', 'record_id', 'D" . $i . "')");
+    }
+    $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+        VALUES (900, 1, 'D2', '__GROUPID__', '31')");
+    $fb = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, 900, array('pk' => 'record_id'));
+    check('walk: an empty record index falls through to the data table',
+        $fb['ok'] === true && strpos($fb['source']->via(), 'redcap_data') === 0);
+    $pg = $fb['source']->page(null, array(), 10);
+    $ids = array();
+    foreach ($pg['rows'] as $r) $ids[] = $r['id'];
+    check('walk: a record held in several events is listed once',
+        $ids === array('D1', 'D2', 'D3', 'D4'));
+    check('walk: and its group comes from the project\'s own group rows',
+        $pg['rows'][1]['dag'] === '31' && $pg['rows'][0]['dag'] === null);
+
+    // Without the record-id field name there is no bounded walk of the data
+    // table, and refusing is the only honest answer.
+    $noPk = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, 900, array());
+    check('walk: no record-id field means no walk, and it says so',
+        $noPk['ok'] === false
+        && strpos($noPk['why'], 'record-id field could not be determined') !== false);
+
+    // A table name can never be a bound parameter, so the allowlist is the only
+    // thing between redcap_projects and an interpolated identifier.
+    $A->query("UPDATE redcap_projects SET data_table = 'redcap_data; DROP TABLE x'
+        WHERE project_id = 900");
+    check('walk: a data-table name that is not one is refused, not interpolated',
+        \INSPIRE\UniversalValidator\Scan\RecordManifestSource::dataTable($dbA, 900) === 'redcap_data');
+    $A->query("UPDATE redcap_projects SET data_table = 'redcap_data' WHERE project_id = 900");
+
+    // -- the fence ------------------------------------------------------------
+    $A->query('CREATE TABLE redcap_log_event (log_event_id BIGINT PRIMARY KEY,
+        project_id INT NOT NULL, pk VARCHAR(100) NULL, event VARCHAR(32) NULL,
+        KEY (project_id, log_event_id)) ENGINE=InnoDB');
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES
+        (100, 900, 'D1', 'INSERT'), (110, 900, 'D2', 'UPDATE'),
+        (120, 900, 'D1', 'UPDATE'), (130, 900, NULL, 'DATA_EXPORT'),
+        (140, 900, 'D3', 'UPDATE'), (150, 901, 'X1', 'UPDATE')");
+
+    $ff = \INSPIRE\UniversalValidator\Scan\SourceFence::forProject($dbA, 900);
+    check('fence: a project with an ordered log can be fenced', $ff['ok'] === true);
+    $fence = $ff['fence'];
+    check('fence: the opening fence is the top of the log', $fence->now() === '140');
+    check('fence: and it is a string, because a bigint is not an int everywhere',
+        is_string($fence->now()));
+
+    $v = $fence->versions(array('D1', 'D2', 'D9'));
+    check('fence: each record carries its own latest version',
+        $v['D1'] === '120' && $v['D2'] === '110');
+    check('fence: a record with no history answers null, which is an answer',
+        array_key_exists('D9', $v) && $v['D9'] === null);
+    check('fence: another project\'s entries are not this project\'s versions',
+        !array_key_exists('X1', $v));
+
+    check('fence: the interval is covered while the opening entry survives',
+        $fence->retained('140')['ok'] === true);
+    // Some installations prune their log. A catch-up over a window it cannot see
+    // would report "nothing changed" about changes it simply cannot read.
+    $A->query('DELETE FROM redcap_log_event WHERE log_event_id < 130 AND project_id = 900');
+    $gone = $fence->retained('100');
+    check('fence: a pruned log refuses to certify the interval', $gone['ok'] === false);
+    check('fence: and says the log was removed rather than that nothing changed',
+        strpos($gone['why'], 'removed since') !== false);
+
+    $A->query("INSERT INTO redcap_log_event (log_event_id, project_id, pk, event) VALUES
+        (160, 900, 'D2', 'UPDATE'), (170, 900, 'D4', 'INSERT'),
+        (180, 900, 'D2', 'UPDATE'), (190, 900, '', 'MANAGE')");
+    $chg = $fence->changedSince('130', '180', null, 10);
+    $names = array();
+    foreach ($chg as $c) $names[] = $c['id'];
+    check('fence: only records changed inside the window are listed',
+        $names === array('D2', 'D3', 'D4'));
+    check('fence: and each carries the newest version in that window',
+        $chg[0]['version'] === '180');
+    check('fence: an entry with no record is not a record change',
+        !in_array('', $names, true));
+    $one = $fence->changedSince('130', '180', null, 1);
+    $rest = $fence->changedSince('130', '180', $one[0]['id'], 10);
+    check('fence: the change list pages by keyset rather than by offset',
+        count($one) === 1 && $one[0]['id'] === 'D2'
+        && count($rest) === 2 && $rest[0]['id'] === 'D3' && $rest[1]['id'] === 'D4');
+
+    // A log table name that is not a log table name never reaches a statement.
+    $A->query("UPDATE redcap_projects SET log_event_table = 'redcap_log_event; DROP TABLE x'
+        WHERE project_id = 900");
+    check('fence: a log table name that is not one is refused',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::resolveTable($dbA, 900) === null);
+    // PHP's '$' also matches before a trailing newline; the anchor is '\z'.
+    $A->query("UPDATE redcap_projects SET log_event_table = 'redcap_log_event\n'
+        WHERE project_id = 900");
+    check('fence: nor is one with a trailing newline',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::resolveTable($dbA, 900) === null);
+    $A->query("UPDATE redcap_projects SET log_event_table = 'redcap_log_event7'
+        WHERE project_id = 900");
+    check('fence: a sharded log table is accepted',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::resolveTable($dbA, 900) === 'redcap_log_event7');
+
+    // Log ids outgrow an int, and outgrow a float's exact range before that.
+    check('fence: fences compare as numbers, not as strings',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::decCmp('9', '10') < 0 && \INSPIRE\UniversalValidator\Scan\SourceFence::decCmp('10', '9') > 0);
+    check('fence: and stay exact past what a float can hold',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::decCmp('9007199254740993', '9007199254740992') > 0);
+    check('fence: leading zeros are not a different number',
+        \INSPIRE\UniversalValidator\Scan\SourceFence::decCmp('0042', '42') === 0);
+
+    foreach (array('redcap_log_event', 'redcap_record_list', 'redcap_data',
+                   'redcap_projects') as $t) {
+        $A->query('DROP TABLE IF EXISTS ' . $t);
+    }
 }
 
 // -- teardown: exactly our tables, nothing else ------------------------------

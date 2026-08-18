@@ -79,18 +79,72 @@ final class ArrayScanStore implements ScanStore
 
     public function writeManifest($runId, array $records)
     {
+        $this->appendManifest($runId, $records);
+        $n = $this->freezeManifest($runId);
+        return $n === false ? 0 : $n;
+    }
+
+    public function appendManifest($runId, array $records)
+    {
+        if (!isset($this->runs[$runId])) return 0;
+        if ($this->runs[$runId]['phase'] !== ScanPhase::PLANNING) return 0;
         $ord = 0;
+        $seen = [];
+        if (isset($this->records[$runId])) {
+            foreach ($this->records[$runId] as $rec) {
+                if ($rec['ordinal'] > $ord) $ord = $rec['ordinal'];
+                $seen[$rec['hash']] = true;
+            }
+        }
+        $added = 0;
         foreach ($records as $rec) {
             $ord++;
+            // The array stand-in for UNIQUE (run_id, record_hash). The record
+            // walk re-reads its page boundary, so the same record can be offered
+            // twice and must land once.
+            if (isset($seen[$rec['hash']])) continue;
+            $seen[$rec['hash']] = true;
             $this->records[$runId][$ord] = [
                 'ordinal' => $ord, 'id_bin' => $rec['id_bin'], 'hash' => $rec['hash'],
                 'dag' => isset($rec['dag']) ? $rec['dag'] : null,
                 'state' => self::REC_PENDING, 'attempts' => 0, 'version' => null,
+                'claimed_at' => null,
             ];
+            $added++;
         }
-        $this->runs[$runId]['manifest_total'] = $ord;
-        $this->runs[$runId]['phase'] = 'scanning';
-        return $ord;
+        return $added;
+    }
+
+    public function freezeManifest($runId)
+    {
+        if (!isset($this->runs[$runId])) return false;
+        if ($this->runs[$runId]['phase'] !== ScanPhase::PLANNING) return false;
+        $total = isset($this->records[$runId]) ? count($this->records[$runId]) : 0;
+        $this->runs[$runId]['manifest_total'] = $total;
+        $this->runs[$runId]['phase'] = ScanPhase::SCANNING;
+        return $total;
+    }
+
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    {
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return [];
+        if ($r['cancel_requested_at'] !== null || !ScanPhase::mayWork($r['phase'])) return [];
+        $limit = max(1, (int) $limit);
+        $cut = time() - max(1, (int) $staleSeconds);
+        $out = [];
+        if (!isset($this->records[$runId])) return [];
+        foreach ($this->records[$runId] as $o => $rec) {
+            if (count($out) >= $limit) break;
+            $free = ($rec['state'] === self::REC_PENDING)
+                 || ($rec['state'] === self::REC_CLAIMED
+                     && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut);
+            if (!$free) continue;
+            $this->records[$runId][$o]['state'] = self::REC_CLAIMED;
+            $this->records[$runId][$o]['claimed_at'] = time();
+            $out[] = self::claimRow($rec);
+        }
+        return $out;
     }
 
     public function claim($runId, $owner, $epoch, $limit)
@@ -100,15 +154,25 @@ final class ArrayScanStore implements ScanStore
         if ($r['cancel_requested_at'] !== null || $r['phase'] !== 'scanning') return [];
         $limit = max(1, (int) $limit);
         $from = (int) $r['cursor_ordinal'];
-        $to = $from + $limit;
-        $this->runs[$runId]['cursor_ordinal'] = $to;
+        // Ordinals are not contiguous - appending a manifest in pages leaves a
+        // gap wherever a re-offered record was ignored - so the cursor moves to
+        // the last row actually taken rather than by a count. Advancing by a
+        // count steps over live rows and strands them below the cursor forever.
         $out = [];
-        for ($o = $from + 1; $o <= $to; $o++) {
-            if (isset($this->records[$runId][$o])
-                && $this->records[$runId][$o]['state'] === self::REC_PENDING) {
-                $out[] = $this->records[$runId][$o];
+        $to = $from;
+        if (isset($this->records[$runId])) {
+            foreach ($this->records[$runId] as $o => $rec) {
+                if (count($out) >= $limit) break;
+                if ((int) $rec['ordinal'] <= $from) continue;
+                if ($rec['state'] !== self::REC_PENDING) continue;
+                $out[] = self::claimRow($rec);
+                if ((int) $rec['ordinal'] > $to) $to = (int) $rec['ordinal'];
             }
         }
+        $this->runs[$runId]['cursor_ordinal'] = $to;
+        // The cursor claim does NOT mark the rows, exactly as the SQL store
+        // does not: the advancing cursor is what keeps two workers apart there,
+        // and marking would only add a second mechanism to disagree with.
         return $out;
     }
 
@@ -122,17 +186,35 @@ final class ArrayScanStore implements ScanStore
         foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
             $this->findings[] = $f;
         }
+        $applied = 0;
         foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
             $o = $rec['ordinal'];
             if (!isset($this->records[$runId][$o])) continue;
-            if ($this->records[$runId][$o]['state'] !== self::REC_PENDING) continue;
+            // Not-yet-terminal rather than pending: a straggler taken by
+            // claimPending() is CLAIMED and must still be committable, while a
+            // terminal row is never rewritten.
+            if ($this->records[$runId][$o]['state'] >= self::REC_DONE) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
             $this->records[$runId][$o]['attempts']++;
+            $applied++;
         }
-        $this->runs[$runId]['manifest_done'] += count(isset($batch['records']) ? $batch['records'] : []);
+        $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count(isset($batch['findings']) ? $batch['findings'] : []);
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
         return true;
+    }
+
+    /**
+     * The four keys a worker gets, and only those.
+     *
+     * The SQL store selects four columns; returning the whole in-memory row
+     * here would let a test lean on a field production never sends, and the
+     * shared contract would pass against a shape only one implementation has.
+     */
+    private static function claimRow(array $rec)
+    {
+        return ['ordinal' => $rec['ordinal'], 'id_bin' => $rec['id_bin'],
+                'hash' => $rec['hash'], 'dag' => $rec['dag']];
     }
 
     /** A predicate over states, exactly as the SQL store computes it. */

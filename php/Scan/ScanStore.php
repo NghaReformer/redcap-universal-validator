@@ -69,6 +69,33 @@ interface ScanStore
     public function writeManifest($runId, array $records);
 
     /**
+     * Add records to a manifest still being planned, continuing its ordinals.
+     *
+     * SEPARATE FROM writeManifest BECAUSE OF SIZE. A million-record manifest
+     * cannot be handed over as one PHP array - that is the whole failure this
+     * rebuild exists to remove - so planning streams pages into the store and
+     * freezes at the end. Appending is idempotent on the record hash, because
+     * the record walk may legitimately re-emit a page boundary.
+     *
+     * Refused unless the run is still planning: a manifest that can grow after
+     * work has started is a manifest that can redefine what "all" means.
+     *
+     * @return int rows actually added
+     */
+    public function appendManifest($runId, array $records);
+
+    /**
+     * Publish the total and leave planning.
+     *
+     * The total is COUNTED from the rows rather than accumulated while writing
+     * them, so a retried or partially applied append cannot make the published
+     * total disagree with the manifest it describes.
+     *
+     * @return int|false the frozen total, or false when the run was not planning
+     */
+    public function freezeManifest($runId);
+
+    /**
      * Claim the next bounded ordinal range for $owner at $epoch.
      *
      * Returns the claimed rows, or an empty array when nothing is left. A claim
@@ -76,6 +103,22 @@ interface ScanStore
      * a range it would fail to commit later.
      */
     public function claim($runId, $owner, $epoch, $limit);
+
+    /**
+     * Claim records the first pass left behind, by STATE rather than by cursor.
+     *
+     * The ordinal cursor only ever moves forward, so a record requeued after a
+     * stable-read failure sits below it and claim() can never offer it again.
+     * Without this the run would wait forever for a row nothing could reach, and
+     * would hold the project's scan slot while doing it.
+     *
+     * Also reclaims rows a dead worker left claimed, after $staleSeconds. That
+     * window is the one place this class trades promptness for safety: too short
+     * and two workers evaluate the same record, which is wasteful but correct;
+     * too long and a crash costs a delay. Neither can produce a false complete,
+     * because a record is only marked done by the transaction that scanned it.
+     */
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900);
 
     /**
      * Commit one batch: findings, record terminal states, aggregates, and the

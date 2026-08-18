@@ -114,6 +114,90 @@ function storeContract(callable $newStore, $label)
     $C('and the project slot is released, so the next scan may start',
         $s->startRun(700, ['created_by' => 'carol'])['ok'] === true);
 
+    // -- streaming a manifest, and the records the cursor leaves behind ------
+    //
+    // A million-record manifest cannot arrive as one PHP array, so planning
+    // appends pages and freezes at the end. Everything below is about what that
+    // splitting makes possible to get wrong.
+    $s3 = $newStore();
+    $r3 = $s3->startRun(710, ['created_by' => 'alice']);
+    $rid3 = (int) $r3['run']['run_id'];
+    $mk = function ($id) {
+        return ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+    };
+
+    $C('appending a page adds its records', $s3->appendManifest($rid3, [$mk('A'), $mk('B')]) === 2);
+    $C('and the run is not scanning yet', $s3->run(710, $rid3)['phase'] === 'planning');
+    $C('a second page continues rather than restarting',
+        $s3->appendManifest($rid3, [$mk('C')]) === 1);
+    // The record walk re-reads its page boundary so it cannot skip an id the
+    // database considers equal to the cursor, so the same record IS offered
+    // twice, by design. It must land once.
+    $C('re-offering a record already in the manifest adds nothing',
+        $s3->appendManifest($rid3, [$mk('C'), $mk('D')]) === 1);
+
+    $total = $s3->freezeManifest($rid3);
+    $C('freezing publishes the COUNT of what is there', $total === 4);
+    $C('and the published total is what the run reports',
+        (int) $s3->run(710, $rid3)['manifest_total'] === 4);
+    $C('freezing moves the run to scanning', $s3->run(710, $rid3)['phase'] === 'scanning');
+    // A manifest that could still grow after work started would let a run
+    // redefine what "all" means halfway through.
+    $C('appending after the freeze is refused', $s3->appendManifest($rid3, [$mk('E')]) === 0);
+    $C('and freezing twice is refused rather than repeated',
+        $s3->freezeManifest($rid3) === false);
+    $C('so the total did not move', (int) $s3->run(710, $rid3)['manifest_total'] === 4);
+
+    // THE STRAGGLER. The ordinal cursor only moves forward, so a record left
+    // pending below it is unreachable by claim() forever - the run would wait
+    // for a row nothing could offer while holding the project's scan slot.
+    $ep3 = (int) $s3->run(710, $rid3)['lease_epoch'];
+    $first = $s3->claim($rid3, 'w1', $ep3, 4);
+    $C('the first pass claims the whole manifest', count($first) === 4);
+    // Commit three of them and leave one behind, as a stable-read failure would.
+    $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+    foreach (array_slice($first, 0, 3) as $c) {
+        $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE];
+    }
+    $C('and commits what it finished', $s3->commitBatch($rid3, 'w1', $ep3, 0, $batch) === true);
+    $C('leaving the run incomplete', $s3->manifestComplete($rid3) === false);
+    $C('the cursor pass cannot reach the record it left behind',
+        $s3->claim($rid3, 'w1', $ep3, 10) === []);
+
+    $left = $s3->claimPending($rid3, 'w2', $ep3, 10);
+    $C('but a state-based claim can', count($left) === 1);
+    $C('and it is the one that was skipped',
+        $left[0]['ordinal'] === $first[3]['ordinal']);
+    $C('claiming by state hands the same row to nobody else',
+        $s3->claimPending($rid3, 'w3', $ep3, 10) === []);
+    // Claimed is not terminal, and a claimed row must still be committable -
+    // otherwise the straggler sweep could take a record and never finish it.
+    $C('a claimed record still commits',
+        $s3->commitBatch($rid3, 'w2', $ep3, 0, ['bytes' => 0, 'findings' => [],
+            'records' => [['ordinal' => $left[0]['ordinal'], 'state' => ScanStore::REC_DONE]]]) === true);
+    $C('and the manifest is then complete', $s3->manifestComplete($rid3) === true);
+
+    // Progress counts what BECAME terminal, not what was offered. A record
+    // re-offered after a requeue would otherwise push the figure past the total.
+    $C('progress never exceeds the manifest',
+        (int) $s3->run(710, $rid3)['manifest_done'] === 4);
+    $C('re-committing a finished record does not advance it again',
+        $s3->commitBatch($rid3, 'w2', $ep3, 0, ['bytes' => 0, 'findings' => [],
+            'records' => [['ordinal' => $first[0]['ordinal'], 'state' => ScanStore::REC_DONE]]]) === true
+        && (int) $s3->run(710, $rid3)['manifest_done'] === 4);
+
+    // Fencing applies to the straggler sweep exactly as it does to the cursor.
+    $s4 = $newStore();
+    $r4 = $s4->startRun(711, []);
+    $rid4 = (int) $r4['run']['run_id'];
+    $s4->writeManifest($rid4, [$mk('Z')]);
+    $ep4 = (int) $s4->run(711, $rid4)['lease_epoch'];
+    $C('a stale epoch claims no stragglers either',
+        $s4->claimPending($rid4, 'w', $ep4 - 1, 5) === []);
+    $C('a cancelled run offers no stragglers',
+        $s4->cancel(711, $rid4, 'admin') === true
+        && $s4->claimPending($rid4, 'w', (int) $s4->run(711, $rid4)['lease_epoch'], 5) === []);
+
     // -- worker slots -------------------------------------------------------
     $s2 = $newStore();
     $a = $s2->leaseSlot('w1', 1, 60);

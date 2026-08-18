@@ -23,6 +23,7 @@
 namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
+    require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -240,6 +241,205 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('derive: ' . $o['terminal'] . ' is a terminal state the phase machine accepts',
             ScanPhase::consistent(ScanPhase::TERMINAL, $o['terminal'])['ok'] === true);
     }
+
+    // ======================================================================
+    // ScanPlanner: naming a rule, and hashing a configuration
+    // ======================================================================
+
+    $threw = function (callable $f) {
+        try { $f(); } catch (\Throwable $e) { return true; }
+        return false;
+    };
+
+    // -- canonical encoding --------------------------------------------------
+    //
+    // Every value carries its type, so nothing that PHP treats as loosely equal
+    // encodes the same way. A fingerprint built on an untagged encoding would
+    // report a rule whose `expectedIds` went from "5" to 5 as unchanged.
+    $c = function ($v) { return ScanPlanner::canonical($v); };
+    check('canonical: 1, "1", 1.0 and true are four different values',
+        count(array_unique([$c(1), $c('1'), $c(1.0), $c(true)])) === 4);
+    check('canonical: null, false, "" and 0 are four more',
+        count(array_unique([$c(null), $c(false), $c(''), $c(0)])) === 4);
+
+    // Key ORDER in a map is not information; item order in a list is.
+    check('canonical: a map does not depend on the order its keys were written',
+        $c(['a' => 1, 'b' => 2]) === $c(['b' => 2, 'a' => 1]));
+    check('canonical: but a list does depend on its order',
+        $c([1, 2]) !== $c([2, 1]));
+    check('canonical: a list and a map with the same contents differ',
+        $c([1, 2]) !== $c([1 => 1, 0 => 2]));
+    check('canonical: nesting is preserved',
+        $c([['a']]) !== $c(['a']) && $c([['a']]) !== $c([['a'], []]));
+
+    // THE LENGTH PREFIX IS LOAD-BEARING. Without it, ['ab','c'] and ['a','bc']
+    // concatenate to the same bytes - a collision anyone could construct by
+    // naming two fields.
+    check('canonical: strings cannot be re-split into a different list',
+        $c(['ab', 'c']) !== $c(['a', 'bc']));
+
+    // THE L-01 REGRESSION, restated for the fingerprint. Two DISTINCT invalid
+    // UTF-8 byte sequences must stay distinct. json_encode refuses them
+    // outright, and its substitute flag collapses each to U+FFFD - a lossy,
+    // data-constructible collision, which is precisely what L-01 was.
+    // One invalid byte each, differing only in which one - the smallest form of
+    // the collision, and the one a Latin-1 import produces.
+    $bad1 = "x\xA0y";
+    $bad2 = "x\xA1y";
+    check('canonical: two different invalid UTF-8 sequences stay different',
+        $c($bad1) !== $c($bad2));
+    check('canonical: json_encode could not have encoded either at all',
+        json_encode($bad1) === false && json_encode($bad2) === false);
+    check('canonical: and substituting collapses both to the same replacement',
+        json_encode($bad1, JSON_INVALID_UTF8_SUBSTITUTE)
+        === json_encode($bad2, JSON_INVALID_UTF8_SUBSTITUTE));
+
+    check('canonical: a NUL byte is a value like any other',
+        $c("a\0b") !== $c('ab') && $c("a\0b") !== $c("a\0\0b"));
+    check('canonical: floats keep enough precision to differ where they differ',
+        $c(0.1 + 0.2) !== $c(0.3));
+    check('canonical: NAN and INF are named rather than printed',
+        $c(NAN) === 'dNAN' && $c(INF) === 'dINF' && $c(-INF) === 'd-INF');
+
+    // An object would be silently cast to an array and hash its private state.
+    check('canonical: an object is refused rather than guessed at',
+        $threw(function () { ScanPlanner::canonical(new \stdClass()); }));
+
+    // -- rule identity -------------------------------------------------------
+    $settings = ['type' => 'single', 'fields' => ['a'], 'algorithm' => 'mod37,36',
+                 'source' => 'field'];
+    $ann      = ['type' => 'required', 'fields' => ['dob', 'sex']];
+
+    // THE ORDINAL BUG, stated as a test. Two rule lists differing only in order
+    // must name the same rule the same way; the ordinal named it 1 and 2.
+    $other = ['type' => 'constraint', 'fields' => ['z'], 'assert' => '[z] > 0'];
+    $idsA = ScanPlanner::identifyAll([$settings, $other], 2);
+    $idsB = ScanPlanner::identifyAll([$other, $settings], 2);
+    check('identity: reordering the rule list does not rename a rule',
+        $idsA[0]['source_id'] === $idsB[1]['source_id']
+        && $idsA[1]['source_id'] === $idsB[0]['source_id']);
+    check('identity: and the two rules do not share a name',
+        $idsA[0]['source_id'] !== $idsA[1]['source_id']);
+
+    // Identical siblings: same content, so the same stem, distinguished by
+    // occurrence - and the SAME occurrence next time, because list order among
+    // identical rules is itself derived from content.
+    $twins = ScanPlanner::identifyAll([$settings, $settings], 2);
+    check('identity: two identical rules get distinct names',
+        $twins[0]['source_id'] !== $twins[1]['source_id']);
+    check('identity: numbered from zero, in order',
+        substr($twins[0]['source_id'], -2) === ':0'
+        && substr($twins[1]['source_id'], -2) === ':1');
+    check('identity: and re-running gives the same two names',
+        ScanPlanner::identifyAll([$settings, $settings], 2) == $twins);
+
+    // A stored id wins whenever there is one, because it is the only form that
+    // survives an EDIT.
+    $withUid = array_merge($settings, ['uid' => 'ab12-cd34']);
+    check('identity: a stored rule id is used when present',
+        ScanPlanner::identify($withUid, 'settings')['source_id'] === 'uid:ab12-cd34');
+    $edited = array_merge($withUid, ['algorithm' => 'mod11,10']);
+    check('identity: and survives editing the rule, which is the point of it',
+        ScanPlanner::identify($edited, 'settings')['source_id']
+        === ScanPlanner::identify($withUid, 'settings')['source_id']);
+    check('identity: while the revision records that it changed',
+        ScanPlanner::revision($edited) !== ScanPlanner::revision($withUid));
+    // The honest limitation of the fallback, asserted rather than left implied.
+    check('identity: without a stored id, an edit DOES rename the settings rule',
+        ScanPlanner::identify(array_merge($settings, ['algorithm' => 'mod11,10']), 'settings')['source_id']
+        !== ScanPlanner::identify($settings, 'settings')['source_id']);
+    check('identity: a stored id ending in digits is not mistaken for an occurrence',
+        ScanPlanner::identify(array_merge($settings, ['uid' => 'rule:7']), 'settings')['stem']
+        === 'uid:rule:7');
+
+    // An annotation rule is named by WHERE it is written, so editing its
+    // pattern keeps the name and moves the revision - the split that lets a
+    // report say "this rule changed" instead of "this rule vanished".
+    $annEdit = array_merge($ann, ['when' => '[age] > 18']);
+    check('identity: editing an annotation rule keeps its name',
+        ScanPlanner::identify($annEdit, 'annotation')['source_id']
+        === ScanPlanner::identify($ann, 'annotation')['source_id']);
+    check('identity: and changes its revision',
+        ScanPlanner::identify($annEdit, 'annotation')['revision']
+        !== ScanPlanner::identify($ann, 'annotation')['revision']);
+    check('identity: field order within an annotation rule is not information',
+        ScanPlanner::identify(['type' => 'required', 'fields' => ['sex', 'dob']], 'annotation')['source_id']
+        === ScanPlanner::identify($ann, 'annotation')['source_id']);
+    check('identity: but WHICH fields is, because that is where the rule lives',
+        ScanPlanner::identify(['type' => 'required', 'fields' => ['dob']], 'annotation')['source_id']
+        !== ScanPlanner::identify($ann, 'annotation')['source_id']);
+    check('identity: a settings rule gaining a field is still the same rule',
+        ScanPlanner::identify(array_merge($settings, ['fields' => ['a', 'b']]), 'settings')['source_id']
+        === ScanPlanner::identify($settings, 'settings')['source_id']);
+    check('identity: two tag families on the same fields do not collide',
+        ScanPlanner::identify(['type' => 'unique', 'fields' => ['dob', 'sex']], 'annotation')['source_id']
+        !== ScanPlanner::identify($ann, 'annotation')['source_id']);
+    check('identity: a settings rule and an annotation rule never share a name',
+        ScanPlanner::identify($ann, 'settings')['source_id']
+        !== ScanPlanner::identify($ann, 'annotation')['source_id']);
+    check('identity: a rule type this build does not know still gets a name',
+        ScanPlanner::identify(['type' => 'range', 'fields' => ['x']], 'annotation')['source_id'] !== '');
+
+    // Authoring metadata is for people. Renaming a rule must not invalidate a
+    // 100,000-record baseline.
+    foreach (['label', 'note', 'message'] as $k) {
+        $renamed = array_merge($ann, [$k => 'a friendlier wording']);
+        check("identity: changing '$k' changes neither name nor revision",
+            ScanPlanner::identify($renamed, 'annotation') == ScanPlanner::identify($ann, 'annotation'));
+    }
+
+    // -- fingerprint ---------------------------------------------------------
+    $spec = [
+        'engine'    => '1.8.19',
+        'rules'     => [['id' => 'ann:x:required:0', 'rev' => str_repeat('a', 64)]],
+        'ownership' => ['dob' => 'demographics'],
+        'structure' => ['longitudinal' => false, 'events' => [], 'repeating' => []],
+        'choices'   => ['sex' => ['0' => 'F', '1' => 'M']],
+        'gapPolicy' => 'separate',
+        'valueMode' => 'locations',
+    ];
+    $fp = ScanPlanner::fingerprint($spec);
+    check('fingerprint: is 64 hex characters', preg_match('/^[0-9a-f]{64}\z/', $fp) === 1);
+    check('fingerprint: does not depend on the order the inputs were written',
+        ScanPlanner::fingerprint(array_reverse($spec, true)) === $fp);
+
+    // EVERY required input must be able to change it. An input that is accepted
+    // and then ignored is worse than one that is missing, because it looks
+    // covered.
+    foreach (array_keys($spec) as $k) {
+        $moved = $spec;
+        $moved[$k] = is_array($moved[$k]) ? array_merge($moved[$k], ['zzz' => 1]) : ($moved[$k] . '-x');
+        check("fingerprint: changing '$k' changes it",
+            ScanPlanner::fingerprint($moved) !== $fp);
+    }
+    // Missing is loud, because a fingerprint that omits an input fails to
+    // notice the change it exists to notice, and fails quietly.
+    foreach (array_keys($spec) as $k) {
+        $short = $spec;
+        unset($short[$k]);
+        check("fingerprint: omitting '$k' is refused",
+            $threw(function () use ($short) { ScanPlanner::fingerprint($short); }));
+    }
+    // Wording may never enter. If it did, fixing a typo would force every
+    // project to re-scan, so typos would not get fixed.
+    foreach (['messages', 'catalog', 'labels', 'wording'] as $k) {
+        check("fingerprint: '$k' is refused as an input",
+            $threw(function () use ($spec, $k) {
+                ScanPlanner::fingerprint(array_merge($spec, [$k => ['a' => 'b']]));
+            }));
+    }
+    // An unrecognised input COUNTS rather than being dropped: the safe
+    // direction for something nobody anticipated is that it invalidates.
+    check('fingerprint: an input this build did not expect still counts',
+        ScanPlanner::fingerprint(array_merge($spec, ['futureThing' => 1])) !== $fp);
+
+    check('fingerprint: matching is exact',
+        ScanPlanner::fingerprintMatches($fp, $fp) === true
+        && ScanPlanner::fingerprintMatches($fp, str_repeat('0', 64)) === false);
+    check('fingerprint: a missing or malformed stored value never matches',
+        ScanPlanner::fingerprintMatches(null, $fp) === false
+        && ScanPlanner::fingerprintMatches('', '') === false
+        && ScanPlanner::fingerprintMatches('abc', 'abc') === false);
 }
 
 namespace {

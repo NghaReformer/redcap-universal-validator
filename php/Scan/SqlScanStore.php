@@ -128,27 +128,95 @@ final class SqlScanStore implements ScanStore
      */
     public function writeManifest($runId, array $records)
     {
+        // Kept as one call for the small synchronous paths and for every test
+        // written against it, but implemented in terms of the streaming pair so
+        // there is one code path that can be wrong rather than two.
+        $this->appendManifest($runId, $records);
+        $n = $this->freezeManifest($runId);
+        return $n === false ? 0 : $n;
+    }
+
+    /**
+     * Append, continuing the manifest's ordinals.
+     *
+     * INSERT IGNORE, not INSERT: the record walk re-reads its page boundary to
+     * avoid skipping ids the database considers equal, so it can legitimately
+     * offer the same record twice. The unique key on (run_id, record_hash) makes
+     * the second offer a no-op instead of an error - which is why the walk is
+     * allowed to be generous.
+     *
+     * The gap this leaves in the ordinals is deliberate and harmless: claiming
+     * walks ordinals in order rather than assuming they are contiguous, and
+     * completeness is a predicate over states.
+     */
+    public function appendManifest($runId, array $records)
+    {
+        if (!$records) return 0;
         $this->db->begin();
         try {
-            $ord = 0;
+            // FOR UPDATE, so two planners cannot interleave their ordinals, and
+            // so a freeze cannot land between the phase check and the insert.
+            $r = $this->db->select('SELECT phase FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING) {
+                $this->db->rollback();
+                return 0;
+            }
             $t = Schema::table('scan_record');
+            $m = $this->db->select('SELECT COALESCE(MAX(ordinal), 0) FROM ' . $t
+                . ' WHERE run_id = ?', [$runId]);
+            $ord = isset($m[0][0]) ? (int) $m[0][0] : 0;
             $now = self::now();
-            // Batched, because one statement per record is one round trip per
-            // record and the manifest is the largest thing a run writes.
+            $added = 0;
             $chunk = [];
             foreach ($records as $rec) {
                 $ord++;
                 $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
                             isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
-                if (count($chunk) >= 500) { $this->insertRecords($t, $chunk); $chunk = []; }
+                if (count($chunk) >= 500) {
+                    $this->insertRecords($t, $chunk);
+                    $added += $this->db->affected();
+                    $chunk = [];
+                }
             }
-            if ($chunk) $this->insertRecords($t, $chunk);
+            if ($chunk) {
+                $this->insertRecords($t, $chunk);
+                $added += $this->db->affected();
+            }
+            $this->db->commit();
+            return $added;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            throw $e;
+        }
+    }
 
+    /**
+     * Count what is there, publish it, and enter `scanning`.
+     *
+     * COUNTED, NOT ACCUMULATED. A total added up while writing would disagree
+     * with the manifest whenever an append was retried or partly ignored, and
+     * the disagreement would be invisible - the run would simply believe it had
+     * more or fewer records than it holds.
+     */
+    public function freezeManifest($runId)
+    {
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING) {
+                $this->db->rollback();
+                return false;
+            }
+            $c = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+                . ' WHERE run_id = ?', [$runId]);
+            $total = isset($c[0][0]) ? (int) $c[0][0] : 0;
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_total = ?, phase = ?, updated_at = ? WHERE run_id = ?',
-                [$ord, 'scanning', $now, $runId]);
+                [$total, ScanPhase::SCANNING, self::now(), $runId]);
             $this->db->commit();
-            return $ord;
+            return $total;
         } catch (\Throwable $e) {
             $this->db->rollback();
             throw $e;
@@ -160,9 +228,21 @@ final class SqlScanStore implements ScanStore
         $ph = implode(',', array_fill(0, count($rows), '(?,?,?,?,?,?,?)'));
         $flat = [];
         foreach ($rows as $r) foreach ($r as $v) $flat[] = $v;
+        // ON DUPLICATE KEY UPDATE with a no-op assignment, NOT `INSERT IGNORE`.
+        //
+        // Both make a re-offered record harmless, and only this one leaves a
+        // REAL write error still an error: IGNORE downgrades a value too long
+        // for its column, a bad character set and a lock timeout into warnings
+        // nobody reads, which is the M-05 shape - a failed write judged as a
+        // successful one. `run_id = run_id` changes nothing, so affected()
+        // counts exactly the rows that were inserted.
+        //
+        // The in-memory store deduplicated in PHP and the fast suite was green;
+        // four real servers rejected the second offer of the same record on the
+        // first run of the database matrix. That is what the matrix is for.
         $this->db->exec('INSERT INTO ' . $table . '
             (run_id, ordinal, record_id_bin, record_hash, dag_at_fence, state, updated_at)
-            VALUES ' . $ph, $flat);
+            VALUES ' . $ph . ' ON DUPLICATE KEY UPDATE run_id = run_id', $flat);
     }
 
     /**
@@ -175,29 +255,98 @@ final class SqlScanStore implements ScanStore
     public function claim($runId, $owner, $epoch, $limit)
     {
         $limit = max(1, (int) $limit);
-        $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
-            SET cursor_ordinal = cursor_ordinal + ?, lease_owner = ?, lease_expires_at = ?,
-                updated_at = ?
-            WHERE run_id = ? AND lease_epoch = ? AND cancel_requested_at IS NULL
-              AND phase = ?',
-            [$limit, $owner, self::inSeconds(300), self::now(), $runId, $epoch, 'scanning']);
-        if ($this->db->affected() !== 1) return [];
+        $this->db->begin();
+        try {
+            // THE FENCE IS A LOCKING READ. It was an UPDATE gated on
+            // affected() === 1, and that fails the same way commitBatch() did:
+            // a worker re-claiming within the same second writes the lease
+            // expiry it already held, changes nothing, and is told it lost the
+            // run. FOR UPDATE also serialises two workers on the run row, which
+            // is what keeps their claims disjoint.
+            $r = $this->db->select('SELECT lease_epoch, phase, cancel_requested_at, cursor_ordinal
+                FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch || $r[0][2] !== null
+                    || $r[0][1] !== ScanPhase::SCANNING) {
+                $this->db->rollback();
+                return [];
+            }
+            $from = (int) $r[0][3];
 
-        $r = $this->db->select('SELECT cursor_ordinal FROM ' . Schema::table('scan_run')
-            . ' WHERE run_id = ?', [$runId]);
-        $to = isset($r[0][0]) ? (int) $r[0][0] : 0;
-        $from = $to - $limit;
-
-        $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence
-            FROM ' . Schema::table('scan_record') . '
-            WHERE run_id = ? AND ordinal > ? AND ordinal <= ? AND state = ?
-            ORDER BY ordinal', [$runId, $from, $to, self::REC_PENDING]);
-        $out = [];
-        foreach ($rows as $row) {
-            $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
-                      'hash' => $row[2], 'dag' => $row[3]];
+            // ORDINALS ARE NOT CONTIGUOUS. Appending a manifest in pages skips
+            // an ordinal wherever a re-offered record was ignored, so advancing
+            // the cursor by a COUNT would step over live rows and leave them
+            // permanently unreachable. Take the next N pending rows in order and
+            // move the cursor to the last one actually taken.
+            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence
+                FROM ' . Schema::table('scan_record') . '
+                WHERE run_id = ? AND ordinal > ? AND state = ?
+                ORDER BY ordinal LIMIT ' . $limit, [$runId, $from, self::REC_PENDING]);
+            $out = [];
+            $to = $from;
+            foreach ($rows as $row) {
+                $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
+                          'hash' => $row[2], 'dag' => $row[3]];
+                if ((int) $row[0] > $to) $to = (int) $row[0];
+            }
+            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+                SET cursor_ordinal = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ?
+                WHERE run_id = ?',
+                [$to, $owner, self::inSeconds(300), self::now(), $runId]);
+            $this->db->commit();
+            return $out;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            return [];
         }
-        return $out;
+    }
+
+    /**
+     * Claim stragglers by state, without touching the ordinal cursor.
+     *
+     * The rows are marked CLAIMED inside the same transaction that selects them,
+     * so a second worker arriving behind the run row's lock sees them taken
+     * rather than evaluating them again. CLAIMED is not terminal: a worker that
+     * dies leaves rows another worker reclaims once they have gone stale, and
+     * nothing about a claim marks a record examined.
+     */
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    {
+        $limit = max(1, (int) $limit);
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT lease_epoch, phase, cancel_requested_at FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch || $r[0][2] !== null
+                    || !ScanPhase::mayWork($r[0][1])) {
+                $this->db->rollback();
+                return [];
+            }
+            $t = Schema::table('scan_record');
+            $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
+            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence
+                FROM ' . $t . '
+                WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
+                ORDER BY ordinal LIMIT ' . $limit,
+                [$runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
+            $out = [];
+            foreach ($rows as $row) {
+                $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
+                          'hash' => $row[2], 'dag' => $row[3]];
+            }
+            if ($out) {
+                $ords = [];
+                foreach ($out as $o) $ords[] = $o['ordinal'];
+                $marks = implode(',', array_fill(0, count($ords), '?'));
+                $this->db->exec('UPDATE ' . $t . ' SET state = ?, updated_at = ?
+                    WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
+                    array_merge([self::REC_CLAIMED, self::now(), $runId], $ords, [self::REC_DONE]));
+            }
+            $this->db->commit();
+            return $out;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            return [];
+        }
     }
 
     /**
@@ -241,19 +390,29 @@ final class SqlScanStore implements ScanStore
             foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
                 $this->insertFinding($f);
             }
+            $applied = 0;
             foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
+                // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
+                // claimed by claimPending() is in CLAIMED, and must still be
+                // committable. Terminal rows stay untouched, which is I3 - only
+                // the transaction that scanned a record marks it done, and it
+                // never marks it done twice.
                 $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
                     SET state = ?, attempts = attempts + 1, version_scanned = ?, updated_at = ?
-                    WHERE run_id = ? AND ordinal = ? AND state = ?',
+                    WHERE run_id = ? AND ordinal = ? AND state < ?',
                     [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
-                     $runId, $rec['ordinal'], self::REC_PENDING]);
+                     $runId, $rec['ordinal'], self::REC_DONE]);
+                $applied += ($this->db->affected() === 1) ? 1 : 0;
             }
             // Counters last, and NOT gated on affected(): a batch that finished
             // zero records and found zero findings changes no column, reports
             // zero, and would roll itself back for having nothing to say. The
             // fence above already decided whether this transaction may commit -
             // asking twice, with a weaker question, only adds a way to be wrong.
-            $done = count(isset($batch['records']) ? $batch['records'] : []);
+            // What ACTUALLY became terminal, not what was offered. A record
+            // re-offered after a requeue would otherwise be counted twice and
+            // the progress figure would pass the manifest total.
+            $done = $applied;
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
                     detail_bytes = detail_bytes + ?, updated_at = ?

@@ -1,5 +1,80 @@
 # Changelog
 
+## 1.8.20 - naming a rule, walking a project, and fencing a read
+
+Three pieces of planning, and the store changes they forced.
+
+**`ScanPlanner` names rules so a stored finding still points at one.** The
+legacy scan cited a rule by its position in `getRules()`, which concatenates the
+settings rules and then the annotation rules in dictionary field order - so
+adding one settings row, or moving one field in the Online Designer, renumbered
+every annotation rule after it. Harmless while findings lived for one request;
+the moment they persist, a stored "rule 7" starts pointing at a different rule
+and nothing in the data can detect it. A settings rule now uses a stored id when
+it has one and a content-derived name otherwise; an annotation rule is named by
+where it is written. Revision is kept separate from identity, so editing a rule
+changes what the report says about it rather than making it a different rule.
+
+**The fingerprint refuses to be built from the wrong things.** Missing an input
+throws, because a fingerprint that omits an input fails to notice the change it
+exists to notice and fails quietly. Message wording is refused outright: if a
+typo invalidated the fingerprint, fixing one would force every project to
+re-scan 100,000 records, so typos would not get fixed. And the canonical
+encoder is not `json_encode` - the L-01 finding recorded that values carry
+invalid UTF-8 from Latin-1 imports, `json_encode` returns false on those, and
+its substitute flag collapses distinct invalid bytes to one replacement
+character. That is a data-constructible collision, which is what L-01 was.
+
+**`RecordManifestSource` walks records without exporting them.** REDCap's record
+index first, the project's data table second, both probed rather than inferred
+from a version number, and every column read out of `information_schema` rather
+than guessed. If neither can enumerate records in bounded memory it refuses
+before a run exists - the alternative is the whole-project export that killed a
+128 MB installation around 2,500 records.
+
+The page boundary is the interesting part. Record columns are usually collated
+case- and accent-insensitively, so `WHERE record > 'abc'` can step over a record
+called 'ABC', and a skipped record is a record certified without being read.
+Ordering on the binary form fixes that and throws away the index, turning the
+walk quadratic. So the walk pages with `>=` and carries the ids already emitted
+at the boundary - and asks the SOURCE TABLE which ids the server considers
+equal, rather than comparing two bound parameters. That distinction is not
+theoretical: this schema's columns are `utf8mb4_unicode_ci`, which pads, while
+MySQL 8.0's default connection collation does not, so the parameter form answers
+differently from the column on the same server. It would have passed on MariaDB.
+
+**`SourceFence` proves a record did not move.** `log_event_id`, never a
+timestamp - a second is long enough for several saves and a clock can step
+backwards. The event taxonomy is deliberately ignored: any log row carrying a
+record counts as a change to it, because being over-inclusive costs a re-read
+and being under-inclusive presents a changed record as covered. Fences are
+compared as decimal numbers rather than as ints, floats or strings, all three of
+which get a big enough log id wrong. A pruned log refuses to certify its
+interval instead of reporting that nothing changed in a window it cannot see.
+
+**What the store needed.** A million-record manifest cannot arrive as one PHP
+array, so planning now appends pages and freezes at the end, and the total is
+COUNTED from the rows rather than accumulated while writing them. Appending is
+idempotent because the record walk deliberately re-offers its page boundary -
+which the in-memory store handled in PHP while four real servers rejected it on
+the first run of the matrix. It is `ON DUPLICATE KEY UPDATE`, not `INSERT
+IGNORE`: both make a re-offer harmless and only one leaves a real write error an
+error.
+
+Two follow-on defects, both found by running rather than by reading. Appending
+in pages leaves gaps in the ordinals, and `claim()` advanced its cursor by a
+COUNT - so it stepped over live rows and stranded them below the cursor forever;
+it now takes the next N pending rows and moves the cursor to the last one taken.
+And a record requeued after a failed stable read sits below the cursor where
+`claim()` can never offer it again, so `claimPending()` claims by state instead,
+reclaiming rows a dead worker left behind. Progress now counts what actually
+became terminal rather than what was offered, so a re-offered record cannot push
+the figure past the manifest total.
+
+244 checks in `tests/scan_worker_php.php`, 58 in the shared store contract, and
+186 in the database matrix across MySQL 8.0 and MariaDB 10.11 under both
+isolation levels. Still nothing runs a scan.
+
 ## 1.8.19 - Task 6 begins: the phase a run is in, and the phases it may reach
 
 `ScanPhase` is the durable scan's state machine. Seven phases, and a transition

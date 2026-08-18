@@ -92,11 +92,12 @@ jobs:
           UV_DB_ISOLATION: 'READ COMMITTED'
         run: php tests/mysql/run.php
 
-      # Only the module's own tables may remain, and none should: run.php drops
-      # what it created. A leftover table means a test path exited early.
+      # Nothing may remain: run.php drops both its own uv_ tables and the
+      # REDCap-shaped stand-ins the record-walk tests create. A leftover table
+      # means a test path exited early, and the next run would inherit its rows.
       - name: Nothing of ours is left behind
         run: |
           LEFT=$(mysql -h 127.0.0.1 -P 3306 -uroot -puvtest -N -B -e \
             "SELECT COUNT(*) FROM information_schema.tables
-             WHERE table_schema='uv_test' AND table_name LIKE 'uv\\_%'")
-          test "$LEFT" = "0" || { echo "left $LEFT module table(s) behind"; exit 1; }
+             WHERE table_schema='uv_test' AND (table_name LIKE 'uv\\_%' OR table_name LIKE 'redcap\\_%')")
+          test "$LEFT" = "0" || { echo "left $LEFT table(s) behind"; exit 1; }
