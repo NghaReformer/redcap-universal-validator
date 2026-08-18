@@ -1,5 +1,70 @@
 # Changelog
 
+## 1.8.10 - Task 5, first slice: the schema, and where its invariants are proved
+
+The durable foundation, installed INERT. Tables exist and a health check answers;
+no worker runs and nothing reads them. That ordering is the plan's, and it is
+deliberate: a persistence bug and a batching bug are indistinguishable if they
+arrive in the same release.
+
+**`php/Scan/Schema.php`** owns versioned, idempotent DDL and the administrator
+diagnostic. Every statement is `CREATE TABLE IF NOT EXISTS`, so a retry after a
+partial install resumes rather than conflicts, and there is no `DROP`, `DELETE`,
+`TRUNCATE` or `ALTER` anywhere in a migration - a migration that can delete is
+one that can delete the wrong thing during a retry.
+
+Three properties are enforced in code rather than in prose:
+
+- **A strict allowlist.** `table()` is the only function that produces a
+  qualified identifier and refuses anything not declared, so a typo fails at the
+  call site instead of interpolating a wrong - or attacker-influenced - name into
+  DDL. The prefix is a constant, not a setting: one that varies at runtime is one
+  that can be pointed at REDCap's own tables.
+- **"Not installed" and "could not ask" are different answers.** A missing
+  version table is a fresh install; any other read failure returns null and
+  attempts nothing. Installing over a schema whose state is unknown is how a
+  half-migration gets migrated again from the beginning.
+- **A failed statement fails the migration.** It stops where it stands, does not
+  continue to the next table, and never records a version for work it did not
+  finish. The diagnostic points at `Schema::plan()` so an administrator whose
+  database user holds no `CREATE` grant can install the DDL by hand.
+
+Two structural invariants are the storage engine's job, not PHP's: at most one
+active run per project, and one active version per finding identity. Both use a
+nullable `active_slot` in a UNIQUE key, because MySQL permits unlimited NULLs
+there - so history is retained while "at most one active" is unviolatable. A
+read-then-write check in PHP is a race; a UNIQUE key is not.
+
+### Where those invariants are actually proved
+
+Not here. `tests/scan_schema_php.php` (44 checks) proves what is decidable
+without a database: the allowlist, idempotency, the fresh-install-versus-failed
+-read distinction, that a failed statement records nothing, and that `health()`
+never calls a half-installed schema usable.
+
+It cannot prove the concurrency invariants, and asserting them against a mock
+would be the exact failure this module has shipped before - v1.4.0 disabled
+`@UVUNIQUE` in production while every mocked test passed. So `tests/mysql/run.php`
+opens **two independent connections** and asserts what the second one observes:
+a second active run refused by the engine, a terminal transition freeing the slot
+while the finished run stays on record, worker-slot limits of 1, 2 and 5 handing
+out exactly that many leases, an expired lease taken over and a live one not, a
+worker whose epoch moved changing nothing, and a cancellation beating an
+in-flight worker to its final compare-and-set.
+
+`.github/workflows/scan-database.yml` runs it against MySQL 5.7 and 8.0 and
+MariaDB 10.5 and 10.11, under the server default isolation and again under READ
+COMMITTED, and fails the job if any module table is left behind. The guarantees
+differ across those servers; a green tick on one is not a green tick on the fleet.
+
+### Not yet
+
+This is the first slice of Task 5. Still to come in it: `ScanStore`/`SqlScanStore`
+with the transaction boundaries, `ScanAuthorization` against the plan's permission
+matrix, worker slots, retention and value expiry, HMAC purpose separation, and
+the fault-injection tests. Tasks 6 and 7 follow. Nothing in this release changes
+what any user sees - the scan remains withdrawn.
+
 ## 1.8.9 - the project-wide scan is withdrawn
 
 **The scan page no longer runs a scan, and the CSV route no longer produces a

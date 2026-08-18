@@ -92,6 +92,7 @@ jobs:
           php -l php/ScanDimensions.php
           php -l php/MessageCatalog.php
           php -l php/ScanColumns.php
+          php -l php/Scan/Schema.php
           php -l UniversalValidator.php
           php -l pages/scan.php
           php -l pages/export.php
@@ -127,6 +128,8 @@ jobs:
         run: php tests/scan_page_php.php
       - name: Scan capabilities (what an installation may claim)
         run: php tests/scan_capabilities_php.php
+      - name: Durable scan schema (allowlist, idempotency, fail-closed migration)
+        run: php tests/scan_schema_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)
         run: php tests/algorithm_coverage_php.php
 
@@ -145,7 +148,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/messages/catalog.json pages/scan.php pages/export.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/messages/catalog.json pages/scan.php pages/export.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports tools; do
