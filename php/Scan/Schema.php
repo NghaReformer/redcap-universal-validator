@@ -449,11 +449,26 @@ final class Schema
             return ['ok' => false, 'version' => null, 'expected' => self::VERSION, 'missing' => [],
                     'why' => 'the schema version could not be read'];
         }
+        // information_schema, NOT `SHOW TABLES LIKE ?`.
+        //
+        // The database matrix caught this on its first run, on MySQL 5.7 and 8.0
+        // alike: SHOW is not preparable in the client protocol, so a bound
+        // parameter makes the statement fail rather than match. health() then
+        // caught its own exception and reported a complete schema as broken -
+        // the safe direction, but wrong, and it would have disabled the durable
+        // scan on every installation.
+        //
+        // This form is preparable everywhere, scopes to the current database
+        // explicitly rather than implicitly, and - unlike LIKE - treats the
+        // underscores in our table names as literal characters instead of
+        // single-character wildcards.
         $missing = [];
         foreach (self::tables() as $t) {
             try {
-                $q = $module->query('SHOW TABLES LIKE ?', [$t]);
-                if (!$q || self::firstRow($q) === null) $missing[] = $t;
+                $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
+                    WHERE table_schema = DATABASE() AND table_name = ?', [$t]);
+                $row = $q ? self::firstRow($q) : null;
+                if ($row === null || (int) (isset($row[0]) ? $row[0] : 0) < 1) $missing[] = $t;
             } catch (\Throwable $e) {
                 return ['ok' => false, 'version' => $v, 'expected' => self::VERSION, 'missing' => [],
                         'why' => 'the table list could not be read: ' . get_class($e)];

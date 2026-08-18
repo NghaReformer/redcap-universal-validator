@@ -1,5 +1,44 @@
 # Changelog
 
+## 1.8.13 - what the database matrix found on its first run
+
+`.github/workflows/scan-database.yml` ran for the first time and failed on MySQL
+5.7 and 8.0 alike. Both failures were mine, and one of them would have disabled
+the durable scan on every installation.
+
+**`SHOW TABLES LIKE ?` is not preparable.** `Schema::health()` asked whether each
+of its tables existed using a bound parameter on a `SHOW` statement. `SHOW` is not
+supported in the client prepared-statement protocol, so the statement failed
+instead of matching; health() caught its own exception and reported a complete,
+correctly migrated schema as broken. The direction was safe - it refuses rather
+than certifies - but the answer was wrong, and a health check that always says
+"broken" is a feature that never turns on.
+
+It now asks `information_schema.tables` with a bound `table_name`. That form is
+preparable everywhere, scopes to the current database explicitly rather than
+implicitly, and treats the underscores in the module's own table names as literal
+characters rather than as single-character LIKE wildcards.
+
+`ScanCapabilities::tableExists()` had the same latent bug at a different call
+site and is fixed with it.
+
+**The mock could not have caught this.** `tests/scan_schema_php.php` modelled
+`SHOW TABLES LIKE ?` faithfully - and a mock that answers a query no server
+accepts is a mock that certifies a query no server accepts. That is the same
+defect class as the chunk mocks in 1.6.3 and the string-versus-array label mocks
+in 1.8.5, and it is precisely why the plan puts these invariants behind a real
+database rather than behind more mocking. The fake now models the query the code
+actually issues.
+
+**A harness bug hid the rest.** `bind_param` in `tests/mysql/run.php` carried nine
+type characters for ten variables, so the run died with an `ArgumentCountError`
+before the finding-version checks executed. The job's only real signal was the
+health failure above it; everything after was unreported rather than passing. A
+health failure now also prints which tables it thought were missing, because a
+bare pass/fail on a schema check is unactionable.
+
+Suite green on PHP 7.4, 8.3 and 8.4.
+
 ## 1.8.12 - Task 5: the settings the policy resolver reads
 
 Seven system settings and four project settings, matching the plan's table. The

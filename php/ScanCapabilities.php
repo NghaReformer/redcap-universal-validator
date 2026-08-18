@@ -292,7 +292,13 @@ final class ScanCapabilities
         // than this one call site.
         if (!preg_match('/^[a-z_][a-z0-9_]*\z/', $name)) return self::no('unusable table name');
         try {
-            $q = $module->query('SHOW TABLES LIKE ?', [$name]);
+            // information_schema rather than `SHOW TABLES LIKE ?`: SHOW is not
+            // preparable in the client protocol, so binding a parameter to it
+            // fails on MySQL 5.7 and 8.0 rather than matching. Found by the
+            // database matrix on its first run, in Schema::health(); this call
+            // site had the same latent bug and is fixed with it.
+            $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
+                WHERE table_schema = DATABASE() AND table_name = ?', [$name]);
             if (!$q) return self::no($name . ' not found');
             $row = self::fetchRow($q);
             return $row ? self::yes($name) : self::no($name . ' not found');

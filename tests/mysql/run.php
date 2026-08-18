@@ -104,6 +104,12 @@ check('migrate: reaching the build version', $r['to'] === Schema::VERSION);
 
 $h = Schema::health($ca);
 check('health: reports ok immediately after migrate', $h['ok'] === true);
+if (!$h['ok']) {
+    // A bare pass/fail on a schema check is unactionable: the whole point is
+    // WHICH table is missing, or which read failed.
+    fwrite(STDERR, '  health said: ' . (string) $h['why']
+        . ' | missing: ' . implode(', ', $h['missing']) . "\n");
+}
 
 // IDEMPOTENT: the second connection re-runs it and changes nothing.
 $r2 = Schema::migrate($cb);
@@ -211,7 +217,11 @@ $insF = function ($conn, $identity, $slot) use ($fnd) {
     $st = $conn->raw()->prepare($sql);
     $rh = hash('sha256', 'r1', true); $rid = 'r1'; $hf = 'fa'; $f = 'x';
     $rs = 'rule1'; $rv = str_repeat('b', 64); $ct = 'required'; $rc = 'required-blank';
-    $st->bind_param('sisssssss', $identity, $slot, $rh, $rid, $hf, $f, $rs, $rv, $ct, $rc);
+    // Ten variables need ten type characters. The previous nine produced an
+    // ArgumentCountError that killed the run BEFORE the finding-version checks,
+    // so those never executed and the job's only real signal was the health
+    // failure above it.
+    $st->bind_param('sisssssssss', $identity, $slot, $rh, $rid, $hf, $f, $rs, $rv, $ct, $rc);
     try { $st->execute(); $st->close(); return true; }
     catch (\Throwable $e) { $st->close(); return false; }
 };

@@ -57,11 +57,17 @@ namespace {
                 }
                 return [[$this->version]];
             }
-            if (strpos($sql, 'SHOW TABLES LIKE') === 0) {
+            // information_schema, matching what health() actually asks. The
+            // mock previously modelled `SHOW TABLES LIKE ?`, which no server
+            // accepts as a prepared statement - so the suite was green against a
+            // query that could not run. That is the mock-shape defect this
+            // repository keeps rediscovering, and the database matrix is what
+            // caught it this time.
+            if (strpos($sql, 'SELECT COUNT(*) FROM information_schema.tables') === 0) {
                 $want = isset($params[0]) ? $params[0] : '';
                 $have = $this->present === null
                       ? \INSPIRE\UniversalValidator\Scan\Schema::tables() : $this->present;
-                return in_array($want, $have, true) ? [[$want]] : [];
+                return [[in_array($want, $have, true) ? 1 : 0]];
             }
             return [];
         }
