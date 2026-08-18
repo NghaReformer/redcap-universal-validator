@@ -103,6 +103,68 @@ class ScanPageView
     }
 
     /**
+     * Why no scan runs, stated once and shared by the page and the exporter.
+     *
+     * The synchronous whole-project scan is WITHDRAWN, not merely discouraged.
+     * It read every record id, every finding and every unique candidate into one
+     * request's memory, and both entry points started that work from a GET - so
+     * a refresh, a second tab or a download each launched another full pass over
+     * the project with nothing serialising them. That is an availability problem
+     * before it is a performance one, and no amount of guarding inside the loop
+     * changes the shape.
+     *
+     * The rebuild plan's Task 1 requires exactly this: disable the production
+     * synchronous scan and the export-by-rerun control, and say plainly that the
+     * durable scan is unavailable until the worker exists. A notice is the
+     * honest interface for a feature that cannot keep its promise; a scan that
+     * sometimes finishes is worse, because the times it does teach people to
+     * trust the times it does not.
+     */
+    const UNAVAILABLE = 'The project-wide validation scan is temporarily unavailable. It is being '
+        . 'rebuilt to run as a resumable background job that can cover a project of any size and '
+        . 'record exactly what it covered; until that lands, this page will not start a scan. '
+        . 'Live form validation and the post-save audit are unaffected and continue to run.';
+
+    /**
+     * What a scan result may CLAIM, decided once.
+     *
+     * Three axes that are routinely confused: STATUS says whether the sweep
+     * finished, COVERAGE says what finishing is worth on this installation, and
+     * CLEAN is the only one that is a statement about the PROJECT. A run that
+     * finished, found nothing, and could not prove the project stayed still is
+     * complete and not clean.
+     *
+     * It lived inside pages/scan.php as three local variables, so the only way
+     * to test it was to render a page and grep the HTML - and when the page
+     * stopped rendering, the predicate lost its coverage with it. The durable
+     * report (plan Task 7) needs the same answer, so it belongs here.
+     */
+    public static function verdict($result)
+    {
+        $complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
+        $coverage = (is_array($result) && isset($result['coverage'])) ? $result['coverage'] : 'partial';
+        $fenced   = ($coverage === 'complete-through-fence');
+        // A clean bill of health needs all four: the sweep finished, the server
+        // could prove the project did not move under it, nothing was found, and
+        // no rule was left unevaluated. A project whose every rule is broken has
+        // zero violations and is not clean (M-02).
+        $clean = $complete && $fenced
+              && empty($result['violations']) && empty($result['unconfigurable']);
+        return ['complete' => $complete, 'coverage' => $coverage,
+                'fenced' => $fenced, 'clean' => $clean];
+    }
+
+    /** The notice, rendered wherever a scan would otherwise have been started. */
+    public static function unavailable($extra = '')
+    {
+        echo '<div style="margin:12px 0;padding:10px 14px;border:1px solid #d9a441;background:#fdf6e3;'
+           . 'color:#7a5c00;border-radius:4px;max-width:760px">'
+           . '<b>&#9888; Scan unavailable</b><p style="margin:6px 0 0">' . self::h(self::UNAVAILABLE) . '</p>'
+           . ($extra !== '' ? '<p style="margin:6px 0 0">' . self::h($extra) . '</p>' : '')
+           . '</div>';
+    }
+
+    /**
      * Who this user may scan, decided ONCE and shared by every page that scans.
      *
      * Extracted so pages/export.php cannot drift from pages/scan.php. An export

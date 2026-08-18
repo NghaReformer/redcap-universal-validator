@@ -1,5 +1,100 @@
 # Changelog
 
+## 1.8.9 - the project-wide scan is withdrawn
+
+**The scan page no longer runs a scan, and the CSV route no longer produces a
+file.** Both now say so. Live as-you-type validation, the save-time audit and the
+uniqueness check are untouched and continue to run; nothing about day-to-day data
+entry changes.
+
+### Why
+
+An independent release review rejected 1.8.7 and blocked the release. Its central
+finding is correct and is not a bug that can be patched: the work since 1.6.2
+hardened the LEGACY synchronous scan and rebuilt its report, but never built the
+architecture `reports/scan-rebuild-plan-2026-08-17.md` describes. Tasks 5 to 9 -
+the durable run store, the resumable worker, leases, source fences, quotas,
+retention, cancellation, keyset paging and stored-result exports - do not exist.
+What shipped was a better-behaved version of a design whose cost grows with the
+project rather than with the work.
+
+That is measurable rather than theoretical. A live pid-135 run produced 1,902
+findings from 39 records - roughly 49 per record. At that density a 100,000-record
+project produces about 4.9 million findings, and the screen's finding array alone
+would want something on the order of two gigabytes before anything is rendered.
+Both entry points also started that work from a GET, with no lock: a refresh, a
+second tab or a retried download each launched another independent full pass.
+That is an availability problem before it is a performance one.
+
+Task 1 of the plan requires exactly this disable, with an explicit notice, until
+the worker exists. It was previously recorded as an accepted deviation and kept
+live. That decision is reversed.
+
+### What this release does
+
+- `pages/scan.php` renders the notice and nothing else. The Run and Download
+  controls are removed rather than left inert: an offered control that refuses is
+  an invitation to file a bug. Rights are still checked first, and still refuse,
+  because who may see the page is not contingent on what it currently offers.
+- Both `run=1` and `csv=1` are read from `$_GET` **and** `$_POST`. The controls
+  were GET-only, so a GET-only check would have let a POST fall through to a page
+  that looks like it simply found nothing. A request that asked for a scan is told
+  its request did nothing; one that merely opened the page is not.
+- `pages/export.php` refuses before rights are considered - there is no file for
+  anyone to be entitled to - and answers **503**, not 403: this is "not available
+  yet", not "not permitted", and a monitor retrying on 503 is behaving correctly.
+  Its previous body is deleted rather than left unreachable. Task 7 specifies a
+  different exporter, streaming from the stored run with expected-count metadata
+  and a mandatory `export_complete=1` trailer; keeping the old writer would invite
+  it to be re-enabled instead of replaced. It is in the history at 1.8.8.
+- `scanProject()` itself is untouched and still fully exercised. Withdrawing the
+  ENTRY POINT is the change; keeping the engine intact is what lets the durable
+  worker reuse its verdicts rather than reimplement them.
+
+### The clean predicate moved
+
+It lived as three local variables inside the page, so the only way to test it was
+to render HTML and grep it - and it would have lost its coverage along with the
+page. `ScanPageView::verdict()` now answers on three axes that are routinely
+confused: STATUS is whether the sweep finished, COVERAGE is what finishing is
+worth on this installation, and CLEAN is the only one that is a claim about the
+project. A run that finished, found nothing, and could not prove the project
+stayed still is complete and not clean.
+
+The same move applies to the report layer. `ScanColumns`, `ScanDimensions` and
+`MessageCatalog` are live code the durable report will consume, so their tests
+now assert on those classes directly instead of on page markup. That is stricter
+than what it replaced: a column's presence is checked against the descriptor list
+rather than inferred from a `<th>` appearing in a string.
+
+### Deliberately NOT done
+
+Three things asked for during this cycle are not here, because adding them would
+decorate an architecture that is being replaced:
+
+- **Collection gaps.** Never-started instruments produced 929 of those 1,902
+  findings. The plan makes untouched-form policy part of the run fingerprint
+  (§6 step 6), so it belongs in the planner, not in the report layer.
+- **REDCap username, mobile-app username and last-change columns.** These need
+  batched per-page enrichment against the project's log shard, bounded to the
+  keys on one page. Against a whole-project synchronous scan that is a query per
+  finding.
+- **Filtering.** The plan specifies server-validated filters with signed keyset
+  cursors over stored findings. A filter over a truncated in-memory array would
+  narrow a view that is already silently incomplete, which is worse than no
+  filter.
+
+### On version numbers
+
+The plan assigns 1.9.0 to Task 6, 1.10.0 to Task 7 and 1.11.0 to Task 8. This
+line stays in 1.8.x until the durable path lands, so those numbers keep meaning
+what the plan says they mean.
+
+### Verification
+
+`tests/scan_page_php.php` 121 -> 128 checks; fifteen of the new ones fail against
+the previous pages. Full suite green on PHP 7.4, 8.3 and 8.4, and on Node.
+
 ## 1.8.8 - an empty event map is an answer, not a failure
 
 Found on the first live run of 1.8.7, on pid 135 (DARE-TB), a real classic

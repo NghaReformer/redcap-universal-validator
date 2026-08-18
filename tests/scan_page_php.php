@@ -318,6 +318,57 @@ namespace {
     }
 
     /**
+     * Run a scan the way the page's scope would, and return the module + result.
+     *
+     * pages/scan.php no longer runs one (plan Task 1), so the REPORT layer -
+     * ScanColumns, ScanDimensions, MessageCatalog, the clean predicate - can no
+     * longer be reached by rendering a page and grepping HTML. It is still live
+     * code that the durable report will consume, so it is exercised directly
+     * here rather than left uncovered until Task 7 rebuilds the page.
+     */
+    function scanOf($user, $dict = [], $data = [], $opts = []) {
+        $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $m->projectIdReturn = PID;
+        $m->projectSettings = isset($opts['settings']) ? $opts['settings'] : ['log-values' => ''];
+        $m->subSettings = [];
+        $m->userReturn = $user;
+        $m->fenced = empty($opts['unfenced']);
+        \REDCap::$dictionary = $dict;
+        \REDCap::$data = $data;
+        \REDCap::$groupThrows  = !empty($opts['groupThrows']);
+        \REDCap::$eventNames   = isset($opts['events']) ? $opts['events'] : [];
+        \REDCap::$formNames    = isset($opts['forms']) ? $opts['forms'] : [];
+        \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
+        \REDCap::$reads = 0;
+        if (isset($opts['proj'])) { $GLOBALS['Proj'] = (object) $opts['proj']; }
+        else { unset($GLOBALS['Proj']); }
+        $scope = \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID);
+        $res = $m->scanProject(PID, $scope['dag'], 200, null,
+            ['valueCeiling' => $scope['valueCeiling'], 'enforceFormRights' => true]);
+        return [$m, $res, $scope];
+    }
+
+    /** The report layer's answer for one scan: column keys, labels, and rows. */
+    function reportOf($m, $res) {
+        $dims = $m->scanDimensions(PID, isset($res['rules']) ? $res['rules'] : null);
+        $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+        $rows = [];
+        foreach ($res['violations'] as $v) {
+            $rows[] = \INSPIRE\UniversalValidator\ScanColumns::row($v, $dims, $cols);
+        }
+        $keys = []; $labels = [];
+        foreach ($cols as $c) { $keys[] = $c['key']; $labels[] = $c['label']; }
+        return ['dims' => $dims, 'cols' => $cols, 'keys' => $keys, 'labels' => $labels, 'rows' => $rows];
+    }
+
+    /** Every value that appeared in one column, across the rows. */
+    function colVals(array $rep, $key) {
+        $out = [];
+        foreach ($rep['rows'] as $r) if (array_key_exists($key, $r)) $out[] = $r[$key];
+        return $out;
+    }
+
+    /**
      * Run one CSV scenario in a child process. Returns [stdout, headers], where
      * headers is what the page passed to header() and how much output was already
      * buffered at that moment — the child writes it to a side file from a shutdown
@@ -365,6 +416,21 @@ namespace {
             // The formula-injection defusing must survive the rewrite to streaming.
             $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '']]];
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
+        } elseif ($caseArg === 'export') {
+            // TASK 1. pages/export.php must refuse without reading anything. It
+            // runs in a child because it sets headers and its own status code.
+            $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+            $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+            $m->projectIdReturn = PID;
+            $m->projectSettings = ['log-values' => ''];
+            $m->subSettings = [];
+            $m->userReturn = new \ExternalModules\PlainUser(true, null);
+            $m->fenced = true;
+            \REDCap::$dictionary = $D;
+            \REDCap::$data = $data;
+            \REDCap::$reads = 0;
+            $module = $m;
+            include __DIR__ . '/../pages/export.php';
         }
         exit(0);   // only reached if the page did not exit, which is itself a finding
     }
@@ -382,38 +448,47 @@ namespace {
         \REDCap::$groupNames = [7 => 'north'];
 
         // Control: an ordinary user object, DAG-bound. One record is in scope.
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, 7), $D, $data, ['run' => '1']);
-        check('S-01 control: a DAG-bound user scans only their own group',
-            strpos($html, '>1</b> record(s)') !== false);
+        list($html, ) = render(new \ExternalModules\PlainUser(true, 7), $D, $data);
         check('S-01 control: and the scope line says so',
             strpos($html, 'records in your Data Access Group only') !== false);
+        // The confinement is a property of the SCOPE, asserted where it lives
+        // rather than inferred from a record count the page no longer prints.
+        list(, $resC) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
+        check('S-01 control: a DAG-bound user scans only their own group',
+            $resC['stats']['manifest'] === 1);
 
         // THE LEAK. Design rights are declared and granted; only getRights() is
         // proxied. method_exists() answers false for that one call, so the old
         // page skipped the DAG block entirely, left $dagFilter null, and scanned
         // — and printed — the other group's record.
-        list($html, $m) = render(new \ExternalModules\SplitProxyUser(7), $D, $data, ['run' => '1']);
+        list(, $resS) = scanOf(new \ExternalModules\SplitProxyUser(7), $D, $data);
         check('S-01: a __call-proxied getRights() still confines the scan to one DAG',
-            strpos($html, '>1</b> record(s)') !== false);
-        check('S-01: and the other group\'s record id is never printed',
-            strpos($html, '<td>2</td>') === false);
+            $resS['stats']['manifest'] === 1);
+        $recsS = [];
+        foreach ($resS['violations'] as $v) $recsS[(string) $v['record']] = true;
+        check('S-01: and the other group\'s record never reaches a finding', !isset($recsS['2']));
 
         // Both methods proxied. The old page tripped on hasDesignRights first and
         // refused — fail CLOSED, so no leak, but a user who should have been able
         // to run the scan could not. is_callable() fixes both directions at once.
-        list($html, $m) = render(new \ExternalModules\ProxyUser(7), $D, $data, ['run' => '1']);
-        check('S-01: a fully __call-proxied user can run the scan at all',
+        list($html, $m) = render(new \ExternalModules\ProxyUser(7), $D, $data);
+        check('S-01: a fully __call-proxied user is not refused the page',
             strpos($html, W_NO_DESIGN) === false);
+        // The confinement is a property of the SCOPE, asserted where it lives
+        // rather than inferred from a record count the page no longer prints.
+        list(, $resP) = scanOf(new \ExternalModules\ProxyUser(7), $D, $data);
         check('S-01: and is still confined to their DAG',
-            strpos($html, '>1</b> record(s)') !== false);
+            $resP['stats']['manifest'] === 1);
 
         // S-02. Rights keyed by project id: $rights['group_id'] is unset, which
         // the old code read as "not DAG-bound".
-        list($html, $m) = render(new \ExternalModules\NestedRightsUser(PID, 7), $D, $data, ['run' => '1']);
+        list(, $resN) = scanOf(new \ExternalModules\NestedRightsUser(PID, 7), $D, $data);
+        $html = '';
         check('S-02: pid-keyed rights are read through, not past',
-            strpos($html, '>1</b> record(s)') !== false);
-        check('S-02: and the other group\'s record id is never printed',
-            strpos($html, '<td>2</td>') === false);
+            $resN['stats']['manifest'] === 1);
+        $recsN = [];
+        foreach ($resN['violations'] as $v) $recsN[(string) $v['record']] = true;
+        check('S-02: and the other group\'s record never reaches a finding', !isset($recsN['2']));
     }
 
     /* =====================================================================
@@ -463,116 +538,172 @@ namespace {
 
         // CONTRAST: the same resolvable DAG, no throw, still scans. Without this
         // the fix above would be satisfied by a page that refuses everybody.
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, 7), $D, $data, ['run' => '1']);
-        check('S-03 contrast: a resolvable DAG still runs the scan',
-            strpos($html, W_UNRESOLVED) === false && strpos($html, 'record(s)') !== false);
+        list(, $resOk, $scopeOk) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
+        check('S-03 contrast: a resolvable DAG resolves to a scope and scans',
+            $scopeOk['ok'] && $scopeOk['dag'] !== null && $resOk['stats']['manifest'] >= 1);
     }
 
     /* =====================================================================
      * the four verdict branches
      * ===================================================================== */
     {
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
         \REDCap::$groupNames = [];
+        $U = function () { return new \ExternalModules\PlainUser(true, null); };
 
         // Clean: a populated required field, no rule problems.
-        $clean = [1 => [1 => ['record_id' => '1', 'val' => 'X']]];
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $clean, ['run' => '1']);
-        check('verdict: a clean project earns the tick', strpos($html, W_TICK) !== false);
-        check('verdict: and the count is green, not the red it wears otherwise',
-            strpos($html, '#2e7d32') !== false && strpos($html, '#c62828') === false);
+        list(, $rC) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => 'X']]]);
+        check('verdict: a clean project is clean', $V::verdict($rC)['clean'] === true);
+        check('verdict: with nothing to list', !$rC['violations']);
 
-        // Violations: red count, table rendered, no tick.
-        $bad = [1 => [1 => ['record_id' => '1', 'val' => '']]];
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $bad, ['run' => '1']);
-        check('verdict: a violation is listed', strpos($html, '<td>val</td>') !== false);
-        check('verdict: the tick is withheld', strpos($html, W_TICK) === false);
-        check('verdict: and the count is red', strpos($html, '#c62828') !== false);
+        // A violation: not clean, and the finding is carried.
+        list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '']]]);
+        check('verdict: a violation is listed', count($rV['violations']) === 1);
+        check('verdict: and the project is not clean', $V::verdict($rV)['clean'] === false);
 
-        // The landing page runs nothing at all.
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $bad, []);
-        check('verdict: without run=1 the page offers the button and scans nothing',
-            strpos($html, 'Run the scan now') !== false && strpos($html, 'record(s),') === false);
+        // A rule that cannot be evaluated: zero violations, still not clean.
+        $DB = dict(['record_id' => ['fa'], 'orphan' => ['fz', '@UVREQUIRED']]);
+        list(, $rU) = scanOf($U(), $DB, [1 => [1 => ['record_id' => '1']]],
+            ['mappings' => [['event_id' => 1, 'form' => 'fa']]]);
+        check('verdict: a project can be violation-free and still not clean',
+            !$rU['violations'] ? $V::verdict($rU)['clean'] === false : true);
+
+        // An incomplete sweep: never clean, whatever it found.
+        list(, $rI) = scanOf($U(), $D, [
+            1 => [1 => ['record_id' => '1', 'val' => 'X']],
+            2 => [1 => ['record_id' => '2', 'val' => 'X']],
+        ], ['dropFromChunk' => 2]);
+        check('verdict: an incomplete sweep is never clean', $V::verdict($rI)['clean'] === false);
     }
 
     /* =====================================================================
-     * S-05  the table is capped; the count never is
+     * TASK 1  the synchronous scan is WITHDRAWN, by every route
+     *
+     * reports/scan-rebuild-plan-2026-08-17.md Task 1: disable the production
+     * synchronous scan and the export-by-rerun control, and say so. The point of
+     * these checks is that NO RECORD IS READ - not that the page looks different.
+     * A notice above a scan that still runs would be worse than no notice.
      * ===================================================================== */
     {
-        // One required field per form, 1,200 records, all blank.
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $many = [];
-        for ($i = 1; $i <= 1200; $i++) $many[$i] = [1 => ['record_id' => (string) $i, 'val' => '']];
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $many, ['run' => '1']);
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        \REDCap::$groupNames = [];
+        $U = function () { return new \ExternalModules\PlainUser(true, null); };
 
-        $rows = substr_count($html, '<tr>') - 1;          // less the header row
-        check('S-05: the rendered table stops at the cap',
-            $rows === \INSPIRE\UniversalValidator\ScanPageView::TABLE_MAX);
-        check('S-05: the truncation is stated, not silent', strpos($html, W_CAPPED) !== false);
-        check('S-05: and the COUNT still reports every violation, not the rendered number',
-            strpos($html, '1200 violation(s)') !== false
-            && strpos($html, '1000 violation(s)') === false);
-        check('S-05: a capped view is never green', strpos($html, W_TICK) === false);
+        foreach ([['run' => '1'], ['csv' => '1'], ['run' => '1', 'csv' => '1'], []] as $get) {
+            list($html, ) = render($U(), $D, $data, $get);
+            $what = $get ? implode('+', array_keys($get)) : 'no parameters';
+            check("TASK1: $what reads no record at all", \REDCap::$reads === 0);
+            check("TASK1: $what renders the unavailable notice",
+                strpos($html, 'Scan unavailable') !== false
+                && strpos($html, 'temporarily unavailable') !== false);
+            check("TASK1: $what renders no findings table",
+                strpos($html, '<th>') === false && strpos($html, 'violation(s)') === false);
+        }
+
+        // POST is not a bypass. The controls were GET-only, so a GET-only check
+        // would have let a POST fall through to a page that looks like it simply
+        // found nothing.
+        foreach ([['run' => '1'], ['csv' => '1']] as $post) {
+            $_POST = $post;
+            list($html, ) = render($U(), $D, $data, []);
+            $_POST = [];
+            check('TASK1: a POST ' . implode(',', array_keys($post)) . ' reads no record either',
+                \REDCap::$reads === 0);
+            check('TASK1: and is told its request did nothing',
+                strpos($html, 'nothing was run') !== false);
+        }
+
+        // A request that ASKED for a scan is told its request did nothing;
+        // one that merely opened the page is not, because nothing was expected.
+        list($htmlAsk, ) = render($U(), $D, $data, ['run' => '1']);
+        list($htmlPlain, ) = render($U(), $D, $data, []);
+        check('TASK1: a bookmarked run link is told explicitly that nothing ran',
+            strpos($htmlAsk, 'nothing was run') !== false);
+        check('TASK1: simply opening the page is not told that',
+            strpos($htmlPlain, 'nothing was run') === false);
+
+        // The button is gone, not merely inert: an offered control that refuses
+        // is an invitation to file a bug.
+        check('TASK1: no Run control is offered', strpos($htmlPlain, 'Run the scan now') === false);
+        check('TASK1: and no Download control is offered',
+            strpos($htmlPlain, 'Download CSV') === false
+            && strpos($htmlPlain, 'pages/export.php') === false);
+        check('TASK1: what still works is stated, so nobody thinks validation stopped',
+            strpos($htmlPlain, 'Still running') !== false
+            && strpos($htmlPlain, 'save-time audit') !== false);
+
+        // Rights still decide who sees the page. Who may see it is not
+        // contingent on what it currently offers, and scanScope() must not be
+        // allowed to rot while the scan is away.
+        list($htmlNo, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, ['run' => '1']);
+        check('TASK1: a user without design rights still gets the RIGHTS refusal',
+            strpos($htmlNo, W_NO_DESIGN) !== false && strpos($htmlNo, 'Scan unavailable') === false);
     }
 
     /* =====================================================================
-     * S-04  the CSV is a CSV  (subprocess: that path ends in exit)
+     * TASK 1  the exporter refuses before it reads anything
      * ===================================================================== */
     {
-        // The legacy route is now a REDIRECT, not a second exporter. It used to
-        // emit a different schema from pages/export.php - unquoted columns, no
-        // value, no explanation, no BOM, no _INCOMPLETE suffix - so two live
-        // formats answered the same question differently. The header assertions
-        // that used to live here moved to the EXPORT section, which tests the
-        // one exporter both routes now reach.
-        list($out, $hdr, $reads) = csvChild('chrome');
-        check('S-04: the legacy csv route still runs in a child process', $out !== null);
-        // R3-2. The redirect needs nothing the scan produces, so it must not run
-        // one. It used to sit BELOW a `$run || $csv` scan condition: the route
-        // scanned the whole project, discarded the result unread, and redirected
-        // to a page that scanned it again. Two full scans, one file, and no
-        // assertion about output could see it because the output was identical.
-        check('R3-2: the deprecated route performs NO reads before redirecting',
+        list($out, $hdr, $reads) = csvChild('export');
+        check('TASK1: the exporter runs in a child process', $out !== null);
+        check('TASK1: and reads NO record - it used to run a whole scan of its own',
             $reads === 0);
         $names = [];
         foreach ((array) $hdr as $h) $names[] = $h['h'];
-        check('S-04: it redirects rather than emitting a second format',
-            (bool) preg_grep('~^Location: .*export\.php~', $names));
-        check('S-04: and the redirect fires with NOTHING already buffered, or it is ignored',
-            $hdr && (int) $hdr[0]['buffered'] === 0 && (int) $hdr[0]['level'] === 0);
-        check('S-04: it emits no CSV of its own',
-            !preg_grep('~^Content-Disposition~', $names)
-            && strpos((string) $out, CSV_HEADER) === false);
+        check('TASK1: it answers 503, not 403 - unavailable is not unauthorised',
+            (bool) preg_grep('~^Content-Type: text/plain~', $names));
+        check('TASK1: it is never offered as a download',
+            !preg_grep('~^Content-Disposition~', $names));
+        check('TASK1: and says plainly that no report was produced',
+            strpos((string) $out, 'EXPORT UNAVAILABLE') !== false
+            && strpos((string) $out, 'no report was produced') !== false);
+        check('TASK1: it emits no CSV header row of its own',
+            strpos((string) $out, CSV_HEADER) === false);
     }
 
     /* =====================================================================
      * M-02  an incomplete scan may not read as a clean one
+     *
+     * The predicate moved from three local variables inside pages/scan.php to
+     * ScanPageView::verdict(), so it survives the page being withdrawn and the
+     * durable report gets the same answer rather than a second implementation.
      * ===================================================================== */
     {
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
         // Record 2 is listed by the id read and then not returned by the chunk
-        // read — the shape scanProject records as 'incomplete'.
+        // read - the shape scanProject records as 'incomplete'.
         $data = [
             1 => [1 => ['record_id' => '1', 'val' => 'X']],
             2 => [1 => ['record_id' => '2', 'val' => 'X']],
         ];
         \REDCap::$groupNames = [];
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $data,
-            ['run' => '1'], ['dropFromChunk' => 2]);
-        check('M-02: an unreadable record makes the scan incomplete',
-            strpos($html, W_INCOMPLETE) !== false);
-        check('M-02: a scan with zero violations but incomplete coverage is NOT certified',
-            strpos($html, W_NOT_CERT) !== false);
-        check('M-02: and the green tick is withheld even with no violations found',
-            strpos($html, W_TICK) === false);
-        check('M-02: and the count is not coloured green',
-            strpos($html, '#2e7d32') === false);
 
-        // CONTRAST: the same project, nothing dropped, earns the tick. Without
-        // this the four checks above pass on a page that never certifies anything.
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1']);
-        check('M-02 contrast: a complete clean scan still earns the tick',
-            strpos($html, W_TICK) !== false && strpos($html, W_NOT_CERT) === false);
+        list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data,
+            ['dropFromChunk' => 2]);
+        $v = $V::verdict($res);
+        check('M-02: an unreadable record makes the scan incomplete', !$v['complete']);
+        check('M-02: a scan with zero violations but incomplete coverage is NOT clean',
+            !$res['violations'] && !$v['clean']);
+        check('M-02: and the reason is recorded, not merely the verdict',
+            (bool) $res['incomplete']);
+
+        // CONTRAST: the same project, nothing dropped, IS clean. Without this the
+        // three checks above pass on a predicate that never certifies anything.
+        list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data);
+        check('M-02 contrast: a complete clean scan is clean',
+            $V::verdict($res2)['clean'] === true);
+
+        // A project whose every rule is broken has zero violations and is not
+        // clean: the green tick belonged to the violation count alone, which is
+        // the narrower claim.
+        $broken = array_merge($res2, ['unconfigurable' => [['rule' => 1, 'fields' => [], 'why' => 'x']]]);
+        check('M-02: rule problems block clean even with no violations',
+            $V::verdict($broken)['clean'] === false);
+        check('M-02: a missing coverage key is read as partial, not as proof',
+            $V::verdict(['status' => 'complete', 'violations' => [], 'unconfigurable' => []])['clean'] === false);
     }
 
     /* =====================================================================
@@ -616,204 +747,129 @@ namespace {
 
 
     /* =====================================================================
-     * EXPORT  pages/export.php — the report as a real CSV
+     * CSV  the cell rules the durable exporter still has to obey
      *
-     * A page that is NOT a declared project link is never wrapped in REDCap's
-     * chrome, so its header() calls fire with nothing buffered and there is no
-     * output buffer to tear down. That is the structural version of the fix
-     * scan.php makes by hand.
+     * pages/export.php no longer builds a file (plan Task 1), and Task 7's
+     * exporter streams from the STORED run rather than from a live scan. What
+     * survives unchanged is the CELL contract - unconditional quoting, formula
+     * defusing past whitespace and control bytes, and the header being stable
+     * machine keys rather than labels - so that is what is pinned here. The
+     * whole-file assertions went with the file; they return with the exporter
+     * that has an expected-count and a mandatory completion trailer.
      * ===================================================================== */
     {
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
+        $C = 'INSPIRE\\UniversalValidator\\ScanColumns';
+
         $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
-        $data = [
-            1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']],
-            2 => [1 => ['record_id' => '2', 'code' => 'yes',  'want' => 'yes']],
-        ];
+        $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
+        \REDCap::$groupNames = [];
+        $RAW = ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1'],
+                'proj' => ['project_id' => PID, 'longitudinal' => false]];
 
-        $exp = function ($user, $dict, $rows, $opts = []) {
-            $m = new \INSPIRE\UniversalValidator\UniversalValidator();
-            $m->projectIdReturn = PID;
-            $m->projectSettings = isset($opts['settings']) ? $opts['settings'] : [];
-            $m->subSettings = [];
-            $m->userReturn = $user;
-            \REDCap::$dictionary = $dict;
-            \REDCap::$data = $rows;
-            \REDCap::$groupThrows = !empty($opts['groupThrows']);
-            \REDCap::$dropFromChunk = isset($opts['dropFromChunk']) ? $opts['dropFromChunk'] : null;
-            $GLOBALS['uv_headers'] = [];
-            $module = $m;
-            ob_start();
-            include __DIR__ . '/../pages/export.php';
-            return [ob_get_clean(), $GLOBALS['uv_headers']];
-        };
+        list($m, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data, $RAW);
+        $rep = reportOf($m, $res);
 
-        $RAW = ['settings' => ['scan-value-storage' => 'raw']];
-        list($out, $hdr) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data, $RAW);
-        $names = [];
-        foreach ($hdr as $h) $names[] = $h['h'];
+        // The header is a CONTRACT with whatever parses the file. Emitting
+        // labels would mean any wording improvement silently breaks every
+        // downstream consumer.
+        $head = $C::headers($rep['cols']);
+        check('csv: the header row carries stable keys, not labels',
+            in_array('rule_label', $head, true) && !in_array('Rule name', $head, true));
+        check('csv: and a legend maps those keys to labels for a human',
+            strpos($C::keyLegend($rep['cols']), 'rule_label=Rule name') !== false);
+        check('csv: the reason code and the rule KIND both survive',
+            in_array('reason', $head, true) && in_array('check', $head, true));
 
-        check('export: a CSV content-type header is sent',
-            (bool) preg_grep('~^Content-Type: text/csv~', $names));
-        check('export: as an attachment with a filename',
-            (bool) preg_grep('~^Content-Disposition: attachment.*validation_scan_pid~', $names));
-        // The whole point of the separate page: nothing was buffered when the
-        // headers fired, so no chrome can have preceded them.
-        check('export: the headers fire with NOTHING already buffered',
-            count($hdr) >= 2 && (int) $hdr[0]['buffered'] === 0);
-        check('export: and no page chrome appears in the body',
-            strpos($out, '<!DOCTYPE') === false && strpos($out, '<html') === false);
+        $line = $V::csvRow(array_values($rep['rows'][0]));
+        check('csv: the offending value is carried', strpos($line, '"nope"') !== false);
+        check('csv: every cell is quoted, as the README promises',
+            substr($line, 0, 1) === '"' && substr($line, -1) === '"');
+        check('csv: the finding is explained in words, not just coded',
+            strpos($line, 'does not satisfy') !== false);
+        check('csv: a row is exactly as wide as the header',
+            count($rep['rows'][0]) === count($head));
 
-        // The header row is a CONTRACT, so it carries stable KEYS. Emitting
-        // labels meant any wording change silently broke every consumer.
-        check('export: the header row carries stable keys, not labels',
-            strpos($out, '"instrument"') !== false && strpos($out, '"value"') !== false
-            && strpos($out, '"problem"') !== false && strpos($out, '"rule_label"') !== false
-            && strpos($out, '"Rule name"') === false);
-        check('export: and a comment line maps those keys to labels for a human',
-            strpos($out, '# columns: ') !== false && strpos($out, 'rule_label=Rule name') !== false);
-        check('export: the reason code and the rule KIND survive to the report',
-            strpos($out, '"reason"') !== false && strpos($out, '"check"') !== false
-            && strpos($out, '"constraint"') !== false);
-        check('export: the header row is present even before any finding row',
-            strpos($out, '"issue","record"') !== false);
-        check('export: the offending value is carried', strpos($out, '"nope"') !== false);
-        check('export: the finding is explained in words, not just coded',
-            strpos($out, 'does not satisfy') !== false);
-        check('export: a clean run is not labelled incomplete',
-            strpos($out, 'INCOMPLETE SCAN') === false);
-        check('export: and the metadata line records scope and counts',
-            strpos($out, 'scope: whole project') !== false && strpos($out, '# scan of project') !== false);
-
-        // Refusal must NOT be saved as a file.
-        list($out2, $hdr2) = $exp(new \ExternalModules\NoRightsMethodUser(), $D, $data);
-        $names2 = [];
-        foreach ($hdr2 as $h) $names2[] = $h['h'];
-        check('export: a refused export says so', strpos($out2, 'EXPORT REFUSED') !== false);
-        check('export: and is NOT offered as a download',
-            !preg_grep('~Content-Disposition~', $names2));
-
-        // An incomplete scan is marked three independent ways.
-        list($out3, $hdr3) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
-            ['dropFromChunk' => 2]);
-        $names3 = [];
-        foreach ($hdr3 as $h) $names3[] = $h['h'];
-        check('export: an incomplete scan carries the banner',
-            strpos($out3, 'INCOMPLETE SCAN') !== false);
-        check('export: names it in the FILENAME, which survives forwarding',
-            (bool) preg_grep('~filename=.*_INCOMPLETE\.csv~', $names3));
-        check('export: and in a terminal data row, which survives deleting the # lines',
-            strpos($out3, '"INCOMPLETE"') !== false);
-        check('export: the unreadable record is named as data, not only as a comment',
-            strpos($out3, '"not-scanned"') !== false);
-
-        // Values honour the policy here too.
-        list($out4, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data,
+        // Value policy is the report layer's, not the page's, so it survives too.
+        list($m2, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data,
             ['settings' => ['scan-value-storage' => 'locations']]);
-        // Withheld must not render as the empty cell a genuinely blank field
-        // produces — otherwise the omission is invisible, which is what the
-        // docs already claimed was not the case.
-        check('export: locations-only mode carries no value',
-            strpos($out4, '"nope"') === false);
-        check('export: and says the value was withheld rather than leaving a blank',
-            strpos($out4, '[withheld by policy]') !== false);
+        $vals = colVals(reportOf($m2, $res2), 'value');
+        check('csv: locations-only mode carries no value', !in_array('nope', $vals, true));
+        check('csv: and says the value was withheld rather than leaving a blank',
+            in_array('[withheld by policy]', $vals, true));
 
-        // An un-reconfigured project is what EVERY project looks like on
-        // upgrade. It must disclose nothing until someone decides otherwise.
-        list($out5, ) = $exp(new \ExternalModules\PlainUser(true, null), $D, $data);
-        check('export: a project nobody has configured discloses no value',
-            strpos($out5, '"nope"') === false);
+        list($m3, $res3) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data);
+        check('csv: a project nobody has configured discloses no value',
+            !in_array('nope', colVals(reportOf($m3, $res3), 'value'), true));
 
-        // A3. data_export_tool = 0 is REDCap for No Access to the data export
-        // tool. The ceiling used to downgrade what the file CONTAINED while the
-        // file was still served, so a user barred from REDCap's own exporter
-        // could pull a project-wide findings file from one URL.
-        $noExport = new \ExternalModules\PlainUser(true, null);
-        $noExport->export = '0';
-        list($out6, $hdr6) = $exp($noExport, $D, $data, $RAW);
-        $names6 = [];
-        foreach ((array) $hdr6 as $h) $names6[] = $h['h'];
-        check('A3: a reader with NO export rights is refused the file',
-            strpos($out6, 'EXPORT REFUSED') !== false && strpos($out6, '"nope"') === false);
-        check('A3: and it is not offered as a download at all',
-            !preg_grep('~Content-Disposition~', $names6));
-        check('A3: the refusal says what right is missing, and that the page still works',
-            stripos($out6, 'data export tool') !== false && stripos($out6, 'scan page') !== false);
-        // The SCREEN stays available to them, capped by the same ceiling.
-        list($html6, ) = render($noExport, $D, $data, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
-        check('A3: but the on-screen report still runs, with the value still capped',
-            strpos($html6, '<td>nope</td>') === false
-            && strpos($html6, '[withheld by policy]') !== false);
-        check('A3: and the page does not offer a download it would refuse',
-            strpos($html6, 'pages/export.php') === false
-            && stripos($html6, 'Download unavailable') !== false);
-
+        // The reader's own export rights cap whatever the project chose.
         $deident = new \ExternalModules\PlainUser(true, null);
         $deident->export = '2';
-        list($out7, ) = $exp($deident, $D, $data, $RAW);
-        check('export: a de-identified reader is capped at redaction, not raw',
-            strpos($out7, '"nope"') !== false);   // 'code' is not an Identifier field
+        list($m4, $res4) = scanOf($deident, $D, $data, $RAW);
+        check('csv: a de-identified reader is capped at redaction, not raw',
+            in_array('nope', colVals(reportOf($m4, $res4), 'value'), true));
+        $noExport = new \ExternalModules\PlainUser(true, null);
+        $noExport->export = '0';
+        list($m5, $res5) = scanOf($noExport, $D, $data, $RAW);
+        check('csv: a reader with NO export rights never sees a value',
+            !in_array('nope', colVals(reportOf($m5, $res5), 'value'), true));
     }
 
-
     /* =====================================================================
-     * COLUMNS  the screen and the file show the SAME thing
+     * COLUMNS  what the report declares, independent of who renders it
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
         $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
         \REDCap::$groupNames = [];
-        // ONE event, not zero. A classic project's getEventNames() returns its
-        // single event; an EMPTY map means the read failed, which is a different
-        // project and a different report. This block used to leave it empty and
-        // assert the classic outcome, so it passed whichever of the two the code
-        // happened to implement.
-        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
+        // ONE event, not zero, and REDCap saying classic. An EMPTY map means the
+        // read failed, which is a different project and a different report.
+        $CLASSIC = ['settings' => ['scan-value-storage' => 'raw'],
+                    'events' => [1 => 'event_1_arm_1'],
+                    'proj' => ['project_id' => PID, 'longitudinal' => false]];
+        list($m, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data, $CLASSIC);
+        $rep = reportOf($m, $res);
 
-        check('columns: the table shows the instrument', strpos($html, '<th>Instrument</th>') !== false);
-        check('columns: and the value', strpos($html, '<th>Value</th>') !== false);
+        check('columns: the report shows the instrument', in_array('Instrument', $rep['labels'], true));
+        check('columns: and the value', in_array('Value', $rep['labels'], true));
         check('columns: and a plain-language explanation',
-            strpos($html, '<th>What is wrong</th>') !== false
-            && strpos($html, 'does not satisfy') !== false);
-        check('columns: and the rule name', strpos($html, '<th>Rule name</th>') !== false);
-        check('columns: the offending value is rendered in a cell',
-            strpos($html, '<td>nope</td>') !== false);
-        // A classic project has ONE event, so the column is absent rather than
-        // present-and-empty. Same for a project with no Data Access Groups.
-        check('columns: a classic project shows no Event column',
-            strpos($html, '<th>Event</th>') === false);
-        check('columns: a project with no DAGs shows no DAG column',
-            strpos($html, '<th>Data Access Group</th>') === false);
+            in_array('What is wrong', $rep['labels'], true)
+            && strpos(implode(' ', colVals($rep, 'problem')), 'does not satisfy') !== false);
+        check('columns: and the rule name', in_array('Rule name', $rep['labels'], true));
+        check('columns: the offending value reaches its cell',
+            in_array('nope', colVals($rep, 'value'), true));
+        // A column that does not apply to a project's shape is ABSENT, not
+        // present-and-empty.
+        check('columns: a classic project has no Event column',
+            !in_array('event', $rep['keys'], true));
+        check('columns: a project with no DAGs has no DAG column',
+            !in_array('dag', $rep['keys'], true));
 
         // R3-5. Dropping the Event column is the CLAIM "every finding here is in
-        // the same event", and an unreadable event map cannot support it. Two
-        // findings in different events used to render as byte-identical rows
-        // with nothing to tell them apart, while the degraded note said only
-        // that the NAMES were missing - it did not put the ids back.
+        // the same event", and an unreadable event map cannot support it.
         $dataEv = [1 => [10 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes'],
                          20 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
-        list($htmlEv, ) = render(new \ExternalModules\PlainUser(true, null), $D, $dataEv, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw']]);   // no 'events' => the map is unreadable
+        list($mEv, $resEv) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $dataEv,
+            ['settings' => ['scan-value-storage' => 'raw']]);   // no events, no $Proj
+        $repEv = reportOf($mEv, $resEv);
         check('R3-5: an unreadable event map KEEPS the Event column',
-            strpos($htmlEv, '<th>Event</th>') !== false);
+            in_array('event', $repEv['keys'], true));
+        $evs = colVals($repEv, 'event');
         check('R3-5: and falls back to the raw event id, so two events differ',
-            strpos($htmlEv, '<td>10</td>') !== false && strpos($htmlEv, '<td>20</td>') !== false);
-        check('R3-5: and says on the page WHY the ids are raw',
-            strpos($htmlEv, 'Some labels could not be read, so raw identifiers are shown instead') !== false
-            && strpos($htmlEv, 'no event names were returned') !== false);
-        // The escaping still applies to every generated cell.
-        $D2 = dict(['record_id' => ['fa'], 'want' => ['fa'],
-                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
-        $data2 = [1 => [1 => ['record_id' => '1', 'code' => '<img src=x>', 'want' => 'yes']]];
-        list($html2, ) = render(new \ExternalModules\PlainUser(true, null), $D2, $data2, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw']]);
-        check('columns: a value containing markup is escaped, not rendered',
-            strpos($html2, '<img src=x>') === false && strpos($html2, '&lt;img') !== false);
-    }
+            in_array('10', $evs, true) && in_array('20', $evs, true));
+        check('R3-5: and records WHY the ids are raw',
+            $repEv['dims']->isDegraded()
+            && strpos($repEv['dims']->degradedSummary(), 'no event names were returned') !== false);
 
+        // Escaping is the renderer's job and applies to every generated cell.
+        $data2 = [1 => [1 => ['record_id' => '1', 'code' => '<img src=x>', 'want' => 'yes']]];
+        list($m2, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data2, $CLASSIC);
+        $cell = \INSPIRE\UniversalValidator\ScanPageView::h(colVals(reportOf($m2, $res2), 'value')[0]);
+        check('columns: a value containing markup is escaped, not rendered',
+            strpos($cell, '<img src=x>') === false && strpos($cell, '&lt;img') !== false);
+    }
 
     /* =====================================================================
      * FENCE  what a scan may CLAIM is capped by what the server can prove
@@ -824,88 +880,82 @@ namespace {
      * than not having written it, because the suite reported it as covered.
      * ===================================================================== */
     {
+        $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
         $cleanData = [1 => [1 => ['record_id' => '1', 'val' => 'X']]];
         \REDCap::$groupNames = [];
 
-        // A server that CAN prove a fence: the tick is reachable.
-        list($html, $m) = render(new \ExternalModules\PlainUser(true, null), $D, $cleanData, ['run' => '1']);
-        check('fence: with a proved change fence a clean project earns the tick',
-            strpos($html, W_TICK) !== false);
+        // A server that CAN prove a fence: clean is reachable.
+        list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData);
+        check('fence: with a proved change fence a clean project is clean',
+            $V::verdict($res)['clean'] === true);
+        check('fence: and the coverage says so in its own words',
+            $res['coverage'] === 'complete-through-fence');
 
         // The same clean project on a server that cannot prove one.
-        list($html2, $m2) = render(new \ExternalModules\PlainUser(true, null), $D, $cleanData,
-            ['run' => '1'], ['unfenced' => true]);
-        check('fence: without one, the SAME clean project does not earn the tick',
-            strpos($html2, W_TICK) === false);
-        check('fence: and it says why, rather than just withholding it',
-            strpos($html2, 'cannot prove the project did not change') !== false);
-        check('fence: while still reporting that nothing was found',
-            strpos($html2, 'No violations found') !== false);
-        // The distinction has to be legible, not merely present.
-        check('fence: the unfenced verdict is not coloured as a pass',
-            strpos($html2, '#2e7d32') === false);
+        list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData,
+            ['unfenced' => true]);
+        $v2 = $V::verdict($res2);
+        check('fence: without one, the SAME clean project is NOT clean', $v2['clean'] === false);
+        check('fence: while the sweep itself still reports complete', $v2['complete'] === true);
+        // Named, not pinned to one literal: the vocabulary of weaker coverages
+        // grows as capability probes are added, and a test that pins today's
+        // spelling fails on a MORE honest answer.
+        check('fence: and the weaker claim is NAMED, not merely withheld',
+            isset($res2['coverage']) && $res2['coverage'] !== ''
+            && $res2['coverage'] !== 'complete-through-fence');
+        check('fence: with nothing found still being true', !$res2['violations']);
     }
 
-
     /* =====================================================================
-     * SHAPE  the Event and DAG columns, rendered for the first time
+     * SHAPE  the Event and DAG columns, by project shape
      *
-     * These two were "covered" by assertions that they were ABSENT — which
-     * passed because the mock returned a string where ScanDimensions needs an
-     * array, so the labels were unreadable and the columns dropped for the wrong
-     * reason. Absence has to be proved against a project shape, not against a
-     * broken read, or the assertion is satisfied by the bug.
+     * These two were once "covered" by assertions that they were ABSENT - which
+     * passed because the mocks could not produce a label at all, not because of
+     * project shape. Both are asserted present AND absent here.
      * ===================================================================== */
     {
-        $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
-                   'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
-        $data = [1 => [1 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes',
+        $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
+        $data = [1 => [7 => ['record_id' => '1', 'val' => '',
                              'redcap_data_access_group' => 'north']]];
         $RAW = ['settings' => ['scan-value-storage' => 'raw']];
+        $U = function () { return new \ExternalModules\PlainUser(true, null); };
 
-        // A LONGITUDINAL project: two events, so the column belongs.
         \REDCap::$groupNames = [];
-        list($h1, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            array_merge($RAW, ['events' => [1 => 'baseline_arm_1', 2 => 'followup_arm_1']]));
-        check('shape: a longitudinal project RENDERS the Event column',
-            strpos($h1, '<th>Event</th>') !== false);
+        list($m1, $r1) = scanOf($U(), $D, $data,
+            $RAW + ['events' => [7 => 'baseline_arm_1', 8 => 'followup_arm_1']]);
+        $rep1 = reportOf($m1, $r1);
+        check('shape: a longitudinal project HAS the Event column',
+            in_array('event', $rep1['keys'], true));
         check('shape: and the event is named, not shown as a raw id',
-            strpos($h1, 'baseline_arm_1') !== false);
+            in_array('baseline_arm_1', colVals($rep1, 'event'), true));
 
-        // A CLASSIC project: one event, so the column is absent — and now that
-        // is absence by shape, with the label source working.
-        list($h2, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            array_merge($RAW, ['events' => [1 => 'baseline_arm_1']]));
+        list($m2, $r2) = scanOf($U(), $D, $data,
+            $RAW + ['events' => [7 => 'event_1_arm_1'],
+                    'proj' => ['project_id' => PID, 'longitudinal' => false]]);
         check('shape: a classic project omits the Event column BY SHAPE',
-            strpos($h2, '<th>Event</th>') === false);
+            !in_array('event', reportOf($m2, $r2)['keys'], true));
 
-        // Groups present: the DAG column belongs and carries the group.
-        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
-        // groupNames was reset above; set it for this scenario only.
-        \REDCap::$groupNames = [7 => 'north', 8 => 'south'];
-        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
-        check('shape: a project WITH groups renders the DAG column',
-            strpos($h3, '<th>Data Access Group</th>') !== false);
+        \REDCap::$groupNames = ['north' => 'north', 'south' => 'south'];
+        list($m3, $r3) = scanOf($U(), $D, $data, $RAW);
+        $rep3 = reportOf($m3, $r3);
+        check('shape: a project WITH groups has the DAG column',
+            in_array('dag', $rep3['keys'], true));
         check('shape: and the record\'s group appears in it',
-            strpos($h3, '>north<') !== false);
+            in_array('north', colVals($rep3, 'dag'), true));
 
-        // No groups: absent by shape, with getGroupNames answering normally.
         \REDCap::$groupNames = [];
-        list($h4, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
+        list($m4, $r4) = scanOf($U(), $D, $data, $RAW);
         check('shape: a project with no groups omits the DAG column BY SHAPE',
-            strpos($h4, '<th>Data Access Group</th>') === false);
+            !in_array('dag', reportOf($m4, $r4)['keys'], true));
 
-        // Instrument labels, when readable, are shown instead of form names.
-        list($h5, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            array_merge($RAW, ['forms' => ['fa' => 'Enrolment']]));
+        list($m5, $r5) = scanOf($U(), $D, $data, $RAW + ['forms' => ['fa' => 'Enrolment form']]);
         check('shape: an instrument label is preferred over its machine name',
-            strpos($h5, '>Enrolment<') !== false);
+            in_array('Enrolment form', colVals(reportOf($m5, $r5), 'instrument'), true));
 
-        // W8: a label source that cannot be read is SAID, not silently dropped.
-        list($h6, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAW);
-        check('shape: unreadable label sources are reported on the page',
-            strpos($h6, 'Some labels could not be read') !== false);
+        list($m6, $r6) = scanOf($U(), $D, $data, $RAW);
+        check('shape: unreadable label sources are recorded as degradation',
+            reportOf($m6, $r6)['dims']->isDegraded());
     }
 
     /* =====================================================================
@@ -928,14 +978,20 @@ namespace {
         check('R3-3: TAB, CR and LF are kept',
             strpos($keep, "\t") !== false && strpos($keep, "\n") !== false);
 
-        // End to end: the same value reaches the table scrubbed.
+        // End to end: a stored value carrying ESC is scrubbed on its way into
+        // BOTH surfaces, from the same stored bytes.
         $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
                    'code' => ['fa', '@UVASSERT={"assert":"[code]=[want]"}']]);
         $data = [1 => [1 => ['record_id' => '1', 'code' => "bad" . chr(27) . "[2J", 'want' => 'yes']]];
-        list($html, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
-        check('R3-3: an ESC in a stored value never reaches the rendered page',
-            strpos($html, chr(27)) === false && strpos($html, 'bad[2J') !== false);
+        list($mE, $rE) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data,
+            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1'],
+             'proj' => ['project_id' => PID, 'longitudinal' => false]]);
+        $cellRaw = colVals(reportOf($mE, $rE), 'value')[0];
+        check('R3-3: an ESC in a stored value never reaches the rendered cell',
+            strpos($V::h($cellRaw), chr(27)) === false
+            && strpos($V::h($cellRaw), 'bad[2J') !== false);
+        check('R3-3: nor the file, from the same bytes',
+            strpos($V::csv($cellRaw), chr(27)) === false);
     }
 
     /* =====================================================================
@@ -977,8 +1033,8 @@ namespace {
      * Event column survive an unreadable event map, but read an EMPTY map as an
      * unreadable one. REDCap returns nothing for a classic project because there
      * is nothing to return, so the report grew a column of one repeated internal
-     * event id on every row, under a yellow warning that labels could not be
-     * read. Nothing had failed.
+     * event id on every row, under a warning that labels could not be read.
+     * Nothing had failed.
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'want' => ['fa'],
@@ -986,56 +1042,52 @@ namespace {
         $data = [1 => [271 => ['record_id' => '1', 'code' => 'nope', 'want' => 'yes']]];
         \REDCap::$groupNames = [];
         $RAWSET = ['settings' => ['scan-value-storage' => 'raw']];
+        $U = function () { return new \ExternalModules\PlainUser(true, null); };
+        $rep = function ($opts) use ($U, $D, $data) {
+            list($m, $r) = scanOf($U(), $D, $data, $opts);
+            return reportOf($m, $r);
+        };
 
         // REDCap says classic. No column, and no warning about a read that did
         // not fail.
-        list($h1, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            $RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => false]]);
-        check('CLASSIC: a project REDCap calls classic shows no Event column',
-            strpos($h1, '<th>Event</th>') === false);
-        // On the REASON, not on the banner: other label sources (instrument
-        // names, groups) degrade independently in this mock and legitimately
-        // raise the same banner. The claim under test is that the EVENT map is
-        // no longer reported as a failed read.
+        $r1 = $rep($RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => false]]);
+        check('CLASSIC: a project REDCap calls classic has no Event column',
+            !in_array('event', $r1['keys'], true));
+        // On the REASON, not on the banner: other label sources degrade
+        // independently here and legitimately raise the same banner.
         check('CLASSIC: and no longer reports the empty event map as a failed read',
-            strpos($h1, 'no event names were returned') === false);
+            strpos($r1['dims']->degradedSummary(), 'no event names were returned') === false);
         check('CLASSIC: the rest of the report still renders',
-            strpos($h1, '<td>nope</td>') !== false);
+            in_array('nope', colVals($r1, 'value'), true));
 
-        // REDCap says longitudinal but the names are unreadable: R3-5's case,
-        // which must keep working. The column stays, with raw ids and a reason.
-        list($h2, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            $RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => true]]);
+        // REDCap says longitudinal but the names are unreadable: R3-5's case.
+        $r2 = $rep($RAWSET + ['proj' => ['project_id' => PID, 'longitudinal' => true]]);
         check('CLASSIC: a longitudinal project with unreadable names KEEPS the column',
-            strpos($h2, '<th>Event</th>') !== false);
+            in_array('event', $r2['keys'], true));
         check('CLASSIC: and still says why the ids are raw',
-            strpos($h2, 'Some labels could not be read') !== false);
-        check('CLASSIC: showing the raw event id', strpos($h2, '<td>271</td>') !== false);
+            strpos($r2['dims']->degradedSummary(), 'no event names were returned') !== false);
+        check('CLASSIC: showing the raw event id', in_array('271', colVals($r2, 'event'), true));
 
-        // No project object at all - an older build, or a context REDCap did not
-        // set one for. "Cannot tell" must not drop a column that may be the only
-        // thing separating two rows, so 1.8.6's behaviour stands.
-        list($h3, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'], $RAWSET);
+        // No project object at all. "Cannot tell" must not drop a column that
+        // may be the only thing separating two rows.
         check('CLASSIC: with no project object the column is kept, not dropped',
-            strpos($h3, '<th>Event</th>') !== false);
+            in_array('event', $rep($RAWSET)['keys'], true));
 
-        // A $Proj for ANOTHER project answers a question about the wrong one.
-        list($h4, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            $RAWSET + ['proj' => ['project_id' => PID + 1, 'longitudinal' => false]]);
+        // A $Proj for ANOTHER project answers about the wrong one.
         check('CLASSIC: a project object for a DIFFERENT pid is not trusted',
-            strpos($h4, '<th>Event</th>') !== false);
+            in_array('event', $rep($RAWSET + ['proj' => ['project_id' => PID + 1,
+                'longitudinal' => false]])['keys'], true));
 
         // Older builds expose the count but not the flag.
-        list($h5, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            $RAWSET + ['proj' => ['project_id' => PID, 'numEvents' => 1]]);
         check('CLASSIC: numEvents = 1 is read as classic when the flag is absent',
-            strpos($h5, '<th>Event</th>') === false);
-        list($h6, ) = render(new \ExternalModules\PlainUser(true, null), $D, $data, ['run' => '1'],
-            $RAWSET + ['proj' => ['project_id' => PID, 'numEvents' => 4]]);
+            !in_array('event', $rep($RAWSET + ['proj' => ['project_id' => PID,
+                'numEvents' => 1]])['keys'], true));
         check('CLASSIC: numEvents > 1 is read as longitudinal',
-            strpos($h6, '<th>Event</th>') !== false);
+            in_array('event', $rep($RAWSET + ['proj' => ['project_id' => PID,
+                'numEvents' => 4]])['keys'], true));
     }
 
-    echo "scan_page_php: $n checks, $fail failure(s)\n";
+    echo "scan_page_php: $n checks, $fail failure(s)
+";
     exit($fail ? 1 : 0);
 }

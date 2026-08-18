@@ -452,6 +452,13 @@ filtering — over every saved record and lists each violation with a CSV export
   `incomplete`, counts the records it did not reach, and says plainly that
   duplicates are under-reported, because uniqueness is the one check that needs
   the whole project.
+> **The project-wide scan is temporarily withdrawn (1.8.9).** The page explains
+> this and starts nothing; the CSV route answers 503. It is being rebuilt as a
+> resumable background job that can cover a project of any size and record
+> exactly what it covered, per `reports/scan-rebuild-plan-2026-08-17.md`. The
+> description below is what it does when it returns. **Live form validation, the
+> save-time audit and the uniqueness check are unaffected and continue to run.**
+
 - **What the report says.** Record, Data Access Group, event, instrument,
   instance, field and field label; the **offending value**; the rule number, the
   rule's own name, and **what is wrong in plain English** rather than a reason
