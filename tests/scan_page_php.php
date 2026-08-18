@@ -88,8 +88,18 @@ namespace ExternalModules {
         public function hasDesignRights() { return $this->design; }
         /** data_export_tool 1 = Full Data Set, which is what raw values require. */
         public $export = '1';
+        /**
+         * A4/A1. A REAL rights row carries per-instrument access, and this mock
+         * did not: userFormRights() therefore found nothing to read and the
+         * entitlement gate barred every rule. The mock now models a user who can
+         * open the project's instruments, and a scenario says so when they cannot.
+         */
+        public $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1'];
+        public function getUsername() { return 'probe'; }
         public function getRights($pid = null) {
-            return ['group_id' => $this->groupId, 'data_export_tool' => $this->export];
+            $r = ['group_id' => $this->groupId, 'data_export_tool' => $this->export];
+            if ($this->forms !== null) $r['forms'] = $this->forms;
+            return $r;
         }
     }
     /**
@@ -99,10 +109,15 @@ namespace ExternalModules {
      */
     class ProxyUser {
         public $groupId = null;
+        public $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1'];
         public function __construct($groupId = null) { $this->groupId = $groupId; }
         public function __call($name, $args) {
             if ($name === 'hasDesignRights') return true;
-            if ($name === 'getRights') return ['group_id' => $this->groupId];
+            if ($name === 'getUsername') return 'proxy';
+            if ($name === 'getRights') {
+                return ['group_id' => $this->groupId, 'data_export_tool' => '1',
+                        'forms' => $this->forms];
+            }
             throw new \BadMethodCallException($name);
         }
     }
@@ -116,19 +131,36 @@ namespace ExternalModules {
      */
     class SplitProxyUser {
         public $groupId = null;
+        public $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1'];
         public function __construct($groupId = null) { $this->groupId = $groupId; }
         public function hasDesignRights() { return true; }   // declared, so this passes either way
+        public function getUsername() { return 'split'; }
         public function __call($name, $args) {
-            if ($name === 'getRights') return ['group_id' => $this->groupId];
+            if ($name === 'getRights') {
+                return ['group_id' => $this->groupId, 'data_export_tool' => '1',
+                        'forms' => $this->forms];
+            }
             throw new \BadMethodCallException($name);
         }
     }
-    /** S-02. getRights() keyed by project id rather than flat. */
+    /**
+     * S-02. getRights() keyed by project id rather than flat.
+     *
+     * A1 gave this shape a second consumer: userFormRights() reads 'forms' from
+     * the same array, so it has to read through the pid key too. It did not, and
+     * this mock is what caught it - the gate barred every rule on a build whose
+     * rights happen to be nested.
+     */
     class NestedRightsUser {
         public $pid; public $groupId;
+        public $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1'];
         public function __construct($pid, $groupId) { $this->pid = $pid; $this->groupId = $groupId; }
         public function hasDesignRights() { return true; }
-        public function getRights($pid = null) { return [$this->pid => ['group_id' => $this->groupId]]; }
+        public function getUsername() { return 'nested'; }
+        public function getRights($pid = null) {
+            return [$this->pid => ['group_id' => $this->groupId, 'data_export_tool' => '1',
+                                   'forms' => $this->forms]];
+        }
     }
     /** A user whose getRights() answers with something unusable. */
     class JunkRightsUser {
@@ -684,14 +716,30 @@ namespace {
         check('export: a project nobody has configured discloses no value',
             strpos($out5, '"nope"') === false);
 
-        // The reader's own export rights cap the project's choice. Design rights
-        // are independent of export rights in REDCap, and the scan reads through
-        // getData() with no user, so nothing else would stop this.
+        // A3. data_export_tool = 0 is REDCap for No Access to the data export
+        // tool. The ceiling used to downgrade what the file CONTAINED while the
+        // file was still served, so a user barred from REDCap's own exporter
+        // could pull a project-wide findings file from one URL.
         $noExport = new \ExternalModules\PlainUser(true, null);
         $noExport->export = '0';
-        list($out6, ) = $exp($noExport, $D, $data, $RAW);
-        check('export: a reader with NO export rights never sees a value, whatever the project set',
-            strpos($out6, '"nope"') === false && strpos($out6, '[withheld by policy]') !== false);
+        list($out6, $hdr6) = $exp($noExport, $D, $data, $RAW);
+        $names6 = [];
+        foreach ((array) $hdr6 as $h) $names6[] = $h['h'];
+        check('A3: a reader with NO export rights is refused the file',
+            strpos($out6, 'EXPORT REFUSED') !== false && strpos($out6, '"nope"') === false);
+        check('A3: and it is not offered as a download at all',
+            !preg_grep('~Content-Disposition~', $names6));
+        check('A3: the refusal says what right is missing, and that the page still works',
+            stripos($out6, 'data export tool') !== false && stripos($out6, 'scan page') !== false);
+        // The SCREEN stays available to them, capped by the same ceiling.
+        list($html6, ) = render($noExport, $D, $data, ['run' => '1'],
+            ['settings' => ['scan-value-storage' => 'raw'], 'events' => [1 => 'event_1_arm_1']]);
+        check('A3: but the on-screen report still runs, with the value still capped',
+            strpos($html6, '<td>nope</td>') === false
+            && strpos($html6, '[withheld by policy]') !== false);
+        check('A3: and the page does not offer a download it would refuse',
+            strpos($html6, 'pages/export.php') === false
+            && stripos($html6, 'Download unavailable') !== false);
 
         $deident = new \ExternalModules\PlainUser(true, null);
         $deident->export = '2';

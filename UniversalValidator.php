@@ -33,8 +33,14 @@ require_once __DIR__ . '/php/ScanColumns.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
-    /** Per-request data dictionary cache (field name => metadata row), or null. */
-    private $dd = false;
+    /**
+     * Per-request data dictionary cache, keyed BY PROJECT ID.
+     *
+     * Keyed, because one process legitimately touches more than one project;
+     * and holding successes only, because a failed read is not an answer to
+     * cache. See dataDictionary().
+     */
+    private $ddCache = [];
 
     /** Per-request HMAC key cache: false = unresolved, null = unavailable. */
     private $hmacKey = false;
@@ -1177,6 +1183,14 @@ class UniversalValidator extends AbstractExternalModule
                 $u = $this->getUser();
                 if ($u && is_callable([$u, 'getRights'])) {
                     $r = $u->getRights($pid);
+                    // Some framework builds key rights BY PROJECT ID. Read
+                    // through that shape, not past it: $r['forms'] on a pid-keyed
+                    // array is simply unset, which reads here as "rights could
+                    // not be established" - safe, but it silently disables the
+                    // feature on those builds. ScanPageView::scanScope() already
+                    // reads through it for group_id; this is the same shape, one
+                    // helper over.
+                    if (is_array($r) && isset($r[$pid]) && is_array($r[$pid])) $r = $r[$pid];
                     if (is_array($r) && isset($r['forms']) && is_array($r['forms'])) return $r['forms'];
                 }
             }
@@ -1221,6 +1235,49 @@ class UniversalValidator extends AbstractExternalModule
             if (is_string($name) && $name !== '') return $name;
         }
         return null;
+    }
+
+    /**
+     * Every field one rule READS: its own, its when/assert operands, and its
+     * composite unique partners.
+     *
+     * The same three sources scanPlan() unions into $readSet, gathered per rule
+     * rather than per project, because an entitlement question is asked of one
+     * rule at a time. Kept beside them so the two cannot drift: a source added
+     * to the read set and forgotten here would be a field the scan reads and
+     * never checks the reader's right to.
+     *
+     * @return string[]
+     */
+    private static function ruleRefFields(array $r)
+    {
+        $out = [];
+        foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+            $out[(string) $f] = true;
+        }
+        foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
+            $p = Logic::parse($cond);
+            if (empty($p['ok'])) continue;
+            foreach (Logic::referencedFields($p['ast']) as $ref) $out[(string) $ref[0]] = true;
+        }
+        foreach (self::ruleUniqueWith($r) as $w) $out[(string) $w] = true;
+        return array_keys($out);
+    }
+
+    /**
+     * Whether this reader may read $form, from REDCap's own per-instrument
+     * rights. Fails CLOSED at every step.
+     *
+     * REDCap's levels: 0 no access; 1 view/edit, 2 read-only and 3 edit survey
+     * responses all imply the form can be read. A form with NO entry is not an
+     * unrestricted form - it is a form the rights row says nothing about, and
+     * saying nothing is not granting.
+     */
+    private static function mayReadForm($rights, $form)
+    {
+        if (!is_array($rights)) return false;                  // unestablished -> clears nothing
+        if (!array_key_exists($form, $rights)) return false;   // no entry -> no
+        return (string) $rights[$form] !== '0';
     }
 
     /** Every non-empty "when" a rule carries (its own, and its branches'). */
@@ -1296,8 +1353,17 @@ class UniversalValidator extends AbstractExternalModule
         //
         // Stored only on success: a throw must NOT be memoized as an answer,
         // because a failed read judged as "no rules" is the H-05 mistake.
-        $this->rulesMemo[$key] = Branching::resolve($out);
-        return $this->rulesMemo[$key];
+        //
+        // And the DICTIONARY is part of "success". Annotation rules are read out
+        // of it and setting rules are validated against it, so a list built
+        // without one is not "no rules" - it is "we could not tell". Memoizing
+        // that made one transient dictionary failure permanent for the request,
+        // which is round 4's A4 defect one layer up: keying the dictionary cache
+        // by pid did NOT let a later scan recover, because the poisoned answer
+        // had already been stored here. Found by the probe written for A4.
+        $resolved = Branching::resolve($out);
+        if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
+        return $resolved;
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
@@ -1826,19 +1892,38 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function dataDictionary($pid = null)
     {
-        if ($this->dd !== false) return $this->dd;
-        $this->dd = null;
+        // KEYED BY PID, and only successes are kept.
+        //
+        // This was one slot, tested before $pid was even read, and it stored the
+        // FAILURE as eagerly as the answer. Two consequences, both bad:
+        //
+        //   - a single transient read failure disabled every annotation rule,
+        //     every field-name check and every host resolution for the rest of
+        //     the request, and no later call could recover it because no later
+        //     call asked again;
+        //   - the docblock above promises that an explicitly passed $pid is
+        //     preferred, precisely because getProjectId() is unreliable in
+        //     import/API/cron contexts - but after the first call the argument
+        //     was never looked at again, so one call without a project context
+        //     poisoned every subsequent call that DID pass the right pid.
+        //
+        // The scan reports its own failure honestly; redcap_save_record shares
+        // this helper and would drop the rule set in silence, which is the class
+        // of failure the module exists to prevent.
+        if (!$pid) $pid = $this->getProjectId();
+        if (!$pid) return null;
+        if (isset($this->ddCache[$pid])) return $this->ddCache[$pid];
         try {
-            if (!$pid) $pid = $this->getProjectId();
-            if ($pid) {
-                $dd = \REDCap::getDataDictionary($pid, 'array');
-                if (is_array($dd) && $dd) $this->dd = $dd;
+            $dd = \REDCap::getDataDictionary($pid, 'array');
+            if (is_array($dd) && $dd) {
+                $this->ddCache[$pid] = $dd;
+                return $dd;
             }
         } catch (\Throwable $e) {
             // outside project context (or dictionary unavailable): no annotation
             // rules and no field-name checking, never a fatal error
         }
-        return $this->dd;
+        return null;   // NOT cached: a read that failed is not an answer
     }
 
     /** Field names of the project, or null when the dictionary is unavailable. */
@@ -2261,6 +2346,29 @@ class UniversalValidator extends AbstractExternalModule
         // array_slice hands back one chunk at a time and the previous one is
         // released as the loop turns.
         $chunkSize = max(1, (int) $chunkSize);
+
+        // A chunk read costs WIDTH x HEIGHT, and only the height was bounded.
+        // Every rule field, every when/assert operand and every composite unique
+        // partner goes into one getData() call, so a project with 1,500 ruled
+        // fields built a 1,500-column export of 200 records at once - and the
+        // 1.6.4 halt guard measures memory BETWEEN chunks, so it notices after
+        // the allocation that caused the problem, not before.
+        //
+        // Narrower reads instead of a refusal: the same records are examined,
+        // in more passes. CELL_BUDGET is a shape constant, not a tuning knob -
+        // 200 records x 200 fields is what the previous behaviour cost on an
+        // ordinary project, so nothing changes for one and a wide project stops
+        // scaling its peak by rule count.
+        $width = max(1, count($readSet));
+        $cellBudget = 40000;
+        if ($width * $chunkSize > $cellBudget) {
+            $narrowed = max(1, (int) ($cellBudget / $width));
+            $result['limits'][] = 'this project has ' . $width . ' fields under rules, so records are '
+                . 'read ' . $narrowed . ' at a time instead of ' . $chunkSize . ' to keep one read '
+                . 'inside memory';
+            $chunkSize = $narrowed;
+        }
+
         $total = count($ids);
         for ($offset = 0; $offset < $total; $offset += $chunkSize) {
             $chunk = array_slice($ids, $offset, $chunkSize);
@@ -2387,7 +2495,13 @@ class UniversalValidator extends AbstractExternalModule
         // change fence can be proved, is 'manifest-complete': it cannot know the
         // project did not move underneath it, and per the plan that must never
         // render as complete or clean.
-        $result['limits'] = isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [];
+        // MERGED, not overwritten. The installation's limits come from the
+        // capability policy; the run's own limits are recorded during the sweep
+        // (the narrowed chunk read above). Assigning here discarded the second
+        // set, which is the only kind a reader can act on.
+        $result['limits'] = array_merge(
+            isset($plan['policy']['limits']) ? $plan['policy']['limits'] : [],
+            isset($result['limits']) ? $result['limits'] : []);
         if ($collect) $result['violations'] = $sink->violations;
         // Only now can the scan claim it saw everything.
         $result['status'] = $result['incomplete'] ? 'incomplete' : 'complete';
@@ -2588,7 +2702,14 @@ class UniversalValidator extends AbstractExternalModule
                 // the reader's own export rights decide how disclosing it
                 // actually is. Neither can raise the other.
                 'valueMode' => self::valueFloor($this->scanValueMode($pid),
-                                                isset($opts['valueCeiling']) ? $opts['valueCeiling'] : 'raw'),
+                                                // 'locations' when the caller says nothing. This
+                                                // read 'raw' - the MOST disclosing option - as the
+                                                // default of the one expression whose job is to cap
+                                                // disclosure, and beside a valueRank() whose docblock
+                                                // states that anything unrecognised ranks LOWEST. Both
+                                                // pages pass a ceiling, so it was latent; a caller that
+                                                // wants raw can say so.
+                                                isset($opts['valueCeiling']) ? $opts['valueCeiling'] : 'locations'),
                 'identifiers' => $this->projectIdentifierFields($pid),
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
@@ -2713,8 +2834,107 @@ class UniversalValidator extends AbstractExternalModule
                 ];
             }
         }
+        // DESIGN RIGHTS ARE NOT INSTRUMENT RIGHTS.
+        //
+        // The scan reads through REDCap::getData() with a project id and no
+        // user, so REDCap's own per-instrument access control never runs. A
+        // designer with No Access to an instrument therefore received that
+        // instrument's findings - and, on a project that had opted into raw
+        // values, its values. The 1.8.x export-rights ceiling caps how much of a
+        // value is shown; it says nothing about which instruments a reader may
+        // see at all, and the docblock that introduced it names this exact case.
+        //
+        // Enforced by DROPPING the rule before it is ever evaluated, not by
+        // filtering rows afterwards. A row filter still leaks: the finding count
+        // moves, the instrument label appears in a summary, an aggregate over
+        // the project reveals how many problems live on a form the reader cannot
+        // open. A rule that never runs produces nothing to leak.
+        //
+        // The entitlement set is every host instrument PLUS every instrument
+        // owning a field the rule references, because a `when` or `assert`
+        // operand read from a barred form decides the verdict just as directly
+        // as the field being checked.
+        //
+        // Opt-in per call. Only a request made BY a user can be scoped to that
+        // user, and scanProject() is also reachable with no user context at all;
+        // both pages pass it, which tests/scan_page_php.php asserts.
+        if (!empty($opts['enforceFormRights'])) {
+            // NULL means the rights could not be established, and a right that
+            // cannot be read cannot clear an instrument - same posture as
+            // mustRedact() and disclosableFields(), for the same reason.
+            $formRights = $this->userFormRights($pid);
+            $ddForms = $this->dataDictionary($pid);
+            $whyUnreadable = 'your per-instrument rights could not be established, so no instrument '
+                . 'could be cleared for reading and this rule was NOT evaluated - a right that cannot '
+                . 'be read cannot grant access. Ask an administrator to check your user rights.';
+            foreach ($live as $i => $r) {
+                // TWO questions, because they have different answers.
+                //
+                // A rule's CONDITION is rule-wide: a `when` or `assert` operand
+                // read from a barred instrument decides every host's verdict, so
+                // one barred operand makes the whole rule unevaluable.
+                //
+                // A rule's HOSTS are independent. Annotation rules pool by
+                // configuration, so one rule routinely spans several
+                // instruments; barring the rule outright would throw away the
+                // hosts the reader is perfectly entitled to, which is the
+                // over-broad half of H-02. Bar the host, keep the rest.
+                $own = [];
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                    $own[(string) $f] = true;
+                }
+                $condBarred = [];
+                foreach (self::ruleRefFields($r) as $f) {
+                    if (isset($own[$f])) continue;                  // a host field, handled below
+                    if (!isset($ddForms[$f]['form_name']) || $ddForms[$f]['form_name'] === '') continue;
+                    $form = (string) $ddForms[$f]['form_name'];
+                    if (!self::mayReadForm($formRights, $form)) $condBarred[$form] = true;
+                }
+                $hostBarred = [];
+                foreach ($hostFields[$i] as $form => $_) {
+                    if (!self::mayReadForm($formRights, (string) $form)) $hostBarred[(string) $form] = true;
+                }
+                if (!$condBarred && !$hostBarred) continue;
+
+                $whole = (bool) $condBarred || count($hostBarred) >= count($hostFields[$i]);
+                $named = array_keys($condBarred ? $condBarred : $hostBarred);
+                $unconf[$i . '|no-instrument-rights'] = [
+                    'rule'   => $i + 1,
+                    'fields' => array_keys($own),
+                    'why'    => $formRights === null ? $whyUnreadable
+                        : ($condBarred
+                            ? 'this rule\'s condition reads instrument ' . implode(', ', $named)
+                              . ', which you do not have access to, so the rule was NOT evaluated '
+                              . 'anywhere. Nothing about that instrument appears in this report.'
+                            : ($whole
+                                ? 'you do not have access to instrument ' . implode(', ', $named)
+                                  . ', which this rule checks, so it was NOT evaluated. Nothing about '
+                                  . 'that instrument appears in this report.'
+                                : 'you do not have access to instrument ' . implode(', ', $named)
+                                  . ', so this rule was checked only on the instrument(s) you can '
+                                  . 'open. Nothing about that instrument appears in this report.')),
+                ];
+                if ($whole) {
+                    unset($live[$i], $hostFields[$i]);
+                    continue;
+                }
+                foreach (array_keys($hostBarred) as $form) unset($hostFields[$i][$form]);
+            }
+        }
+
+        // Reassigned, because $live and $hostFields are copies taken above and
+        // the gate may have removed entries from both. Leaving the earlier
+        // assignment standing would evaluate rules the gate had just barred.
+        $out['live']       = $live;
         $out['hostFields'] = $hostFields;
         $out['unconf']     = $unconf;
+        if (!$live) {
+            // Every rule barred is not "nothing to scan": the rule problems above
+            // are the report, and they must survive. nothingToScan short-circuits
+            // to a complete status, which unconfigurable[] then keeps off green.
+            $out['nothingToScan'] = true;
+            return $out;
+        }
 
         // Everything the evaluation needs to read: rule fields + when/assert
         // refs + composite unique keys.

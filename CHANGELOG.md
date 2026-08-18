@@ -1,5 +1,111 @@
 # Changelog
 
+## 1.8.7 — instrument rights, and a cache that could not recover
+
+A fifth pass (`reports/scan-wargame-round4-2026-08-18.md`) attacked surfaces the
+earlier rounds never touched, and deliberately re-tested none of their findings.
+Eight of its thirteen probes confirmed something. Four are authorization, one is
+a cache whose failure mode is a scan that cannot recover inside a request, and
+three are gaps between what the code does and what the docs say it does.
+
+The report also records a first pass of its own that reported the authorization
+finding clean, because the value came back `NULL` from the project default rather
+than from any rights check. A probe that stops at the first `NULL` certifies a
+control that is not there.
+
+**Design rights are not instrument rights.** The scan reads through
+`REDCap::getData()` with a project id and no user, so REDCap's own per-instrument
+access control never runs on it. A designer with **No Access** to an instrument
+received that instrument's findings, and on a project that had opted into raw
+values, its values. The export-rights ceiling added in 1.8.x caps how much of a
+value is shown and says nothing about which instruments a reader may see at all —
+the docblock that introduced it names this exact case.
+
+Rules that read an instrument the reader cannot open are now dropped **before**
+evaluation and reported as rule problems naming the instrument. Before, not
+after: filtering rows afterwards still moves the finding count and still puts the
+instrument's label in a summary, so a rule that never runs is the only version
+with nothing left to leak. Two questions with different answers:
+
+- A rule's **condition** is rule-wide. One `when` or `assert` operand on a barred
+  instrument decides every host's verdict, so the rule is skipped everywhere.
+- A rule's **hosts** are independent. Annotation rules pool by configuration, so
+  one rule routinely spans several instruments; barring it outright would discard
+  the hosts the reader is entitled to. The barred host goes, the rest are checked.
+
+Rights that cannot be read clear nothing, the same posture `mustRedact()` takes.
+An instrument with no entry in the rights row is barred rather than assumed open:
+a row that says nothing about a form is not a row that grants it. The scoping is
+something a caller asks for, because `scanProject()` is also reachable with no
+user to scope to; both pages ask for it, which `tests/scan_page_php.php` asserts.
+
+`userFormRights()` also learned to read **through** a pid-keyed rights array, as
+`scanScope()` already did for `group_id`. Without it the gate barred every rule on
+any build whose rights come back nested — found by the mock that exists for that
+shape.
+
+**The export needs export rights.** `data_export_tool = 0` is REDCap for "No
+Access to the data export tool", and the file was still served with only its
+values downgraded — so a user barred from REDCap's own exporter could pull a
+project-wide findings file from one URL. The download is refused and the button is
+replaced by the reason. The screen is unaffected: reading a report inside REDCap
+is not the same act as walking out with the file, which is the distinction the
+export right exists to draw.
+
+**One failed dictionary read no longer disables the request.** The cache was a
+single slot, tested before `$pid` was read, and it stored the failure as eagerly
+as the answer. One transient failure dropped every annotation rule, every
+field-name check and every host resolution for the rest of the request, and no
+later call could recover it because no later call asked again. The docblock
+promises that an explicitly passed `$pid` is preferred — precisely because
+`getProjectId()` is unreliable in import, API and cron contexts — yet after the
+first call the argument was never read again, so one call without a project
+context poisoned every later call that passed the right pid. Now keyed by pid,
+holding successes only.
+
+Fixing it was not enough, and the probe written for it said so: `getRules()`
+memoised the empty rule list that an unreadable dictionary produces, so the
+second scan still saw no rules. Annotation rules are read out of the dictionary
+and setting rules are validated against it, so a list built without one is not
+"no rules" — it is "we could not tell". It is memoised only when the dictionary
+was readable.
+
+**A chunk read is bounded by cells, not by records.** Every rule field, every
+`when`/`assert` operand and every composite unique partner goes into one
+`getData()` call, so a project with 1,500 ruled fields built a 1,500-column
+export of 200 records at once — and the 1.6.4 halt guard measures memory
+*between* chunks, so it notices after the allocation that caused the problem.
+Wide projects now read fewer records per pass and say so in the limits; 200
+records of 200 fields, which is what an ordinary project already cost, is
+unchanged. The run's own limits are merged with the installation's rather than
+overwritten by them, which had been discarding the only kind a reader can act on.
+
+**The value ceiling defaults to `locations`.** `scanPlan()` fell back to `raw` —
+the most disclosing option — as the default of the one expression whose job is to
+cap disclosure, twenty lines from a `valueRank()` docblock stating that anything
+unrecognised ranks lowest. Both pages pass a ceiling, so it was latent. This is
+the third site in that class; the other two were fixed in 1.8.6.
+
+**Documented:** under `dag` scope, records in no group form one group of their
+own and are compared against each other. That is the only consistent reading, and
+neither `README.md` nor `config.json` said so.
+
+### Confirmed clean
+
+Recorded so the next reviewer does not re-spend the time. Record ids that PHP
+coerces as array keys (`'007'`, `'0'`, `'1e3'`, `' 8'`) survive the manifest, the
+chunk read and the report intact. Six malformed record-node shapes all produce a
+reported result rather than an exception. Markup in a field label, a rule note and
+a rule message renders escaped. A config-error rule between two live rules does
+not shift either one's labels. The `MessageCatalog` memo added in 1.8.6 could not
+be made to serve one finding's sentence to another.
+
+### Verification
+
+`hosting_php` 162 → 178 checks, `scan_page_php` 107 → 111. Fourteen of the new
+checks fail on the pre-fix tree. Full suite green on PHP 7.4 and 8.3 and on Node:
+17 PHP files and 17 JS files, 0 failures.
+
 ## 1.8.6 — the round-three findings
 
 A fourth adversarial pass (`reports/scan-wargame-round3-2026-08-18.md`) re-ran

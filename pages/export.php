@@ -26,6 +26,16 @@ $pid = $module->getProjectId();
 if (!$pid) return;
 
 $scope = ScanPageView::scanScope($module, $pid);
+if ($scope['ok'] && empty($scope['mayExport'])) {
+    // data_export_tool = 0 is REDCap saying No Access to the data export tool.
+    // The ceiling downgraded what this file CONTAINED and nothing withheld the
+    // file itself, so a user barred from REDCap's own exporter could still pull
+    // a project-wide findings file from one URL. The on-screen report is
+    // unaffected and still says everything their ceiling allows.
+    $scope = ['ok' => false, 'dag' => null, 'valueCeiling' => 'locations', 'mayExport' => false,
+              'why' => 'Your REDCap account has no access to the data export tool, so the scan '
+                     . 'report cannot be downloaded. The scan page itself still works.'];
+}
 if (!$scope['ok']) {
     // No attachment header: a browser must not save a file whose entire content
     // is an error, because a 0-finding CSV and a refused one look identical once
@@ -77,7 +87,7 @@ $sink = new CallbackFindingSink(function (array $f) use ($dims, $cols, &$rows, $
 // had already written. Caught here so the file still arrives and SAYS it is short.
 try {
     $result = $module->scanProject($pid, $scope['dag'], 200, $sink,
-        ['valueCeiling' => $scope['valueCeiling']]);
+        ['valueCeiling' => $scope['valueCeiling'], 'enforceFormRights' => true]);
 } catch (\Throwable $e) {
     $sinkError = get_class($e);
     $result = ['status' => 'failed', 'violations' => [], 'unconfigurable' => [],

@@ -1428,7 +1428,11 @@ namespace {
     // until the dialog is saved and landing on 'raw' would switch every
     // un-reconfigured project to full disclosure on upgrade.
     $m->projectSettings['scan-value-storage'] = 'raw';
-    $res = $m->scanProject(149);
+    // The CEILING is passed explicitly. scanPlan's fallback is 'locations', so a
+    // caller that wants raw asks for it - the pages always do. A test that
+    // relied on the fallback was relying on the most disclosing default in the
+    // one expression whose job is to cap disclosure (round 4, A6).
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
     check('scan: stats count records and rules', $res['stats']['records'] === 3 && $res['stats']['rules'] === 4);
     function scanHits($res, $type) {
         return array_values(array_filter($res['violations'], function ($v) use ($type) { return $v['type'] === $type; }));
@@ -1460,7 +1464,10 @@ namespace {
             return $v['reason'] === 'required-blank' && $v['value'] === null;
         }));
     $mDef = newModule([], $scDict, $scData, 149);
-    $resDef = $mDef->scanProject(149);
+    // The ceiling is RAW here on purpose: the only thing withholding must be the
+    // PROJECT setting, or the check passes for two reasons and would keep
+    // passing if that default were ever flipped.
+    $resDef = $mDef->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
     check('scan: a project nobody has configured discloses no value at all',
         !array_filter($resDef['violations'], function ($v) {
             return isset($v['value']) && $v['value'] !== null;

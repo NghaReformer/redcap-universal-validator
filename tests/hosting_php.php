@@ -60,10 +60,19 @@ namespace ExternalModules {
         public function getUser() { return new TestUser('nurse'); }
     }
     class TestUser {
+        /**
+         * A1/A2. Per-instrument rights, so a scenario can model REDCap's own
+         * answer to "may this user open fb". null means the rights row cannot be
+         * read at all, which must clear NOTHING.
+         */
+        public static $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1', 'fr' => '1', 'f1' => '1',
+                                'fz' => '1'];
         private $n; public function __construct($n) { $this->n = $n; }
         public function getUsername() { return $this->n; }
         public function hasDesignRights() { return true; }
-        public function getRights($pid = null) { return ['forms' => ['fa' => '1', 'fb' => '1', 'fc' => '1', 'fr' => '1', 'f1' => '1']]; }
+        public function getRights($pid = null) {
+            return self::$forms === null ? [] : ['forms' => self::$forms];
+        }
     }
 }
 
@@ -171,12 +180,21 @@ namespace {
             }
             return $out;
         }
+        /** A4. Every dictionary read, so "did it ask again?" is a fact. */
+        public static $dictCalls = 0;
         public static function getDataDictionary($pid, $f = 'array') {
+            self::$dictCalls++;
             if (self::$dictThrow) throw new \RuntimeException('simulated dictionary failure');
             return self::$dictionary;
         }
+        /**
+         * The SECOND source userFormRights() tries. It answered with a fixed
+         * full-access map, so a scenario that emptied the user object's rights
+         * still got cleared here and the fail-closed branch was unreachable.
+         */
         public static function getUserRights($pid = null, $u = null) {
-            return ['nurse' => ['forms' => ['fa' => '1', 'fb' => '1', 'fc' => '1', 'fr' => '1', 'f1' => '1']]];
+            $f = \ExternalModules\TestUser::$forms;
+            return $f === null ? [] : ['nurse' => ['forms' => $f]];
         }
         public static function getGroupNames($a = false, $b = null) { return ''; }
         public static function getRecordIdField() { return self::$pkAvailable ? 'record_id' : ''; }
@@ -219,6 +237,9 @@ namespace {
         \REDCap::$filterByFields = false; \REDCap::$getDataMode = 'ok'; \REDCap::$pkAvailable = true;
         REDCap::$sleepPerRead = 0; REDCap::$getDataCalls = [];
         \REDCap::$repeatMapAvailable = true;
+        \REDCap::$dictCalls = 0;
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '1', 'fc' => '1', 'fr' => '1',
+                                             'f1' => '1', 'fz' => '1'];
         return $m;
     }
     function viols($m) { return array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'invalid-id-saved'; })); }
@@ -981,7 +1002,9 @@ namespace {
 
         $m = mkMod($D, $data);
         $m->projectSettings = ['scan-value-storage' => 'raw'];
-        $res = $m->scanProject(PID);
+        // The reader's CEILING is passed explicitly - scanPlan falls back to
+        // 'locations', so raw is something a caller asks for (round 4, A6).
+        $res = $m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
         check('value: raw mode shows the bad value', $valOf($res, 'code') === 'nope');
         check('value: and a required-blank shows nothing, because there is nothing',
             $valOf($res, 'secret') === null);
@@ -995,15 +1018,17 @@ namespace {
         // so an unset setting is what EVERY un-reconfigured project looks like,
         // and what every project looks like on upgrade. Landing on 'raw' there
         // would switch them all to full disclosure with nobody deciding.
+        // Ceiling RAW throughout this pair: the PROJECT setting must be the only
+        // thing withholding, or the checks pass for two reasons at once.
         $m = mkMod($D, $data);
         $m->projectSettings = [];
-        $res = $m->scanProject(PID);
+        $res = $m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
         check('value: an unset setting discloses NOTHING, not everything',
             $valOf($res, 'code') === null);
         $m = mkMod($D, $data);
         $m->projectSettings = ['scan-value-storage' => 'wat'];
         check('value: an unrecognised setting also discloses nothing',
-            $valOf($m->scanProject(PID), 'code') === null);
+            $valOf($m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']), 'code') === null);
 
         // The reader's own export rights cap whatever the project chose.
         $m = mkMod($D, $data);
@@ -1274,6 +1299,131 @@ namespace {
             !array_filter($me['unconfigurable'], function ($u) {
                 return stripos($u['why'], 'not designated to any event') !== false;
             }));
+    }
+
+    /* =====================================================================
+     * R4  the round-4 independent attack
+     * ===================================================================== */
+    {
+        // A1/A2. Design rights are not instrument rights. The scan reads through
+        // REDCap::getData() with a project id and NO user, so REDCap's own
+        // per-instrument access control never runs: a designer with No Access to
+        // an instrument received that instrument's findings, and - once the
+        // project opted into raw values - its values.
+        //
+        // Enforced by dropping the rule BEFORE evaluation. A row filter still
+        // leaks through the finding count and the instrument label; a rule that
+        // never runs produces nothing to leak.
+        $DA = dict(['record_id' => ['fa'],
+                    'open'   => ['fa', '@UVREQUIRED'],
+                    'secret' => ['fb', '@UVREQUIRED']]);
+        $adata = [1 => [1 => ['record_id' => '1', 'open' => '', 'secret' => '']]];
+        $OPT = ['enforceFormRights' => true, 'valueCeiling' => 'raw'];
+
+        $m = mkMod($DA, $adata);
+        $m->projectSettings['scan-value-storage'] = 'raw';
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '0'];
+        $res = $m->scanProject(PID, null, 200, null, $OPT);
+        $fields = [];
+        foreach ($res['violations'] as $v) $fields[$v['field']] = true;
+        check('A1: a rule on an instrument the reader cannot open yields NO finding',
+            !isset($fields['secret']));
+        check('A1: while the instrument they can open is still checked',
+            isset($fields['open']));
+        check('A2: and nothing names the barred instrument in a finding row',
+            !array_filter($res['violations'], function ($v) {
+                return isset($v['instrument']) && $v['instrument'] === 'fb';
+            }));
+        check('A1: the skip is DISCLOSED as a rule problem naming the instrument',
+            (bool) array_filter($res['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'do not have access to instrument fb') !== false;
+            }));
+        check('A1: so the project cannot read as clean', !empty($res['unconfigurable']));
+
+        // Full access: the same project, the same rules, both findings.
+        $m2 = mkMod($DA, $adata);
+        $m2->projectSettings['scan-value-storage'] = 'raw';
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '1'];
+        $res2 = $m2->scanProject(PID, null, 200, null, $OPT);
+        check('A1: with access to both instruments, both rules run',
+            count($res2['violations']) === 2);
+
+        // Rights that cannot be READ clear nothing. This is the same posture as
+        // mustRedact(): a right we cannot read cannot grant access.
+        $m3 = mkMod($DA, $adata);
+        \ExternalModules\TestUser::$forms = null;
+        $res3 = $m3->scanProject(PID, null, 200, null, $OPT);
+        // ONE rule, not two: identical @UVREQUIRED annotations POOL into a single
+        // rule spanning both instruments, which is exactly why the gate bars per
+        // host rather than per rule.
+        check('A1: unreadable instrument rights bar every rule',
+            !$res3['violations'] && count($res3['unconfigurable']) === 1);
+        check('A1: and say so, rather than reporting a clean project',
+            (bool) array_filter($res3['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'could not be established') !== false;
+            }));
+
+        // A form with NO entry is not an unrestricted form.
+        $m4 = mkMod($DA, $adata);
+        \ExternalModules\TestUser::$forms = ['fa' => '1'];       // fb simply absent
+        $res4 = $m4->scanProject(PID, null, 200, null, $OPT);
+        check('A1: an instrument with no rights entry is barred, not assumed open',
+            !array_filter($res4['violations'], function ($v) { return $v['field'] === 'secret'; }));
+
+        // The entitlement set includes REFERENCED fields, not only host fields:
+        // a `when` operand read from a barred form decides the verdict just as
+        // directly as the field being checked.
+        $DW = dict(['record_id' => ['fa'],
+                    'gate'  => ['fb'],
+                    'thing' => ['fa', '@UVREQUIRED={"when":"[gate]=\'1\'"}']]);
+        $wdata = [1 => [1 => ['record_id' => '1', 'gate' => '1', 'thing' => '']]];
+        $m5 = mkMod($DW, $wdata);
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '0'];
+        $res5 = $m5->scanProject(PID, null, 200, null, $OPT);
+        check('A2: a rule whose CONDITION reads a barred instrument is barred too',
+            !$res5['violations'] && (bool) array_filter($res5['unconfigurable'], function ($u) {
+                return stripos($u['why'], 'instrument fb') !== false;
+            }));
+        $m6 = mkMod($DW, $wdata);
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '1'];
+        check('A2: and runs when the reader may read both',
+            count($m6->scanProject(PID, null, 200, null, $OPT)['violations']) === 1);
+
+        // Opt-in per call: scanProject() is reachable with no user context, and
+        // a scan that has no user cannot be scoped to one.
+        $m7 = mkMod($DA, $adata);
+        \ExternalModules\TestUser::$forms = ['fa' => '1', 'fb' => '0'];
+        $res7 = $m7->scanProject(PID);
+        check('A1: without the flag nothing is barred, so no other caller changed',
+            count($res7['violations']) === 2 && !$res7['unconfigurable']);
+
+        // A4. The dictionary cache was ONE slot, tested before $pid was read, and
+        // it stored the failure as eagerly as the answer: one transient failure
+        // disabled every annotation rule for the rest of the request, and no
+        // later call could recover it because no later call asked again.
+        $m8 = mkMod($DA, $adata);
+        \REDCap::$dictThrow = true;
+        $bad = $m8->scanProject(PID);
+        check('A4: a failed dictionary read fails the scan, and says so',
+            $bad['status'] === 'failed' && (bool) array_filter($bad['incomplete'], function ($w) {
+                return stripos($w, 'dictionary') !== false;
+            }));
+        \REDCap::$dictThrow = false;
+        $good = $m8->scanProject(PID);           // the SAME module instance
+        check('A4: the very next scan in the same request recovers',
+            $good['status'] === 'complete' && count($good['violations']) === 2);
+        check('A4: because the failure was never cached as an answer',
+            \REDCap::$dictCalls > 1);
+
+        // Successes are still cached, or the fix would trade one defect for a
+        // read per call.
+        \REDCap::$dictCalls = 0;
+        $m9 = mkMod($DA, $adata);
+        $m9->scanProject(PID);
+        $afterFirst = \REDCap::$dictCalls;
+        $m9->scanProject(PID);
+        check('A4: a successful read is still cached for the request',
+            $afterFirst > 0 && \REDCap::$dictCalls === $afterFirst);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

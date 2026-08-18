@@ -76,8 +76,12 @@ if ($csv) {
 
 $result = null;
 if ($run) {
+    // enforceFormRights: this is a request made BY a user, so it can be scoped
+    // to that user's per-instrument rights. scanProject() is also reachable with
+    // no user context, which is why the scoping is something a caller asks for
+    // rather than something scanPlan() assumes.
     $result = $module->scanProject($pid, $dagFilter, 200, null,
-        ['valueCeiling' => $scope['valueCeiling']]);
+        ['valueCeiling' => $scope['valueCeiling'], 'enforceFormRights' => true]);
 }
 
 $complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
@@ -136,7 +140,14 @@ project the scan may take a while — leave the page open until the table appear
   <?php /* Every executed scan offers its evidence file, not only the ones that
            found something: "0 violations, incomplete, and here is why" is a
            result worth filing. */ ?>
+  <?php if (!empty($scope['mayExport'])) { ?>
   &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo ScanPageView::h($exportUrl); ?>">Download CSV</a>
+  <?php } else { ?>
+  <?php /* The export page refuses this reader anyway; offering the button would
+           be an invitation to a 403. Say why here instead. */ ?>
+  &nbsp;<span class="text-muted" style="font-size:11px">Download unavailable — your account has no
+    access to REDCap's data export tool.</span>
+  <?php } ?>
   &nbsp;<a class="btn btn-defaultrc btn-xs" href="<?php echo ScanPageView::h($self . '&run=1'); ?>">Re-run</a>
 </p>
 

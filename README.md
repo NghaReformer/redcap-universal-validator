@@ -353,6 +353,11 @@ call — no page reload), with the usual message/confirm/block enforcement:
   must be unique (a specimen ID within its site). Scopes: `project` (default),
   `dag` (unique within each Data Access Group), `event` (within the same
   event of a longitudinal project).
+- **Under `dag`, records in no group form one group of their own.** They are
+  compared against each other, not exempted: "no DAG" is a scope like any other,
+  and the alternative reading — that an ungrouped record has nothing to be
+  compared with — would let the rule lapse exactly where records are hardest to
+  attribute. Use `project` scope if you want them compared against everything.
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
@@ -478,8 +483,21 @@ filtering — over every saved record and lists each violation with a CSV export
 - **Nothing is skipped in silence.** A rule the scan cannot evaluate is listed
   as a rule problem with the reason: a broken configuration, a field that cannot
   be located on any instrument, a project-scope uniqueness rule under a
-  group-scoped scan, or an instrument designated to no event, which collects
-  nothing and so can never fire the rules on it.
+  group-scoped scan, an instrument designated to no event (which collects
+  nothing, so the rules on it can never fire), or an instrument **you** do not
+  have access to.
+- **Design rights are not instrument rights.** The scan reads through REDCap's
+  export API with no user attached, so REDCap's own per-instrument access
+  control never runs on it. A rule that reads an instrument you cannot open is
+  therefore skipped **before** it is evaluated, and named as a rule problem — no
+  finding, no count and no label from that instrument reaches the report, which
+  filtering the rows afterwards could not promise. A rule spanning several
+  instruments is still checked on the ones you can open; a rule whose *condition*
+  reads a barred instrument is skipped outright, because the condition decides
+  every verdict. Rights that cannot be read clear nothing.
+- **The download needs export rights.** A user REDCap bars from its data export
+  tool can read the scan on screen, at whatever their value ceiling allows, and
+  cannot download the file.
 - **Same engine, same verdicts.** The scan evaluates through the exact
   dispatch the save-hook audit uses (`ruleFindings`), so the two can never
   disagree about what a violation is. Unique rules are checked in one

@@ -117,7 +117,8 @@ class ScanPageView
     public static function scanScope($module, $pid)
     {
         $no = function ($why) {
-            return ['ok' => false, 'dag' => null, 'why' => $why, 'valueCeiling' => 'locations'];
+            return ['ok' => false, 'dag' => null, 'why' => $why, 'valueCeiling' => 'locations',
+                    'mayExport' => false];
         };
         try {
             $user = $module->getUser();
@@ -142,8 +143,10 @@ class ScanPageView
                 return $no('Your Data Access Group could not be established, so the validation scan was not run.');
             }
             $ceiling = self::valueCeilingFor($rights);
+            $mayExport = self::mayExportFor($rights);
             if (empty($rights['group_id'])) {
-                return ['ok' => true, 'dag' => null, 'why' => null, 'valueCeiling' => $ceiling];
+                return ['ok' => true, 'dag' => null, 'why' => null, 'valueCeiling' => $ceiling,
+                        'mayExport' => $mayExport];
             }
 
             $gd = null;
@@ -163,7 +166,8 @@ class ScanPageView
                 return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
                          . 'The validation scan was not run.');
             }
-            return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling];
+            return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling,
+                    'mayExport' => $mayExport];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');
         }
@@ -199,5 +203,28 @@ class ScanPageView
         if ($dx === '1') return 'raw';
         if ($dx === '2' || $dx === '3') return 'identifier-redacted';
         return 'locations';                      // '0', '', or anything unrecognised
+    }
+
+    /**
+     * Whether this reader may DOWNLOAD the report at all.
+     *
+     * data_export_tool = 0 is REDCap for "No Access to the data export tool".
+     * The value ceiling downgraded what such a file contained and nothing
+     * withheld the file, so a user REDCap bars from its own exporter could still
+     * pull a project-wide findings file from this module - every record id, every
+     * instrument, every field, in one request.
+     *
+     * The SCREEN stays available to them, at whatever the ceiling allows. The
+     * distinction is deliberate: reading a report inside REDCap is not the same
+     * act as walking out with the file, which is the distinction the export
+     * right exists to draw in the first place.
+     *
+     * Unreadable or absent rights are no rights, because the safe direction is
+     * the restrictive one.
+     */
+    public static function mayExportFor($rights)
+    {
+        if (!is_array($rights) || !array_key_exists('data_export_tool', $rights)) return false;
+        return (string) $rights['data_export_tool'] !== '0';
     }
 }
