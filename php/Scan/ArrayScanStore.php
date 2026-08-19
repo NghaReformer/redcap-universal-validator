@@ -136,8 +136,11 @@ final class ArrayScanStore implements ScanStore
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
     {
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
-        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return [];
-        if ($r['cancel_requested_at'] !== null || !ScanPhase::mayWork($r['phase'])) return [];
+        // Refused and empty are DIFFERENT answers - see SqlScanStore::claim().
+        // Both stores are judged by one contract, so both must draw the line in
+        // the same place.
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return false;
+        if ($r['cancel_requested_at'] !== null || !ScanPhase::mayWork($r['phase'])) return false;
         $limit = max(1, (int) $limit);
         $cut = time() - max(1, (int) $staleSeconds);
         $out = [];
@@ -158,8 +161,8 @@ final class ArrayScanStore implements ScanStore
     public function claim($runId, $owner, $epoch, $limit)
     {
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
-        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return [];
-        if ($r['cancel_requested_at'] !== null || $r['phase'] !== 'scanning') return [];
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return false;
+        if ($r['cancel_requested_at'] !== null || $r['phase'] !== 'scanning') return false;
         $limit = max(1, (int) $limit);
         $from = (int) $r['cursor_ordinal'];
         // Ordinals are not contiguous - appending a manifest in pages leaves a

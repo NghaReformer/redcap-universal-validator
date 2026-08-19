@@ -98,9 +98,16 @@ interface ScanStore
     /**
      * Claim the next bounded ordinal range for $owner at $epoch.
      *
-     * Returns the claimed rows, or an empty array when nothing is left. A claim
-     * is itself fenced: a worker whose epoch has moved gets nothing rather than
-     * a range it would fail to commit later.
+     * Returns the claimed rows, `[]` when nothing is left, or FALSE when this
+     * worker may not claim right now - a cancelled run, a moved epoch, a phase
+     * that changed underneath it, or a read that failed.
+     *
+     * THOSE LAST TWO ARE DIFFERENT ANSWERS AND MUST STAY DIFFERENT. `[]` means
+     * move on to the next phase; `false` means stop and come back. Conflating
+     * them is what let the first live pilot walk a 39-record run to its final
+     * phase having examined three records, reporting `done` on the way out.
+     *
+     * @return array|false
      */
     public function claim($runId, $owner, $epoch, $limit);
 

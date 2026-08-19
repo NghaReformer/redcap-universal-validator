@@ -198,6 +198,41 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('migrate: and issues no DDL at all',
             !array_filter($m2->sql, function ($s) { return strpos($s, 'CREATE TABLE') === 0; }));
 
+        // THE VERSION ROW IS NOT EVIDENCE THE TABLES ARE THERE. A partial drop,
+        // a restore from a dump taken mid-uninstall, or a botched manual cleanup
+        // leaves the row standing over tables that are gone - and migrate()
+        // looked at "already at version 1" and did nothing, forever, while
+        // health() correctly called the schema broken and nothing could repair
+        // it. Found by having exactly that accident with a test database.
+        $m2b = new \FakeModule();
+        $m2b->version = Schema::VERSION;
+        $m2b->present = ['uv_schema_version'];        // the row survived; the tables did not
+        $r2b = Schema::migrate($m2b);
+        check('migrate: a version row over missing tables re-applies the schema',
+            $r2b['ok'] === true && $r2b['applied'] > 0);
+        check('migrate: rebuilding every table that was gone',
+            count(array_filter($m2b->sql, function ($s) {
+                return strpos($s, 'CREATE TABLE') === 0;
+            })) === count(Schema::tables()));
+
+        // And it stays a no-op when the tables really are all there, or the
+        // repair would re-run on every settings save forever.
+        $m2c = new \FakeModule();
+        $m2c->version = Schema::VERSION;
+        $r2c = Schema::migrate($m2c);
+        check('migrate: a schema that is genuinely complete still does nothing',
+            $r2c['applied'] === 0);
+
+        // "Could not ask" is not "nothing is missing". A probe that throws must
+        // not be read as a healthy schema, and must not be read as a broken one
+        // either - it leaves the recorded version standing.
+        $m2d = new \FakeModule();
+        $m2d->version = Schema::VERSION;
+        $m2d->failOn = 'information_schema';
+        $r2d = Schema::migrate($m2d);
+        check('migrate: an unreadable table list does not trigger a rebuild',
+            $r2d['applied'] === 0);
+
         // An unreadable version must NOT lead to a migration attempt: installing
         // over a schema whose state is unknown is how a half-migration gets
         // migrated again from the beginning.

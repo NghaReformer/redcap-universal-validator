@@ -64,7 +64,20 @@ function storeContract(callable $newStore, $label)
     $C('a claim returns the requested range', count($claim) === 2);
     $C('in ordinal order, from the start', $claim[0]['ordinal'] === 1 && $claim[1]['ordinal'] === 2);
     $C('carrying the worker locator rather than a hash', $claim[0]['id_bin'] === 'REC-1');
-    $C('a claim at a stale epoch gets NOTHING', $s->claim($runId, 'w2', $epoch - 1, 2) === []);
+    // REFUSED AND EMPTY ARE DIFFERENT ANSWERS. `[]` means the run has nothing
+    // more to hand out and the caller may move on; `false` means this worker may
+    // not have any right now and must stop. Both were `[]`, and the first live
+    // pilot walked a 39-record run to its final phase having examined three
+    // records, reporting `done` on the way out.
+    $C('a claim at a stale epoch is REFUSED, not empty',
+        $s->claim($runId, 'w2', $epoch - 1, 2) === false);
+    $C('and a straggler sweep at a stale epoch is refused too',
+        $s->claimPending($runId, 'w2', $epoch - 1, 2) === false);
+    // The distinction has to survive ===, because that is how the worker reads
+    // it: an empty array and false are both falsy, which is exactly how they got
+    // conflated in the first place.
+    $C('the two answers are not merely both falsy',
+        $s->claim($runId, 'w2', $epoch - 1, 2) !== []);
 
     // -- committing ---------------------------------------------------------
     $batch = ['bytes' => 20, 'records' => [], 'findings' => []];
@@ -236,11 +249,14 @@ function storeContract(callable $newStore, $label)
     $rid4 = (int) $r4['run']['run_id'];
     $s4->writeManifest($rid4, [$mk('Z')]);
     $ep4 = (int) $s4->run(711, $rid4)['lease_epoch'];
-    $C('a stale epoch claims no stragglers either',
-        $s4->claimPending($rid4, 'w', $ep4 - 1, 5) === []);
-    $C('a cancelled run offers no stragglers',
+    $C('a stale epoch is refused the stragglers rather than told there are none',
+        $s4->claimPending($rid4, 'w', $ep4 - 1, 5) === false);
+    // A CANCELLED RUN IS THE CASE THAT COST MOST. Returning [] here reads as
+    // "this phase is finished", so the worker advanced - and kept advancing, to
+    // the end of the chain, over records nobody had looked at.
+    $C('a cancelled run REFUSES stragglers rather than reporting none left',
         $s4->cancel(711, $rid4, 'admin') === true
-        && $s4->claimPending($rid4, 'w', (int) $s4->run(711, $rid4)['lease_epoch'], 5) === []);
+        && $s4->claimPending($rid4, 'w', (int) $s4->run(711, $rid4)['lease_epoch'], 5) === false);
 
     // -- worker slots -------------------------------------------------------
     $s2 = $newStore();

@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.9.6 - a run that walked past the records it never examined
+
+The scan ran. On real data, on a real server, it examined records and wrote
+1,815 findings. Then it reached its last phase with **3 of 39 records done** and
+answered `scan-work` with `done: true, worked: 0`.
+
+Two faults compounded, and the second is the one that matters.
+
+**An empty claim meant two different things.** `claim()` and `claimPending()`
+both returned `[]` for "this run has nothing more to hand out" AND for "you may
+not claim right now" - a cancelled run, a moved epoch, a phase that changed
+underneath, a read that failed. The first is a reason to move on; the second is
+a reason to stop. They are now `[]` and `false`, and the contract test asserts
+the two are distinguishable by `===` rather than merely both falsy, because
+both-falsy is exactly how they got conflated.
+
+**And the worker advanced on an empty claim without asking whether the manifest
+was finished.** It now refuses to leave any phase but `scanning` while a record
+remains non-terminal, and says which: records still held by another worker, or
+left behind by one that stopped. Scanning keeps its exception - its cursor can
+legitimately reach the end while rows sit claimed - which is precisely why
+catch-up, which sweeps those stragglers by state, may not advance past them.
+
+`done` is now a predicate over record states rather than the fact that the loop
+ran out of work. It was the loop's own exhaustion, which is a statement about
+the worker and not about the project.
+
+Coverage would still have read `partial`, so the run could never have claimed to
+be complete - the safety net held, and that is the only reason this was a bug
+about wasted work rather than a false clean bill of health. It still abandoned
+36 records it could have examined and told the client it was finished.
+
+Verified by mutation: conflating the two answers again fails three checks. The
+first attempt at that mutation silently did not apply and reported a clean pass,
+which is its own reminder that an unverified mutation test proves nothing.
+
+**Also: a version row is not evidence that the tables exist.** Cleaning up after
+an interrupted test run left `uv_schema_version` standing over dropped tables,
+and `migrate()` read "already at version 1" and did nothing - forever - while
+`health()` correctly called the schema broken. The same accident is a database
+restore. It now asks the facts rather than the flag, and re-applies; every
+statement is CREATE TABLE IF NOT EXISTS, so being right costs one no-op per
+table. A probe that cannot answer still changes nothing.
+
 ## 1.9.5 - the pool nothing filled
 
 Past the rights gates, the scan planned. It authorized, resolved the entitlement

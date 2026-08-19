@@ -1270,6 +1270,80 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('promote: a cross-project run id is refused with the "no such run" wording',
         $p['promoted'] === false && strpos($p['why'], 'no scan with that reference') !== false);
 
+    /* =====================================================================
+     * NEVER WALK PAST RECORDS NOBODY EXAMINED.
+     *
+     * The first live pilot: a 39-record run reached rollup-finalize with THREE
+     * records examined, and scan-work answered `done: true, worked: 0`. Two
+     * faults compounded. A cancelled run returned [] from claimPending, which
+     * reads as "this phase is finished" rather than "you may not claim"; and the
+     * worker advanced on an empty claim without asking whether the manifest was
+     * actually finished.
+     *
+     * Coverage would still have been reported `partial`, so the run could not
+     * have called itself complete - the safety net held. But it abandoned 36
+     * records it could have examined and told the client it was done, and both
+     * of those are lies of a kind this module exists to not tell.
+     * ===================================================================== */
+    {
+        list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
+
+        // Cancellation is what made the pilot's claims come back empty.
+        $store->cancel(800, $runId, 'admin');
+        $epoch = (int) $store->run(800, $runId)['lease_epoch'];
+        check('walk: a cancelled run refuses work rather than reporting none left',
+            $store->claimPending($runId, 'w1', $epoch, 5) === false);
+
+        // A worker on a phase whose claims are REFUSED stops where it is.
+        list($store2, $runId2) = $fixture(['A', 'B', 'C']);
+        $store2->advancePhase($runId2, (int) $store2->run(800, $runId2)['lease_epoch'],
+            ScanPhase::CATCH_UP);
+        $store2->cancel(800, $runId2, 'admin');
+        $w = new ScanWorker($store2, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+            'finalizer' => $fin()]);
+        $res = $w->work(800, $runId2);
+        // Cancelling is where the run belongs - cancel() moves it there - and
+        // the point is that the worker does not walk it onwards from here.
+        check('walk: a cancelled run stays in cancelling rather than advancing',
+            $store2->run(800, $runId2)['phase'] === ScanPhase::CANCELLING);
+        check('walk: it takes no work in that phase', $res['worked'] === 0);
+        check('walk: nor claims to be done over a manifest it never finished',
+            $res['done'] === false);
+
+        // The other half: claims genuinely empty, but records still out with
+        // another worker. Catch-up sweeps stragglers BY STATE, and a row claimed
+        // moments ago is invisible to that sweep until its claim goes stale -
+        // so advancing here abandons it.
+        list($store3, $runId3) = $fixture(['A', 'B', 'C']);
+        $ep3 = (int) $store3->run(800, $runId3)['lease_epoch'];
+        $store3->advancePhase($runId3, $ep3, ScanPhase::CATCH_UP);
+        $store3->claimPending($runId3, 'other-worker', $ep3, 3);   // taken, not committed
+        $w3 = new ScanWorker($store3, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+            'finalizer' => $fin()]);
+        $res3 = $w3->work(800, $runId3);
+        check('walk: records held by another worker keep the phase where it is',
+            $store3->run(800, $runId3)['phase'] === ScanPhase::CATCH_UP);
+        check('walk: the run waits rather than finishing', $res3['done'] === false
+            && $res3['stop'] === 'waiting');
+        check('walk: and says so in words a person can act on',
+            strpos($res3['why'], 'still being examined') !== false);
+        check('walk: nothing was marked examined by waiting',
+            $store3->manifestComplete($runId3) === false);
+
+        // And the control: with every record genuinely terminal, the same worker
+        // does advance and does finish. Otherwise the guard above would pass by
+        // making the scan never finish at all.
+        list($store4, $runId4) = $fixture(['A', 'B']);
+        $w4 = new ScanWorker($store4, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+            'finalizer' => $fin()]);
+        $res4 = $w4->work(800, $runId4);
+        check('walk: a manifest that IS finished still reaches the end of the chain',
+            $res4['done'] === true && $store4->manifestComplete($runId4) === true);
+    }
+
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);
     $store->finish($runId, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));

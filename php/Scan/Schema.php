@@ -440,8 +440,26 @@ final class Schema
             return ['ok' => false, 'from' => null, 'to' => self::VERSION, 'applied' => 0,
                     'why' => 'the schema version could not be read, so no migration was attempted'];
         }
-        if ($from >= self::VERSION) {
+        // THE VERSION ROW IS NOT EVIDENCE THAT THE TABLES ARE THERE, and this
+        // is where trusting it costs most. A partial drop, a restore from a
+        // dump taken mid-uninstall, or a botched manual cleanup can leave the
+        // version row standing over tables that are gone - and migrate() would
+        // then look at "already at version 1" and do nothing, forever, while
+        // health() correctly reported the schema broken and nothing on the
+        // installation was able to repair it.
+        //
+        // Found while cleaning up after an interrupted test run, which is the
+        // same accident an administrator can have with a database restore.
+        //
+        // Cheap to be right: every statement is CREATE TABLE IF NOT EXISTS, so
+        // re-applying costs one no-op per existing table and rebuilds whatever
+        // is missing. Ask the facts, not the flag.
+        $missing = self::missingTables($module);
+        if ($from >= self::VERSION && $missing === []) {
             return ['ok' => true, 'from' => $from, 'to' => self::VERSION, 'applied' => 0, 'why' => null];
+        }
+        if ($from >= self::VERSION && $missing !== null && $missing !== []) {
+            $from = 0;      // re-apply every version; IF NOT EXISTS makes it safe
         }
         if (!is_callable([$module, 'query'])) {
             return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => 0,
@@ -526,6 +544,34 @@ final class Schema
                            . self::VERSION];
         }
         return ['ok' => true, 'version' => $v, 'expected' => self::VERSION, 'missing' => [], 'why' => null];
+    }
+
+    /**
+     * Which of our tables are absent, or NULL when that cannot be established.
+     *
+     * NULL is not an empty list. "Nothing is missing" and "we could not ask"
+     * lead to opposite actions - one proceeds, the other must not pretend the
+     * schema is sound - and this file has the same distinction at every other
+     * boundary.
+     *
+     * @return string[]|null
+     */
+    private static function missingTables($module)
+    {
+        if (!is_callable([$module, 'query'])) return null;
+        $missing = [];
+        foreach (self::tables() as $t) {
+            try {
+                $q = $module->query('SELECT COUNT(*) FROM information_schema.tables
+                    WHERE table_schema = DATABASE() AND table_name = ?', [$t]);
+                $row = $q ? self::firstRow($q) : null;
+                if ($row === null) return null;
+                if ((int) (isset($row[0]) ? $row[0] : 0) < 1) $missing[] = $t;
+            } catch (\Throwable $e) {
+                return null;
+            }
+        }
+        return $missing;
     }
 
     /** One row from whatever shape the framework's query() returned, or null. */

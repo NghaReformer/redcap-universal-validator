@@ -258,6 +258,16 @@ final class SqlScanStore implements ScanStore
      * The claim is itself a compare-and-set: a worker whose epoch has already
      * moved gets nothing, rather than a range it would fail to commit later and
      * would have spent a full getData() on first.
+     *
+     * EMPTY AND REFUSED ARE DIFFERENT ANSWERS, and this is the method where
+     * conflating them cost most. `[]` means the run has no more rows to hand
+     * out; `false` means this worker may not have any right now - a cancelled
+     * run, a moved epoch, a phase that has changed underneath it, or a read that
+     * failed. The first is a reason to move on; the second is a reason to stop.
+     * The live pilot walked a 39-record run to its last phase with 3 records
+     * examined because both answers were [].
+     *
+     * @return array|false
      */
     public function claim($runId, $owner, $epoch, $limit)
     {
@@ -275,7 +285,7 @@ final class SqlScanStore implements ScanStore
             if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch || $r[0][2] !== null
                     || $r[0][1] !== ScanPhase::SCANNING) {
                 $this->db->rollback();
-                return [];
+                return false;                     // refused, NOT empty
             }
             $from = (int) $r[0][3];
 
@@ -310,7 +320,7 @@ final class SqlScanStore implements ScanStore
             return $out;
         } catch (\Throwable $e) {
             $this->db->rollback();
-            return [];
+            return false;
         }
     }
 
@@ -332,8 +342,12 @@ final class SqlScanStore implements ScanStore
                 . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch || $r[0][2] !== null
                     || !ScanPhase::mayWork($r[0][1])) {
+                // REFUSED, which is not the same as EMPTY - see the contract
+                // note on claim(). Returning [] here let the worker read "you
+                // may not claim" as "there is nothing left" and walk the phase
+                // chain to the end over a manifest it had barely started.
                 $this->db->rollback();
-                return [];
+                return false;
             }
             $t = Schema::table('scan_record');
             $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
@@ -360,8 +374,10 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return $out;
         } catch (\Throwable $e) {
+            // A failed read is not an empty one, and this is the file that says
+            // so everywhere else.
             $this->db->rollback();
-            return [];
+            return false;
         }
     }
 

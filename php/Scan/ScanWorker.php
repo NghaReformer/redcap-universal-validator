@@ -262,7 +262,18 @@ final class ScanWorker
             if ($phase === ScanPhase::CATCH_UP) {
                 $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
                                                       $budget->claim());
+                if ($claimed === false) return self::refused($worked, $requeued, $blocked,
+                                                             $found, $phase);
                 if (!$claimed) {
+                    // NOT WHILE RECORDS ARE STILL OUT. Catch-up sweeps
+                    // stragglers BY STATE, and a row claimed by a worker that
+                    // has not committed is invisible to that sweep until its
+                    // claim goes stale. Advancing here abandons it: the live
+                    // pilot reached rollup-finalize with 3 of 39 examined and
+                    // told the client it was done.
+                    if (!$this->store->manifestComplete($runId)) {
+                        return self::waiting($worked, $requeued, $blocked, $found, $phase);
+                    }
                     $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
                     if ($cu instanceof CatchUp) {
                         $t0 = microtime(true);
@@ -291,24 +302,33 @@ final class ScanWorker
                 $claimed = $this->store->claim($runId, $this->owner(), $epoch, $budget->claim());
             }
 
+            if ($claimed === false) {
+                return self::refused($worked, $requeued, $blocked, $found, $phase);
+            }
             if (!$claimed) {
-                // Nothing left in this phase. Whether that means the run is
-                // finished is not this method's decision - the phase chain says
-                // what comes next, and a phase that has nothing to do still has
-                // to be entered so that "it ran and found nothing" is
-                // distinguishable from "it never ran".
-                if (!$this->store->manifestComplete($runId)) {
-                    // The cursor reached the end with rows still unfinished:
-                    // stragglers, which catch-up sweeps by state rather than by
-                    // position.
-                    $done = false;
+                // Nothing left to hand out here. Whether the run may move on is
+                // a question about the MANIFEST, not about this claim: a phase
+                // with nothing to do still has to be ENTERED, so "it ran and
+                // found nothing" stays distinguishable from "it never ran" - but
+                // a phase must never be LEFT over records nobody examined.
+                //
+                // Scanning is the one exception, and only forwards: its cursor
+                // legitimately reaches the end while rows sit claimed by a
+                // worker that has not committed. Those are stragglers, and
+                // catch-up sweeps them by state - which is exactly why catch-up
+                // refuses to advance while any remain.
+                if ($phase !== ScanPhase::SCANNING && !$this->store->manifestComplete($runId)) {
+                    return self::waiting($worked, $requeued, $blocked, $found, $phase);
                 }
                 $next = ScanPhase::next($phase);
                 if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
                     $phase = $next;
                     continue;
                 }
-                $done = true;
+                // `done` is a claim about the WHOLE RUN, so it is a predicate
+                // over record states - never the fact that this loop ran out of
+                // work to do.
+                $done = $this->store->manifestComplete($runId);
                 break;
             }
 
@@ -344,6 +364,33 @@ final class ScanWorker
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued, 'blocked' => $blocked,
                 'findings' => $found, 'phase' => $phase, 'done' => $done,
                 'stop' => $stop, 'why' => $why];
+    }
+
+    /**
+     * This worker may not claim right now. Not an error, and not the end.
+     *
+     * A cancelled run, a moved epoch, a phase that changed underneath us, or a
+     * read that failed all arrive here. Every one of them means stop; none of
+     * them means the run is finished, and saying `done` over any of them is how
+     * a scan certifies a project it barely looked at.
+     */
+    private static function refused($worked, $requeued, $blocked, $found, $phase)
+    {
+        return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
+                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
+                'done' => false, 'stop' => 'fenced',
+                'why' => 'this scan could not take more work just now; it will continue where '
+                       . 'it stopped'];
+    }
+
+    /** Records are still out with another worker. Resumable, and honest about why. */
+    private static function waiting($worked, $requeued, $blocked, $found, $phase)
+    {
+        return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
+                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
+                'done' => false, 'stop' => 'waiting',
+                'why' => 'some records are still being examined, or were left behind by a worker '
+                       . 'that stopped; this scan will pick them up shortly'];
     }
 
     /**

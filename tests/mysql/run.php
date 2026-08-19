@@ -429,8 +429,12 @@ check('store: a claim returns the requested range', count($claim) === 3);
 check('store: in ordinal order', $claim[0]['ordinal'] === 1 && $claim[2]['ordinal'] === 3);
 check('store: carrying the worker locator, not a hash',
     $claim[0]['id_bin'] === 'REC-1');
+// REFUSED, not empty. Both were [], and a worker reading "you may not claim"
+// as "there is nothing left" walked the first live pilot's 39-record run to its
+// final phase having examined three records.
 $stale = $storeB->claim($runId, 'workerB', $epoch - 1, 3);
-check('store: a claim at a STALE epoch gets nothing', $stale === []);
+check('store: a claim at a STALE epoch is refused', $stale === false);
+check('store: and that is distinguishable from an empty run', $stale !== []);
 
 // COMMIT: findings + record states + counters, atomically and fenced.
 $batch = ['bytes' => 40, 'records' => [], 'findings' => []];
