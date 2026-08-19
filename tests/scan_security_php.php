@@ -30,6 +30,22 @@ namespace {
     }
 }
 
+namespace ExternalModules {
+    /**
+     * A framework user that answers the one question that matters here.
+     *
+     * Declared rather than mocked loosely on purpose: isSuperUser() is a real
+     * method on the framework's User, and the module asks it through
+     * is_callable - never method_exists, which answers false for anything the
+     * framework serves via __call() and is how v1.4.0 shipped a dead feature.
+     */
+    class SuperUser {
+        private $super;
+        public function __construct($super) { $this->super = (bool) $super; }
+        public function isSuperUser() { return $this->super; }
+    }
+}
+
 namespace INSPIRE\UniversalValidator\Scan {
 
     use function check;
@@ -105,6 +121,62 @@ namespace INSPIRE\UniversalValidator\Scan {
         $whyOdd = ScanAuthorization::mayStart(rights(['data_export_tool' => 'x']), $ENT)['why'];
         check('start: an unrecognised level is refused AND quoted',
             strpos($whyOdd, 'unrecognised') !== false && strpos($whyOdd, 'x') !== false);
+
+        // -- the administrator, who has no rights row to read -----------------
+        //
+        // A REDCap super-user bypasses project rights entirely, so the framework
+        // hands back design rights and NO export level and NO per-instrument
+        // map. Every gate read those absences as "no rights" and refused the one
+        // category of user who can already export the whole project from
+        // REDCap's own exporter. The first live pilot was refused exactly this
+        // way, twice over: once on the export level, once on the form map.
+        $PV = '\INSPIRE\UniversalValidator\ScanPageView';
+        $adminUser = new \ExternalModules\SuperUser(true);
+        $plainUser = new \ExternalModules\SuperUser(false);
+
+        check('admin: the framework is ASKED, never inferred from absence',
+            $PV::isAdministrator($adminUser) === true
+            && $PV::isAdministrator($plainUser) === false
+            && $PV::isAdministrator(null) === false);
+
+        $bare = ['design' => true];               // what a super-user's rights look like
+        $asAdmin = $PV::normalizeRights($bare, $adminUser);
+        check('admin: an administrator resolves to full export rights',
+            $PV::exportLevel($asAdmin) === '1');
+        check('admin: and is marked as one, by name rather than by inference',
+            $asAdmin['superUser'] === true);
+        check('admin: so a run may start with no rights row at all',
+            ScanAuthorization::mayStart($asAdmin, ['fa', 'fb', 'fc'])['ok'] === true);
+        check('admin: and every instrument is readable, there being no map',
+            ScanAuthorization::mayRead($asAdmin, ['fa', 'fb'], null)['ok'] === true);
+
+        // THE INVERSE, which is where the risk actually lives. The same absence
+        // in a NON-administrator must still be a refusal - otherwise this fix is
+        // a hole, not a fix.
+        $asPlain = $PV::normalizeRights($bare, $plainUser);
+        check('admin: the same bare rights for an ordinary user still refuse',
+            ScanAuthorization::mayStart($asPlain, ['fa'])['ok'] === false);
+        check('admin: and that user is not marked as an administrator',
+            $asPlain['superUser'] === false);
+        check('admin: an ordinary user still cannot read a form with no entry',
+            ScanAuthorization::mayRead($asPlain, ['fa'], null)['ok'] === false);
+
+        // An administrator who DOES have an explicit rights row keeps it. A
+        // deliberate restriction somebody typed outranks an inference we made.
+        $restricted = $PV::normalizeRights(
+            ['design' => true, 'data_export_tool' => '2'], $adminUser);
+        check('admin: an explicit export level is never overwritten',
+            $PV::exportLevel($restricted) === '2');
+        check('admin: so an explicitly de-identified administrator may not start',
+            ScanAuthorization::mayStart($restricted, ['fa'])['ok'] === false);
+
+        // Unreadable stays unreadable. Manufacturing an entitlement out of a
+        // shape we could not read is the fail-open direction, administrator or
+        // not, and it is the one thing this must never do.
+        check('admin: an unreadable rights shape is still unreadable',
+            $PV::normalizeRights(null, $adminUser) === null);
+        check('admin: and a scan over it is still refused',
+            ScanAuthorization::mayStart(null, ['fa'])['ok'] === false);
 
         // One reader, three callers. The value ceiling and the download gate
         // must agree with the start gate about where the level lives, or a user

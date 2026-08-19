@@ -1164,6 +1164,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $forms = $this->userFormRights($pid);
             if ($forms === null) return [];
+            $allForms = ($forms === true);
             $dd = $this->dataDictionary($pid);
             if (!$dd) return [];
             $out = [];
@@ -1171,10 +1172,12 @@ class UniversalValidator extends AbstractExternalModule
                 if (!isset($dd[$f]['form_name'])) continue;          // unknown field -> no
                 $form = $dd[$f]['form_name'];
                 if ($instrument !== null && $form === $instrument) continue;  // already live
-                if (!array_key_exists($form, $forms)) continue;      // no entry -> no
+                // An administrator reads every instrument, so there is no map
+                // to consult and nothing to bar.
+                if (!$allForms && !array_key_exists($form, $forms)) continue;   // no entry -> no
                 // REDCap form rights: 0 = no access. 1 view/edit, 2 read-only,
                 // 3 edit survey responses all imply the user can read the form.
-                if ((string) $forms[$form] === '0') continue;
+                if (!$allForms && (string) $forms[$form] === '0') continue;
                 $out[$f] = true;
             }
             return $out;
@@ -1196,11 +1199,36 @@ class UniversalValidator extends AbstractExternalModule
      * dead in v1.4.0 (see the is_callable/method_exists note above), so the
      * framework-native User::getRights($pid) is tried FIRST and the static is
      * only a fallback, called with no arguments and filtered here by username.
+     *
+     * TRI-STATE, and every caller must handle all three:
+     *   array  the per-instrument rights map
+     *   true   EVERY instrument - a REDCap administrator, who has no rights row
+     *   null   could not be established, which clears nothing
+     *
+     * `true` is not a convenience. Folding it into "an array containing every
+     * form" would need the dictionary read here, and would make an
+     * administrator's entitlement a snapshot that goes stale the moment an
+     * instrument is added.
      */
     private function userFormRights($pid)
     {
         $user = $this->currentUsername();
         if ($user === null) return null;
+
+        // 0. AN ADMINISTRATOR HAS NO RIGHTS ROW TO READ, and never needed one:
+        //    a REDCap super-user bypasses project rights entirely. Returning
+        //    null here - "rights could not be established" - made every
+        //    instrument unclearable and the entitlement gate barred every rule,
+        //    which on the first live pilot was indistinguishable from a user
+        //    with genuinely no access. Asked of the framework, never inferred
+        //    from the absence itself; see ScanPageView::isAdministrator().
+        try {
+            if (is_callable([$this, 'getUser'])
+                    && ScanPageView::isAdministrator($this->getUser())) {
+                return true;                      // every instrument; see the tri-state above
+            }
+        } catch (\Throwable $e) {
+        }
 
         // 1. Framework-native: an unambiguous, project-scoped signature.
         try {
@@ -1300,6 +1328,11 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function mayReadForm($rights, $form)
     {
+        // TRUE is userFormRights()'s "every instrument": a REDCap administrator,
+        // who has no per-instrument rights row because a super-user does not
+        // need one. Distinct from NULL, which is "could not be established" and
+        // still clears nothing.
+        if ($rights === true) return true;
         if (!is_array($rights)) return false;                  // unestablished -> clears nothing
         if (!array_key_exists($form, $rights)) return false;   // no entry -> no
         return (string) $rights[$form] !== '0';

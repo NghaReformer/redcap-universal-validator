@@ -201,6 +201,10 @@ class ScanPageView
             // shape, not past it: $rights['group_id'] on a pid-keyed array is
             // simply unset, which reads as "no DAG" and confines nothing.
             if (is_array($rights) && isset($rights[$pid]) && is_array($rights[$pid])) $rights = $rights[$pid];
+            // Resolve an administrator's entitlement before any gate reads it.
+            // A super-user has no rights row to read, and every gate downstream
+            // treated that absence as "no rights" - see normalizeRights().
+            $rights = self::normalizeRights($rights, $user);
             if (!is_array($rights)) {
                 return $no('Your Data Access Group could not be established, so the validation scan was not run.');
             }
@@ -303,6 +307,73 @@ class ScanPageView
             }
         }
         return null;
+    }
+
+    /**
+     * Is this the account of a REDCap administrator?
+     *
+     * ASKED, NEVER INFERRED FROM ABSENCE. This is the distinction that keeps the
+     * fix from being a hole: an account with no export level in its rights is
+     * still refused, exactly as before. What changes is that we now ASK whether
+     * the framework considers this user an administrator, and only an
+     * affirmative answer counts.
+     *
+     * is_callable, never method_exists - the framework serves methods through
+     * __call() and method_exists answers false for those, which is how v1.4.0
+     * shipped a production-inert @UVUNIQUE.
+     *
+     * The REDCap global is a fallback and is consulted ONLY when a user object
+     * exists, so it cannot be read in a cron or survey context where it might
+     * describe somebody else.
+     */
+    public static function isAdministrator($user)
+    {
+        if (!$user) return false;
+        try {
+            if (is_callable([$user, 'isSuperUser'])) return (bool) $user->isSuperUser();
+        } catch (\Throwable $e) {
+        }
+        if (isset($GLOBALS['super_user'])) return ((string) $GLOBALS['super_user'] === '1');
+        if (defined('SUPER_USER')) return ((string) constant('SUPER_USER') === '1');
+        return false;
+    }
+
+    /**
+     * The framework's rights array, resolved into the entitlement this module
+     * reasons about.
+     *
+     * WHY THIS EXISTS. REDCap administrators have no row in `redcap_user_rights`
+     * for a project they were never added to - they do not need one, because a
+     * super-user bypasses project rights entirely. The framework therefore hands
+     * back an array with design rights and NO export level, and every gate here
+     * read that as "no export rights", refusing a scan to the one category of
+     * user who can already export the whole project from REDCap's own exporter.
+     * The first live pilot was refused exactly this way.
+     *
+     * Resolution, not invention. An administrator's export level is filled in
+     * only when the framework supplied none: an administrator who DOES have an
+     * explicit rights row keeps whatever that row says, because a deliberate
+     * restriction someone typed is worth more than an inference we made.
+     *
+     * The returned array is the MODULE's shape, which is why `superUser` is a
+     * first-class key in it rather than something smuggled in - the gates read
+     * it by name, and it is greppable.
+     */
+    public static function normalizeRights($rights, $user = null)
+    {
+        $admin = self::isAdministrator($user);
+        if (!is_array($rights)) {
+            // An unreadable rights shape stays unreadable. Manufacturing an
+            // entitlement out of one is the fail-open direction, administrator
+            // or not.
+            return null;
+        }
+        $rights['superUser'] = $admin;
+        if ($admin) {
+            $rights['design'] = true;
+            if (self::exportLevel($rights) === null) $rights['data_export_tool'] = '1';
+        }
+        return $rights;
     }
 
     /**

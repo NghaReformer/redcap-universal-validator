@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.9.4 - the administrator has no rights row, and never needed one
+
+The diagnostic added in 1.9.3 answered its question on the first click, and my
+guess in 1.9.3 was wrong. The refusal came back:
+
+> no export level was present in your rights for this project (this build
+> supplied neither data_export_tool nor data_export)
+
+Neither key. Not an API-shape mismatch at all - the account is a REDCap
+super-user, and a super-user bypasses project rights entirely, so there is no
+`redcap_user_rights` row to read. The framework hands back design rights and
+nothing else, and every gate here read that absence as "no rights" and refused
+the one category of user who can already export the whole project from REDCap's
+own exporter.
+
+It was two gates, not one, and they presented as one defect: the export level
+was missing, and so was the per-instrument map, so even past the export check
+every instrument would have been barred.
+
+**Asked, never inferred from absence.** This is the line that keeps the fix from
+being a hole. An account with no export level is still refused exactly as
+before; what changed is that the module now ASKS the framework whether this is
+an administrator, through `is_callable` - never `method_exists`, which answers
+false for anything served via `__call()` and is how v1.4.0 shipped a dead
+feature. Only an affirmative answer counts.
+
+**Resolution, not invention.** An administrator with an explicit rights row
+keeps whatever it says: a deliberate restriction somebody typed outranks an
+inference we made. An explicitly de-identified administrator still may not start
+a run. An unreadable rights shape stays unreadable, administrator or not.
+
+The inverse assertions are the ones that matter, and they are checked by
+mutation: making absence grant rights fails three of them. 163 checks in the
+security suite.
+
 ## 1.9.3 - one reader for the export level, and a refusal that diagnoses itself
 
 Third pilot finding. With the transport fixed, Start reached the server, the

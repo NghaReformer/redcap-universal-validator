@@ -265,6 +265,11 @@ final class ScanAuthorization
      */
     private static function barredForms($rights, array $entitlement)
     {
+        // An administrator reads every instrument, and has no per-instrument
+        // rights row to say so. Without this the same absence that hid their
+        // export level bars every form they were about to scan - one defect
+        // presenting as two, which is why both are fixed together.
+        if (is_array($rights) && !empty($rights['superUser'])) return [];
         $forms = (is_array($rights) && isset($rights['forms']) && is_array($rights['forms']))
                ? $rights['forms'] : null;
         if ($forms === null) return $entitlement;      // unreadable clears nothing
