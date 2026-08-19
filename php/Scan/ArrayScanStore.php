@@ -189,10 +189,20 @@ final class ArrayScanStore implements ScanStore
 
     public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch)
     {
+        // Both stores name WHICH fence refused - one contract, one set of
+        // words. "Cancelled or taken over" covered three causes and told a
+        // pilot nothing about which one it had hit.
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
-        if ($r === null) return false;
-        if ((int) $r['lease_epoch'] !== (int) $epoch || $r['cancel_requested_at'] !== null) {
-            return false;   // overtaken or cancelled: commit NOTHING
+        if ($r === null) {
+            return 'this scan no longer exists, so nothing from these records was kept';
+        }
+        if ($r['cancel_requested_at'] !== null) {
+            return 'this scan was stopped while these records were being examined, so nothing '
+                 . 'from them was kept';
+        }
+        if ((int) $r['lease_epoch'] !== (int) $epoch) {
+            return 'another worker took over this scan while these records were being examined, '
+                 . 'so nothing from them was kept; they will be examined again';
         }
         foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
             $this->findings[] = $f;
@@ -253,6 +263,31 @@ final class ArrayScanStore implements ScanStore
     }
 
     /** A predicate over states, exactly as the SQL store computes it. */
+    /**
+     * Hand claimed rows back. See SqlScanStore::releaseClaims() for why: without
+     * it, a rolled-back batch and a phase that refuses to advance over
+     * unexamined records combine into a deadlock.
+     */
+    public function releaseClaims($runId, $epoch, array $ordinals)
+    {
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return 0;
+        if (!$ordinals || !isset($this->records[$runId])) return 0;
+        $n = 0;
+        foreach ($this->records[$runId] as $o => $rec) {
+            if (!in_array((int) $rec['ordinal'], array_map('intval', $ordinals), true)) continue;
+            if ($rec['state'] !== self::REC_CLAIMED) continue;
+            $this->records[$runId][$o]['state'] = self::REC_PENDING;
+            $this->records[$runId][$o]['claimed_at'] = null;
+            $n++;
+        }
+        $low = min(array_map('intval', $ordinals)) - 1;
+        if ($low < (int) $this->runs[$runId]['cursor_ordinal']) {
+            $this->runs[$runId]['cursor_ordinal'] = $low;
+        }
+        return $n;
+    }
+
     public function manifestComplete($runId)
     {
         if (!isset($this->records[$runId])) return false;

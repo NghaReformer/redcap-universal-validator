@@ -413,10 +413,24 @@ final class SqlScanStore implements ScanStore
             // "unchanged" is not mistaken for "absent".
             $fence = $this->db->select('SELECT lease_epoch, cancel_requested_at FROM '
                 . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
-            if (!isset($fence[0])) { $this->db->rollback(); return false; }
-            if ((int) $fence[0][0] !== (int) $epoch || $fence[0][1] !== null) {
+            // SAY WHICH FENCE REFUSED. "Cancelled or taken over" covered three
+            // different causes, and during the pilot a run failed its very first
+            // commit with no way to tell which one it was. A worker's own report
+            // about its own run discloses nothing, and it is the difference
+            // between a diagnosis and an afternoon.
+            if (!isset($fence[0])) {
                 $this->db->rollback();
-                return false;
+                return 'this scan no longer exists, so nothing from these records was kept';
+            }
+            if ($fence[0][1] !== null) {
+                $this->db->rollback();
+                return 'this scan was stopped while these records were being examined, so nothing '
+                     . 'from them was kept';
+            }
+            if ((int) $fence[0][0] !== (int) $epoch) {
+                $this->db->rollback();
+                return 'another worker took over this scan while these records were being '
+                     . 'examined, so nothing from them was kept; they will be examined again';
             }
 
             foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
@@ -470,7 +484,64 @@ final class SqlScanStore implements ScanStore
             return true;
         } catch (\Throwable $e) {
             $this->db->rollback();
-            return false;
+            // The server refused the write. Named, because "cancelled or taken
+            // over" would be a guess and this is the one cause an administrator
+            // can actually act on.
+            return 'the database refused to store these findings (' . get_class($e)
+                 . '), so nothing from these records was kept';
+        }
+    }
+
+    /**
+     * Hand claimed records back, so another worker can take them at once.
+     *
+     * WHY THIS EXISTS AT ALL. Claiming and committing are separate transactions
+     * - they must be, because the evaluation between them can take seconds - so
+     * a batch that rolls back leaves its rows CLAIMED. A claimed row is
+     * invisible to the straggler sweep until it goes stale, and the phase
+     * machine now (correctly) refuses to advance over rows nobody has examined.
+     * Without this the two safe behaviours combine into a deadlock: the pilot
+     * sat at 0 of 39 answering "waiting" for a quarter of an hour.
+     *
+     * FENCED, and on the epoch this worker held. A worker whose rows were taken
+     * over by someone else must not be able to yank them back out of the new
+     * holder's hands, so a moved epoch releases nothing.
+     *
+     * The cursor moves back with them. Scanning hands out rows ABOVE the cursor,
+     * so released rows below it would only ever be reachable by the straggler
+     * sweep - which is a slower path for records that were never examined at all.
+     *
+     * @return int rows handed back
+     */
+    public function releaseClaims($runId, $epoch, array $ordinals)
+    {
+        if (!$ordinals) return 0;
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT lease_epoch, cursor_ordinal FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch) {
+                $this->db->rollback();
+                return 0;
+            }
+            $marks = implode(',', array_fill(0, count($ordinals), '?'));
+            $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                SET state = ?, updated_at = ?
+                WHERE run_id = ? AND state = ? AND ordinal IN (' . $marks . ')',
+                array_merge([self::REC_PENDING, self::now(), $runId, self::REC_CLAIMED],
+                            $ordinals));
+            $n = $this->db->affected();
+            $low = min($ordinals) - 1;
+            if ($low < (int) $r[0][1]) {
+                $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                    . ' SET cursor_ordinal = ?, updated_at = ? WHERE run_id = ? AND lease_epoch = ?',
+                    [$low, self::now(), $runId, $epoch]);
+            }
+            $this->db->commit();
+            return $n;
+        } catch (\Throwable $e) {
+            $this->db->rollback();
+            return 0;
         }
     }
 

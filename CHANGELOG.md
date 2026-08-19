@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.9.8 - the deadlock my own guard created, and the variable that ate a record
+
+1.9.7 cleared the stuck cancel and a fresh run started - then sat at 0 of 39
+answering `waiting`, forever. The 1.9.6 guard was right to refuse to advance
+over unexamined records, and on its own it converted a lost batch into a
+deadlock.
+
+**Claiming and committing are separate transactions**, and they have to be:
+the evaluation between them takes seconds. So a rolled-back batch leaves its
+rows CLAIMED, and a claimed row is invisible to the straggler sweep until it
+goes stale fifteen minutes later. Two individually safe behaviours, combining
+into a stall. A worker that is not going to commit now hands its rows back,
+fenced on the epoch it held so a worker whose rows were taken over cannot pull
+them out of the new holder's hands. The cursor moves back with them, because
+scanning only hands out rows above it.
+
+**And `$c` was reused.** Inside the loop over claimed records, the candidate
+loop was also `foreach (... as $c)`, which overwrote the record being processed.
+The record row appended two lines later then carried a candidate's fields and no
+ordinal at all - so every record that produced a uniqueness candidate was
+committed against the wrong ordinal. On a project with a `@UVUNIQUE` rule, that
+is most of them. Four characters, and no test could see it because the fixtures
+that exercise candidates and the fixtures that check ordinals were different
+fixtures.
+
+**A refused commit now says which fence refused it.** One message covered a
+stopped run, a taken-over run and a database that would not write, and the pilot
+hit one of them with no way to tell which. Cancellation is reported ahead of the
+epoch because a cancel bumps the epoch too - reporting the takeover would be
+true and useless. Both stores name the same three causes, so the shared contract
+holds them together.
+
+282 checks across four servers, 377 in the worker suite.
+
 ## 1.9.7 - the cancel that never finished
 
 Pressing Stop left the run in `cancelling`, and there it stayed.

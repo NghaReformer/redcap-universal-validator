@@ -469,8 +469,16 @@ $lost = ['bytes' => 10, 'records' => [['ordinal' => 4, 'state' => ScanStore::REC
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
             'reason_code' => 'required-blank']]];
-check('store: an overtaken worker cannot commit',
-    $storeA->commitBatch($runId, 'workerA', $epoch, 0, $lost) === false);
+$overtaken = $storeA->commitBatch($runId, 'workerA', $epoch, 0, $lost);
+check('store: an overtaken worker cannot commit', $overtaken !== true);
+// The refusal names WHICH fence stopped it. During the pilot a run failed its
+// very first commit and one message covered a stopped run, a taken-over run and
+// a database that would not write. Here the cause is a CANCELLATION - which is
+// checked before the epoch precisely because it is the more specific answer:
+// a cancel bumps the epoch too, so reporting the takeover would be true and
+// useless.
+check('store: and is told the scan was stopped, the more specific of the two',
+    is_string($overtaken) && strpos($overtaken, 'was stopped') !== false);
 check('store: and left NO finding behind',
     (int) $storeA->run(700, $runId)['detail_rows'] === (int) $rows0);
 $left = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
@@ -738,8 +746,10 @@ $fresh = function () use ($A, $storeA) {
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
             'reason_code' => str_repeat('z', 200))));   // column is VARCHAR(64)
-    check('fault: a batch whose write fails does not commit',
-        $store->commitBatch($rid, 'w', $epoch, 0, $bad) === false);
+    $refused = $store->commitBatch($rid, 'w', $epoch, 0, $bad);
+    check('fault: a batch whose write fails does not commit', $refused !== true);
+    check('fault: and names the database as the cause, not a phantom cancellation',
+        is_string($refused) && strpos($refused, 'database refused') !== false);
     $f = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'), array());
     check('fault: leaving no partial findings', (int) $f[0][0] === 0);
     $st = $ca->query('SELECT state FROM ' . Schema::table('scan_record')

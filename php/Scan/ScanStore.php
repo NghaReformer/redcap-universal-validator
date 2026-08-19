@@ -137,6 +137,22 @@ interface ScanStore
     public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch);
 
     /**
+     * Hand claimed records back so another worker can take them immediately.
+     *
+     * Claiming and committing are separate transactions - they must be, because
+     * the evaluation between them takes time - so a rolled-back batch leaves its
+     * rows CLAIMED, and a claimed row is invisible to the straggler sweep until
+     * it goes stale. Combined with a phase machine that refuses to advance over
+     * unexamined records, that is a deadlock rather than a delay.
+     *
+     * Fenced on the epoch the caller held: a worker whose rows were taken over
+     * must not be able to pull them back out of the new holder's hands.
+     *
+     * @return int rows handed back
+     */
+    public function releaseClaims($runId, $epoch, array $ordinals);
+
+    /**
      * Is every manifest row terminal? A PREDICATE over states (I4), never a
      * comparison of counters.
      */

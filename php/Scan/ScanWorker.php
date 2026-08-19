@@ -506,9 +506,17 @@ final class ScanWorker
             // same batch so that a rolled-back read leaves no candidate behind
             // to make some other record look like a duplicate of it.
             if (isset($ev['candidates']) && is_array($ev['candidates'])) {
-                foreach ($ev['candidates'] as $c) {
-                    if (!isset($c['version'])) $c['version'] = isset($after[$id]) ? $after[$id] : null;
-                    $batch['candidates'][] = $c;
+                // $cand, NOT $c. The outer loop variable is the CLAIMED RECORD,
+                // and reusing its name here overwrote it - so the record row
+                // appended two lines below carried a candidate's fields and no
+                // ordinal at all. Every record that produced a uniqueness
+                // candidate was committed against the wrong ordinal, which on a
+                // project with a @UVUNIQUE rule is most of them.
+                foreach ($ev['candidates'] as $cand) {
+                    if (!isset($cand['version'])) {
+                        $cand['version'] = isset($after[$id]) ? $after[$id] : null;
+                    }
+                    $batch['candidates'][] = $cand;
                 }
             }
             $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
@@ -518,9 +526,23 @@ final class ScanWorker
         }
 
         $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, 0, $batch);
-        if (!$ok) {
+        if ($ok !== true) {
+            // RELEASE WHAT WE ARE NOT GOING TO COMMIT.
+            //
+            // The claim and the commit are separate transactions, so a rolled
+            // back batch leaves its records CLAIMED - and a claimed row is
+            // invisible to the straggler sweep until it goes stale, fifteen
+            // minutes later. With the phase now correctly refusing to advance
+            // over unexamined records, that turned a lost batch into a run that
+            // sat at 0 of 39 saying "waiting" for a quarter of an hour. Handing
+            // them back is what makes the refusal recoverable instead of a
+            // deadlock.
+            $ords = [];
+            foreach ($claimed as $row) $ords[] = $row['ordinal'];
+            $this->store->releaseClaims($runId, $epoch, $ords);
             return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
-                    'why' => 'this scan was cancelled or taken over while these records were being '
+                    'why' => is_string($ok) ? $ok
+                           : 'this scan was stopped or taken over while these records were being '
                            . 'examined, so nothing from them was kept'];
         }
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued, 'blocked' => $blocked,

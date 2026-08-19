@@ -155,8 +155,21 @@ function storeContract(callable $newStore, $label)
                              'record_hash' => hash('sha256', 'REC-3', true),
                              'rule_source_id' => 'r1',
                              'rule_revision' => str_repeat('c', 64)]]];
-    $C('an overtaken worker cannot commit',
-        $s->commitBatch($runId, 'w1', $epoch, 0, $lost) === false);
+    // The commit reports WHICH fence refused, so a caller can tell a stopped run
+    // from a taken-over one from a database that would not write. `!== true` is
+    // the failure test; the string is the diagnosis.
+    $refusal = $s->commitBatch($runId, 'w1', $epoch, 0, $lost);
+    $C('an overtaken worker cannot commit', $refusal !== true);
+    $C('and is told which fence refused it',
+        is_string($refusal) && strlen($refusal) > 20);
+
+    // RELEASING CLAIMS. A rolled-back batch leaves its rows claimed, and a
+    // claimed row is invisible to the straggler sweep until it goes stale - so
+    // with a phase machine that refuses to advance over unexamined records, the
+    // two safe behaviours combine into a deadlock unless the worker hands them
+    // back.
+    $C('a stale epoch releases nothing',
+        $s->releaseClaims($runId, $epoch - 5, [1, 2]) === 0);
     $C('and left no finding behind', (int) $s->run(700, $runId)['detail_rows'] === $before);
     $C('nor advanced the done count',
         (int) $s->run(700, $runId)['manifest_done'] === 2);

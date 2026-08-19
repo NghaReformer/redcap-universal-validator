@@ -819,8 +819,13 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('worker: and everything it had buffered is discarded',
         (int) $store->run(800, $runId)['detail_rows'] === 0
         && (int) $store->run(800, $runId)['manifest_done'] === 0);
+    // AND SAYS WHICH FENCE REFUSED. One message covered a stopped run, a taken
+    // -over run and a database that would not write, and during the pilot a run
+    // failed its first commit with no way to tell those apart.
     check('worker: it says what happened rather than reporting success',
-        strpos($res['why'], 'cancelled or taken over') !== false);
+        strpos($res['why'], 'stopped while these records were being examined') !== false);
+    check('worker: and the claimed records are handed back, not stranded',
+        $store->claimPending($runId, 'w2', (int) $store->run(800, $runId)['lease_epoch'], 5) !== []);
 
     // -- the configuration moved underneath the run --------------------------
     list($store, $runId) = $fixture(['A']);
