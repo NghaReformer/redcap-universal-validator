@@ -484,12 +484,43 @@ final class SqlScanStore implements ScanStore
             return true;
         } catch (\Throwable $e) {
             $this->db->rollback();
-            // The server refused the write. Named, because "cancelled or taken
-            // over" would be a guess and this is the one cause an administrator
-            // can actually act on.
-            return 'the database refused to store these findings (' . get_class($e)
-                 . '), so nothing from these records was kept';
+            // The server refused the write. SAY WHAT IT SAID.
+            //
+            // The class name alone cost three rounds of the live pilot: every
+            // batch failed with "(Exception)", which is the framework's wrapper
+            // and describes nothing. "Data too long for column reason_code" and
+            // "Column host_form cannot be null" need completely different fixes,
+            // and only the server knows which one it is.
+            return 'the database refused to store these findings, so nothing from these records '
+                 . 'was kept: ' . self::safeDbMessage($e);
         }
+    }
+
+    /**
+     * A database error message with the data taken out of it.
+     *
+     * MySQL puts the offending VALUE in single quotes - "Duplicate entry
+     * 'AB12-9' for key ..." - and this message reaches a page. The structural
+     * part is what diagnoses the fault; the value is what must not travel with
+     * it, because the reader's export rights are not the question when the text
+     * is an error string nobody audited.
+     *
+     * So: quoted literals become an ellipsis, backticked IDENTIFIERS stay (a
+     * column name is not participant data and is the whole diagnosis), and the
+     * result is bounded because an error message is not a place to put a
+     * paragraph.
+     */
+    private static function safeDbMessage(\Throwable $e)
+    {
+        $m = (string) $e->getMessage();
+        if ($m === '') return get_class($e);
+        // Single-quoted runs are values. Doubled quotes inside them are escaped
+        // quotes, so match lazily and accept that a pathological value ends the
+        // redaction early - erring toward removing MORE than necessary.
+        $m = preg_replace("/'[^']*'/", "'...'", $m);
+        $m = preg_replace('/\s+/', ' ', $m);
+        if (strlen($m) > 200) $m = substr($m, 0, 197) . '...';
+        return $m;
     }
 
     /**

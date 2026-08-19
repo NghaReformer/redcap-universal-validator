@@ -750,6 +750,16 @@ $fresh = function () use ($A, $storeA) {
     check('fault: a batch whose write fails does not commit', $refused !== true);
     check('fault: and names the database as the cause, not a phantom cancellation',
         is_string($refused) && strpos($refused, 'database refused') !== false);
+    // AND SAYS WHAT THE SERVER SAID. "(Exception)" is the framework's wrapper
+    // and describes nothing; three rounds of the live pilot were spent on it.
+    // The reason_code column here is VARCHAR(64) and the value is 200 bytes, so
+    // the server's own words are the diagnosis.
+    check('fault: quoting the server, so the column is named',
+        strpos($refused, 'reason_code') !== false || strpos($refused, 'too long') !== false);
+    // The VALUE never travels with the diagnosis. MySQL puts it in single
+    // quotes, and an error string nobody audited is not a disclosure channel.
+    check('fault: but never the value that caused it',
+        strpos($refused, str_repeat('z', 20)) === false);
     $f = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'), array());
     check('fault: leaving no partial findings', (int) $f[0][0] === 0);
     $st = $ca->query('SELECT state FROM ' . Schema::table('scan_record')

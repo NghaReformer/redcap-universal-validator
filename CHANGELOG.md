@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.9.9 - say what the server said
+
+The 1.9.8 diagnostic answered the question that had cost three rounds. Every
+batch, forty times, identically:
+
+> the database refused to store these findings (Exception)
+
+Not a cancellation. Not a takeover. A write error - which the previous message,
+"this scan was cancelled or taken over", had been quietly asserting was
+something else entirely since the first pilot run.
+
+And `(Exception)` is the External Modules wrapper class. It describes nothing.
+"Data too long for column reason_code" and "Column host_form cannot be null"
+need completely different fixes, and only the server knows which one it is, so
+the server's own words now travel with the refusal.
+
+**With the values taken out.** MySQL puts the offending value in single quotes -
+"Duplicate entry '...' for key" - and this text reaches a page. The structural
+half is the diagnosis; the value is what must not travel with it, because an
+error string nobody audited is not a disclosure channel and the reader's export
+rights are not the question. Quoted literals are redacted, backticked column
+names survive because a column name is not participant data, and the whole thing
+is bounded. The database matrix asserts both halves: the column is named, and a
+200-byte offending value does not appear.
+
+Two things worth recording about the run that produced this. The scan stayed in
+`scanning` and retried for forty batches rather than advancing, and it never
+once claimed to be done - the 1.9.6 and 1.9.8 guards held under a fault that was
+hitting every single batch. And the release-claims fix meant each retry got the
+records back immediately instead of waiting fifteen minutes for a stale claim.
+
 ## 1.9.8 - the deadlock my own guard created, and the variable that ate a record
 
 1.9.7 cleared the stuck cancel and a fresh run started - then sat at 0 of 39
