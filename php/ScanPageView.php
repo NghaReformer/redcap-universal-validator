@@ -265,11 +265,44 @@ class ScanPageView
      */
     public static function valueCeilingFor($rights)
     {
-        if (!is_array($rights) || !array_key_exists('data_export_tool', $rights)) return 'locations';
-        $dx = (string) $rights['data_export_tool'];
+        $dx = self::exportLevel($rights);
+        if ($dx === null) return 'locations';
+        $dx = (string) $dx;
         if ($dx === '1') return 'raw';
         if ($dx === '2' || $dx === '3') return 'identifier-redacted';
         return 'locations';                      // '0', '', or anything unrecognised
+    }
+
+    /**
+     * The reader's export level, under whichever key this build supplies it.
+     *
+     * ONE READER, THREE CALLERS, and that is the point. The export level decides
+     * the value ceiling, whether the file may be downloaded, and whether a run
+     * may start at all; three copies of `$rights['data_export_tool']` is three
+     * chances for one of them to be looking at the wrong key. The recorded
+     * lesson from the v1.6.0 rounds is that a shared helper has to arrive with
+     * every caller already converted.
+     *
+     * `data_export_tool` is the column in `redcap_user_rights` and what the
+     * framework's User::getRights() returns. `data_export` is the name the same
+     * value carries in REDCap's own API payloads. A build that hands back the
+     * API shape would otherwise read as no export rights at all - a denial
+     * indistinguishable from a correctly refused user, which is exactly how the
+     * first live pilot got refused by an account REDCap's own User Rights page
+     * showed as Full Data Set.
+     *
+     * Null when neither key is present, and every caller treats null as the
+     * restrictive answer: guessing a level from an absent one fails open.
+     */
+    public static function exportLevel($rights)
+    {
+        if (!is_array($rights)) return null;
+        foreach (['data_export_tool', 'data_export'] as $k) {
+            if (array_key_exists($k, $rights) && $rights[$k] !== null && $rights[$k] !== '') {
+                return $rights[$k];
+            }
+        }
+        return null;
     }
 
     /**
@@ -291,7 +324,7 @@ class ScanPageView
      */
     public static function mayExportFor($rights)
     {
-        if (!is_array($rights) || !array_key_exists('data_export_tool', $rights)) return false;
-        return (string) $rights['data_export_tool'] !== '0';
+        $dx = self::exportLevel($rights);
+        return $dx !== null && (string) $dx !== '0';
     }
 }

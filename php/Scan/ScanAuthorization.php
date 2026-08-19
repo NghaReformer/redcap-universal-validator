@@ -57,8 +57,16 @@ final class ScanAuthorization
         // A de-identified reader may not start a run: the run STORES values, and
         // what is stored outlives the level the reader had when they asked.
         if (!self::hasFullExport($rights)) {
+            // SAY WHAT WAS READ, not merely that it was not enough.
+            //
+            // The first live pilot was refused here by an account REDCap's own
+            // User Rights page showed as Full Data Set, and the message gave
+            // nobody a way to tell a wrong right from a wrong READING of it. A
+            // user being told about their own export level discloses nothing
+            // they cannot already see on that page, and it is the difference
+            // between "ask your administrator" and a diagnosis.
             return self::no('this scan stores record values, so it needs Full Data Set export '
-                . 'rights; your account does not have them');
+                . 'rights; ' . self::exportLevelPhrase($rights));
         }
         if ($unknownOwnership) {
             return self::no('at least one field a rule depends on could not be located on an '
@@ -212,8 +220,39 @@ final class ScanAuthorization
 
     private static function hasFullExport($rights)
     {
-        if (!is_array($rights) || !array_key_exists('data_export_tool', $rights)) return false;
-        return (string) $rights['data_export_tool'] === self::EXPORT_FULL;
+        if (!is_array($rights)) return false;
+        $lvl = self::exportLevel($rights);
+        return $lvl !== null && (string) $lvl === self::EXPORT_FULL;
+    }
+
+    /**
+     * The reader's export level.
+     *
+     * Delegated to ScanPageView, which owns the one reader the value ceiling and
+     * the download gate also use. Three private copies of the same array lookup
+     * is three chances for one of them to be reading the wrong key, which is the
+     * defect this method exists because of.
+     */
+    private static function exportLevel($rights)
+    {
+        return \INSPIRE\UniversalValidator\ScanPageView::exportLevel($rights);
+    }
+
+    /** How to describe the level that was actually read, in the refusal. */
+    private static function exportLevelPhrase($rights)
+    {
+        if (!is_array($rights)) return 'your rights could not be read';
+        $lvl = self::exportLevel($rights);
+        if ($lvl === null) {
+            return 'no export level was present in your rights for this project (this build '
+                 . 'supplied neither data_export_tool nor data_export), so the scan was refused '
+                 . 'rather than assumed';
+        }
+        $names = ['0' => 'No Access', '1' => 'Full Data Set', '2' => 'De-Identified',
+                  '3' => 'Remove Identifier Fields'];
+        $s = (string) $lvl;
+        return 'your export level for this project reads as '
+             . (isset($names[$s]) ? $names[$s] : ('an unrecognised value (' . $s . ')'));
     }
 
     /**

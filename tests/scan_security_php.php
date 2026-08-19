@@ -17,6 +17,7 @@
  */
 
 namespace {
+    require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
@@ -68,6 +69,55 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanAuthorization::mayStart(rights(['data_export_tool' => '1']), $ENT)['ok'] === true);
         check('start: a missing export key is a denial',
             ScanAuthorization::mayStart(['design' => true, 'forms' => ['fa' => '1']], ['fa'])['ok'] === false);
+
+        // THE API SHAPE. The framework's User::getRights() returns the
+        // `redcap_user_rights` column `data_export_tool`; REDCap's own API
+        // payloads carry the same value as `data_export`. A build handing back
+        // the API shape read as "no export rights at all" - a denial
+        // indistinguishable from a correctly refused user, and the reason the
+        // first live pilot was refused by an account REDCap's own User Rights
+        // page showed as Full Data Set.
+        $api = ['design' => true, 'forms' => ['fa' => '1'], 'data_export' => '1'];
+        check('start: Full Data Set under the API key starts a run',
+            ScanAuthorization::mayStart($api, ['fa'])['ok'] === true);
+        check('start: and a restricted level under that key still does not',
+            ScanAuthorization::mayStart(array_merge($api, ['data_export' => '2']), ['fa'])['ok'] === false);
+        // Both keys is not a way to smuggle a level past the column REDCap
+        // actually stores: the stored column wins.
+        check('start: the stored column outranks the API alias',
+            ScanAuthorization::mayStart(array_merge($api,
+                ['data_export_tool' => '2', 'data_export' => '1']), ['fa'])['ok'] === false);
+
+        // A REFUSAL THAT CANNOT BE DIAGNOSED IS A SUPPORT TICKET. The message
+        // says what was actually read, which a user can already see on their own
+        // User Rights page, so it discloses nothing and it is the difference
+        // between "ask your administrator" and a fix.
+        $whyDeid = ScanAuthorization::mayStart(rights(['data_export_tool' => '2']), $ENT)['why'];
+        check('start: the refusal names the level it read',
+            strpos($whyDeid, 'De-Identified') !== false);
+        $whyNone = ScanAuthorization::mayStart(
+            ['design' => true, 'forms' => ['fa' => '1']], ['fa'])['why'];
+        check('start: and says so when the level was absent entirely',
+            strpos($whyNone, 'no export level was present') !== false);
+        check('start: naming both keys it looked under, for whoever has to fix it',
+            strpos($whyNone, 'data_export_tool') !== false
+            && strpos($whyNone, 'data_export') !== false);
+        $whyOdd = ScanAuthorization::mayStart(rights(['data_export_tool' => 'x']), $ENT)['why'];
+        check('start: an unrecognised level is refused AND quoted',
+            strpos($whyOdd, 'unrecognised') !== false && strpos($whyOdd, 'x') !== false);
+
+        // One reader, three callers. The value ceiling and the download gate
+        // must agree with the start gate about where the level lives, or a user
+        // is refused a run and granted a raw-value export in the same request.
+        check('rights: the value ceiling reads the API key too',
+            \INSPIRE\UniversalValidator\ScanPageView::valueCeilingFor(
+                ['data_export' => '1']) === 'raw');
+        check('rights: and so does the download gate',
+            \INSPIRE\UniversalValidator\ScanPageView::mayExportFor(['data_export' => '1']) === true);
+        check('rights: an absent level is still locations-only',
+            \INSPIRE\UniversalValidator\ScanPageView::valueCeilingFor(['design' => true]) === 'locations');
+        check('rights: and still no download',
+            \INSPIRE\UniversalValidator\ScanPageView::mayExportFor(['design' => true]) === false);
 
         // WHOLE-REPORT DENIAL. One barred instrument refuses the run - filtering
         // rows would leak through counts, rollups, filter options and filenames.

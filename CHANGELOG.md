@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.9.3 - one reader for the export level, and a refusal that diagnoses itself
+
+Third pilot finding. With the transport fixed, Start reached the server, the
+framework authenticated it, and authorization refused: "this scan stores record
+values, so it needs Full Data Set export rights; your account does not have
+them" - to an account REDCap's own User Rights page shows as Full Data Set.
+
+That message gave nobody a way to tell a wrong RIGHT from a wrong READING of
+one, so the first change is that it now says what it actually read: the level by
+name, or that no level was present and under which keys it looked. A user is
+being told about their own export rights, which they can already see on their
+own User Rights page, so this discloses nothing - and it is the difference
+between "ask your administrator" and a fix.
+
+The second change is the likely cause and a real robustness gap either way. The
+level was read only as `data_export_tool`, the column in `redcap_user_rights`.
+REDCap's own API payloads carry the same value as `data_export`, and a build
+handing back that shape read as no export rights at all - a denial
+indistinguishable from a correctly refused user. Both names are now read, the
+stored column wins when both are present, and an absent level is still a denial
+because guessing a level from an absent one fails open.
+
+**One reader, three callers, converted together.** The export level decides the
+value ceiling, whether the file may be downloaded, and whether a run may start;
+three separate copies of the same array lookup is three chances for one to be
+reading the wrong key - and it would show up as a user refused a run and granted
+a raw-value export in the same request. `ScanPageView::exportLevel()` is now the
+only place that knows where the level lives. The recorded lesson from the v1.6.0
+rounds is that a shared helper has to arrive with every caller already
+converted, so it does.
+
+151 checks in the security suite, green on PHP 7.4 and 8.4.
+
 ## 1.9.2 - a panel nothing could drive
 
 Second defect from the same pilot, one click after the first. With the schema
