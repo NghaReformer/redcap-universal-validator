@@ -127,8 +127,29 @@ final class ScanWorker
             $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
             $slot = $slots->acquire($this->owner(), $runId, $ttl);
             if ($slot === null) {
-                // Not an error: the server is busy, and the right answer is to
-                // come back rather than to fail the run.
+                // TWO DIFFERENT FAULTS LOOK IDENTICAL HERE, and only one of them
+                // is contention.
+                //
+                // Leasing is an UPDATE against precreated rows, so the count of
+                // rows IS the limit - and a table with no rows is a limit of
+                // zero. Every worker is refused, forever, and "the server is
+                // busy with other scans" is then a false sentence that sends an
+                // administrator looking for scans that do not exist. The first
+                // live pilot spent a round exactly there.
+                //
+                // One extra query, on the failure path only, to tell an empty
+                // pool from a full one.
+                $census = $slots->census();
+                if ((int) $census['total'] < 1) {
+                    return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'phase' => $phase, 'done' => false,
+                            'stop' => 'unprovisioned',
+                            'why' => 'this installation has no scan worker slots, so no scan can '
+                                   . 'run. An administrator can create them by saving the module\'s '
+                                   . 'system configuration.'];
+                }
+                // Genuine contention. Not an error: the right answer is to come
+                // back rather than to fail the run.
                 return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
                         'findings' => 0, 'phase' => $phase, 'done' => false, 'stop' => 'capacity',
                         'why' => 'this server is running as many scans as it allows at once; '

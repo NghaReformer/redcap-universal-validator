@@ -2274,6 +2274,39 @@ class UniversalValidator extends AbstractExternalModule
                 'applied' => isset($r['applied']) ? (int) $r['applied'] : 0,
                 'why' => isset($r['why']) ? (string) $r['why'] : '',
             ]);
+            if (empty($r['ok'])) return;
+
+            // AND PROVISION THE WORKER SLOTS, because creating the table does
+            // not create the rows.
+            //
+            // Leasing a slot is an UPDATE against precreated rows - deliberately,
+            // so that two workers racing are serialised by InnoDB and exactly one
+            // sees a row changed. The consequence is that the COUNT OF ROWS IS
+            // THE LIMIT, and a table with no rows is a limit of zero: every
+            // worker is refused, forever, and told the server is busy.
+            //
+            // The first live pilot hit exactly that. The scan planned, froze a
+            // 39-record manifest, and then could not do a single batch, because
+            // provision() had no caller anywhere outside its own tests - the
+            // same shape as the migration it now sits beside.
+            //
+            // Additive: raising the limit adds rows here on the next save;
+            // lowering it never deletes one, because a row being deleted may be
+            // leased right now.
+            $limitKey = 'scan-system-max-concurrent-projects';
+            // Through ScanPolicy so an unset or malformed setting lands on the
+            // documented default rather than on zero, which would provision
+            // nothing and reproduce the very fault this fixes.
+            $policy = Scan\ScanPolicy::resolve(
+                [$limitKey => $this->getSystemSetting($limitKey)], []);
+            $slots = new Scan\WorkerSlots(new Scan\ModuleDb($this));
+            $added = $slots->provision($policy['maxProjects']);
+            $census = $slots->census();
+            $this->log('scan-slots-provision', [
+                'limit' => (int) $policy['maxProjects'],
+                'added' => (int) $added,
+                'total' => (int) $census['total'],
+            ]);
         } catch (Throwable $e) {
             // Swallowed on purpose - see the docblock. The scan stays disabled
             // and the page explains itself.

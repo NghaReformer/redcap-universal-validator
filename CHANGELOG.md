@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.9.5 - the pool nothing filled
+
+Past the rights gates, the scan planned. It authorized, resolved the entitlement
+forms, computed a fingerprint, captured an opening fence and froze a 39-record
+manifest from the real record list - all of it correct on the first attempt.
+
+Then it did nothing at all, and said: "This server is busy with other scans;
+this one will continue shortly." There were no other scans.
+
+`WorkerSlots::provision()` had no caller anywhere outside its own tests - the
+same shape as the migration in 1.9.1. Leasing a slot is an UPDATE against
+precreated rows, deliberately, so two racing workers are serialised by InnoDB
+and exactly one sees a row changed. The consequence is that **the count of rows
+is the limit**, and a table with no rows is a limit of zero. Creating the table
+does not create the rows, and nothing created the rows.
+
+Provisioning now happens where the schema is installed, which is the same
+administrator action: ticking the switch and pressing Save. It is additive, so
+raising the limit adds rows on the next save and lowering it never deletes one -
+a row being deleted may be leased right now.
+
+**And the message was false, which is the worse half.** Two different faults are
+indistinguishable at the `acquire()` call, and only one of them is contention.
+Telling an administrator the server is busy when the pool is empty sends them
+looking for scans that do not exist. One extra query, on the failure path only,
+now tells an empty pool from a full one, and the empty case says how to fix it.
+
+Both are checked against real servers rather than a mock: a real store, real
+slots and an empty pool, asserting the worker stops with `unprovisioned`, does
+no work, marks nothing examined - and that provisioning one slot lets the same
+run proceed, so the refusal really was about the pool. 275 checks across MySQL
+5.7/8.0 and MariaDB 10.5/10.11.
+
 ## 1.9.4 - the administrator has no rights row, and never needed one
 
 The diagnostic added in 1.9.3 answered its question on the first click, and my

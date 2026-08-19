@@ -539,6 +539,15 @@ $fresh = function () use ($A, $storeA) {
     $slotsB = new \INSPIRE\UniversalValidator\Scan\WorkerSlots($dbB);
     $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
 
+    // AN UNPROVISIONED POOL IS A LIMIT OF ZERO, not a busy server. The table
+    // exists here and holds no rows, which is precisely the state the first live
+    // pilot ran in: the scan planned a 39-record manifest and could not do one
+    // batch, while the page said the server was busy with other scans.
+    check('slots: an empty pool refuses every worker',
+        $slotsA->acquire('w1', 1, 60) === null);
+    check('slots: and the census says the pool is empty rather than full',
+        $slotsA->census()['total'] === 0 && $slotsA->census()['held'] === 0);
+
     check('slots: provisioning creates the configured number', $slotsA->provision(3) === 3);
     check('slots: and is idempotent - saving settings twice adds nothing',
         $slotsA->provision(3) === 0);
@@ -582,6 +591,43 @@ $fresh = function () use ($A, $storeA) {
         $slotsA->renew($browser['slot_no'], 'browser-1', $browser['epoch'], 60) === false);
     check('slots: nor release it, which would hand away a LIVE lease',
         $slotsA->release($browser['slot_no'], 'browser-1', $browser['epoch']) === false);
+
+    // AND WHAT THE WORKER SAYS ABOUT IT. Real store, real slots, empty pool -
+    // no mock can get this wrong, because there is no mock. The distinction
+    // matters because the two states are indistinguishable at the acquire()
+    // call and only one of them is something an administrator should wait out.
+    {
+        $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+        $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+        foreach (array('scan_record', 'scan_run') as $t) {
+            $A->query('DELETE FROM ' . Schema::table($t));
+        }
+        $r = $store->startRun(950, array('created_by' => 'alice'));
+        $rid = (int) $r['run']['run_id'];
+        $store->writeManifest($rid, array(
+            array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null)));
+        $w = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+            'slots' => $slotsA, 'owner' => 'w1',
+            'read' => function ($ids) { return array('ok' => true, 'data' => array(), 'why' => null); },
+            'evaluate' => function ($id, $node) {
+                return array('findings' => array(), 'bytes' => 0, 'contexts' => 1, 'why' => null);
+            }));
+        $res = $w->work(950, $rid);
+        check('slots: with no pool the worker stops rather than reporting contention',
+            $res['stop'] === 'unprovisioned');
+        check('slots: and says how to fix it, not that the server is busy',
+            strpos($res['why'], 'no scan worker slots') !== false
+            && strpos($res['why'], 'busy') === false);
+        check('slots: and it did no work, so nothing is marked examined',
+            $res['worked'] === 0 && (int) $store->run(950, $rid)['manifest_done'] === 0);
+
+        // Provision one slot and the same worker proceeds: the refusal really
+        // was about the pool and not about anything else in the run.
+        $slotsA->provision(1);
+        $res2 = $w->work(950, $rid);
+        check('slots: provisioning the pool lets the same run proceed',
+            $res2['stop'] !== 'unprovisioned');
+    }
 }
 
 // -- ScanRetention: three clocks, and nothing silently loses a finding --------
