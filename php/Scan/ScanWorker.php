@@ -84,6 +84,30 @@ final class ScanWorker
             return self::stop('no scan with that reference is running for this project');
         }
         $phase = (string) $run['phase'];
+
+        // A CANCELLED RUN HAS TO BE FINISHED BY SOMEBODY.
+        //
+        // `cancelling` exists so the epoch bump lands BEFORE the terminal write,
+        // which is what makes a worker mid-evaluation fail its compare-and-set
+        // instead of committing into a finished run. That is the whole point of
+        // the phase - but nothing then completed the transition, so a cancelled
+        // run sat in `cancelling` holding the project's one active slot, and no
+        // new scan could start until the abandoned-run sweep caught it hours
+        // later. The live pilot left one there within a minute of pressing Stop.
+        //
+        // Whoever arrives next finishes it. finish() is idempotent, so two
+        // workers arriving together is not a race.
+        if ($phase === ScanPhase::CANCELLING) {
+            $this->store->finish($runId, ScanOutcome::derive([
+                'cancelled' => true,
+                'manifestDone' => $this->store->manifestComplete($runId),
+            ]));
+            return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                    'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'cancelled',
+                    'why' => 'this scan was stopped, so the records after that point were never '
+                           . 'examined'];
+        }
+
         if (!ScanPhase::mayWork($phase)) {
             return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => $phase, 'done' => ($phase === ScanPhase::TERMINAL), 'stop' => null,

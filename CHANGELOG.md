@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.9.7 - the cancel that never finished
+
+Pressing Stop left the run in `cancelling`, and there it stayed.
+
+The phase is a deliberate two-step: bump the lease epoch, THEN write the
+terminal state, so a worker already evaluating fails its compare-and-set instead
+of committing into a finished run. That is the whole reason `cancelling` exists.
+But nothing owned the second step - the worker refuses to work in a phase that
+takes no work, and returned early without finishing it - so the run stayed
+active, holding the project's one scan slot, until the abandoned-run sweep
+caught it hours later. Stop then Start reported the project busy with the user's
+own cancelled run.
+
+Whoever arrives next now finishes it. `finish()` refuses to reopen anything, so
+two workers landing on the same cancelled run is not a race. And `start()` reaps
+it before asking for the slot, because the person starting a new scan does not
+have a run id to hand the worker - reaping only in the worker would have fixed
+the case nobody hits and left the one everybody hits.
+
+Found the same way as the last four: by watching a real run instead of a test.
+
 ## 1.9.6 - a run that walked past the records it never examined
 
 The scan ran. On real data, on a real server, it examined records and wrote

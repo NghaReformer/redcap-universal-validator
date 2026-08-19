@@ -1303,13 +1303,26 @@ namespace INSPIRE\UniversalValidator\Scan {
             'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
             'finalizer' => $fin()]);
         $res = $w->work(800, $runId2);
-        // Cancelling is where the run belongs - cancel() moves it there - and
-        // the point is that the worker does not walk it onwards from here.
-        check('walk: a cancelled run stays in cancelling rather than advancing',
-            $store2->run(800, $runId2)['phase'] === ScanPhase::CANCELLING);
-        check('walk: it takes no work in that phase', $res['worked'] === 0);
+        // A CANCELLED RUN IS FINISHED BY WHOEVER ARRIVES NEXT. The two-step
+        // exists so the epoch bump lands before the terminal write; nothing
+        // owned the second step, so the run held the project's one active slot
+        // and pressing Stop then Start reported the project busy with the user's
+        // own cancelled run. Indefinitely.
+        $after2 = $store2->run(800, $runId2);
+        check('walk: a cancelled run is carried to terminal rather than left holding the slot',
+            $after2['phase'] === ScanPhase::TERMINAL
+            && $after2['terminal'] === ScanOutcome::CANCELLED);
+        check('walk: it takes no work on the way', $res['worked'] === 0);
         check('walk: nor claims to be done over a manifest it never finished',
             $res['done'] === false);
+        check('walk: and the project may start a new scan straight afterwards',
+            $store2->startRun(800, ['created_by' => 'bob'])['ok'] === true);
+        // Idempotent: two workers arriving on the same cancelled run is ordinary,
+        // and the second must not reopen or re-finish it.
+        $again = $w->work(800, $runId2);
+        check('walk: a second arrival changes nothing',
+            $store2->run(800, $runId2)['terminal'] === ScanOutcome::CANCELLED
+            && $again['worked'] === 0);
 
         // The other half: claims genuinely empty, but records still out with
         // another worker. Catch-up sweeps stragglers BY STATE, and a row claimed

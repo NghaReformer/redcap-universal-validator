@@ -116,6 +116,16 @@ final class ScanService
         $gate = $this->available($pid);
         if (!$gate['ok']) return self::noStart($gate['why']);
 
+        // FINISH ANY CANCELLED RUN BEFORE ASKING FOR THE SLOT.
+        //
+        // A run stopped by its user sits in `cancelling` until somebody writes
+        // its terminal state, and while it sits there it holds the project's one
+        // active slot. Without this, pressing Stop and then Start told the user
+        // the project was busy - with their own cancelled run, indefinitely.
+        // Reaped here rather than only in the worker, because the worker needs a
+        // run id and the person starting a new scan does not have one.
+        $this->reapCancelled($pid);
+
         $scope = ScanPageView::scanScope($this->module, $pid);
         if (empty($scope['ok'])) return self::noStart($scope['why']);
         $dag = $scope['dag'];
@@ -297,6 +307,42 @@ final class ScanService
             return isset($r[0][0]) ? (int) $r[0][0] : null;
         } catch (\Throwable $e) {
             return null;
+        }
+    }
+
+    /**
+     * Write the terminal state of any run this project left in `cancelling`.
+     *
+     * The phase is a deliberate two-step - bump the epoch, then finish - so that
+     * a worker already evaluating fails its compare-and-set rather than
+     * committing into a finished run. The second step had no owner, so the run
+     * stayed active and the project stayed busy.
+     *
+     * Idempotent and silent: finish() refuses to reopen anything, and a project
+     * with nothing cancelled does no work here.
+     *
+     * @return int runs finished
+     */
+    private function reapCancelled($pid)
+    {
+        try {
+            $rows = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+                . ' WHERE project_id = ? AND active_slot = 1 AND phase = ?',
+                [$pid, ScanPhase::CANCELLING]);
+            $n = 0;
+            foreach ($rows as $row) {
+                $runId = (int) $row[0];
+                $this->store()->finish($runId, ScanOutcome::derive([
+                    'cancelled' => true,
+                    'manifestDone' => $this->store()->manifestComplete($runId),
+                ]));
+                $n++;
+            }
+            return $n;
+        } catch (\Throwable $e) {
+            // A reap that fails must not stop a start from being ATTEMPTED; the
+            // slot check below will refuse honestly if the run is still there.
+            return 0;
         }
     }
 
