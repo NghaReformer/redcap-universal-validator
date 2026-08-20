@@ -760,6 +760,15 @@ $fresh = function () use ($A, $storeA) {
     // quotes, and an error string nobody audited is not a disclosure channel.
     check('fault: but never the value that caused it',
         strpos($refused, str_repeat('z', 20)) === false);
+    // AND THE ANSWER IS BOUNDED WHATEVER ARRIVES. The framework puts the failing
+    // statement in the message, and a findings batch is one multi-row INSERT
+    // with tens of thousands of placeholders - so the input here can be
+    // megabytes. Running a backtracking pattern over that is how 1.9.9 turned a
+    // reported error into an empty 200 with no body: PCRE gives up, preg_replace
+    // returns null, and the null travels on inside a catch already handling a
+    // failure. Cut first, then redact.
+    check('fault: and the reason is bounded rather than however long the server was',
+        strlen($refused) <= 200);
     $f = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'), array());
     check('fault: leaving no partial findings', (int) $f[0][0] === 0);
     $st = $ca->query('SELECT state FROM ' . Schema::table('scan_record')

@@ -514,11 +514,29 @@ final class SqlScanStore implements ScanStore
     {
         $m = (string) $e->getMessage();
         if ($m === '') return get_class($e);
-        // Single-quoted runs are values. Doubled quotes inside them are escaped
-        // quotes, so match lazily and accept that a pathological value ends the
-        // redaction early - erring toward removing MORE than necessary.
-        $m = preg_replace("/'[^']*'/", "'...'", $m);
-        $m = preg_replace('/\s+/', ' ', $m);
+
+        // CUT FIRST, THEN REDACT, and that order is the whole fix.
+        //
+        // The framework puts the failing STATEMENT in the exception message, and
+        // a findings batch is one multi-row INSERT with tens of thousands of
+        // placeholders - so the message arriving here can be megabytes. Running
+        // a backtracking pattern over that is how 1.9.9 turned a reported error
+        // into an empty 200 with no body at all: PCRE gives up, preg_replace
+        // returns null, and the null travels into the next string call inside a
+        // catch block that is already handling a failure.
+        //
+        // The answer is 200 characters. It never needed a megabyte of input, and
+        // the useful part of a database error - "Data too long for column x" -
+        // is always at the front.
+        if (strlen($m) > 2000) $m = substr($m, 0, 2000);
+
+        // Single-quoted runs are values. Redacted rather than shown: this text
+        // reaches a page, and an error string nobody audited is not a place to
+        // put participant data.
+        $r = preg_replace("/'[^']*'/", "'...'", $m);
+        if (is_string($r)) $m = $r;                 // null = PCRE gave up; keep the cut original
+        $r = preg_replace('/\s+/', ' ', $m);
+        if (is_string($r)) $m = $r;
         if (strlen($m) > 200) $m = substr($m, 0, 197) . '...';
         return $m;
     }

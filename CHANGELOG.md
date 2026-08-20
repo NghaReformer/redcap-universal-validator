@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.9.10 - the diagnostic that killed the request it was diagnosing
+
+1.9.9 was supposed to name the column. Instead `scan-work` returned HTTP 200
+with an empty body - no JSON, no error, nothing to read.
+
+The message-sanitiser did it. The framework puts the failing STATEMENT into the
+exception message, and a findings batch is one insert per finding across a
+transaction holding thousands of them, so the text arriving at the sanitiser can
+be megabytes. It ran a backtracking pattern over all of it, PCRE gave up,
+`preg_replace` returned null, and the null travelled into the next string call -
+inside a catch block that was already handling a failure.
+
+**Cut first, then redact.** The answer is 200 characters; it never needed a
+megabyte of input, and the useful part of a database error is always at the
+front. Every `preg_replace` result is now checked for null before it is used,
+because a pattern that can fail is a pattern whose failure is a value.
+
+**And a fatal must never become an empty 200.** The existing catch handles
+anything that is a `Throwable`, which is most things - but not memory
+exhaustion, and not the request running out of time. Those end the process with
+no output, and HTTP 200 over an empty body is a success status over nothing:
+indistinguishable from a broken client, and no thread for anyone to pull. A
+shutdown handler now emits JSON naming the KIND of failure - out of memory, or
+stopped unexpectedly - because those need different answers. Not the message,
+which names paths and can quote the statement.
+
+That guard cannot rescue the request. It makes the failure say something, which
+is the difference between a bug report and a shrug - and it is the second time
+this pilot that a missing diagnosis cost more than the defect behind it.
+
 ## 1.9.9 - say what the server said
 
 The 1.9.8 diagnostic answered the question that had cost three rounds. Every

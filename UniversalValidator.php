@@ -3778,22 +3778,62 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function scanAction($action, $project_id, $payload)
     {
+        // A FATAL MUST NOT BECOME AN EMPTY 200.
+        //
+        // The try/catch below handles anything that is a Throwable, which is
+        // most things - but not memory exhaustion, and not the request simply
+        // running out of time. Those end the process with no output at all, and
+        // the client then gets HTTP 200 with an empty body: a success status
+        // over nothing. The pilot lost a round to exactly that, because an empty
+        // 200 is indistinguishable from a broken client and gives nobody a
+        // thread to pull.
+        //
+        // The shutdown handler cannot rescue the request. It can make the
+        // failure SAY something, which is the difference between a bug report
+        // and a shrug.
+        $answered = false;
+        register_shutdown_function(function () use (&$answered) {
+            if ($answered) return;
+            $e = error_get_last();
+            if ($e === null) return;
+            $fatal = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+            if (!in_array($e['type'], $fatal, true)) return;
+            // The MESSAGE is not echoed: it names paths and can quote the
+            // statement. The KIND is, because "ran out of memory" and "ran out
+            // of time" need different answers and the caller can act on neither
+            // if told nothing.
+            $why = (stripos($e['message'], 'memory') !== false)
+                 ? 'this scan ran out of memory partway through a batch; nothing from it was kept'
+                 : 'this scan stopped unexpectedly partway through a batch; nothing from it was kept';
+            if (!headers_sent()) header('Content-Type: application/json');
+            echo json_encode(['ok' => false, 'stop' => 'fatal', 'why' => $why]);
+        });
+
         try {
             $svc = new Scan\ScanService($this);
             $runId = (isset($payload['run_id']) && is_scalar($payload['run_id']))
                    ? (int) $payload['run_id'] : 0;
 
             if ($action === 'scan-start') {
-                return $svc->start($project_id);
+                $r = $svc->start($project_id);
+                $answered = true;
+                return $r;
             }
             if ($runId <= 0) {
+                $answered = true;
                 return ['ok' => false, 'why' => Scan\ScanService::NO_RUN];
             }
-            if ($action === 'scan-work')   return $svc->work($project_id, $runId, 'browser');
-            if ($action === 'scan-status') return $svc->status($project_id, $runId);
-            if ($action === 'scan-cancel') return $svc->cancel($project_id, $runId);
+            if ($action === 'scan-work') {
+                $r = $svc->work($project_id, $runId, 'browser');
+                $answered = true;
+                return $r;
+            }
+            if ($action === 'scan-status') { $answered = true; return $svc->status($project_id, $runId); }
+            if ($action === 'scan-cancel') { $answered = true; return $svc->cancel($project_id, $runId); }
+            $answered = true;
             return ['ok' => false, 'why' => 'unknown action'];
         } catch (\Throwable $e) {
+            $answered = true;
             // Never leaks the exception. A class name or a message from here can
             // describe the installation's schema and its database user, to a
             // caller who has just been told the answer is no.
