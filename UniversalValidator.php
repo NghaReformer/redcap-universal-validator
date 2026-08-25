@@ -920,6 +920,13 @@ class UniversalValidator extends AbstractExternalModule
         ]);
 
         $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
+        // _origin is ours, and it stops here. Not a disclosure - 'settings' or
+        // 'annotation' tells a reader nothing - but this payload is built per
+        // page and per rule, and an unexplained key in the engine's input is
+        // what a future strict-shape check rejects.
+        foreach ($config['rules'] as $i => $r) {
+            if (is_array($r) && array_key_exists('_origin', $r)) unset($config['rules'][$i]['_origin']);
+        }
         return $config;
     }
 
@@ -1404,8 +1411,20 @@ class UniversalValidator extends AbstractExternalModule
         $key = (string) ($pid === null ? '' : $pid);
         if (array_key_exists($key, $this->rulesMemo)) return $this->rulesMemo[$key];
 
-        $out = $this->getSettingRules($pid);
-        foreach ($this->getAnnotationRules($pid) as $r) $out[] = $r;
+        // WHERE A RULE CAME FROM TRAVELS ON THE RULE.
+        //
+        // It used to be inferred from a count: the caller was expected to say
+        // how many leading entries were settings rules, and everything after
+        // that boundary was an annotation rule. No caller ever passed the
+        // count, so every settings rule was named through the annotation branch
+        // - and the count could not have been made correct anyway, because
+        // Branching::resolve() below DROPS rules that lost every field to a
+        // branch rule and APPENDS synthesized ones, so no integer boundary
+        // survives it. A key on the rule does survive it: resolve() copies
+        // surviving rules wholesale.
+        $out = [];
+        foreach ($this->getSettingRules($pid) as $r)    { $r['_origin'] = 'settings';   $out[] = $r; }
+        foreach ($this->getAnnotationRules($pid) as $r) { $r['_origin'] = 'annotation'; $out[] = $r; }
         // Shared fields become explicit per-field branch rules (or config
         // errors when the sharing is illegal), so the client engine, the
         // audit, and the snapshot all consume one resolved structure.
@@ -1438,7 +1457,28 @@ class UniversalValidator extends AbstractExternalModule
 
         foreach ($subs as $s) {
             $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers);
-            if ($rule !== null) $out[] = $rule;
+            if ($rule === null) continue;
+            // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
+            //
+            // ScanPlanner::identify() has always preferred a stored id and has
+            // always said so ("a persistent id stored on the row is the right
+            // answer, because it survives editing the rule"), and no project
+            // ever had one - so the content-hash fallback was what ran, and it
+            // cannot survive an edit. Worse, revision() deliberately discards
+            // the field list, so two settings rules of the same type and options
+            // on DIFFERENT fields share a stem and are told apart only by their
+            // position in the list: dragging one row past another swapped their
+            // identities and re-attributed every finding stored against them.
+            //
+            // Attached here rather than in settingRowToRule() because that
+            // method returns from two branches and a rule that got its id in
+            // only one of them is the same class of half-wiring this release is
+            // about.
+            if (isset($s['rule-uid']) && is_string($s['rule-uid'])
+                    && preg_match('/^[0-9a-f]{16}\z/', $s['rule-uid'])) {
+                $rule['rule-uid'] = $s['rule-uid'];
+            }
+            $out[] = $rule;
         }
         return $out;
     }
@@ -2232,8 +2272,69 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_save_configuration($project_id = null)
     {
-        if ($project_id !== null) return;          // project settings install nothing
+        if ($project_id !== null) {
+            // Project settings install nothing, but this is the one moment the
+            // module is certain the rule list has just been edited, so it is
+            // where a rule row is given the identity it will keep.
+            $this->mintRuleIds($project_id);
+            return;
+        }
         $this->installScanSchema();
+    }
+
+    /**
+     * Give every settings rule row a persistent id, once, and never again.
+     *
+     * WHY A ROW NEEDS AN ID. ScanPlanner::identify() prefers a stored id and
+     * always has - its comment says "a persistent id stored on the row is the
+     * right answer, because it survives editing the rule" - but nothing ever
+     * minted one, so every project ran the content-hash fallback. That fallback
+     * cannot survive an edit, and it is worse than it looks: revision()
+     * deliberately excludes the field list, so two rules of the same type and
+     * options on DIFFERENT fields hash the same and are separated only by their
+     * position. Dragging one row above the other swapped their identities and
+     * re-attributed every finding already stored against them.
+     *
+     * NEVER REGENERATED. An id that changes is worse than no id, because a
+     * changed id silently orphans findings instead of merely failing to match
+     * them. A row whose stored value is already a valid id is left exactly as
+     * it is; only blanks and malformed values are filled.
+     *
+     * NEVER FATAL. This runs inside a framework hook during a settings save. A
+     * failure here degrades to the old content-hash naming, which is what
+     * shipped for every release before this one; failing the administrator's
+     * save over it would be a much worse outcome than the fallback.
+     */
+    private function mintRuleIds($pid)
+    {
+        try {
+            if (!is_callable([$this, 'setProjectSetting'])) return;
+            $subs = $this->getSubSettings('rules', $pid);
+            if (!is_array($subs) || !$subs) return;
+
+            $col = [];
+            $minted = 0;
+            foreach ($subs as $s) {
+                $cur = (is_array($s) && isset($s['rule-uid']) && is_string($s['rule-uid']))
+                    ? $s['rule-uid'] : '';
+                if (preg_match('/^[0-9a-f]{16}\z/', $cur)) { $col[] = $cur; continue; }
+                $col[] = bin2hex(random_bytes(8));
+                $minted++;
+            }
+            if ($minted === 0) return;
+
+            // Written as the whole parallel column, because that is how the
+            // framework stores a repeatable sub-setting: a partial write would
+            // shift every row's id by one, which is the exact failure mode the
+            // id exists to prevent.
+            $this->setProjectSetting('rule-uid', $col, $pid);
+            $this->log('scan-rule-ids-minted', ['rows' => count($col), 'minted' => $minted]);
+        } catch (\Throwable $e) {
+            // Class only: the message comes from the framework's error path and
+            // can carry statement text.
+            try { $this->log('scan-rule-ids-mint-failed', ['error' => get_class($e)]); }
+            catch (\Throwable $ignored) { }
+        }
     }
 
     /**
@@ -2897,8 +2998,10 @@ class UniversalValidator extends AbstractExternalModule
 
         $key = $this->hmacKey();
         $gen = isset($opts['generation']) ? (int) $opts['generation'] : 1;
-        $ids = Scan\ScanPlanner::identifyAll($plan['live'],
-            isset($opts['settingsCount']) ? (int) $opts['settingsCount'] : 0);
+        // Taken from the plan, never re-derived. See scanPlan()'s note where
+        // ruleIds is built: deriving it twice is what let the evaluator and the
+        // planner disagree about which rule an ordinal named.
+        $ids = isset($plan['ruleIds']) && is_array($plan['ruleIds']) ? $plan['ruleIds'] : [];
 
         // Which instrument owns which field, for the fingerprint. Computed here
         // because it comes from the plan, and recomputed nowhere else.
@@ -2971,12 +3074,21 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $recHash = Scan\Hmac::raw(Scan\Hmac::P_RECORD, $pid, (string) $recordId, $key);
-        $rule = function ($ord) use ($ids) {
+        $missed = [];
+        $rule = function ($ord) use ($ids, &$missed) {
             $i = ((int) $ord) - 1;
             // A rule the planner could not name is still reported, under a name
             // that says so. Dropping the finding would be the silent skip.
-            return isset($ids[$i]) ? $ids[$i]
-                 : ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
+            //
+            // AND IT IS NOW LOUD. $ids is keyed by the same ordinals as
+            // $plan['live'], so after the key-preserving fix this branch is
+            // unreachable in normal operation - which means any occurrence is a
+            // bug in us, not a fact about the project. It used to be reachable
+            // on every project with one config-broken rule, and it produced a
+            // plausible-looking name ('unnamed:7') that no reader would question.
+            if (isset($ids[$i])) return $ids[$i];
+            $missed[(int) $ord] = true;
+            return ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
         };
 
         $findings = [];
@@ -3040,8 +3152,22 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // A rule ordinal the planner could not name is an INTERNAL fault, and it
+        // travels as a rule problem rather than as a plausible name nobody
+        // questions. It is reported per record, which is where it was noticed;
+        // the aggregate that counts rule problems dedupes on the text.
+        $problems = array_values($unconf);
+        foreach (array_keys($missed) as $ord) {
+            $problems[] = [
+                'rule'   => (int) $ord,
+                'fields' => [],
+                'why'    => 'internal: this scan holds no identity for rule ' . (int) $ord
+                    . ', so any finding it produced is recorded under a placeholder name',
+            ];
+        }
+
         return ['findings' => $findings, 'candidates' => $candidates, 'bytes' => $bytes,
-                'contexts' => $r['contexts'], 'problems' => array_values($unconf), 'why' => null];
+                'contexts' => $r['contexts'], 'problems' => $problems, 'why' => null];
     }
 
     /**
@@ -3295,6 +3421,14 @@ class UniversalValidator extends AbstractExternalModule
         $out['live']       = $live;
         $out['hostFields'] = $hostFields;
         $out['unconf']     = $unconf;
+        // ONE LIST, ONE OWNER. The rule identities are derived HERE, from the
+        // final $live, and keyed identically to it by construction. They used
+        // to be derived a second time in durableScanContext() from a copy that
+        // had been re-indexed on the way, so the two disagreed about which rule
+        // an ordinal named - and since rule_source_id is hashed into the
+        // finding identity, the disagreement was silent and permanent. A second
+        // derivation of the same thing is a second thing that can drift.
+        $out['ruleIds'] = Scan\ScanPlanner::identifyAll($live);
         if (!$live) {
             // Every rule barred is not "nothing to scan": the rule problems above
             // are the report, and they must survive. nothingToScan short-circuits

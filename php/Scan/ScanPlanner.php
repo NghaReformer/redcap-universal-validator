@@ -135,12 +135,26 @@ final class ScanPlanner
 
         // Names and revisions first: the fingerprint is computed OVER them, so a
         // rule that cannot be named is a rule the fingerprint cannot cover.
-        $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : 0);
+        $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : null);
         $ruleSpec = [];
-        foreach ($ids as $i => $id) {
+        foreach ($ids as $id) {
             $ruleSpec[] = ['id' => $id['source_id'], 'rev' => $id['revision'],
-                           'ord' => $i + 1, 'origin' => $id['origin']];
+                           'origin' => $id['origin']];
         }
+        // A SET, NOT A SEQUENCE, and the ordinal is gone from it entirely.
+        //
+        // canonical() preserves list order, so folding the position in meant
+        // that merely REORDERING the rules - nothing added, removed or edited -
+        // changed the fingerprint, and fingerprintMatches() then declared the
+        // configuration had moved underneath the run. Annotation rule order
+        // follows data-dictionary field order, so moving a field in the Online
+        // Designer invalidated every resumable run on the project. identify()'s
+        // own docblock says moving a field must not rename the rule written on
+        // it; the run-level guard was contradicting the identity layer.
+        usort($ruleSpec, function ($a, $b) {
+            $c = strcmp($a['id'], $b['id']);
+            return $c !== 0 ? $c : strcmp($a['rev'], $b['rev']);
+        });
         try {
             $fp = self::fingerprint([
                 'engine'    => isset($req['engine']) ? $req['engine'] : '',
@@ -413,6 +427,11 @@ final class ScanPlanner
         // without invalidating a 100,000-record baseline.
         unset($rule['label'], $rule['note'], $rule['ruleNote'], $rule['message'],
               $rule['uid'], $rule['rule-uid'], $rule['ruleUid']);
+        // Where the rule came from is already in the source_id's prefix
+        // (`set:` / `ann:` / `uid:`). Hashing it here as well would churn every
+        // existing revision for no gain, and would break this function's stated
+        // contract of hashing only what CHANGING the rule changes.
+        unset($rule['_origin']);
         return hash('sha256', self::canonical($rule));
     }
 
@@ -442,23 +461,45 @@ final class ScanPlanner
      * because the list order of identical siblings is itself derived from
      * content.
      *
-     * @param array $rules   as getRules() produced them
-     * @param int   $settingsCount how many leading entries came from settings
-     * @return array parallel to $rules
+     * KEYS ARE PART OF THE ANSWER. This used to walk array_values($rules) and
+     * append with $out[], which re-indexed the result densely - while its one
+     * caller passes $plan['live'], a SPARSE array whose keys are rule ordinals
+     * (scanPlan skips config-broken rules and the per-instrument-rights gate
+     * unsets more), and then looks the identity up by ordinal - 1. One dropped
+     * rule therefore shifted every later rule's name by one and pushed the last
+     * one off the end into the `unnamed:` fallback. Because rule_source_id is
+     * hashed into Hmac::findingIdentity(), that did not merely mislabel a
+     * finding: it gave the finding the identity of a rule that did not produce
+     * it, which is the key the supersede logic matches on.
+     *
+     * ORIGIN COMES FROM THE RULE, NOT FROM A COUNT. $settingsCount was a
+     * positional boundary no caller ever supplied, and it could not have been
+     * made correct: Branching::resolve() drops rules that lost every field to a
+     * branch rule and appends synthesized ones, so no integer survives it. It
+     * remains only as a fallback for a caller holding an untagged list.
+     *
+     * @param array $rules         as getRules() produced them; keys preserved
+     * @param ?int  $settingsCount DEPRECATED positional fallback, used only for
+     *                             rules carrying no _origin key
+     * @return array parallel to $rules, INCLUDING ITS KEYS
      */
-    public static function identifyAll(array $rules, $settingsCount)
+    public static function identifyAll(array $rules, $settingsCount = null)
     {
         $seen = [];
         $out = [];
-        foreach (array_values($rules) as $i => $r) {
-            $origin = ($i < (int) $settingsCount) ? 'settings' : 'annotation';
+        $pos = 0;
+        foreach ($rules as $k => $r) {
+            $origin = (isset($r['_origin']) && is_string($r['_origin']) && $r['_origin'] !== '')
+                ? (string) $r['_origin']
+                : (($pos < (int) $settingsCount) ? 'settings' : 'annotation');
+            $pos++;
             // Probe with occurrence zero to learn the un-numbered part of the
             // name, then count how many of those we have already issued.
             $probe = self::identify($r, $origin, 0);
             $stem = $probe['stem'];
             $n = isset($seen[$stem]) ? $seen[$stem] : 0;
             $seen[$stem] = $n + 1;
-            $out[] = self::identify($r, $origin, $n);
+            $out[$k] = self::identify($r, $origin, $n);
         }
         return $out;
     }

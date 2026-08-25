@@ -161,6 +161,12 @@
       "repeatable": true,
       "sub_settings": [
         {
+          "key": "rule-uid",
+          "name": "Internal rule id — assigned automatically, never edit.",
+          "type": "text",
+          "hidden": true
+        },
+        {
           "key": "rule-note",
           "name": "Rule label (optional — your own name for this rule, e.g. 'Specimen IDs' or 'Legacy screening codes')",
           "type": "text"

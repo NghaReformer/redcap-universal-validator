@@ -70,6 +70,60 @@ cannot be rescued by any of the three try/catch blocks around it. That is the
 empty-200-over-a-fatal that 1.9.10 exists to prevent, reached by another road.
 Rows are now materialised once, under a cap.
 
+**Findings filed against the wrong rule.** scanPlan() builds its live rule list
+with the keys preserved from the full list, because a finding cites its rule by
+ordinal - it skips config-broken rules, and the per-instrument-rights gate
+removes more, so the array is sparse and its keys ARE the ordinals. The naming
+pass then walked it with array_values() and re-indexed densely, and the
+evaluator looked the name up by ordinal minus one. One misconfigured rule
+therefore shifted every later rule's name by one and pushed the last rule off
+the end into a placeholder.
+
+That is not a labelling defect. rule_source_id is hashed into the finding's
+identity, so a shifted name gives a finding the IDENTITY of a rule that did not
+produce it - and identity is the key an incremental run matches on to close the
+previous run's row. The trigger is the most ordinary one the module supports:
+scanPlan goes out of its way to REPORT a config-broken rule rather than drop it
+silently, which is exactly why the gap it leaves is routine.
+
+The list is now derived once, by the planner, keyed identically to the rules it
+names, and handed to the evaluator rather than rebuilt from a copy. A second
+derivation of the same thing is a second thing that can drift.
+
+**And every settings rule was named as an annotation rule.** Origin was inferred
+from a positional count that no caller ever supplied. It could not have been
+made correct either: rule resolution drops rules that lost every field to a
+branch rule and appends synthesized ones, so no integer boundary survives it.
+The two naming branches share one namespace that the `set:` and `ann:` prefixes
+exist to keep apart, and the annotation branch names a rule by its field list -
+so a settings rule and an annotation rule of the same family on the same field
+produced the same name stem and were told apart only by a counter assigned in
+list order. Deleting one renamed the other. Origin now travels on the rule.
+
+**Settings rules have a persistent id.** The naming code has always preferred
+one, and its comment has always said why: an id survives editing the rule, which
+is the one thing a content hash cannot do. Nothing ever minted one. The fallback
+was worse than fragile - the content hash deliberately excludes the field list,
+so two rules of the same kind and options on different fields hashed identically
+and were separated only by their position. Dragging one row above another in the
+settings dialog swapped their identities. Rows are now given an id on save, once,
+and never reissued: an id that changes orphans stored findings, which is strictly
+worse than never having had one.
+
+**Reordering rules no longer looks like reconfiguring them.** The run
+fingerprint folded a positional ordinal in, so moving a field in the Online
+Designer - which reorders annotation rules, because their order follows
+dictionary order - made a resumed run report that the configuration had changed
+underneath it and fail. The identity layer's own docblock says moving a field
+must not rename the rule written on it; the run-level guard was contradicting
+it. The fingerprint now covers the rule SET.
+
+None of the above was visible to the suite. The full fix was applied to a scratch
+copy of the tree before it was written here, and all 22 suites plus 286
+real-database checks stayed green over it - because nothing in tests/ had ever
+called the seam where the rule engine's output becomes database rows. That seam
+now has its own suite, and every check in it fails on the old tree.
+
 **A cancellation control that decided nothing.** `mayCancel()` compared the
 run's creator against the acting user and then returned the same expression
 whichever way the comparison went. Two inert parameters that every call site
