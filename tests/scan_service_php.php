@@ -44,6 +44,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
+    require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
 
     $n = 0; $fail = 0;
@@ -91,6 +92,53 @@ namespace {
                 return [[in_array($t, $this->tables, true) ? 1 : 0]];
             }
             return [];
+        }
+    }
+
+
+    /**
+     * A module healthy enough to reach the store, and a database that fails.
+     *
+     * The two halves matter equally. Every earlier check in this file stops at
+     * available(), so nothing here had ever driven a verb past its gate; the
+     * fixture below passes the gate and then breaks the ONE statement the test
+     * names, which is how a storage failure arrives in production - not as a
+     * broken installation, but as a working one whose server stopped answering
+     * halfway through a request.
+     */
+    class StorageFaultModule extends FakeModule
+    {
+        /** @var ?string statements containing this fail */
+        public $failOn = null;
+        /** @var array list of [event, context] */
+        public $logs = [];
+
+        public function query($sql, $params = [])
+        {
+            if ($this->failOn !== null && strpos($sql, $this->failOn) !== false) {
+                throw new \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable(
+                    '[1213] Deadlock found when trying to get lock; the work was rolled back');
+            }
+            // The record index answers for this project, so the capability gate
+            // passes and the refusal that follows is the one under test.
+            if (strpos($sql, 'FROM redcap_record_list') !== false) return [['R1']];
+            return parent::query($sql, $params);
+        }
+
+        public function log($event, $context = [])
+        {
+            $this->logs[] = [$event, $context];
+            return 1;
+        }
+
+        /** Everything logged under one event name, as a flat list of contexts. */
+        public function logged($event)
+        {
+            $out = [];
+            foreach ($this->logs as $l) {
+                if ($l[0] === $event) $out[] = $l[1];
+            }
+            return $out;
         }
     }
 
@@ -209,6 +257,53 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('service: work refuses while disabled', $offSvc->work(1, 5)['ok'] === false);
     check('service: and neither reveals whether run 5 exists',
         $offSvc->work(1, 5)['why'] === $offSvc->work(1, 99999)['why']);
+
+    // -- A STORAGE FAILURE IS NOT A 500, AND NOT A LEAK ----------------------
+    //
+    // ScanService is the last frame before the AJAX handler. Now that the store
+    // throws rather than answering a deadlock with the fence's own vocabulary,
+    // something has to decide what an operator is told and what an
+    // administrator is told, and this is the only place that can decide both.
+    //
+    // The stand-in raises the failure at the query seam, which is where the
+    // real one arrives from: ModuleDb::exec() throws ScanStoreUnavailable when
+    // the server will not say how many rows a write changed, and SqlScanStore's
+    // read methods deliberately do not catch it.
+    $ready = new \StorageFaultModule();
+    $ready->sys[ScanService::SYS_FLAG] = '1';
+    $ready->proj[ScanService::PROJ_FLAG] = '1';
+    $ready->version = Schema::VERSION;
+    $ready->tables = Schema::tables();
+    check('service: the fixture is otherwise healthy, so the next refusal is the fault',
+        (new ScanService($ready))->available(1)['ok'] === true);
+
+    $ready->failOn = 'FROM ' . Schema::table('scan_run');
+    $svcF = new ScanService($ready);
+    $w = $svcF->work(1, 5);
+    check('service: a storage failure during work is a refusal, not an uncaught throw',
+        is_array($w) && $w['ok'] === false);
+    check('service: and the operator gets the one fixed sentence',
+        $w['why'] === ScanStoreUnavailable::OPERATOR_TEXT);
+    check('service: which names no table, column, value or error number',
+        preg_match('/\d/', $w['why']) === 0
+        && stripos($w['why'], 'uv_') === false && stripos($w['why'], 'deadlock') === false);
+
+    $logged = $ready->logged('scan storage failure');
+    check('service: what the server said reaches the module log',
+        count($logged) === 1 && strpos($logged[0]['detail'], 'Deadlock') !== false);
+    check('service: with the run and project it happened on',
+        $logged[0]['run_id'] === 5 && $logged[0]['project_id'] === 1);
+    check('service: and none of it reaches the browser',
+        strpos(json_encode($w), 'Deadlock') === false);
+
+    // START TAKES THE SAME BOUNDARY, through the same helper, and it cannot be
+    // driven from here: every gate in front of startRun() - the availability
+    // probe, the scope read, the manifest source - catches Throwable and turns
+    // it into its own refusal, so nothing a stand-in can raise reaches the
+    // catch except by going all the way through the planner. The store half of
+    // it is proved in tests/scan_sqlstore_fault_php.php, where a write failure
+    // over an EMPTY project slot throws instead of reporting contention; the
+    // service half needs the database matrix, and is named for it.
 
     // -- reason codes --------------------------------------------------------
     //

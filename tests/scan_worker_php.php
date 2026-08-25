@@ -37,6 +37,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
+    require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
 
     $n = 0; $fail = 0;
@@ -465,7 +466,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     // A refused start costs a message. An abandoned run costs the project its
     // scan slot until something expires it, so every refusal that CAN happen
     // before startRun() does.
-    $planner = new ScanPlanner(new ArrayScanStore(2), 'k');
+    $planner = new ScanPlanner(new ArrayScanStore(), 'k');
     $noSource = $planner->plan(1, ['rules' => [['type' => 'required', 'fields' => ['a']]]]);
     check('plan: an installation that cannot list records is refused',
         $noSource['ok'] === false && $noSource['busy'] === false);
@@ -663,7 +664,7 @@ namespace INSPIRE\UniversalValidator\Scan {
 
     /** A run with a frozen manifest, ready to be worked. */
     $fixture = function ($ids, $pid = 800) {
-        $store = new ArrayScanStore(2);
+        $store = new ArrayScanStore();
         $r = $store->startRun($pid, ['created_by' => 'alice']);
         $runId = (int) $r['run']['run_id'];
         $recs = [];
@@ -966,7 +967,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     /** A run sitting in catch-up with its records already scanned. */
     $hash = function ($id) { return hash('sha256', $id, true); };
     $inCatchUp = function (array $ids, $scannedAt = '100') use ($hash) {
-        $store = new ArrayScanStore(2);
+        $store = new ArrayScanStore();
         $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => '1']);
         $runId = (int) $r['run']['run_id'];
         $recs = [];
@@ -1362,6 +1363,121 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('walk: a manifest that IS finished still reaches the end of the chain',
             $res4['done'] === true && $store4->manifestComplete($runId4) === true);
     }
+
+    // -- WHEN THE DATABASE FAILS ---------------------------------------------
+    //
+    // Four store methods used to answer a deadlock with the value that means
+    // "the fence refused you", and the worker believed them. claim() and
+    // claimPending() came back through refused(): ok TRUE, stop 'fenced', "this
+    // scan could not take more work just now" - so the browser, reading ok
+    // true, re-issued scan-work at once against a database already in trouble.
+    // advancePhase() was worse: false reads as "there is no next phase", and
+    // the run was reported DONE over a transaction that never ran.
+    //
+    // The store now throws ScanStoreUnavailable, and these are the assertions
+    // about what the worker does with it.
+
+    require_once __DIR__ . '/scan_fault_support.php';
+
+    /** A frozen five-record run behind a store that fails where the test says. */
+    $faulty = function ($methods) use ($fixture) {
+        list($inner, $runId) = $fixture(['A', 'B', 'C', 'D', 'E']);
+        $store = new FaultyStore($inner);
+        $store->failFrom($methods);
+        return [$store, $runId, $inner];
+    };
+
+    list($store, $runId) = $faulty('claim');
+    $notes = [];
+    $recorder = function ($event, array $ctx) use (&$notes) { $notes[] = [$event, $ctx]; };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(), 'note' => $recorder]);
+    $res = $w->work(800, $runId);
+    check('storage: a failed claim stops the run rather than being fenced out',
+        $res['ok'] === false && $res['stop'] === 'storage');
+    check('storage: and never says the run is done', $res['done'] === false);
+    check('storage: the sentence is not the one a genuine fence gets',
+        strpos($res['why'], 'could not take more work just now') === false);
+    check('storage: it names no table, column, value or error number',
+        preg_match('/\d/', $res['why']) === 0
+        && stripos($res['why'], 'uv_') === false && stripos($res['why'], 'sql') === false);
+    check('storage: nothing was counted as examined', $res['worked'] === 0);
+
+    // WHAT THE SERVER SAID GOES TO THE LOG, and to nowhere else. A payload key
+    // the caller is trusted to remove before answering is a key the second
+    // caller forgets.
+    check('storage: the failure reaches the module log',
+        count($notes) === 1 && $notes[0][0] === 'scan storage failure'
+        && strpos($notes[0][1]['detail'], 'Deadlock') !== false);
+    check('storage: and the answer the browser gets carries none of it',
+        !array_key_exists('fault', $res) && !array_key_exists('detail', $res)
+        && strpos(json_encode($res), 'Deadlock') === false);
+
+    // THE ONE THAT REPORTED DONE. The manifest is walked, the batches commit,
+    // and the phase advance is where the database gives out.
+    list($store, $runId) = $faulty('advancePhase');
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $res = $w->work(800, $runId);
+    check('storage: a failed phase advance does not certify the run as finished',
+        $res['done'] === false && $res['ok'] === false && $res['stop'] === 'storage');
+
+    list($store, $runId) = $faulty('claimPending');
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $res = $w->work(800, $runId);
+    check('storage: a failed straggler sweep stops rather than reporting none left',
+        $res['ok'] === false && $res['stop'] === 'storage' && $res['done'] === false);
+
+    // A WORKER WITH NO `note` STILL ANSWERS. The composition root supplies one;
+    // a cron entrypoint that forgets must not turn a database fault into a
+    // fatal on top of it.
+    list($store, $runId) = $faulty('claim');
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    check('storage: a worker with nowhere to report to still answers cleanly',
+        $w->work(800, $runId)['stop'] === 'storage');
+
+    // A GENUINE FENCE IS UNTOUCHED. This is the half that is easy to lose: only
+    // failure moved, and a cancellation still reads as a cancellation.
+    list($store5, $runId5) = $fixture(['A', 'B']);
+    $store5->cancel(800, $runId5, 'admin');
+    $w = new ScanWorker($store5, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $res = $w->work(800, $runId5);
+    check('storage: a cancelled run is still a cancellation, not a storage failure',
+        $res['stop'] === 'cancelled');
+
+    // -- THE SEMAPHORE FAILS THE SAME WAY ------------------------------------
+    //
+    // WorkerSlots::acquire() is a compare-and-set like everything else, and it
+    // is the exact place the 1.9.5 pilot lost a round: a slot that was taken
+    // but reported as null produced "this server is running as many scans as it
+    // allows at once" over a pool that was free. With ModuleDb refusing to
+    // deliver an unknown row count as a number, that arrives as a storage
+    // failure instead of as a lie about capacity.
+    list($store, $runId) = $fixture(['A']);
+    $chatty = new RecordingFramework();
+    $chatty->chatty = true;                       // every ROW_COUNT() answers -1
+    // One free slot for acquire() to aim at, so the failure is the row count
+    // and not an empty pool.
+    $chatty->canned = ['FROM ' . Schema::table('scan_worker_slot') => [[1, 0]]];
+    $notes = [];
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(), 'slots' => new WorkerSlots(new ModuleDb($chatty)),
+        'note' => $recorder]);
+    $res = $w->work(800, $runId);
+    check('storage: a slot table that cannot answer is not reported as a full server',
+        $res['stop'] === 'storage');
+    check('storage: and the run is not certified on the way out', $res['done'] === false);
+    check('storage: with the slot failure recorded where an administrator can see it',
+        count($notes) === 1 && $notes[0][0] === 'scan storage failure');
 
     // -- a finished run takes no more work -----------------------------------
     list($store, $runId) = $fixture(['A']);

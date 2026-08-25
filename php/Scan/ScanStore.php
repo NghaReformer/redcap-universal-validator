@@ -54,7 +54,16 @@ interface ScanStore
      * success; on contention it returns a busy marker with NO information about
      * the run that holds the slot - see ScanAuthorization::busy().
      *
+     * BUSY IS RETURNED WHEN AND ONLY WHEN THE SLOT IS GENUINELY HELD. Every
+     * other write failure - a missing table, a value too long, a connection
+     * that went away - throws ScanStoreUnavailable and is the caller's problem
+     * rather than the operator's. The two used to be the same answer, which
+     * told an administrator to wait for a scan that did not exist and could
+     * never finish.
+     *
      * @return array{ok:bool, busy:bool, run:?array, why:?string}
+     * @throws ScanStoreUnavailable when the write failed for any reason other
+     *         than the project's active slot already being taken
      */
     public function startRun($pid, array $run);
 
@@ -107,7 +116,14 @@ interface ScanStore
      * them is what let the first live pilot walk a 39-record run to its final
      * phase having examined three records, reporting `done` on the way out.
      *
+     * AND A READ THAT FAILED IS A THIRD ANSWER, which is why it is no longer in
+     * that list. `false` means the fence looked and said no. A deadlock, a
+     * lock-wait timeout or a dropped connection means the fence never got to
+     * look, and an implementation that answers `false` over one of those hands
+     * the worker a sentence about contention for a database that is down.
+     *
      * @return array|false
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function claim($runId, $owner, $epoch, $limit);
 
@@ -124,6 +140,9 @@ interface ScanStore
      * and two workers evaluate the same record, which is wasteful but correct;
      * too long and a crash costs a delay. Neither can produce a false complete,
      * because a record is only marked done by the transaction that scanned it.
+     *
+     * @return array|false  as claim(), with the same three-way distinction
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900);
 
@@ -149,6 +168,7 @@ interface ScanStore
      * must not be able to pull them back out of the new holder's hands.
      *
      * @return int rows handed back
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function releaseClaims($runId, $epoch, array $ordinals);
 
@@ -166,7 +186,13 @@ interface ScanStore
      * cancelled or taken-over run must not be walked forward by whoever was
      * working it a moment ago.
      *
+     * FALSE MUST MEAN REFUSED AND NOTHING ELSE. ScanWorker reads it as "there is
+     * no next phase" and reports the run DONE, so an implementation that
+     * answered false over a failed write would certify a project on the
+     * strength of a transaction that never ran.
+     *
      * @return bool false when the transition was refused or the fence had moved
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function advancePhase($runId, $epoch, $to);
 
@@ -181,11 +207,13 @@ interface ScanStore
     /** Request cancellation: sets the flag, the phase, and bumps the lease epoch. */
     public function cancel($pid, $runId, $actor);
 
-    /** Lease/renew an installation-wide worker slot, or null when none is free. */
-    public function leaseSlot($owner, $runId, $ttlSeconds);
-
-    /** Release a slot held by $owner at $epoch. A stale holder releases nothing. */
-    public function releaseSlot($slotNo, $owner, $epoch);
+    // THE INSTALLATION-WIDE WORKER SEMAPHORE IS NOT PART OF THIS CONTRACT, and
+    // leaseSlot()/releaseSlot() were removed from it rather than repaired.
+    // WorkerSlots is the semaphore, wired at ScanService and ScanWorker; the
+    // store's pair was a second implementation over the same table with no
+    // caller, and the read-back in it returned the wrong slot number whenever
+    // one owner held two. A resource with two mechanisms is a resource where
+    // the unused mechanism collects the defects.
 
     /** One keyset page of findings for a generation, already filtered. */
     public function findings($generationId, array $filter, $afterId, $limit);

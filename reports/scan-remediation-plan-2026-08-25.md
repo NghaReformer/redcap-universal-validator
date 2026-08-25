@@ -744,3 +744,65 @@ Replace README.md:428-519 wholesale: keep the paragraph on why the scan exists, 
 | `php/Scan/ReasonCode.php` | M5 report | exclusive |
 | `tests/mysql/bootstrap.sql` | B1/M18 scoping | exclusive |
 | `tools/measure_scan.php` | B3 dag | exclusive |
+
+---
+
+## Findings added during implementation
+
+These were not in the adversarial review. Each was found by building the thing the review asked for
+and discovering what it caught.
+
+### W1-N1 — `WorkerSlots::idleAbove()` has no production caller, so lowering the concurrency limit does nothing
+
+Found by the wiring test (`tests/scan_wiring_php.php`), which is itself the review's §7 countermeasure.
+`scan-system-max-concurrent-projects` is additive in one direction only: raising it provisions rows on
+the next settings save, and `idleAbove()` — the method that would retire rows above a lowered limit —
+is called by nothing. An administrator who lowers the limit to shed load sees no effect at all, and
+the setting text does not say so.
+
+**Severity:** medium. It fails in the safe direction (too much concurrency, never too little), but it
+is a control that reports success and does nothing, which is the same class as B6.
+**Schedule:** wave 10, with the rest of the safeguard wiring.
+
+### W1-N2 — `WorkerSlots::renew()` has no production caller, so a slot lease expires under the worker holding it
+
+Same source. A worker leases a slot with a TTL (`ScanService::SLOT_TTL`) and never renews it. A batch
+that runs longer than the TTL therefore keeps working while its slot is, as far as the semaphore is
+concerned, free — so a second worker can lease the same slot and the installation-wide concurrency
+limit is exceeded by however many workers are in that state.
+
+The batch budget is 3.0 s for a browser pass, so this is not reachable today through the browser. It
+becomes reachable the moment wave 9 gives planning its own budgeted phase and wave 10 introduces a
+cron pass, both of which run longer.
+
+**Severity:** medium now, high after wave 9. **Schedule:** wave 5 (worker control flow) — the worker is
+already being opened there, and renewing a lease belongs beside claiming one.
+
+### W1-N3 — the plan's case-file names do not match the harness split
+
+The harness partition produced twelve case files, not the nine the plan named: `catchup` content lives
+in `cases/fence.php` and `summary` content in `cases/rollup.php`, and `slots`, `fault`, `walk`,
+`planning` and `worker` are new. Later waves that cite a case filename must be remapped:
+
+| plan says | actually |
+|---|---|
+| `tests/mysql/cases/catchup.php` | `tests/mysql/cases/fence.php` |
+| `tests/mysql/cases/summary.php` | `tests/mysql/cases/rollup.php` |
+| `tests/mysql/cases/perf.php` | not created; wave 8 creates it |
+| `tests/mysql/cases/dag.php` | not created; wave 6 creates it |
+| `tests/mysql/cases/cron.php` | not created; wave 10 creates it |
+| `tests/mysql/cases/report.php` | not created; wave 11 creates it |
+| `tests/mysql/cases/ratelimit.php` | not created; wave 5 creates it |
+
+### W1-N4 — three concessions in the new MySQL fixture are wave 4's to remove
+
+The two-project fixture cannot yet do the one thing it exists for, because the schema it runs against
+is not project-scoped. The concessions are named in the case-file headers and repeated here:
+
+- `cases/uniqueness.php` and `cases/rollup.php` hold the neighbouring project apart **by generation**,
+  which is precisely the isolation production does not have. Once generations are per project, put the
+  neighbour in the same generation and delete the concession.
+- `support/fixture.php`'s `uv_clear_project()` cannot scope its `uv_finding` DELETE by project and
+  excludes the neighbour by record-id prefix instead.
+- `cases/retention.php` is missing the assertion that purging one project leaves the neighbour's
+  findings alone — it is red today, which is B1 reproduced inside the suite.

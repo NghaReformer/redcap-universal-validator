@@ -70,6 +70,95 @@ cannot be rescued by any of the three try/catch blocks around it. That is the
 empty-200-over-a-fatal that 1.9.10 exists to prevent, reached by another road.
 Rows are now materialised once, under a cap.
 
+**One open tab, tens of thousands of requests.** The scan panel re-issued
+`scan-work` at zero milliseconds on every non-terminal `ok:true` answer. Four
+server answers reach that line having done no work, and two of them carry no
+stop reason at all. A "waiting" answer persists until a dead worker's claim goes
+stale, which is fifteen minutes, and a no-work round trip is tens of
+milliseconds - so one person with the page open put a shared REDCap through tens
+of thousands of PHP requests and database round trips while nothing on screen
+changed.
+
+Scheduling is now keyed on PROGRESS rather than on which sentence the server
+used, because two of the hot paths say nothing at all. Any counter moving is
+progress and is re-issued at once; everything else climbs from 1.5 s to 30 s.
+1.5 because a browser batch aims at three seconds, so an answer saying another
+worker holds the claim cannot have become false sooner; 30 because the states
+that legitimately persist are bounded by the 900-second claim staleness, and a
+longer silence reads as a dead page. The server's own explanation of why nothing
+is moving used to be written and then blanked on the next successful response;
+it now survives. A synchronous throw from the transport can no longer escape the
+promise chain and leave the client insisting the run is alive. A second click
+cannot start a second pump. The panel has the ARIA wiring the module's own
+accessibility test has always demanded of its live validation, an unrecognised
+coverage value is named rather than rendered as an empty certificate, and the
+scripting-off text describes what the page actually does.
+
+**The gate probed a table the project does not use.** The availability check
+named `redcap_data` as a literal while the walk it gates resolves the project's
+real table from `redcap_projects.data_table`. REDCap keeps `redcap_data` present
+as the default even where per-project tables are in use, and the probe
+deliberately tolerates an empty result, so the usual outcome was not a wrong
+refusal but a vacuous pass: on a project whose data lives in `redcap_data7`, the
+hard gate proved a walk of a table that project will never touch, and said the
+scan was available. The resolution is delegated now rather than copied, because
+two copies of one table-name rule are what produced the disagreement.
+
+**Storage failures are their own answer.** Four of the store's fenced reads -
+claiming a range, sweeping stragglers, handing claimed records back, and
+advancing a phase - caught every error and returned the value that means
+"another worker took over". A deadlock and a lost connection arrived at the
+worker in the same words as a cancelled run, and nothing recorded that the
+database had failed at all. The swallowed error inside the phase advance was the
+worst of the four: it read as "there is no next phase", so a run was reported
+FINISHED over a transaction that never ran. Those four now raise a storage
+failure the worker stops on. The scan says it could not reach its storage, it
+never claims to be done, and what the server said goes to the module log. No
+table, column, value or error number reaches the page.
+
+**Starting a scan no longer reports every write failure as contention.** "A
+validation scan is already running for this project" tells an operator to wait,
+which is right when the slot is genuinely held and is a wait that never ends when
+the real problem is a missing table. The start now asks one question on the
+failure path - is the slot actually held? - and answers busy only when it is, in
+the same words as before.
+
+**And the adapter the module actually runs on had never been tested.** Every
+compare-and-set in the scan depends on how many rows a write changed, which the
+production adapter reads with a second statement, `SELECT ROW_COUNT()`. Measured
+against MySQL 8.0.46, that agrees with the driver's own count on every write
+shape the store uses - but it returns -1 after any intervening statement, and the
+adapter passed that straight through. A framework build that ran one extra query
+inside its own `query()` would have inverted every compare-and-set at once: the
+slot semaphore would report failure for a slot it had just taken and never
+release it, which is the 1.9.5 pilot's "the server is busy" over a free pool. It
+now refuses to guess.
+
+**The suite could not tell a second project from no project at all.** Every one
+of the 286 real-database checks ran in a schema holding exactly one project,
+which is the single shape in which a statement that scopes by project and one
+that does not give the same answer. The suite went further and hand-partitioned
+the very axis the scan gets wrong: it handed the planner a group id directly
+rather than letting the code derive one, and each finalizer scenario picked a
+private generation number so no scenario's rows could meet another's. Production
+has none of that isolation.
+
+Every fixture now names its project and plants a neighbour beside it, built
+through the same store the module uses. The first thing that neighbour did was
+reproduce the root cause against a real server: purging one project's finished
+run deleted the other project's findings. Where the neighbour cannot yet share a
+generation without turning the suite red, the file says so and names the
+assertion the scoping fix gets to write.
+
+**And a wiring test, which is the countermeasure this whole release argues for.**
+Forty-three public methods under `php/Scan/` have no caller outside the tests -
+retention, revocation, the value-expiry policy, the two predicates that decide
+whether the word "clean" may be printed, the entire read path for a finding. Each
+now has a line in an allow-list saying which wave wires it and what it costs
+until then, and the test fails both ways: a method that goes inert without a line,
+and a line that outlives its method. It caught its first drift within the hour,
+when the storage work deleted six methods it named.
+
 **Findings filed against the wrong rule.** scanPlan() builds its live rule list
 with the keys preserved from the full list, because a finding cites its rule by
 ordinal - it skips config-broken rules, and the per-instrument-rights gate

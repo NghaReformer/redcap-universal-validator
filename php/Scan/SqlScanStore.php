@@ -16,10 +16,9 @@ namespace INSPIRE\UniversalValidator\Scan;
  * lives. Two mechanisms hold that, and the choice between them is not stylistic:
  *
  *   SINGLE-STATEMENT MUTATIONS carry their precondition in the WHERE clause and
- *   are decided by affected() — claim, cancel, finish, leaseSlot, releaseSlot.
- *   Each of these necessarily CHANGES a column when it succeeds (a cursor
- *   advances, a slot goes from NULL to an owner), which is what makes the count
- *   meaningful.
+ *   are decided by affected() — claim, cancel and finish. Each of these
+ *   necessarily CHANGES a column when it succeeds (a cursor advances, a run
+ *   leaves its active slot), which is what makes the count meaningful.
  *
  *   MULTI-STATEMENT TRANSACTIONS fence with SELECT ... FOR UPDATE and compare in
  *   PHP — commitBatch. affected() cannot be used here: MySQL reports rows
@@ -46,6 +45,44 @@ final class SqlScanStore implements ScanStore
     public function __construct(ScanDb $db)
     {
         $this->db = $db;
+    }
+
+    /**
+     * The database failed, and this is how the store says so.
+     *
+     * WHY THESE TWO HELPERS EXIST AT ALL. Four methods below used to end in
+     * `catch (\Throwable $e) { rollback(); return false; }`, which spends the
+     * fence's own vocabulary on something the fence never decided — see
+     * ScanStoreUnavailable's docblock for what that cost. They now end in a
+     * throw, and a throw built one way in four places is a throw that will be
+     * built two ways by the sixth.
+     *
+     * DbError::safe() is the only redaction point in this module. Nothing here
+     * looks at getMessage() itself.
+     */
+    private function unavailable(\Throwable $e)
+    {
+        return ScanStoreUnavailable::from($e);
+    }
+
+    /**
+     * The same, for a failure inside a transaction.
+     *
+     * The rollback is wrapped because it can fail too, and on precisely the
+     * faults that get us here: a connection that has gone away cannot be told
+     * to roll back. An unwrapped rollback would throw a SECOND, unclassified
+     * exception and the first one — the one that says what actually happened —
+     * would never be seen.
+     */
+    private function rolledBack(\Throwable $e)
+    {
+        try {
+            $this->db->rollback();
+        } catch (\Throwable $ignored) {
+            // Nothing to do and nothing to say: the caller is about to be told
+            // the storage is unavailable, which is already true.
+        }
+        return ScanStoreUnavailable::from($e);
     }
 
     // -- runs ---------------------------------------------------------------
@@ -87,12 +124,45 @@ final class SqlScanStore implements ScanStore
         try {
             $this->db->exec($sql, $params);
         } catch (\Throwable $e) {
-            // Any insert failure here is reported as busy WITHOUT detail. A
-            // message distinguishing "slot taken" from "column too long" would
-            // be an oracle for one caller and a support ticket for the other;
-            // the run row that owns the slot is never named either way.
-            return ['ok' => false, 'busy' => true, 'run' => null,
-                    'why' => 'a validation scan is already running for this project'];
+            // WHICH FAULT WAS IT? CONTENTION IS A FACT ABOUT THE TABLE, NOT
+            // ABOUT THE ERROR.
+            //
+            // Every insert failure here used to be reported as busy, and the
+            // docblock above defended that: a message distinguishing "slot
+            // taken" from "column too long" would be an oracle for one caller
+            // and a support ticket for the other. The first half of that is
+            // still true and is still held below. The second half was wrong in
+            // a way that costs a pilot round: "busy" tells an operator to WAIT,
+            // which is correct for contention and is a wait that never ends for
+            // a missing table, a value too long, or a lost connection. That is
+            // the same misdiagnosis as "the server is busy with other scans"
+            // over a slot pool with no rows in it, which ScanWorker::work()
+            // carries twenty lines about.
+            //
+            // So ask the one question that separates them, on the failure path
+            // only. NOT the driver's error code: the framework wraps mysqli
+            // errors and getCode() is frequently 0, so a code test is a second
+            // thing that works locally and not in production. The slot itself
+            // is reliable, and the statement that reads it is already in this
+            // method.
+            $held = [];
+            try {
+                $held = $this->db->select('SELECT 1 FROM ' . Schema::table('scan_run')
+                    . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
+            } catch (\Throwable $ignored) {
+                // The probe failed too, which is itself the answer: this is not
+                // contention, it is a database that cannot be read from.
+                $held = [];
+            }
+            if (isset($held[0])) {
+                // Unchanged, wording included. The probe returns a bare 1 and
+                // never the run id, the creator or the scope, so the
+                // non-disclosure property ScanAuthorization::busy() depends on
+                // is exactly what it was.
+                return ['ok' => false, 'busy' => true, 'run' => null,
+                        'why' => 'a validation scan is already running for this project'];
+            }
+            throw $this->unavailable($e);
         }
         $row = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
@@ -319,8 +389,11 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return $out;
         } catch (\Throwable $e) {
-            $this->db->rollback();
-            return false;
+            // A FAILED READ IS NOT A REFUSED ONE. `false` here means the fence
+            // looked and said no; a deadlock means the fence never got to look,
+            // and the worker that treats them alike stops without anything
+            // recording that the database is in trouble.
+            throw $this->rolledBack($e);
         }
     }
 
@@ -374,10 +447,9 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return $out;
         } catch (\Throwable $e) {
-            // A failed read is not an empty one, and this is the file that says
-            // so everywhere else.
-            $this->db->rollback();
-            return false;
+            // A failed read is not an empty one, and it is not a refused one
+            // either. This is the file that says so everywhere else.
+            throw $this->rolledBack($e);
         }
     }
 
@@ -544,8 +616,11 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return $n;
         } catch (\Throwable $e) {
-            $this->db->rollback();
-            return 0;
+            // Zero is "the epoch had moved, so these rows are not yours to hand
+            // back". It is not "the database refused to talk to us", and a
+            // worker that reads one as the other leaves its rows CLAIMED and
+            // invisible to the straggler sweep until they go stale.
+            throw $this->rolledBack($e);
         }
     }
 
@@ -659,8 +734,11 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return true;
         } catch (\Throwable $e) {
-            $this->db->rollback();
-            return false;
+            // THE WORST OF THE FOUR, because of what the caller does with it.
+            // ScanWorker reads `false` as "there is no next phase" and reports
+            // the run DONE. A deadlock swallowed here therefore certified a
+            // project on the strength of a transaction that never ran.
+            throw $this->rolledBack($e);
         }
     }
 
@@ -692,38 +770,17 @@ final class SqlScanStore implements ScanStore
         return $ok;
     }
 
-    // -- worker slots -------------------------------------------------------
-
-    /**
-     * Lease one installation-wide slot.
-     *
-     * An UPDATE with a predicate, never an INSERT: the rows are precreated, so
-     * two workers racing for the last slot are serialised by the row lock and
-     * exactly one sees affected() === 1. An expired lease is takeable in the
-     * same statement, so a dead worker cannot hold the server hostage.
-     */
-    public function leaseSlot($owner, $runId, $ttlSeconds)
-    {
-        $t = Schema::table('scan_worker_slot');
-        $this->db->exec('UPDATE ' . $t . '
-            SET owner = ?, run_id = ?, epoch = epoch + 1, expires_at = ?
-            WHERE (owner IS NULL OR expires_at < ?) ORDER BY slot_no LIMIT 1',
-            [$owner, $runId, self::inSeconds($ttlSeconds), self::now()]);
-        if ($this->db->affected() !== 1) return null;
-        $r = $this->db->select('SELECT slot_no, epoch FROM ' . $t
-            . ' WHERE owner = ? ORDER BY slot_no LIMIT 1', [$owner]);
-        if (!isset($r[0])) return null;
-        return ['slot_no' => (int) $r[0][0], 'epoch' => (int) $r[0][1]];
-    }
-
-    /** A stale holder releases nothing: the epoch is part of the predicate. */
-    public function releaseSlot($slotNo, $owner, $epoch)
-    {
-        $this->db->exec('UPDATE ' . Schema::table('scan_worker_slot') . '
-            SET owner = NULL, run_id = NULL, expires_at = NULL
-            WHERE slot_no = ? AND owner = ? AND epoch = ?', [$slotNo, $owner, $epoch]);
-        return $this->db->affected() === 1;
-    }
+    // THE WORKER SLOTS USED TO BE LEASED FROM HERE TOO, and that is why they
+    // are not any more. leaseSlot() and releaseSlot() were a second
+    // implementation of WorkerSlots over the same uv_scan_worker_slot table,
+    // wired to nothing, and while nobody was calling them they grew a defect:
+    // the read-back after the UPDATE asked for the lowest-numbered slot the
+    // OWNER holds rather than the one just taken, so one owner leasing twice
+    // was told "slot 1" both times, and releasing what it had been told
+    // stranded slot 2 until its TTL expired. Two mechanisms over one semaphore
+    // is how the wrong one keeps a defect nobody notices for five releases.
+    // WorkerSlots is the only one now, and it holds the same read-back
+    // corrected - see the compare-and-set in WorkerSlots::acquire().
 
     // -- reads --------------------------------------------------------------
 

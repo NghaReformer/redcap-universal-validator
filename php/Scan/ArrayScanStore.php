@@ -30,18 +30,9 @@ final class ArrayScanStore implements ScanStore
     private $records = [];     // run_id => [ordinal => row]
     private $findings = [];    // list
     private $candidates = [];  // uniqueness candidates, keyed as the UNIQUE index is
-    private $slots = [];       // slot_no => row
     private $aggregates = [];  // run_id => list
     private $audits = [];
     private $nextRun = 1;
-
-    public function __construct($slotCount = 2)
-    {
-        for ($i = 1; $i <= max(1, (int) $slotCount); $i++) {
-            $this->slots[$i] = ['slot_no' => $i, 'owner' => null, 'epoch' => 0,
-                                'run_id' => null, 'expires_at' => null];
-        }
-    }
 
     public function startRun($pid, array $run)
     {
@@ -330,32 +321,13 @@ final class ArrayScanStore implements ScanStore
         return true;
     }
 
-    public function leaseSlot($owner, $runId, $ttlSeconds)
-    {
-        $now = time();
-        foreach ($this->slots as $no => $s) {
-            $free = ($s['owner'] === null)
-                 || ($s['expires_at'] !== null && $s['expires_at'] < $now);
-            if (!$free) continue;
-            $this->slots[$no]['owner'] = $owner;
-            $this->slots[$no]['run_id'] = $runId;
-            $this->slots[$no]['epoch']++;
-            $this->slots[$no]['expires_at'] = $now + (int) $ttlSeconds;
-            return ['slot_no' => $no, 'epoch' => $this->slots[$no]['epoch']];
-        }
-        return null;
-    }
-
-    public function releaseSlot($slotNo, $owner, $epoch)
-    {
-        if (!isset($this->slots[$slotNo])) return false;
-        $s = $this->slots[$slotNo];
-        if ($s['owner'] !== $owner || (int) $s['epoch'] !== (int) $epoch) return false;
-        $this->slots[$slotNo]['owner'] = null;
-        $this->slots[$slotNo]['run_id'] = null;
-        $this->slots[$slotNo]['expires_at'] = null;
-        return true;
-    }
+    // THE WORKER SLOTS ARE NOT MODELLED HERE ANY MORE. This class used to carry
+    // an in-memory copy of them because the contract declared leaseSlot() and
+    // releaseSlot(); the contract does not, because WorkerSlots is the one
+    // semaphore and the store's pair had no caller. The assertions that lived
+    // on this pair moved to the WorkerSlots contract, which runs against a real
+    // server - which is where a semaphore's behaviour can actually be shown,
+    // since the interesting half of it is two processes racing.
 
     public function findings($generationId, array $filter, $afterId, $limit)
     {

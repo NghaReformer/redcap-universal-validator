@@ -271,16 +271,16 @@ function storeContract(callable $newStore, $label)
         $s4->cancel(711, $rid4, 'admin') === true
         && $s4->claimPending($rid4, 'w', (int) $s4->run(711, $rid4)['lease_epoch'], 5) === false);
 
-    // -- worker slots -------------------------------------------------------
-    $s2 = $newStore();
-    $a = $s2->leaseSlot('w1', 1, 60);
-    $b = $s2->leaseSlot('w2', 1, 60);
-    $C('slots lease up to the configured count', $a !== null && $b !== null);
-    $C('and the next worker finds none free', $s2->leaseSlot('w3', 1, 60) === null);
-    $C('a stale holder releases nothing',
-        $s2->releaseSlot($a['slot_no'], 'w1', $a['epoch'] + 5) === false);
-    $C('someone else releases nothing either',
-        $s2->releaseSlot($a['slot_no'], 'impostor', $a['epoch']) === false);
-    $C('the real holder releases', $s2->releaseSlot($a['slot_no'], 'w1', $a['epoch']) === true);
-    $C('freeing it for the next worker', $s2->leaseSlot('w3', 1, 60) !== null);
+    // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
+    //
+    // Six assertions used to sit at the end of this function, driving the
+    // store's own leaseSlot()/releaseSlot(). Those methods are gone: they were
+    // a second implementation of WorkerSlots over the same table, with no
+    // production caller, and the read-back inside them named the wrong slot
+    // whenever one owner held two. The contract never noticed because it leased
+    // with three DISTINCT owners w1/w2/w3, so it could not reach the case.
+    //
+    // The assertions were RELOCATED, not deleted - see the slot section of
+    // tests/scan_moduledb_php.php, which drives WorkerSlots against a real
+    // server and adds the repeat-owner case the shape of this one excluded.
 }

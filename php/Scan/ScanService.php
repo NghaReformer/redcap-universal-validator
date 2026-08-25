@@ -113,6 +113,24 @@ final class ScanService
      */
     public function start($pid)
     {
+        // THE STORAGE-FAILURE BOUNDARY IS HERE, one frame above the body, and
+        // that is why the body is a method of its own. startRun() used to
+        // report a missing table as "a validation scan is already running for
+        // this project", so an administrator was told to wait for something
+        // that could never finish; it now throws, and every store call between
+        // here and it can throw the same way. One catch at the entrypoint
+        // answers all of them with a sentence that says what actually happened,
+        // and puts what the server said in the module log where it belongs.
+        try {
+            return $this->openRun($pid);
+        } catch (ScanStoreUnavailable $e) {
+            return self::noStart($this->storageFailed($pid, null, $e));
+        }
+    }
+
+    /** @see start() — the body, so that the catch above is not a page of indent. */
+    private function openRun($pid)
+    {
         $gate = $this->available($pid);
         if (!$gate['ok']) return self::noStart($gate['why']);
 
@@ -188,6 +206,20 @@ final class ScanService
      */
     public function work($pid, $runId, $mode = 'browser')
     {
+        // As start(): one boundary for every way the storage can fail. The
+        // worker catches the failures raised inside its own loop and answers
+        // stop:'storage'; this catches the ones raised before it gets there -
+        // the entitlement reads, the slot acquisition, the status read.
+        try {
+            return $this->advanceRun($pid, $runId, $mode);
+        } catch (ScanStoreUnavailable $e) {
+            return ['ok' => false, 'why' => $this->storageFailed($pid, $runId, $e)];
+        }
+    }
+
+    /** @see work() — the body. */
+    private function advanceRun($pid, $runId, $mode)
+    {
         $gate = $this->available($pid);
         if (!$gate['ok']) return ['ok' => false, 'why' => $gate['why']];
 
@@ -215,8 +247,26 @@ final class ScanService
             'finalizer' => $this->finalizer($pid, $ctx),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             'rollup'    => new RollupBuilder($this->db, $store),
+            'note'      => function ($event, array $context) {
+                $this->note($event, $context);
+            },
         ]);
         $r = $worker->work($pid, $runId);
+
+        // A RUN WHOSE STORAGE JUST FAILED IS NOT A RUN TO PROMOTE. Promotion
+        // reads statuses and counters and then writes a terminal verdict; doing
+        // that on the strength of reads that are failing is how a database
+        // blip becomes a permanent answer about a project. The run keeps its
+        // slot and its phase, and the next request promotes it if it can.
+        //
+        // The status is not re-read either, for the same reason: asking a
+        // database that has just refused one question to answer another one
+        // either fails again or answers from a state nobody should trust. The
+        // caller gets a refusal shaped like every other refusal.
+        if (isset($r['stop']) && $r['stop'] === 'storage') {
+            return array_merge($r, ['status' => ['ok' => false,
+                                                 'why' => ScanStoreUnavailable::OPERATOR_TEXT]]);
+        }
 
         // Promotion is attempted on every pass, not only the one that finishes.
         // It refuses until the run really is finishable, so asking early costs
@@ -576,5 +626,39 @@ final class ScanService
     private static function noStart($why)
     {
         return ['ok' => false, 'busy' => false, 'run_id' => null, 'why' => $why];
+    }
+
+    /**
+     * Record a storage failure, and answer with the sentence the operator gets.
+     *
+     * TWO AUDIENCES AND THEY NEVER SWAP. The return value is
+     * ScanStoreUnavailable::OPERATOR_TEXT - one fixed sentence, no table name,
+     * no column, no value, no error number - and it is the only thing that
+     * reaches the page. What the server said goes to the module log, which is
+     * the module's admin-only surface. Reporting nothing is how the pilot spent
+     * five rounds on misattributed causes; reporting the server's own text to
+     * the browser is how a batch of participant data leaves through an error
+     * message. This is the one place the module gets to choose both.
+     */
+    private function storageFailed($pid, $runId, ScanStoreUnavailable $e)
+    {
+        $this->note('scan storage failure', ['project_id' => $pid, 'run_id' => $runId,
+                                             'detail' => $e->safeDetail()]);
+        return ScanStoreUnavailable::OPERATOR_TEXT;
+    }
+
+    /**
+     * One line in the module log, and never an exception of its own.
+     *
+     * The log write goes through the same database connection that has just
+     * failed, so this is expected to fail too; a throw from here would replace
+     * the diagnosis with a second, less useful failure.
+     */
+    private function note($event, array $context)
+    {
+        try {
+            if (is_callable([$this->module, 'log'])) $this->module->log($event, $context);
+        } catch (\Throwable $ignored) {
+        }
     }
 }

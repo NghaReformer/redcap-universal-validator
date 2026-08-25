@@ -60,6 +60,10 @@ final class ScanWorker
      *   fingerprint:    string        the configuration as it is NOW
      *   policyRevision: int           the privacy policy as it is NOW
      *   slotTtl:        int
+     *   note:           ?callable(string $event, array $context): void
+     *                                 where a storage failure is recorded. The
+     *                                 worker's own answer never carries what
+     *                                 the server said - see noteStorageFailure.
      * }
      */
     public function __construct(ScanStore $store, array $deps)
@@ -147,47 +151,100 @@ final class ScanWorker
         // scanning twice, which is why the limit is not per project.
         $slot = null;
         $slots = isset($this->deps['slots']) ? $this->deps['slots'] : null;
-        if ($slots instanceof WorkerSlots) {
-            $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
-            $slot = $slots->acquire($this->owner(), $runId, $ttl);
-            if ($slot === null) {
-                // TWO DIFFERENT FAULTS LOOK IDENTICAL HERE, and only one of them
-                // is contention.
-                //
-                // Leasing is an UPDATE against precreated rows, so the count of
-                // rows IS the limit - and a table with no rows is a limit of
-                // zero. Every worker is refused, forever, and "the server is
-                // busy with other scans" is then a false sentence that sends an
-                // administrator looking for scans that do not exist. The first
-                // live pilot spent a round exactly there.
-                //
-                // One extra query, on the failure path only, to tell an empty
-                // pool from a full one.
-                $census = $slots->census();
-                if ((int) $census['total'] < 1) {
-                    return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
-                            'findings' => 0, 'phase' => $phase, 'done' => false,
-                            'stop' => 'unprovisioned',
-                            'why' => 'this installation has no scan worker slots, so no scan can '
-                                   . 'run. An administrator can create them by saving the module\'s '
-                                   . 'system configuration.'];
-                }
-                // Genuine contention. Not an error: the right answer is to come
-                // back rather than to fail the run.
-                return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
-                        'findings' => 0, 'phase' => $phase, 'done' => false, 'stop' => 'capacity',
-                        'why' => 'this server is running as many scans as it allows at once; '
-                               . 'this one will continue shortly'];
-            }
-        }
-
+        // THE SEMAPHORE IS INSIDE THE STORAGE-FAILURE GUARD, not before it.
+        // acquire() is a compare-and-set over the slot table and it fails the
+        // same way everything else does; leaving it outside would send a
+        // database fault back as "this server is running as many scans as it
+        // allows at once", which is the 1.9.5 sentence over a pool that is free.
         try {
+            if ($slots instanceof WorkerSlots) {
+                $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
+                $slot = $slots->acquire($this->owner(), $runId, $ttl);
+                if ($slot === null) {
+                    // TWO DIFFERENT FAULTS LOOK IDENTICAL HERE, and only one of them
+                    // is contention.
+                    //
+                    // Leasing is an UPDATE against precreated rows, so the count of
+                    // rows IS the limit - and a table with no rows is a limit of
+                    // zero. Every worker is refused, forever, and "the server is
+                    // busy with other scans" is then a false sentence that sends an
+                    // administrator looking for scans that do not exist. The first
+                    // live pilot spent a round exactly there.
+                    //
+                    // One extra query, on the failure path only, to tell an empty
+                    // pool from a full one.
+                    $census = $slots->census();
+                    if ((int) $census['total'] < 1) {
+                        return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                                'findings' => 0, 'phase' => $phase, 'done' => false,
+                                'stop' => 'unprovisioned',
+                                'why' => 'this installation has no scan worker slots, so no scan can '
+                                       . 'run. An administrator can create them by saving the module\'s '
+                                       . 'system configuration.'];
+                    }
+                    // Genuine contention. Not an error: the right answer is to come
+                    // back rather than to fail the run.
+                    return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'phase' => $phase, 'done' => false, 'stop' => 'capacity',
+                            'why' => 'this server is running as many scans as it allows at once; '
+                                   . 'this one will continue shortly'];
+                }
+            }
+
             return $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $opts);
+        } catch (ScanStoreUnavailable $e) {
+            // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
+            //
+            // Until the store learned to say so, a deadlock inside claim() came
+            // back as `false` and left through refused() — ok:true, stop:
+            // 'fenced', "this scan could not take more work just now" — and the
+            // browser, reading ok:true, re-issued scan-work immediately against
+            // a database that was already in trouble. Worse, the same swallow
+            // inside advancePhase() read as "there is no next phase" and the
+            // run was reported DONE.
+            //
+            // So: ok is FALSE, which is what stops the client pumping, and done
+            // is FALSE, which is the one thing that must never be guessed. The
+            // counters are zero because the transaction that failed rolled back
+            // and I3 leaves its records exactly as unexamined as they were.
+            $this->noteStorageFailure($runId, $e);
+            return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                    'findings' => 0, 'phase' => $phase, 'done' => false, 'stop' => 'storage',
+                    'why' => ScanStoreUnavailable::OPERATOR_TEXT];
         } finally {
+            // Still inside the finally, deliberately: a storage failure must
+            // give the installation its worker slot back, or one bad afternoon
+            // exhausts the pool for everybody.
             if ($slot !== null && $slots instanceof WorkerSlots) {
                 $slots->release($slot['slot_no'], $this->owner(), $slot['epoch']);
             }
+        }
+    }
+
+    /**
+     * Send what the server said somewhere an administrator can read it.
+     *
+     * THE PAYLOAD NEVER CARRIES IT. The worker's answer goes to a browser, and
+     * a server error message is the one string in this module most likely to
+     * have a participant's data in the middle of it. Threading the detail
+     * through the payload and asking the caller to remove it before answering
+     * would work exactly until the second caller — so the detail leaves by a
+     * different door, and the door is optional: a worker built without a `note`
+     * is a worker whose failures are silent, which the composition root is
+     * responsible for not doing.
+     *
+     * Wrapped, because the log write goes to the database that just failed.
+     */
+    private function noteStorageFailure($runId, ScanStoreUnavailable $e)
+    {
+        $note = isset($this->deps['note']) ? $this->deps['note'] : null;
+        if (!is_callable($note)) return;
+        try {
+            $note('scan storage failure', ['run_id' => (int) $runId,
+                                           'detail' => $e->safeDetail()]);
+        } catch (\Throwable $ignored) {
+            // A failure while reporting a failure is not worth a second one.
         }
     }
 
