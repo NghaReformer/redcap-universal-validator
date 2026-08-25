@@ -22,6 +22,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
+    require_once __DIR__ . '/../php/Scan/DbError.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -267,8 +268,13 @@ namespace INSPIRE\UniversalValidator\Scan {
             ScanAuthorization::mayCancel($dagUser, $ENT, null)['ok'] === false);
         check('cancel: a DAG user may cancel their own group\'s run',
             ScanAuthorization::mayCancel($dagUser, $ENT, 'north')['ok'] === true);
+        // The rule is SCOPE, not ownership - stated without the two parameters
+        // that used to carry it. They were inert: mayCancel compared them and
+        // then returned the same expression either way, so this check passed
+        // over a control that decided nothing. Asserting the rule directly is
+        // what makes it a test rather than a decoration.
         check('cancel: even one another user in that group started',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'north', 'someone_else', 'me')['ok'] === true);
+            ScanAuthorization::mayCancel($dagUser, $ENT, 'north')['ok'] === true);
         check('cancel: but not another group\'s run',
             ScanAuthorization::mayCancel($dagUser, $ENT, 'south')['ok'] === false);
         check('cancel: an unrestricted user may cancel any DAG run',
@@ -546,6 +552,122 @@ namespace INSPIRE\UniversalValidator\Scan {
                 check("drift: $k is a SYSTEM setting, not a project one", isset($sysKeys[$k]));
             }
         }
+    }
+
+    /* =====================================================================
+     * S-10  a database error names the SCHEMA and never the DATA
+     *
+     * This text reaches a page. MySQL puts the offending VALUE in single
+     * quotes - and, as it turns out, the IDENTIFIER too, in the same quotes -
+     * so the blanket redaction that shipped through 1.9.10 destroyed the
+     * diagnosis along with the value and three pilot rounds were spent on it.
+     * The replacement REBUILDS a template from structural captures instead of
+     * filtering the server's string, which is what lets the failing statement
+     * and its bound parameters be dropped rather than trimmed.
+     *
+     * safeDbMessage had no test of any kind before this block: no hit for it,
+     * for 'refused to store', for 'Duplicate entry' or for 'Data too long'
+     * anywhere under tests/. That absence is why an `||` in the MySQL suite was
+     * able to stand in for the guarantee for two releases.
+     * ===================================================================== */
+    {
+        $D = '\INSPIRE\UniversalValidator\Scan\DbError';
+        $err = function ($msg, $code = 0) { return new \RuntimeException($msg, $code); };
+
+        // --- the two shapes that carry participant data ---
+        $dup = $D::safe($err("Duplicate entry 'AB12-9' for key 'uv_finding.uq_active_identity'", 1062));
+        check('S-10: a duplicate key names the KEY', strpos($dup, 'uq_active_identity') !== false);
+        check('S-10: and never the duplicated value', strpos($dup, 'AB12-9') === false);
+        check('S-10: and carries the errno, which names the fix on its own',
+            strpos($dup, '1062') !== false);
+
+        $inc = $D::safe($err("Incorrect integer value: 'Mrs Smith' for column 'instance' at row 4", 1366));
+        check('S-10: an incorrect value names the column', strpos($inc, 'instance') !== false);
+        check('S-10: and withholds the value', strpos($inc, 'Mrs Smith') === false);
+
+        // --- the shapes whose quoted parts are all identifiers ---
+        $long = $D::safe($err("Data too long for column 'reason_code' at row 1", 1406));
+        check('S-10: data-too-long names the column, which is the whole diagnosis',
+            strpos($long, 'reason_code') !== false);
+        check('S-10: a null violation names its column',
+            strpos($D::safe($err("Column 'host_form' cannot be null", 1048)), 'host_form') !== false);
+        check('S-10: a missing default names its field',
+            strpos($D::safe($err("Field 'run_id' doesn't have a default value", 1364)), 'run_id') !== false);
+        check('S-10: an unknown column names itself',
+            strpos($D::safe($err("Unknown column 'zzz' in 'field list'", 1054)), 'zzz') !== false);
+        check('S-10: a missing table names itself',
+            strpos($D::safe($err("Table 'redcap.uv_finding' doesn't exist", 1146)), 'uv_finding') !== false);
+
+        // --- the value-free shapes the lease predicates need (H12) ---
+        check('S-10: a deadlock says deadlock, so it is not read as a takeover',
+            stripos($D::safe($err('Deadlock found when trying to get lock; try restarting transaction', 1213)),
+                    'deadlock') !== false);
+        check('S-10: a lock-wait timeout says so too',
+            stripos($D::safe($err('Lock wait timeout exceeded; try restarting transaction', 1205)),
+                    'lock wait timeout') !== false);
+
+        // --- THE TAIL WINDOW. The framework prepends the failing STATEMENT, and
+        // a findings batch is a multi-row INSERT with thousands of
+        // placeholders, so the server's own text can sit a megabyte in. A
+        // head-only cut finds nothing at all and reports a shrug.
+        $huge = 'ExternalModules framework error running query: INSERT INTO uv_finding ('
+              . str_repeat('?, ', 200000) . ') -- ' . "Duplicate entry 'SECRET' for key 'uv_finding.uq_active_identity'";
+        $tail = $D::safe($err($huge, 1062));
+        check('S-10: the diagnosis is found even when the statement pushes it past the head window',
+            strpos($tail, 'uq_active_identity') !== false);
+        check('S-10: and the megabyte of statement does not travel with it',
+            strpos($tail, 'INSERT INTO') === false && strlen($tail) < 200);
+        check('S-10: and the value at the far end is still withheld',
+            strpos($tail, 'SECRET') === false);
+
+        // --- REBUILDING IS THE SECURITY PROPERTY. On a recognised shape the
+        // output is assembled from captures, so anything the wrapper appended -
+        // statement, bound parameters - is dropped rather than trimmed.
+        $withParams = "Duplicate entry 'X' for key 'uv_finding.uq_active_identity' "
+                    . '[params: nhs_number=4857773456, dob=1974-02-11]';
+        $rebuilt = $D::safe($err($withParams, 1062));
+        check('S-10: bound parameters appended by the wrapper are dropped, not trimmed',
+            strpos($rebuilt, '4857773456') === false && strpos($rebuilt, '1974-02-11') === false);
+
+        // --- the ident() guard. A value carrying an apostrophe can re-frame the
+        // text so a fragment of it lands in a capture group; identifier shape is
+        // what makes that a withheld name rather than a disclosure.
+        $crafted = $D::safe($err("Duplicate entry 'a' for key 'Smith, Jane (DOB 1974-02-11)'", 1062));
+        check('S-10: a capture that is not identifier-shaped is withheld',
+            strpos($crafted, 'Smith') === false && strpos($crafted, '1974') === false);
+        check('S-10: and says so rather than printing nothing',
+            strpos($crafted, 'withheld') !== false);
+
+        // --- THE BINARY CASE, which is the one that actually leaked.
+        //
+        // uq_active_identity is keyed on a 32-byte HMAC, so the value MySQL
+        // echoes back in a duplicate-entry error is raw binary - and roughly one
+        // identity in eight contains an apostrophe byte (0x27) by chance. That
+        // byte closes the redaction pattern's quoted run early and opens the
+        // next one in the wrong place, so the old blanket redaction emitted the
+        // bytes BETWEEN the two apostrophes verbatim while still destroying the
+        // key name. It lost the diagnosis and disclosed at the same time. The
+        // template rebuild is immune because it never echoes the value capture.
+        $bin = "\x9f\x2c'" . "\x44\xa1SHOULD_NOT_APPEAR\x00\x11" . "'\xee\x03";
+        $binMsg = $D::safe($err("Duplicate entry '" . $bin
+                                . "' for key 'uv_finding.uq_active_identity'", 1062));
+        check('S-10: a quote byte inside a binary key value cannot re-frame the redaction',
+            strpos($binMsg, 'SHOULD_NOT_APPEAR') === false);
+        check('S-10: and the key name survives it, which the old pattern also lost',
+            strpos($binMsg, 'uq_active_identity') !== false);
+        check('S-10: and no raw NUL reaches the page',
+            strpos($binMsg, "\x00") === false);
+
+        // --- an unrecognised message still answers, still bounded, still redacted.
+        $odd = $D::safe($err("Some novel server condition involving 'AB12-9' and more", 9999));
+        check('S-10: an unrecognised error still redacts its quoted runs',
+            strpos($odd, 'AB12-9') === false);
+        check('S-10: and still names its errno', strpos($odd, '9999') !== false);
+        check('S-10: and is bounded', strlen($odd) <= 200);
+
+        // --- and it never returns nothing. An empty message is the one input
+        // that used to hand a bare class name to a page.
+        check('S-10: an empty message still answers', $D::safe($err('', 1213)) !== '');
     }
 
     echo "scan_security_php: $n checks, $fail failure(s)\n";

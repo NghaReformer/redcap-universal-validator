@@ -29,6 +29,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
     require_once __DIR__ . '/../php/Scan/SourceFence.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
     require_once __DIR__ . '/../php/Scan/WorkBudget.php';

@@ -35,6 +35,7 @@ require_once __DIR__ . '/php/ScanColumns.php';
 // asked - and the framework has no autoloader to fall back on.
 require_once __DIR__ . '/php/Scan/Schema.php';
 require_once __DIR__ . '/php/Scan/ScanDb.php';
+require_once __DIR__ . '/php/Scan/DbError.php';
 require_once __DIR__ . '/php/Scan/ScanStore.php';
 require_once __DIR__ . '/php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/php/Scan/ScanPhase.php';
@@ -2307,9 +2308,28 @@ class UniversalValidator extends AbstractExternalModule
                 'added' => (int) $added,
                 'total' => (int) $census['total'],
             ]);
-        } catch (Throwable $e) {
-            // Swallowed on purpose - see the docblock. The scan stays disabled
-            // and the page explains itself.
+        } catch (\Throwable $e) {
+            // Swallowed on purpose - see the docblock - but NEVER SILENTLY.
+            //
+            // THE LEADING BACKSLASH IS THE WHOLE POINT. This file declares
+            // `namespace INSPIRE\UniversalValidator`, so an unqualified
+            // `catch (Throwable)` names INSPIRE\UniversalValidator\Throwable -
+            // a class that does not exist. PHP does not warn about that; it
+            // simply never matches. This catch was inert from the day it was
+            // written, so anything thrown after the migration returned - the
+            // log, the policy read, the slot provisioning - escaped it and took
+            // the administrator's settings save down with it, which is the
+            // exact outcome the docblock above promises cannot happen.
+            //
+            // And a catch that finally starts catching must not trade a loud
+            // failure for an invisible one: without this line a slot-
+            // provisioning failure would vanish, and the operator would meet it
+            // later as the 1.9.5 pilot symptom - "the server is busy" over an
+            // empty slot pool - with nothing anywhere to explain it. The CLASS
+            // only: the message is written by the framework's error path and
+            // can carry statement text.
+            try { $this->log('scan-schema-install-failed', ['error' => get_class($e)]); }
+            catch (\Throwable $ignored) { }
         }
     }
 

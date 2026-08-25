@@ -28,6 +28,7 @@ require_once __DIR__ . '/../../php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/../../php/Scan/ScanPhase.php';
 require_once __DIR__ . '/../../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../../php/Scan/ScanDb.php';
+require_once __DIR__ . '/../../php/Scan/DbError.php';
 require_once __DIR__ . '/../../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../php/Scan/ScanRetention.php';
@@ -754,8 +755,17 @@ $fresh = function () use ($A, $storeA) {
     // and describes nothing; three rounds of the live pilot were spent on it.
     // The reason_code column here is VARCHAR(64) and the value is 200 bytes, so
     // the server's own words are the diagnosis.
+    // TWO CHECKS, AND (not OR). This was one check joined by `||`, and it was
+    // passing on "too long" alone: MySQL single-quotes its identifiers rather
+    // than backticking them, so the blanket value-redaction had been erasing
+    // the column name since the day 1.9.9 promised to print it. A disjunction
+    // cannot fail while either half is effectively a constant, so the test that
+    // was supposed to guard the diagnosis was the reason nobody noticed it had
+    // never worked. Assert each half on its own line.
     check('fault: quoting the server, so the column is named',
-        strpos($refused, 'reason_code') !== false || strpos($refused, 'too long') !== false);
+        strpos($refused, 'reason_code') !== false);
+    check('fault: and the server\'s own words for what was wrong with it',
+        strpos($refused, 'too long') !== false);
     // The VALUE never travels with the diagnosis. MySQL puts it in single
     // quotes, and an error string nobody audited is not a disclosure channel.
     check('fault: but never the value that caused it',

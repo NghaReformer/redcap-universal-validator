@@ -24,6 +24,7 @@ namespace {
     require_once __DIR__ . '/../php/ScanCapabilities.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
