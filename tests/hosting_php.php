@@ -60,6 +60,14 @@ namespace ExternalModules {
         public function query($sql, $params = []) {
             $this->sql[] = $sql;
             if (strpos($sql, 'MAX(version)') !== false) return [[0]];
+            // Version 2 asks the server what is already there, so a
+            // migration interrupted between two ALTERs can resume. This
+            // fixture is about HOSTING, not about the schema, so it answers
+            // 'already applied' and lets migrate() get to the part this file
+            // is actually testing.
+            if (strpos($sql, 'information_schema.columns') !== false
+                    || strpos($sql, 'information_schema.statistics') !== false) return [[1]];
+            if (strpos($sql, 'project_id = 0') !== false) return [[0]];
             return [];
         }
         public function getProjectId() { return $this->projectIdReturn; }

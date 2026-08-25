@@ -124,7 +124,8 @@ namespace ExternalModules {
             // installation state - the migration has not been run - and the page
             // must refuse over it rather than offer a panel nothing can drive.
             if (strpos($sql, 'MAX(version)') !== false) {
-                return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : null]]);
+                return new \ExternalModules\FakeRes([[$this->tablesInstalled
+                    ? (string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION : null]]);
             }
             if (strpos($sql, 'information_schema.tables') !== false) {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : '0']]);

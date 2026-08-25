@@ -122,6 +122,60 @@ of running two conflicting validators; give each field exactly one rule.
 - Set a rule to *Compulsory* and try to save with a bad ID → the save is blocked
   until you fix it.
 
+## The Validation scan's own tables
+
+The durable Validation scan stores its work in thirteen tables of its own, all
+prefixed `uv_`. They are created the first time a server administrator saves the
+module's system configuration with **Validation scan — enable the durable,
+resumable scan** switched on, and the module's database user needs a plain
+`CREATE` grant to make them. `CREATE TEMPORARY TABLES`, `CREATE VIEW` and
+`CREATE ROUTINE` do not suffice; the scan page's health check says so by name if
+the grant is missing.
+
+If the module's user holds no `CREATE` grant, an administrator can install the
+schema by hand. `Schema::plan()` returns every statement in order, and running
+them by hand is a supported path: re-saving the configuration afterwards finds
+the tables already present, skips the statements that have been applied, and
+completes the parts that are not DDL.
+
+### Upgrading from 1.9.x
+
+**This upgrade deletes every scan finding stored by 1.9.x, and it is not
+reversible.** If a scan was ever run on this server, read this section before
+saving the configuration.
+
+Three things about a finding changed in 2.0.0: which rule it is attributed to,
+what makes two findings "the same finding", and the numbering that separates one
+run from the next. A finding written by 1.9.x is therefore not comparable with
+one written by 2.0.0 — it cannot be matched, and it cannot be closed. Keeping
+those rows would leave a report mixing two schemes whose older half can never be
+updated again, and on a server with more than one project they are additionally
+attributed to the wrong project, because the tables that hold them had no project
+column at all until this release.
+
+So the upgrade removes them, in pages, and says so in the module log. Nothing
+else is touched: no REDCap table, no project data, no record. **The findings are
+re-derivable — run the scan again.**
+
+Any scan that was still running is ended and marked `expired`. That is deliberate
+too: those runs are holding their projects' only scan slot, several of them since
+1.9.0, because nothing in 1.9.x ever reclaimed an abandoned run.
+
+**The upgrade runs inside the HTTP request that saves the configuration.** On a
+server with a large `uv_finding` table it can take minutes, and the browser will
+sit there. Three things make that safer:
+
+- run it outside working hours, or at least when nobody is scanning;
+- take a database backup first, as for any migration;
+- if the request times out, save the configuration again. The migration is
+  resumable — every statement checks whether it has already been applied — and
+  it records the new version only after it has verified the result, so an
+  interrupted run leaves the scan disabled rather than half-migrated.
+
+If it fails, the scan page names what failed and the scan stays off. It never
+half-installs.
+
+
 ## Notes
 
 - The module injects its own JavaScript; the JavaScript Injector module is **not**

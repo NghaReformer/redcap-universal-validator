@@ -162,3 +162,100 @@ check('finding-versions: closing the old one lets the new generation insert',
 $cnt = (int) $ca->query('SELECT COUNT(*) FROM ' . $fnd . ' WHERE finding_identity = 0x'
     . bin2hex($id1), [])[0][0];
 check('finding-versions: history is retained, not replaced', $cnt === 2);
+
+// -- the upgrade an installation that ALREADY RAN 1.9.x actually takes --------
+//
+// Every other check in this file migrates from nothing. That is the one path a
+// piloted server will never take, and it is the path where version 1's frozen
+// comment ("the durable scan has never been enabled on any installation") cost
+// five releases of invisible schema changes.
+//
+// So: build version 1 ALONE, put rows in it the way 1.9.x did, record version 1,
+// and migrate for real.
+foreach (array_reverse(Schema::tables()) as $t) $A->query('DROP TABLE IF EXISTS ' . $t);
+foreach (Schema::statements(1) as $sql) $A->query($sql);
+$A->query('INSERT INTO ' . Schema::table('schema_version') . ' (version, applied_at) VALUES (1, NOW())');
+
+// A version-1 run and its findings, in the shape 1.9.10 wrote them: generation 1
+// for every project, and no project_id on the finding at all.
+$A->query('INSERT INTO ' . Schema::table('scan_run') . '
+    (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+     coverage, detail, values_state, policy_json, policy_revision, fingerprint,
+     created_at, updated_at, active_slot)
+    VALUES (UNHEX(REPLACE(UUID(), "-", "")), 900, 1, 1, "alice", "project", "full", "scanning",
+            "partial", "complete", "none", "{}", 1, REPEAT("a", 64), NOW(), NOW(), 1)');
+$A->query('INSERT INTO ' . Schema::table('scan_run') . '
+    (run_uuid, project_id, run_seq, generation_id, created_by, scope_kind, run_kind, phase,
+     coverage, detail, values_state, policy_json, policy_revision, fingerprint,
+     created_at, updated_at, active_slot)
+    VALUES (UNHEX(REPLACE(UUID(), "-", "")), 901, 1, 1, "bob", "project", "full", "scanning",
+            "partial", "complete", "none", "{}", 1, REPEAT("b", 64), NOW(), NOW(), 1)');
+for ($i = 1; $i <= 3; $i++) {
+    $A->query('INSERT INTO ' . Schema::table('finding') . '
+        (generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
+         record_id_bin, instance, host_form, field, rule_source_id, rule_revision, rule_ord,
+         check_type, reason_code)
+        VALUES (1, UNHEX(SHA2(' . $i . ', 256)), 1, 1, UNHEX(SHA2(' . $i . ', 256)),
+                "R' . $i . '", 1, "fa", "x", "r1", REPEAT("c", 64), 1, "required", "required-blank")');
+}
+$A->query('INSERT INTO ' . Schema::table('unique_group') . '
+    (generation_id, group_hmac, phase) VALUES (1, UNHEX(SHA2("g", 256)), "new")');
+$A->query('INSERT INTO ' . Schema::table('scan_dim') . '
+    (generation_id, kind, dim_key, label) VALUES (1, "form", "fa", "Form A")');
+
+$before = (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))[0][0];
+check('upgrade: the version-1 fixture really has findings to lose', $before === 3);
+check('upgrade: and it reports itself at version 1', Schema::currentVersion($ca) === 1);
+
+$r = Schema::migrate($ca);
+check('upgrade: an installation at version 1 migrates rather than sitting still',
+    $r['ok'] === true && $r['from'] === 1 && $r['to'] === 2);
+
+// The four tables gain the column, and the rows that predate it go: their
+// identities were computed by a naming pass that has since changed, so they can
+// never be matched against a new run's rows and could never be closed.
+check('upgrade: uv_finding now carries project_id',
+    (int) $ca->query('SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = "' . Schema::table('finding') . '"
+          AND column_name = "project_id"')[0][0] === 1);
+check('upgrade: and the version-1 findings are gone rather than mis-attributed',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))[0][0] === 0);
+check('upgrade: with nothing left belonging to no project, in any of the four tables',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('unique_group')
+        . ' WHERE project_id = 0')[0][0] === 0
+    && (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_dim')
+        . ' WHERE project_id = 0')[0][0] === 0);
+
+// Both wedged runs are retired, which is what releases the project slot the
+// pilot's runs have been holding since 1.9.0 with nothing able to reap them.
+check('upgrade: every pre-existing run is retired, for every project',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+        . ' WHERE active_slot = 1')[0][0] === 0);
+check('upgrade: and each is expired rather than silently deleted',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+        . ' WHERE terminal = "expired"')[0][0] === 2);
+
+// The sequence starts ABOVE what those runs used, so a new run on either
+// project cannot reuse a generation number that already appears in the tables.
+check('upgrade: the generation sequence is seeded per project',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('project_seq'))[0][0] === 2);
+check('upgrade: and starts past the generation the retired run used',
+    (int) $ca->query('SELECT next_seq FROM ' . Schema::table('project_seq')
+        . ' WHERE project_id = 900')[0][0] === 2);
+
+// The index the supersede query needs is the one three specs asked to drop.
+check('upgrade: ix_record survives the migration, widened rather than dropped',
+    // COUNT over information_schema.statistics counts one row PER COLUMN of an
+    // index, so a four-column key answers 4. The question is whether the key
+    // exists, not how wide it is.
+    (int) $ca->query('SELECT COUNT(DISTINCT index_name) FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = "' . Schema::table('finding') . '"
+          AND index_name = "ix_record_v2"')[0][0] === 1);
+
+// And running it again changes nothing. An ALTER that ran twice would fail the
+// whole migration, which is why every version-2 statement carries a predicate.
+$r2 = Schema::migrate($ca);
+check('upgrade: migrating an already-migrated installation succeeds', $r2['ok'] === true);
+check('upgrade: and leaves the retired runs retired',
+    (int) $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+        . ' WHERE terminal = "expired"')[0][0] === 2);

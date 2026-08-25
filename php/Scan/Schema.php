@@ -35,16 +35,27 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 1;
+    const VERSION = 2;
 
-    // WHY VERSION 1 STILL CHANGES. The durable scan has never been enabled on
-    // any installation - nothing in the module calls migrate(), the feature
-    // flag does not exist yet, and the tables are created only by tests. So
-    // there is no installation to migrate FROM, and adding a version 2 would
-    // mean shipping an upgrade path that no installation could ever take while
-    // hiding the real shape of the schema behind it. The moment the first
-    // release enables the scan, this stops being true and every change becomes
-    // a new version.
+    // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
+    //
+    // The paragraph that used to stand here said the durable scan had never
+    // been enabled on any installation, so version 1 could keep changing in
+    // place. That stopped being true at 1.9.0, when it was enabled and piloted
+    // on a live server - and it stayed in the file for five releases while
+    // being false. It cost the whole of version 2: every DDL change written
+    // into statements(1) between 1.9.0 and now was invisible to the piloted
+    // installation, because migrate() is a no-op once the version row is
+    // present and the tables exist.
+    //
+    // statements(1) is now the DEFINITION of what a field installation
+    // contains. Editing it makes the code and the field disagree, silently,
+    // with no way for either to notice.
+    //
+    // VERSION 2 IS ALTERs, NOT RE-ISSUED CREATEs. Re-issuing a CREATE TABLE IF
+    // NOT EXISTS with a changed column list against an existing populated table
+    // succeeds, emits one warning, and changes nothing - so a schema change
+    // written that way reaches only installations that never had the table.
 
     /**
      * Table prefix. One constant, because the plan requires the installation's
@@ -72,6 +83,10 @@ final class Schema
         'scan_aggregate',
         'scan_dim',
         'scan_audit',
+        // Version 2.
+        'project_seq',
+        'scan_plan',
+        'rate_bucket',
     ];
 
     /**
@@ -118,6 +133,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 2) return self::statementsV2();
         if ((int) $version !== 1) return [];
 
         $T = function ($s) { return self::table($s); };
@@ -374,6 +390,250 @@ final class Schema
     }
 
     /**
+     * Version 2: project scoping, the identity fix's storage, and three tables.
+     *
+     * RETURNS DESCRIPTORS, NOT STRINGS, and that difference is load-bearing.
+     * ALTER TABLE x ADD COLUMN y FAILS if y already exists, and migrate() fails
+     * closed on the first statement error - so a migration interrupted between
+     * two ALTERs could never be resumed, which breaks this class's promise that
+     * running it against a half-created schema completes it, and kills the
+     * repair branch that re-applies every version when a table has gone
+     * missing. Each descriptor carries a skipIf predicate, checked against
+     * information_schema in the same preparable form health() already uses.
+     *
+     * "Idempotent by construction" becomes idempotent BY CHECK from here on.
+     * Allow-listing MySQL's 1060/1061/1091 would have been cheaper and is
+     * wrong: those codes are shared with real errors, and this class's whole
+     * design is to fail loud.
+     *
+     * NO ALGORITHM=INPLACE, LOCK=NONE. Naming the algorithm turns "this server
+     * cannot do it online" into a migration FAILURE. Let the server choose.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV2()
+    {
+        $T = function ($s) { return self::table($s); };
+        $opts = ' ENGINE=InnoDB ROW_FORMAT=DYNAMIC DEFAULT CHARSET=utf8mb4';
+        $out = [];
+
+        $create = function ($sql) use (&$out) { $out[] = ['sql' => $sql, 'skipIf' => null]; };
+        $col = function ($table, $column, $sql) use (&$out) {
+            $out[] = ['sql' => $sql, 'skipIf' => ['column', $table, $column]];
+        };
+        $idx = function ($table, $index, $sql) use (&$out) {
+            $out[] = ['sql' => $sql, 'skipIf' => ['index', $table, $index]];
+        };
+
+        // -- new tables ------------------------------------------------------
+
+        // THE GENERATION IS A PER-PROJECT SEQUENCE, which is the whole of the
+        // root cause. It was the literal 1 for every run of every project, so
+        // the second scan of any project re-inserted identities that were
+        // already there and the batch was refused - forty times, identically,
+        // in the pilot, with no exit, because a rolled-back commit could not
+        // increment the attempt counter that was supposed to give up.
+        //
+        // ONE counter, not two: run_seq and generation_id are the same
+        // monotonic number for a full run, and that is what makes
+        // valid_from_seq/valid_to_seq a real interval rather than two columns
+        // that happen to be filled in.
+        $create('CREATE TABLE IF NOT EXISTS ' . $T('project_seq') . ' (
+            project_id INT UNSIGNED NOT NULL,
+            next_seq BIGINT UNSIGNED NOT NULL DEFAULT 1,
+            PRIMARY KEY (project_id)
+        )' . $opts);
+
+        // Planning becomes a resumable phase. It used to walk, hash and insert
+        // the entire record list inside the single scan-start request, with
+        // both of ScanPlanner::stream()'s guards passed as null - so a project
+        // large enough to exceed max_execution_time died mid-walk, an
+        // uncatchable fatal, leaving a run in `planning` holding the project's
+        // only slot with nothing anywhere able to reap it.
+        //
+        // plan_carry is MEDIUMBLOB because it must be: it holds a tie page of
+        // record ids at up to 255 bytes each, hex-encoded and joined, which
+        // exceeds BLOB's 65,535 limit.
+        $create('CREATE TABLE IF NOT EXISTS ' . $T('scan_plan') . ' (
+            run_id BIGINT UNSIGNED NOT NULL,
+            plan_cursor VARBINARY(255) NULL,
+            plan_carry MEDIUMBLOB NULL,
+            plan_pages INT UNSIGNED NOT NULL DEFAULT 0,
+            plan_listed BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            plan_out_of_scope BIGINT UNSIGNED NOT NULL DEFAULT 0,
+            plan_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            plan_done TINYINT UNSIGNED NOT NULL DEFAULT 0,
+            updated_at DATETIME NOT NULL,
+            PRIMARY KEY (run_id)
+        )' . $opts);
+
+        // The survey uniqueness endpoint is unauthenticated and rate-limits
+        // itself with a read-modify-write over a system setting, so concurrent
+        // requests lose increments - worst exactly under the flood the tier was
+        // written for. A counter the database owns cannot lose one.
+        $create('CREATE TABLE IF NOT EXISTS ' . $T('rate_bucket') . ' (
+            project_id INT UNSIGNED NOT NULL,
+            bucket INT UNSIGNED NOT NULL,
+            hits INT UNSIGNED NOT NULL DEFAULT 0,
+            PRIMARY KEY (project_id, bucket)
+        )' . $opts);
+
+        // -- scan_run --------------------------------------------------------
+
+        $r = $T('scan_run');
+        // How far the previous generation's active rows have been closed, so
+        // superseding is resumable rather than one unbounded statement.
+        $col($r, 'supersede_cursor',
+            'ALTER TABLE ' . $r . ' ADD COLUMN supersede_cursor BIGINT UNSIGNED NOT NULL DEFAULT 0');
+        // updated_at moves on every touch, including a touch that did nothing.
+        // "Has this run made PROGRESS" is a different question, and the
+        // stale-run reaper is the caller that needs it.
+        $col($r, 'progress_at',
+            'ALTER TABLE ' . $r . ' ADD COLUMN progress_at DATETIME NULL');
+        // The outcome, persisted rather than re-derived on every read. NULL is
+        // "not yet decided", which is distinct from decided-and-false.
+        $col($r, 'clean',
+            'ALTER TABLE ' . $r . ' ADD COLUMN clean TINYINT UNSIGNED NULL');
+        $col($r, 'gap_count',
+            'ALTER TABLE ' . $r . ' ADD COLUMN gap_count BIGINT UNSIGNED NOT NULL DEFAULT 0');
+        $col($r, 'rule_problem_count',
+            'ALTER TABLE ' . $r . ' ADD COLUMN rule_problem_count BIGINT UNSIGNED NOT NULL DEFAULT 0');
+        // Records that reached a terminal state WITHOUT being examined, counted
+        // apart from manifest_done. A progress figure that counts them reads
+        // 100% over a run that examined a fraction, which is how a wedged run
+        // came to look finished.
+        $col($r, 'not_examined',
+            'ALTER TABLE ' . $r . ' ADD COLUMN not_examined BIGINT UNSIGNED NOT NULL DEFAULT 0');
+
+        // -- scan_record -----------------------------------------------------
+
+        // PER-RECORD CLAIM TOKENS. lease_epoch is incremented in exactly one
+        // statement in the whole codebase, inside cancel(), so takeover fencing
+        // did not exist: a second worker could re-claim a stale worker's rows
+        // while both held the same epoch, and the first worker's later commit
+        // passed the fence. Bumping the epoch on takeover was the obvious fix
+        // and is wrong - it invalidates the whole run's fence rather than the
+        // records that actually moved. The claim belongs on the row.
+        $rec = $T('scan_record');
+        $col($rec, 'claim_owner',
+            'ALTER TABLE ' . $rec . ' ADD COLUMN claim_owner VARBINARY(64) NULL');
+        $col($rec, 'claim_seq',
+            'ALTER TABLE ' . $rec . ' ADD COLUMN claim_seq BIGINT UNSIGNED NOT NULL DEFAULT 0');
+
+        // -- finding ---------------------------------------------------------
+
+        // uv_finding, uv_unique_candidate, uv_unique_group and uv_scan_dim
+        // carried NO project_id at all, and every query over them filtered by
+        // generation alone. Reproduced against MySQL 8.0.46: one project's
+        // rollup wrote another project's instrument and Data Access Group names
+        // into its summary; one project's retention purge deleted every
+        // project's findings installation-wide; and one project's unfinished
+        // duplicate group blocked a different project's run from ever
+        // finishing. The finding IDENTITY was always project-safe, which is
+        // exactly why the corruption was silent instead of a key error.
+        //
+        // DEFAULT 0 IS PERMANENT, not a migration convenience. It is what lets
+        // ADD COLUMN succeed against a populated table, and removing it later
+        // would make every insert written before the code catches up fail under
+        // STRICT_TRANS_TABLES. The fail-loud lives in PHP: the writers refuse a
+        // missing or zero project id.
+        $f = $T('finding');
+        $col($f, 'project_id',
+            'ALTER TABLE ' . $f . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER finding_id');
+
+        // Every key rebuilt with project_id LEADING, so a project-scoped query
+        // can use it. Dropped and added in one statement each, so the table is
+        // walked once per key rather than twice.
+        $idx($f, 'uq_active_identity_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX uq_active_identity,
+            ADD UNIQUE KEY uq_active_identity_v2 (project_id, generation_id, finding_identity, active_slot)');
+        $idx($f, 'uq_staged_identity_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX uq_staged_identity,
+            ADD UNIQUE KEY uq_staged_identity_v2 (project_id, generation_id, finding_identity, stage_epoch)');
+        $idx($f, 'ix_page_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_page,
+            ADD KEY ix_page_v2 (project_id, generation_id, active_slot, finding_id)');
+        $idx($f, 'ix_group_stage_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_group_stage,
+            ADD KEY ix_group_stage_v2 (project_id, generation_id, group_hmac, stage_epoch, finding_id)');
+        $idx($f, 'ix_filter_form_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_filter_form,
+            ADD KEY ix_filter_form_v2 (project_id, generation_id, active_slot, host_form, finding_id)');
+        $idx($f, 'ix_filter_reason_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_filter_reason,
+            ADD KEY ix_filter_reason_v2 (project_id, generation_id, active_slot, reason_code, finding_id)');
+        $idx($f, 'ix_filter_dag_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_filter_dag,
+            ADD KEY ix_filter_dag_v2 (project_id, generation_id, active_slot, dag_key, finding_id)');
+
+        // ix_record IS WIDENED, NOT DROPPED, and three separate specs asked for
+        // it to be dropped as pure write cost. They were right about the tree
+        // as it shipped - no query filtered uv_finding by record_hash - and
+        // wrong from the moment a re-examined record has to close its own prior
+        // findings, which is exactly "WHERE <project/generation> AND
+        // record_hash = ? AND active_slot = 1", run once per record per batch.
+        // Measured on 125,000 findings: 1.690 ms with this key, 333.527 ms
+        // without it, because the optimiser falls back to the identity key and
+        // examines 61,268 rows. The trailing active_slot is the part that must
+        // not be lost.
+        $idx($f, 'ix_record_v2', 'ALTER TABLE ' . $f . '
+            DROP INDEX ix_record,
+            ADD KEY ix_record_v2 (project_id, generation_id, record_hash, active_slot)');
+
+        // The report filters by check type. Without this it filters by scan.
+        $idx($f, 'ix_filter_type', 'ALTER TABLE ' . $f . '
+            ADD KEY ix_filter_type (project_id, generation_id, active_slot, check_type, finding_id)');
+
+        // -- unique_candidate ------------------------------------------------
+
+        $uc = $T('unique_candidate');
+        $col($uc, 'project_id',
+            'ALTER TABLE ' . $uc . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER candidate_id');
+        // event_id BECOMES NOT NULL WITH A ZERO SENTINEL, and this is
+        // correctness rather than tidiness. It is NULL on every classic
+        // project, MySQL counts each NULL in a unique index as distinct, so
+        // insertCandidate's ON DUPLICATE KEY UPDATE never fired there and
+        // duplicate candidate rows accumulated. Harmless only because
+        // discover() counts DISTINCT record hashes - one line away from
+        // reporting a duplicate that is one record counted twice. Every reader
+        // maps 0 back to null at the boundary.
+        $out[] = ['sql' => 'ALTER TABLE ' . $uc . ' MODIFY COLUMN event_id INT UNSIGNED NOT NULL DEFAULT 0',
+                  'skipIf' => ['notnull', $uc, 'event_id']];
+        $idx($uc, 'uq_candidate_v2', 'ALTER TABLE ' . $uc . '
+            DROP INDEX uq_candidate,
+            ADD UNIQUE KEY uq_candidate_v2 (project_id, generation_id, group_hmac, record_hash, field, event_id, instance)');
+        $idx($uc, 'ix_group_v2', 'ALTER TABLE ' . $uc . '
+            DROP INDEX ix_group,
+            ADD KEY ix_group_v2 (project_id, generation_id, group_hmac)');
+
+        // -- unique_group ----------------------------------------------------
+
+        $ug = $T('unique_group');
+        $col($ug, 'project_id',
+            'ALTER TABLE ' . $ug . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER group_id');
+        $idx($ug, 'uq_group_v2', 'ALTER TABLE ' . $ug . '
+            DROP INDEX uq_group,
+            ADD UNIQUE KEY uq_group_v2 (project_id, generation_id, group_hmac)');
+        // nextUnfinished() filters on phase and had no index for it, so it
+        // walked the group index and got slower as groups were published:
+        // measured 2.88 ms with none settled, 283.82 ms with all settled, and a
+        // flat 1.49-1.73 ms with this key.
+        $idx($ug, 'ix_pending', 'ALTER TABLE ' . $ug . '
+            ADD KEY ix_pending (project_id, generation_id, phase, group_hmac)');
+
+        // -- scan_dim --------------------------------------------------------
+
+        $d = $T('scan_dim');
+        $col($d, 'project_id',
+            'ALTER TABLE ' . $d . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER dim_id');
+        $idx($d, 'uq_dim_v2', 'ALTER TABLE ' . $d . '
+            DROP INDEX uq_dim,
+            ADD UNIQUE KEY uq_dim_v2 (project_id, generation_id, kind, dim_key)');
+
+        return $out;
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -384,7 +644,13 @@ final class Schema
     {
         $out = [];
         for ($v = ((int) $from) + 1; $v <= self::VERSION; $v++) {
-            foreach (self::statements($v) as $sql) $out[] = $sql;
+            // Version 2 onwards returns DESCRIPTORS so migrate() can skip a
+            // change already made. An administrator running this by hand wants
+            // the statement, and gets every one of them: a conditional skipped
+            // here would be a statement they never saw and never ran.
+            foreach (self::statements($v) as $item) {
+                $out[] = is_array($item) ? $item['sql'] : $item;
+            }
         }
         return $out;
     }
@@ -469,8 +735,16 @@ final class Schema
 
         $applied = 0;
         for ($v = $from + 1; $v <= self::VERSION; $v++) {
-            foreach (self::statements($v) as $sql) {
+            foreach (self::statements($v) as $item) {
+                $sql  = is_array($item) ? $item['sql'] : $item;
+                $skip = (is_array($item) && isset($item['skipIf'])) ? $item['skipIf'] : null;
                 try {
+                    // IDEMPOTENT BY CHECK from version 2 on. Version 1 is every
+                    // statement a CREATE TABLE IF NOT EXISTS, so re-running it
+                    // is free; an ALTER is not, and a migration interrupted
+                    // between two of them has to be resumable or this class's
+                    // promise to complete a half-created schema is a lie.
+                    if ($skip !== null && self::alreadyApplied($module, $skip)) continue;
                     $module->query($sql, []);
                 } catch (\Throwable $e) {
                     return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
@@ -479,6 +753,26 @@ final class Schema
                                    . 'schema by hand from Schema::plan().'];
                 }
                 $applied++;
+            }
+            // DDL FIRST, THEN WHAT THE DDL MEANS. Version 2 gives four tables a
+            // project_id they did not have; the rows already in them belong to
+            // no project and cannot be attributed after the fact, so they go.
+            if ($v === 2) {
+                try {
+                    self::upgradeDataV2($module);
+                } catch (\Throwable $e) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 2 was installed but its data could not be '
+                                   . 'brought forward (' . get_class($e) . '), so the version is NOT '
+                                   . 'recorded and the scan stays disabled. Re-saving the '
+                                   . 'configuration retries it.'];
+                }
+                $bad = self::verifyV2($module);
+                if ($bad !== null) {
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 2 did not verify after it was applied: ' . $bad
+                                   . '. The version is NOT recorded and the scan stays disabled.'];
+                }
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')
@@ -572,6 +866,137 @@ final class Schema
             }
         }
         return $missing;
+    }
+
+    /**
+     * Has this descriptor's change already been made?
+     *
+     * A probe that cannot be read is NOT "no". Returning false there would run
+     * an ALTER that then fails on a duplicate column, and the migration would
+     * report a schema fault when the real fault was an unreadable
+     * information_schema. It throws instead, and migrate() turns that into a
+     * refusal naming the probe that could not be answered.
+     *
+     * @param array $skipIf [kind, table, name]; kind is column|index|notnull
+     */
+    private static function alreadyApplied($module, array $skipIf)
+    {
+        $kind  = isset($skipIf[0]) ? (string) $skipIf[0] : '';
+        $table = isset($skipIf[1]) ? (string) $skipIf[1] : '';
+        $name  = isset($skipIf[2]) ? (string) $skipIf[2] : '';
+
+        if ($kind === 'column') {
+            $sql = 'SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?';
+        } elseif ($kind === 'index') {
+            $sql = 'SELECT COUNT(*) FROM information_schema.statistics
+                    WHERE table_schema = DATABASE() AND table_name = ? AND index_name = ?';
+        } elseif ($kind === 'notnull') {
+            $sql = 'SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema = DATABASE() AND table_name = ? AND column_name = ?
+                      AND is_nullable = "NO"';
+        } else {
+            throw new \RuntimeException('unknown skipIf kind: ' . $kind);
+        }
+
+        $q = $module->query($sql, [$table, $name]);
+        $row = $q ? self::firstRow($q) : null;
+        if ($row === null) {
+            throw new \RuntimeException('the schema could not be inspected for '
+                . $kind . ' ' . $table . '.' . $name);
+        }
+        return ((int) (isset($row[0]) ? $row[0] : 0)) > 0;
+    }
+
+    /**
+     * Bring version-1 DATA to what version 2 means, after version 2's DDL.
+     *
+     * VERSION-1 SCAN ROWS ARE DELETED, NOT MIGRATED, and that is a decision
+     * rather than an omission. Three things changed underneath them in this
+     * release: every rule_source_id changed (the naming pass re-indexed a
+     * sparse list densely, and every settings rule was named through the
+     * annotation branch), the finding tuple gained a locus, and the generation
+     * became a per-project sequence. A version-1 finding_identity is therefore
+     * not comparable with a post-upgrade one, so superseding across the
+     * boundary is impossible and attempting it would match the wrong rows.
+     * Keeping them would leave a report mixing two identity schemes whose rows
+     * can never be closed - and on a multi-project server they are additionally
+     * wrong about which project they describe. The findings are re-derivable by
+     * running a scan; the corruption is not detectable by a reader.
+     *
+     * PAGED, because the one unpaged statement in this module measured 160
+     * seconds over 500,000 rows while holding row locks throughout, and this
+     * runs inside an administrator's settings save.
+     */
+    private static function upgradeDataV2($module)
+    {
+        // Every version-1 row carries project_id = 0: that is the default the
+        // ADD COLUMN gave it, and nothing else can have written a zero.
+        foreach (['finding', 'unique_candidate', 'unique_group', 'scan_dim'] as $short) {
+            $t = self::table($short);
+            for ($page = 0; $page < 100000; $page++) {
+                $module->query('DELETE FROM ' . $t . ' WHERE project_id = 0 LIMIT 5000', []);
+                $q = $module->query('SELECT COUNT(*) FROM ' . $t . ' WHERE project_id = 0', []);
+                $row = $q ? self::firstRow($q) : null;
+                if ($row === null) {
+                    throw new \RuntimeException('could not confirm the version-1 rows were '
+                        . 'removed from ' . $t);
+                }
+                if ((int) (isset($row[0]) ? $row[0] : 0) === 0) break;
+            }
+        }
+
+        // RETIRE EVERY PRE-EXISTING RUN. Each is holding its project's only
+        // slot - the pilot's wedged runs are still there, because nothing reaps
+        // them - and none can be resumed: its manifest describes a generation
+        // that no longer means anything. Expired is what this module already
+        // says for a run whose evidence has gone, and it releases the slot.
+        $module->query('UPDATE ' . self::table('scan_run') . '
+            SET active_slot = NULL, phase = ?, terminal = ?, coverage = ?, clean = NULL,
+                terminal_reason = ?, updated_at = ?
+            WHERE active_slot = 1 OR terminal IS NULL',
+            [ScanPhase::TERMINAL, ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
+             'ended by the upgrade to schema version 2, which changed what a finding is named',
+             date('Y-m-d H:i:s')]);
+
+        // SEED THE SEQUENCE SO NO PROJECT REUSES A GENERATION. The retired runs
+        // are gone as reports, but their generation numbers were real and a new
+        // run reusing one would collide with whatever survived.
+        $module->query('INSERT INTO ' . self::table('project_seq') . ' (project_id, next_seq)
+            SELECT project_id, MAX(generation_id) + 1 FROM ' . self::table('scan_run') . '
+            GROUP BY project_id
+            ON DUPLICATE KEY UPDATE next_seq = GREATEST(next_seq, VALUES(next_seq))', []);
+    }
+
+    /**
+     * Prove version 2 really is what is on the server before saying so.
+     *
+     * migrate() used to report ok on the strength of having executed its
+     * statements without an error. With conditional ALTERs that stops being
+     * evidence: a skipIf that answered wrongly would skip a change and the
+     * migration would report success over a schema that never got it.
+     *
+     * @return ?string null when everything holds, otherwise what does not
+     */
+    private static function verifyV2($module)
+    {
+        foreach (['finding', 'unique_candidate', 'unique_group', 'scan_dim'] as $short) {
+            $t = self::table($short);
+            if (!self::alreadyApplied($module, ['column', $t, 'project_id'])) {
+                return $t . ' has no project_id column, so the migration did not take';
+            }
+            $q = $module->query('SELECT COUNT(*) FROM ' . $t . ' WHERE project_id = 0', []);
+            $row = $q ? self::firstRow($q) : null;
+            if ($row === null) return $t . ' could not be checked for unattributed rows';
+            if ((int) (isset($row[0]) ? $row[0] : 0) > 0) {
+                return $t . ' still holds rows belonging to no project';
+            }
+        }
+        if (!self::alreadyApplied($module, ['index', self::table('finding'), 'ix_record_v2'])) {
+            return 'the finding table has no ix_record_v2, so closing a re-examined record'
+                 . ' would scan the whole generation';
+        }
+        return null;
     }
 
     /** One row from whatever shape the framework's query() returned, or null. */

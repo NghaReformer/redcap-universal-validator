@@ -159,6 +159,54 @@ until then, and the test fails both ways: a method that goes inert without a lin
 and a line that outlives its method. It caught its first drift within the hour,
 when the storage work deleted six methods it named.
 
+**The schema said it had never been installed anywhere, and that stopped being
+true five releases ago.** `Schema::VERSION` was 1, with a comment explaining that
+version 1 could keep changing in place because the durable scan had never been
+enabled on any installation. It was enabled and piloted on a live server at
+1.9.0. From that moment every DDL change written into version 1 was invisible to
+the one installation that mattered, because the migration is a no-op once the
+version row is present and the tables exist. Version 1 is now frozen, byte for
+byte, and is the definition of what a field installation contains.
+
+Version 2 is the change on top of it, and it is ALTERs. Re-issuing a changed
+`CREATE TABLE IF NOT EXISTS` against a populated table succeeds, warns, and
+changes nothing — so a schema change written that way reaches only installations
+that never had the table, which is the trap version 1 fell into.
+
+Four tables — findings, uniqueness candidates, uniqueness groups and the label
+dimension — had no project column at all, and every query over them filtered by
+generation alone. They gain one, and every key is rebuilt with it leading. Three
+separate specifications asked for the record index to be dropped on the grounds
+that nothing queries it. That was true of the code as it shipped and stops being
+true the moment a re-examined record has to close its own earlier findings, which
+is exactly the query that index serves: measured on 125,000 findings, 1.7 ms with
+it against 333 ms without, because the optimiser falls back to the identity key
+and examines sixty thousand rows. It is widened, not dropped.
+
+Three new tables. A per-project generation counter, which is the root cause of
+five failed pilots: the generation was the literal 1 for every run of every
+project, so the second scan of anything re-inserted identities that were already
+there. A resumable planning cursor. And a rate-limit counter the database owns,
+because the survey endpoint's read-modify-write over a setting loses increments
+under exactly the flood it exists to stop.
+
+**A migration that can be interrupted has to be resumable.** `ADD COLUMN` fails
+if the column is there, and this migration fails closed on the first error — so
+one interrupted between two statements could never be retried, which would have
+broken the class's own promise to complete a half-created schema. Every version-2
+statement now carries a predicate checked against `information_schema`, and the
+migration verifies the result before recording the version rather than inferring
+success from the absence of an error.
+
+**And it deletes the version-1 findings.** Their rule attribution, their identity
+tuple and their generation numbering all changed in this release, so they cannot
+be matched against a new run's rows and can never be closed; on a multi-project
+server they are also attributed to the wrong project. They are removed in pages,
+the runs still holding their projects' scan slots are retired, and the sequence
+is seeded past the generations those runs used. `docs/INSTALL.md` says all of
+this before an administrator reaches the switch. The findings are re-derivable by
+running a scan; the corruption was not detectable by a reader.
+
 **Findings filed against the wrong rule.** scanPlan() builds its live rule list
 with the keys preserved from the full list, because a finding cites its rule by
 ordinal - it skips config-broken rules, and the per-instrument-rights gate
