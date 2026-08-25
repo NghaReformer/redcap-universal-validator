@@ -48,7 +48,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     // that started runs installation-wide would find its run.
     $nb = uv_plant_neighbour($dbA, $PID);
     check('plan: a second project has records and a run of its own',
-        is_array($nb) && uv_neighbour_findings($dbA) === 2);
+        is_array($nb) && uv_neighbour_findings($dbA, $PID) === 2);
 
     $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
     $planner = new \INSPIRE\UniversalValidator\Scan\ScanPlanner($store, 'test-secret-key');

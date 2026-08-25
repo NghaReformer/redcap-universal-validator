@@ -35,7 +35,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     // only one project in it.
     $nb = uv_plant_neighbour($dbA, $PID);
     check('fault: a neighbouring project holds findings this rollback must not touch',
-        is_array($nb) && uv_neighbour_findings($dbA) === 2);
+        is_array($nb) && uv_neighbour_findings($dbA, $PID) === 2);
     $r = $store->startRun($PID, array('created_by' => 'alice'));
     $rid = (int) $r['run']['run_id'];
     $store->writeManifest($rid, array(
@@ -48,11 +48,21 @@ $NEIGHBOUR = uv_neighbour($PID);
     // ENTIRELY - a half-written batch would mark records done whose findings
     // were never stored, which is the one outcome that produces a confidently
     // clean report over unexamined data.
+    //
+    // EVERYTHING ELSE ABOUT THIS ROW IS VALID, and that is load-bearing. The
+    // store refuses a finding with no project before it ever reaches the
+    // server, so a fixture that left project_id off would produce a refusal
+    // from PHP and the four assertions below - which are about what MySQL said
+    // - would be asserting against the wrong sentence entirely.
+    $gen = (int) $r['run']['generation_id'];
     $bad = array(
         'bytes' => 10,
-        'records' => array(array('ordinal' => 1, 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
+        'records' => array(array('ordinal' => 1, 'record_hash' => hash('sha256', 'R1', true),
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
-            'generation_id' => 1, 'identity' => hash('sha256', 'bad', true), 'seq' => 1,
+            'project_id' => $PID,
+            'generation_id' => $gen, 'identity' => hash('sha256', 'bad', true),
+            'valid_from_seq' => uv_run_seq($dbA, $rid),
             'record_hash' => hash('sha256', 'R1', true), 'record_id_bin' => 'R1',
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
@@ -93,7 +103,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         . " WHERE record_id_bin IN ('R1','R2')", array());
     check('fault: leaving no partial findings', (int) $f[0][0] === 0);
     check('fault: and the neighbouring project\'s findings are untouched by the rollback',
-        uv_neighbour_findings($dbA) === 2);
+        uv_neighbour_findings($dbA, $PID) === 2);
     $st = $ca->query('SELECT state FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ' . $rid . ' AND ordinal = 1', array());
     check('fault: and the record still PENDING, so the work is re-claimable',

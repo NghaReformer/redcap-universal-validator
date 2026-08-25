@@ -806,3 +806,38 @@ is not project-scoped. The concessions are named in the case-file headers and re
   excludes the neighbour by record-id prefix instead.
 - `cases/retention.php` is missing the assertion that purging one project leaves the neighbour's
   findings alone — it is red today, which is B1 reproduced inside the suite.
+
+### W4-D1 — superseding the PREVIOUS generation is deferred to wave 8, deliberately
+
+B1 part 3(c) asks for a bounded pass that closes the previous generation's active findings when a
+run reaches terminal complete, advancing `scan_run.supersede_cursor`. It is **not** in wave 4, and
+this is the reasoning, recorded so the column does not become another thing that exists and is never
+written.
+
+**It is no longer a correctness fix.** Its original purpose was to stop a new run colliding with the
+previous run's active rows. Once the identity key became
+`(project_id, generation_id, finding_identity, active_slot)` and generations became a per-project
+sequence, a new run writes under a generation no earlier row uses, so there is nothing to collide
+with. Every reader is scoped to one project and one generation:
+
+| reader | predicate |
+|---|---|
+| `RollupBuilder::step` | `project_id`, `generation_id` |
+| `SqlScanStore::findings` | `project_id`, `generation_id` |
+| `UniqueFinalizer` (all 19 sites) | `project_id`, `generation_id` |
+| `ScanRetention::purgeRuns` | `project_id`, `generation_id` |
+
+So an older generation's rows are history, not contamination. What remains is that "the current
+state of this project" is a per-generation question rather than a single query, and that
+`valid_to_seq` is written only by the within-run supersede.
+
+**Why wave 8 and not now.** The pass has to be paged — the one unpaged statement in this module
+measured 160 seconds over 500,000 rows while holding row locks — and paging across requests needs
+either a phase the worker can advance or a cron pass. Wave 8 builds the paged retention machinery
+and wave 10 declares the cron. Building a second, half-paged mechanism here would be a worse version
+of what wave 8 is about to build properly.
+
+**What this leaves.** `scan_run.supersede_cursor` exists in schema version 2 with no writer until
+wave 8. That is deliberate and is the one column in this migration deliberately ahead of its code —
+adding it later would mean a second `ALTER` pass over an ~800 MB table, which is the trap version 1
+fell into. Wave 8 owns it.

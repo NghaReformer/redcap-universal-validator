@@ -81,7 +81,13 @@ final class ScanRetention
         // window between "unreadable" and "gone" is small and bounded, instead
         // of being however long until the next cron.
         $this->db->exec('UPDATE ' . Schema::table('finding') . ' f
-            JOIN ' . Schema::table('scan_run') . ' r ON r.generation_id = f.generation_id
+            // BOTH SIDES OF THE JOIN. It matched on generation_id alone, and
+            // the generation was 1 for every run of every project - so
+            // tightening ONE project s policy cleared the stored previews of
+            // every project on the installation. A join that scopes only one
+            // side is a join that can still cross projects.
+            JOIN ' . Schema::table('scan_run') . ' r
+                 ON r.generation_id = f.generation_id AND r.project_id = f.project_id
             SET f.value_bin = NULL, f.value_fingerprint = NULL, f.value_expires_at = NULL
             WHERE r.project_id = ?', [$pid]);
         return $n;
@@ -111,10 +117,20 @@ final class ScanRetention
             // cascade, and reversing it orphans rows whose parent is gone.
             $this->db->exec('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ?', [$runId]);
             $this->db->exec('DELETE FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ?', [$runId]);
-            $this->db->exec('DELETE FROM ' . Schema::table('finding') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('unique_candidate') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('unique_group') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('scan_dim') . ' WHERE generation_id = ?', [$gen]);
+            // BY PROJECT AND GENERATION. These four deletes named the
+            // generation only, and the generation was 1 for every run of every
+            // project - so purging ONE finished run of ONE project deleted
+            // every project s findings on the whole installation. Reproduced
+            // against a real server before it was fixed: two projects, one
+            // purge, zero findings left anywhere.
+            $this->db->exec('DELETE FROM ' . Schema::table('finding')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('unique_candidate')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('unique_group')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('scan_dim')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
             $this->db->exec('DELETE FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', [$runId]);
             $n++;
         }
@@ -158,8 +174,13 @@ final class ScanRetention
      */
     public function preview($pid, array $policy)
     {
+        // This answers a question about ONE project - "what would retention do
+        // here?" - and used to count every expired preview on the
+        // installation, so an administrator of a small project was shown the
+        // consequence of somebody else s data.
         $vals = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-            . ' WHERE value_expires_at IS NOT NULL AND value_expires_at <= ?', [self::now()]);
+            . ' WHERE project_id = ? AND value_expires_at IS NOT NULL'
+            . ' AND value_expires_at <= ?', [$pid, self::now()]);
         $runs = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?',
             [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90)]);

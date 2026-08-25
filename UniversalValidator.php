@@ -575,8 +575,15 @@ class UniversalValidator extends AbstractExternalModule
                         $c = (string) $code;
                         if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
                         if (isset($hiddenSet[$c])) {
+                            // locus: WHICH hidden code. A checkbox can have
+                            // several ticked at once, and every one of them is
+                            // a separate problem at the same field - so without
+                            // this they were the same finding twice, the unique
+                            // key refused the second, and the batch that
+                            // carried them both was rolled back entire.
                             $out['invalid'][] = ['field' => $field, 'value' => $c, 'algo' => 'choices',
-                                                 'type' => 'choices', 'reason' => 'hidden-choice'];
+                                                 'type' => 'choices', 'reason' => 'hidden-choice',
+                                                 'locus' => $c];
                         }
                     }
                     continue;
@@ -2998,7 +3005,34 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $key = $this->hmacKey();
-        $gen = isset($opts['generation']) ? (int) $opts['generation'] : 1;
+
+        // THE GENERATION IS THE RUN'S, AND THERE IS NO DEFAULT.
+        //
+        // It used to be `isset($opts['generation']) ? ... : 1`, and no caller
+        // anywhere passed one - so every run of every project wrote generation
+        // 1. That single default is the root cause of five failed pilots: the
+        // second scan of any project re-inserted identities that were already
+        // active, the unique key refused them, and the batch rolled back
+        // forever. A default is what let it ship, so there is no longer one.
+        //
+        // NULL is a legitimate value and means "planning": start() needs the
+        // rules and the ownership map before a run exists to have a generation,
+        // so it asks for a context with no evaluator rather than inventing a
+        // number. Passing no key at all is still an error.
+        if (!array_key_exists('generation', $opts)) {
+            throw new \InvalidArgumentException(
+                'durableScanContext requires the run generation (null for planning)');
+        }
+        $gen = ($opts['generation'] === null) ? null : (int) $opts['generation'];
+        $runSeq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 0;
+
+        // When a stored value preview expires, decided at WRITE time. The
+        // policy method that computes this had no callers at all, so every
+        // preview was written with a NULL expiry and the query that removes
+        // them could never have matched one.
+        $valueExpiry = Scan\ScanPolicy::valueExpiry(
+            isset($opts['policy']) && is_array($opts['policy']) ? $opts['policy'] : [], time());
+
         // Taken from the plan, never re-derived. See scanPlan()'s note where
         // ruleIds is built: deriving it twice is what let the evaluator and the
         // planner disagree about which rule an ordinal named.
@@ -3014,8 +3048,12 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $module = $this;
-        $evaluate = function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids) {
-            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids);
+        // No generation, no evaluator. A caller that only needs the rule list
+        // gets one it cannot accidentally scan with.
+        $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
+                                                          $runSeq, $valueExpiry) {
+            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
+                                                  $runSeq, $valueExpiry);
         };
 
         // The read the worker performs. Explicit records, and only the fields
@@ -3062,7 +3100,8 @@ class UniversalValidator extends AbstractExternalModule
      * @return array{findings:array, candidates:array, bytes:int, contexts:int,
      *               problems:array, why:?string}
      */
-    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key, array $ids)
+    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
+                                          array $ids, $runSeq = 0, $valueExpiry = null)
     {
         $found = [];
         $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
@@ -3071,7 +3110,7 @@ class UniversalValidator extends AbstractExternalModule
         $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
         if ($r['why'] !== null) {
             return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
-                    'problems' => [], 'why' => $r['why']];
+                    'problems' => [], 'collapsed' => 0, 'why' => $r['why']];
         }
 
         $recHash = Scan\Hmac::raw(Scan\Hmac::P_RECORD, $pid, (string) $recordId, $key);
@@ -3093,21 +3132,43 @@ class UniversalValidator extends AbstractExternalModule
         };
 
         $findings = [];
+        $byIdentity = [];
+        $collapsed = 0;
         $bytes = 0;
-        $seq = 0;
         foreach ($found as $v) {
             $id = $rule($v['rule']);
             $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
                     'instance' => $v['instance'], 'host_form' => $v['instrument'],
                     'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason'])];
+                    'reason_code' => Scan\ReasonCode::code($v['reason']),
+                    // The within-location discriminator. See Hmac::findingIdentity.
+                    'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
             $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
             $blob = ($val === null) ? null : substr((string) $val, 0, 255);
+            $identity = Scan\Hmac::findingIdentity($pid, $loc, $key);
+
+            // BACKSTOP, NOT THE FIX. With the discriminator in place nothing
+            // legitimate produces one identity twice, so a repeat here is a bug
+            // in a rule kind rather than a fact about the project - and it must
+            // be COUNTED rather than allowed to reach the unique key, where it
+            // would roll back a whole batch of correctly examined records. The
+            // count travels out so the worker can raise it; swallowing it in
+            // SQL with ON DUPLICATE KEY UPDATE would hide exactly the thing
+            // this release exists to make visible.
+            $seenKey = bin2hex($identity);
+            if (isset($byIdentity[$seenKey])) { $collapsed++; continue; }
+            $byIdentity[$seenKey] = true;
+
             if ($blob !== null) $bytes += strlen($blob);
             $findings[] = [
+                'project_id' => (int) $pid,
                 'generation_id' => $gen,
-                'identity' => Scan\Hmac::findingIdentity($pid, $loc, $key),
-                'seq' => ++$seq,
+                'identity' => $identity,
+                // The RUN's sequence number, not a per-record ordinal. It used
+                // to be `++$seq`, which put valid_from_seq and valid_to_seq in
+                // different number spaces and made the interval columns the
+                // schema is built around describe nothing.
+                'valid_from_seq' => $runSeq,
                 'record_hash' => $recHash,
                 'record_id_bin' => (string) $recordId,
                 'event_id' => $v['event_id'],
@@ -3125,6 +3186,13 @@ class UniversalValidator extends AbstractExternalModule
                 'value_truncated' => ($val !== null && strlen((string) $val) > 255) ? 1 : 0,
                 'value_fingerprint' => ($val === null) ? null
                     : Scan\Hmac::raw(Scan\Hmac::P_VALUE, $pid, (string) $val, $key),
+                // WRITTEN AT WRITE TIME. The expiry policy was computed by a
+                // method with no callers, so every stored preview carried a NULL
+                // here and the query that expires them - WHERE value_expires_at
+                // IS NOT NULL - could never have matched a row even once it was
+                // wired. Participant data was retained indefinitely in a table
+                // any user with design rights can read.
+                'value_expires_at' => ($blob === null) ? null : $valueExpiry,
             ];
         }
 
@@ -3133,16 +3201,31 @@ class UniversalValidator extends AbstractExternalModule
         // path is reused verbatim and then keyed, so the live check, the audit
         // and the scan all agree about what "the same value" means.
         $candidates = [];
+        $candSeen = [];
         foreach ($seen as $groupKey => $rows) {
             $g = Scan\Hmac::raw(Scan\Hmac::P_UNIQUE, $pid, (string) $groupKey, $key);
             foreach ($rows as $row) {
                 $id = $rule($row['rule']);
+                // scope_key was the literal 'project' whatever the rule said, so
+                // a rule scoped to a Data Access Group or to an event was stored
+                // as though it were project-wide. The rule knows its own scope;
+                // the store was being told something else.
+                $scope = isset($row['scope']) && is_string($row['scope']) && $row['scope'] !== ''
+                    ? (string) $row['scope'] : 'project';
+                // The candidate key the store enforces, computed here so an
+                // intra-record repeat is dropped before it can refuse a batch -
+                // the same backstop the findings get, for the same reason.
+                $ck = $g . '|' . $recHash . '|' . (string) $row['event_id'] . '|'
+                    . (string) $row['instance'] . '|' . (string) $row['field'];
+                if (isset($candSeen[$ck])) { $collapsed++; continue; }
+                $candSeen[$ck] = true;
                 $candidates[] = [
+                    'project_id' => (int) $pid,
                     'generation_id' => $gen,
                     'rule_source_id' => $id['source_id'],
                     'rule_revision' => $id['revision'],
                     'group_hmac' => $g,
-                    'scope_key' => 'project',
+                    'scope_key' => $scope,
                     'record_hash' => $recHash,
                     'record_id_bin' => (string) $recordId,
                     'event_id' => $row['event_id'],
@@ -3168,7 +3251,11 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         return ['findings' => $findings, 'candidates' => $candidates, 'bytes' => $bytes,
-                'contexts' => $r['contexts'], 'problems' => $problems, 'why' => null];
+                'contexts' => $r['contexts'], 'problems' => $problems,
+                // Non-zero means a rule kind produced one identity twice. With
+                // the locus discriminator in place nothing legitimate does, so
+                // this is a bug report rather than a fact about the project.
+                'collapsed' => $collapsed, 'why' => null];
     }
 
     /**
@@ -3534,6 +3621,13 @@ class UniversalValidator extends AbstractExternalModule
                             'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
                             'value' => ($rv === false) ? null : $rv,
                             'valueWithheld' => ($rv === false),
+                            // RAW, and never through reportValue(). The
+                            // discriminator is part of the LOCATION; routing it
+                            // through the value path would null it under a
+                            // withholding policy, and the collision this exists
+                            // to prevent would come back on exactly the privacy
+                            // setting the module recommends.
+                            'locus' => isset($v['locus']) ? (string) $v['locus'] : '',
                             // $hostForm, NOT $ctx['instrument']: that is null for
                             // every base row (:2297) and deliberately null for a
                             // repeating-EVENT context (:2320), which between them

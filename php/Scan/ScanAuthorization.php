@@ -142,19 +142,18 @@ final class ScanAuthorization
         return self::scopeMatches($base, $runScopeDag);        // same group, whoever started it
     }
 
-    /**
-     * What `scan-start` may say when another scope already owns the project.
-     *
-     * GENERIC BY CONSTRUCTION. No run id, no owner, no scope, no progress, no
-     * timing. A DAG user learning that a project-wide run is in progress learns
-     * that someone with wider rights is looking at their project, and a run id
-     * would let them ask about it. The message is identical whoever asks.
-     */
-    public static function busy()
-    {
-        return ['ok' => false, 'busy' => true, 'why' => 'a validation scan is already running for '
-            . 'this project. Try again when it has finished.', 'scope' => null, 'unrestricted' => false];
-    }
+    // busy() USED TO LIVE HERE, and it was never called.
+    //
+    // It existed so the "already running" sentence would be identical whoever
+    // asked - and both stores wrote their own copy of it anyway, which had
+    // already drifted from this one by a sentence. Its only two mentions in the
+    // shipped tree were inside comments, so the wiring test could not see that
+    // nothing invoked it until the call-site corpus stopped counting prose.
+    //
+    // The sentence now belongs to ScanStore::BUSY_WHY, which is the contract
+    // that produces the refusal, and both stores answer with it. A wrapper that
+    // only reshapes a constant is a third place for the wording to drift.
+
 
     /**
      * What `scan-status` may disclose about a DAG-scoped run that has NOT yet

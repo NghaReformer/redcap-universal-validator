@@ -95,7 +95,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         // in when the page told an administrator the server was busy.
         $nb = uv_plant_neighbour($dbA, $PID);
         check('slots: a second project is running beside this one',
-            is_array($nb) && uv_neighbour_findings($dbA) === 2);
+            is_array($nb) && uv_neighbour_findings($dbA, $PID) === 2);
         $r = $store->startRun($PID, array('created_by' => 'alice'));
         $rid = (int) $r['run']['run_id'];
         $store->writeManifest($rid, array(

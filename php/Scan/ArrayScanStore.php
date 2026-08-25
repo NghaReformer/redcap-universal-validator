@@ -34,6 +34,9 @@ final class ArrayScanStore implements ScanStore
     private $audits = [];
     private $nextRun = 1;
 
+    /** Per-project generation counters, the stand-in for uv_project_seq. */
+    private $seq = [];
+
     public function startRun($pid, array $run)
     {
         foreach ($this->runs as $r) {
@@ -41,9 +44,23 @@ final class ArrayScanStore implements ScanStore
             // DESCRIBES the invariant, it does not evidence it.
             if ((int) $r['project_id'] === (int) $pid && $r['active_slot'] === 1) {
                 return ['ok' => false, 'busy' => true, 'run' => null,
-                        'why' => 'a validation scan is already running for this project'];
+                        // The same one sentence the SQL store answers with.
+                        // Two stores writing their own copy is how the wording
+                        // drifted from the helper that exists to fix it.
+                        'why' => self::BUSY_WHY];
             }
         }
+        // THE SAME PER-PROJECT SEQUENCE THE REAL STORE ALLOCATES. It matters
+        // that this store models it rather than defaulting to 1: the constant
+        // generation is the defect the whole release turns on, and a stand-in
+        // that hands out 1 forever would keep every mocked test green over it
+        // exactly as it did before.
+        if (!isset($this->seq[(int) $pid])) $this->seq[(int) $pid] = 0;
+        $seq = ++$this->seq[(int) $pid];
+        $gen = (isset($run['run_kind']) && $run['run_kind'] === 'incremental'
+                && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
+            ? (int) $run['baseline_generation'] : $seq;
+
         $id = $this->nextRun++;
         $this->runs[$id] = array_merge([
             'run_id' => $id, 'project_id' => (int) $pid, 'scope_dag' => null,
@@ -51,7 +68,8 @@ final class ArrayScanStore implements ScanStore
             'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'none',
             'policy_revision' => 1, 'fingerprint' => str_repeat('0', 64),
             'manifest_total' => 0, 'manifest_done' => 0, 'cursor_ordinal' => 0,
-            'lease_epoch' => 0, 'generation_id' => 1, 'created_by' => '',
+            'lease_epoch' => 0, 'generation_id' => $gen, 'run_seq' => $seq,
+            'supersede_cursor' => 0, 'created_by' => '',
             'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
             // Reconciliation state. Present from the start so progressState()
@@ -195,7 +213,71 @@ final class ArrayScanStore implements ScanStore
             return 'another worker took over this scan while these records were being examined, '
                  . 'so nothing from them was kept; they will be examined again';
         }
+        // SUPERSEDE THIS BATCH'S RECORDS, THEN REFUSE A REPEATED IDENTITY.
+        //
+        // This store used to be `$this->findings[] = $f;` - no unique key, no
+        // column widths, no NOT NULL. Every mocked test therefore passed on
+        // rows a real MySQL rejects, which is how a scan that could not commit
+        // a second batch shipped with 285 real-database checks and 22 mocked
+        // suites all green. The two halves below are the two constraints the
+        // real store enforces, and they are here so the fast suite can see a
+        // regression in either.
+        //
+        // Order matters exactly as it does in SQL: close first, so the
+        // uniqueness check below sees only the new rows as active.
+        $projectId    = (int) $r['project_id'];
+        $generationId = (int) $r['generation_id'];
+        $runSeq       = (int) $r['run_seq'];
+        $closing = [];
+        foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
+            if (!isset($rec['record_hash'])) continue;
+            $st = (int) $rec['state'];
+            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+                $closing[$rec['record_hash']] = true;
+            }
+        }
+        if ($closing) {
+            foreach ($this->findings as $i => $old) {
+                if (!isset($old['active_slot']) || (int) $old['active_slot'] !== 1) continue;
+                if (isset($old['stage_epoch']) && $old['stage_epoch'] !== null) continue;
+                if ((int) $old['project_id'] !== $projectId) continue;
+                if ((int) $old['generation_id'] !== $generationId) continue;
+                if (!isset($closing[$old['record_hash']])) continue;
+                $this->findings[$i]['active_slot'] = null;
+                $this->findings[$i]['valid_to_seq'] = $runSeq;
+            }
+        }
+
+        // ONE ACTIVE ROW PER IDENTITY, which in the real store is a UNIQUE key
+        // and here has to be a check. A batch carrying the same identity twice
+        // is refused ENTIRE, exactly as MySQL refuses it - because a store that
+        // quietly kept the first and dropped the second would let a defect
+        // through that costs the real one a rolled-back batch and, before the
+        // retry cap was fixed, an unbounded retry loop.
+        $active = [];
+        foreach ($this->findings as $old) {
+            if (!isset($old['active_slot']) || (int) $old['active_slot'] !== 1) continue;
+            $active[(int) $old['project_id'] . '|' . (int) $old['generation_id']
+                    . '|' . bin2hex($old['identity'])] = true;
+        }
+        $incoming = [];
         foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
+            if (!isset($f['project_id']) || (int) $f['project_id'] < 1) {
+                return 'the database refused to store these findings, so nothing from these '
+                     . 'records was kept: a finding reached the store with no project';
+            }
+            $k = (int) $f['project_id'] . '|' . (int) $f['generation_id']
+               . '|' . bin2hex($f['identity']);
+            if (isset($active[$k]) || isset($incoming[$k])) {
+                return 'the database refused to store these findings, so nothing from these '
+                     . 'records was kept: Duplicate entry (value withheld) for key '
+                     . "'uv_finding.uq_active_identity_v2'";
+            }
+            $incoming[$k] = true;
+        }
+        foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
+            if (!isset($f['active_slot'])) $f['active_slot'] = 1;
+            if (!isset($f['valid_from_seq'])) $f['valid_from_seq'] = $runSeq;
             $this->findings[] = $f;
         }
         // In the same commit as the findings, for the reason in SqlScanStore:
@@ -329,14 +411,20 @@ final class ArrayScanStore implements ScanStore
     // server - which is where a semaphore's behaviour can actually be shown,
     // since the interesting half of it is two processes racing.
 
-    public function findings($generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         $out = [];
         $i = 0;
         foreach ($this->findings as $f) {
             $i++;
             if ($i <= (int) $afterId) continue;
+            if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
+            // Closed rows belong to an earlier reading of a record and are
+            // kept so an "as of run N" view stays reproducible. A report
+            // shows the ACTIVE ones; the real store says the same with
+            // active_slot = 1 in its WHERE.
+            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
             $skip = false;
             foreach (['host_form', 'reason_code', 'check_type'] as $k) {
                 if (isset($filter[$k]) && $filter[$k] !== ''
@@ -368,16 +456,6 @@ final class ArrayScanStore implements ScanStore
         return $n;
     }
 
-    public function purgeRuns($pid, $olderThan)
-    {
-        $n = 0;
-        foreach ($this->runs as $id => $r) {
-            if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] === 1) continue;
-            unset($this->runs[$id], $this->records[$id]);
-            $n++;
-        }
-        return $n;
-    }
 
     public function audit($pid, $runId, $event, $actor, $detail)
     {

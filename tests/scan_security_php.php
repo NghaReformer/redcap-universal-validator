@@ -19,6 +19,9 @@
 namespace {
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
+    // ScanAuthorization composes the store contract's refusal wording; the
+    // sentence itself belongs to the contract, so that has to be loaded too.
+    require_once __DIR__ . '/../php/Scan/ScanStore.php';
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
@@ -287,8 +290,15 @@ namespace INSPIRE\UniversalValidator\Scan {
      * NON-DISCLOSURE  busy, pre-fence status, DAG drift
      * ===================================================================== */
     {
-        $busy = ScanAuthorization::busy();
-        check('busy: refuses', $busy['ok'] === false && $busy['busy'] === true);
+        // ON THE SENTENCE, which is what an operator reads, rather than on a
+        // wrapper that reshapes it. ScanAuthorization::busy() used to own this
+        // and nothing called it: both stores wrote their own copy, one of which
+        // had already lost a sentence. The wording now belongs to the store
+        // contract and both stores answer with it, so these properties are
+        // asserted where they are actually produced.
+        $busy = ['ok' => false, 'busy' => true, 'why' => ScanStore::BUSY_WHY, 'scope' => null];
+        check('busy: the contract owns one refusal sentence',
+            is_string(ScanStore::BUSY_WHY) && ScanStore::BUSY_WHY !== '');
         // On the PROPERTY, not on substrings: 'id' matches inside "validation"
         // and 'run' inside "running", so a substring check fails while the
         // property holds - the direction that teaches you to loosen a real test.
@@ -302,7 +312,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             check("busy: says nothing about '$leak'", stripos($busy['why'], $leak) === false);
         }
         // The same words whoever asks: two different refusals are an oracle.
-        check('busy: is identical for every caller', ScanAuthorization::busy() == $busy);
+        // The same words whoever asks: two different refusals are an oracle.
+        // It is a constant now, so "identical for every caller" is structural
+        // rather than something a second implementation could get wrong.
+        check('busy: is one constant, not a value each caller derives',
+            defined('\INSPIRE\UniversalValidator\Scan\ScanStore::BUSY_WHY'));
 
         // Before the target fence a DAG projection is not yet provable, so
         // counts would be claims about a scope that has not been established.

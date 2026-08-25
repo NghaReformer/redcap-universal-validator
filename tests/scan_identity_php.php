@@ -171,7 +171,11 @@ namespace {
      * them is where the defect lived.
      */
     function identitiesByField($m, $recordId) {
-        $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'locations']);
+        // The generation is REQUIRED now, and null means planning. There is no
+        // default: a default is what wrote generation 1 for every run of every
+        // project on the installation and wedged every second scan.
+        $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'locations',
+                                            'generation' => 7, 'runSeq' => 7]);
         if (empty($ctx['ok'])) return ['__why' => $ctx['why']];
         $ev = $ctx['evaluate'];
         $node = \REDCap::$data[$recordId];
@@ -431,6 +435,106 @@ namespace {
             && $withIds['y_val'] === $withIdsSwap['y_val']);
         check('I-05: while the two rules still have two names',
             $withIds['x_val'] !== $withIds['y_val']);
+    }
+
+    /* =====================================================================
+     * I-06  two hidden options ticked on one checkbox are TWO findings
+     *
+     * A @UVCHOICES rule on a CHECKBOX emits one finding per ticked hidden code,
+     * all with reason `hidden-choice` and all at the same record, event,
+     * instance, form and field, under the same rule. The identity hashed
+     * exactly those seven facts, so the two were byte-identical: the unique key
+     * refused the second, commitBatch rolled the WHOLE batch back, and a FIRST
+     * scan of a fresh project stored nothing at all for records it had examined
+     * correctly. No prior scan involved, no second run needed.
+     *
+     * The fix is a within-location discriminator inside the hash - the ticked
+     * choice CODE - and NOT an ordinal. An ordinal renumbers every later
+     * finding when an earlier one is fixed, so a re-scan would close and reopen
+     * rows that never changed, which destroys the one property the identity
+     * exists to provide. The second half of this block is what pins that.
+     * ===================================================================== */
+    {
+        $D = ['record_id' => ['field_type' => 'text', 'form_name' => 'fa', 'field_annotation' => ''],
+              'symptoms'  => ['field_type' => 'checkbox', 'form_name' => 'fa',
+                              'select_choices_or_calculations' => '1, Cough | 2, Fever | 3, Rash',
+                              'field_annotation' => '@UVCHOICES={"hide":["2","3"]}']];
+        // BOTH hidden options ticked. REDCap presents a checkbox as a map of
+        // code => '1', which is the shape the rule reads.
+        $data = [1 => [1 => ['record_id' => '1',
+                             'symptoms' => ['1' => '1', '2' => '1', '3' => '1']]]];
+
+        $m = mkMod($D, $data);
+        $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'locations',
+                                            'generation' => 3, 'runSeq' => 3]);
+        check('I-06: the premise - the checkbox rule is scannable',
+            !empty($ctx['ok']));
+        if (!empty($ctx['ok'])) {
+            $ev = $ctx['evaluate'];
+            $r  = $ev(1, $data[1]);
+
+            $hidden = [];
+            foreach ($r['findings'] as $f) {
+                if ($f['reason_code'] === \INSPIRE\UniversalValidator\Scan\ReasonCode::code('hidden-choice')) {
+                    $hidden[] = $f;
+                }
+            }
+            check('I-06: both ticked hidden options are reported, not one',
+                count($hidden) === 2);
+            check('I-06: and they are two DIFFERENT findings, which the unique key can hold',
+                count($hidden) === 2
+                && $hidden[0]['identity'] !== $hidden[1]['identity']);
+            check('I-06: nothing was collapsed to get there',
+                isset($r['collapsed']) && $r['collapsed'] === 0);
+            // The two are at ONE location by every other measure. If any of
+            // these stopped being equal the test would be passing for the wrong
+            // reason - two findings that differ in their field are not the case
+            // this block is about.
+            check('I-06: at the same field, rule and reason - only the option differs',
+                count($hidden) === 2
+                && $hidden[0]['field'] === $hidden[1]['field']
+                && $hidden[0]['rule_source_id'] === $hidden[1]['rule_source_id']
+                && $hidden[0]['reason_code'] === $hidden[1]['reason_code']
+                && $hidden[0]['host_form'] === $hidden[1]['host_form']);
+
+            // STABILITY, which is the whole reason the discriminator is the
+            // choice code rather than a counter. Scan the same record again and
+            // the same two identities must come back - otherwise an incremental
+            // run closes and reopens rows nothing changed.
+            $again = $ev(1, $data[1]);
+            $ids1 = []; foreach ($hidden as $f) $ids1[] = bin2hex($f['identity']);
+            $ids2 = [];
+            foreach ($again['findings'] as $f) {
+                if ($f['reason_code'] === \INSPIRE\UniversalValidator\Scan\ReasonCode::code('hidden-choice')) {
+                    $ids2[] = bin2hex($f['identity']);
+                }
+            }
+            sort($ids1); sort($ids2);
+            check('I-06: and a re-scan produces the same two identities', $ids1 === $ids2);
+
+            // UNTICKING ONE MUST NOT RENAME THE OTHER. This is the property an
+            // ordinal discriminator would fail: with a counter, removing the
+            // first finding renumbers the second, and every stored row for it
+            // is orphaned.
+            // THE SAME evaluator, a different reading of the record. A second
+            // module would mint a second HMAC key and every identity would
+            // differ for a reason that has nothing to do with the rule - which
+            // would make this check pass or fail on the fixture rather than on
+            // the behaviour.
+            $one = [1 => ['record_id' => '1',
+                          'symptoms' => ['1' => '1', '2' => '0', '3' => '1']]];
+            $r2 = $ev(1, $one);
+            $left = [];
+            foreach ($r2['findings'] as $f) {
+                if ($f['reason_code'] === \INSPIRE\UniversalValidator\Scan\ReasonCode::code('hidden-choice')) {
+                    $left[] = bin2hex($f['identity']);
+                }
+            }
+            check('I-06: unticking one hidden option leaves exactly the other',
+                count($left) === 1);
+            check('I-06: and does NOT rename it, which an ordinal would have',
+                count($left) === 1 && in_array($left[0], $ids1, true));
+        }
     }
 
     echo "scan_identity_php: $n checks, $fail failure(s)\n";

@@ -9,9 +9,10 @@
  * cannot repeat, the version read that goes to a log table. Those are here.
  *
  * TWO PROJECTS. 900 is under test and 901 is planted with a run and findings of
- * its own. It matters most in the two rollback assertions: "not one buffered
- * finding reached the table" is a claim about this run, and asked of the whole
- * table it answers the same way on a schema that only ever held one project.
+ * its own, in the same generation. It matters most in the two rollback
+ * assertions: "not one buffered finding reached the table" is a claim about this
+ * run, and asked of the whole table it answers the same way on a schema that
+ * only ever held one project.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
@@ -32,7 +33,7 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     $nb = uv_plant_neighbour($dbA, $PID);
     check('worker: a second project is on the same store with findings of its own',
-        is_array($nb) && uv_neighbour_findings($dbA) === 2);
+        is_array($nb) && uv_neighbour_findings($dbA, $PID) === 2);
 
     $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $PID);
     for ($i = 1; $i <= 12; $i++) {
@@ -55,15 +56,22 @@ $NEIGHBOUR = uv_neighbour($PID);
         $planned['ok'] === true && (int) $planned['run']['manifest_total'] === 12);
     $wrid = (int) $planned['run']['run_id'];
     $gen = (int) $planned['run']['generation_id'];
+    $seq = uv_run_seq($dbA, $wrid);
 
     $readAll = function ($ids) {
         $out = array();
         foreach ($ids as $id) $out[$id] = array('1' => array('x' => ''));
         return array('ok' => true, 'data' => $out, 'why' => null);
     };
-    $findOne = function ($id, $node) use ($gen) {
+    // ScanWorker passes an evaluator's findings to the store UNCHANGED - it
+    // stamps the record state and the record hash, and nothing else - so the
+    // project and the run sequence are the evaluator's to supply here exactly
+    // as they are ScanService's to supply in production.
+    $findOne = function ($id, $node) use ($gen, $seq, $PID) {
         return array('bytes' => 12, 'contexts' => 1, 'why' => null, 'findings' => array(array(
-            'generation_id' => $gen, 'identity' => hash('sha256', 'w' . $id, true), 'seq' => 1,
+            'project_id' => $PID,
+            'generation_id' => $gen, 'identity' => hash('sha256', 'w' . $id, true),
+            'valid_from_seq' => $seq,
             'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id,
             'instance' => 1, 'host_form' => 'f', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
@@ -82,11 +90,15 @@ $NEIGHBOUR = uv_neighbour($PID);
     $wres = $worker->work($PID, $wrid);
     check('worker: every record is examined against a real store', $wres['worked'] === 12);
     check('worker: and every finding is stored', $wres['findings'] === 12);
-    // SCOPED BY RECORD, not by generation alone. Both projects' findings sit in
-    // the same generation space today, so "how many findings does generation 1
-    // hold" is a question about the installation rather than about this run.
+    // SCOPED BY PROJECT AND GENERATION, which is what a report query is scoped
+    // by. Both projects' findings really do sit in the same generation number -
+    // generation 1 is the first run of every project - so "how many findings
+    // does generation 1 hold" is still a question about the installation. It is
+    // the project half that turns it into a question about this run, and asking
+    // it by record-id prefix instead would answer the same on a row written
+    // with the wrong project id.
     $stored = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . " WHERE generation_id = ? AND record_id_bin LIKE 'W%'", array($gen));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $gen));
     check('worker: the findings are really in the table', (int) $stored[0][0] === 12);
     check('worker: the manifest is complete as a predicate over states',
         $store->manifestComplete($wrid) === true);
@@ -138,13 +150,16 @@ $NEIGHBOUR = uv_neighbour($PID);
         'source' => $srcW['source'], 'fence' => $fenceW['fence'], 'pageSize' => 20)));
     $wrid3 = (int) $planned3['run']['run_id'];
     $gen3 = (int) $planned3['run']['generation_id'];
+    $seq3 = uv_run_seq($dbA, $wrid3);
     $storeB = new \INSPIRE\UniversalValidator\Scan\SqlScanStore(new MysqliDb($B));
-    $cancelMidway = function ($id, $node) use ($storeB, $wrid3, $gen3, $PID) {
+    $cancelMidway = function ($id, $node) use ($storeB, $wrid3, $gen3, $seq3, $PID) {
         // The SECOND connection cancels, exactly as an administrator's request
         // in another tab would.
         $storeB->cancel($PID, $wrid3, 'admin');
         return array('bytes' => 1, 'contexts' => 1, 'why' => null, 'findings' => array(array(
-            'generation_id' => $gen3, 'identity' => hash('sha256', 'c' . $id, true), 'seq' => 1,
+            'project_id' => $PID,
+            'generation_id' => $gen3, 'identity' => hash('sha256', 'c' . $id, true),
+            'valid_from_seq' => $seq3,
             'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id,
             'instance' => 1, 'host_form' => 'f', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
@@ -160,11 +175,11 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('worker: a cancel from another connection stops the worker at its fence',
         $wres3['ok'] === false && $wres3['stop'] === 'fenced');
     $leftF = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . " WHERE generation_id = ? AND record_id_bin LIKE 'W%'", array($gen3));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $gen3));
     check('worker: and not one buffered finding reached the table',
         (int) $leftF[0][0] === 0);
     check('worker: while the neighbouring project keeps every finding it had',
-        uv_neighbour_findings($dbA) === 2);
+        uv_neighbour_findings($dbA, $PID) === 2);
     $leftD = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ? AND state >= ?', array($wrid3, \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE));
     check('worker: nor was any record marked as examined', (int) $leftD[0][0] === 0);

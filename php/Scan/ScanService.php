@@ -149,7 +149,14 @@ final class ScanService
         $dag = $scope['dag'];
 
         $policy = $this->policy($pid);
-        $ctx = $this->module->durableScanContext($pid, ['valueCeiling' => $policy['valueMode']], $dag);
+        // PLANNING CONTEXT. start() needs the rule list and the ownership map
+        // to authorise and to plan; the run - and therefore its generation -
+        // does not exist yet. Asking for a null generation says that, and gets
+        // back a context with no evaluator rather than one silently bound to
+        // generation 1, which is what every run of every project used to write.
+        $ctx = $this->module->durableScanContext($pid,
+            ['valueCeiling' => $policy['valueMode'], 'generation' => null,
+             'policy' => $policy], $dag);
         if (empty($ctx['ok'])) return self::noStart($ctx['why']);
 
         // Every instrument the run will read, from the plan rather than from a
@@ -413,8 +420,15 @@ final class ScanService
             return ['ok' => false, 'why' => $scope['why']];
         }
         $policy = $this->policy($pid);
-        $ctx = $this->module->durableScanContext($pid,
-            ['valueCeiling' => $policy['valueMode']], $run['scope_dag']);
+        // The run is in hand, so the evaluator is bound to THIS run's
+        // generation and sequence - the numbers its findings are written under
+        // and the interval they open.
+        $ctx = $this->module->durableScanContext($pid, [
+            'valueCeiling' => $policy['valueMode'],
+            'generation'   => (int) $run['generation_id'],
+            'runSeq'       => (int) $run['run_seq'],
+            'policy'       => $policy,
+        ], $run['scope_dag']);
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why']];
 
         $forms = [];

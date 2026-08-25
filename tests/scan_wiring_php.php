@@ -87,9 +87,6 @@ namespace {
         // moved: wave 2 deleted the methods. This check is what noticed - an
         // allow-list that outlives its subject is how a list of known-inert
         // code turns back into a list nobody reads.
-        'ScanStore::purgeRuns'         => 'wave 4 (M15) deletes it: ScanRetention::purgeRuns is the correct seven-table cascade, and two purges are how they came to disagree about whether an integer meant days or a datetime',
-        'ArrayScanStore::purgeRuns'    => 'wave 4 (M15) deletes it, with the contract',
-        'SqlScanStore::purgeRuns'      => 'wave 4 (M15) deletes it, with the contract',
         'ScanPageView::verdict'        => 'wave 7 deletes it: a second clean predicate with no caller that does not agree with ScanOutcome::mayClaimClean(), which is the drift ScanOutcome\'s docblock exists to prevent',
 
         // -- wave 7, the honest outcome.
@@ -105,7 +102,6 @@ namespace {
         'ScanStore::expireValues'        => 'wave 10, through ScanRetention',
         'ArrayScanStore::expireValues'   => 'wave 10, through ScanRetention',
         'SqlScanStore::expireValues'     => 'wave 10, through ScanRetention',
-        'ScanPolicy::valueExpiry'        => 'wave 10 (B6/H8): nothing writes value_expires_at, so even a wired expireValues would match no row',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
         'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
         'ScanPolicy::floor'              => 'wave 10, transitively: tightened() is its only intended caller',
@@ -242,6 +238,32 @@ namespace {
         return $out;
     }
 
+    /**
+     * The shipped tree with its PROSE removed.
+     *
+     * A comment that names a method is not a call to it, and this codebase's
+     * comments name methods constantly - they are how it records why a thing
+     * exists and what it replaced. Searching raw file text made the sentence
+     * "ScanRetention::purgeRuns() removed those AND the findings" read as a
+     * call site, so a method could be marked wired by the very comment
+     * explaining that nothing calls it. Strings go too: a method name inside a
+     * message is not a call either.
+     */
+    function uv_code_only($file) {
+        $out = '';
+        foreach (token_get_all(file_get_contents($file)) as $tok) {
+            if (is_array($tok)) {
+                if ($tok[0] === T_COMMENT || $tok[0] === T_DOC_COMMENT) continue;
+                if ($tok[0] === T_CONSTANT_ENCAPSED_STRING) continue;
+                if ($tok[0] === T_ENCAPSED_AND_WHITESPACE) continue;
+                $out .= $tok[1];
+            } else {
+                $out .= $tok;
+            }
+        }
+        return $out;
+    }
+
     /** Is this method name invoked anywhere in the shipped tree? */
     function uv_is_called($name, $corpus) {
         return (bool) preg_match('/(->|::)\s*' . preg_quote($name, '/') . '\s*\(/', $corpus);
@@ -274,7 +296,7 @@ namespace {
     $declFiles = uv_declaration_files();
     $siteFiles = uv_call_site_files();
     $corpus = '';
-    foreach ($siteFiles as $f) $corpus .= file_get_contents($f) . "\n";
+    foreach ($siteFiles as $f) $corpus .= uv_code_only($f) . "\n";
 
     $declared = []; $wired = []; $where = [];
     foreach ($declFiles as $f) {

@@ -34,6 +34,16 @@ final class Hmac
 {
     const V = 'v1';
 
+    // The FINDING tuple's own version, separate from V.
+    //
+    // V is shared by P_RECORD, P_VALUE and P_UNIQUE; bumping it to record a
+    // change to the finding tuple would invalidate record_hash - breaking the
+    // manifest matching of any run in flight - and unique_candidate.group_hmac,
+    // for nothing. This tag changes only the space findingIdentity() lives in,
+    // so a version-1 identity is recognisably old rather than silently
+    // different from a version-2 one describing the same problem.
+    const FINDING_TUPLE = 'f2';
+
     // The four spaces. Adding a fifth means adding a constant here, so the set
     // is enumerable and a reviewer can see that none of them collide.
     const P_RECORD   = 'record';        // record id -> presentation/identity hash
@@ -79,15 +89,36 @@ final class Hmac
      * A field whose wrong value changed from one wrong value to another is the
      * same finding with a new value, and treating it as a new finding would make
      * every re-scan look like churn.
+     *
+     * `locus` IS THE WITHIN-LOCATION DISCRIMINATOR, and it is here because the
+     * seven facts above are not always enough to tell two findings apart. A
+     * @UVCHOICES rule on a CHECKBOX emits one finding per ticked hidden code,
+     * all with reason `hidden-choice`, so two ticked hidden options at one field
+     * were byte-identical in every hashed field: the unique key refused the
+     * second, the whole batch rolled back, and a FIRST scan of a fresh project
+     * stored nothing at all for records it had examined correctly.
+     *
+     * It is part of the LOCATION, never the value - the ticked choice CODE for
+     * hidden-choice, and empty for every rule kind that can produce at most one
+     * finding per field per context. That distinction is what keeps the
+     * paragraph above true.
+     *
+     * It is NOT an ordinal. A positional discriminator renumbers every later
+     * finding when an earlier one is fixed, which would close and reopen rows
+     * that never changed and destroy the one property this identity exists for.
+     *
+     * It lives only inside a keyed hash and is never written to a column, so it
+     * discloses nothing even where the policy withholds values.
      */
     public static function findingIdentity($pid, array $loc, $key)
     {
         $parts = [];
         foreach (['record', 'event_id', 'instance', 'host_form', 'field',
-                  'rule_source_id', 'reason_code'] as $k) {
+                  'rule_source_id', 'reason_code', 'locus'] as $k) {
             $v = isset($loc[$k]) ? $loc[$k] : '';
             $parts[] = is_scalar($v) ? (string) $v : '';
         }
-        return self::raw(self::P_FINDING, $pid, implode("\0", $parts), $key);
+        return self::raw(self::P_FINDING, $pid,
+                         self::FINDING_TUPLE . "\0" . implode("\0", $parts), $key);
     }
 }

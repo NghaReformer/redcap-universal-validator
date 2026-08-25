@@ -21,7 +21,7 @@ $NEIGHBOUR = uv_neighbour($PID);
 
 {
     $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
-    $nb = uv_plant_neighbour($dbA, $PID, false);
+    $nb = uv_plant_neighbour($dbA, $PID);
     check('promote: a second project holds a run of its own throughout',
         is_array($nb) && (int) $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ' . $NEIGHBOUR . ' AND active_slot = 1')[0][0] === 1);
@@ -38,7 +38,13 @@ $NEIGHBOUR = uv_neighbour($PID);
     $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbA, $store);
 
     $store->setProgressState($rid, $epoch, array('rollupCursor' => 0));
-    while ($roll->step($rid, $epoch, $gen, 100)['done'] === false) { }
+    // THE PROJECT IS THE FIRST ARGUMENT NOW. It was called with four arguments
+    // after the signature grew one, so $rid arrived as the project and $epoch as
+    // the run - progressState() then answered null and the loop exited on its
+    // first turn having summarised nothing. It cost nothing here, because this
+    // block only needs the rollup to be settled, and that is exactly why a
+    // wrong call could sit in it unnoticed.
+    while ($roll->step($PID, $rid, $epoch, $gen, 100)['done'] === false) { }
 
     // Still scanning, with a record pending: not promotable, whatever else is
     // true. A cursor at the end of the manifest is not a manifest at its end.

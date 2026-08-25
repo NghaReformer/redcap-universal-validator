@@ -310,7 +310,7 @@ final class ScanWorker
                 if ($roll instanceof RollupBuilder) {
                     $t0 = microtime(true);
                     $m0 = memory_get_usage(true);
-                    $r = $roll->step($runId, $epoch, $generationId, $budget->claim());
+                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim());
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
                             // The lease moved under us. Its page was discarded
@@ -518,11 +518,11 @@ final class ScanWorker
                 // the project, and reporting it is better than either retrying
                 // forever or quietly leaving it out.
                 if ($tries + 1 >= $maxAttempts) {
-                    $batch['records'][] = ['ordinal' => $c['ordinal'],
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_UNSTABLE, 'version' => null];
                     $blocked++;
                 } else {
-                    $batch['records'][] = ['ordinal' => $c['ordinal'],
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null];
                     $requeued++;
                 }
@@ -535,11 +535,11 @@ final class ScanWorker
                 // is not stuck waiting for it - or the read is wrong about it,
                 // which is worth another attempt first.
                 if ($tries + 1 >= $maxAttempts) {
-                    $batch['records'][] = ['ordinal' => $c['ordinal'],
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_TOMBSTONE, 'version' => null];
                     $blocked++;
                 } else {
-                    $batch['records'][] = ['ordinal' => $c['ordinal'],
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null];
                     $requeued++;
                 }
@@ -550,7 +550,7 @@ final class ScanWorker
             if (!empty($ev['why'])) {
                 // The record was read and could not be examined. Reported as
                 // unreadable rather than as clean - H-05 in one line.
-                $batch['records'][] = ['ordinal' => $c['ordinal'],
+                $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                        'state' => ScanStore::REC_UNREADABLE, 'version' => null];
                 $blocked++;
                 continue;
@@ -577,7 +577,7 @@ final class ScanWorker
                 }
             }
             $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
-            $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+            $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'state' => ScanStore::REC_DONE,
                                    'version' => isset($after[$id]) ? $after[$id] : null];
             $worked++;
         }

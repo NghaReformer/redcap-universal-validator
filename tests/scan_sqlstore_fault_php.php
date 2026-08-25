@@ -184,24 +184,30 @@ namespace INSPIRE\UniversalValidator\Scan {
     // CONTENTION. The insert fails and the probe finds the slot held, which is
     // the only case that may answer busy.
     $db = new ScriptedDb();
-    $db->rows = ['active_slot = 1' => [[1]]];
-    $db->failAt('INSERT INTO', 1, new \RuntimeException(
+    $db->rows = ['active_slot = 1' => [[1]], 'LAST_INSERT_ID' => [[3]]];
+    $db->failAt('INSERT INTO ' . Schema::table('scan_run'), 1, new \RuntimeException(
         "Duplicate entry '700-1' for key 'uv_scan_run.uq_project_active'", 1062));
     $r = outcomeOf(function () use ($db) {
         return (new SqlScanStore($db))->startRun(700, ['created_by' => 'alice']);
     });
     check('start: a genuine slot collision still answers busy',
         $r['kind'] === 'returned' && $r['value']['ok'] === false && $r['value']['busy'] === true);
-    check('start: in the same words as before, naming nobody and nothing',
+    // IN THE CONTRACT'S WORDS, not this file's copy of them. The literal that
+    // stood here was one of THREE copies of the sentence - one per store, plus
+    // a helper written to keep them identical that nothing ever called - and
+    // two of the three had already drifted from the third. Asserting the
+    // constant means a later edit to the wording cannot leave one store
+    // disagreeing with the other while both suites stay green.
+    check('start: in the contract one refusal sentence, naming nobody and nothing',
         $r['kind'] === 'returned'
-        && $r['value']['why'] === 'a validation scan is already running for this project'
+        && $r['value']['why'] === ScanStore::BUSY_WHY
         && preg_match('/\d/', $r['value']['why']) === 0);
 
     // A FAULT. Same failed insert, but no run holds the slot — a missing table,
     // a column too short, a connection that dropped. Telling an operator to
     // wait for this is a wait that never ends.
     $db = new ScriptedDb();       // the probe finds no active run
-    $db->failAt('INSERT INTO', 1, new \RuntimeException(
+    $db->failAt('INSERT INTO ' . Schema::table('scan_run'), 1, new \RuntimeException(
         "Data too long for column 'created_by' at row 1", 1406));
     $r = outcomeOf(function () use ($db) {
         return (new SqlScanStore($db))->startRun(700, ['created_by' => str_repeat('x', 5000)]);
@@ -214,7 +220,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     // THE PROBE ITSELF FAILING is also the answer: a database that cannot be
     // read from is not a database holding a slot.
     $db = new ScriptedDb();
-    $db->failAt('INSERT INTO', 1, new \RuntimeException('MySQL server has gone away', 2006));
+    $db->failAt('INSERT INTO ' . Schema::table('scan_run'), 1, new \RuntimeException('MySQL server has gone away', 2006));
     $db->failAt('active_slot = 1', 1, new \RuntimeException('MySQL server has gone away', 2006));
     $r = outcomeOf(function () use ($db) {
         return (new SqlScanStore($db))->startRun(700, []);

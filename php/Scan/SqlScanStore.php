@@ -88,6 +88,45 @@ final class SqlScanStore implements ScanStore
     // -- runs ---------------------------------------------------------------
 
     /**
+     * Allocate this project's next sequence number.
+     *
+     * THIS IS THE ROOT CAUSE, in one method. The generation was the literal 1
+     * for every run of every project, because three separate places defaulted
+     * it and no caller ever supplied one. With `uq_active_identity` keyed on
+     * the generation and nothing superseding the previous run's rows, the
+     * SECOND scan of any project re-inserted identities that were already
+     * active, the key refused them, and the batch rolled back - forty times,
+     * identically, in the pilot.
+     *
+     * ONE STATEMENT, atomic under InnoDB's row lock on the project's row. No
+     * SELECT ... FOR UPDATE and no explicit transaction: a read-then-write is
+     * the same race the run slot exists to avoid, and a gap lock on a row that
+     * does not exist yet is not portable across the four servers this module
+     * supports.
+     *
+     * LAST_INSERT_ID(expr) sets the session's value explicitly and returns it,
+     * so the fresh-project INSERT path and the existing-project UPDATE path
+     * both answer with the number they allocated. It is session-scoped and read
+     * on the same connection as the write - the same caveat ScanDb already
+     * documents for ROW_COUNT().
+     */
+    private function allocateSeq($pid)
+    {
+        $this->db->exec('INSERT INTO ' . Schema::table('project_seq') . '
+            (project_id, next_seq) VALUES (?, LAST_INSERT_ID(1) + 1)
+            ON DUPLICATE KEY UPDATE next_seq = LAST_INSERT_ID(next_seq) + 1', [(int) $pid]);
+        $r = $this->db->select('SELECT LAST_INSERT_ID()', []);
+        $seq = isset($r[0][0]) ? (int) $r[0][0] : 0;
+        if ($seq < 1) {
+            // Never a fallback to 1. A generation that silently repeats is the
+            // defect this method exists to remove.
+            throw new \RuntimeException('the scan could not allocate a generation for this project');
+        }
+        return $seq;
+    }
+
+
+    /**
      * I1: at most one active run per project, enforced by the UNIQUE key.
      *
      * The insert simply tries. A duplicate-key error is not an exception in the
@@ -98,6 +137,24 @@ final class SqlScanStore implements ScanStore
     public function startRun($pid, array $run)
     {
         $now = self::now();
+
+        // ALLOCATED BEFORE THE INSERT, AND DELIBERATELY OUTSIDE ITS try.
+        //
+        // The insert below reports a duplicate key as "a scan is already
+        // running for this project", which is the right answer to contention
+        // and the wrong answer to anything else. An allocation folded into
+        // that try would report a missing uv_project_seq table as busy, which
+        // tells an operator to wait for a wait that never ends - the exact
+        // misdiagnosis M10 was fixed to stop making.
+        $seq = $this->allocateSeq($pid);
+        // An incremental run reports findings against the baseline it is
+        // comparing with; a full run writes its own generation. Both take
+        // run_seq from the sequence, which is what makes valid_from_seq and
+        // valid_to_seq a single monotonic interval per project.
+        $gen = (isset($run['run_kind']) && $run['run_kind'] === 'incremental'
+                && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
+            ? (int) $run['baseline_generation'] : $seq;
+
         $sql = 'INSERT INTO ' . Schema::table('scan_run') . '
             (run_uuid, project_id, run_seq, generation_id, created_by, scope_dag, scope_kind,
              run_kind, baseline_generation, phase, coverage, detail, values_state, policy_json,
@@ -106,8 +163,10 @@ final class SqlScanStore implements ScanStore
         $params = [
             isset($run['uuid']) ? $run['uuid'] : random_bytes(16),
             $pid,
-            isset($run['run_seq']) ? $run['run_seq'] : 1,
-            isset($run['generation_id']) ? $run['generation_id'] : 1,
+            // No defaults. A default is what let generation 1 ship for every
+            // run of every project on the installation.
+            $seq,
+            $gen,
             isset($run['created_by']) ? $run['created_by'] : '',
             isset($run['scope_dag']) ? $run['scope_dag'] : null,
             isset($run['scope_dag']) && $run['scope_dag'] !== null ? 'dag' : 'global',
@@ -160,7 +219,16 @@ final class SqlScanStore implements ScanStore
                 // non-disclosure property ScanAuthorization::busy() depends on
                 // is exactly what it was.
                 return ['ok' => false, 'busy' => true, 'run' => null,
-                        'why' => 'a validation scan is already running for this project'];
+                        // ONE SENTENCE, ONE OWNER. ScanAuthorization::busy()
+                        // exists so this wording is identical whoever asks -
+                        // its docblock says so - and both stores were writing
+                        // their own copy of it, which had already drifted from
+                        // the helper by a sentence. Nothing called the helper
+                        // at all: its only two mentions in the shipped tree
+                        // were inside comments, which is why the wiring test
+                        // could not see it until the corpus stopped counting
+                        // prose as a call site.
+                        'why' => self::BUSY_WHY];
             }
             throw $this->unavailable($e);
         }
@@ -184,14 +252,18 @@ final class SqlScanStore implements ScanStore
         // promotion test is what said so.
         $r = $this->db->select('SELECT run_id, project_id, scope_dag, phase, terminal, coverage,
             detail, values_state, policy_revision, fingerprint, manifest_total, manifest_done,
-            cursor_ordinal, lease_epoch, generation_id, created_by, detail_rows, detail_bytes,
+            cursor_ordinal, lease_epoch, generation_id, run_seq, created_by, detail_rows, detail_bytes,
             fence_open, fence_target, cancel_requested_at
             FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?',
             [$runId, $pid]);
         if (!isset($r[0])) return null;
         $k = ['run_id', 'project_id', 'scope_dag', 'phase', 'terminal', 'coverage', 'detail',
               'values_state', 'policy_revision', 'fingerprint', 'manifest_total', 'manifest_done',
-              'cursor_ordinal', 'lease_epoch', 'generation_id', 'created_by', 'detail_rows',
+              // run_seq is the interval a finding written by this run OPENS,
+              // so a caller building a batch needs it as much as it needs the
+              // generation. Leaving it out made every such caller reach past
+              // this method for it, or quietly write a zero.
+              'cursor_ordinal', 'lease_epoch', 'generation_id', 'run_seq', 'created_by', 'detail_rows',
               'detail_bytes', 'fence_open', 'fence_target', 'cancel_requested_at'];
         return array_combine($k, $r[0]);
     }
@@ -483,7 +555,11 @@ final class SqlScanStore implements ScanStore
             // code did not do: a concurrent cancel now serialises behind us
             // rather than racing us, and the epoch is compared in PHP where
             // "unchanged" is not mistaken for "absent".
-            $fence = $this->db->select('SELECT lease_epoch, cancel_requested_at FROM '
+            // The same row, the same lock, four columns instead of two: the
+            // supersede below needs the project, the generation and the run
+            // sequence, and reading them here costs nothing extra.
+            $fence = $this->db->select('SELECT lease_epoch, cancel_requested_at, project_id,
+                       generation_id, run_seq FROM '
                 . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             // SAY WHICH FENCE REFUSED. "Cancelled or taken over" covered three
             // different causes, and during the pilot a run failed its very first
@@ -503,6 +579,66 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return 'another worker took over this scan while these records were being '
                      . 'examined, so nothing from them was kept; they will be examined again';
+            }
+
+            $projectId    = (int) $fence[0][2];
+            $generationId = (int) $fence[0][3];
+            $runSeq       = (int) $fence[0][4];
+
+            // SUPERSEDE THIS BATCH'S RECORDS BEFORE WRITING THEIR NEW EVIDENCE.
+            //
+            // Nothing anywhere used to close a record's existing findings. A
+            // record edited during a run is requeued by catch-up, re-examined,
+            // and produces the same violation again - so commitBatch inserted
+            // an identity its own first pass had already committed as active,
+            // the unique key refused it, and the batch rolled back. On a FIRST
+            // run of a fresh installation, with no prior scan involved.
+            //
+            // Every clause of where this sits is load-bearing:
+            //   AFTER the three fences, so a cancelled or taken-over worker
+            //     cannot close a live worker's findings;
+            //   INSIDE the transaction, so a batch that rolls back does not
+            //     leave the previous evidence closed and silently empty the
+            //     report for records nobody re-examined;
+            //   BEFORE any insert, so the unique key sees only the new rows as
+            //     active;
+            //   under the row lock the SELECT ... FOR UPDATE above already
+            //     holds, which serialises two workers of the same run.
+            //
+            // BY RECORD, not by the identities in this batch. A violation FIXED
+            // between the two examinations produces no finding the second time,
+            // and an identity-scoped close would leave it active forever - the
+            // report would show corrected data as still broken.
+            $closing = [];
+            foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
+                if (!isset($rec['record_hash'])) continue;
+                $st = (int) $rec['state'];
+                // Only a record that has just been examined, or one that is
+                // gone. A record REQUEUED because it moved commits no new
+                // findings, so closing its rows would blank the report for a
+                // record that still violates.
+                if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+                    $closing[] = $rec['record_hash'];
+                }
+            }
+            if ($closing) {
+                $marks = implode(',', array_fill(0, count($closing), '?'));
+                // stage_epoch IS NULL excludes duplicate-value findings. Those
+                // belong to UniqueFinalizer::publish(), which closes and
+                // republishes per GROUP; closing them here would make a still
+                // -true duplicate group vanish the moment any one of its
+                // records was re-examined.
+                //
+                // This is the query ix_record serves - (project_id,
+                // generation_id, record_hash, active_slot) - and the reason
+                // three separate specifications were overruled about dropping
+                // it. Without the index it is 333 ms per batch instead of 1.7.
+                $this->db->exec('UPDATE ' . Schema::table('finding') . '
+                    SET active_slot = NULL, valid_to_seq = ?
+                    WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                      AND stage_epoch IS NULL
+                      AND record_hash IN (' . $marks . ')',
+                    array_merge([$runSeq, $projectId, $generationId], $closing));
             }
 
             foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
@@ -637,17 +773,47 @@ final class SqlScanStore implements ScanStore
      * field can be 64 KB and a candidate per record would be a second copy of
      * the project. A group that actually collides is re-read from the source.
      */
+    /**
+     * The project a row belongs to, or a refusal.
+     *
+     * project_id carries DEFAULT 0 in the schema, and permanently: the default
+     * is what lets ADD COLUMN succeed against a populated table, and removing
+     * it would make every insert written before the code catches up fail under
+     * STRICT_TRANS_TABLES. So the column cannot fail loud, and this does it
+     * instead.
+     *
+     * A zero here would not be a small mistake. Every predicate over the four
+     * generation-scoped tables now filters by project, so a row written with 0
+     * belongs to no project: invisible to its own report, immune to its own
+     * project's retention, and indistinguishable from the version-1 rows the
+     * migration deletes. Silence is exactly how the constant generation shipped.
+     */
+    private static function mustProject(array $row)
+    {
+        $pid = isset($row['project_id']) ? (int) $row['project_id'] : 0;
+        if ($pid < 1) {
+            throw new \RuntimeException('a scan row reached the store with no project; '
+                . 'refusing to write a row that belongs to nothing');
+        }
+        return $pid;
+    }
+
     private function insertCandidate(array $c)
     {
         $this->db->exec('INSERT INTO ' . Schema::table('unique_candidate') . '
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned)', [
+            self::mustProject($c),
             $c['generation_id'], $c['rule_source_id'], $c['rule_revision'], $c['group_hmac'],
             isset($c['scope_key']) ? $c['scope_key'] : '',
             $c['record_hash'], $c['record_id_bin'],
-            isset($c['event_id']) ? $c['event_id'] : null,
+            // 0, NOT NULL. MySQL counts every NULL in a unique index as
+            // distinct, so on a classic project - where event_id is always
+            // null - ON DUPLICATE KEY UPDATE never fired and duplicate
+            // candidate rows accumulated for the same record.
+            isset($c['event_id']) && $c['event_id'] !== null ? (int) $c['event_id'] : 0,
             isset($c['instance']) ? $c['instance'] : 1,
             $c['host_form'], $c['field'],
             isset($c['version']) ? $c['version'] : null,
@@ -661,13 +827,19 @@ final class SqlScanStore implements ScanStore
         // findings are active from the moment they are written.
         $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
         $this->db->exec('INSERT INTO ' . Schema::table('finding') . '
-            (generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
+            (project_id, generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
              record_id_bin, event_id, arm_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity, dag_key,
              status_key, value_bin, value_len, value_fingerprint, value_truncated, value_binary,
              value_expires_at, group_hmac, stage_epoch)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-            $f['generation_id'], $f['identity'], $f['seq'], $staged ? null : 1,
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+            self::mustProject($f),
+            $f['generation_id'], $f['identity'],
+            // The RUN's sequence number. It used to be a per-record
+            // ordinal, which put valid_from_seq and valid_to_seq in
+            // different number spaces and made the interval meaningless.
+            isset($f['valid_from_seq']) ? (int) $f['valid_from_seq'] : 0,
+            $staged ? null : 1,
             $f['record_hash'], $f['record_id_bin'],
             isset($f['event_id']) ? $f['event_id'] : null,
             isset($f['arm_id']) ? $f['arm_id'] : null,
@@ -785,14 +957,21 @@ final class SqlScanStore implements ScanStore
     // -- reads --------------------------------------------------------------
 
     /** One keyset page. Never OFFSET: it degrades quadratically over a run. */
-    public function findings($generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         $limit = max(1, min(100, (int) $limit));
         $sql = 'SELECT finding_id, record_id_bin, event_id, instance, host_form, field,
                        check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated
                 FROM ' . Schema::table('finding') . '
-                WHERE generation_id = ? AND active_slot = 1 AND finding_id > ?';
-        $params = [$generationId, (int) $afterId];
+                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                  AND finding_id > ?';
+        // PROJECT FIRST, in the predicate and in the index. This method had
+        // no production caller at all, which is the only reason a read
+        // filtered by generation alone - with the generation the literal 1
+        // for every project - was stored corruption rather than a live
+        // cross-project disclosure. The report is what would have turned it
+        // into one.
+        $params = [(int) $projectId, $generationId, (int) $afterId];
         // Only allowlisted axes reach the statement; an unknown key is dropped
         // rather than interpolated.
         foreach (['host_form' => 'host_form', 'reason_code' => 'reason_code',
@@ -844,24 +1023,6 @@ final class SqlScanStore implements ScanStore
         return $this->db->affected();
     }
 
-    /** Purge finished runs past retention. Active runs are never touched. */
-    public function purgeRuns($pid, $olderThan)
-    {
-        $ids = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run') . '
-            WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?', [$pid, $olderThan]);
-        $n = 0;
-        foreach ($ids as $row) {
-            $id = (int) $row[0];
-            // Children first: there are no foreign keys, so cascade is this
-            // order and nothing else. Reversing it would orphan rows whose
-            // parent is already gone.
-            $this->db->exec('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ?', [$id]);
-            $this->db->exec('DELETE FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ?', [$id]);
-            $this->db->exec('DELETE FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', [$id]);
-            $n++;
-        }
-        return $n;
-    }
 
     // -- reconciliation ------------------------------------------------------
 

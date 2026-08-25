@@ -184,7 +184,16 @@ final class ScanPlanner
         $started = $this->store->startRun($pid, [
             'created_by'    => isset($req['createdBy']) ? $req['createdBy'] : '',
             'scope_dag'     => $dag,
-            'generation_id' => isset($req['generation']) ? $req['generation'] : 1,
+            // NO generation here. It was one of three places that defaulted
+            // it to 1, and between them no caller ever supplied one - so
+            // every run of every project on the installation wrote
+            // generation 1, and the second scan of anything re-inserted
+            // identities that were already active. The store allocates it
+            // now, from a per-project sequence, and is the only thing that
+            // can: allocation has to be atomic with the run insert or two
+            // starts race for the same number.
+            'run_kind'      => isset($req['runKind']) ? $req['runKind'] : 'full',
+            'baseline_generation' => isset($req['baseline']) ? $req['baseline'] : null,
             'fingerprint'   => $fp,
             'fence_open'    => $open,
             'policy_json'   => json_encode(isset($req['policy']) ? $req['policy'] : []),

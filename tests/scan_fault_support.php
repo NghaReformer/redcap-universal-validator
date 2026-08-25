@@ -96,6 +96,12 @@ class ScriptedDb implements ScanDb
         foreach ($this->rows as $needle => $rows) {
             if (strpos($sql, $needle) !== false) return $rows;
         }
+        // A real server always answers LAST_INSERT_ID(), so a stub that does
+        // not is modelling a database that cannot exist - and every scenario
+        // here would then be testing the generation allocator rather than the
+        // fault it was written for. A scenario that wants a specific number,
+        // or wants the allocation to fail, still says so through rows/failAt.
+        if (strpos($sql, 'LAST_INSERT_ID') !== false) return [[1]];
         return [];
     }
 
@@ -215,7 +221,7 @@ class FaultyStore implements ScanStore
     public function cancel($pid, $runId, $actor)
     { $this->gate('cancel'); return $this->inner->cancel($pid, $runId, $actor); }
 
-    public function findings($generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     { $this->gate('findings'); return $this->inner->findings($generationId, $filter, $afterId, $limit); }
 
     public function aggregates($runId)
@@ -224,8 +230,6 @@ class FaultyStore implements ScanStore
     public function expireValues($now)
     { $this->gate('expireValues'); return $this->inner->expireValues($now); }
 
-    public function purgeRuns($pid, $olderThan)
-    { $this->gate('purgeRuns'); return $this->inner->purgeRuns($pid, $olderThan); }
 
     public function audit($pid, $runId, $event, $actor, $detail)
     { $this->gate('audit'); return $this->inner->audit($pid, $runId, $event, $actor, $detail); }

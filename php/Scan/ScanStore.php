@@ -38,6 +38,22 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 interface ScanStore
 {
+    /**
+     * The one sentence a caller gets when the project s slot is already held.
+     *
+     * GENERIC BY CONSTRUCTION: no run id, no owner, no scope, no progress, no
+     * timing. A group-restricted user learning that a project-wide run is in
+     * progress learns that someone with wider rights is looking at their
+     * project, and a run id would let them ask about it.
+     *
+     * IT LIVES HERE because three copies of it existed - one in each store and
+     * one in ScanAuthorization::busy(), which was written to keep them
+     * identical and which nothing ever called. Two of the three had already
+     * drifted from the third by a sentence.
+     */
+    const BUSY_WHY = 'a validation scan is already running for this project. '
+        . 'Try again when it has finished.';
+
     // Record states. Terminal states are >= 100 so "is this row finished" is a
     // comparison rather than a list that a new state can be forgotten from.
     const REC_PENDING   = 0;
@@ -216,7 +232,7 @@ interface ScanStore
     // the unused mechanism collects the defects.
 
     /** One keyset page of findings for a generation, already filtered. */
-    public function findings($generationId, array $filter, $afterId, $limit);
+    public function findings($projectId, $generationId, array $filter, $afterId, $limit);
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);
@@ -224,8 +240,18 @@ interface ScanStore
     /** Expire stored value previews whose TTL has passed. Returns rows affected. */
     public function expireValues($now);
 
-    /** Purge runs past their retention. Returns runs removed. */
-    public function purgeRuns($pid, $olderThan);
+    // purgeRuns() IS GONE FROM THIS CONTRACT, DELIBERATELY.
+    //
+    // There were two of them. This one removed the run, its records and its
+    // aggregates; ScanRetention::purgeRuns() removed those AND the findings,
+    // candidates, groups and dimensions. Whichever a caller happened to reach
+    // decided how much survived a retention pass, and the two had already
+    // drifted on what their second argument meant - a day count in one, a
+    // datetime in the other. A store with a partial cascade beside a retention
+    // class with the full one is not two options; it is one of them being
+    // wrong, silently, depending on the call site.
+    //
+    // ScanRetention owns retention. The store owns rows.
 
     /** Record an audit event. Never per page fetch - see the plan's §4 note. */
     public function audit($pid, $runId, $event, $actor, $detail);

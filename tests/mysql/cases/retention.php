@@ -9,15 +9,17 @@
  * misreading this module exists to prevent.
  *
  * TWO PROJECTS, AND ONE OF THE CLOCKS CROSSES THE LINE. 800 is under test and
- * 801 is planted beside it with findings of its own. Two of these clocks are
- * installation-wide by design - a cron owns them - and one, purgeRuns, takes a
- * project id and then deletes findings by GENERATION. Generations are handed out
- * per installation rather than per project today, so purging one project's run
- * reaches the other project's findings. Nothing here asserts that yet: the fix
- * is B1's, and an assertion written before it would land this refactor red. The
- * neighbour is here so that when the fix arrives the evidence is already in
- * place, and so no assertion below can quietly go back to being about a schema
- * that holds a single project.
+ * 801 is planted beside it with findings of its own, IN THE SAME GENERATION -
+ * because a generation is per project now, so the first run of each of them is
+ * generation 1, exactly as on a real installation.
+ *
+ * That arrangement is what makes the last assertion in this file the most
+ * important one in the suite. purgeRuns takes a project id and then deletes
+ * findings by generation; while the generation was the literal 1 everywhere and
+ * uv_finding carried no project column, purging ONE finished run of ONE project
+ * deleted every project's findings on the whole installation. It was reproduced
+ * against a real server exactly this way - two projects, one purge, zero
+ * findings left anywhere - and this case is where that stays reproduced.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
@@ -38,20 +40,30 @@ $NEIGHBOUR = uv_neighbour($PID);
     // is counting, and the two that did not have been scoped.
     $nb = uv_plant_neighbour($dbA, $PID);
     check('retention: a neighbouring project has findings of its own on record',
-        is_array($nb) && uv_neighbour_findings($dbA) === 2);
+        is_array($nb) && uv_neighbour_findings($dbA, $PID) === 2);
 
     $r = $store->startRun($PID, array('created_by' => 'alice'));
     $rid = (int) $r['run']['run_id'];
     $gen = (int) $r['run']['generation_id'];
     $store->writeManifest($rid, array(
         array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null)));
+    $seq = uv_run_seq($dbA, $rid);
+    // THE TWO PROJECTS REALLY DO SHARE A GENERATION. Asserted rather than
+    // assumed: every project-crossing claim in this file is worth nothing if
+    // the two happen to have landed in different generation numbers, and that
+    // is exactly how this suite used to arrange for its purges to look safe.
+    check('retention: the neighbour shares this project\'s generation, as two projects do',
+        (int) $nb['generation_id'] === $gen);
     $epoch = (int) $store->run($PID, $rid)['lease_epoch'];
     $store->claim($rid, 'w', $epoch, 1);
     $store->commitBatch($rid, 'w', $epoch, 0, array(
         'bytes' => 10,
-        'records' => array(array('ordinal' => 1, 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
+        'records' => array(array('ordinal' => 1, 'record_hash' => hash('sha256', 'R1', true),
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
-            'generation_id' => $gen, 'identity' => hash('sha256', 'x', true), 'seq' => 1,
+            'project_id' => $PID,
+            'generation_id' => $gen, 'identity' => hash('sha256', 'x', true),
+            'valid_from_seq' => $seq,
             'record_hash' => hash('sha256', 'R1', true), 'record_id_bin' => 'R1',
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
@@ -99,8 +111,28 @@ $NEIGHBOUR = uv_neighbour($PID);
     $left = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
         . ' WHERE run_id = ' . $rid, array());
     check('retention: taking its manifest rows with it', (int) $left[0][0] === 0);
-    $lf = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ' . $gen, array());
+    $lf = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $gen));
     check('retention: and its findings, so no orphan outlives its run',
         (int) $lf[0][0] === 0);
+
+    // THE ROOT CAUSE, REPRODUCED AGAINST A REAL SERVER.
+    //
+    // This is the check the whole two-project fixture was built for, and it was
+    // red before wave 4. The two projects hold the same generation number - the
+    // assertion near the top of this case says so - and purgeRuns deletes
+    // findings, candidates, groups and dimensions by generation. Without the
+    // project half of each of those four predicates, purging one finished run
+    // of project 800 takes project 801's findings with it: a report that empties
+    // itself because somebody else's scan aged out, which reads to the person
+    // holding it as their project having no problems left.
+    check('retention: purging one project leaves the neighbour\'s findings exactly where they were',
+        uv_neighbour_findings($dbA, $PID) === 2);
+    // And its run too. The findings are the disclosure-shaped half of the
+    // failure; a neighbouring run deleted out from under a live worker is the
+    // corruption-shaped half, and one predicate covers both.
+    $nbRun = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
+        . ' WHERE project_id = ?', array($NEIGHBOUR));
+    check('retention: and its run, which nothing about this purge concerns',
+        (int) $nbRun[0][0] === 1);
 }

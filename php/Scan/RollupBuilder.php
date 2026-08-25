@@ -54,7 +54,7 @@ final class RollupBuilder
      *
      * @return array{done:bool, rows:int, why:?string}
      */
-    public function step($runId, $epoch, $generationId, $limit = 1000)
+    public function step($projectId, $runId, $epoch, $generationId, $limit = 1000)
     {
         $limit = max(1, min(10000, (int) $limit));
         $st = $this->store->progressState($runId);
@@ -69,8 +69,8 @@ final class RollupBuilder
         // it to today's summary would count the same problem twice.
         $rows = $this->db->select('SELECT finding_id, host_form, reason_code, dag_key, check_type
             FROM ' . Schema::table('finding') . '
-            WHERE generation_id = ? AND active_slot = 1 AND finding_id > ?
-            ORDER BY finding_id LIMIT ' . $limit, [$generationId, $after]);
+            WHERE project_id = ? AND generation_id = ? AND active_slot = 1 AND finding_id > ?
+            ORDER BY finding_id LIMIT ' . $limit, [$projectId, $generationId, $after]);
 
         if (!$rows) {
             return ['done' => true, 'rows' => 0, 'why' => null];

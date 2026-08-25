@@ -683,8 +683,15 @@ namespace INSPIRE\UniversalValidator\Scan {
         return function ($id, $node) use ($n) {
             $out = [];
             for ($i = 0; $i < $n; $i++) {
-                $out[] = ['generation_id' => 1, 'identity' => hash('sha256', $id . $i, true),
-                          'seq' => 1, 'record_hash' => hash('sha256', $id, true),
+                // A finding names its project. The store refuses one that does
+                // not, because a row written with no project belongs to
+                // nothing: invisible to its own report and immune to its own
+                // project's retention. A stub that omitted it would keep this
+                // suite green over a producer that had forgotten to set it,
+                // which is how the constant generation survived five pilots.
+                $out[] = ['project_id' => 800, 'generation_id' => 1,
+                          'identity' => hash('sha256', $id . $i, true),
+                          'valid_from_seq' => 1, 'record_hash' => hash('sha256', $id, true),
                           'record_id_bin' => $id, 'host_form' => 'f', 'field' => 'x',
                           'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
                           'check_type' => 'required', 'reason_code' => 'required-blank'];

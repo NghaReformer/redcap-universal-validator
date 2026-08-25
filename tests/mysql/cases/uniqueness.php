@@ -8,7 +8,7 @@
  * scanning. Everything below is about the two ways that goes wrong: deciding
  * something the module cannot actually prove, and holding a group in memory.
  *
- * TWO PROJECTS, AND ONE THING THIS CASE STILL CANNOT ASSERT.
+ * TWO PROJECTS, IN ONE GENERATION.
  *
  * 900 is the project under test and 901 is planted beside it with candidates of
  * its own, so the group HMAC - which is keyed on the project id - is exercised
@@ -16,16 +16,20 @@
  * project publishes may contain one of the neighbour's records, and that is
  * asserted below.
  *
- * The neighbour's candidates sit in their OWN generation, and that is a
- * concession rather than a design. The finalizer scopes every statement it makes
- * by generation and by nothing else, and generations are handed out per
- * installation today, so two projects sharing one would make discover() and
- * status() answer about both of them at once. Putting the neighbour in the same
- * generation is therefore the assertion wave 4 gets to write - after B1 makes
- * the generation per project, `status($gen)['groups']` becomes a question with
- * one project's answer and this fixture can drop the separate generation. The
- * numbers themselves are allocated by uv_generation() rather than written out,
- * so that change is one function rather than six literals.
+ * The neighbour's candidates used to sit in a generation of their own, and that
+ * was a concession rather than a design: the finalizer scoped every statement it
+ * made by generation and by nothing else, so two projects sharing one made
+ * discover() and status() answer about both at once. Every statement in
+ * UniqueFinalizer carries a project predicate now, so the neighbour shares this
+ * project's generation - which is what two projects on a real installation do -
+ * and `status($GEN)['groups']` is a question with one project's answer.
+ *
+ * That is the whole of what this case exists to prove. A finalizer that
+ * regressed to filtering by generation alone would discover the neighbour's
+ * group, count it pending, and never settle - which is exactly what was
+ * reproduced against a real server: status() answered "not done, 1 blocking"
+ * over groups belonging to a different project, so the run never reached a
+ * terminal state and never released its project's slot.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
@@ -56,9 +60,9 @@ $NEIGHBOUR = uv_neighbour($PID);
         $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
         $v = ($version === 'null') ? 'NULL' : ("'" . $version . "'");
         $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (" . $GEN . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+            VALUES (" . $PID . ", " . $GEN . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
                     'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', '" . $field . "', " . $v . ")");
     };
 
@@ -71,30 +75,46 @@ $NEIGHBOUR = uv_neighbour($PID);
     $put('EF56', 'R6', 'hospno');
 
     // THE PROJECT NEXT DOOR, holding the same value on records with the same
-    // ids. The group hash is keyed on the project id, so this is the fixture
-    // that decides whether that keying is real: if the pid ever left the HMAC,
-    // 901's R1 and 900's R1 would land in one group and this module would
-    // report two participants at two different sites as duplicates of each
-    // other. Its own generation, for the reason in the file header.
-    $GEN_NB = uv_generation('the-neighbour');
-    $putNb = function ($group, $rec) use ($A, $GEN_NB, $KEY, $NEIGHBOUR) {
+    // ids, IN THE SAME GENERATION. Two things are being asked at once, and both
+    // used to be unaskable here.
+    //
+    // The first is the group hash, which is keyed on the project id: if the pid
+    // ever left the HMAC, 901's R1 and 900's R1 would land in one group and this
+    // module would report two participants at two different sites as duplicates
+    // of each other.
+    //
+    // The second is every statement the finalizer makes. It scoped by
+    // generation alone, and the neighbour was given a generation of its own so
+    // that could not show - which meant the fixture was arranging the isolation
+    // the code was missing. Sharing the generation is what makes discover(),
+    // nextUnfinished(), status() and sweep() have to say which project they
+    // mean.
+    $putNb = function ($group, $rec) use ($A, $GEN, $KEY, $NEIGHBOUR) {
         $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $NEIGHBOUR, $group, $KEY));
         $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $NEIGHBOUR, $rec, $KEY));
         $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (" . $GEN_NB . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+            VALUES (" . $NEIGHBOUR . ", " . $GEN . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
                     'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
     };
     $putNb('AB12', 'R1');
     $putNb('AB12', 'R2');
     $nbCands = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate')
-        . ' WHERE generation_id = ?', array($GEN_NB));
+        . ' WHERE project_id = ? AND generation_id = ?', array($NEIGHBOUR, $GEN));
     check('unique: a second project holds the same value on the same record ids',
         (int) $nbCands[0][0] === 2);
+    // In the SAME generation number as this project's, which is the whole point
+    // of the arrangement and is asserted rather than assumed - a fixture that
+    // drifted back to two generations would make every check below pass for the
+    // wrong reason.
+    $sameGen = $dbA->select('SELECT COUNT(DISTINCT generation_id) FROM '
+        . Schema::table('unique_candidate'));
+    check('unique: sharing this project\'s generation, as two projects on one server do',
+        (int) $sameGen[0][0] === 1);
     $shared = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate') . ' a
         JOIN ' . Schema::table('unique_candidate') . ' b ON a.group_hmac = b.group_hmac
-        WHERE a.generation_id = ? AND b.generation_id = ?', array($GEN, $GEN_NB));
+        WHERE a.project_id = ? AND b.project_id = ?', array($PID, $NEIGHBOUR));
     check('unique: and shares no group with this one, because the hash is keyed on the project',
         (int) $shared[0][0] === 0);
 
@@ -110,6 +130,24 @@ $NEIGHBOUR = uv_neighbour($PID);
         }
         return array('ok' => true, 'values' => $out, 'why' => null);
     };
+
+    // THE PROJECT IS A CONSTRUCTOR FACT. emit() used to read it as
+    // `isset($deps['pid']) ? $deps['pid'] : 0` at the one place it happened to
+    // need one, and a silent 0 is the same shape as the constant generation:
+    // every query in the file would then span the whole installation, and a
+    // wrong project is not distinguishable from a right one by anyone reading
+    // the report.
+    foreach (array('absent' => array(), 'zero' => array('pid' => 0)) as $what => $over) {
+        $refused = false;
+        try {
+            new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA,
+                array_merge(array('hmacKey' => $KEY, 'read' => $reader), $over));
+        } catch (\InvalidArgumentException $e) {
+            $refused = true;
+        }
+        check('unique: a finalizer built with a ' . $what . ' project is refused rather than '
+            . 'defaulted', $refused === true);
+    }
 
     $fin = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $reader));
 
@@ -135,15 +173,18 @@ $NEIGHBOUR = uv_neighbour($PID);
         $st['done'] === true && $st['published'] === 2 && $st['blocking'] === 0);
 
     $f = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ? AND reason_code = ?', array($GEN, 'duplicate'));
+        . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ?',
+        array($PID, $GEN, 'duplicate'));
     check('unique: one finding for every record in a duplicate group',
         (int) $f[0][0] === 5);
     $active = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ? AND active_slot = 1', array($GEN));
+        . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1',
+        array($PID, $GEN));
     check('unique: and all of them are visible once their group is published',
         (int) $active[0][0] === 5);
     $lonely = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . " WHERE generation_id = ? AND record_id_bin = 'R6'", array($GEN));
+        . " WHERE project_id = ? AND generation_id = ? AND record_id_bin = 'R6'",
+        array($PID, $GEN));
     check('unique: a record whose value nobody shares is not reported',
         (int) $lonely[0][0] === 0);
 
@@ -152,15 +193,16 @@ $NEIGHBOUR = uv_neighbour($PID);
     // supply: a staged row has no active slot, and MySQL counts every NULL in a
     // unique index as distinct.
     $A->query('UPDATE ' . Schema::table('unique_group')
-        . " SET phase = 'emitting', emit_cursor = 0 WHERE generation_id = " . $GEN
-        . " AND phase = 'published'");
+        . " SET phase = 'emitting', emit_cursor = 0 WHERE project_id = " . $PID
+        . ' AND generation_id = ' . $GEN . " AND phase = 'published'");
     $again = 0;
     while ($again++ < 50) {
         $r = $fin->step($GEN, 2);
         if ($r['done']) break;
     }
     $f2 = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ? AND reason_code = ?', array($GEN, 'duplicate'));
+        . ' WHERE project_id = ? AND generation_id = ? AND reason_code = ?',
+        array($PID, $GEN, 'duplicate'));
     check('unique: re-emitting a group writes the same rows rather than a second set',
         (int) $f2[0][0] === 5);
 
@@ -176,9 +218,9 @@ $NEIGHBOUR = uv_neighbour($PID);
         $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
         $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
         $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (" . $gen2 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+            VALUES (" . $PID . ", " . $gen2 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
                     'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
     };
     $put2('SAME', 'X1');
@@ -203,7 +245,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('unique: and finalization still settles rather than looping',
         $st2['done'] === true);
     $f3 = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ?', array($GEN2));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN2));
     check('unique: no duplicate verdict is emitted for a group it could not decide',
         (int) $f3[0][0] === 0);
 
@@ -214,9 +256,9 @@ $NEIGHBOUR = uv_neighbour($PID);
         $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
         $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
         $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (" . $gen3 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+            VALUES (" . $PID . ", " . $gen3 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
                     'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', NULL)");
     };
     $put3('Q', 'Y1');
@@ -233,7 +275,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('unique: values that could not be re-read block the group rather than confirming it',
         $fin3->status($GEN3)['blocking'] === 1);
     $f4 = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ?', array($GEN3));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN3));
     check('unique: and nothing is reported about it', (int) $f4[0][0] === 0);
 
     // -- a record edited while its group was being decided --------------------
@@ -243,9 +285,9 @@ $NEIGHBOUR = uv_neighbour($PID);
         $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
         $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
         $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
-            (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (" . $gen4 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+            VALUES (" . $PID . ", " . $gen4 . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
                     'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', 'hospno', '" . $ver . "')");
     };
     $put4('M', 'Z1', '100');
@@ -256,10 +298,11 @@ $NEIGHBOUR = uv_neighbour($PID);
         'read' => $reader, 'versions' => $moving));
     $fin4->discover($GEN4, 10);
     $before = $dbA->select('SELECT candidate_epoch FROM ' . Schema::table('unique_group')
-        . ' WHERE generation_id = ?', array($GEN4));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN4));
     $fin4->step($GEN4, 10);
     $afterE = $dbA->select('SELECT candidate_epoch, phase, verify_cursor FROM '
-        . Schema::table('unique_group') . ' WHERE generation_id = ?', array($GEN4));
+        . Schema::table('unique_group') . ' WHERE project_id = ? AND generation_id = ?',
+        array($PID, $GEN4));
     check('unique: a record edited mid-check restarts its group at a new epoch',
         (int) $afterE[0][0] === (int) $before[0][0] + 1);
     check('unique: from the beginning, not from where it stopped',
@@ -267,13 +310,14 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     // Staged rows from an abandoned attempt are unreachable and swept in pages.
     $A->query('INSERT INTO ' . Schema::table('finding') . '
-        (generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
+        (project_id, generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
          record_id_bin, host_form, field, rule_source_id, rule_revision, rule_ord,
          check_type, reason_code, group_hmac, stage_epoch)
-        SELECT ' . $GEN4 . ", UNHEX(SHA2('stale', 256)), 1, NULL, record_hash, record_id_bin,
-               'f', 'hospno', 'r1', '" . str_repeat('c', 64) . "', 0, 'unique', 'duplicate',
-               group_hmac, 1
-        FROM " . Schema::table('unique_candidate') . ' WHERE generation_id = ' . $GEN4 . ' LIMIT 1');
+        SELECT ' . $PID . ', ' . $GEN4 . ", UNHEX(SHA2('stale', 256)), 1, NULL, record_hash,
+               record_id_bin, 'f', 'hospno', 'r1', '" . str_repeat('c', 64) . "', 0, 'unique',
+               'duplicate', group_hmac, 1
+        FROM " . Schema::table('unique_candidate') . ' WHERE project_id = ' . $PID
+        . ' AND generation_id = ' . $GEN4 . ' LIMIT 1');
     check('unique: rows from an abandoned pass are swept', $fin4->sweep($GEN4, 100) === 1);
     check('unique: and sweeping again finds nothing', $fin4->sweep($GEN4, 100) === 0);
 
@@ -289,20 +333,20 @@ $NEIGHBOUR = uv_neighbour($PID);
         for ($i = 1; $i <= $n; $i++) {
             $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, 'ONE', $KEY));
             $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, 'B' . $i, $KEY));
-            $rows[] = "(" . $gen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g
+            $rows[] = "(" . $PID . ", " . $gen . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g
                 . "'), 'project', UNHEX('" . $h . "'), 'B" . $i . "', 1, 1, 'f', 'hospno', NULL)";
             if (count($rows) >= 500) {
                 $A->query('INSERT INTO ' . Schema::table('unique_candidate') . '
-                    (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
-                     record_hash, record_id_bin, event_id, instance, host_form, field,
+                    (project_id, generation_id, rule_source_id, rule_revision, group_hmac,
+                     scope_key, record_hash, record_id_bin, event_id, instance, host_form, field,
                      version_scanned) VALUES ' . implode(',', $rows));
                 $rows = array();
             }
         }
         if ($rows) {
             $A->query('INSERT INTO ' . Schema::table('unique_candidate') . '
-                (generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
-                 record_hash, record_id_bin, event_id, instance, host_form, field,
+                (project_id, generation_id, rule_source_id, rule_revision, group_hmac,
+                 scope_key, record_hash, record_id_bin, event_id, instance, host_form, field,
                  version_scanned) VALUES ' . implode(',', $rows));
         }
     };
@@ -327,7 +371,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('unique: a 20,000-record group finalizes', $finB->status($BIG)['done'] === true
         && $finB->status($BIG)['published'] === 1);
     $bigF = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-        . ' WHERE generation_id = ?', array($BIG));
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $BIG));
     check('unique: reporting every record in it', (int) $bigF[0][0] === 20000);
     // 400x the candidates. If anything accumulated a group, this is where it
     // would show; the page size is the only thing that sets the footprint.

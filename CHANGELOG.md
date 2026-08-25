@@ -207,6 +207,77 @@ is seeded past the generations those runs used. `docs/INSTALL.md` says all of
 this before an administrator reaches the switch. The findings are re-derivable by
 running a scan; the corruption was not detectable by a reader.
 
+**The generation was the literal 1, for every run of every project.** Three
+places defaulted it and no caller ever supplied one, so the second scan of
+anything re-inserted finding identities that were already active, the unique key
+refused them, the whole batch rolled back, and the worker handed the records
+back and tried again. Forty times, identically, in the last pilot - with no exit,
+because the attempt counter that was supposed to give up was only incremented
+inside the transaction that had just rolled back.
+
+There is no default now. The store allocates a per-project sequence in one
+statement, atomic under the row lock on that project's counter, and the context
+builder throws if a caller does not say which generation it means. `null` is a
+legitimate value and means planning: starting a run needs the rule list before a
+run exists to have a generation, so it asks for a context with no evaluator
+rather than inventing a number.
+
+**And the four tables the scan writes to had no project column at all.** Every
+query over them filtered by generation alone, and the generation was the same
+for everyone. Reproduced against a real server, three ways: one project's
+retention purge deleted every project's findings on the installation; one
+project's summary was built from another project's findings and carried its
+instrument and Data Access Group names; and the duplicate finalizer's keyset
+cursor was installation-wide, so once any project had discovered a group whose
+hash sorted high, a different project's first run discovered *none of its own*
+and then reported itself finished, having published the neighbour's group under
+its own name. A missed duplicate presented as a clean result.
+
+They carry one now, and all thirty-one predicates over them use it. Because the
+column has to keep `DEFAULT 0` permanently - that is what let it be added to a
+populated table - the store refuses a row that arrives without one rather than
+writing something that belongs to nothing.
+
+**Two hidden options ticked on one checkbox were the same finding twice.** A
+`@UVCHOICES` rule on a checkbox emits one finding per ticked hidden code, all at
+the same record, event, instance, form and field, under the same rule and the
+same reason - so the identity, which hashed exactly those seven facts, could not
+tell them apart. The unique key refused the second and the batch carrying both
+was rolled back entire. On a FIRST scan of a fresh project, with no prior run
+involved.
+
+The identity now carries the ticked choice code as a within-location
+discriminator. Deliberately not an ordinal: a counter renumbers every later
+finding when an earlier one is fixed, so a re-scan would close and reopen rows
+that nothing had changed, which is the one property the identity exists to
+provide.
+
+**And nothing ever closed a record's earlier findings.** A record edited during a
+run is requeued, re-examined, and produces the same violation again - so the
+commit inserted identities its own first pass had already written, and the same
+refusal followed. Committing a record's evidence now replaces that record's
+active evidence, in the same transaction, after the fences and before any
+insert: after, so a worker that has been taken over cannot close a live worker's
+findings; inside, so a batch that rolls back does not leave the previous
+evidence closed and silently empty the report; before, so the unique key sees
+only the new rows as active. By record rather than by identity, because a
+violation FIXED between the two readings produces no finding the second time,
+and closing only what came back would leave corrected data showing as broken.
+
+**The in-memory store now models both constraints.** It was one line -
+`$this->findings[] = $f;` - with no unique key, no column widths and no NOT
+NULL, so every mocked test passed on rows a real MySQL rejects. That is how a
+scan which could not commit a second batch shipped with 22 mocked suites and 285
+real-database checks all green.
+
+The database suite could not see it either: every one of those 285 checks ran in
+a schema holding exactly one project, which is the single shape in which a
+statement that scopes by project and one that does not give the same answer. It
+now plants a neighbouring project in the same generation - as two projects on a
+real server have - and asserts what that makes visible, including the one that
+was red before this release: purging one project leaves the other's findings
+exactly where they were.
+
 **Findings filed against the wrong rule.** scanPlan() builds its live rule list
 with the keys preserved from the full list, because a finding cites its rule by
 ordinal - it skips config-broken rules, and the per-instrument-rights gate

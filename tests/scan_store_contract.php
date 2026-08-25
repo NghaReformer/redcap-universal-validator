@@ -80,14 +80,25 @@ function storeContract(callable $newStore, $label)
         $s->claim($runId, 'w2', $epoch - 1, 2) !== []);
 
     // -- committing ---------------------------------------------------------
+    // EVERY ROW NAMES ITS PROJECT AND ITS GENERATION, and the record rows carry
+    // their hash. Both are new contract rather than fixture tidying: a finding
+    // with no project belongs to nothing - invisible to its own report and
+    // immune to its own project's retention - and without the record hash the
+    // store cannot close that record's previous evidence in the transaction
+    // that writes the new evidence, which is what wedged every re-examined
+    // record before this release.
+    $gen = (int) $run['generation_id'];
     $batch = ['bytes' => 20, 'records' => [], 'findings' => []];
     foreach ($claim as $c) {
-        $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE];
-        $batch['findings'][] = ['generation_id' => 1, 'host_form' => 'fa', 'field' => 'x',
+        $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                               'state' => ScanStore::REC_DONE];
+        $batch['findings'][] = ['project_id' => 700, 'generation_id' => $gen,
+                                'host_form' => 'fa', 'field' => 'x',
                                 'check_type' => 'required', 'reason_code' => 'required-blank',
                                 'record_id_bin' => $c['id_bin'],
                                 'identity' => hash('sha256', 'f' . $c['ordinal'], true),
-                                'seq' => 1, 'record_hash' => $c['hash'],
+                                'valid_from_seq' => (int) $run['run_seq'],
+                                'record_hash' => $c['hash'],
                                 'rule_source_id' => 'r1',
                                 'rule_revision' => str_repeat('c', 64)];
     }
