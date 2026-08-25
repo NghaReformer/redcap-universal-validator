@@ -67,9 +67,9 @@ final class ScanCapabilities
             if ($walk['state'] === self::OK) return $walk;
         }
 
-        // Fallback: a keyset walk of redcap_data restricted to the record-id
-        // field. Bounded, but it needs both a usable query API and a known
-        // record-id field.
+        // Fallback: a keyset walk of the project's own data table, restricted
+        // to the record-id field. Bounded, but it needs both a usable query API
+        // and a known record-id field.
         $canQuery = self::canQuery($module);
         if ($canQuery['state'] !== self::OK) {
             return self::no('no paged record-list source, and ' . $canQuery['why']);
@@ -345,6 +345,59 @@ final class ScanCapabilities
         }
     }
 
+    /**
+     * The project's data table — resolved the same way the WALK resolves it.
+     *
+     * THE GATE MUST PROBE THE TABLE THE WALK WILL READ. This probe used to name
+     * `redcap_data` as a literal while RecordManifestSource::dataTable() read
+     * redcap_projects.data_table and accepted redcap_data[0-9]*. On an
+     * installation with per-project data tables the two disagreed, and because
+     * the probe deliberately tolerates an empty result, the usual outcome was
+     * not a wrong refusal but a VACUOUS PASS: the gate proved a walk of a table
+     * this project will never touch, on exactly the installations the
+     * per-project tables exist for. "Prove the walk, do not infer it" is the
+     * sentence above recordEnumeration(); a probe of the wrong table infers.
+     *
+     * The resolution is DELEGATED rather than copied, because two copies of a
+     * table-name rule are what produced the disagreement in the first place.
+     * The delegation is guarded because this file must keep loading on its own:
+     * tests/scan_capabilities_php.php requires ScanCapabilities.php and nothing
+     * else, and UniversalValidator.php requires this file BEFORE the Scan/*
+     * classes. class_exists() is called with autoload disabled on purpose — the
+     * question is whether the module's own require block has run, and a probe
+     * is not a place to trigger somebody else's autoloader.
+     *
+     * `redcap_data` remains the documented fallback, which is what shipped and
+     * what REDCap still installs by default. If it is the wrong answer here the
+     * probe below fails against it and says so, which is the honest outcome:
+     * the fallback cannot manufacture a pass.
+     *
+     * Both answers are safe to interpolate, and only for that reason are they
+     * interpolated: dataTable() allowlists the server's value against
+     * /^redcap_data[0-9]*\z/ and returns null otherwise, and the fallback is a
+     * literal in this file. A table name can never be a bound parameter, which
+     * is what makes the allowlist the whole of the defence — the same argument
+     * spelled out above logEventTable().
+     */
+    private static function dataTableFor($module, $pid)
+    {
+        if (class_exists('INSPIRE\UniversalValidator\Scan\RecordManifestSource', false)
+                && class_exists('INSPIRE\UniversalValidator\Scan\ModuleDb', false)
+                && is_object($module) && is_callable([$module, 'query'])) {
+            try {
+                $t = Scan\RecordManifestSource::dataTable(new Scan\ModuleDb($module), $pid);
+                // null means the walk could not recognise a data table either.
+                // Falling back to the default still asks a real question of the
+                // database, and a wrong answer is a refusal rather than a pass.
+                if (is_string($t) && $t !== '') return $t;
+            } catch (\Throwable $e) {
+                // A resolution that fails is not a capability answer; the probe
+                // below is. Fall through to the default and let it decide.
+            }
+        }
+        return 'redcap_data';
+    }
+
     private static function recordIdField($pid)
     {
         try {
@@ -427,19 +480,40 @@ final class ScanCapabilities
         }
     }
 
-    /** One bounded keyset read of redcap_data, to prove the fallback walk works. */
+    /**
+     * One bounded keyset read of the project's OWN data table, to prove the
+     * fallback walk works.
+     *
+     * The record-id field is not re-checked here: recordEnumeration() refuses
+     * before it calls this, and a second guard that no caller can reach is the
+     * shape this whole review was written about.
+     *
+     * BOTH ANSWERS NAME THE RESOLVED TABLE. An operator on a per-project-table
+     * installation used to be told "the redcap_data keyset walk failed" about a
+     * table their project does not use, which sends the investigation to the
+     * wrong place before it starts.
+     */
     private static function probeKeysetWalk($module, $pid)
     {
-        $pk = self::recordIdField($pid);
+        $tbl = self::dataTableFor($module, $pid);
+        $pk  = self::recordIdField($pid);
         try {
             $q = $module->query(
-                'SELECT record FROM redcap_data WHERE project_id = ? AND field_name = ? '
+                'SELECT record FROM ' . $tbl . ' WHERE project_id = ? AND field_name = ? '
                 . 'ORDER BY record LIMIT 1', [$pid, $pk]);
-            if (!$q) return self::no('the redcap_data keyset walk returned nothing');
+            // ONLY false and null are failures. A framework whose query() hands
+            // back a plain ARRAY answers an empty result set as [], which is
+            // falsy - so `if (!$q)` refused a walk that had just worked, and the
+            // two transports gave opposite answers about the same database.
+            // That is the by-value/by-cursor confusion that produced H17, in the
+            // same file and one function along.
+            if ($q === false || $q === null) {
+                return self::no('the ' . $tbl . ' keyset walk returned nothing');
+            }
             self::fetchRow($q);      // an empty project is legitimate; the QUERY working is the point
-            return self::yes('redcap_data keyset walk (probed)');
+            return self::yes($tbl . ' keyset walk (probed)');
         } catch (\Throwable $e) {
-            return self::no('the redcap_data keyset walk failed: ' . get_class($e));
+            return self::no('the ' . $tbl . ' keyset walk failed: ' . get_class($e));
         }
     }
 }

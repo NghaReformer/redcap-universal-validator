@@ -473,6 +473,176 @@ namespace {
             (memory_get_usage() - $before) < 4 * 1024 * 1024);
     }
 
+    /* =====================================================================
+     * C-10  THE GATE PROBES THE TABLE THE WALK READS
+     *
+     * ScanCapabilities decides whether a bounded record walk is possible;
+     * RecordManifestSource performs it. They are separate classes with separate
+     * table-name rules, and for the whole of the durable scan's life those
+     * rules disagreed: the gate said `FROM redcap_data` as a literal while the
+     * walk read redcap_projects.data_table and accepted redcap_data[0-9]*.
+     *
+     * The failure this produced is the quiet one, not the loud one. REDCap
+     * keeps redcap_data present as the default even where per-project tables
+     * are in use, and the keyset probe deliberately tolerates an empty result
+     * ("the QUERY working is the point"), so on a project whose data lives in
+     * redcap_data7 the gate proved a walk of a table that project never
+     * touches, and answered available. A gate that passes because SOME table
+     * could be read is the same shape as the gate that passed because two
+     * prerequisites existed — the shape ScanCapabilities' own docblock was
+     * written against.
+     *
+     * The property asserted is AGREEMENT, not either side's implementation:
+     * both are driven over one database double, and the table each NAMES IN
+     * ITS OWN SQL is compared. That survives any future change to how either
+     * resolves the name, which is what the two drifting copies did not.
+     *
+     * THE SCAN CLASSES ARE REQUIRED HERE, AT THE END, DELIBERATELY. Everything
+     * above runs with ScanCapabilities.php loaded alone, which is the other
+     * half of the contract: the file is required by UniversalValidator.php
+     * BEFORE php/Scan/*, so its resolution of the data table is guarded by
+     * class_exists() and falls back to the documented default when the Scan
+     * classes are not loaded. C-01 through C-09 exercise that fallback; this
+     * block exercises the delegation.
+     * ===================================================================== */
+    require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
+
+    /**
+     * A database that answers by STATEMENT AND PARAMETER.
+     *
+     * The canned-needle double above matches on SQL text alone, and it cannot
+     * express this fixture: both sides ask information_schema for a table's
+     * columns with the table name as a BOUND PARAMETER, so "redcap_record_list
+     * is absent but redcap_data7 is present" is invisible to a substring match.
+     */
+    class GateDb {
+        /** What redcap_projects.data_table holds; null means the column does not exist. */
+        public $dataTable = null;
+        /** table name => its columns. A table not listed here does not exist. */
+        public $tables = [];
+        /** table name => how many record rows it answers a walk with. */
+        public $rows = [];
+        /** Every statement, so the table each side named is observable. */
+        public $sql = [];
+        public function query($sql, $params = []) {
+            $this->sql[] = $sql;
+            if (strpos($sql, 'information_schema.tables') !== false) {
+                $t = isset($params[0]) ? $params[0] : '';
+                return isset($this->tables[$t]) ? [[1]] : [];
+            }
+            if (strpos($sql, 'information_schema.columns') !== false) {
+                $t = isset($params[0]) ? $params[0] : '';
+                if (!isset($this->tables[$t])) return [];
+                $out = [];
+                foreach ($this->tables[$t] as $c) $out[] = [$c];
+                return $out;
+            }
+            if (strpos($sql, 'data_table') !== false) {
+                // An older build has no such column, and a failed query is an
+                // answer where a version number would only be a claim.
+                if ($this->dataTable === null) throw new \RuntimeException('Unknown column data_table');
+                return [[$this->dataTable]];
+            }
+            if (preg_match('/FROM\s+([a-z0-9_]+)/i', $sql, $m)) {
+                $count = isset($this->rows[$m[1]]) ? $this->rows[$m[1]] : 0;
+                $out = [];
+                for ($i = 0; $i < $count; $i++) $out[] = ['R' . $i];
+                return $out;
+            }
+            return [];
+        }
+    }
+
+    /** The table a side named in its record-listing statement, from its own SQL. */
+    function tableWalked(array $sql) {
+        $seen = null;
+        foreach ($sql as $s) {
+            if (preg_match('/SELECT\s+record\s+FROM\s+([a-z0-9_]+)\s+WHERE\s+project_id/i', $s, $m)) {
+                $seen = $m[1];
+            }
+        }
+        return $seen;
+    }
+
+    {
+        $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+
+        // F1  a per-project data table. redcap_data is NOT among this server's
+        //     tables at all, which is the mirror case: the gate must neither
+        //     refuse because the default table is empty nor pass because it
+        //     read something else.
+        $shard = new \GateDb();
+        $shard->dataTable = 'redcap_data7';
+        $shard->tables = ['redcap_data7' => ['project_id', 'record', 'field_name']];
+        $shard->rows   = ['redcap_data7' => 1];
+        $gate = $C::recordEnumeration($shard, PID);
+        $gateSql = $shard->sql;
+        $shard->sql = [];
+        $walk = $MS::open(new \INSPIRE\UniversalValidator\Scan\ModuleDb($shard), PID,
+            ['pk' => 'record_id']);
+        $walkSql = $shard->sql;
+
+        check('C-10: a sharded project can be enumerated', $gate['state'] === $OK);
+        check('C-10: and the walk agrees it can be opened', $walk['ok'] === true);
+        check('C-10: the gate and the walk name the SAME table',
+            tableWalked($gateSql) !== null && tableWalked($gateSql) === tableWalked($walkSql));
+        check('C-10: which is this project\'s table, not the default',
+            tableWalked($gateSql) === 'redcap_data7');
+        check('C-10: and the answer names it, so a failure sends the reader to the right table',
+            strpos((string) $gate['via'], 'redcap_data7') === 0);
+        // The assertion that fails on the hardcoded literal even if the one
+        // above were somehow satisfied: no statement may name the default.
+        $namedDefault = 0;
+        foreach ($gateSql as $s) if (preg_match('/FROM\s+redcap_data\b(?![0-9])/i', $s)) $namedDefault++;
+        check('C-10: no probe statement touches the default table on this server',
+            $namedDefault === 0);
+
+        // F2  CONTROL: no data_table column at all, which is the older build.
+        //     Both sides fall back to redcap_data, and must still agree.
+        $plain = new \GateDb();
+        $plain->tables = ['redcap_data' => ['project_id', 'record', 'field_name']];
+        $plain->rows   = ['redcap_data' => 1];
+        $g2 = $C::recordEnumeration($plain, PID);
+        $g2Sql = $plain->sql;
+        $plain->sql = [];
+        $w2 = $MS::open(new \INSPIRE\UniversalValidator\Scan\ModuleDb($plain), PID,
+            ['pk' => 'record_id']);
+        check('C-10 control: a build with no data_table column still enumerates',
+            $g2['state'] === $OK && $w2['ok'] === true);
+        check('C-10 control: on the documented default, both sides',
+            tableWalked($g2Sql) === 'redcap_data' && tableWalked($plain->sql) === 'redcap_data');
+
+        // F3  CONTROL: the preferred source. Neither side should reach a data
+        //     table at all, and they must agree about that too.
+        $idx = new \GateDb();
+        $idx->tables = ['redcap_record_list' => ['project_id', 'record', 'dag_id'],
+                        'redcap_data'        => ['project_id', 'record', 'field_name']];
+        $idx->rows   = ['redcap_record_list' => 1, 'redcap_data' => 1];
+        $g3 = $C::recordEnumeration($idx, PID);
+        $g3Sql = $idx->sql;
+        $idx->sql = [];
+        $w3 = $MS::open(new \INSPIRE\UniversalValidator\Scan\ModuleDb($idx), PID,
+            ['pk' => 'record_id']);
+        check('C-10 control: the record index is preferred by both sides',
+            tableWalked($g3Sql) === 'redcap_record_list'
+            && tableWalked($idx->sql) === 'redcap_record_list');
+        check('C-10 control: and both accept it', $g3['state'] === $OK && $w3['ok'] === true);
+
+        // F4  ONE BEHAVIOUR, TWO TRANSPORTS. GateDb returns plain arrays, so an
+        //     empty result set arrives as [] - which is falsy. `if (!$q)` read
+        //     that as a broken query and refused a walk that had just worked,
+        //     while the cursor shape (FakeResult, above) was accepted. Same
+        //     database, opposite answers, decided by the framework's return
+        //     type. An empty project is legitimate here; only false and null
+        //     are failures.
+        $emptyProject = new \GateDb();
+        $emptyProject->tables = ['redcap_data' => ['project_id', 'record', 'field_name']];
+        $emptyProject->rows   = ['redcap_data' => 0];
+        check('C-10: an array-shaped empty result is a working query, not a broken one',
+            $C::recordEnumeration($emptyProject, PID)['state'] === $OK);
+    }
+
     echo "scan_capabilities_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

@@ -154,6 +154,194 @@ class ScanPageView
                 'fenced' => $fenced, 'clean' => $clean];
     }
 
+    /**
+     * How a phase reads to somebody who did not design this.
+     *
+     * Deliberately not the stored value. "unique-finalize" is a correct name for
+     * a state machine and an alarming one for a data manager watching a progress
+     * bar.
+     *
+     * THIS TABLE LIVES HERE AND NOWHERE ELSE. It was a literal inside
+     * js/scan.js, which meant PHP and JavaScript each held half of the same
+     * vocabulary and neither knew when the other changed. The page now renders
+     * from this table and hands the same table to the client, so a new phase is
+     * one entry rather than two edits a reviewer has to notice are a pair. The
+     * recorded lesson is the v1.6.0 rounds, where the reviews kept failing on
+     * callers of a shared helper that had not been converted with it.
+     */
+    public static function phaseLabels()
+    {
+        return [
+            Scan\ScanPhase::PLANNING   => 'Listing the records to check',
+            Scan\ScanPhase::SCANNING   => 'Checking records',
+            Scan\ScanPhase::CATCH_UP   => 'Checking what changed while it ran',
+            Scan\ScanPhase::UNIQUE     => 'Looking for duplicate values',
+            Scan\ScanPhase::ROLLUP     => 'Building the summary',
+            Scan\ScanPhase::CANCELLING => 'Stopping',
+            Scan\ScanPhase::TERMINAL   => 'Finished',
+        ];
+    }
+
+    /**
+     * One phase, in words. An unrecognised phase falls back to its stored name:
+     * a state-machine value on screen is ugly, and an empty label where the
+     * phase should be is a page that looks broken.
+     */
+    public static function phaseLabel($phase)
+    {
+        $m = self::phaseLabels();
+        $k = (string) $phase;
+        return isset($m[$k]) ? $m[$k] : $k;
+    }
+
+    /**
+     * What a finished run may be said to have achieved.
+     *
+     * Every one of these is a different sentence on purpose. The whole rebuild
+     * exists because one word - "complete" - was used for a run that examined
+     * everything and a run that examined nothing.
+     */
+    public static function coverageSentences()
+    {
+        return [
+            Scan\ScanOutcome::FENCED      => 'Every record was checked, including changes made while it ran.',
+            Scan\ScanOutcome::MANIFEST    => 'Every record on the opening list was checked. This server '
+                                           . 'cannot prove the project did not change during the scan.',
+            Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
+                                           . 'picture of the project.',
+            Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',
+        ];
+    }
+
+    /**
+     * The sentence for a coverage value this build does not know.
+     *
+     * Saying nothing would be a blank certificate over a finished run, and that
+     * is the one outcome this module refuses. Naming the unrecognised value
+     * gives whoever has to fix it a thread to pull. {value} is substituted by
+     * both halves of the page - PHP here, JavaScript in js/scan.js - so the two
+     * cannot word it differently.
+     */
+    const COVERAGE_UNKNOWN = 'This scan finished, but this page does not recognise the result it '
+        . 'recorded ({value}). Treat it as incomplete and run it again.';
+
+    /**
+     * Stated even on a run whose coverage was complete: the report the reader
+     * holds is not the report the run produced.
+     */
+    const DETAIL_TRUNCATED = 'Some findings were not kept, because the scan reached the limit this '
+        . 'project allows.';
+
+    /**
+     * The completion sentence for one finished run, built as ONE string.
+     *
+     * Built rather than appended to whatever is already on screen. The client
+     * used to write the coverage sentence into the node and then concatenate the
+     * truncation note onto its text, so an unmapped coverage produced a sentence
+     * that began with a space and had no subject.
+     */
+    public static function coverageSentence($coverage, $detail = null)
+    {
+        $m = self::coverageSentences();
+        $k = (string) $coverage;
+        $s = isset($m[$k]) ? $m[$k] : str_replace('{value}', $k, self::COVERAGE_UNKNOWN);
+        if ((string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED) {
+            $s .= ' ' . self::DETAIL_TRUNCATED;
+        }
+        return $s;
+    }
+
+    /** The vocabulary the browser half renders from, so it holds no copy of its own. */
+    public static function labels()
+    {
+        return [
+            'phase'           => self::phaseLabels(),
+            'coverage'        => self::coverageSentences(),
+            'coverageUnknown' => self::COVERAGE_UNKNOWN,
+            'truncated'       => self::DETAIL_TRUNCATED,
+        ];
+    }
+
+    /**
+     * Percentage, or null when the total is not knowable yet.
+     *
+     * Null is not zero, and the distinction is the whole point: a bar sitting at
+     * 0% for the length of a planning phase reads as a scan that has stalled,
+     * and people stop scans that look stalled.
+     */
+    public static function pct($done, $total)
+    {
+        $total = (int) $total;
+        if ($total <= 0) return null;
+        $p = (int) floor(((int) $done / $total) * 100);
+        if ($p < 0) return 0;
+        return $p > 100 ? 100 : $p;
+    }
+
+    /**
+     * The panel's text BEFORE any script runs.
+     *
+     * pages/scan.php has claimed since it was written that it "renders the state
+     * before any script runs, so somebody with scripting disabled still sees
+     * whether their scan is going rather than an empty box". It did not: every
+     * value span was emitted empty and the bar was hardcoded to zero, so a
+     * reader without JavaScript got exactly the empty box the comment promised
+     * they would not, under a progress bar that read as a stalled run. This
+     * produces the same four strings js/scan.js produces, from the same status
+     * array, so the first paint and the first poll agree.
+     *
+     * @param  ?array $status a ScanService::status() array, or null when there is
+     *                no run or its status could not be read
+     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string, active:bool}
+     */
+    public static function panelPrefill($status)
+    {
+        if (!is_array($status) || empty($status['ok'])) {
+            return ['phase' => '', 'counts' => '', 'found' => '', 'pct' => null,
+                    'done' => null, 'active' => false];
+        }
+
+        $total = isset($status['total']) ? (int) $status['total'] : 0;
+        $done  = isset($status['done']) ? (int) $status['done'] : 0;
+        $pct   = self::pct($done, $total);
+        $found = isset($status['findings']) ? (int) $status['findings'] : 0;
+
+        return [
+            'phase'  => self::phaseLabel(isset($status['phase']) ? $status['phase'] : ''),
+            'counts' => $total > 0
+                ? ($done . ' of ' . $total . ' records' . ($pct === null ? '' : '  (' . $pct . '%)'))
+                : 'Preparing',
+            'found'  => $found === 0 ? 'Nothing found yet'
+                : ($found . ' finding' . ($found === 1 ? '' : 's') . ' so far'),
+            'pct'    => $pct,
+            'done'   => empty($status['terminal']) ? null
+                : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
+                                         isset($status['detail']) ? $status['detail'] : null),
+            'active' => !empty($status['active']),
+        ];
+    }
+
+    /**
+     * Is this a name the page may print inside a <script> block?
+     *
+     * The framework's JavaScript module object name is not project data and not
+     * user input - External Modules derives it from the module's installed
+     * directory - so this is not an escaping problem, and escaping cannot solve
+     * it: htmlspecialchars on an expression leaves an expression that no longer
+     * evaluates. It is a missing input contract. A name that is not a dotted
+     * identifier becomes a syntax error inside the block that prints it, and a
+     * panel that fails with a syntax error explains nothing to the person who
+     * has to fix it - which is how the first pilot's Start button failed, by a
+     * different route.
+     *
+     * The length cap is there so a pathological value cannot bloat the page.
+     */
+    public static function isJsIdentifierPath($name)
+    {
+        if (!is_string($name) || $name === '' || strlen($name) > 200) return false;
+        return (bool) preg_match('/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/', $name);
+    }
+
     /** The notice, rendered wherever a scan would otherwise have been started. */
     public static function unavailable($extra = '')
     {
