@@ -1510,6 +1510,52 @@ namespace {
         }
         check('migrate: a database that refuses does not break saving the settings',
             $threw === false);
+
+        // AND THE CASE THE ONE ABOVE CANNOT REACH.
+        //
+        // $boom throws on EVERY query, so Schema::migrate() - which catches
+        // internally and reports ok=false - returns before installScanSchema()
+        // gets anywhere near the block that provisions the worker slots. The
+        // check above is therefore green whether or not the guard around that
+        // block works, and for most of this module's life it did not: the catch
+        // was written `catch (Throwable)` inside `namespace INSPIRE\
+        // UniversalValidator`, which names a class that does not exist and so
+        // never matched. A test whose name states a guarantee it cannot
+        // exercise is worse than no test, because it stops anyone looking.
+        //
+        // This one throws ONLY on the worker-slot write, so the migration
+        // succeeds, execution reaches the provisioning block, and the guard is
+        // the only thing between the failure and the administrator's save.
+        $slotBoom = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+            public function query($sql, $params = []) {
+                // The slot table's own DDL must still succeed - otherwise
+                // migrate() fails, catches internally, and returns before the
+                // provisioning block, which is precisely the blind spot this
+                // test exists to cover.
+                if (strpos($sql, 'scan_worker_slot') !== false
+                        && strpos($sql, 'CREATE TABLE') === false) {
+                    throw new \RuntimeException('slot table write refused');
+                }
+                return parent::query($sql, $params);
+            }
+        };
+        $slotBoom->systemSettings['scan-system-enable-durable'] = '1';
+        $threw2 = false;
+        try {
+            $slotBoom->redcap_module_save_configuration(null);
+        } catch (\Throwable $e) {
+            $threw2 = true;
+        }
+        check('migrate: a slot provisioning that throws AFTER a good migration '
+            . 'does not break saving the settings either', $threw2 === false);
+        // Swallowed, but not silent: an operator who later meets "the server is
+        // busy" over an empty slot pool must be able to find out why.
+        $logged = false;
+        foreach ($slotBoom->logCalls as $entry) {
+            if ($entry[0] === 'scan-schema-install-failed') $logged = true;
+        }
+        check('migrate: and the swallowed failure is recorded rather than lost',
+            $logged === true);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

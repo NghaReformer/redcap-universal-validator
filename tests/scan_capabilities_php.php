@@ -49,6 +49,20 @@ namespace ExternalModules {
             return new FakeResult([]);
         }
     }
+    /**
+     * A framework whose query() hands back a plain ARRAY of rows rather than a
+     * cursor. Not hypothetical: the probes carry an is_array() branch precisely
+     * because something answers this way, and that branch is the one that
+     * looped.
+     */
+    class ArrayQueryModule extends AbstractExternalModule {
+        private $rows;
+        public function __construct($rows) { $this->rows = $rows; }
+        public function query($sql, $params = []) {
+            $this->queries[] = [$sql, $params];
+            return $this->rows;
+        }
+    }
     class FakeResult {
         private $rows; private $i = 0;
         public function __construct($rows) { $this->rows = $rows; }
@@ -395,6 +409,68 @@ namespace {
         $polOk = $C::policy($C::all($ok, PID));
         check('C-08 contrast: with a proved fence, completion may reach the fence',
             $polOk['maxCompletion'] === 'complete-through-fence');
+    }
+
+    /* =====================================================================
+     * C-09  a probe DRAINS its result, whatever shape the framework hands back
+     *
+     * The framework's query() is documented to return a mysqli_result, and the
+     * probes also carry an is_array() branch for the shapes that do not. Those
+     * two shapes cannot be drained by the same one-row helper: advancing a
+     * cursor mutates the object, while shifting an array mutates whichever copy
+     * the callee holds - and a BY-VALUE parameter means the caller's array
+     * never shrinks.
+     *
+     * schemaPrivilege() looped on exactly that: `while ($row = fetchRow($q))`
+     * over an array re-shifted a fresh copy every pass, answered element 0
+     * forever, and grew its accumulator until the request died of memory
+     * exhaustion with no output at all - an empty 200 over a fatal, which is
+     * the failure mode 1.9.10 exists to prevent, reached by another road.
+     *
+     * The observable property is not "it does not hang" - a test cannot wait
+     * forever to find out. It is that a row AFTER the first is read: under the
+     * defect row 2 is unreachable, so a grant that lives only there is missed.
+     * ===================================================================== */
+    {
+        // CREATE is on the SECOND row. Under the defect the loop never advances
+        // past the first, so this answers "no CREATE grant" - or never answers.
+        $arr = new \ExternalModules\ArrayQueryModule([
+            ['GRANT USAGE ON *.* TO `redcap`@`localhost`'],
+            ['GRANT SELECT, INSERT, UPDATE, DELETE, CREATE ON `redcap`.* TO `redcap`@`localhost`'],
+        ]);
+        $r = $C::schemaPrivilege($arr);
+        check('C-09: an array-shaped result is drained past its first row',
+            $r['state'] === $OK);
+        check('C-09: and the grant it found is attributed to SHOW GRANTS',
+            $r['via'] === 'SHOW GRANTS');
+
+        // The same probe over the cursor shape must agree - one behaviour, two
+        // transports.
+        $cur = fullyCapable();
+        $cur->canned = ['SHOW GRANTS' => [
+            ['GRANT USAGE ON *.* TO `redcap`@`localhost`'],
+            ['GRANT SELECT, INSERT, UPDATE, DELETE, CREATE ON `redcap`.* TO `redcap`@`localhost`'],
+        ]];
+        check('C-09: and the cursor shape answers identically',
+            $C::schemaPrivilege($cur)['state'] === $OK);
+
+        // A genuinely insufficient grant is still refused through the array
+        // shape, so the fix cannot have been "return OK sooner".
+        $weak = new \ExternalModules\ArrayQueryModule([
+            ['GRANT SELECT, INSERT, CREATE TEMPORARY TABLES, CREATE VIEW ON `redcap`.* TO `u`@`%`'],
+        ]);
+        check('C-09: CREATE TEMPORARY TABLES / CREATE VIEW still do not count as CREATE',
+            $C::schemaPrivilege($weak)['state'] === $NO);
+
+        // And the drain is BOUNDED. A driver that never signals exhaustion must
+        // cost a capped amount of memory rather than the request.
+        $flood = [];
+        for ($i = 0; $i < 5000; $i++) $flood[] = ['GRANT USAGE ON *.* TO `u`@`%`'];
+        $before = memory_get_usage();
+        check('C-09: a flood of rows still answers rather than exhausting the request',
+            $C::schemaPrivilege(new \ExternalModules\ArrayQueryModule($flood))['state'] === $NO);
+        check('C-09: and reading it stays bounded',
+            (memory_get_usage() - $before) < 4 * 1024 * 1024);
     }
 
     echo "scan_capabilities_php: $n checks, $fail failure(s)\n";

@@ -157,8 +157,18 @@ final class ScanCapabilities
         try {
             $q = $module->query('SHOW GRANTS FOR CURRENT_USER()', []);
             if (!$q) return self::no('SHOW GRANTS returned nothing');
+            // NOT `while ($row = self::fetchRow($q))`. fetchRow() takes its
+            // argument BY VALUE, so for the array shape its array_shift()
+            // drains a fresh copy on every call and hands back element 0
+            // forever: the loop never terminates and $all grows until the
+            // request dies of memory exhaustion, with no output at all. That is
+            // the same empty-200-over-a-fatal that 1.9.10 was written to
+            // eliminate, reached by a different road. Materialise the rows once,
+            // under a cap, and iterate a real list.
             $all = '';
-            while ($row = self::fetchRow($q)) $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
+            foreach (self::fetchAll($q) as $row) {
+                $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
+            }
             $all = strtoupper($all);
             if ($all === '') return self::no('SHOW GRANTS returned no rows');
             // Only the privilege LIST is searched, never the ON/TO clauses: a
@@ -347,7 +357,49 @@ final class ScanCapabilities
         return null;
     }
 
-    /** mysqli_result, or anything else that can hand back one row. */
+    /**
+     * EVERY row, once, from either shape - bounded.
+     *
+     * The cursor shape (mysqli_result) and the materialised shape (a plain
+     * array) cannot be drained by the same one-row call: advancing a cursor is
+     * a side effect on the object, and shifting an array is a side effect on
+     * whatever copy the callee happens to hold. Anything that needs more than
+     * the first row must come through here.
+     *
+     * The cap is not tidiness. SHOW GRANTS on a user with thousands of grants,
+     * or a driver that never signals exhaustion, must cost a bounded amount of
+     * memory rather than the request.
+     */
+    private static function fetchAll($q, $cap = 500)
+    {
+        $rows = [];
+        try {
+            if (is_array($q)) {
+                foreach ($q as $row) {
+                    $rows[] = $row;
+                    if (count($rows) >= $cap) break;
+                }
+                return $rows;
+            }
+            if (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                while (count($rows) < $cap) {
+                    $row = $q->fetch_row();
+                    if ($row === null || $row === false) break;
+                    $rows[] = $row;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        return $rows;
+    }
+
+    /**
+     * ONE row, from either shape.
+     *
+     * Correct for a single read and used only for single reads - the array
+     * branch shifts a by-value copy, which answers element 0 and mutates
+     * nothing the caller can see. Never call it in a loop; see fetchAll().
+     */
     private static function fetchRow($q)
     {
         try {

@@ -259,8 +259,7 @@ final class ScanService
         foreach ($store->recordStates($runId) as $st => $n) {
             if ((int) $st >= ScanStore::REC_DONE) $done += (int) $n;
         }
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag'],
-                                               $run['created_by'], $this->username());
+        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag']);
 
         return [
             'ok'        => true,
@@ -289,8 +288,7 @@ final class ScanService
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag'],
-                                             $run['created_by'], $this->username());
+        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         $ok = $store->cancel($pid, $runId, (string) $this->username());

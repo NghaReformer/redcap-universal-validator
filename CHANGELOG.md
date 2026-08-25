@@ -1,5 +1,83 @@
 # Changelog
 
+## 2.0.0 - the tests that said it could
+
+The durable scan failed five live pilots and the suite was green through every
+one of them. This release is the remediation of an adversarial review that read
+the whole feature and then ran it: twelve blocking findings, seventeen high,
+nineteen medium, and eleven measured performance defects. The full plan is in
+`reports/scan-remediation-plan-2026-08-25.md`; what follows is what changed.
+
+The through-line is not that the code was careless. The phase machine, the
+lease fencing, the HMAC separation and the outcome derivation are careful work.
+It is that a large fraction of the safety logic was written, unit-tested, and
+never called - and that the suite contained tests whose names asserted more
+than their expressions, which is worse than no test at all, because a test that
+cannot fail is the reason nobody looks.
+
+**The diagnostic never worked, in either direction.** 1.9.9 promised to name
+the failing column and 1.9.10 promised the message would survive being cut.
+Neither did. `safeDbMessage()` was built on the premise that MySQL backticks
+its identifiers - it does not, it single-quotes them, in the same quotes it puts
+round the offending value - so the blanket redaction erased the diagnosis from
+every error shape the server produces, not merely from the duplicate-key one.
+Measured against MySQL 8.0.46, `Data too long for column 'reason_code'` reached
+the operator as `Data too long for column '...'`.
+
+It could also disclose. `uq_active_identity` is keyed on a 32-byte HMAC, so the
+value MySQL echoes in a duplicate-entry error is raw binary, and roughly one
+identity in eight contains an apostrophe byte by chance. That byte closed the
+redaction's quoted run early and opened the next one in the wrong place, so the
+bytes between them were emitted verbatim while the key name was still destroyed.
+It lost the diagnosis and leaked at the same time.
+
+The replacement REBUILDS the message from structural captures instead of
+filtering the server's string, which is what lets the failing statement and its
+bound parameters - appended by the External Modules wrapper, and the largest
+disclosure risk in the whole text - be dropped rather than trimmed. It searches
+the tail as well as the head, because a wrapper that puts the statement first
+pushes the diagnosis past any head-only cut. It carries the errno, which names
+the fix on its own. And it lives in `php/Scan/DbError.php` rather than in one
+class's private section, because the lease predicates and `startRun()` need the
+same answer and had each invented a different one.
+
+The test that was supposed to guard all this asserted
+`contains('reason_code') || contains('too long')`. The column name had never
+been there; it was passing on the other half. It is now two checks, and it
+fails without the fix.
+
+**A catch that never caught.** `installScanSchema()` ends in
+`catch (Throwable $e)` with no leading backslash, inside
+`namespace INSPIRE\UniversalValidator` - so it names a class that does not
+exist. PHP does not warn about that; the clause simply never matches. Anything
+thrown after the migration returned - the log write, the policy read, the worker
+slot provisioning - escaped it and failed the administrator's settings save,
+which is the exact outcome its own docblock promises cannot happen.
+
+The test named for that guarantee was green over it for four releases. It throws
+from `query()`, so `Schema::migrate()` - which catches internally and reports
+`ok=false` - returned before execution ever reached the guarded block. The new
+test throws only on the worker-slot write, so the migration succeeds and the
+guard is the only thing in the way. A catch that finally starts catching must
+not trade a loud failure for an invisible one either, so the swallowed error is
+now logged.
+
+**A capability probe that could kill the request.** `fetchRow()` takes its
+argument by value, so for the array shape its `array_shift()` drained a copy and
+answered element 0 forever. `schemaPrivilege()` drove it in a `while` loop:
+unbounded memory, ending in an exhaustion fatal, which is not a `Throwable` and
+cannot be rescued by any of the three try/catch blocks around it. That is the
+empty-200-over-a-fatal that 1.9.10 exists to prevent, reached by another road.
+Rows are now materialised once, under a cap.
+
+**A cancellation control that decided nothing.** `mayCancel()` compared the
+run's creator against the acting user and then returned the same expression
+whichever way the comparison went. Two inert parameters that every call site
+filled in earnest are a better disguise than no parameters at all. The rule that
+actually ships - a run is cancellable by anyone equally entitled in the same
+scope, because the person who started it is precisely the person who may have
+gone home - is now stated in the docblock and asserted directly.
+
 ## 1.9.10 - the diagnostic that killed the request it was diagnosing
 
 1.9.9 was supposed to name the column. Instead `scan-work` returned HTTP 200

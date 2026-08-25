@@ -115,9 +115,17 @@ final class ScanAuthorization
      * must be stoppable by anyone equally entitled in the same scope. A GLOBAL
      * run, though, may only be cancelled by an unrestricted user - a DAG user
      * cancelling a project-wide run affects every other group.
+     *
+     * CREATOR IDENTITY IS DELIBERATELY NOT CONSULTED, and this sentence is here
+     * so it is not re-added. Ownership would only add a way for a wedged run to
+     * become unstoppable: the person who started it is precisely the person who
+     * may have gone home. This function used to TAKE a creator and a username
+     * and compare them, and both arms of that comparison returned the same
+     * expression - so the control read as live, was tested as live, and decided
+     * nothing. Two inert parameters that every call site fills in earnest are a
+     * better disguise than no parameters at all.
      */
-    public static function mayCancel($rights, array $entitlement, $runScopeDag,
-                                     $creator = null, $username = null)
+    public static function mayCancel($rights, array $entitlement, $runScopeDag)
     {
         $base = self::mayStart($rights, $entitlement);
         if (!$base['ok']) return $base;
@@ -131,10 +139,7 @@ final class ScanAuthorization
             return $base;
         }
         if ($unrestricted) return $base;                       // may cancel any DAG run
-        if ($creator !== null && $username !== null && (string) $creator === (string) $username) {
-            return self::scopeMatches($base, $runScopeDag);     // their own run
-        }
-        return self::scopeMatches($base, $runScopeDag);
+        return self::scopeMatches($base, $runScopeDag);        // same group, whoever started it
     }
 
     /**
