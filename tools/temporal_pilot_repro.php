@@ -1,10 +1,34 @@
 <?php
 /**
- * temporal_pilot_repro.php — reproduce the live pilot's "the database refused to
- * store these findings" against a REAL MySQL, using the shipped SqlScanStore.
+ * temporal_pilot_repro.php — the live pilot's five failures, against a REAL
+ * MySQL, through the shipped SqlScanStore.
+ *
+ * WHAT IT WAS FOR. Every pilot of the durable scan from 1.9.0 to 1.9.10 died
+ * with "the database refused to store these findings", forty batches
+ * identically, and the cause was never identified. This drives the real store
+ * through the five shapes that produce it. On 1.9.10 it printed REFUSED for
+ * scenarios 1, 2 and 5, and zero findings left across BOTH projects for
+ * scenario 4.
+ *
+ * WHAT IT IS FOR NOW. The same five, as an after-state. On this tree it prints:
+ *
+ *   1  the SECOND scan of a project        COMMITTED   (findings 2 -> 4)
+ *   2  two hidden codes ticked on one box  COMMITTED   (2 stored, not 0)
+ *   4  purging ONE project's run           2 findings left, not 0
+ *   5  the record reaches a terminal state state=100 attempts=1
+ *
+ * The scenario labels below still describe the DEFECT each one was written to
+ * catch, because that is what makes the output readable as a before-and-after.
+ *
+ * ONE CAVEAT ON SCENARIO 5. It was written to show that a refused batch never
+ * incremented `attempts`, so the retry cap could never trip and the run retried
+ * forever. The batch now commits, so this harness can no longer reach that
+ * path - the TRIGGER is fixed, not the defect. Counting an attempt outside the
+ * failing transaction is wave 5; until it lands, any other persistent write
+ * error still retries without bound.
  *
  * Run:
- *   UV_DB_HOST=127.0.0.1 UV_DB_PORT=33306 UV_DB_USER=root UV_DB_PASS=root \
+ *   UV_DB_HOST=127.0.0.1 UV_DB_PORT=33306 UV_DB_USER=root UV_DB_PASS=uvtest \
  *   UV_DB_NAME=uv_test php -d extension=mysqli tools/temporal_pilot_repro.php
  */
 
@@ -13,8 +37,12 @@ require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/../php/Scan/ScanPhase.php';
 require_once __DIR__ . '/../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../php/Scan/ScanDb.php';
+require_once __DIR__ . '/../php/Scan/DbError.php';
+require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
+require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
 require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../php/Scan/Hmac.php';
+require_once __DIR__ . '/../php/Scan/ScanRetention.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 use INSPIRE\UniversalValidator\Scan\SqlScanStore;
@@ -89,11 +117,18 @@ function findingsFor($pid, $recordId, $key, $gen, $spec) {
         $loc = ['record' => (string) $recordId, 'event_id' => $s['event_id'],
                 'instance' => $s['instance'], 'host_form' => $s['host_form'],
                 'field' => $s['field'], 'rule_source_id' => $s['rule_source_id'],
-                'reason_code' => $s['reason_code']];
+                'reason_code' => $s['reason_code'],
+                // WHICH ticked hidden code. Two options ticked on one checkbox
+                // are two problems at one location, and this is what tells them
+                // apart. The real evaluator sets it from the choice code; here
+                // the fixture's own 'value' is that code.
+                'locus' => isset($s['locus']) ? (string) $s['locus']
+                         : (isset($s['value']) ? (string) $s['value'] : '')];
         $out[] = [
+            'project_id' => (int) $pid,
             'generation_id' => $gen,
             'identity' => Hmac::findingIdentity($pid, $loc, $key),
-            'seq' => ++$seq,
+            'valid_from_seq' => 1,
             'record_hash' => Hmac::raw(Hmac::P_RECORD, $pid, (string) $recordId, $key),
             'record_id_bin' => (string) $recordId,
             'event_id' => $s['event_id'],
@@ -117,7 +152,7 @@ function findingsFor($pid, $recordId, $key, $gen, $spec) {
 
 /** One whole run: start, manifest, claim, commit, finish. Returns the commit results. */
 function oneRun($store, $pid, $records, $specFor, $label) {
-    $started = $store->startRun($pid, ['generation_id' => 1, 'created_by' => 'tester',
+    $started = $store->startRun($pid, ['created_by' => 'tester',
         'fingerprint' => str_repeat('f', 64), 'policy_json' => '{}', 'values_state' => 'raw']);
     if (empty($started['ok'])) { echo "$label: START REFUSED (" . $started['why'] . ")\n"; return null; }
     $runId = (int) $started['run']['run_id'];
@@ -128,7 +163,14 @@ function oneRun($store, $pid, $records, $specFor, $label) {
                    'dag' => null];
     }
     $store->writeManifest($runId, $rows);
-    $epoch = (int) $store->run($pid, $runId)['lease_epoch'];
+    $runRow = $store->run($pid, $runId);
+    $epoch  = (int) $runRow['lease_epoch'];
+    // THE RUN'S OWN GENERATION, not a literal. This harness was written when
+    // every run of every project was generation 1 - which is the defect it
+    // exists to demonstrate - so the fixtures below still say 1 and are
+    // corrected here from whatever the store actually allocated.
+    $gen    = (int) $runRow['generation_id'];
+    $rseq   = (int) $runRow['run_seq'];
     $results = [];
     while (true) {
         $claim = $store->claim($runId, 'owner-1', $epoch, 2);
@@ -136,8 +178,13 @@ function oneRun($store, $pid, $records, $specFor, $label) {
         $batch = ['findings' => [], 'candidates' => [], 'records' => [], 'bytes' => 0];
         foreach ($claim as $row) {
             $rid = $row['id_bin'];
-            foreach ($specFor($rid) as $f) $batch['findings'][] = $f;
-            $batch['records'][] = ['ordinal' => $row['ordinal'], 'state' => ScanStore::REC_DONE,
+            foreach ($specFor($rid) as $f) {
+                $f['generation_id']  = $gen;
+                $f['valid_from_seq'] = $rseq;
+                $batch['findings'][] = $f;
+            }
+            $batch['records'][] = ['ordinal' => $row['ordinal'], 'record_hash' => $row['hash'],
+                                   'state' => ScanStore::REC_DONE,
                                    'version' => '1'];
         }
         $res = $store->commitBatch($runId, 'owner-1', $epoch, null, $batch);
@@ -186,6 +233,10 @@ oneRun($store, $PID, ['2001'], $spec2, 'checkbox run');
 $n = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_row()[0];
 echo "findings stored: $n\n\n";
 
+// ScanRetention is the ONLY purge now. The store had one too - it removed
+// the run, its records and its aggregates but NOT its findings - and the two
+// had already drifted on what their second argument meant.
+$ret = new INSPIRE\UniversalValidator\Scan\ScanRetention($db);
 echo "=== SCENARIO 3: retention purge deletes by generation_id ONLY ===\n";
 $c->query('DELETE FROM ' . Schema::table('finding'));
 $c->query('DELETE FROM ' . Schema::table('scan_run'));
@@ -201,12 +252,11 @@ oneRun($store, 222, ['B1'], function ($rid) use ($KEY) {
 $n = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_row()[0];
 echo "findings across both projects: $n\n";
 // purgeRuns(pid, olderThan) on project 111 only
-$store->purgeRuns(111, date('Y-m-d H:i:s', time() + 3600));
+$ret->purgeRuns(111, date('Y-m-d H:i:s', time() + 3600));
 $n = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_row()[0];
 echo "findings after purging project 111 only: $n  (project 222's findings should still be there)\n";
 
 echo "\n=== SCENARIO 4: ScanRetention::purgeRuns deletes findings BY GENERATION (cross-project) ===\n";
-require_once __DIR__ . '/../php/Scan/ScanRetention.php';
 foreach (array_reverse(Schema::tables()) as $t) $c->query('DROP TABLE IF EXISTS ' . $t);
 Schema::migrate($m);
 oneRun($store, 111, ['A1'], $spec, 'project 111');
@@ -221,7 +271,6 @@ $before = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_r
 echo "findings, both projects: $before\n";
 // age project 111's run so it is past retention
 $c->query("UPDATE " . Schema::table('scan_run') . " SET updated_at = '2000-01-01 00:00:00' WHERE project_id = 111");
-$ret = new INSPIRE\UniversalValidator\Scan\ScanRetention($db);
 $purged = $ret->purgeRuns(111, 1);
 $after = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_row()[0];
 echo "purged $purged run(s) of project 111 -> findings left across ALL projects: $after";
