@@ -36,9 +36,23 @@ class Links(HTMLParser):
             self.hrefs.append(d["href"])
 
 
+def static_names() -> set:
+    """Files copied verbatim from site/static/ (search-engine ownership files).
+
+    They are not pages and must not be held to the page metadata rules.
+    """
+    d = HERE / "static"
+    if not d.is_dir():
+        return set()
+    return {f.name for f in d.iterdir() if f.is_file() and f.name != ".gitkeep"}
+
+
 def check_pages() -> None:
+    skip = static_names()
     for f in sorted(OUT.rglob("*.html")):
         rel = f.relative_to(OUT)
+        if rel.as_posix() in skip:
+            continue
         txt = f.read_text(encoding="utf-8")
 
         for block in re.findall(r'<script type="application/ld\+json">(.*?)</script>', txt, re.S):

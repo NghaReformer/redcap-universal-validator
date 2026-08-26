@@ -24,7 +24,7 @@ LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
 # the tag GSC gives you (Settings -> Ownership verification -> HTML tag).
 # Leave empty and no tag is emitted. The HTML-file method works too: drop
 # Google's google<hash>.html into site/static/ instead.
-GOOGLE_SITE_VERIFICATION = ""
+GOOGLE_SITE_VERIFICATION = "3Xx8mW5tGXkqZ-Cv-7X73hduncQeIFhcINQMtDNyKJU"
 
 # IndexNow (Bing, Yandex, Seznam, Naver — not Google). The key is published at
 # /<key>.txt so those engines can confirm we own the site; that is the design,
