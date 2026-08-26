@@ -4,6 +4,8 @@ Live, as-you-type validation for any REDCap field with a structure. A mistyped
 participant ID costs hours of reconciliation later; this module catches it while
 the person who typed it is still looking at the field.
 
+Documentation: <https://nghareformer.github.io/redcap-universal-validator/> — one page per action tag.
+
 Two validation families, one engine:
 
 - **Check-character IDs** (the flagship): participant and specimen IDs minted
@@ -606,7 +608,9 @@ See [`tests/README.md`](tests/README.md).
 
 ## Install
 
-See [`docs/INSTALL.md`](docs/INSTALL.md).
+See [`docs/INSTALL.md`](docs/INSTALL.md), or the
+[install page](https://nghareformer.github.io/redcap-universal-validator/install/)
+on the documentation site.
 
 ## Develop
 

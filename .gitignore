@@ -10,3 +10,10 @@ Thumbs.db
 
 # logs / local
 *.log
+
+# Generated documentation site (site/build.py output)
+site/_site/
+
+# python bytecode
+__pycache__/
+*.py[cod]

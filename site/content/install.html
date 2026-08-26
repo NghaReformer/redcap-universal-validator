@@ -1,0 +1,94 @@
+<p>Installing takes three steps: a REDCap administrator enables the module once per
+server, a project administrator enables it on a project, and a designer adds the
+rules.</p>
+
+<h2>1. Install the module — administrator, once per server</h2>
+
+<p><strong>From a downloaded copy</strong></p>
+
+<ol>
+<li>Put the module folder on the server under <code>modules/</code>, named with its
+version — for example <code>redcap/modules/universal_validator_v1.6.1/</code>. The
+folder must contain <code>config.json</code> at its top level.</li>
+<li>Go to <strong>Control Center → External Modules → Manage</strong>. The module
+appears as available. Click <strong>Enable</strong>.</li>
+</ol>
+
+<p>Download a versioned copy from the
+<a href="https://github.com/NghaReformer/redcap-universal-validator/releases">releases
+page</a>.</p>
+
+<p><strong>From the REDCap repository</strong> (once published): Control Center →
+External Modules → <strong>View modules available in the repository</strong> → find
+<em>Universal Field Validator</em> → <strong>Download</strong> →
+<strong>Enable</strong>.</p>
+
+<h2>2. Enable it on a project — project administrator</h2>
+
+<p>Project <strong>External Modules</strong> page → <strong>Enable a module</strong> →
+<em>Universal Field Validator</em>.</p>
+
+<h2>3. Add validation rules</h2>
+
+<p>One rule is one kind of validation, applied to any number of fields. There are two
+places to declare rules and they mix freely. A field claimed twice shows a
+configuration error rather than quietly running two validators.</p>
+
+<h3>A. The Configure dialog</h3>
+
+<p>Add one <strong>Validation rule</strong> per kind of validation:</p>
+
+<ul>
+<li><strong>Rule label</strong> — optional, your own name for the rule, such as
+"Specimen IDs".</li>
+<li><strong>What this rule checks</strong> — the rule kind: Single value, Pooled,
+Constraint, Required or Choices.</li>
+<li><strong>Field(s)</strong> — pick fields with the picker and click its
+<strong>+</strong> to add more to the same rule, or type extra field names into the
+<strong>fast entry</strong> box, comma- or space-separated. Unknown names show a
+configuration error.</li>
+<li><strong>Check-character method</strong> — must match how the IDs were minted. The
+generator's default is ISO 7064 Mod 37,36. To validate a plain format with no check
+character, choose <em>No check character</em> and set the format pattern.</li>
+</ul>
+
+<h3>B. Field annotations — best for bulk setup</h3>
+
+<p>Tag fields where you already design them: the <strong>Action Tags / Field
+Annotation</strong> box in the Online Designer, or the <code>field_annotation</code>
+column of the data dictionary CSV. To validate 50 fields, fill one spreadsheet column
+and upload the dictionary once.</p>
+
+<pre><code>@UVALIDATE                                     default check, message only
+@UVALIDATE=verhoeff                            pick the algorithm
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}","blockSave":"hard"}
+@UVALIDATE={"type":"pooled","expectedIds":3}   pooled field, warn unless 3 IDs</code></pre>
+
+<p>Recognised JSON keys for <code>@UVALIDATE</code>: <code>type</code>,
+<code>algorithm</code>, <code>source</code>, <code>pattern</code>, <code>strip</code>,
+<code>keepChars</code>, <code>idLengths</code>, <code>idMinLen</code>,
+<code>idMaxLen</code>, <code>expectedIds</code>, <code>blockSave</code>,
+<code>when</code>, <code>suggestFix</code>, <code>note</code>. Use double quotes inside
+the JSON.</p>
+
+<div class="note">
+<p>A malformed tag — a typo'd key, an unknown algorithm, bad JSON, or a tag on an
+unsupported field type — shows a configuration error in a notice at the top of the
+form rather than failing silently. Fields with identical tags are grouped into one rule
+automatically.</p>
+</div>
+
+<p>The other four tags are documented on their own pages:
+<a href="../uvassert/">@UVASSERT</a>, <a href="../uvrequired/">@UVREQUIRED</a>,
+<a href="../uvunique/">@UVUNIQUE</a> and <a href="../uvchoices/">@UVCHOICES</a>.</p>
+
+<h2>Requirements</h2>
+
+<ul>
+<li>REDCap 13.7.0 or later (External Module Framework version 14)</li>
+<li>PHP 7.4.0 or later</li>
+</ul>
+
+<p>The full install document, including the parts not repeated here, is
+<a href="https://github.com/NghaReformer/redcap-universal-validator/blob/main/docs/INSTALL.md"><code>docs/INSTALL.md</code></a>
+in the repository.</p>

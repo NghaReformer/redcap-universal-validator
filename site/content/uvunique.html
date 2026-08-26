@@ -1,0 +1,71 @@
+<p>REDCap has no native field-level uniqueness. <code>@UVUNIQUE</code> checks the value
+against every other record <strong>as it is typed</strong> — a CSRF-protected module
+AJAX call, no page reload — with the usual message / confirm / block enforcement.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVUNIQUE                       unique across the project
+
+@UVUNIQUE=event                 scope: project | dag | event
+
+@UVUNIQUE={"with":["site"],
+           "message":"Specimen already registered",
+           "blockSave":"hard"}</code></pre>
+
+<h2>Scopes and composite keys</h2>
+
+<ul>
+<li><code>project</code> (the default) — unique across the whole project.</li>
+<li><code>dag</code> — unique within each Data Access Group.</li>
+<li><code>event</code> — unique within the same event of a longitudinal project.</li>
+<li><code>with</code> makes the key <strong>composite</strong>: the value plus those
+fields together must be unique, such as a specimen ID within its site.</li>
+</ul>
+
+<div class="note">
+<p><strong>Under <code>dag</code> scope, records in no group form one group of their
+own.</strong> They are compared against each other, not exempted. "No DAG" is a scope
+like any other, and the alternative reading — that an ungrouped record has nothing to
+be compared with — would let the rule lapse exactly where records are hardest to
+attribute. Use <code>project</code> scope if you want them compared against
+everything.</p>
+</div>
+
+<h2>Privacy posture</h2>
+
+<p>The endpoint answers only for fields that carry a unique rule, so it cannot be used
+to probe arbitrary fields for the existence of a value. Staff see the colliding record
+id only when it is inside their own Data Access Group. Comparison is exact, after
+trimming, against stored values.</p>
+
+<h2>Surveys: opt-in, and never on an identifier</h2>
+
+<p>Survey respondents are not logged in, so an "already used" answer tells anyone
+holding the survey link that a specific value is in the study — one value at a time.
+<code>{"surveys":true}</code> is therefore:</p>
+
+<ul>
+<li><strong>Off by default.</strong></li>
+<li>Answered as a bare yes/no, never a record id.</li>
+<li>Rate-limited.</li>
+<li><strong>Refused outright on any field REDCap flags as an Identifier</strong> —
+there it would let a stranger test whether a named person is enrolled, so the module
+makes that a configuration error rather than trusting a warning to be read.</li>
+</ul>
+
+<p>A reasonable use is a non-identifying response token, to stop the same person
+submitting twice. Leaving it off costs no data quality: survey submissions are still
+covered by the post-save audit and the Validation scan.</p>
+
+<h2>The race is audited, not denied</h2>
+
+<p>Two near-simultaneous saves can both pass the live check. The post-save audit
+re-checks the saved value against every other record and logs a collision as
+<code>type: unique</code>, <code>reason: duplicate-value</code> — review the module log
+for races. Any transport failure fails <strong>open</strong>: a network error never
+traps a save.</p>
+
+<h2>Field types</h2>
+
+<p>Text, Notes, dropdown, radio, yes/no, true/false and slider. Composes with the other
+modes on the same field.</p>

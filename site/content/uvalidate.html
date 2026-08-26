@@ -1,0 +1,114 @@
+<p><code>@UVALIDATE</code> is the module's flagship rule. It recomputes a field's
+check character, tests its format against a regex pattern, or both — and reports
+the two kinds of failure separately, so the person entering data knows which
+mistake they made.</p>
+
+<h2>Syntax</h2>
+
+<p>The tag has three forms, from shortest to most explicit. All three go in a
+field's <strong>Field Annotation</strong> box in the Online Designer.</p>
+
+<pre><code>@UVALIDATE                                        bare — all defaults (ISO 7064 Mod 37,36)
+@UVALIDATE=verhoeff                               short — pick the algorithm
+@UVALIDATE={"algorithm":"verhoeff","blockSave":"hard"}    JSON — every option</code></pre>
+
+<h3>Algorithm shorthands</h3>
+
+<pre><code>@UVALIDATE=verhoeff
+@UVALIDATE=9710                 ISO 7064 Mod 97,10
+@UVALIDATE=3736                 ISO 7064 Mod 37,36 (the default)
+@UVALIDATE=gs1                  GS1 / GTIN / EAN / UPC barcodes
+@UVALIDATE=isbn                 ISBN-10 weighted Mod-11</code></pre>
+
+<h3>Format patterns instead of a check character</h3>
+
+<p>Set <code>algorithm</code> to <code>none</code> (or <code>regex</code>) and give a
+<code>pattern</code>. In stock REDCap a custom regex validation type has to be added
+server-wide by an administrator; here a project designer sets it per rule.</p>
+
+<pre><code>@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}"}
+@UVALIDATE={"algorithm":"regex","pattern":"TB-[0-9]{6}","blockSave":"hard"}</code></pre>
+
+<h3>Both at once</h3>
+
+<pre><code>@UVALIDATE={"algorithm":"iso7064_mod37_36","pattern":"TB[A-Z]{3}-[0-9]{5}[0-9A-Z]"}
+@UVALIDATE={"algorithm":"mod11_10","source":"digits_only"}
+@UVALIDATE={"algorithm":"3736","strip":"-/ _|\\"}</code></pre>
+
+<h3>Pooled fields</h3>
+
+<p>One box holding several IDs — space-separated, comma-separated, or run together
+with no separator — is split at the boundaries where the check character verifies,
+then shown as one chip per member.</p>
+
+<pre><code>@UVALIDATE={"type":"pooled","idLengths":[9],"expectedIds":3}
+@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"FC[0-9]{4}","idLengths":[6]}
+@UVALIDATE={"type":"pooled","idMinLen":9,"idMaxLen":12,"blockSave":"confirm"}</code></pre>
+
+<h2>Methods supported</h2>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Family</th><th>Members</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td>ISO/IEC 7064</td><td>Mod 37,36 (default), Mod 11,10, Mod 97,10, Mod 11,2, Mod 37,2, two letters-only variants</td><td>Alphanumeric payloads</td></tr>
+<tr><td>Classic decimal</td><td>Damm, Verhoeff, Luhn</td><td>Digit payloads, one check digit</td></tr>
+<tr><td>Weighted modulus</td><td>GS1 Mod-10, ABA Mod-10, ICAO MRZ Mod-10, ISBN-10 weighted Mod-11</td><td><code>weighted_mod11</code> may emit <code>X</code></td></tr>
+<tr><td>None</td><td><code>none</code> / <code>regex</code></td><td>Format pattern only</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>The three Mod-10 schemes catch every single-digit error at any length but miss
+adjacent swaps of digits differing by 5. <code>weighted_mod11</code> catches every
+single-digit error and every adjacent swap only up to 9 digits — the ISBN-10 domain.
+At 10 or more digits the position carrying weight 11 goes blind to substitutions, so
+prefer Mod 11,2 or Mod 97,10 for longer numbers.</p>
+
+<div class="note">
+<p><strong>The method must match how the IDs were minted.</strong> A check character
+is only meaningful against the scheme that produced it — pointing
+<code>@UVALIDATE</code> at the wrong algorithm will reject valid IDs.</p>
+</div>
+
+<h2>Conditional validation with <code>when</code></h2>
+
+<p>Any rule may carry a condition and validate only while that condition is true.</p>
+
+<pre><code>@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}","when":"[consent(1)]='1' and [site]&lt;&gt;'9'"}</code></pre>
+
+<p>The condition language is a REDCap-style subset, not byte-for-byte REDCap logic:</p>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Supported</th><th>Rejected when the rule is saved</th></tr></thead>
+<tbody>
+<tr><td><code>[field]</code> and <code>[checkbox(code)]</code> references</td><td>Functions such as <code>datediff(...)</code></td></tr>
+<tr><td><code>'text'</code>, <code>"text"</code> and number literals</td><td>Smart variables such as <code>[record-name]</code></td></tr>
+<tr><td><code>=</code> <code>&lt;&gt;</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code> <code>&gt;=</code> <code>&lt;=</code></td><td><code>[event][field]</code> cross-event prefixes</td></tr>
+<tr><td><code>and</code> / <code>or</code> / <code>not</code>, parentheses</td><td>Arithmetic and piping</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Branched validation</h3>
+
+<p>Several <code>@UVALIDATE</code> tags with different <code>when</code> conditions on
+one field branch, plus at most one tag without a condition as the fallback.</p>
+
+<pre><code>@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='2'"}
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{4}"}          ← the "otherwise"</code></pre>
+
+<h2>The "should end in X" hint</h2>
+
+<p>A hint naming the expected check character is available per rule via
+<code>suggestFix</code>, but it is <strong>off by default</strong>. A visible expected
+character can entice staff to force-fit a mistyped ID instead of re-scanning it.</p>
+
+<pre><code>@UVALIDATE={"algorithm":"3736","suggestFix":true,"note":"Blood specimen barcode"}</code></pre>
+
+<h2>Field types</h2>
+
+<p>Check-character and regex validation apply to <strong>Text and Notes</strong>
+fields. The other rule kinds cover a wider set — see each tag's page.</p>

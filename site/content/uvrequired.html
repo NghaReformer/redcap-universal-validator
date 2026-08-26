@@ -1,0 +1,47 @@
+<p>REDCap's own required flag is unconditional and only warns.
+<code>@UVREQUIRED</code> adds the two things it lacks: a <strong>condition</strong> and
+a <strong>real block</strong>.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVREQUIRED                                   always required
+
+@UVREQUIRED="[consent]='1'"                   required only while consented
+
+@UVREQUIRED={"when":"[consent]='1'",
+             "message":"Phone needed for consented participants",
+             "blockSave":"hard"}</code></pre>
+
+<h2>Behaviour</h2>
+
+<ul>
+<li>A blank or whitespace-only field shows the notice while the requirement is in
+force. The requirement turns on and off <strong>live</strong> as the referenced fields
+change.</li>
+<li>Filling the field clears the notice. There is deliberately no green "OK", because
+required mode never judges the <em>value</em> — pair it with
+<a href="../uvalidate/"><code>@UVALIDATE</code></a> or
+<a href="../uvassert/"><code>@UVASSERT</code></a> for that.</li>
+<li>Modes compose cleanly: on a blank field only <code>@UVREQUIRED</code> fires; on a
+filled-but-wrong value only the value checks fire. Each keeps its own save-block
+state.</li>
+<li>Several <code>@UVREQUIRED</code> tags with different <code>when</code> conditions
+<strong>branch</strong>. Two conditions true at once is a visible conflict that never
+blocks.</li>
+</ul>
+
+<h2>Field types</h2>
+
+<p>Text, Notes, dropdown, radio, yes/no, true/false and slider.</p>
+
+<div class="note">
+<p><strong>Not calc fields.</strong> The person entering data cannot fill a calc, so
+requiring one would trap them. The same reasoning covers read-only fields: a read-only
+field shows the notice but never blocks the save.</p>
+</div>
+
+<h2>Audit</h2>
+
+<p>The server audit logs a blank-while-required save as <code>type: required</code>,
+<code>reason: required-blank</code>. A blank carries nothing identifying, so this entry
+is safe to keep in every privacy mode.</p>

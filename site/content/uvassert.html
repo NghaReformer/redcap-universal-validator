@@ -1,0 +1,94 @@
+<p>Stock REDCap cannot <em>block</em> a bad relationship between fields at entry:
+branching only hides, a range check only warns, and Data Quality runs in batch.
+<code>@UVASSERT</code> closes that gap. The field is invalid unless a condition holds,
+checked live and enforced with the same message / confirm / block modes as every
+other rule.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVASSERT="[end_date]&gt;=[start_date]"
+
+@UVASSERT={"assert":"[dose]&lt;=[max_dose]",
+           "message":"Dose exceeds the protocol maximum",
+           "blockSave":"hard"}
+
+@UVASSERT={"assert":"[sex]='2'",
+           "when":"[pregnant]='1'",
+           "message":"Pregnant participants must be recorded female"}</code></pre>
+
+<p>The condition uses the <strong>same dialect</strong> as the <code>when</code> key:
+<code>[field]</code> and <code>[checkbox(code)]</code> references, the operators
+<code>=</code> <code>&lt;&gt;</code> <code>!=</code> <code>&gt;</code> <code>&lt;</code>
+<code>&gt;=</code> <code>&lt;=</code>, <code>and</code> / <code>or</code> /
+<code>not</code>, and parentheses. ISO dates and numbers compare correctly.</p>
+
+<h2>Confirm-a-value pairs</h2>
+
+<p>"Type it twice" needs no special feature — it is an assertion:</p>
+
+<pre><code>@UVASSERT="[participant_id]=[participant_id_confirm]"</code></pre>
+
+<h2>Things worth knowing before you rely on it</h2>
+
+<ul>
+<li><strong>An empty field is inert.</strong> Requiring a value is
+<a href="../uvrequired/"><code>@UVREQUIRED</code></a>'s job, not a constraint's.</li>
+<li><strong>Set your own <code>message</code>.</strong> A generic line is used if you
+omit it, but only you can word an arbitrary relationship in terms the person
+entering data will understand.</li>
+<li><strong>Optional <code>when</code>.</strong> Enforce the constraint only while a
+condition is true. Several <code>@UVASSERT</code> tags with different
+<code>when</code> conditions <strong>branch</strong>, plus at most one without as the
+fallback.</li>
+<li><strong>Rules compose.</strong> A field may carry <code>@UVASSERT</code> alongside
+<a href="../uvalidate/"><code>@UVALIDATE</code></a> and other modes. All must pass, and
+each keeps an independent save-block state.</li>
+<li><strong>Audited.</strong> The server audit honours the constraint against saved
+values, logged as <code>type: constraint</code>.</li>
+</ul>
+
+<h2>Field types</h2>
+
+<p>Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
+(Check-character and regex validation stay on Text and Notes.)</p>
+
+<h2>Across instruments</h2>
+
+<p>Since version 1.6.0 the condition may reference a field on another instrument in
+the same event. What happens then depends on whether you are entitled to read that
+field.</p>
+
+<h3>Entitled — live, but advisory</h3>
+
+<p>For staff data entry with REDCap rights to the other instrument, the off-page value
+is resolved on the server and baked into the condition, so the check stays
+<strong>live</strong> as you type.</p>
+
+<div class="note">
+<p><strong>It does not block the save, at any <code>blockSave</code> setting.</strong>
+That value is read once, when the page opens, and nothing can refresh it while you
+type. A concurrent edit on the other form would otherwise produce a wrong block, or a
+wrong pass, with no way to tell which. A failure names the off-page field and says
+when it was read, so you know to reload; the post-save audit and the Validation scan
+are the enforcement record.</p>
+</div>
+
+<h3>Not entitled — deferred, meaning detection rather than prevention</h3>
+
+<p>On a <strong>survey</strong>, or for a user <strong>without rights</strong> to the
+referenced instrument, the value is never sent to the page and the rule is
+<strong>deferred</strong>: the browser shows no verdict, never blocks, and the save is
+accepted. <code>redcap_save_record</code> fires after the write, so the audit logs the
+violation once it has happened and the Validation scan can find it later. Deferring
+buys privacy at the cost of both live feedback and the block — someone has to read the
+log or run the scan.</p>
+
+<h3>Unresolvable — refused</h3>
+
+<p>A field on a different repeating instrument, a field not collected in this event, or
+a read that failed will stop the rule rather than compare against a blank that was
+never read. The reason names the field.</p>
+
+<p><strong>Rules whose fields are all on the current instrument are unaffected</strong>
+and still block exactly as before — both sides are live in the form, so nothing is a
+snapshot. Cross-<em>event</em> references are not supported.</p>

@@ -1,0 +1,64 @@
+<p>REDCap's <code>@HIDECHOICE</code> hides options <strong>statically</strong>.
+<code>@UVCHOICES</code> shows or hides individual options of a <strong>radio, dropdown
+or checkbox</strong> field based on the live values of other fields — a country →
+region → site cascade in one field, instead of one near-duplicate field per
+country.</p>
+
+<h2>Syntax</h2>
+
+<p><strong>JSON form only.</strong> Exactly one of <code>show</code> (a whitelist —
+every other code of the field hides) or <code>hide</code> (a blacklist) per tag, plus
+optional <code>when</code>, <code>message</code> and <code>blockSave</code>.</p>
+
+<pre><code>@UVCHOICES={"when":"[country]='1'","show":["101","102","103"]}
+@UVCHOICES={"when":"[country]='2'","show":["201","202"]}
+
+@UVCHOICES={"when":"[legacy_entry]&lt;&gt;'1'","hide":["9"]}
+
+@UVCHOICES={"when":"[pilot(1)]='1'","show":["s01","s02"],
+            "message":"Only pilot sites during the pilot phase.",
+            "blockSave":"hard"}</code></pre>
+
+<p>Codes must exist in the field's own choice list. An unknown code is a configuration
+error that names the real codes.</p>
+
+<h2>Branching</h2>
+
+<p>Repeat the tag with different <code>when</code> conditions, plus at most one without
+as the fallback. Exactly one true condition filters; none — and no fallback — shows
+everything; more than one true is a visible conflict, in which case the filter is
+<strong>not</strong> applied and the save is never blocked on a configuration
+problem.</p>
+
+<p>Conditions may reference fields on other instruments. Those are resolved server-side
+against saved values, so nothing off-page leaks into the browser.</p>
+
+<h2>A hidden selection is never cleared</h2>
+
+<div class="note">
+<p>If the stored or selected choice becomes hidden — the user changes the country after
+picking a site — the module <strong>keeps it visible</strong> (dropdowns keep the option
+in place but disabled), flags the field invalid with your <code>message</code>, and
+applies <code>blockSave</code>. Silently erasing an entered value is the one thing this
+mode refuses to do. Fix it by picking one of the shown choices.</p>
+</div>
+
+<p><strong>Out-of-list values are out of scope.</strong> A value that is not in the
+field's choice list at all — a missing-data code such as <code>-99</code> — is never
+flagged.</p>
+
+<h2>Field types</h2>
+
+<p>Radio, dropdown and checkbox. <strong>Not</strong> yes/no, true/false, sql, or matrix
+fields — matrix rows render different markup, so the tag is refused there rather than
+half-working.</p>
+
+<p>Dropdown filtering physically removes and re-inserts <code>&lt;option&gt;</code>
+elements, because Safari ignores CSS hiding on options. Configure via field annotation
+only in this version.</p>
+
+<h2>Audit</h2>
+
+<p>A save that lands a hidden choice — via the API, an import, or a race — is logged by
+the post-save audit as <code>type: choices</code>, <code>reason: hidden-choice</code>,
+and the Validation scan reports it retrospectively.</p>
