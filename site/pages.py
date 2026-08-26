@@ -18,6 +18,19 @@ TAGLINE = "Live, as-you-type field validation for REDCap"
 AUTHOR = "Bamenda Center for Health Promotion and Research (CHPR)"
 LICENSE_URL = f"{REPO_URL}/blob/main/LICENSE"
 
+# --- search-engine plumbing ------------------------------------------------
+
+# Google Search Console meta-tag verification. Paste the `content` value from
+# the tag GSC gives you (Settings -> Ownership verification -> HTML tag).
+# Leave empty and no tag is emitted. The HTML-file method works too: drop
+# Google's google<hash>.html into site/static/ instead.
+GOOGLE_SITE_VERIFICATION = ""
+
+# IndexNow (Bing, Yandex, Seznam, Naver — not Google). The key is published at
+# /<key>.txt so those engines can confirm we own the site; that is the design,
+# it is not a secret. Submit with: python site/submit_indexnow.py
+INDEXNOW_KEY = "67913efd98c5b057d096b9d82c92a6b4"
+
 
 @dataclass
 class Page:

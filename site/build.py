@@ -21,6 +21,7 @@ import pages as cfg  # noqa: E402
 OUT = HERE / "_site"
 CONTENT = HERE / "content"
 ASSETS = HERE / "assets"
+STATIC = HERE / "static"
 
 
 def canonical(slug: str) -> str:
@@ -108,7 +109,7 @@ SHELL = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <meta name="description" content="{description}">
-{keywords_meta}<link rel="canonical" href="{canonical}">
+{verification}{keywords_meta}<link rel="canonical" href="{canonical}">
 <meta property="og:type" content="{og_type}">
 <meta property="og:title" content="{title}">
 <meta property="og:description" content="{description}">
@@ -164,6 +165,8 @@ def render(page) -> str:
     return SHELL.format(
         title=html.escape(page.title),
         description=html.escape(page.description),
+        verification=(f'<meta name="google-site-verification" content="{cfg.GOOGLE_SITE_VERIFICATION}">\n'
+                      if cfg.GOOGLE_SITE_VERIFICATION else ""),
         keywords_meta=(f'<meta name="keywords" content="{html.escape(", ".join(kw))}">\n' if kw else ""),
         canonical=canonical(page.slug),
         og_type="website" if page.slug == "index" else "article",
@@ -205,6 +208,21 @@ def main() -> None:
         print(f"  {target.relative_to(OUT)}")
 
     shutil.copytree(ASSETS, OUT / "assets")
+
+    # Anything dropped in site/static/ lands at the site root verbatim — that is
+    # where search-engine ownership files go (Google's google<hash>.html,
+    # Bing's BingSiteAuth.xml).
+    if STATIC.is_dir():
+        for f in sorted(STATIC.iterdir()):
+            if f.is_file() and f.name != ".gitkeep":
+                shutil.copy2(f, OUT / f.name)
+                print(f"  {f.name} (static)")
+
+    # IndexNow proves site ownership by serving the key back at /<key>.txt.
+    # Publishing it is the design, not a leak.
+    if cfg.INDEXNOW_KEY:
+        (OUT / f"{cfg.INDEXNOW_KEY}.txt").write_text(cfg.INDEXNOW_KEY, encoding="utf-8")
+
     (OUT / "sitemap.xml").write_text(sitemap(), encoding="utf-8")
     (OUT / "robots.txt").write_text(
         f"User-agent: *\nAllow: /\n\nSitemap: {cfg.BASE_URL}/sitemap.xml\n", encoding="utf-8")
