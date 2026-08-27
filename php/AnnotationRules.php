@@ -682,41 +682,9 @@ class AnnotationRules
 
         $pattern = isset($frag['idPattern']) ? $frag['idPattern'] : null;
         if ($pattern !== null && $pattern !== '') {
-            if (!is_string($pattern)) {
-                $errors[] = 'the format pattern must be a regex string.';
-            } elseif (preg_match('/[^\x20-\x7E]/', $pattern)) {
-                // The client (JS RegExp, UTF-16) and server (PCRE /u, code
-                // points) are only proven to agree on printable ASCII.
-                $errors[] = 'the format pattern must contain printable ASCII only — '
-                    . 'the browser and server regex engines are only guaranteed to agree on that subset.';
-            } elseif (preg_match('/\\\\[AZ]/', $pattern)) {
-                $errors[] = 'the format pattern uses Python-only \A or \Z anchors — patterns are '
-                    . 'JavaScript regex; use ^ and $ instead (anchors are optional anyway).';
-            } elseif (strpos($pattern, '(?P<') !== false) {
-                $errors[] = 'the format pattern uses Python-only (?P<name>...) groups, '
-                    . 'which JavaScript cannot compile.';
-            } elseif (self::usesUFlagEscape($pattern)) {
-                // \p{}, \P{}, \u{}, \x{} and \k<> only work with JavaScript's "u"
-                // flag; the browser compiles ID patterns WITHOUT it (so \p reads as
-                // a literal "p" and \x{41} as x{41}) while the server matches with
-                // PCRE /u, so the two engines would disagree on a valid value (F2 +
-                // F2-BYPASS-01). Reject at config time like \A/\Z and (?P<...),
-                // keeping the proven-parity subset to explicit classes.
-                $errors[] = 'the format pattern uses a Unicode-property, code-point or named escape '
-                    . '(\p{...}, \P{...}, \u{...}, \x{...} or \k<...>) that only works with '
-                    . 'JavaScript\'s "u" flag — the browser compiles ID patterns without it, so the '
-                    . 'value would validate differently in the browser and on the server. Use explicit '
-                    . 'character classes such as [A-Z] or [0-9] instead.';
-            } elseif (CheckCharacter::riskyPattern($pattern)) {
-                $errors[] = 'the format pattern looks catastrophically backtracking (nested '
-                    . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
-                    . 'long run of overlapping bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / '
-                    . '[0-9]*[0-9]*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
-                    . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
-                    . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
-            } elseif (!CheckCharacter::patternCompiles($pattern)) {
-                $errors[] = 'the format pattern does not compile as a regex — check the syntax.';
-            }
+            // Single admission point, shared with the pooled parser and twinned
+            // by QRID_gatePattern (js) — see CheckCharacter::gatePattern.
+            if (CheckCharacter::gatePattern($pattern, $why) === null) $errors[] = $why;
         }
         if ($algo === 'none' && ($pattern === null || $pattern === '')) {
             $errors[] = 'algorithm "none" validates format only, so a format pattern is required.';
@@ -987,20 +955,6 @@ class AnnotationRules
         if (is_int($v)) return $v > 0;
         if (is_string($v)) return ctype_digit($v) && (int) $v > 0;
         return false;
-    }
-
-    /**
-     * Whether $pattern uses a regex escape that only works with JavaScript's "u"
-     * flag — \p{...} \P{...} \u{...} \x{...} or \k<...> — which the browser (no u
-     * flag) and the server (PCRE /u) enforce DIFFERENTLY (F2, F2-BYPASS-01).
-     * Escaped-backslash pairs are stripped first so a literal-backslash pattern
-     * like "\\u{2}" is NOT mistaken for a real \u escape (F2-OVERREJECT-02). Keep
-     * in sync with QRID_uFlagEscape (js).
-     */
-    private static function usesUFlagEscape($pattern)
-    {
-        $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
-        return preg_match('/\\\\[pPux]\{/', $d) === 1 || strpos($d, '\\k<') !== false;
     }
 
     /**

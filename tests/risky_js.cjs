@@ -67,5 +67,53 @@ n++;
   if (elapsed > 500) { fail++; console.error(`safe patterns exceeded the time budget: ${elapsed}ms`); }
 }
 
+// ---- gatePattern is THE admission point: every pattern the heuristic rejects
+// must be refused by the gate too, and every safe one must compile through it.
+// Locks the extraction that replaced three copies of this chain (single-field
+// factory, pooled factory, AnnotationRules::checkFragment).
+if (typeof Q.gatePattern !== 'function') {
+  console.error('engine.js did not expose INSPIREUniversalValidator.gatePattern');
+  process.exit(1);
+}
+for (const p of fx.risky) {
+  n++;
+  const g = Q.gatePattern(p, '');
+  if (g.re !== null || !/catastrophically backtracking/.test(g.error)) {
+    fail++;
+    console.error(`gatePattern did not refuse a risky pattern: ${JSON.stringify(p)}`);
+  }
+}
+for (const p of fx.safe) {
+  n++;
+  const g = Q.gatePattern(p, '');
+  if (g.re === null || g.error !== '') {
+    fail++;
+    console.error(`gatePattern refused a safe pattern: ${JSON.stringify(p)} -> ${g.error}`);
+  }
+}
+// The other three gates still fire, and `label` names the offending alternate.
+n++;
+{
+  const cases = [
+    ['\\Aabc', 'Python-only'],
+    ['abéc', 'printable ASCII'],
+    ['\\p{L}+x', 'Unicode-property'],
+    ['[a-', 'not a valid JavaScript regex'],
+  ];
+  for (const [pat, needle] of cases) {
+    const g = Q.gatePattern(pat, 'GHIT');
+    if (g.re !== null || g.error.indexOf(needle) === -1 || g.error.indexOf('(GHIT)') === -1) {
+      fail++;
+      console.error(`gatePattern(${JSON.stringify(pat)}, "GHIT") -> ${JSON.stringify(g.error)}`);
+    }
+  }
+  // no label => legacy wording: no "(alternate)" tag right after "idPattern"
+  const g0 = Q.gatePattern('\\Aabc', '');
+  if (g0.error.indexOf('idPattern uses Python-only') !== 0) {
+    fail++;
+    console.error(`unlabelled gatePattern changed the legacy wording: ${JSON.stringify(g0.error)}`);
+  }
+}
+
 console.log(`risky_js: ${n} patterns checked, ${fail} mismatch(es)`);
 process.exit(fail === 0 ? 0 : 1);

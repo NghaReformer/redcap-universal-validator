@@ -101,5 +101,52 @@ if (CheckCharacter::riskyPattern(str_repeat('A', 512)) !== false) {
     fwrite(STDERR, "512-char plain pattern source was wrongly gated\n");
 }
 
+// ---- 5) gatePattern is THE admission point (twin of QRID_gatePattern) ----
+// Every pattern the heuristic rejects must be refused by the gate, and every
+// safe one must compile through it. Locks the extraction that replaced the
+// hand-rolled chain in AnnotationRules::checkFragment.
+foreach ($fx['risky'] as $p) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($p, $why) !== null || strpos($why, 'catastrophically backtracking') === false) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern did not refuse a risky pattern: ' . json_encode($p) . "\n");
+    }
+}
+foreach ($fx['safe'] as $p) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($p, $why) === null) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern refused a safe pattern: ' . json_encode($p) . ' -> ' . $why . "\n");
+    }
+}
+// The server-only gates still fire with checkFragment's exact wording.
+foreach ([
+    ['\Aabc',    'Python-only \A or \Z'],
+    ["ab\xC3\xA9c", 'printable ASCII only'],
+    ['\p{L}+x',  'Unicode-property'],
+    ['(?P<n>a)', '(?P<name>...)'],
+    ['[a-',      'does not compile'],
+] as $case) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($case[0], $why) !== null || strpos($why, $case[1]) === false) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern(' . json_encode($case[0]) . ') -> ' . json_encode($why) . "\n");
+    }
+}
+// compileOnly skips the parity gates but still reports an uncompilable body.
+$n++;
+if (CheckCharacter::patternCompiles('\p{L}+x') !== true) {
+    $fail++;
+    fwrite(STDERR, "patternCompiles wrongly applied a parity gate\n");
+}
+$n++;
+if (CheckCharacter::patternCompiles('[a-') !== false) {
+    $fail++;
+    fwrite(STDERR, "patternCompiles accepted an uncompilable pattern\n");
+}
+
 echo sprintf("risky_php: %d checks, %d mismatch(es)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

@@ -841,6 +841,54 @@ function QRID_classesOverlap(a, b){
   }
   return false;
 }
+/* THE one place an ID pattern is admitted and compiled. Four gates, then
+   compile: Python-only anchors, printable ASCII (the only subset the browser
+   and PCRE provably agree on), u-flag-only escapes (F2), and catastrophic
+   backtracking (F1). Returns {re, error}; exactly one of them is meaningful.
+
+   Extracted because the identical chain lived in the single-field factory, the
+   pooled factory and AnnotationRules::checkFragment — three copies that had to
+   be edited together, and a rule with SEVERAL patterns would have made it five.
+   Twin of CheckCharacter::gatePattern (php); the wording is asserted on by
+   tests/config_notice_js.cjs and tests/dispatch_notice_js.cjs, so it must stay
+   byte-identical across both runtimes. `label` names which alternate failed
+   (empty for a single-pattern rule, so legacy messages are unchanged). */
+function QRID_gatePattern(raw, label){
+  var src = String(raw), where = label ? " (" + label + ")" : "";
+  if(/\\[AZ]/.test(src)){
+    /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
+    return { re: null, error: "idPattern" + where + " uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
+      "regex — use ^ and $ instead (anchors are optional anyway)." };
+  }
+  if(/[^\x20-\x7E]/.test(src)){
+    /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
+    return { re: null, error: "idPattern" + where + " must contain printable ASCII only — the browser and server " +
+      "regex engines are only guaranteed to agree on that subset." };
+  }
+  if(QRID_uFlagEscape(src)){
+    /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
+       compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
+       x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
+    return { re: null, error: "idPattern" + where + " uses a Unicode-property, code-point or named escape (\\p{...}, " +
+      "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
+      "browser compiles ID patterns without it, so the value would validate differently in the " +
+      "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead." };
+  }
+  if(QRID_riskyPattern(src)){
+    return { re: null, error: "idPattern" + where + " looks catastrophically backtracking (nested quantifiers, a " +
+      "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
+      "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
+      "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
+      "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class." };
+  }
+  try {
+    var body = src.replace(/^\^/, "").replace(/\$$/, "");
+    return { re: new RegExp("^(?:" + body + ")$"), error: "" };
+  } catch(e){
+    return { re: null, error: "idPattern" + where + " is not a valid JavaScript regex: " + e.message +
+      " (Python-only syntax like (?P<name>...) or inline flags is not supported)." };
+  }
+}
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
 var QRID_MAX_POOLED_LEN = 4096;   /* pooled field: cap total scanned length        */
 /* Rule-config work caps — mirror php/CheckCharacter.php MAX_* constants (the
@@ -1708,36 +1756,9 @@ function QRIDSingleInit(QRID_CONFIG){
       Object.keys(Q.ALGORITHMS).join(", ") + ".";
   }
   if(!configError && cfg.idPattern){
-    var rawPatS = String(cfg.idPattern);
-    if(/\\[AZ]/.test(rawPatS)){
-      /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
-      configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
-        "regex — use ^ and $ instead (anchors are optional anyway).";
-    } else if(/[^\x20-\x7E]/.test(rawPatS)){
-      /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
-      configError = "idPattern must contain printable ASCII only — the browser and server " +
-        "regex engines are only guaranteed to agree on that subset.";
-    } else if(QRID_uFlagEscape(rawPatS)){
-      /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
-         compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
-         x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
-      configError = "idPattern uses a Unicode-property, code-point or named escape (\\p{...}, " +
-        "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
-        "browser compiles ID patterns without it, so the value would validate differently in the " +
-        "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead.";
-    } else if(QRID_riskyPattern(rawPatS)){
-      configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
-        "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
-        "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
-        "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
-        "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class.";
-    } else try {
-      var p = rawPatS.replace(/^\^/, "").replace(/\$$/, "");
-      fullRe = new RegExp("^(?:" + p + ")$");
-    } catch(e){
-      configError = "idPattern is not a valid JavaScript regex: " + e.message +
-        " (Python-only syntax like (?P<name>...) or inline flags is not supported).";
-    }
+    var gS = QRID_gatePattern(cfg.idPattern, "");
+    configError = gS.error;
+    fullRe = gS.re;
   }
   if(!configError){
     CHECK_MODE = (algoName !== "none");
@@ -2887,36 +2908,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       Object.keys(Q.ALGORITHMS).join(", ") + ".";
   }
   if(!configError && cfg.idPattern){
-    var rawPatP = String(cfg.idPattern);
-    if(/\\[AZ]/.test(rawPatP)){
-      /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
-      configError = "idPattern uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
-        "regex — use ^ and $ instead (anchors are optional anyway).";
-    } else if(/[^\x20-\x7E]/.test(rawPatP)){
-      /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
-      configError = "idPattern must contain printable ASCII only — the browser and server " +
-        "regex engines are only guaranteed to agree on that subset.";
-    } else if(QRID_uFlagEscape(rawPatP)){
-      /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
-         compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
-         x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
-      configError = "idPattern uses a Unicode-property, code-point or named escape (\\p{...}, " +
-        "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
-        "browser compiles ID patterns without it, so the value would validate differently in the " +
-        "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead.";
-    } else if(QRID_riskyPattern(rawPatP)){
-      configError = "idPattern looks catastrophically backtracking (nested quantifiers, a " +
-        "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
-        "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
-        "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
-        "unbounded quantifiers overlap, and no long run of bounded quantifiers shares a character class.";
-    } else try {
-      var _p = rawPatP.replace(/^\^/, "").replace(/\$$/, "");
-      fullRe = new RegExp("^(?:" + _p + ")$");
-    } catch(e){
-      configError = "idPattern is not a valid JavaScript regex: " + e.message +
-        " (Python-only syntax like (?P<name>...) or inline flags is not supported).";
-    }
+    var gP = QRID_gatePattern(cfg.idPattern, "");
+    configError = gP.error;
+    fullRe = gP.re;
   }
   if(!configError){
     CHECK_MODE = (algoName !== "none");
@@ -3434,6 +3428,7 @@ window.INSPIREUniversalValidator = {
   config: QRID_COMBINED_CONFIG,
   engine: Q,
   riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
+  gatePattern: QRID_gatePattern,            /* the one pattern admission point, locked by tests/risky_js.cjs */
   configErrorNotice: QRID_configErrorNotice, /* exercised by tests/config_notice_js.cjs */
   whenLogic: {                               /* "when" twins, locked by tests/when_js.cjs */
     parse: QRID_whenParse,

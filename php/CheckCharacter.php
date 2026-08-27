@@ -449,9 +449,95 @@ class CheckCharacter
     /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
     public static function patternCompiles($pattern)
     {
+        $why = '';
+        return self::gatePattern($pattern, $why, true) !== null;
+    }
+
+    /**
+     * Whether $pattern uses a regex escape that only works with JavaScript's "u"
+     * flag — \p{...} \P{...} \u{...} \x{...} or \k<...> — which the browser (no u
+     * flag) and the server (PCRE /u) enforce DIFFERENTLY (F2, F2-BYPASS-01).
+     * Escaped-backslash pairs are stripped first so a literal-backslash pattern
+     * like "\\u{2}" is NOT mistaken for a real \u escape (F2-OVERREJECT-02). Keep
+     * in sync with QRID_uFlagEscape (js).
+     */
+    public static function usesUFlagEscape($pattern)
+    {
+        $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
+        return preg_match('/\\\\[pPux]\{/', $d) === 1 || strpos($d, '\\k<') !== false;
+    }
+
+    /**
+     * THE one place an ID pattern is admitted and compiled on the server.
+     * Returns the anchored PCRE, or null with $why set to the designer-facing
+     * sentence AnnotationRules::checkFragment reports.
+     *
+     * Extracted because the identical chain lived in the single-field factory,
+     * the pooled factory (both js) and checkFragment — three copies that had to
+     * be edited together, and a rule with SEVERAL patterns would have made it
+     * five. Twin of QRID_gatePattern (js); the gates are the same four plus the
+     * server-only (?P<...> and is_string checks, which the browser cannot hit.
+     *
+     * $compileOnly skips the parity gates for callers that only need to know
+     * whether PCRE accepts the syntax (patternCompiles).
+     */
+    public static function gatePattern($pattern, &$why = null, $compileOnly = false)
+    {
+        $why = '';
+        if (!$compileOnly) {
+            if (!is_string($pattern)) {
+                $why = 'the format pattern must be a regex string.';
+                return null;
+            }
+            if (preg_match('/[^\x20-\x7E]/', $pattern)) {
+                // The client (JS RegExp, UTF-16) and server (PCRE /u, code
+                // points) are only proven to agree on printable ASCII.
+                $why = 'the format pattern must contain printable ASCII only — '
+                    . 'the browser and server regex engines are only guaranteed to agree on that subset.';
+                return null;
+            }
+            if (preg_match('/\\\\[AZ]/', $pattern)) {
+                $why = 'the format pattern uses Python-only \A or \Z anchors — patterns are '
+                    . 'JavaScript regex; use ^ and $ instead (anchors are optional anyway).';
+                return null;
+            }
+            if (strpos($pattern, '(?P<') !== false) {
+                $why = 'the format pattern uses Python-only (?P<name>...) groups, '
+                    . 'which JavaScript cannot compile.';
+                return null;
+            }
+            if (self::usesUFlagEscape($pattern)) {
+                // \p{}, \P{}, \u{}, \x{} and \k<> only work with JavaScript's "u"
+                // flag; the browser compiles ID patterns WITHOUT it (so \p reads as
+                // a literal "p" and \x{41} as x{41}) while the server matches with
+                // PCRE /u, so the two engines would disagree on a valid value (F2 +
+                // F2-BYPASS-01). Reject at config time like \A/\Z and (?P<...),
+                // keeping the proven-parity subset to explicit classes.
+                $why = 'the format pattern uses a Unicode-property, code-point or named escape '
+                    . '(\p{...}, \P{...}, \u{...}, \x{...} or \k<...>) that only works with '
+                    . 'JavaScript\'s "u" flag — the browser compiles ID patterns without it, so the '
+                    . 'value would validate differently in the browser and on the server. Use explicit '
+                    . 'character classes such as [A-Z] or [0-9] instead.';
+                return null;
+            }
+            if (self::riskyPattern($pattern)) {
+                $why = 'the format pattern looks catastrophically backtracking (nested '
+                    . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
+                    . 'long run of overlapping bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / '
+                    . '[0-9]*[0-9]*, or A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}) — rewrite it so no ambiguous '
+                    . 'group repeats, no two unbounded quantifiers overlap, and no long run of bounded '
+                    . 'quantifiers shares a character class (use a disjoint class or a fixed length).';
+                return null;
+            }
+        }
         $body = preg_replace('/^\^/', '', (string) $pattern);
         $body = preg_replace('/\$$/', '', $body);
-        return self::compilePattern($body) !== null;
+        $re = self::compilePattern($body);
+        if ($re === null) {
+            $why = 'the format pattern does not compile as a regex — check the syntax.';
+            return null;
+        }
+        return $re;
     }
 
     /** Build an anchored PCRE from a JS-style regex body, or null if uncompilable. */
