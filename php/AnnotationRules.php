@@ -730,11 +730,31 @@ class AnnotationRules
             $roLens = [];       // lengths of the FORMAT-ONLY alternates
             $ckLens = [];       // lengths of the CHECK-BEARING alternates
             $keepSets = [];
+            $shapes = [];
+            $fwhy = '';
             foreach ($alts as $i => $a) {
                 $nm = isset($a['label']) && $a['label'] !== '' ? (string) $a['label'] : 'alternate ' . ($i + 1);
                 if (isset($a['label']) && strlen((string) $a['label']) > CheckCharacter::MAX_ALT_LABEL) {
                     $errors[] = 'alternate ' . ($i + 1) . ': "label" is limited to '
                         . CheckCharacter::MAX_ALT_LABEL . ' characters.';
+                    continue;
+                }
+                // M-01: alternatesOf refuses a non-ASCII label at RUNTIME, so a
+                // label that only passed a length check here would save clean
+                // and then kill the rule on the form - breaking the invariant
+                // that a rule one channel accepts another cannot reject.
+                if (isset($a['label']) && preg_match('/[^\x20-\x7E]/', (string) $a['label'])) {
+                    $errors[] = 'alternate ' . ($i + 1) . ': "label" must contain printable ASCII '
+                        . 'characters only.';
+                    continue;
+                }
+                // M-04: an alternate's own "strip" reaches normalize() exactly
+                // as the rule-level one does, and PHP splits it by code point
+                // while the browser splits by UTF-16 code unit - so outside
+                // printable ASCII the two runtimes strip differently. Same gate
+                // the rule level has had all along.
+                if (isset($a['strip']) && preg_match('/[^\x20-\x7E]/', (string) $a['strip'])) {
+                    $errors[] = $nm . ': "strip" must contain printable ASCII characters only.';
                     continue;
                 }
                 $aAlgo = isset($a['algorithm']) && $a['algorithm'] !== '' ? $a['algorithm'] : $ruleAlgo;
@@ -781,21 +801,57 @@ class AnnotationRules
                     if ($aAlgo === 'none') $roLens = array_merge($roLens, $ls);
                     else                   $ckLens = array_merge($ckLens, $ls);
                 }
+                $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none')];
                 // KEEP is computed once over the WHOLE field before anything is
                 // split, so it is the union across alternates. An algorithm that
                 // can emit "*" therefore makes "*" survive for a sibling that
                 // cannot contain it, silently changing the string recorded for
                 // that sibling.
-                $keepSets[$nm] = self::keepSetFor($baseKeep, $aAlgo, $a['pattern']);
+                // Keyed by INDEX, not by display name: two alternates sharing
+                // a label used to overwrite each other, and when EVERY entry
+                // shared one label the map collapsed to a single row and the
+                // comparison below was skipped entirely - silently disabling
+                // the gate. Copy-pasting an entry and forgetting to rename it
+                // is the obvious way to hit that.
+                $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'])];
+            }
+            // A format-only alternate accepts on shape alone, and the first
+            // alternate that accepts wins - so if its pattern also accepts a
+            // value a check-bearing alternate is meant to verify, that check
+            // character is never tested and a mis-scan passes as clean. Pattern
+            // subsumption is undecidable in general; this asks the decidable
+            // question instead - is there a CONCRETE string both accept? - and
+            // stays silent whenever no witness can be produced.
+            // The pooled path also has the length guard below; this is the only
+            // protection a single-value field gets.
+            if (!$errors && count($shapes) > 1) {
+                foreach ($shapes as $fi => $F) {
+                    if (!$F['formatOnly']) continue;
+                    foreach ($shapes as $ki => $K) {
+                        if ($K['formatOnly']) continue;
+                        $w = CheckCharacter::patternWitness($K['pattern']);
+                        if ($w === null) continue;                  // no witness, no claim
+                        $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
+                        if ($fre === null || !CheckCharacter::patTest($fre, $w)) continue;
+                        $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
+                            . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). Whichever '
+                            . 'alternate accepts first wins, so ' . $K['name'] . '\'s check character '
+                            . 'would never be tested and a mis-scan would pass as a clean ID. Narrow '
+                            . $F['name'] . '\'s pattern so the two cannot overlap.';
+                        break 2;
+                    }
+                }
             }
             if (!$errors && count($keepSets) > 1) {
-                $names = array_keys($keepSets);
-                $first = $keepSets[$names[0]];
-                foreach ($names as $nm) {
-                    $diff = array_merge(array_diff(str_split($keepSets[$nm]), str_split($first)),
-                                        array_diff(str_split($first), str_split($keepSets[$nm])));
+                $idxs  = array_keys($keepSets);
+                $first = $keepSets[$idxs[0]];
+                foreach ($idxs as $ix) {
+                    $diff = array_merge(array_diff(str_split($keepSets[$ix]['keep']), str_split($first['keep'])),
+                                        array_diff(str_split($first['keep']), str_split($keepSets[$ix]['keep'])));
                     if ($diff) {
-                        $errors[] = $names[0] . ' and ' . $nm . ' disagree about which characters survive '
+                        $nm = $keepSets[$ix]['name'];
+                        if ($nm === $first['name']) $nm = 'alternate ' . ($ix + 1);
+                        $errors[] = $first['name'] . ' and ' . $nm . ' disagree about which characters survive '
                             . 'cleaning (' . implode(' ', array_unique($diff)) . '). Cleaning runs once over '
                             . 'the whole field, so those characters would be kept for every alternate — '
                             . 'including ones that cannot contain them, which changes the value recorded. '

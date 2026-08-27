@@ -72,9 +72,19 @@ function boot(els, config) {
     addEventListener(type, fn) { (this._handlers[type] = this._handlers[type] || []).push(fn); },
     fire(type, ev) { (this._handlers[type] || []).forEach((fn) => fn(ev)); },
   };
+  // Production NEVER sends a bare rules array: buildClientConfig merges
+  // UniversalValidator::defaults() into the TOP LEVEL of the injected config,
+  // and cfgFor fills every rule key from there. A harness that omits those
+  // defaults tests a config shape the module never emits - which is how a
+  // pooled multi-format rule came to fail on every real form while this suite
+  // stayed green. Boot the way the server actually injects.
   const win = {
     _alerts: [], alert(m) { this._alerts.push(m); }, confirm() { return true; },
-    INSPIRE_VALIDATOR_CONFIG: config,
+    INSPIRE_VALIDATOR_CONFIG: Object.assign({
+      algorithm: 'iso7064_mod37_36', idPattern: null, alternates: null,
+      source: 'normalized_id', strip: '-/ _|\\', suggestFix: false, keepChars: '',
+      idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: 'off',
+    }, config),
   };
   global.document = doc; global.window = win;
   require(enginePath);
@@ -296,6 +306,37 @@ function singleEnv(value, extra) {
     check('summary: an all-check-bearing pool still says "all verified"',
       /all verified/.test(msg.innerHTML) && !/format-only/.test(msg.innerHTML));
   }
+}
+
+// ---- 7) the guard must read the RULE, not the merged config ---------------
+// buildClientConfig merges defaults() (idMinLen 8, idMaxLen 14) into the top
+// level, and cfgFor fills every rule key from there. Inheriting those into a
+// multi-format rule made "don't set these alongside alternates" fire on EVERY
+// pooled alternates rule: red config banner, no chips, blockSave never armed,
+// while the server-side audit validated normally and nothing signalled the gap.
+{
+  const box = makeEl('input'); box.name = 'pool'; box.value = '';
+  const env = boot([box], { singleFields: [], pooledFields: [], rules: [
+    { type: 'pooled', fields: ['pool'], strip: '-', blockSave: 'hard', alternates: ALTS },
+  ] });
+  const api = env.NS.lastPooled;
+  check('C-01: a pooled alternates rule survives the merged production defaults',
+    api.mode.configError === '');
+  check('C-01: and actually parses', (() => {
+    const SK = mint(env, 'SK1-0123');
+    const segs = api.parse('FC1-0589' + SK);
+    return segs && segs.length === 2 && segs.every((x) => x.type === 'id' && x.valid);
+  })());
+}
+// ...but a rule that genuinely sets them alongside alternates is still refused,
+// on the rule itself rather than on an inherited default.
+for (const extra of [{ idLengths: [8] }, { idMinLen: 8 }, { idMaxLen: 14 }, { idPattern: 'A[0-9]{4}' }]) {
+  const box = makeEl('input'); box.name = 'pool';
+  const env = boot([box], { singleFields: [], pooledFields: [], rules: [
+    Object.assign({ type: 'pooled', fields: ['pool'], strip: '-', alternates: ALTS }, extra),
+  ] });
+  check('C-01: a rule setting ' + Object.keys(extra)[0] + ' alongside alternates is still refused',
+    /must not also set/.test(env.NS.lastPooled.mode.configError || ''));
 }
 
 console.log(`alternates_dom_js: ${n} checks, ${fail} failure(s)`);

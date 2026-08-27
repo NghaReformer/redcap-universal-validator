@@ -472,6 +472,20 @@ namespace {
     check('alternates: a non-ASCII value fails open with no alternate check run',
         \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => true, 'reason' => 'valid']);
 
+    // M-02 (review 2026-08-27): an algorithm this engine does not implement is a
+    // CONFIGURATION problem. Unguarded, compute() throws inside validateId and
+    // reads back as a failed check - a false finding against a good ID. The
+    // pooled twin has refused it since the rewrite (COR-002).
+    $unkCfg = ['algorithm' => 'iso7064_mod37_36', 'source' => 'normalized_id', 'strip' => '-',
+               'alternates' => [['pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => 'sha256_thing']]];
+    check('M-02: an unknown alternate algorithm is unconfigurable, not a check failure',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($unkCfg, 'SK1-0123D')
+        === ['ok' => true, 'reason' => 'unconfigurable']);
+    check('M-02: the pooled twin agrees',
+        \INSPIRE\UniversalValidator\CheckCharacter::validatePooledField(
+            array_merge($unkCfg, ['alternates' => [['pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',
+                'algorithm' => 'sha256_thing', 'lengths' => [9]]]]), 'SK1-0123D')['reason'] === 'unconfigurable');
+
     // ---- 13) per-rule isolation: a failure while auditing one rule must not
     //           stop later rules. Simulated by a log backend that throws on the
     //           FIRST detection write (rule 1's invalid field); the annotation

@@ -12,6 +12,7 @@
 require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\AnnotationRules;
+use INSPIRE\UniversalValidator\CheckCharacter;
 
 $n = 0;
 $fail = 0;
@@ -546,6 +547,81 @@ check('the four-family action tag parses clean end to end',
     !isset($r['error']) && count($r['alternates']) === 4
     && $r['alternates'][1]['algorithm'] === 'iso7064_mod37_36'
     && $r['blockSave'] === 'hard' && $r['type'] === 'pooled');
+
+
+// ---- adversarial review 2026-08-27: the config-time gates it got past ------
+$MOD = 'iso7064_mod37_36';
+
+// H-01: a format-only alternate accepts on shape alone and the first accept
+// wins, so a permissive one silently disables a check-bearing sibling. Pattern
+// subsumption is undecidable; the guard asks the decidable question instead -
+// is there a CONCRETE string both accept?
+check('H-01 permissive format-only alternate refused (declared first)',
+    strpos($altErr([
+        ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
+        ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
+    ], ['type' => 'single']), 'never be tested') !== false);
+check('H-01 caught regardless of declaration order',
+    strpos($altErr([
+        ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
+        ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
+    ], ['type' => 'single']), 'never be tested') !== false);
+check('H-01 the error names a concrete overlapping value',
+    strpos($altErr([
+        ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
+        ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
+    ], ['type' => 'single']), 'SK1-00000') !== false);
+// ...and disjoint prefixes are still fine, single AND pooled: the driving case
+// declares its format-only family FIRST and must keep working.
+check('H-01 the driving case (disjoint shapes) still accepted, single',
+    fragErrors(['type' => 'single', 'strip' => '-', 'alternates' => array_map(function ($a) {
+        unset($a['lengths']); return $a;
+    }, $ALT4)]) === []);
+check('H-01 the driving case still accepted, pooled',
+    fragErrors(['type' => 'pooled', 'strip' => '-', 'alternates' => $ALT4]) === []);
+// no witness can be produced from an alternation, so no claim is made
+check('H-01 stays silent when no witness can be built',
+    $altErr([
+        ['label' => 'wild', 'pattern' => '[A-Z0-9-]+',   'algorithm' => 'none'],
+        ['label' => 'grp',  'pattern' => '(a|b)[0-9]{3}', 'algorithm' => $MOD],
+    ], ['type' => 'single']) === '');
+
+// H-02: the KEEP map was keyed by display name, so two alternates sharing a
+// label overwrote each other - and when every entry shared one label the map
+// collapsed to a single row and the comparison was skipped outright.
+$keepPair = function ($l1, $l2) {
+    return implode(' ', fragErrors(['type' => 'pooled', 'alternates' => [
+        ['label' => $l1, 'pattern' => 'AA[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_2',  'lengths' => [9]],
+        ['label' => $l2, 'pattern' => 'BB[0-9]{7}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+    ]]));
+};
+check('H-02 distinct labels: KEEP disagreement refused',
+    strpos($keepPair('QR', 'QR2'), 'disagree about which characters survive') !== false);
+check('H-02 DUPLICATE labels no longer collapse the gate',
+    strpos($keepPair('QR', 'QR'), 'disagree about which characters survive') !== false);
+check('H-02 the duplicate-label message still distinguishes the two entries',
+    strpos($keepPair('QR', 'QR'), 'alternate 2') !== false);
+
+// M-01: alternatesOf refuses a non-ASCII label at RUNTIME, so one that only
+// passed a length check here would save clean and kill the rule on the form.
+check('M-01 non-ASCII alternate label refused at config time',
+    strpos($altErr([['label' => "A\xE2\x80\x94B", 'pattern' => 'A[0-9]{4}', 'algorithm' => 'none']],
+        ['type' => 'single']), 'printable ASCII') !== false);
+// M-04: an alternate's own strip reaches normalize() exactly as the rule-level
+// one does, and the runtimes split it differently outside printable ASCII.
+check('M-04 non-ASCII alternate strip refused at config time',
+    strpos($altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'strip' => "\xE2\x80\x94"]],
+        ['type' => 'single']), 'printable ASCII') !== false);
+check('M-04 an ASCII alternate strip is still accepted',
+    $altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'strip' => '-']], ['type' => 'single']) === '');
+
+// patternWitness must never guess: an unverifiable witness is discarded.
+check('patternWitness builds a verified witness for a supported pattern',
+    CheckCharacter::patternWitness('SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
+check('patternWitness declines an alternation',
+    CheckCharacter::patternWitness('(a|b)[0-9]{3}') === null);
+check('patternWitness declines a negated class',
+    CheckCharacter::patternWitness('[^A-Z]{3}') === null);
 
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);

@@ -565,6 +565,82 @@ class CheckCharacter
         return null;
     }
 
+    /**
+     * A shortest concrete string this pattern accepts, or null when one cannot
+     * be produced. Used to decide, at config time, whether a format-only
+     * alternate would swallow a value a check-bearing one is meant to verify.
+     *
+     * Handles the pattern class this module supports - literals, escaped
+     * literals, character classes, "." and the quantifiers ?, +, *, {n}, {n,m}.
+     * Groups and alternation return null: no witness, no claim.
+     *
+     * The result is VERIFIED against the pattern's own compiled regex before it
+     * is returned, so a witness this builder gets wrong is discarded rather
+     * than used - the guard can therefore only ever fire on a string both
+     * patterns provably accept, never on a guess.
+     */
+    public static function patternWitness($pattern)
+    {
+        $p = preg_replace('/^\\^/', '', (string) $pattern);
+        $p = preg_replace('/\\$$/', '', $p);
+        $n = strlen($p);
+        $out = '';
+        $i = 0;
+        while ($i < $n) {
+            $c = $p[$i];
+            if ($c === '(' || $c === ')' || $c === '|') return null;   // not our class
+            $sample = null;
+            if ($c === '\\') {
+                $i++;
+                if ($i >= $n) return null;
+                $e = $p[$i];
+                if ($e === 'd') $sample = '0';
+                elseif ($e === 'w') $sample = 'A';
+                elseif ($e === 's') $sample = ' ';
+                elseif ($e === 'D' || $e === 'W' || $e === 'S') return null;
+                else $sample = $e;                                     // escaped literal
+                $i++;
+            } elseif ($c === '[') {
+                $close = strpos($p, ']', $i + 1);
+                if ($close === false) return null;
+                $body = substr($p, $i + 1, $close - $i - 1);
+                if ($body === '' || $body[0] === '^') return null;      // negated: no cheap member
+                $cls = self::expandClass($body);
+                if ($cls === null || $cls === '') return null;
+                $sample = $cls[0];
+                $i = $close + 1;
+            } elseif ($c === '.') {
+                $sample = 'A';
+                $i++;
+            } else {
+                $sample = $c;
+                $i++;
+            }
+            // quantifier
+            $min = 1;
+            if ($i < $n) {
+                $q = $p[$i];
+                if ($q === '?') { $min = 0; $i++; }
+                elseif ($q === '+') { $min = 1; $i++; }
+                elseif ($q === '*') { $min = 0; $i++; }
+                elseif ($q === '{') {
+                    $close = strpos($p, '}', $i + 1);
+                    if ($close === false) return null;
+                    $spec = substr($p, $i + 1, $close - $i - 1);
+                    if (!preg_match('/^([0-9]+)(,([0-9]*))?$/', $spec, $m)) return null;
+                    $min = (int) $m[1];
+                    $i = $close + 1;
+                }
+            }
+            if ($min > self::MAX_ID_LEN) return null;
+            $out .= str_repeat($sample, $min);
+            if (strlen($out) > self::MAX_ID_LEN) return null;
+        }
+        $re = self::gatePattern($pattern, $why, true);
+        if ($re === null) return null;
+        return self::patTest($re, $out) ? $out : null;                 // verify, or no claim
+    }
+
     /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
     public static function patternCompiles($pattern)
     {
@@ -680,7 +756,10 @@ class CheckCharacter
      * junk / invalid-ID verdict. Mirrors the preg_last_error guard in
      * matchesPattern() for the single-field path.
      */
-    private static function patTest($re, $t)
+    // Public because checkFragment's config-time overlap check needs the same
+    // PCRE-error-guarded match the parser uses; a bare preg_match there could
+    // report an engine failure as a real match.
+    public static function patTest($re, $t)
     {
         $m = @preg_match($re, $t);
         if ($m === false || preg_last_error() !== PREG_NO_ERROR) {
@@ -707,6 +786,17 @@ class CheckCharacter
         $norm = trim(self::normalize($value, '', true, true, null));
         if (preg_match('/[^ -~]/', $norm)) return ['ok' => true, 'reason' => 'valid'];
 
+        // An algorithm this engine does not implement is a CONFIGURATION problem,
+        // not a data problem: compute() would throw inside validateId and read
+        // back as a failed check, filing a false finding against a good ID.
+        // pooledState has refused it since the rewrite; this is its twin, and
+        // the rule-level gate at UniversalValidator::ruleFindings has no
+        // alternate-level equivalent (COR-002).
+        foreach ($ALTS as $A) {
+            if (!self::knownAlgorithm($A['algorithm'])) {
+                return ['ok' => true, 'reason' => 'unconfigurable'];
+            }
+        }
         $anyPattern = false; $shapeMatched = false;
         foreach ($ALTS as $A) {
             $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;

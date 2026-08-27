@@ -3680,6 +3680,15 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   function modeOfType(t){
     return (t === "constraint" || t === "required" || t === "unique" || t === "choices") ? t : "check";
   }
+  /* Keys a multi-format rule carries PER ALTERNATE. They must not be inherited
+     from the top-level config, because the server merges defaults() there
+     (idMinLen 8, idMaxLen 14) and inheriting them made the "don't set these
+     alongside alternates" guard fire on EVERY pooled alternates rule — the
+     documented feature was dead in the browser while the server, which reads
+     the raw rule where the keys are genuinely absent, validated normally.
+     Taking the RULE's own value (or nothing) makes the client see exactly what
+     the server sees, so a rule that genuinely sets them is still refused. */
+  var OWN_KEYS = { idPattern: 1, idLengths: 1, idMinLen: 1, idMaxLen: 1 };
   function cfgFor(rule){
     var cfg = {}, i, k;
     /* Branch rule (php/Branching.php): defaults are filled PER BRANCH, so a
@@ -3692,7 +3701,11 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         var b = rule.branches[i], bc = {};
         for(var j = 0; j < DEFAULT_KEYS.length; j++){
           k = DEFAULT_KEYS[j];
-          bc[k] = (b[k] !== undefined) ? b[k] : C[k];
+          /* per-alternate key on a multi-format branch: take the branch's own
+             value or nothing — never the top-level default */
+          bc[k] = (b[k] !== undefined) ? b[k]
+                : (OWN_KEYS[k] && b.alternates != null && b.alternates !== "") ? undefined
+                : C[k];
         }
         cfg.branches.push(bc);
       }
@@ -3702,7 +3715,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     }
     for(i = 0; i < DEFAULT_KEYS.length; i++){
       k = DEFAULT_KEYS[i];
-      cfg[k] = (rule[k] !== undefined) ? rule[k] : C[k];
+      cfg[k] = (rule[k] !== undefined) ? rule[k]
+             : (OWN_KEYS[k] && rule.alternates != null && rule.alternates !== "") ? undefined
+             : C[k];
     }
     cfg.fields = rule.fields || [];
     /* a rule the server flagged as mis-configured (e.g. a non-integer expected
