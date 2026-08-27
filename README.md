@@ -31,6 +31,12 @@ validate identically here, in Excel, and in the browser (same verified engine).
   the expected check character is available per rule (`suggestFix`) but **OFF
   by default** — a visible expected character can entice staff to force-fit a
   mistyped ID instead of re-scanning it.
+- **Several ID formats in one field** — a rule may declare a list of
+  `alternates`, each with its own pattern and its own check algorithm (or
+  `none`). A value, or a token inside a pooled box, is valid if any one of them
+  accepts it — so a shipment holding IDs from four studies, three of which carry
+  a check character and one of which does not, validates in a single field
+  without giving up the check character on the three that have one.
 - **Pooled fields** — splits a box holding several IDs (space/comma-separated, or
   jammed together with no separator) into individual IDs at the boundaries where
   the check character verifies, then shows one chip per member with warnings for
@@ -93,10 +99,39 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    @UVALIDATE={"type":"pooled","expectedIds":3}          pooled field, warn unless 3 IDs
    ```
 
-   JSON keys: `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`,
-   `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`,
-   `suggestFix`, `note`. A malformed tag shows a configuration error under that
-   field — never a silent no-op. Fields with identical tags are grouped into
+   **Several ID formats in one field.** Give the rule a list of `alternates`
+   instead of one `pattern`/`algorithm`; a value is valid if any entry accepts
+   it. Each entry carries its own `pattern` and `algorithm`, and a pooled rule
+   also needs `lengths` on every entry so the parser knows where one member
+   ends and the next begins:
+
+   ```text
+   @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+     {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
+     {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+     {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+     {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+   ```
+
+   Entry keys: `pattern` (required), `algorithm`, `source`, `strip`, `lengths`,
+   `label`. Anything not given falls back to the rule-level value. The `label`
+   names the family in messages and on the chips. Up to 8 entries and 32
+   format/length combinations per rule; when `alternates` is used the
+   rule-level `pattern`, `idLengths`, `idMinLen` and `idMaxLen` must be left
+   unset, because each entry carries its own.
+
+   Some combinations are refused when the rule is saved rather than guessed at
+   later: lengths where one is the sum of two or more others (one token could
+   then swallow several real members and still verify), a format-only entry
+   sharing a length with a check-bearing one (the format-only entry would
+   accept first, so that check character would never be tested), and entries
+   that disagree about which characters survive cleaning. Each message names
+   the entry and the fix.
+
+   JSON keys: `type`, `algorithm`, `source`, `pattern`, `alternates`, `strip`,
+   `keepChars`, `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`,
+   `when`, `suggestFix`, `note`. A malformed tag shows a configuration error under
+   that field — never a silent no-op. Fields with identical tags are grouped into
    one rule automatically, and one field may carry SEVERAL tags when each has
    a different `when` condition (branched validation — see below).
 

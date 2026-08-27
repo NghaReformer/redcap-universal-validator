@@ -1,5 +1,97 @@
 # Changelog
 
+## 1.10.0 - one field, several ID formats
+
+A sample-transportation project scans QR codes from four studies into the same
+box. GHIT IDs are 8 characters with no check character; START4KIDS, DARE-TB and
+SCREEN-TB are 9 or 10 characters and carry ISO 7064 Mod 37,36. A rule could only
+be shape-only for everything or shape-and-check for everything, so the choice was
+between marking every GHIT code a check-character error and dropping the check
+character from the three families that have one.
+
+- **A rule may now declare `alternates`** - a list of accepted ID formats, each
+  with its own `pattern` and its own `algorithm` (or `none`). A value, or a token
+  inside a pooled box, is valid if any one of them accepts it. Entry keys:
+  `pattern` (required), `algorithm`, `source`, `strip`, `lengths`, `label`;
+  anything omitted falls back to the rule-level value. Available in the action
+  tag, the data dictionary and the Configure dialog, all validated by the same
+  `checkFragment`. Up to 8 entries and 32 format/length combinations per rule.
+
+  ```text
+  @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+    {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
+    {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+    {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+    {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+  ```
+
+- **A legacy rule normalizes to a one-element list**, so there is one code path
+  rather than two to keep in step. `tests/pooled_fixture.json` regenerating
+  unchanged across the rewrite is the proof that nothing existing moved.
+
+- **Ambiguity is refused when the rule is saved, not guessed at afterwards** -
+  the precedent M-03 set. The sum-swallow proof runs over the UNION of the
+  alternates' lengths, because two individually safe sets can be jointly unsafe
+  (`[9]` and `[5,4]`: 9 = 5 + 4). A format-only alternate may not share a length
+  with a check-bearing one, or it accepts first and that check character is never
+  tested. Alternates must agree on which characters survive cleaning, since
+  cleaning runs once for the whole field - an `iso7064_mod37_2` alternate's `*`
+  would otherwise change the value recorded for its siblings; `keepChars` is the
+  opt-in. `expectedIds` stays enforceable while at most ONE format-only length
+  exists, which is what lets the mixed case above keep its count.
+
+- **Typing guidance comes back for multi-format single fields.** A hand-written
+  alternation pattern silently kills it, because the tokenizer bails on `|`. Each
+  alternate carries its own clean pattern, so the hint narrows to one format as
+  soon as the prefix decides and names the candidates while several are still
+  possible. `suggestFix` is offered only when exactly one shape matched.
+
+- **The pooled summary no longer over-claims on a mixed rule.** It picked between
+  "all verified" and "no check character in this project" from one boolean, and
+  in a mixed rule both are false. It now reports `3 verified, 1 format-only`, and
+  a member accepted by a format-only alternate gets a grey open-circle chip
+  instead of a green tick.
+
+### Two pooled-parser bugs fixed on the way (behaviour changes)
+
+- **A member length reachable by adding THREE or more of the others was
+  accepted.** The guard only ever compared two lengths, so `idLengths:[4,12]`
+  passed even though 12 = 4+4+4, and a valid 4-character member followed by eight
+  characters of scan debris read back as one verified 12-character ID with zero
+  junk and a green outline. The swallow hid exactly the mis-scans the module
+  exists to catch, and the parser's "merged-member phantoms are impossible by
+  construction" comment was false for any set admitting a k-term sum with k >= 3.
+  Replaced with unbounded-coin reachability over the declared lengths, which
+  subsumes the pairwise test and names the whole decomposition. Only
+  `[4,12]`-shaped sets change verdict, and they are unsafe.
+
+- **The junk re-scan walked a contiguous range the rule does not declare.** With
+  `idLengths:[10,12]` it tested length 11 and could stamp an "invalid ID" chip at
+  a length the segmentation pass can never produce. It now walks the declared
+  lengths only, and in a multi-format rule only the check-bearing alternates take
+  part: for a format-only alternate the shape IS the test, so stamping a
+  check-character error against an ID that has no check character was wrong.
+
+### Internals
+
+- `gatePattern` (both runtimes) is now the single place an ID pattern is admitted
+  and compiled, replacing three copies of the same four-gate chain. `SCAN_CAP`
+  divides by the count of (alternate, length) pairs, which for a single-format
+  rule is the same number as before, so no existing rule's cap moves.
+- Segmentation walks those pairs bucketed length-ascending then declaration
+  order, with no comparator - `usort` is not stable on the declared PHP 7.4
+  floor. The scoring function needs no new criterion: a segment carries only
+  type/id/valid, so two alternates accepting one token produce identical output.
+- COR-004's non-ASCII fail-open moved up into `validateSingleField`, where a
+  fail-open "true" can no longer be read as "the first alternate's pattern
+  matched" and run that alternate's check anyway.
+- **Tests.** New `tests/alternates_dom_js.cjs` (31 checks). `annotation_php`
+  151 -> 175, `hook_php` 286 -> 294, `branching_php` 28 -> 32, `risky_php`
+  102 -> 127, `pooled_fixture.json` 8 -> 15 cases. `branching_php` now asserts
+  structurally that `BRANCH_KEYS` covers every option `checkFragment` reads: a
+  key missing there validates fine and then vanishes, after which the audit runs
+  the rule under default settings nobody configured.
+
 ## 1.9.10 - the diagnostic that killed the request it was diagnosing
 
 1.9.9 was supposed to name the column. Instead `scan-work` returned HTTP 200

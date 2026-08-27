@@ -450,6 +450,49 @@ summary like *"2 IDs read — leftover text that is not an ID"*.
 **Try it.** `FC0001FC0002XY` → two valid members `FC0001`, `FC0002`, plus junk
 `XY` flagged.
 
+### Scenario 6b: One field, several ID formats (mixed shipment)
+
+**Goal.** A sample-transportation field receives QR codes from four studies in
+one box. GHIT codes are 8 characters and carry no check character; START4KIDS,
+DARE-TB and SCREEN-TB are 9 or 10 characters and carry an ISO 7064 Mod 37,36
+check character.
+
+One rule cannot be shape-only for some families and check-verified for others,
+so give it a list of **alternates** — each with its own pattern and its own
+algorithm. A token is valid if any one of them accepts it.
+
+**Rule.**
+
+- *Dialog:* Field type **Pooled**, leave Method / Format pattern / Exact ID
+  length(s) blank, and paste the list into **Several ID formats in one field**.
+- *Annotation:*
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
+  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+```
+
+**Try it.** Scan one of each, with or without separators. All four read as
+members, each chip named with its family, and the summary reports
+`4 IDs read — 3 verified ✓, 1 format-only (no check character in that format)`.
+The GHIT chip is grey with an open circle rather than a green tick, because
+there was no check character to verify.
+
+Now break one character in the START4KIDS code. That member alone turns red:
+its shape still matches, so the message names a check-character error rather
+than a format error, and the save is blocked. A rule that validated all four
+families by shape alone could not catch that.
+
+**What it will refuse.** If two families were the same length and one of them
+had no check character, the format-only one would accept first and the other's
+check character would never be tested — so that combination is rejected when
+the rule is saved, with a message naming the two entries. The same applies to
+lengths where one is the sum of two or more others: a single token could then
+swallow several real members and still verify.
+
 ### Scenario 7: Bulk-configure many fields from the data dictionary
 
 **Goal.** Twenty fields across the project hold Verhoeff-checked IDs. Configure

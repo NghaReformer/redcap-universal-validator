@@ -41,6 +41,31 @@ server-wide by an administrator; here a project designer sets it per rule.</p>
 with no separator — is split at the boundaries where the check character verifies,
 then shown as one chip per member.</p>
 
+<h2 id="alternates">Several ID formats in one field</h2>
+<p>Give the rule a list of <code>alternates</code> instead of one
+<code>pattern</code>/<code>algorithm</code>. A value &mdash; or a token inside a
+pooled box &mdash; is valid if any one entry accepts it, so IDs from several
+studies can share a field without the ones that carry a check character losing
+it. Each entry needs its own <code>pattern</code>; a pooled rule also needs
+<code>lengths</code> on every entry.</p>
+<pre><code>@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
+  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}</code></pre>
+<p>Entry keys: <code>pattern</code> (required), <code>algorithm</code>,
+<code>source</code>, <code>strip</code>, <code>lengths</code>,
+<code>label</code>; anything omitted falls back to the rule-level value. Up to 8
+entries per rule. When <code>alternates</code> is used the rule-level
+<code>pattern</code>, <code>idLengths</code>, <code>idMinLen</code> and
+<code>idMaxLen</code> must be left unset.</p>
+<p>Combinations that could report a mis-scan as a clean ID are refused when the
+rule is saved, each with a message naming the entry and the fix: lengths where
+one is the sum of two or more others, a format-only entry sharing a length with
+a check-bearing one, and entries that disagree about which characters survive
+cleaning.</p>
+
+<h2 id="pooled">Pooled fields</h2>
 <pre><code>@UVALIDATE={"type":"pooled","idLengths":[9],"expectedIds":3}
 @UVALIDATE={"type":"pooled","algorithm":"none","pattern":"FC[0-9]{4}","idLengths":[6]}
 @UVALIDATE={"type":"pooled","idMinLen":9,"idMaxLen":12,"blockSave":"confirm"}</code></pre>
