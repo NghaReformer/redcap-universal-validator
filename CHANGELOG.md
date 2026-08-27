@@ -72,6 +72,43 @@ character from the three families that have one.
   part: for a format-only alternate the shape IS the test, so stamping a
   check-character error against an ID that has no check character was wrong.
 
+### Upgrading
+
+Two changes tighten configurations that are accepted today. Both are visible
+rather than silent - the browser shows a configuration error and the server logs
+`uvalidate-unconfigurable` - but neither validates data while it is in effect, so
+**check the module log for `uvalidate-unconfigurable` after upgrading.**
+
+- A pooled rule whose exact ID lengths let one length be built from two or more
+  of the others (`idLengths: [4,12]`, because 12 = 4+4+4) is now refused. Such a
+  rule could report a mis-scan as a clean ID, so it was never safe, but a project
+  running one loses enforcement on that field until the lengths are corrected.
+- The pooled work budget was recalibrated (below). A rule declaring many
+  candidate lengths over long members now scans fewer characters per field; a
+  value longer than the new cap gets no verdict and says so.
+
+### Performance
+
+- **The pooled work budget now reflects measured cost.** `POOLED_WORK_BUDGET`
+  bounds `(scanned length) x |PAIRS| x (member length)`, but its unit was
+  nominal: one step is a substring, a regex test and - unless the pattern
+  rejects first - a full normalize, source-extract and check-character
+  computation, which measures around an order of magnitude above a character
+  comparison. At 2,000,000 the formula admitted roughly 300 ms of server work
+  per pooled field per save, paid again per record by the durable scan.
+
+  Measured at each configuration's own cap and lowered to 500,000, every
+  ordinary rule keeps the full 4096-character ceiling - the 8..14 default, an
+  exact-length rule, a 64-character single format, the four-family mixed case -
+  and only the wide tail shrinks: 32 candidate pairs over 64-character members
+  drop from 976 characters to the 256 floor, and the worst case falls to about
+  a quarter of what it was. `tests/pooled_php.php` locks which configurations
+  move and which do not.
+
+  This was a pre-existing calibration, not something multi-format rules
+  introduced: a single-format rule declaring 32 exact lengths already cost the
+  same, and the alternates equivalent is marginally cheaper.
+
 ### Internals
 
 - `gatePattern` (both runtimes) is now the single place an ID pattern is admitted
@@ -85,9 +122,28 @@ character from the three families that have one.
 - COR-004's non-ASCII fail-open moved up into `validateSingleField`, where a
   fail-open "true" can no longer be read as "the first alternate's pattern
   matched" and run that alternate's check anyway.
-- **Tests.** New `tests/alternates_dom_js.cjs` (31 checks). `annotation_php`
+- **An adversarial review of this branch found six defects, all fixed here.**
+  The worst, `C-01`, stopped the headline feature working at all: the server
+  merges `defaults()` into the top level of the injected config, the client
+  inherits every rule key from there, so `idMinLen` was never absent and the
+  "do not set these alongside `alternates`" guard fired on **every** pooled
+  multi-format rule. The browser showed a configuration banner and validated
+  nothing while the server-side audit ran normally. The client now takes a
+  multi-format rule's own value or nothing, never the inherited default.
+
+  Every test harness had built the injected config *without* those defaults, so
+  a green suite sat on top of a broken feature; the harness now boots the way
+  the module actually injects. The other five: a permissive format-only
+  alternate could silently disable a check-bearing sibling (`H-01`, now refused
+  at config time when a concrete value both patterns accept can be produced);
+  duplicate `label`s collapsed the cleaning-agreement gate (`H-02`); a non-ASCII
+  `label` or alternate `strip` saved clean and then killed the rule at runtime
+  (`M-01`, `M-04`); and an unknown per-alternate algorithm was reported as a
+  failed check character rather than a configuration problem (`M-02`).
+
+- **Tests.** New `tests/alternates_dom_js.cjs` (37 checks). `annotation_php`
   151 -> 175, `hook_php` 286 -> 294, `branching_php` 28 -> 32, `risky_php`
-  102 -> 127, `pooled_fixture.json` 8 -> 15 cases. `branching_php` now asserts
+  102 -> 127, `pooled_php` 8 -> 21 cases, `pooled_fixture.json` 8 -> 15 cases. `branching_php` now asserts
   structurally that `BRANCH_KEYS` covers every option `checkFragment` reads: a
   key missing there validates fine and then vanishes, after which the audit runs
   the rule under default settings nobody configured.

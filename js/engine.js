@@ -854,28 +854,33 @@ function QRID_classesOverlap(a, b){
    byte-identical across both runtimes. `label` names which alternate failed
    (empty for a single-pattern rule, so legacy messages are unchanged). */
 function QRID_gatePattern(raw, label){
-  var src = String(raw), where = label ? " (" + label + ")" : "";
+  /* Label placement matches the php twin, which reports "<name>: <message>"
+     from checkFragment. The base sentences differ by audience (this one
+     names the config KEY for an injector/browser reader, the server names
+     "the format pattern" for a dialog reader) — that split predates
+     alternates; what must not drift is which alternate is blamed. */
+  var src = String(raw), pre = label ? label + ": " : "";
   if(/\\[AZ]/.test(src)){
     /* JS would silently treat \A / \Z as literal letters — a Python-only trap */
-    return { re: null, error: "idPattern" + where + " uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
+    return { re: null, error: pre + "idPattern" + " uses Python-only \\A or \\Z anchors; patterns are JavaScript " +
       "regex — use ^ and $ instead (anchors are optional anyway)." };
   }
   if(/[^\x20-\x7E]/.test(src)){
     /* the browser (UTF-16) and server (PCRE /u) only provably agree on ASCII */
-    return { re: null, error: "idPattern" + where + " must contain printable ASCII only — the browser and server " +
+    return { re: null, error: pre + "idPattern" + " must contain printable ASCII only — the browser and server " +
       "regex engines are only guaranteed to agree on that subset." };
   }
   if(QRID_uFlagEscape(src)){
     /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
        compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
        x{41}) while the server matches with /u — they disagree (F2, F2-BYPASS-01). */
-    return { re: null, error: "idPattern" + where + " uses a Unicode-property, code-point or named escape (\\p{...}, " +
+    return { re: null, error: pre + "idPattern" + " uses a Unicode-property, code-point or named escape (\\p{...}, " +
       "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
       "browser compiles ID patterns without it, so the value would validate differently in the " +
       "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead." };
   }
   if(QRID_riskyPattern(src)){
-    return { re: null, error: "idPattern" + where + " looks catastrophically backtracking (nested quantifiers, a " +
+    return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
       "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
       "bounded quantifiers — e.g. (a+)+, (a|aa)+, .*.* / [0-9]*[0-9]*, or " +
       "A{1,20}A{1,20}A{1,20}A{1,20}A{1,20}). Rewrite it so no ambiguous group repeats, no two " +
@@ -885,7 +890,7 @@ function QRID_gatePattern(raw, label){
     var body = src.replace(/^\^/, "").replace(/\$$/, "");
     return { re: new RegExp("^(?:" + body + ")$"), error: "" };
   } catch(e){
-    return { re: null, error: "idPattern" + where + " is not a valid JavaScript regex: " + e.message +
+    return { re: null, error: pre + "idPattern" + " is not a valid JavaScript regex: " + e.message +
       " (Python-only syntax like (?P<name>...) or inline flags is not supported)." };
   }
 }
@@ -981,7 +986,7 @@ function QRID_swallowSum(LENS){
   for(s = 1; s <= maxL; s++){
     for(i = 0; i < LENS.length; i++){
       L = LENS[i];
-      if(L > s) continue;                       /* LENS is sorted ascending */
+      if(L > s) break;                          /* ascending — twin of the php break */
       if(L === s || rep1[s - L]){ rep1[s] = true; via[s] = L; break; }
     }
   }
@@ -1011,11 +1016,22 @@ var QRID_MAX_ALTERNATES  = 8;     /* most ID formats one rule may accept        
 var QRID_MAX_ALT_LABEL   = 40;    /* an alternate's display name (reaches innerHTML) */
 var QRID_MAX_EXPECTED    = 9999;
 var QRID_MAX_KEEP        = 64;
-/* One pooled parse costs about (scanned length) x |LENS| x (member length)
-   character operations; this budget bounds that product for EVERY legal
+/* One pooled parse costs about (scanned length) x |PAIRS| x (member length)
+   "character operations"; this budget bounds that product for EVERY legal
    config, so an expensive rule shrinks its scan cap instead of freezing the
-   tab. Default rules keep the full QRID_MAX_POOLED_LEN. */
-var QRID_POOLED_WORK_BUDGET = 2000000;
+   tab. Default rules keep the full QRID_MAX_POOLED_LEN.
+
+   The unit is nominal, not literal: one step is a substr, a regex test and -
+   whenever the pattern does not reject first - a full normalize + source +
+   check-character computation, which measures around an order of magnitude
+   above a character comparison. Measured at each config's own cap, the old
+   2,000,000 admitted ~300 ms of server work per pooled field per save (and the
+   durable scan pays it again per record). 500,000 leaves every ordinary rule
+   at the full 4096 - the 8..14 default, an exact-length rule, the four-family
+   mixed case - and only shrinks the wide tail: 32 candidate pairs over 64-char
+   members drop from 976 to the 256 floor. Keep in sync with
+   php/CheckCharacter.php POOLED_WORK_BUDGET. */
+var QRID_POOLED_WORK_BUDGET = 500000;
 /* How long after the last keystroke before validating (change/blur validate
    immediately). Bounds per-keystroke work on slow machines (PER-002). */
 var QRID_DEBOUNCE_MS = 150;
@@ -3564,7 +3580,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       (ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32" : "#e0b4b0;background:#fbeceb;color:#c62828");
     /* Which alternate claimed each member? Declaration order, computed after
        segmentation — reporting only, never an input to the DP score. */
-    var claim = {}, nFmtOnly = 0;
+    /* COR-005: member text is attacker-ish input for a plain object — a token
+       reading "constructor" must not inherit prototype members and corrupt
+       the lookups. Same prototype-free map the other registries use. */
+    var claim = Object.create(null), nFmtOnly = 0;
     if(V.claimedBy && V.alts){
       ids.forEach(function(x){
         if(!x.valid) return;
@@ -3588,7 +3607,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     }
     var html = "<b>" + ids.length + " ID" + (ids.length === 1 ? "" : "s") + " read" +
       (ok ? " &mdash; " + okWord : " &mdash; " + esc(problems.join("; "))) + "</b><br>";
-    var occ = {};
+    var occ = Object.create(null);
     segs.forEach(function(x){
       if(x.type === "id"){
         occ[x.id] = (occ[x.id] || 0) + 1;

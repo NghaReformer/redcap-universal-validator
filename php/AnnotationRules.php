@@ -1058,7 +1058,14 @@ class AnnotationRules
                             . json_encode($L) . '.'];
                     }
                 }
-                $a['lengths'] = array_values(array_map('intval', $lens));
+                // L-01: bound the list here too. The union check only runs on
+                // the POOLED path, so without this a single-type rule could
+                // carry an arbitrarily long list into stored config.
+                $a['lengths'] = array_values(array_unique(array_map('intval', $lens)));
+                if (count($a['lengths']) > CheckCharacter::MAX_LEN_CHOICES) {
+                    return ['error' => $nm . ': "lengths" lists ' . count($a['lengths'])
+                        . ' values — at most ' . CheckCharacter::MAX_LEN_CHOICES . ' are supported.'];
+                }
             }
             $clean[] = $a;
         }

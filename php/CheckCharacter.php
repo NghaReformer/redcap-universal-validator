@@ -50,10 +50,19 @@ class CheckCharacter
     const MAX_EXPECTED_IDS = 9999;
     const MAX_KEEP_CHARS  = 64;
     const MAX_POOLED_LEN  = 4096; // absolute pooled scan cap (client QRID_MAX_POOLED_LEN)
-    // One pooled parse costs about (scanned length) x |LENS| x (member length)
-    // char-ops; this budget bounds the product for every legal config, so an
+    // One pooled parse costs about (scanned length) x |PAIRS| x (member length)
+    // "char-ops"; this budget bounds the product for every legal config, so an
     // expensive rule shrinks its scan cap instead of stalling the save hook.
-    const POOLED_WORK_BUDGET = 2000000;
+    //
+    // The unit is nominal, not literal: one step is a substr, a regex test and
+    // - whenever the pattern does not reject first - a full normalize + source
+    // + check-character computation, around an order of magnitude above a
+    // character comparison. Measured at each config's own cap, the old
+    // 2,000,000 admitted ~300 ms per pooled field per save, paid again per
+    // record by the durable scan. 500,000 leaves every ordinary rule at the
+    // full 4096 and shrinks only the wide tail. Keep in sync with
+    // QRID_POOLED_WORK_BUDGET (js).
+    const POOLED_WORK_BUDGET = 500000;
     // Config-time bound on BOUNDED-quantifier backtracking (riskyPattern stage
     // two-b). A contiguous run of overlapping bounded repeats (A{1,20}A{1,20}…)
     // backtracks with the factor count as the exponent, so a long chain freezes a

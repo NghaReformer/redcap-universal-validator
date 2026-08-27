@@ -102,7 +102,10 @@ n++;
   ];
   for (const [pat, needle] of cases) {
     const g = Q.gatePattern(pat, 'GHIT');
-    if (g.re !== null || g.error.indexOf(needle) === -1 || g.error.indexOf('(GHIT)') === -1) {
+    // "<name>: <message>" — the same way the php twin prefixes a labelled
+    // failure from checkFragment, so the two runtimes blame the same alternate
+    // in the same shape. The base sentences differ by audience and always have.
+    if (g.re !== null || g.error.indexOf(needle) === -1 || g.error.indexOf('GHIT: ') !== 0) {
       fail++;
       console.error(`gatePattern(${JSON.stringify(pat)}, "GHIT") -> ${JSON.stringify(g.error)}`);
     }

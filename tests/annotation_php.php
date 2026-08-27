@@ -616,6 +616,16 @@ check('M-04 an ASCII alternate strip is still accepted',
     $altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'strip' => '-']], ['type' => 'single']) === '');
 
 // patternWitness must never guess: an unverifiable witness is discarded.
+// L-01: the union cap only runs on the POOLED path, so without a per-entry
+// bound a single-type rule could carry an arbitrarily long list into config.
+check('L-01 an over-long per-alternate lengths list is refused',
+    ($r = AnnotationRules::parseField('@UVALIDATE={"type":"single","alternates":[{"pattern":"A[0-9]{4}",'
+        . '"algorithm":"none","lengths":[' . implode(',', range(1, 40)) . ']}]}'))
+    && isset($r['error']) && strpos($r['error'], 'at most') !== false);
+check('L-01 a list at the cap is still accepted',
+    !isset(AnnotationRules::parseField('@UVALIDATE={"type":"single","alternates":[{"pattern":"A[0-9]{4}",'
+        . '"algorithm":"none","lengths":[' . implode(',', range(1, 32)) . ']}]}')['error']));
+
 check('patternWitness builds a verified witness for a supported pattern',
     CheckCharacter::patternWitness('SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
 check('patternWitness declines an alternation',
