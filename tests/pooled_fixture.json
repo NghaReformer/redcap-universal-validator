@@ -250,6 +250,300 @@
           "valid": false
         }
       ]
+    },
+    {
+      "label": "mixed manifest, jammed with no separators",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GHIT",
+            "pattern": "FC[1-9]-[0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "START4KIDS",
+            "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "DARETB",
+            "pattern": "DT[1-2]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          },
+          {
+            "label": "SCREENTB",
+            "pattern": "ST[1-5]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          }
+        ]
+      },
+      "input": "FC1-0589SK1-0123DDT1-12345HST3-77012Z",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC1-0589",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "SK1-0123D",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "DT1-12345H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "ST3-77012Z",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "mixed manifest, comma/space separated",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GHIT",
+            "pattern": "FC[1-9]-[0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "START4KIDS",
+            "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "DARETB",
+            "pattern": "DT[1-2]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          },
+          {
+            "label": "SCREENTB",
+            "pattern": "ST[1-5]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          }
+        ]
+      },
+      "input": "FC1-0589, SK1-0123D DT1-12345H  ST3-77012Z",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC1-0589",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "SK1-0123D",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "DT1-12345H",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "ST3-77012Z",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "mixed manifest, one broken check character",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GHIT",
+            "pattern": "FC[1-9]-[0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "START4KIDS",
+            "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "DARETB",
+            "pattern": "DT[1-2]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          },
+          {
+            "label": "SCREENTB",
+            "pattern": "ST[1-5]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          }
+        ]
+      },
+      "input": "FC1-0589 SK1-0923D DT1-12345H",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC1-0589",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "SK1-0923D",
+          "valid": false
+        },
+        {
+          "type": "id",
+          "id": "DT1-12345H",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "mixed manifest with junk between members",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GHIT",
+            "pattern": "FC[1-9]-[0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "START4KIDS",
+            "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "DARETB",
+            "pattern": "DT[1-2]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          },
+          {
+            "label": "SCREENTB",
+            "pattern": "ST[1-5]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          }
+        ]
+      },
+      "input": "FC1-0589ZZDT1-12345H",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC1-0589",
+          "valid": true
+        },
+        {
+          "type": "junk",
+          "text": "ZZ"
+        },
+        {
+          "type": "id",
+          "id": "DT1-12345H",
+          "valid": true
+        }
+      ]
+    },
+    {
+      "label": "two adjacent format-only members stay two",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GHIT",
+            "pattern": "FC[1-9]-[0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "START4KIDS",
+            "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "DARETB",
+            "pattern": "DT[1-2]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          },
+          {
+            "label": "SCREENTB",
+            "pattern": "ST[1-5]-[0-9]{5}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              10
+            ]
+          }
+        ]
+      },
+      "input": "FC1-0589FC3-0179",
+      "segs": [
+        {
+          "type": "id",
+          "id": "FC1-0589",
+          "valid": true
+        },
+        {
+          "type": "id",
+          "id": "FC3-0179",
+          "valid": true
+        }
+      ]
     }
   ]
 }

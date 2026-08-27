@@ -39,7 +39,7 @@ foreach (['(a+)+$', '([A-Z]+)*$', '(x+x+)+y', '([0-9]{1,20}){1,20}'] as $p) {
     $n++;
     $value = str_repeat('a', 50000) . 'X';
     $t = microtime(true);
-    $res = CheckCharacter::validateSingleField('none', 'normalized_id', '', $p, $value);
+    $res = CheckCharacter::validateSingleField(['algorithm' => 'none', 'source' => 'normalized_id', 'strip' => '', 'idPattern' => $p], $value);
     $elapsed = microtime(true) - $t;
     if (empty($res['ok'])) {
         $fail++;

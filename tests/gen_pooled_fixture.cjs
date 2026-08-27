@@ -80,6 +80,33 @@ add('idMinLen/idMaxLen range: the same length IS declared, so it is reported',
     { algorithm: 'iso7064_mod37_36', source: 'normalized_id', strip: '-/ _|\\',
       idPattern: gapPat, idMinLen: 10, idMaxLen: 12 }, gapJunk);
 
+// ---- multi-format rules: one field, four ID families -----------------------
+// The sample-transportation case. GHIT carries NO check character, the other
+// three carry ISO 7064 Mod 37,36, and all four arrive in one box. These freeze
+// the (alternate, length) candidate walk, the union KEEP set, and the per-
+// alternate junk re-scan across BOTH runtimes.
+const MINT_DASH = Q.makeScheme({ algorithm: mod37, source: 'normalized_id', placement: 'append', enabled: true,
+  normalize_rules: { strip_delimiters: '-', uppercase: true, unify_unicode_dashes: true, keep_only: null } });
+const appD = (id) => Q.appendCheck(id, MINT_DASH);
+const FC = 'FC1-0589', FC2 = 'FC3-0179';
+const SK = appD('SK1-0123'), DT = appD('DT1-12345'), ST = appD('ST3-77012');
+const altCfg = { strip: '-', alternates: [
+  { label: 'GHIT',       pattern: 'FC[1-9]-[0-9]{4}',         algorithm: 'none', lengths: [8] },
+  { label: 'START4KIDS', pattern: 'SK[1-5]-[0-9]{4}[0-9A-Z]', algorithm: mod37,  lengths: [9] },
+  { label: 'DARETB',     pattern: 'DT[1-2]-[0-9]{5}[0-9A-Z]', algorithm: mod37,  lengths: [10] },
+  { label: 'SCREENTB',   pattern: 'ST[1-5]-[0-9]{5}[0-9A-Z]', algorithm: mod37,  lengths: [10] },
+] };
+add('mixed manifest, jammed with no separators', altCfg, FC + SK + DT + ST);
+add('mixed manifest, comma/space separated', altCfg, FC + ', ' + SK + ' ' + DT + '  ' + ST);
+// a mis-scanned START4KIDS member must be CAUGHT, never swallowed into a
+// neighbour: this is the protection regex-only mode cannot give
+add('mixed manifest, one broken check character', altCfg,
+    FC + ' ' + SK.slice(0, 5) + (SK[5] === '9' ? '8' : '9') + SK.slice(6) + ' ' + DT);
+add('mixed manifest with junk between members', altCfg, FC + 'ZZ' + DT);
+// two 8-char format-only members back to back: 16 is not a declared length, so
+// the union sum-swallow reasoning must keep them apart
+add('two adjacent format-only members stay two', altCfg, FC + FC2);
+
 const out = {
   generated_by: 'tests/gen_pooled_fixture.cjs',
   note: 'Frozen browser pooled-parser output; recomputed by pooled_js.cjs and pooled_php.php.',

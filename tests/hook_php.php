@@ -397,6 +397,81 @@ namespace {
         count(logsOf($m, 'uvalidate-unconfigurable')) === 1);
     check('PCRE engine failure logs no false invalid', count(invalidLogs($m)) === 0);
 
+    // ---- 12b) multi-format rules audit the mixed pool the browser validates ----
+    // The sample-transportation case: GHIT carries no check character, the other
+    // three carry ISO 7064 Mod 37,36, and all four arrive in one box. The audit
+    // has to reach the same verdict the browser does, or the server logs
+    // findings a data collector never saw.
+    $mintDash = function ($base) {
+        return $base . \INSPIRE\UniversalValidator\CheckCharacter::compute(
+            'iso7064_mod37_36',
+            \INSPIRE\UniversalValidator\CheckCharacter::applySource(\INSPIRE\UniversalValidator\CheckCharacter::normalize($base, '-', true, true, null), 'normalized_id')
+        );
+    };
+    $FC = 'FC1-0589';
+    $SK = $mintDash('SK1-0123');
+    $DT = $mintDash('DT1-12345');
+    $ST = $mintDash('ST3-77012');
+    $altJson = json_encode([
+        ['label' => 'GHIT',       'pattern' => 'FC[1-9]-[0-9]{4}',         'algorithm' => 'none',             'lengths' => [8]],
+        ['label' => 'START4KIDS', 'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+        ['label' => 'DARETB',     'pattern' => 'DT[1-2]-[0-9]{5}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+        ['label' => 'SCREENTB',   'pattern' => 'ST[1-5]-[0-9]{5}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+    ]);
+    $altRule = function ($type) use ($altJson) {
+        return [[
+            'rule-type' => $type, 'fields' => ['main_id_1'], 'fields-csv' => '',
+            'algorithm' => '', 'source' => '', 'pattern' => '', 'alternates-json' => $altJson,
+            'strip' => '-', 'keep-chars' => '', 'id-lengths' => '', 'id-min-len' => '', 'id-max-len' => '',
+            'expected-count' => '', 'block-save' => 'off',
+        ]];
+    };
+
+    // a clean mixed pool: nothing logged at all
+    $m = newModule($altRule('pooled'), $dictionary,
+        [2 => [351 => ['main_id_1' => $FC . ' ' . $SK . ' ' . $DT . ' ' . $ST]]], 149);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    check('alternates: a clean mixed pool logs nothing',
+        count(invalidLogs($m)) === 0 && count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+
+    // one mis-scanned START4KIDS member: exactly ONE finding, not four
+    $badSK = substr($SK, 0, 5) . ($SK[5] === '9' ? '8' : '9') . substr($SK, 6);
+    $m = newModule($altRule('pooled'), $dictionary,
+        [2 => [351 => ['main_id_1' => $FC . ' ' . $badSK . ' ' . $DT]]], 149);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    check('alternates: one broken check character logs exactly one finding',
+        count(invalidLogs($m)) === 1);
+
+    // the same four formats on a SINGLE field
+    $m = newModule($altRule('single'), $dictionary, [2 => [351 => ['main_id_1' => $DT]]], 149);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    check('alternates: a single field accepts a value matching the third format',
+        count(invalidLogs($m)) === 0);
+
+    $m = newModule($altRule('single'), $dictionary, [2 => [351 => ['main_id_1' => 'ZZ9-9999']]], 149);
+    $m->redcap_save_record(149, '2', 'id_validation_test', 351, null, null, null, 1);
+    check('alternates: a single field logs a value matching no format',
+        count(invalidLogs($m)) === 1);
+
+    // reason precedence: a SHAPE that matched but whose check failed is a
+    // check-character finding, not a format one - that is what keeps the scan
+    // catalogue and the browser wording saying the same thing.
+    $vcfg = [
+        'algorithm' => 'iso7064_mod37_36', 'source' => 'normalized_id', 'strip' => '-',
+        'alternates' => json_decode($altJson, true),
+    ];
+    check('alternates: shape matched + check failed -> reason "check-character"',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, $badSK) === ['ok' => false, 'reason' => 'check-character']);
+    check('alternates: nothing matched -> reason "format"',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, 'ZZ9-9999') === ['ok' => false, 'reason' => 'format']);
+    check('alternates: the format-only family is accepted with no check run',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, $FC) === ['ok' => true, 'reason' => 'valid']);
+    // COR-004: outside printable ASCII the server fails OPEN. Hoisted out of
+    // matchesPattern, whose fail-open "true" would otherwise read as "alternate
+    // 1's pattern matched" and run that alternate's CHECK on the value.
+    check('alternates: a non-ASCII value fails open with no alternate check run',
+        \INSPIRE\UniversalValidator\CheckCharacter::validateSingleField($vcfg, "FC1-05\xC3\xA989") === ['ok' => true, 'reason' => 'valid']);
+
     // ---- 13) per-rule isolation: a failure while auditing one rule must not
     //           stop later rules. Simulated by a log backend that throws on the
     //           FIRST detection write (rule 1's invalid field); the annotation

@@ -415,5 +415,138 @@ check('checkFragment: unique bad scope -> error',
 check('checkFragment: unique empty with -> error',
     AnnotationRules::checkFragment(['type' => 'unique', 'uniqueWith' => []]) !== []);
 
+// ---- multi-format rules ("alternates") ------------------------------------
+// The sample-transportation case: four ID families in one field, three of them
+// carrying ISO 7064 Mod 37,36 and one (GHIT) carrying no check character.
+$ALT4 = [
+    ['label' => 'GHIT',       'pattern' => 'FC[1-9]-[0-9]{4}',         'algorithm' => 'none', 'lengths' => [8]],
+    ['label' => 'START4KIDS', 'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+    ['label' => 'DARETB',     'pattern' => 'DT[1-2]-[0-9]{5}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+    ['label' => 'SCREENTB',   'pattern' => 'ST[1-5]-[0-9]{5}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+];
+$altErr = function (array $alts, array $extra = []) {
+    return implode(' ', fragErrors(array_merge(['type' => 'pooled', 'alternates' => $alts], $extra)));
+};
+
+check('four-family pooled rule accepted',
+    fragErrors(['type' => 'pooled', 'alternates' => $ALT4, 'strip' => '-']) === []);
+check('four-family SINGLE rule accepted (no lengths needed)',
+    fragErrors(['type' => 'single', 'strip' => '-', 'alternates' => array_map(function ($a) {
+        unset($a['lengths']); return $a;
+    }, $ALT4)]) === []);
+
+// per-alternate algorithm shorthands resolve like the rule-level one
+$r = AnnotationRules::parseField('@UVALIDATE={"type":"pooled","alternates":[{"pattern":"A[0-9]{4}","algorithm":"3736","lengths":[5]}]}');
+check('alternate algorithm shorthand resolves to canonical',
+    !isset($r['error']) && $r['alternates'][0]['algorithm'] === 'iso7064_mod37_36');
+
+// R6 - a pattern-less alternate would accept everything and hide the rest
+check('alternate without a pattern rejected',
+    strpos(implode(' ', fragErrors(['type' => 'pooled',
+        'alternates' => [['algorithm' => 'none', 'lengths' => [8]]]])), 'needs a non-empty "pattern"') !== false);
+$r = AnnotationRules::parseField('@UVALIDATE={"alternates":[{"algorithm":"none"}]}');
+check('alternate without a pattern rejected in the JSON channel too',
+    isset($r['error']) && strpos($r['error'], 'pattern') !== false);
+check('pooled alternate without lengths rejected',
+    strpos($altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none']]), 'needs "lengths"') !== false);
+
+// R7 - a JSON object would be ordered differently by the two runtimes
+$r = AnnotationRules::parseField('@UVALIDATE={"alternates":{"a":{"pattern":"A[0-9]{4}"}}}');
+check('alternates as a JSON object rejected',
+    isset($r['error']) && strpos($r['error'], 'not an object') !== false);
+
+// unknown option inside an alternate must name it, not be silently dropped
+check('unknown key inside an alternate rejected',
+    ($r = AnnotationRules::parseField('@UVALIDATE={"alternates":[{"pattern":"A[0-9]{4}","algoritm":"none"}]}'))
+    && isset($r['error']) && strpos($r['error'], 'algoritm') !== false);
+
+// R5 - two sources of truth for one fact
+// validateConfig renames the JSON key "pattern" to "idPattern", so that is what
+// the fragment carries by the time checkFragment sees it.
+check('alternates + rule-level pattern rejected',
+    strpos($altErr($ALT4, ['idPattern' => 'A[0-9]{4}']), 'must not also set a rule-level "pattern"') !== false);
+check('alternates + rule-level idLengths rejected',
+    strpos($altErr($ALT4, ['idLengths' => [8]]), 'must not also set rule-level') !== false);
+check('alternates + rule-level idMinLen rejected',
+    strpos($altErr($ALT4, ['idMinLen' => 8]), 'must not also set rule-level') !== false);
+
+// R9 - caps
+check('more than 8 alternates rejected', strpos($altErr(array_map(function ($i) {
+    return ['pattern' => 'A' . $i . '[0-9]{4}', 'algorithm' => 'none', 'lengths' => [6]];
+}, range(1, 9))), 'at most') !== false);
+check('over-long alternate label rejected',
+    strpos($altErr([['label' => str_repeat('x', 41), 'pattern' => 'A[0-9]{4}',
+        'algorithm' => 'none', 'lengths' => [5]]]), 'label') !== false);
+
+// R8 - a bad pattern on ANY alternate fails the WHOLE rule, and names it
+check('a risky pattern in alternate 2 fails the rule and names the alternate',
+    strpos($altErr([
+        ['label' => 'ok',  'pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'lengths' => [5]],
+        ['label' => 'bad', 'pattern' => '(a+)+$',    'algorithm' => 'none', 'lengths' => [7]],
+    ]), 'bad: ') !== false);
+check('an unknown algorithm on an alternate names the alternate',
+    strpos($altErr([['label' => 'z', 'pattern' => 'A[0-9]{4}',
+        'algorithm' => 'nosuchalgo', 'lengths' => [5]]]), 'z: unknown algorithm') !== false);
+
+// R1 - the union is what the sum-swallow proof runs over. Individually safe,
+// jointly unsafe: 9 = 5 + 4.
+check('cross-alternate sum-swallow rejected (9 = 5 + 4)',
+    strpos($altErr([
+        ['pattern' => 'A[0-9A-Z]{8}', 'algorithm' => 'none', 'lengths' => [9]],
+        ['pattern' => 'B[0-9A-Z]{4}', 'algorithm' => 'none', 'lengths' => [5]],
+        ['pattern' => 'C[0-9A-Z]{3}', 'algorithm' => 'none', 'lengths' => [4]],
+    ]), 'swallow') !== false);
+check('the four-family union 8/9/10 is safe', $altErr($ALT4) === '');
+
+// R3 - a format-only alternate sharing a length with a check-bearing one would
+// accept first, so that check character would never be tested
+check('format-only alternate sharing a length with a check-bearing one rejected',
+    strpos($altErr([
+        ['pattern' => 'AA[0-9]{7}', 'algorithm' => 'none', 'lengths' => [9]],
+        ['pattern' => 'BB[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+    ]), 'would accept the value first') !== false);
+
+// R2 - KEEP is computed once for the whole field, so an algorithm that can emit
+// "*" changes what survives cleaning for its siblings too
+check('alternates disagreeing about the kept character set rejected',
+    strpos($altErr([
+        ['pattern' => 'AA[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_2',  'lengths' => [9]],
+        ['pattern' => 'BB[0-9]{7}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+    ]), 'disagree about which characters survive') !== false);
+check('declaring the union in keepChars is the escape hatch',
+    $altErr([
+        ['pattern' => 'AA[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_2',  'lengths' => [9]],
+        ['pattern' => 'BB[0-9]{7}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [10]],
+    ], ['keepChars' => '*']) === '');
+
+// R4 (M-03 generalised) - only the FORMAT-ONLY alternates can create count
+// ambiguity, so the driving case keeps expectedIds while two unpinned
+// format-only families lose it.
+check('expectedIds kept when only ONE format-only length exists (the GHIT case)',
+    $altErr($ALT4, ['expectedIds' => 4]) === '');
+check('expectedIds refused when two format-only alternates differ in length',
+    strpos($altErr([
+        ['pattern' => 'A[0-9A-Z]{3}', 'algorithm' => 'none', 'lengths' => [4]],
+        ['pattern' => 'B[0-9A-Z]{4}', 'algorithm' => 'none', 'lengths' => [5]],
+    ], ['expectedIds' => 2]), 'ambiguous') !== false);
+check('expectedIds kept when every alternate carries a check character',
+    $altErr([
+        ['pattern' => 'A[0-9]{3}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [5]],
+        ['pattern' => 'B[0-9]{5}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [7]],
+    ], ['expectedIds' => 2]) === '');
+
+// the whole tag, end to end through the annotation channel
+$tag = '@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":['
+    . '{"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},'
+    . '{"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},'
+    . '{"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},'
+    . '{"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}';
+$r = AnnotationRules::parseField($tag);
+check('the four-family action tag parses clean end to end',
+    !isset($r['error']) && count($r['alternates']) === 4
+    && $r['alternates'][1]['algorithm'] === 'iso7064_mod37_36'
+    && $r['blockSave'] === 'hard' && $r['type'] === 'pooled');
+
+
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

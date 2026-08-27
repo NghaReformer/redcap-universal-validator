@@ -653,7 +653,7 @@
     if (typeof window !== "undefined" && window.INSPIRE_VALIDATOR_CONFIG)
       return window.INSPIRE_VALIDATOR_CONFIG;
     return { singleFields: [], pooledFields: [], rules: [], algorithm: "iso7064_mod37_36",
-      idPattern: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
+      idPattern: null, alternates: null, source: "normalized_id", strip: "-/ _|\\", suggestFix: false,
       keepChars: "", idLengths: null, idMinLen: 8, idMaxLen: 14, expectedIds: null, blockSave: "off" };
   }
   var QRID_COMBINED_CONFIG = QRID_readConfig();
@@ -889,6 +889,74 @@ function QRID_gatePattern(raw, label){
       " (Python-only syntax like (?P<name>...) or inline flags is not supported)." };
   }
 }
+/* Every rule is a LIST of accepted ID formats, each with its own pattern and its
+   own check algorithm (or "none"). A rule written the old way — one scalar
+   algorithm, one scalar idPattern — normalizes to a ONE-ELEMENT list, so every
+   consumer below runs exactly one loop and there is no second code path to keep
+   in step. Pure normalization: no gates, no compilation, total. The gates live
+   in the factories (QRID_gatePattern per alternate) and, authoritatively, in
+   AnnotationRules::checkFragment.
+
+   `lengths` is null when the alternate does not declare its own; the pooled
+   factory then hands it the rule-level idLengths/idMinLen..idMaxLen set, which
+   is what makes a legacy rule byte-identical to today.
+
+   Twin of CheckCharacter::alternatesOf (php). */
+function QRID_altName(alt, i){ return alt.label ? alt.label : "alternate " + (i + 1); }
+function QRID_alternatesOf(cfg){
+  var raw = cfg.alternates;
+  if(raw === undefined || raw === null || raw === ""){
+    return { list: [{ label: "", pattern: (cfg.idPattern || null), algorithm: cfg.algorithm,
+                      source: cfg.source, strip: cfg.strip, lengths: null }], error: "" };
+  }
+  function bad(msg){ return { list: [], error: msg }; }
+  if(!(raw instanceof Array) || !raw.length){
+    return bad("alternates must be a non-empty LIST of formats, e.g. " +
+      "[{\"pattern\":\"FC[1-9]-[0-9]{4}\",\"algorithm\":\"none\",\"lengths\":[8]}]. " +
+      "A JSON object is not accepted: the browser and the server order its keys differently.");
+  }
+  if(raw.length > QRID_MAX_ALTERNATES){
+    return bad("alternates lists " + raw.length + " formats — at most " + QRID_MAX_ALTERNATES +
+      " are supported. More ID families than that in one field is usually a sign they belong in separate fields.");
+  }
+  var list = [];
+  for(var i = 0; i < raw.length; i++){
+    var a = raw[i], nm = "alternates entry " + (i + 1);
+    if(!a || typeof a !== "object" || a instanceof Array) return bad(nm + " must be an object with a \"pattern\".");
+    if(typeof a.pattern !== "string" || a.pattern === ""){
+      /* a pattern-less alternate matches everything, so in declaration order it
+         would swallow every token and silently kill the alternates after it */
+      return bad(nm + " needs a non-empty \"pattern\" — an alternate without one would accept " +
+        "every value and the alternates after it would never be reached.");
+    }
+    if(a.label !== undefined && a.label !== null && a.label !== ""){
+      if(typeof a.label !== "string" || a.label.length > QRID_MAX_ALT_LABEL ||
+         /[^\x20-\x7E]/.test(a.label)){
+        return bad(nm + " has a \"label\" that is not printable ASCII of at most " +
+          QRID_MAX_ALT_LABEL + " characters.");
+      }
+    }
+    var lens = null;
+    if(a.lengths !== undefined && a.lengths !== null){
+      if(!(a.lengths instanceof Array) || !a.lengths.length ||
+         !a.lengths.every(function(x){ return typeof x === "number" && isFinite(x) && x > 0 && x % 1 === 0; })){
+        return bad(nm + " has \"lengths\" that is not a list of positive whole numbers, e.g. [8].");
+      }
+      var seen = {};
+      lens = [];
+      a.lengths.forEach(function(x){ var n = x | 0; if(!seen[n]){ seen[n] = 1; lens.push(n); } });
+      lens.sort(function(x, y){ return x - y; });
+    }
+    list.push({ label: (a.label || ""), pattern: a.pattern,
+                algorithm: (a.algorithm === undefined || a.algorithm === null || a.algorithm === "")
+                  ? cfg.algorithm : a.algorithm,
+                source: (a.source === undefined || a.source === null || a.source === "")
+                  ? cfg.source : a.source,
+                strip: (a.strip === undefined || a.strip === null) ? cfg.strip : a.strip,
+                lengths: lens });
+  }
+  return { list: list, error: "" };
+}
 /* Can any declared member length be built by adding TWO OR MORE of the declared
    lengths together? If so one token can span several real members and still
    verify, so a mis-scan is reported as a clean ID — the failure the pooled
@@ -939,6 +1007,8 @@ var QRID_MAX_POOLED_LEN = 4096;   /* pooled field: cap total scanned length     
    unconfigurable at audit time); keep the values in sync. */
 var QRID_MAX_ID_LEN      = 64;    /* longest single ID/member the parser considers */
 var QRID_MAX_LEN_CHOICES = 32;    /* most candidate lengths a pooled rule may declare */
+var QRID_MAX_ALTERNATES  = 8;     /* most ID formats one rule may accept          */
+var QRID_MAX_ALT_LABEL   = 40;    /* an alternate's display name (reaches innerHTML) */
 var QRID_MAX_EXPECTED    = 9999;
 var QRID_MAX_KEEP        = 64;
 /* One pooled parse costs about (scanned length) x |LENS| x (member length)
@@ -1790,44 +1860,64 @@ function QRIDSingleInit(QRID_CONFIG){
      built once per rule (legacy) or once per branch (branch rules). ---- */
   function makeVariant(cfg){
 
-  /* ---- resolve the validation mode from the config ---- */
+  /* ---- resolve the accepted ID formats from the config ----
+     One rule = one or more ALTERNATES, each with its own pattern and its own
+     check algorithm. A legacy scalar rule normalizes to exactly one alternate,
+     so the verdict below is a single loop rather than two code paths. */
   var configError = cfg.configErrorOverride || "";
-  var CHECK_MODE = false, REGEX_ONLY = false, fullRe = null;
-  var algoName = cfg.algorithm;
-  if(!configError && algoName !== "none" && !Q.ALGORITHMS[algoName]){
-    configError = "Unknown algorithm \"" + algoName + "\". Valid: " +
-      Object.keys(Q.ALGORITHMS).join(", ") + ".";
+  var A0 = QRID_alternatesOf(cfg);
+  configError = configError || A0.error;
+  var ALTS = A0.list, HAS_ALTS = !!(cfg.alternates != null && cfg.alternates !== "");
+  if(!configError && HAS_ALTS && cfg.idPattern){
+    configError = "a rule with \"alternates\" must not also set a rule-level \"pattern\" — " +
+      "give each alternate its own.";
   }
-  if(!configError && cfg.idPattern){
-    var gS = QRID_gatePattern(cfg.idPattern, "");
-    configError = gS.error;
-    fullRe = gS.re;
-  }
-  if(!configError){
-    CHECK_MODE = (algoName !== "none");
-    REGEX_ONLY = (!CHECK_MODE && !!fullRe);
-    if(!CHECK_MODE && !REGEX_ONLY){
-      configError = "algorithm is \"none\" and no idPattern is set — nothing to validate. " +
+  for(var ai = 0; ai < ALTS.length && !configError; ai++){
+    var A = ALTS[ai], an = QRID_altName(A, ai);
+    if(A.algorithm !== "none" && !Q.ALGORITHMS[A.algorithm]){
+      configError = "Unknown algorithm \"" + A.algorithm + "\"" +
+        (HAS_ALTS ? " on " + an : "") + ". Valid: " + Object.keys(Q.ALGORITHMS).join(", ") + ".";
+      break;
+    }
+    A.check = (A.algorithm !== "none");
+    if(A.pattern){
+      var gA = QRID_gatePattern(A.pattern, HAS_ALTS ? an : "");
+      if(gA.error){ configError = gA.error; break; }
+      A.re = gA.re;
+    } else { A.re = null; }
+    A.regexOnly = (!A.check && !!A.re);
+    if(!A.check && !A.regexOnly){
+      configError = (HAS_ALTS ? an + ": algorithm" : "algorithm") + " is \"none\" and no " +
+        (HAS_ALTS ? "pattern" : "idPattern") + " is set — nothing to validate. " +
         "Set the check algorithm your IDs were minted with, or (for a legacy project " +
-        "without check characters) set idPattern to your ID regex.";
+        "without check characters) set " + (HAS_ALTS ? "pattern" : "idPattern") + " to your ID regex.";
+      break;
     }
-  }
-  if(!configError && CHECK_MODE){
-    var srcS = cfg.source || "normalized_id";
-    if(srcS !== "normalized_id" && srcS !== "digits_only" && srcS !== "sequence_only"){
-      configError = 'Unknown source "' + srcS + '" — use normalized_id, digits_only or sequence_only.';
+    A.source = A.source || "normalized_id";
+    if(A.check && A.source !== "normalized_id" && A.source !== "digits_only" && A.source !== "sequence_only"){
+      configError = 'Unknown source "' + A.source + '"' + (HAS_ALTS ? " on " + an : "") +
+        " — use normalized_id, digits_only or sequence_only.";
+      break;
     }
+    A.scheme = A.check ? Q.makeScheme({
+      /* explicit fallbacks: an absent key must not override makeScheme's
+         defaults with undefined (Object.assign copies undefined values) */
+      algorithm: A.algorithm, source: A.source,
+      placement: "append", delimiter: "-",
+      normalize_rules: { strip_delimiters: A.strip || "", uppercase: true,
+                         unify_unicode_dashes: true, keep_only: null },
+      enabled: true
+    }) : null;
+    A.nCheck = A.check ? Q.ALGORITHMS[A.algorithm].nCheckChars : 0;
   }
-  var scheme = CHECK_MODE ? Q.makeScheme({
-    /* explicit fallbacks: an absent key must not override makeScheme's
-       defaults with undefined (Object.assign copies undefined values) */
-    algorithm: algoName, source: cfg.source || "normalized_id",
-    placement: "append", delimiter: "-",
-    normalize_rules: { strip_delimiters: cfg.strip || "", uppercase: true,
-                       unify_unicode_dashes: true, keep_only: null },
-    enabled: true
-  }) : null;
-  var nCheck = CHECK_MODE ? Q.ALGORITHMS[algoName].nCheckChars : 0;
+  var CHECK_MODE = false, REGEX_ONLY = false, MIXED = false;
+  if(!configError){
+    var nChk = 0;
+    for(var si = 0; si < ALTS.length; si++) if(ALTS[si].check) nChk++;
+    CHECK_MODE = nChk > 0;
+    REGEX_ONLY = nChk === 0;
+    MIXED      = nChk > 0 && nChk < ALTS.length;
+  }
   /* regex target: trimmed + uppercased + unicode dashes unified, but separators
      KEPT — user patterns are written against the printed form (FC1-1001). */
   var REGEX_RULES = { strip_delimiters: "", uppercase: true,
@@ -1891,11 +1981,20 @@ function QRIDSingleInit(QRID_CONFIG){
     }
     return atoms.length ? atoms : null;
   }
-  var atoms = fullRe ? tokenizePattern(cfg.idPattern) : null;
+  /* Per-alternate atom chains. A hand-written alternation pattern kills guidance
+     outright (tokenizePattern bails on "|"), but each alternate carries its OWN
+     clean pattern, so a multi-format rule gets guidance back — narrowed to the
+     one alternate still in play. */
+  if(!configError){
+    for(var ti = 0; ti < ALTS.length; ti++)
+      ALTS[ti].atoms = ALTS[ti].re ? tokenizePattern(ALTS[ti].pattern) : null;
+  }
+  var ANY_ATOMS = false;
+  for(var ti2 = 0; ti2 < ALTS.length; ti2++) if(ALTS[ti2].atoms) ANY_ATOMS = true;
   function atomPhrase(count, a){
     return (count > 1 ? count + " x " : "") + a.desc;
   }
-  function remainingText(atomIdx, stillNeeded){
+  function remainingText(atoms, atomIdx, stillNeeded){
     var parts = [], k;
     if(stillNeeded > 0) parts.push(atomPhrase(stillNeeded, atoms[atomIdx]));
     for(k = atomIdx + 1; k < atoms.length && parts.length < 5; k++){
@@ -1907,7 +2006,7 @@ function QRIDSingleInit(QRID_CONFIG){
   }
   /* Walk the typed value along the atoms: 'match' | {partial} | {mismatch}.
      Greedy per atom; the full regex stays the final authority on completeness. */
-  function walkPattern(s){
+  function walkPattern(s, atoms){
     var i = 0, a;
     for(var ai = 0; ai < atoms.length; ai++){
       a = atoms[ai];
@@ -1925,61 +2024,102 @@ function QRIDSingleInit(QRID_CONFIG){
   /* Deliberately NOT a copy-paste "did you mean" ID: if the typo is in the BODY,
      a re-stamped suggestion would be a perfectly-valid-looking WRONG participant.
      Instead, state conditionally what the final character(s) would be. */
-  function suggestion(raw){
-    if(!cfg.suggestFix || cfg.source !== "normalized_id") return "";
+  function suggestion(raw, A){
+    /* Offered only for ONE candidate format: with two shapes matched, naming
+       either one's check character is a coin flip presented as advice. */
+    if(!cfg.suggestFix || !A || !A.check || A.source !== "normalized_id" || A.nCheck < 1) return "";
     try {
-      var norm = Q.normalize(raw, scheme.normalize_rules);
-      if(norm.length <= nCheck) return "";
-      var expected = Q.ALGORITHMS[algoName].compute(norm.slice(0, -nCheck));
-      return ' If everything before the last ' + (nCheck > 1 ? nCheck + ' characters' : 'character') +
+      var norm = Q.normalize(raw, A.scheme.normalize_rules);
+      if(norm.length <= A.nCheck) return "";
+      var expected = Q.ALGORITHMS[A.algorithm].compute(norm.slice(0, -A.nCheck));
+      return ' If everything before the last ' + (A.nCheck > 1 ? A.nCheck + ' characters' : 'character') +
         ' is correct, the ID should end in <b style="font-family:monospace">' + QRID_escapeHtml(expected) + "</b>." +
         " Otherwise the typo is earlier in the ID.";
     } catch(e){ return ""; }
   }
+  function nameOf(A, i){ return QRID_escapeHtml(A.label ? A.label : "format " + (i + 1)); }
   function verdict(v, isFinal){
     /* returns {ok: true|false|"info", html} for a non-empty value.
-       Order: 1) FORMAT (regex, with live remaining-guidance) 2) CHECK character —
-       so the fielder always knows WHICH kind of error they are making. */
-    if(fullRe){
-      var normR = Q.normalize(v, REGEX_RULES).trim();
-      if(!fullRe.test(normR)){
-        if(atoms){
-          var w = walkPattern(normR);
-          if(w.state === "partial"){
-            /* rem is built from the configured pattern (atom .desc, which may
-               echo a raw [class] body) — escape before it reaches innerHTML. */
-            var rem = QRID_escapeHtml(remainingText(w.atomIdx, w.needed));
-            if(!isFinal) return { ok: "info",
-              html: "&#8230; format OK so far &mdash; remaining: <b>" + rem + "</b>." };
-            return { ok: false,
-              html: "&#10007; FORMAT error &mdash; the ID is incomplete. Still remaining: <b>" + rem + "</b>." };
-          }
-          if(w.state === "mismatch"){
-            return { ok: false, html: "&#10007; FORMAT error at character " + (w.pos + 1) +
-              ": expected " + QRID_escapeHtml(w.expected) + ", got <b style=\"font-family:monospace\">" +
-              QRID_escapeHtml(w.got) + "</b>." +
-              (CHECK_MODE ? " (The check character is only tested once the format is right.)" : "") };
-          }
-        }
-        return { ok: false, html: "&#10007; FORMAT error &mdash; this does <b>not</b> match this " +
-          "project's ID format. Please re-scan or re-type it." };
-      }
-      if(REGEX_ONLY){
-        return { ok: true, html: "&#10003; ID format OK. (This project's IDs carry no check " +
+       Three passes, in the order that tells the fielder WHICH kind of mistake
+       they made: 1) does any format accept it, 2) did a format's SHAPE match
+       but its check character fail, 3) no shape matched — guide the typing.
+       For a single-format rule each pass collapses to today's branch, so the
+       wording is unchanged. */
+    var normR = Q.normalize(v, REGEX_RULES).trim();
+    var i, A, shapeFailed = [];
+
+    /* ---- pass 1: acceptance, declaration order, first accept wins ---- */
+    for(i = 0; i < ALTS.length; i++){
+      A = ALTS[i];
+      if(A.re && !A.re.test(normR)) continue;
+      if(A.regexOnly){
+        return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + " format OK" : "ID format OK") +
+          ". (" + (MIXED ? "IDs in this format carry" : "This project's IDs carry") + " no check " +
           "character, so typos that keep the format cannot be detected.)" };
       }
-      if(Q.validateIdCheck(v, scheme)){
-        return { ok: true, html: "&#10003; Format OK <b>and</b> check character verified." };
+      if(Q.validateIdCheck(v, A.scheme)){
+        if(!A.re) return { ok: true, html: "&#10003; ID verified &mdash; the check character matches." };
+        return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + ": format" : "Format") +
+          " OK <b>and</b> check character verified." };
+      }
+      shapeFailed.push(A);           /* shape matched (or no shape to match), check did not */
+    }
+
+    /* ---- pass 2: a shape matched but its check character failed ---- */
+    if(shapeFailed.length){
+      var only = shapeFailed.length === 1 ? shapeFailed[0] : null;
+      if(only && !only.re){
+        return { ok: false, html: "&#10007; This ID's check character does <b>not</b> match &mdash; " +
+          "probably a typo or mis-scan. Please re-scan or re-type it." + suggestion(v, only) };
       }
       return { ok: false, html: "&#10007; The format is correct, but the CHECK character does " +
         "<b>not</b> match &mdash; one of the characters is mistyped. Please re-scan or re-type it." +
-        suggestion(v) };
+        suggestion(v, only) };
     }
-    if(Q.validateIdCheck(v, scheme)){
-      return { ok: true, html: "&#10003; ID verified &mdash; the check character matches." };
+
+    /* ---- pass 3: nothing matched — narrow the guidance to ONE format ---- */
+    if(ANY_ATOMS){
+      var live = [], mism = null;
+      for(i = 0; i < ALTS.length; i++){
+        if(!ALTS[i].atoms) continue;
+        var w = walkPattern(normR, ALTS[i].atoms);
+        if(w.state === "partial") live.push({ a: ALTS[i], i: i, w: w });
+        else if(w.state === "mismatch" && !mism) mism = w;
+      }
+      if(live.length === 1){
+        /* rem is built from the configured pattern (atom .desc, which may
+           echo a raw [class] body) — escape before it reaches innerHTML. */
+        var rem = QRID_escapeHtml(remainingText(live[0].a.atoms, live[0].w.atomIdx, live[0].w.needed));
+        var who = MIXED || ALTS.length > 1 ? nameOf(live[0].a, live[0].i) + " &mdash; remaining: "
+                                           : "remaining: ";
+        if(!isFinal) return { ok: "info", html: "&#8230; format OK so far &mdash; " + who + "<b>" + rem + "</b>." };
+        return { ok: false, html: "&#10007; FORMAT error &mdash; the ID is incomplete. Still " +
+          (MIXED || ALTS.length > 1 ? "matching " + nameOf(live[0].a, live[0].i) + ", remaining: "
+                                    : "remaining: ") + "<b>" + rem + "</b>." };
+      }
+      if(live.length > 1){
+        /* Several formats are still possible, so no single remaining-characters
+           hint is true yet. Name the candidates instead of guessing one. */
+        var names = live.map(function(x){ return nameOf(x.a, x.i); }).join(", ");
+        if(!isFinal) return { ok: "info",
+          html: "&#8230; format OK so far &mdash; still matching: <b>" + names + "</b>." };
+        return { ok: false, html: "&#10007; FORMAT error &mdash; the ID is incomplete. Still " +
+          "matching: <b>" + names + "</b>." };
+      }
+      if(mism && ALTS.length === 1){
+        return { ok: false, html: "&#10007; FORMAT error at character " + (mism.pos + 1) +
+          ": expected " + QRID_escapeHtml(mism.expected) + ", got <b style=\"font-family:monospace\">" +
+          QRID_escapeHtml(mism.got) + "</b>." +
+          (CHECK_MODE ? " (The check character is only tested once the format is right.)" : "") };
+      }
     }
-    return { ok: false, html: "&#10007; This ID's check character does <b>not</b> match &mdash; " +
-      "probably a typo or mis-scan. Please re-scan or re-type it." + suggestion(v) };
+    if(ALTS.length > 1){
+      var all = ALTS.map(function(x, k){ return nameOf(x, k); }).join(", ");
+      return { ok: false, html: "&#10007; FORMAT error &mdash; this matches none of this field's " +
+        "accepted ID formats (<b>" + all + "</b>). Please re-scan or re-type it." };
+    }
+    return { ok: false, html: "&#10007; FORMAT error &mdash; this does <b>not</b> match this " +
+      "project's ID format. Please re-scan or re-type it." };
   }
 
   var BLOCK = cfg.blockSave || "off";
@@ -1990,7 +2130,8 @@ function QRIDSingleInit(QRID_CONFIG){
   var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
   return { configError: configError, verdict: verdict, gate: GATE, blockSave: BLOCK,
            when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
-           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, guidance: !!atoms } };
+           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, guidance: ANY_ATOMS,
+                   mixed: MIXED, alternates: ALTS.length } };
   }
   /* ---- end makeVariant ---- */
 
@@ -2942,47 +3083,106 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      built once per rule (legacy) or once per branch (branch rules). ---- */
   function makeVariant(cfg){
 
-  /* ---- resolve the validation mode from the config ---- */
+  /* ---- resolve the accepted ID formats from the config ----
+     One rule = one or more ALTERNATES, each with its own pattern and its own
+     check algorithm. A legacy scalar rule normalizes to exactly one alternate,
+     so everything below is a single loop over ALTS rather than two code paths.
+     CHECK_MODE/REGEX_ONLY become rule-level summaries: a MIXED rule is both. */
   var configError = cfg.configErrorOverride || "";
-  var CHECK_MODE = false, REGEX_ONLY = false, fullRe = null;
-  var algoName = cfg.algorithm;
-  if(!configError && algoName !== "none" && !Q.ALGORITHMS[algoName]){
-    configError = "Unknown algorithm \"" + algoName + "\". Valid: " +
-      Object.keys(Q.ALGORITHMS).join(", ") + ".";
-  }
-  if(!configError && cfg.idPattern){
-    var gP = QRID_gatePattern(cfg.idPattern, "");
-    configError = gP.error;
-    fullRe = gP.re;
-  }
-  if(!configError){
-    CHECK_MODE = (algoName !== "none");
-    REGEX_ONLY = (!CHECK_MODE && !!fullRe);
-    if(!CHECK_MODE && !REGEX_ONLY){
-      configError = "algorithm is \"none\" and no idPattern is set — nothing to validate. " +
-        "Set the check algorithm your IDs were minted with, or (for a legacy project " +
-        "without check characters) set idPattern to your ID regex.";
+  var A0 = QRID_alternatesOf(cfg);
+  configError = configError || A0.error;
+  var ALTS = A0.list, HAS_ALTS = !!(cfg.alternates != null && cfg.alternates !== "");
+  for(var ai = 0; ai < ALTS.length && !configError; ai++){
+    var A = ALTS[ai], an = QRID_altName(A, ai);
+    if(A.algorithm !== "none" && !Q.ALGORITHMS[A.algorithm]){
+      configError = "Unknown algorithm \"" + A.algorithm + "\"" +
+        (HAS_ALTS ? " on " + an : "") + ". Valid: " + Object.keys(Q.ALGORITHMS).join(", ") + ".";
+      break;
     }
+    A.check = (A.algorithm !== "none");
+    if(A.pattern){
+      var gA = QRID_gatePattern(A.pattern, HAS_ALTS ? an : "");
+      if(gA.error){ configError = gA.error; break; }
+      A.re = gA.re;
+    } else { A.re = null; }
+    A.regexOnly = (!A.check && !!A.re);
+    if(!A.check && !A.regexOnly){
+      configError = (HAS_ALTS ? an + ": algorithm" : "algorithm") + " is \"none\" and no " +
+        (HAS_ALTS ? "pattern" : "idPattern") + " is set — nothing to validate. " +
+        "Set the check algorithm your IDs were minted with, or (for a legacy project " +
+        "without check characters) set " + (HAS_ALTS ? "pattern" : "idPattern") + " to your ID regex.";
+      break;
+    }
+    A.source = A.source || "normalized_id";
+    if(A.check && A.source !== "normalized_id" && A.source !== "digits_only" && A.source !== "sequence_only"){
+      configError = 'Unknown source "' + A.source + '"' + (HAS_ALTS ? " on " + an : "") +
+        " — use normalized_id, digits_only or sequence_only.";
+      break;
+    }
+    A.scheme = A.check ? Q.makeScheme({
+      algorithm: A.algorithm, source: A.source,
+      placement: "append", delimiter: "-",
+      normalize_rules: { strip_delimiters: A.strip || "", uppercase: true,
+                         unify_unicode_dashes: true, keep_only: null },
+      enabled: true
+    }) : null;
+    A.nCheck = A.check ? Q.ALGORITHMS[A.algorithm].nCheckChars : 0;
   }
-  var srcP = cfg.source || "normalized_id";
-  if(!configError && CHECK_MODE &&
-     srcP !== "normalized_id" && srcP !== "digits_only" && srcP !== "sequence_only"){
-    configError = 'Unknown source "' + srcP + '" — use normalized_id, digits_only or sequence_only.';
+  /* rule-level summaries, kept for the render layer and the public mode object */
+  var CHECK_MODE = false, REGEX_ONLY = false, MIXED = false;
+  if(!configError){
+    var nChk = 0;
+    for(var si = 0; si < ALTS.length; si++) if(ALTS[si].check) nChk++;
+    CHECK_MODE = nChk > 0;
+    REGEX_ONLY = nChk === 0;
+    MIXED      = nChk > 0 && nChk < ALTS.length;
   }
-  var scheme = CHECK_MODE ? Q.makeScheme({
-    algorithm: algoName, source: srcP,
-    placement: "append", delimiter: "-",
-    normalize_rules: { strip_delimiters: cfg.strip || "", uppercase: true,
-                       unify_unicode_dashes: true, keep_only: null },
-    enabled: true
-  }) : null;
-  var nCheck = CHECK_MODE ? Q.ALGORITHMS[algoName].nCheckChars : 0;
   /* ---- validate the length configuration ---- */
   function isPosInt(x){ return typeof x === "number" && isFinite(x) && x > 0 && x % 1 === 0; }
+  /* Two sources of truth for one fact is the bug this repo keeps re-litigating:
+     with alternates, lengths are declared per alternate and the rule-level keys
+     must be absent. That also makes the idMaxLen < 2 x idMinLen branch below
+     unreachable on the alternates path — only the union test survives. */
+  if(!configError && HAS_ALTS){
+    if(cfg.idPattern) configError = "a rule with \"alternates\" must not also set a rule-level " +
+      "\"pattern\" — give each alternate its own.";
+    else if(cfg.idLengths != null || cfg.idMinLen !== undefined || cfg.idMaxLen !== undefined)
+      configError = "a rule with \"alternates\" must not also set rule-level \"idLengths\", " +
+        "\"idMinLen\" or \"idMaxLen\" — give each alternate its own \"lengths\".";
+    else for(var qi = 0; qi < ALTS.length; qi++)
+      if(!ALTS[qi].lengths){
+        configError = QRID_altName(ALTS[qi], qi) + " needs \"lengths\" — a pooled rule splits a run " +
+          "at member boundaries, so every format must say how long its IDs are.";
+        break;
+      }
+  }
   var minLen = cfg.idMinLen === undefined ? 8 : cfg.idMinLen;
   var maxLen = cfg.idMaxLen === undefined ? 14 : cfg.idMaxLen;
   var LENS = [];
-  if(!configError && cfg.idLengths != null){
+  if(!configError && HAS_ALTS){
+    /* The safety proofs below are properties of the WHOLE length universe, not
+       of one alternate: two alternates that are individually safe ([9] and
+       [5,4]) are jointly unsafe, because 9 = 5 + 4 lets one 9-char window
+       swallow a real 5 and a real 4. So the union is what gets tested. */
+    var _uSeen = {};
+    for(var ui = 0; ui < ALTS.length; ui++)
+      for(var uj = 0; uj < ALTS[ui].lengths.length; uj++){
+        var uL = ALTS[ui].lengths[uj];
+        if(!_uSeen[uL]){ _uSeen[uL] = 1; LENS.push(uL); }
+      }
+    LENS.sort(function(a, b){ return a - b; });
+    minLen = LENS[0]; maxLen = LENS[LENS.length - 1];
+    if(maxLen > QRID_MAX_ID_LEN){
+      configError = "ID lengths above " + QRID_MAX_ID_LEN + " characters are not supported.";
+    } else {
+      var swA = QRID_swallowSum(LENS);
+      if(swA) configError = "the alternates produce ID lengths " + LENS.join(", ") + ", and " +
+        swA.target + " = " + swA.parts.join(" + ") + " — one \"member\" could swallow " +
+        swA.parts.length + " real ones and still verify, so a mis-scan would be reported as a " +
+        "clean ID. Give the alternates lengths where no length is the sum of two or more others, " +
+        "or split them into separate fields.";
+    }
+  } else if(!configError && cfg.idLengths != null){
     var lensCfg = cfg.idLengths;
     if(!(lensCfg instanceof Array) || !lensCfg.length || !lensCfg.every(isPosInt)){
       configError = "idLengths must be a list of positive whole numbers, e.g. [10] — got " +
@@ -3028,8 +3228,39 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       configError = "idMaxLen (" + maxLen + ") is above the supported maximum of " + QRID_MAX_ID_LEN + ".";
     }
     if(!configError){
-      minLen = Math.max(minLen, nCheck + 1);
+      minLen = Math.max(minLen, ALTS[0].nCheck + 1);
       for(var _L = minLen; _L <= maxLen; _L++) LENS.push(_L);
+    }
+  }
+  /* Every alternate that did not declare its own lengths inherits the rule-level
+     set — which is exactly the legacy single-alternate case, so PAIRS below is
+     byte-for-byte today's LENS and the DP is unchanged. */
+  var PAIRS = [], RESCAN = [];
+  if(!configError){
+    for(var pi2 = 0; pi2 < ALTS.length; pi2++)
+      if(!ALTS[pi2].lengths) ALTS[pi2].lengths = LENS;
+    /* Bucketed, NOT sorted: length ascending on the outside keeps the DP's
+       early `break` valid and preserves "shortest member wins ties"; declaration
+       order on the inside gives precedence. A comparator would order ties
+       differently on PHP 7.4, where usort is not stable, and the two runtimes
+       would silently disagree.
+       The winning alternate's identity never reaches a segment, so two
+       alternates accepting one token produce identical output and betterThan
+       needs no extra criterion. Feed alternate identity into the DP score and
+       that guarantee is gone. */
+    for(var li3 = 0; li3 < LENS.length; li3++)
+      for(var aj = 0; aj < ALTS.length; aj++)
+        if(ALTS[aj].lengths.indexOf(LENS[li3]) >= 0)
+          PAIRS.push({ len: LENS[li3], alt: aj, a: ALTS[aj] });
+    for(var ri = 0; ri < PAIRS.length; ri++)
+      if(PAIRS[ri].a.check && PAIRS[ri].a.re) RESCAN.push(PAIRS[ri]);
+    if(!PAIRS.length){
+      configError = "no candidate ID length survived — check the declared lengths.";
+    } else if(PAIRS.length > QRID_MAX_LEN_CHOICES){
+      /* the same bound the single-format rule has always had: this IS the
+         candidate list the parser walks at every position (PER-002) */
+      configError = "the rule declares " + PAIRS.length + " format/length combinations — at most " +
+        QRID_MAX_LEN_CHOICES + " are supported.";
     }
   }
   if(!configError && cfg.expectedIds != null
@@ -3052,22 +3283,39 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      Also automatically kept: the check algorithm's special characters (e.g. the
      "*" that iso7064_mod37_2 can emit) and any literal separator the ID regex
      itself uses (-, /, _, ...), so the printed form still matches. */
-  var KEEP = ALPHA + (cfg.keepChars || "");
-  if(CHECK_MODE){
-    var CA = Q.ALGORITHMS[algoName].checkAlphabet || "";
-    for(var _c = 0; _c < CA.length; _c++)
-      if(KEEP.indexOf(CA.charAt(_c)) < 0) KEEP += CA.charAt(_c);
-  }
-  if(fullRe){
-    var _pat = String(cfg.idPattern), _meta = "\\^$.|?*+()[]{}";
-    for(var _pi = 0; _pi < _pat.length; _pi++){
-      var _pc = _pat.charAt(_pi);
-      if(_pc === "\\"){                       /* escaped char: literal if it is a metachar */
-        _pi++; _pc = _pat.charAt(_pi);
-        if(_pc && _meta.indexOf(_pc) >= 0 && KEEP.indexOf(_pc) < 0) KEEP += _pc;
-        continue;
+  function keepFor(A){
+    var K = ALPHA + (cfg.keepChars || "");
+    if(A.check){
+      var CA = Q.ALGORITHMS[A.algorithm].checkAlphabet || "";
+      for(var _c = 0; _c < CA.length; _c++)
+        if(K.indexOf(CA.charAt(_c)) < 0) K += CA.charAt(_c);
+    }
+    if(A.re){
+      var _pat = String(A.pattern), _meta = "\\^$.|?*+()[]{}";
+      for(var _pi = 0; _pi < _pat.length; _pi++){
+        var _pc = _pat.charAt(_pi);
+        if(_pc === "\\"){                       /* escaped char: literal if it is a metachar */
+          _pi++; _pc = _pat.charAt(_pi);
+          if(_pc && _meta.indexOf(_pc) >= 0 && K.indexOf(_pc) < 0) K += _pc;
+          continue;
+        }
+        if(_meta.indexOf(_pc) < 0 && !/[A-Za-z0-9]/.test(_pc) && K.indexOf(_pc) < 0) K += _pc;
       }
-      if(_meta.indexOf(_pc) < 0 && !/[A-Za-z0-9]/.test(_pc) && KEEP.indexOf(_pc) < 0) KEEP += _pc;
+    }
+    return K;
+  }
+  /* clean() runs ONCE over the whole pooled string, before anything is split,
+     so there is one KEEP set for the field: the union over the alternates.
+     That union is also a hazard — an algorithm that can emit "*" would make "*"
+     survive for a sibling alternate that cannot contain it, changing the string
+     recorded for that sibling. checkFragment refuses a rule whose alternates
+     disagree about KEEP unless the designer declares the union in keepChars. */
+  var KEEP = ALPHA + (cfg.keepChars || "");
+  if(!configError){
+    for(var ki = 0; ki < ALTS.length; ki++){
+      var Ki = keepFor(ALTS[ki]);
+      for(var kc = 0; kc < Ki.length; kc++)
+        if(KEEP.indexOf(Ki.charAt(kc)) < 0) KEEP += Ki.charAt(kc);
     }
   }
   function clean(v){
@@ -3078,16 +3326,29 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      configuration makes parsing expensive, in which case the cap shrinks so
      one parse stays inside QRID_POOLED_WORK_BUDGET char-ops (PER-002). Mirrors
      CheckCharacter::pooledScanCap (php) — keep the formula identical. */
+  /* PAIRS, not LENS: the candidate list the parser walks at every position is
+     now (alternate, length) pairs. For a single-format rule PAIRS.length IS
+     LENS.length, so every existing rule keeps exactly the cap it has today. */
   var SCAN_CAP = configError ? QRID_MAX_POOLED_LEN : Math.min(QRID_MAX_POOLED_LEN,
-    Math.max(256, Math.floor(QRID_POOLED_WORK_BUDGET / ((LENS.length || 1) * (maxLen || 1)))));
-  /* A verified member. Check mode: the check character verifies (and the shape
-     matches, when a pattern is also given) — the check char alone marks where
-     one ID ends and the next begins. Regex-only mode (legacy projects, no check
-     character): the shape IS the whole test. */
-  function verifies(t){
-    if(fullRe && !fullRe.test(t)) return false;
-    if(REGEX_ONLY) return true;
-    return Q.validateIdCheck(t, scheme);
+    Math.max(256, Math.floor(QRID_POOLED_WORK_BUDGET / ((PAIRS.length || 1) * (maxLen || 1)))));
+  /* Does THIS alternate accept the token? Check mode: the check character
+     verifies (and the shape matches, when a pattern is also given) — the check
+     char alone marks where one ID ends and the next begins. Regex-only
+     (legacy projects, no check character): the shape IS the whole test. */
+  function verifiesAs(P, t){
+    if(P.a.re && !P.a.re.test(t)) return false;
+    if(P.a.regexOnly) return true;
+    return Q.validateIdCheck(t, P.a.scheme);
+  }
+  /* Which alternate claims this token? First in declaration order, computed
+     AFTER segmentation for reporting only — never an input to the DP score. */
+  function claimedBy(t){
+    for(var ci = 0; ci < ALTS.length; ci++){
+      var C = ALTS[ci];
+      if(C.re && !C.re.test(t)) continue;
+      if(C.regexOnly || Q.validateIdCheck(t, C.scheme)) return ci;
+    }
+    return -1;
   }
   function parse(raw){
     /* over-budget input: no verdict at all (null), never a slow parse — the
@@ -3124,10 +3385,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       var c = sc[i + 1];
       var best = { tok: c.tok, maxL: c.maxL, runs: c.runs + (c.startsJunk ? 0 : 1),
                    chars: c.chars + 1, startsJunk: true, move: 0 };
-      for(var li = 0; li < LENS.length; li++){     /* ascending: shortest member wins ties */
-        var L = LENS[li];
+      for(var li = 0; li < PAIRS.length; li++){    /* length-ascending: shortest member wins ties */
+        var L = PAIRS[li].len;
         if(L > N - i) break;
-        if(!verifies(s.substr(i, L))) continue;
+        if(!verifiesAs(PAIRS[li], s.substr(i, L))) continue;
         var ch = sc[i + L];
         var cand = { tok: ch.tok + 1, maxL: (L > ch.maxL ? L : ch.maxL),
                      runs: ch.runs, chars: ch.chars, startsJunk: false, move: L };
@@ -3149,25 +3410,29 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       }
     }
     flushJunk();
-    /* Check+pattern mode: re-scan junk runs for well-formed-but-wrong-check members
-       so they surface as their own X chips instead of anonymous leftover text.
-       (Not in regex-only mode — there the shape IS the test, so a leftover that
-       matched the shape would already be a member.) */
-    if(fullRe && CHECK_MODE){
+    /* Re-scan junk runs for well-formed-but-wrong-check members so they surface
+       as their own X chips instead of anonymous leftover text.
+       Only CHECK-BEARING alternates that carry a pattern take part: for a
+       regex-only alternate the shape IS the test, so a leftover matching its
+       shape would already be a member, and stamping valid:false on it would
+       report a check-character error against an ID that has no check character. */
+    if(RESCAN.length){
       var out = [];
       for(var g = 0; g < segs.length; g++){
         if(segs[g].type !== "junk"){ out.push(segs[g]); continue; }
         var rest = segs[g].text, buf = "";
         while(rest.length){
           var hit = "";
-          /* Only lengths the rule actually DECLARES. This walked the contiguous
-             range minLen..maxLen, so idLengths [10,12] tested length 11 and
-             could stamp an "invalid ID" chip the segmentation pass can never
-             produce — an error message naming a length the rule forbids. */
-          for(var li2 = 0; li2 < LENS.length && !hit; li2++){
-            var L2 = LENS[li2];
-            if(L2 > rest.length) break;                /* LENS is ascending */
-            if(fullRe.test(rest.substr(0, L2))) hit = rest.substr(0, L2);
+          /* Only lengths the rule actually DECLARES, and only for the alternate
+             that declares them. This walked the contiguous range minLen..maxLen,
+             so idLengths [10,12] tested length 11 and could stamp an "invalid
+             ID" chip the segmentation pass can never produce — an error message
+             naming a length the rule forbids. Length ascending outer, alternate
+             order inner, so the shortest hit still wins. */
+          for(var li2 = 0; li2 < RESCAN.length && !hit; li2++){
+            var L2 = RESCAN[li2].len;
+            if(L2 > rest.length) break;                /* RESCAN is length-ascending */
+            if(RESCAN[li2].a.re.test(rest.substr(0, L2))) hit = rest.substr(0, L2);
           }
           if(hit){
             if(buf){ out.push({type:"junk", text: buf}); buf = ""; }
@@ -3191,10 +3456,12 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   /* optional "when" condition: null when absent (no behavior change) */
   var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
   return { configError: configError, clean: clean, parse: parse, scanCap: SCAN_CAP,
+           claimedBy: claimedBy, alts: ALTS,
            expectedIds: (cfg.expectedIds == null ? null : cfg.expectedIds),
            blockSave: BLOCK, gate: GATE,
            when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
-           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY } };
+           mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, mixed: MIXED,
+                   alternates: ALTS.length } };
   }
   /* ---- end makeVariant ---- */
 
@@ -3204,7 +3471,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ANY_BLOCK = VS.firstBlock !== "off";
   var V0 = VS.all[0];
   var api = { clean: V0.clean, parse: V0.parse,        /* exposed for testing / power users */
-              mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError } };
+              claimedBy: V0.claimedBy, alts: V0.alts,
+              mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly,
+                      mixed: V0.mode.mixed, alternates: V0.mode.alternates,
+                      configError: configError } };
   UV_lastPooled = api;                                 /* namespace .lastPooled */
   (QRID_MULTI_CONFIG.fields || []).forEach(function(f){
     if(IS_BRANCH){
@@ -3358,7 +3628,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
 /* ---- dispatcher: one validator instance per rule ---- */
 (function(){
   var C = QRID_COMBINED_CONFIG;
-  var DEFAULT_KEYS = ["algorithm", "idPattern", "source", "strip", "suggestFix",
+  var DEFAULT_KEYS = ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
                       "blockSave", "when", "whenAst",
                       /* constraint mode (@UVASSERT). "deferred" marks an assert

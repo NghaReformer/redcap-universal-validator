@@ -76,6 +76,7 @@ class UniversalValidator extends AbstractExternalModule
         return [
             'algorithm'   => 'iso7064_mod37_36',
             'idPattern'   => null,
+            'alternates'  => null,
             'source'      => 'normalized_id',
             'strip'       => "-/ _|\\",
             // OFF by default: a visible "should end in X" hint can entice
@@ -641,18 +642,22 @@ class UniversalValidator extends AbstractExternalModule
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || $value === '') continue;
-            if ($type === 'pooled') {
-                $res = CheckCharacter::validatePooledField([
-                    'algorithm'   => $algo, 'source' => $source, 'strip' => $strip,
-                    'idPattern'   => $pattern, 'keepChars' => isset($rule['keepChars']) ? $rule['keepChars'] : '',
-                    'idLengths'   => isset($rule['idLengths']) ? $rule['idLengths'] : null,
-                    'idMinLen'    => isset($rule['idMinLen']) ? $rule['idMinLen'] : null,
-                    'idMaxLen'    => isset($rule['idMaxLen']) ? $rule['idMaxLen'] : null,
-                    'expectedIds' => isset($rule['expectedIds']) ? $rule['expectedIds'] : null,
-                ], $value);
-            } else {
-                $res = CheckCharacter::validateSingleField($algo, $source, $strip, $pattern, $value);
-            }
+            // ONE config array for both verdicts: the single and pooled twins
+            // read the same keys, so there is no second argument list to keep in
+            // step when a rule gains an option.
+            $vcfg = [
+                'algorithm'   => $algo, 'source' => $source, 'strip' => $strip,
+                'idPattern'   => $pattern,
+                'alternates'  => isset($rule['alternates']) ? $rule['alternates'] : null,
+                'keepChars'   => isset($rule['keepChars']) ? $rule['keepChars'] : '',
+                'idLengths'   => isset($rule['idLengths']) ? $rule['idLengths'] : null,
+                'idMinLen'    => isset($rule['idMinLen']) ? $rule['idMinLen'] : null,
+                'idMaxLen'    => isset($rule['idMaxLen']) ? $rule['idMaxLen'] : null,
+                'expectedIds' => isset($rule['expectedIds']) ? $rule['expectedIds'] : null,
+            ];
+            $res = ($type === 'pooled')
+                ? CheckCharacter::validatePooledField($vcfg, $value)
+                : CheckCharacter::validateSingleField($vcfg, $value);
             if (isset($res['reason']) && $res['reason'] === 'unconfigurable') {
                 // The rule cannot produce a trustworthy verdict (unsafe lengths,
                 // uncompilable pattern, PCRE engine failure). Surface it instead
@@ -1476,7 +1481,7 @@ class UniversalValidator extends AbstractExternalModule
         // else instead of warning or letting it reach the engine.
         foreach (['rule-type', 'fields-csv', 'when', 'assert', 'message',
                   'unique-with', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
-                  'suggest-fix', 'pattern', 'strip',
+                  'suggest-fix', 'pattern', 'alternates-json', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
             if (isset($s[$k]) && !is_scalar($s[$k])) unset($s[$k]);
@@ -1644,6 +1649,21 @@ class UniversalValidator extends AbstractExternalModule
         // Presence checks, not empty(): a pattern/strip/keep of the string "0"
         // is legitimate configuration, not an unset box (UX-002).
         if (isset($s['pattern']) && (string) $s['pattern'] !== '')    $rule['idPattern'] = (string) $s['pattern'];
+        // Multi-format rules: the dialog holds the same JSON the action tag
+        // does, and it is validated by the SAME checkFragment below, so a rule
+        // one channel accepts can never be one another channel rejects.
+        $altErr = null;
+        if (isset($s['alternates-json']) && trim((string) $s['alternates-json']) !== '') {
+            $decoded = json_decode(trim((string) $s['alternates-json']), true);
+            if (!is_array($decoded)) {
+                $altErr = 'the "accepted ID formats" box is not valid JSON — it must be a list like '
+                    . '[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}].';
+            } else {
+                $norm = AnnotationRules::normalizeAlternates($decoded);
+                if (isset($norm['error'])) $altErr = $norm['error'];
+                else $rule['alternates'] = $norm['alternates'];
+            }
+        }
         if (isset($s['strip']) && (string) $s['strip'] !== '')        $rule['strip']     = (string) $s['strip'];
         if (isset($s['keep-chars']) && (string) $s['keep-chars'] !== '') $rule['keepChars'] = (string) $s['keep-chars'];
         // Optional "when" condition — the rule validates only while it is true.
@@ -1705,6 +1725,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        if ($altErr !== null) array_unshift($errors, $altErr);
         if ($errors) $rule['configError'] = implode(' ', $errors);
 
         return self::applyAuthoring($rule, $s);
@@ -1769,7 +1790,7 @@ class UniversalValidator extends AbstractExternalModule
         $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
                  'unique-with', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
-                 'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
+                 'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
         $n = count($settings['rules']);
         foreach ($keys as $k) {

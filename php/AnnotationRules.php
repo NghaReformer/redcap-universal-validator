@@ -133,9 +133,12 @@ class AnnotationRules
     ];
 
     /** Keys accepted in the JSON form ("pattern" maps to the engine's idPattern). */
-    const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'strip', 'keepChars',
+    const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'alternates', 'strip', 'keepChars',
                        'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'when',
                        'suggestFix', 'note'];
+
+    /** Keys accepted INSIDE one entry of the "alternates" list. */
+    const ALT_KEYS = ['pattern', 'algorithm', 'source', 'strip', 'lengths', 'label'];
 
     /**
      * Resolve a user-typed algorithm shorthand to its canonical name.
@@ -581,6 +584,12 @@ class AnnotationRules
             $out['idPattern'] = $cfg['pattern'];
         }
 
+        if (isset($cfg['alternates'])) {
+            $norm = self::normalizeAlternates($cfg['alternates']);
+            if (isset($norm['error'])) return ['error' => $norm['error']];
+            $out['alternates'] = $norm['alternates'];
+        }
+
         if (isset($cfg['suggestFix'])) {
             // Strict boolean: "true"/1 would hide a typo'd intent, and the
             // check-character hint is deliberately opt-in (see README).
@@ -681,13 +690,149 @@ class AnnotationRules
         }
 
         $pattern = isset($frag['idPattern']) ? $frag['idPattern'] : null;
+        $hasAlts = isset($frag['alternates']) && is_array($frag['alternates']) && count($frag['alternates']);
+        $why = '';
         if ($pattern !== null && $pattern !== '') {
             // Single admission point, shared with the pooled parser and twinned
             // by QRID_gatePattern (js) — see CheckCharacter::gatePattern.
             if (CheckCharacter::gatePattern($pattern, $why) === null) $errors[] = $why;
         }
-        if ($algo === 'none' && ($pattern === null || $pattern === '')) {
+        if ($algo === 'none' && ($pattern === null || $pattern === '') && !$hasAlts) {
             $errors[] = 'algorithm "none" validates format only, so a format pattern is required.';
+        }
+
+        // ---- multi-format rules -------------------------------------------
+        // Ambiguity is refused HERE, at config time, never resolved by guessing
+        // at runtime: the same precedent M-03 set below.
+        if ($hasAlts && !$errors) {
+            $alts = $frag['alternates'];
+            if (count($alts) > CheckCharacter::MAX_ALTERNATES) {
+                $errors[] = '"alternates" lists ' . count($alts) . ' formats — at most '
+                    . CheckCharacter::MAX_ALTERNATES . ' are supported. More ID families than that in '
+                    . 'one field is usually a sign they belong in separate fields.';
+            }
+            if ($pattern !== null && $pattern !== '') {
+                $errors[] = 'a rule with "alternates" must not also set a rule-level "pattern" — '
+                    . 'give each alternate its own.';
+            }
+            if (isset($frag['idLengths']) || isset($frag['idMinLen']) || isset($frag['idMaxLen'])) {
+                $errors[] = 'a rule with "alternates" must not also set rule-level "idLengths", '
+                    . '"idMinLen" or "idMaxLen" — give each alternate its own "lengths".';
+            }
+        }
+        if ($hasAlts && !$errors) {
+            $alts = $frag['alternates'];
+            $ruleAlgo   = $algo;
+            $ruleSource = isset($frag['source']) ? $frag['source'] : 'normalized_id';
+            $baseKeep   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+                . (isset($frag['keepChars']) ? (string) $frag['keepChars'] : '');
+            $union = [];        // every length any alternate can produce
+            $roLens = [];       // lengths of the FORMAT-ONLY alternates
+            $ckLens = [];       // lengths of the CHECK-BEARING alternates
+            $keepSets = [];
+            foreach ($alts as $i => $a) {
+                $nm = isset($a['label']) && $a['label'] !== '' ? (string) $a['label'] : 'alternate ' . ($i + 1);
+                if (isset($a['label']) && strlen((string) $a['label']) > CheckCharacter::MAX_ALT_LABEL) {
+                    $errors[] = 'alternate ' . ($i + 1) . ': "label" is limited to '
+                        . CheckCharacter::MAX_ALT_LABEL . ' characters.';
+                    continue;
+                }
+                $aAlgo = isset($a['algorithm']) && $a['algorithm'] !== '' ? $a['algorithm'] : $ruleAlgo;
+                if (!in_array($aAlgo, self::ALGORITHMS, true)) {
+                    $errors[] = $nm . ': unknown algorithm "' . $aAlgo . '". Valid: '
+                        . implode(', ', self::ALGORITHMS) . '.';
+                    continue;
+                }
+                $aSource = isset($a['source']) && $a['source'] !== '' ? $a['source'] : $ruleSource;
+                if ($aAlgo !== 'none' && !in_array($aSource, ['normalized_id', 'digits_only', 'sequence_only'], true)) {
+                    $errors[] = $nm . ': unknown source "' . $aSource . '" — use normalized_id, '
+                        . 'digits_only or sequence_only.';
+                    continue;
+                }
+                if (!isset($a['pattern']) || !is_string($a['pattern']) || $a['pattern'] === '') {
+                    // A pattern-less alternate matches everything, so in
+                    // declaration order it would swallow every value and the
+                    // alternates after it would never be reached.
+                    $errors[] = $nm . ' needs a non-empty "pattern" — an alternate without one would '
+                        . 'accept every value and the alternates after it would never be reached.';
+                    continue;
+                }
+                $why = '';
+                if (CheckCharacter::gatePattern($a['pattern'], $why) === null) {
+                    $errors[] = $nm . ': ' . $why;
+                    continue;
+                }
+                if ($type === 'pooled') {
+                    if (!isset($a['lengths']) || !is_array($a['lengths']) || !count($a['lengths'])) {
+                        $errors[] = $nm . ' needs "lengths" — a pooled rule splits a run at member '
+                            . 'boundaries, so every format must say how long its IDs are.';
+                        continue;
+                    }
+                    $ls = array_values(array_unique(array_map('intval', $a['lengths'])));
+                    sort($ls);
+                    foreach ($ls as $L) {
+                        if ($L > CheckCharacter::MAX_ID_LEN) {
+                            $errors[] = $nm . ': ID lengths above ' . CheckCharacter::MAX_ID_LEN
+                                . ' characters are not supported.';
+                            break;
+                        }
+                    }
+                    $union = array_merge($union, $ls);
+                    if ($aAlgo === 'none') $roLens = array_merge($roLens, $ls);
+                    else                   $ckLens = array_merge($ckLens, $ls);
+                }
+                // KEEP is computed once over the WHOLE field before anything is
+                // split, so it is the union across alternates. An algorithm that
+                // can emit "*" therefore makes "*" survive for a sibling that
+                // cannot contain it, silently changing the string recorded for
+                // that sibling.
+                $keepSets[$nm] = self::keepSetFor($baseKeep, $aAlgo, $a['pattern']);
+            }
+            if (!$errors && count($keepSets) > 1) {
+                $names = array_keys($keepSets);
+                $first = $keepSets[$names[0]];
+                foreach ($names as $nm) {
+                    $diff = array_merge(array_diff(str_split($keepSets[$nm]), str_split($first)),
+                                        array_diff(str_split($first), str_split($keepSets[$nm])));
+                    if ($diff) {
+                        $errors[] = $names[0] . ' and ' . $nm . ' disagree about which characters survive '
+                            . 'cleaning (' . implode(' ', array_unique($diff)) . '). Cleaning runs once over '
+                            . 'the whole field, so those characters would be kept for every alternate — '
+                            . 'including ones that cannot contain them, which changes the value recorded. '
+                            . 'Add them to "keepChars" if that is intended, or give the alternates the same '
+                            . 'check alphabet and separators.';
+                        break;
+                    }
+                }
+            }
+            if (!$errors && $type === 'pooled' && $union) {
+                $union = array_values(array_unique($union));
+                sort($union);
+                if (count($union) > CheckCharacter::MAX_LEN_CHOICES) {
+                    $errors[] = 'the alternates declare ' . count($union) . ' distinct ID lengths — at most '
+                        . CheckCharacter::MAX_LEN_CHOICES . ' are supported.';
+                }
+                $sw = $errors ? null : CheckCharacter::swallowSum($union);
+                if ($sw !== null) {
+                    $errors[] = 'the alternates produce ID lengths ' . implode(', ', $union) . ', and '
+                        . $sw['target'] . ' = ' . implode(' + ', $sw['parts']) . ' — one "member" could '
+                        . 'swallow ' . count($sw['parts']) . ' real ones and still verify, so a mis-scan '
+                        . 'would be reported as a clean ID. Give the alternates lengths where no length is '
+                        . 'the sum of two or more others, or split them into separate fields.';
+                }
+                // A format-only alternate sharing a length with a check-bearing
+                // one accepts first (declaration order is irrelevant — the DP
+                // takes any accepting pair), so that length's check character
+                // would never actually be tested.
+                $shared = array_values(array_unique(array_intersect($roLens, $ckLens)));
+                if (!$errors && $shared) {
+                    sort($shared);
+                    $errors[] = 'a format-only alternate and a check-character alternate are both '
+                        . implode(' and ', $shared) . ' characters long. At that length the format-only '
+                        . 'alternate would accept the value first, so the check character would never be '
+                        . 'tested. Give them different lengths, or drop the format-only alternate.';
+                }
+            }
         }
 
         foreach (['strip' => 'strip', 'keepChars' => 'keepChars'] as $k => $label) {
@@ -755,7 +900,34 @@ class AnnotationRules
         // enforced (the parser would pick one division and could misreport the
         // count). Require a single exact length, drop expectedIds, or use a check
         // algorithm (which disambiguates by verification).
-        if ($type === 'pooled' && !$errors && $algo === 'none'
+        // With alternates the same question is asked of the FORMAT-ONLY ones
+        // only: a check-bearing alternate disambiguates its own members by
+        // verification, so it cannot create count ambiguity. Two format-only
+        // alternates pinned to different lengths reconstitute exactly the
+        // variable-length regex-only rule this refuses -- a run of a*b
+        // characters divides into b members of length a OR a of length b, both
+        // fully accepted, with nothing to prefer. One format-only length is
+        // therefore the exact boundary, not a conservative one, and it is what
+        // lets a mixed rule (one format-only family + several check-bearing
+        // ones) keep "expectedIds".
+        if ($type === 'pooled' && !$errors && $hasAlts
+                && isset($frag['expectedIds']) && self::posInt($frag['expectedIds'])) {
+            $ro = [];
+            foreach ($frag['alternates'] as $a) {
+                $aAlgo = isset($a['algorithm']) && $a['algorithm'] !== '' ? $a['algorithm'] : $algo;
+                if ($aAlgo !== 'none' || !isset($a['lengths']) || !is_array($a['lengths'])) continue;
+                foreach ($a['lengths'] as $L) $ro[] = (int) $L;
+            }
+            if (count(array_unique($ro)) > 1) {
+                sort($ro);
+                $errors[] = '"expectedIds" cannot be enforced: the format-only alternates are '
+                    . implode(' and ', array_values(array_unique($ro))) . ' characters long, and without a '
+                    . 'check character a run can split into different numbers of IDs, so the count is '
+                    . 'ambiguous. Give the format-only alternates a single length, drop "expectedIds", or '
+                    . 'give them a check algorithm (which disambiguates by verification).';
+            }
+        }
+        if ($type === 'pooled' && !$errors && !$hasAlts && $algo === 'none'
                 && isset($frag['expectedIds']) && self::posInt($frag['expectedIds'])) {
             $variable = $lens
                 ? (count(array_unique(array_map('intval', $lens))) > 1)
@@ -769,6 +941,106 @@ class AnnotationRules
             }
         }
         return $errors;
+    }
+
+    /**
+     * Shape-check and normalize an "alternates" list, shared by BOTH
+     * configuration channels: the @UVALIDATE JSON above and the Configure
+     * dialog's box (UniversalValidator::settingRowToRule). Structure only -
+     * the semantic gates (pattern safety, the union length proofs, KEEP
+     * agreement, the count-ambiguity rule) live in checkFragment, which every
+     * channel also goes through, so a rule one channel accepts can never be one
+     * another channel rejects.
+     *
+     * Returns ['alternates' => [...]] or ['error' => '...'].
+     */
+    public static function normalizeAlternates($alts)
+    {
+        if (!is_array($alts) || !count($alts)) {
+            return ['error' => '"alternates" must be a non-empty LIST of formats, e.g. '
+                . '[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}].'];
+        }
+        if (array_keys($alts) !== range(0, count($alts) - 1)) {
+            // A JSON object would be ordered differently by the two runtimes
+            // (PHP keeps insertion order, JavaScript reorders integer-like
+            // keys), and alternates are tried in DECLARATION order.
+            return ['error' => '"alternates" must be a JSON list [ ... ], not an object { ... } - '
+                . 'the browser and the server order object keys differently, and alternates are '
+                . 'tried in the order you write them.'];
+        }
+        $clean = [];
+        foreach ($alts as $i => $a) {
+            $nm = 'alternate ' . ($i + 1);
+            if (!is_array($a) || ($a !== [] && array_keys($a) === range(0, count($a) - 1))) {
+                return ['error' => '"alternates" entry ' . ($i + 1) . ' must be an object with a "pattern".'];
+            }
+            $unknown = array_diff(array_keys($a), self::ALT_KEYS);
+            if ($unknown) {
+                return ['error' => $nm . ' has unknown option(s): ' . implode(', ', $unknown)
+                    . '. Valid: ' . implode(', ', self::ALT_KEYS) . '.'];
+            }
+            if (!isset($a['pattern']) || !is_string($a['pattern']) || $a['pattern'] === '') {
+                return ['error' => $nm . ' needs a non-empty "pattern" - an alternate without one '
+                    . 'would accept every value and the alternates after it would never be reached.'];
+            }
+            if (isset($a['algorithm'])) {
+                if (!is_string($a['algorithm'])) return ['error' => $nm . ': "algorithm" must be a string.'];
+                $a['algorithm'] = self::canonicalAlgorithm($a['algorithm']);
+            }
+            foreach (['source', 'strip', 'label'] as $k) {
+                if (isset($a[$k]) && !is_string($a[$k])) return ['error' => $nm . ': "' . $k . '" must be a string.'];
+            }
+            if (isset($a['lengths'])) {
+                $lens = $a['lengths'];
+                if (is_string($lens)) $lens = array_map('trim', explode(',', $lens));
+                if (!is_array($lens) || !count($lens)) {
+                    return ['error' => $nm . ': "lengths" must be a list of positive whole numbers, e.g. [8].'];
+                }
+                foreach ($lens as $L) {
+                    if (!self::posInt($L)) {
+                        return ['error' => $nm . ': "lengths" must be positive whole numbers - got '
+                            . json_encode($L) . '.'];
+                    }
+                }
+                $a['lengths'] = array_values(array_map('intval', $lens));
+            }
+            $clean[] = $a;
+        }
+        return ['alternates' => $clean];
+    }
+
+    /**
+     * Which characters ONE alternate needs to survive the pooled cleaner: the
+     * base alphabet, its algorithm's check alphabet (mod37_2 can emit "*"), and
+     * every literal separator its pattern uses. Twin of
+     * CheckCharacter::pooledKeepFor and keepFor (js) -- used here only to prove
+     * the alternates agree, since cleaning runs once for the whole field.
+     */
+    private static function keepSetFor($base, $algo, $pattern)
+    {
+        $K = $base;
+        if ($algo !== 'none') {
+            $CA = CheckCharacter::checkAlphabet($algo);
+            for ($i = 0; $i < strlen($CA); $i++) {
+                if (strpos($K, $CA[$i]) === false) $K .= $CA[$i];
+            }
+        }
+        $pat = (string) $pattern; $meta = '\\^$.|?*+()[]{}';
+        for ($i = 0; $i < strlen($pat); $i++) {
+            $pc = $pat[$i];
+            if ($pc === '\\') {
+                $i++;
+                if ($i < strlen($pat)) {
+                    $pc = $pat[$i];
+                    if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
+                }
+                continue;
+            }
+            if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
+                $K .= $pc;
+            }
+        }
+        return $K;
     }
 
     /**

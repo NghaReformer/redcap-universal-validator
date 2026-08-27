@@ -48,7 +48,7 @@ class Branching
      * (null marks the else branch); "fields"/"type"/"configError" never
      * belong to a branch.
      */
-    const BRANCH_KEYS = ['algorithm', 'idPattern', 'source', 'strip', 'keepChars',
+    const BRANCH_KEYS = ['algorithm', 'idPattern', 'alternates', 'source', 'strip', 'keepChars',
                          'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
                          'blockSave', 'suggestFix', 'note',
                          // constraint mode (@UVASSERT)

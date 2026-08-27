@@ -11,8 +11,10 @@
  */
 
 require_once __DIR__ . '/../php/Branching.php';
+require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\Branching;
+use INSPIRE\UniversalValidator\AnnotationRules;
 
 $n = 0;
 $fail = 0;
@@ -151,6 +153,46 @@ check('unshared field of a flagged rule survives', $solo !== null && $solo['fiel
 $rules = [rule(['sid'], ['when' => '   ']), rule(['sid'], [])];
 $c = Branching::fieldConflicts($rules);
 check('blank when is treated as no when', isset($c['sid']) && $c['sid']['kind'] === 'two-unconditional');
+
+// ---- BRANCH_KEYS must cover every rule option checkFragment validates ----
+// branchOf() is a sparse allow-list, and validation runs on the SOURCE rule
+// BEFORE the copy. An option missing here therefore validates fine and then
+// silently vanishes, after which ruleFindings falls back to the DEFAULT
+// algorithm over the DEFAULT lengths and audits every value under a rule
+// nobody wrote, while the browser reports "Unknown algorithm". This structural
+// test is the durable fix: the next option added is caught here, not in
+// production.
+$n++;
+{
+    $jsonKeys = AnnotationRules::JSON_KEYS;
+    // JSON key "pattern" is stored on the fragment as "idPattern"; "type" and
+    // "when" are rule-level and never travel on a branch payload.
+    $map  = ['pattern' => 'idPattern'];
+    $skip = ['type', 'when'];
+    $need = [];
+    foreach ($jsonKeys as $k) {
+        if (in_array($k, $skip, true)) continue;
+        $need[] = isset($map[$k]) ? $map[$k] : $k;
+    }
+    $missing = array_values(array_diff($need, Branching::BRANCH_KEYS));
+    check('BRANCH_KEYS covers every @UVALIDATE option (missing: ' . implode(', ', $missing) . ')',
+        $missing === []);
+}
+
+// ---- alternates survive the branch rewrite --------------------------------
+$n++;
+{
+    $alts = [['pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]]];
+    $rules = [
+        rule(['sid'], ['alternates' => $alts, 'when' => "[s]='1'"]),
+        rule(['sid'], ['algorithm' => 'verhoeff', 'when' => "[s]='2'"]),   // legacy scalar branch
+    ];
+    $out = Branching::resolve($rules);
+    $br  = isset($out[0]['branches']) ? $out[0]['branches'] : [];
+    check('a branch carrying alternates round-trips, beside a legacy scalar branch',
+        count($br) === 2 && isset($br[0]['alternates']) && $br[0]['alternates'] === $alts
+        && !isset($br[1]['alternates']) && $br[1]['algorithm'] === 'verhoeff');
+}
 
 echo sprintf("branching_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

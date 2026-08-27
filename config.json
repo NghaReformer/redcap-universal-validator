@@ -266,6 +266,11 @@
           "type": "text"
         },
         {
+          "key": "alternates-json",
+          "name": "<b>Several ID formats in one field</b> (optional). Leave blank unless this field accepts more than one kind of ID. A JSON list, one entry per format, each with its own <code>pattern</code> and its own <code>algorithm</code> \u2014 a value is valid if ANY entry accepts it. Pooled rules also need <code>lengths</code> on every entry. When this box is used, the Method / format-pattern / ID-length boxes above must be left blank, because each format carries its own. Example: <code>[{\"label\":\"GHIT\",\"pattern\":\"FC[1-9]-[0-9]{4}\",\"algorithm\":\"none\",\"lengths\":[8]},{\"label\":\"START4KIDS\",\"pattern\":\"SK[1-5]-[0-9]{4}[0-9A-Z]\",\"algorithm\":\"iso7064_mod37_36\",\"lengths\":[9]}]</code>",
+          "type": "textarea"
+        },
+        {
           "key": "strip",
           "name": "Separators to ignore before checking (default: - / space _ | \\ )",
           "type": "text"

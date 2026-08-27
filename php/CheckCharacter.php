@@ -45,6 +45,8 @@ class CheckCharacter
     // the two in sync.
     const MAX_ID_LEN      = 64;   // longest single ID/member the parser will consider
     const MAX_LEN_CHOICES = 32;   // most candidate lengths a pooled rule may declare
+    const MAX_ALTERNATES  = 8;    // most ID formats one rule may accept
+    const MAX_ALT_LABEL   = 40;   // an alternate's display name (reaches innerHTML)
     const MAX_EXPECTED_IDS = 9999;
     const MAX_KEEP_CHARS  = 64;
     const MAX_POOLED_LEN  = 4096; // absolute pooled scan cap (client QRID_MAX_POOLED_LEN)
@@ -206,6 +208,16 @@ class CheckCharacter
     // -- server-side rule validation (mirror the browser rule semantics) -----
 
     /** The check alphabet an algorithm emits into (mirrors the JS registry). */
+    /**
+     * Is $name an algorithm this engine implements? Derived from checkAlphabet
+     * (which answers '' for anything unknown) so there is no second list to
+     * keep in step with compute(). "none" counts as known: it means format-only.
+     */
+    public static function knownAlgorithm($name)
+    {
+        return $name === 'none' || self::checkAlphabet($name) !== '';
+    }
+
     public static function checkAlphabet($name)
     {
         if (isset(self::WEIGHTED_SCHEMES[$name])) {
@@ -447,6 +459,68 @@ class CheckCharacter
     }
 
     /**
+     * Every rule is a LIST of accepted ID formats, each with its own pattern and
+     * its own check algorithm (or "none"). A rule written the old way — one
+     * scalar algorithm, one scalar idPattern — normalizes to a ONE-ELEMENT list,
+     * so every consumer runs exactly one loop and there is no second code path.
+     *
+     * Pure normalization: total, no gates, no compilation. The gates belong to
+     * the caller, because the three consumers have three different failure
+     * policies — validateSingleField fails OPEN, pooledState fails CLOSED, and
+     * AnnotationRules::checkFragment words an error. Conflating them would break
+     * whichever one it did not match.
+     *
+     * 'lengths' is null when the alternate does not declare its own; pooledState
+     * then hands it the rule-level set, which is what makes a legacy rule
+     * byte-identical to today. Returns null when the shape is unusable.
+     *
+     * Twin of QRID_alternatesOf (js).
+     */
+    public static function alternatesOf(array $cfg)
+    {
+        $algo   = (isset($cfg['algorithm']) && $cfg['algorithm'] !== '') ? $cfg['algorithm'] : 'iso7064_mod37_36';
+        $source = (isset($cfg['source']) && $cfg['source'] !== '') ? $cfg['source'] : 'normalized_id';
+        $strip  = (array_key_exists('strip', $cfg) && $cfg['strip'] !== null) ? $cfg['strip'] : '';
+
+        if (!isset($cfg['alternates']) || $cfg['alternates'] === null || $cfg['alternates'] === '') {
+            $pattern = (isset($cfg['idPattern']) && $cfg['idPattern'] !== '') ? $cfg['idPattern'] : null;
+            return [[
+                'label' => '', 'pattern' => $pattern, 'algorithm' => $algo,
+                'source' => $source, 'strip' => $strip, 'lengths' => null,
+            ]];
+        }
+        $raw = $cfg['alternates'];
+        // A JSON object would order its keys differently in the two runtimes
+        // (PHP keeps insertion order, JS reorders integer-like keys), so only a
+        // list is accepted. array_is_list is 8.1+, hence the manual test.
+        if (!is_array($raw) || !count($raw) || array_keys($raw) !== range(0, count($raw) - 1)) return null;
+        if (count($raw) > self::MAX_ALTERNATES) return null;
+        $out = [];
+        foreach ($raw as $a) {
+            if (!is_array($a)) return null;
+            if (!isset($a['pattern']) || !is_string($a['pattern']) || $a['pattern'] === '') return null;
+            $label = (isset($a['label']) && $a['label'] !== null) ? (string) $a['label'] : '';
+            if (strlen($label) > self::MAX_ALT_LABEL || preg_match('/[^\x20-\x7E]/', $label)) return null;
+            $lens = null;
+            if (isset($a['lengths']) && $a['lengths'] !== null) {
+                if (!is_array($a['lengths']) || !count($a['lengths'])) return null;
+                foreach ($a['lengths'] as $L) if (!self::isPosInt($L)) return null;
+                $lens = array_values(array_unique(array_map('intval', $a['lengths'])));
+                sort($lens);
+            }
+            $out[] = [
+                'label'     => $label,
+                'pattern'   => $a['pattern'],
+                'algorithm' => (isset($a['algorithm']) && $a['algorithm'] !== '') ? $a['algorithm'] : $algo,
+                'source'    => (isset($a['source']) && $a['source'] !== '') ? $a['source'] : $source,
+                'strip'     => (array_key_exists('strip', $a) && $a['strip'] !== null) ? $a['strip'] : $strip,
+                'lengths'   => $lens,
+            ];
+        }
+        return $out;
+    }
+
+    /**
      * Can any declared member length be built by adding TWO OR MORE of the
      * declared lengths together? If so one token can span several real members
      * and still verify, so a mis-scan is reported as a clean ID — the failure
@@ -620,20 +694,41 @@ class CheckCharacter
      * Server-side single-field validation mirroring the client's rule order:
      * format (idPattern) first, then check character. Returns ['ok', 'reason'].
      */
-    public static function validateSingleField($algo, $source, $strip, $pattern, $value)
+    public static function validateSingleField(array $cfg, $value)
     {
-        $hasPattern = ($pattern !== null && $pattern !== '');
-        if ($hasPattern && !self::matchesPattern($value, $pattern)) {
-            return ['ok' => false, 'reason' => 'format'];
-        }
-        if ($algo !== 'none') {
-            if (!self::validateId($algo, $source, $strip, $value)) {
-                return ['ok' => false, 'reason' => 'check-character'];
+        $ALTS = self::alternatesOf($cfg);
+        if ($ALTS === null) return ['ok' => true, 'reason' => 'unconfigurable'];
+        // COR-004 lives HERE, not inside matchesPattern. Outside printable ASCII
+        // the browser (UTF-16) and PCRE /u disagree, so the server fails OPEN
+        // rather than log a mismatch the client never showed. Left in
+        // matchesPattern, that fail-open "true" would read as "alternate 1's
+        // pattern matched" and the alternate's CHECK would then run on the value
+        // and fail - converting a deliberate fail-open into a false finding.
+        $norm = trim(self::normalize($value, '', true, true, null));
+        if (preg_match('/[^ -~]/', $norm)) return ['ok' => true, 'reason' => 'valid'];
+
+        $anyPattern = false; $shapeMatched = false;
+        foreach ($ALTS as $A) {
+            $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
+            if ($pattern !== null) {
+                $anyPattern = true;
+                if (!self::matchesPattern($value, $pattern)) continue;
             }
-            return ['ok' => true, 'reason' => 'valid'];
+            $shapeMatched = true;
+            if ($A['algorithm'] === 'none') {
+                // format-only: the shape IS the whole test
+                return ['ok' => true, 'reason' => $pattern !== null ? 'valid' : 'no-op'];
+            }
+            if (self::validateId($A['algorithm'], $A['source'], $A['strip'], $value)) {
+                return ['ok' => true, 'reason' => 'valid'];
+            }
         }
-        // algorithm "none": format-only if a pattern is set, otherwise nothing to check.
-        return ['ok' => true, 'reason' => $hasPattern ? 'valid' : 'no-op'];
+        // Reason precedence, byte-identical to the old two-branch order for a
+        // single-format rule: a SHAPE that matched but whose check failed is a
+        // check-character error; nothing matching any shape is a format error.
+        if ($shapeMatched) return ['ok' => false, 'reason' => 'check-character'];
+        if ($anyPattern)   return ['ok' => false, 'reason' => 'format'];
+        return ['ok' => false, 'reason' => 'check-character'];
     }
 
     // -- server-side pooled parser (faithful port of QRIDPooledInit) ---------
@@ -656,30 +751,59 @@ class CheckCharacter
     private static function pooledState(array $cfg)
     {
         $ALPHA  = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        $algo   = (isset($cfg['algorithm']) && $cfg['algorithm'] !== '') ? $cfg['algorithm'] : 'iso7064_mod37_36';
-        $source = (isset($cfg['source']) && $cfg['source'] !== '') ? $cfg['source'] : 'normalized_id';
-        $strip  = (array_key_exists('strip', $cfg) && $cfg['strip'] !== null) ? $cfg['strip'] : '';
-        $pattern = (isset($cfg['idPattern']) && $cfg['idPattern'] !== '') ? $cfg['idPattern'] : null;
+        $hasAlts = (isset($cfg['alternates']) && $cfg['alternates'] !== null && $cfg['alternates'] !== '');
 
-        $checkMode = ($algo !== 'none');
-        $regexOnly = (!$checkMode && $pattern !== null);
-        if (!$checkMode && !$regexOnly) return null; // nothing to validate
-        if ($pattern !== null && self::riskyPattern($pattern)) return null; // catastrophic -> unconfigurable
+        // One rule = one or more ALTERNATES. A legacy scalar rule normalizes to
+        // exactly one, so everything below is a single loop rather than two
+        // code paths. Twin of the js pooled makeVariant.
+        $ALTS = self::alternatesOf($cfg);
+        if ($ALTS === null) return null;
+        // Two sources of truth for one fact: with alternates, lengths live on
+        // the alternates and the rule-level keys must be absent.
+        if ($hasAlts && (isset($cfg['idPattern']) && $cfg['idPattern'] !== '')) return null;
+        if ($hasAlts && ((isset($cfg['idLengths']) && $cfg['idLengths'] !== null)
+                || (isset($cfg['idMinLen']) && $cfg['idMinLen'] !== null && $cfg['idMinLen'] !== '')
+                || (isset($cfg['idMaxLen']) && $cfg['idMaxLen'] !== null && $cfg['idMaxLen'] !== ''))) return null;
 
-        $re = null;
-        if ($pattern !== null) {
-            $body = preg_replace('/^\^/', '', (string) $pattern);
-            $body = preg_replace('/\$$/', '', $body);
-            $re = self::compilePattern($body);
-            if ($re === null) return null; // cannot segment safely
+        $checkMode = false; $regexOnly = true;
+        foreach ($ALTS as $i => $A) {
+            $chk = ($A['algorithm'] !== 'none');
+            if ($chk && !self::knownAlgorithm($A['algorithm'])) return null;
+            if ($chk && $A['source'] !== 'normalized_id' && $A['source'] !== 'digits_only'
+                     && $A['source'] !== 'sequence_only') return null;
+            $pat = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
+            if (!$chk && $pat === null) return null;                 // nothing to validate
+            $re = null;
+            if ($pat !== null) {
+                if (self::riskyPattern($pat)) return null;            // catastrophic -> unconfigurable
+                $body = preg_replace('/^\^/', '', (string) $pat);
+                $body = preg_replace('/\$$/', '', $body);
+                $re = self::compilePattern($body);
+                if ($re === null) return null;                       // cannot segment safely
+            }
+            $ALTS[$i]['check']     = $chk;
+            $ALTS[$i]['re']        = $re;
+            $ALTS[$i]['regexOnly'] = (!$chk && $re !== null);
+            $ALTS[$i]['nCheck']    = $chk ? self::nCheckChars($A['algorithm']) : 0;
+            if ($chk) { $checkMode = true; $regexOnly = false; }
+            if ($hasAlts && $ALTS[$i]['lengths'] === null) return null;  // pooled needs a length per format
         }
-
-        $nCheck = $checkMode ? self::nCheckChars($algo) : 0;
 
         $LENS = [];
         $minLen = (isset($cfg['idMinLen']) && $cfg['idMinLen'] !== null && $cfg['idMinLen'] !== '') ? (int) $cfg['idMinLen'] : 8;
         $maxLen = (isset($cfg['idMaxLen']) && $cfg['idMaxLen'] !== null && $cfg['idMaxLen'] !== '') ? (int) $cfg['idMaxLen'] : 14;
-        if (isset($cfg['idLengths']) && $cfg['idLengths'] !== null) {
+        if ($hasAlts) {
+            // The safety proofs are properties of the WHOLE length universe, not
+            // of one alternate: [9] and [5,4] are individually safe and jointly
+            // unsafe, because 9 = 5 + 4.
+            foreach ($ALTS as $A) foreach ($A['lengths'] as $L) $LENS[] = $L;
+            $LENS = array_values(array_unique($LENS));
+            sort($LENS);
+            $minLen = $LENS[0];
+            $maxLen = $LENS[count($LENS) - 1];
+            if ($maxLen > self::MAX_ID_LEN) return null;
+            if (self::swallowSum($LENS) !== null) return null;       // union sum-swallow
+        } elseif (isset($cfg['idLengths']) && $cfg['idLengths'] !== null) {
             $lens = $cfg['idLengths'];
             if (!is_array($lens) || !count($lens)) return null;
             foreach ($lens as $L) if (!self::isPosInt($L)) return null;
@@ -694,57 +818,117 @@ class CheckCharacter
             if ($maxLen < $minLen) return null;
             if ($maxLen >= 2 * $minLen) return null;
             if ($maxLen > self::MAX_ID_LEN) return null; // BEFORE the range loop: no huge allocation
-            $minLen = max($minLen, $nCheck + 1);
+            $minLen = max($minLen, $ALTS[0]['nCheck'] + 1);
             for ($L = $minLen; $L <= $maxLen; $L++) $LENS[] = $L;
         }
-        // Hard work bounds: parsing tests every candidate length at every
-        // position, so unbounded lengths turn one keystroke/save into seconds
-        // of regex + check-character work (PER-002). Beyond the caps the rule
-        // is unconfigurable (and rejected at settings-save time upstream).
-        if ($maxLen > self::MAX_ID_LEN || count($LENS) > self::MAX_LEN_CHOICES) return null;
+        // Every alternate that did not declare its own lengths inherits the
+        // rule-level set - which is exactly the legacy single-alternate case,
+        // so PAIRS below is byte-for-byte today's LENS.
+        foreach ($ALTS as $i => $A) if ($ALTS[$i]['lengths'] === null) $ALTS[$i]['lengths'] = $LENS;
+        // Bucketed, NOT sorted: length ascending on the outside keeps the DP's
+        // early break valid and preserves "shortest member wins ties";
+        // declaration order on the inside gives precedence. A comparator would
+        // order ties differently on PHP 7.4, where usort is not stable, and the
+        // two runtimes would silently disagree.
+        $PAIRS = []; $RESCAN = [];
+        foreach ($LENS as $L) {
+            foreach ($ALTS as $ai => $A) {
+                if (!in_array($L, $A['lengths'], true)) continue;
+                $P = ['len' => $L, 'alt' => $ai, 're' => $A['re'], 'regexOnly' => $A['regexOnly'],
+                      'algo' => $A['algorithm'], 'source' => $A['source'], 'strip' => $A['strip']];
+                $PAIRS[] = $P;
+                // Regex-only alternates never take part in the junk re-scan: the
+                // shape IS their test, so stamping valid=false on a shape match
+                // would report a check-character error against an ID that has no
+                // check character.
+                if (!$A['regexOnly'] && $A['re'] !== null) $RESCAN[] = $P;
+            }
+        }
+        // Hard work bounds: parsing tests every candidate (alternate, length)
+        // pair at every position, so unbounded lengths turn one keystroke/save
+        // into seconds of regex + check-character work (PER-002). Beyond the
+        // caps the rule is unconfigurable (and rejected at settings-save time
+        // upstream). For a single-format rule |PAIRS| IS |LENS|.
+        if (!count($PAIRS)) return null;
+        if ($maxLen > self::MAX_ID_LEN || count($PAIRS) > self::MAX_LEN_CHOICES) return null;
 
         $keepCfg = isset($cfg['keepChars']) ? (string) $cfg['keepChars'] : '';
         // Non-ASCII keep characters would make the byte-indexed splitter below
         // disagree with the browser's UTF-16 one; the audited subset is ASCII.
         if (strlen($keepCfg) > self::MAX_KEEP_CHARS || preg_match('/[^\x20-\x7E]/', $keepCfg)) return null;
 
+        // clean() runs ONCE over the whole pooled string, before anything is
+        // split, so there is one KEEP set for the field: the union over the
+        // alternates. That union is also a hazard - an algorithm that can emit
+        // "*" makes "*" survive for a sibling alternate that cannot contain it,
+        // changing the string recorded for that sibling. checkFragment refuses a
+        // rule whose alternates disagree about KEEP unless the designer declares
+        // the union in keepChars.
         $KEEP = $ALPHA . $keepCfg;
-        if ($checkMode) {
-            $CA = self::checkAlphabet($algo);
-            for ($i = 0; $i < strlen($CA); $i++) {
-                if (strpos($KEEP, $CA[$i]) === false) $KEEP .= $CA[$i];
+        foreach ($ALTS as $A) {
+            $Ki = self::pooledKeepFor($A, $ALPHA . $keepCfg);
+            for ($i = 0; $i < strlen($Ki); $i++) {
+                if (strpos($KEEP, $Ki[$i]) === false) $KEEP .= $Ki[$i];
             }
         }
-        if ($pattern !== null) {
-            $pat = (string) $pattern; $meta = '\\^$.|?*+()[]{}';
+
+        return [
+            'checkMode' => $checkMode, 'regexOnly' => $regexOnly,
+            'minLen' => $minLen, 'maxLen' => $maxLen, 'LENS' => $LENS, 'KEEP' => $KEEP,
+            'ALTS' => $ALTS, 'PAIRS' => $PAIRS, 'RESCAN' => $RESCAN,
+        ];
+    }
+
+    /** The characters ONE alternate needs to survive cleaning. Twin of keepFor (js). */
+    private static function pooledKeepFor(array $A, $base)
+    {
+        $K = $base;
+        if ($A['check']) {
+            $CA = self::checkAlphabet($A['algorithm']);
+            for ($i = 0; $i < strlen($CA); $i++) {
+                if (strpos($K, $CA[$i]) === false) $K .= $CA[$i];
+            }
+        }
+        if ($A['re'] !== null) {
+            $pat = (string) $A['pattern']; $meta = '\\^$.|?*+()[]{}';
             for ($i = 0; $i < strlen($pat); $i++) {
                 $pc = $pat[$i];
                 if ($pc === '\\') {
                     $i++;
                     if ($i < strlen($pat)) {
                         $pc = $pat[$i];
-                        if (strpos($meta, $pc) !== false && strpos($KEEP, $pc) === false) $KEEP .= $pc;
+                        if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
                     }
                     continue;
                 }
-                if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($KEEP, $pc) === false) {
-                    $KEEP .= $pc;
+                if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
+                    $K .= $pc;
                 }
             }
         }
-
-        return [
-            'algo' => $algo, 'source' => $source, 'strip' => $strip,
-            'checkMode' => $checkMode, 'regexOnly' => $regexOnly, 'nCheck' => $nCheck,
-            'minLen' => $minLen, 'maxLen' => $maxLen, 'LENS' => $LENS, 'KEEP' => $KEEP, 're' => $re,
-        ];
+        return $K;
     }
 
-    private static function pooledVerifies(array $st, $t)
+    /** Does THIS (alternate, length) pair accept the token? Twin of verifiesAs (js). */
+    private static function pooledVerifiesAs(array $P, $t)
     {
-        if ($st['re'] !== null && !self::patTest($st['re'], $t)) return false;
-        if ($st['regexOnly']) return true;
-        return self::validateId($st['algo'], $st['source'], $st['strip'], $t);
+        if ($P['re'] !== null && !self::patTest($P['re'], $t)) return false;
+        if ($P['regexOnly']) return true;
+        return self::validateId($P['algo'], $P['source'], $P['strip'], $t);
+    }
+
+    /**
+     * Which alternate claims this token? First in declaration order, computed
+     * AFTER segmentation for reporting only - never an input to the DP score.
+     * Twin of claimedBy (js).
+     */
+    public static function pooledClaimedBy(array $st, $t)
+    {
+        foreach ($st['ALTS'] as $i => $A) {
+            if ($A['re'] !== null && !self::patTest($A['re'], $t)) continue;
+            if ($A['regexOnly'] || self::validateId($A['algorithm'], $A['source'], $A['strip'], $t)) return $i;
+        }
+        return -1;
     }
 
     private static function pooledBetter(array $a, array $b)
@@ -759,7 +943,6 @@ class CheckCharacter
     {
         $s = self::normalize($raw, '', true, true, $st['KEEP']); // clean(): keep only KEEP chars
         $N = strlen($s);
-        $LENS = $st['LENS'];
         $sc = array_fill(0, $N + 1, null);
         $sc[$N] = ['tok' => 0, 'maxL' => 0, 'runs' => 0, 'chars' => 0, 'startsJunk' => false, 'move' => -1];
         for ($i = $N - 1; $i >= 0; $i--) {
@@ -769,9 +952,10 @@ class CheckCharacter
                 'runs' => $c['runs'] + ($c['startsJunk'] ? 0 : 1),
                 'chars' => $c['chars'] + 1, 'startsJunk' => true, 'move' => 0,
             ];
-            foreach ($LENS as $L) {
+            foreach ($st['PAIRS'] as $P) {          // length-ascending: shortest member wins ties
+                $L = $P['len'];
                 if ($L > $N - $i) break;
-                if (!self::pooledVerifies($st, substr($s, $i, $L))) continue;
+                if (!self::pooledVerifiesAs($P, substr($s, $i, $L))) continue;
                 $ch = $sc[$i + $L];
                 $cand = [
                     'tok' => $ch['tok'] + 1, 'maxL' => ($L > $ch['maxL'] ? $L : $ch['maxL']),
@@ -795,7 +979,7 @@ class CheckCharacter
         if ($junk !== '') $segs[] = ['type' => 'junk', 'text' => $junk];
 
         // re-scan junk for well-formed-but-wrong-check members (check + pattern only)
-        if ($st['re'] !== null && $st['checkMode']) {
+        if (count($st['RESCAN'])) {
             $out = [];
             foreach ($segs as $seg) {
                 if ($seg['type'] !== 'junk') { $out[] = $seg; continue; }
@@ -806,9 +990,10 @@ class CheckCharacter
                     // contiguous range minLen..maxLen, so idLengths [10,12]
                     // tested length 11 and could stamp an "invalid ID" chip the
                     // segmentation pass can never produce. Twin of the js loop.
-                    foreach ($st['LENS'] as $L2) {
-                        if ($L2 > strlen($rest)) break;             // ascending
-                        if (self::patTest($st['re'], substr($rest, 0, $L2))) { $hit = substr($rest, 0, $L2); break; }
+                    foreach ($st['RESCAN'] as $R) {
+                        $L2 = $R['len'];
+                        if ($L2 > strlen($rest)) break;             // length-ascending
+                        if (self::patTest($R['re'], substr($rest, 0, $L2))) { $hit = substr($rest, 0, $L2); break; }
                     }
                     if ($hit !== '') {
                         if ($buf !== '') { $out[] = ['type' => 'junk', 'text' => $buf]; $buf = ''; }
@@ -833,7 +1018,7 @@ class CheckCharacter
     /** Per-rule scan cap — the PHP twin of the client's SCAN_CAP formula. */
     public static function pooledScanCap(array $st)
     {
-        $lens = count($st['LENS']) ?: 1;
+        $lens = count($st['PAIRS']) ?: 1;   // for a single-format rule this IS |LENS|
         $max  = $st['maxLen'] ?: 1;
         $cap  = (int) floor(self::POOLED_WORK_BUDGET / ($lens * $max));
         if ($cap < 256) $cap = 256;
