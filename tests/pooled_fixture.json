@@ -17,17 +17,20 @@
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0001F",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0DEF00093",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     },
@@ -46,12 +49,14 @@
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0001F",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "junk",
@@ -74,17 +79,20 @@
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0001F",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     },
@@ -103,17 +111,20 @@
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0001F",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0DEF00093",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     },
@@ -132,7 +143,8 @@
         {
           "type": "id",
           "id": "0ABC0001F",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     },
@@ -170,17 +182,20 @@
         {
           "type": "id",
           "id": "0ABC0000H",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0ABC0001X",
-          "valid": false
+          "valid": false,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "0DEF00093",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     },
@@ -199,12 +214,14 @@
         {
           "type": "id",
           "id": "FC0001",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "FC0002",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "junk",
@@ -247,7 +264,8 @@
         {
           "type": "id",
           "id": "ZQQQQQQQQQQ",
-          "valid": false
+          "valid": false,
+          "alt": 0
         }
       ]
     },
@@ -295,22 +313,26 @@
         {
           "type": "id",
           "id": "FC1-0589",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "SK1-0123D",
-          "valid": true
+          "valid": true,
+          "alt": 1
         },
         {
           "type": "id",
           "id": "DT1-12345H",
-          "valid": true
+          "valid": true,
+          "alt": 2
         },
         {
           "type": "id",
           "id": "ST3-77012Z",
-          "valid": true
+          "valid": true,
+          "alt": 3
         }
       ]
     },
@@ -358,22 +380,26 @@
         {
           "type": "id",
           "id": "FC1-0589",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "SK1-0123D",
-          "valid": true
+          "valid": true,
+          "alt": 1
         },
         {
           "type": "id",
           "id": "DT1-12345H",
-          "valid": true
+          "valid": true,
+          "alt": 2
         },
         {
           "type": "id",
           "id": "ST3-77012Z",
-          "valid": true
+          "valid": true,
+          "alt": 3
         }
       ]
     },
@@ -421,17 +447,20 @@
         {
           "type": "id",
           "id": "FC1-0589",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "SK1-0923D",
-          "valid": false
+          "valid": false,
+          "alt": 1
         },
         {
           "type": "id",
           "id": "DT1-12345H",
-          "valid": true
+          "valid": true,
+          "alt": 2
         }
       ]
     },
@@ -479,7 +508,8 @@
         {
           "type": "id",
           "id": "FC1-0589",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "junk",
@@ -488,7 +518,8 @@
         {
           "type": "id",
           "id": "DT1-12345H",
-          "valid": true
+          "valid": true,
+          "alt": 2
         }
       ]
     },
@@ -536,12 +567,14 @@
         {
           "type": "id",
           "id": "FC1-0589",
-          "valid": true
+          "valid": true,
+          "alt": 0
         },
         {
           "type": "id",
           "id": "FC3-0179",
-          "valid": true
+          "valid": true,
+          "alt": 0
         }
       ]
     }

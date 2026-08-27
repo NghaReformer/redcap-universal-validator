@@ -646,6 +646,16 @@ class AnnotationRules
         $errors = [];
         $type = isset($frag['type']) && $frag['type'] !== '' ? $frag['type'] : 'single';
 
+        // "alternates" describes accepted ID FORMATS, which only the check
+        // modes read. Left unremarked on the others it validates clean, is
+        // carried through Branching::BRANCH_KEYS and shipped to the browser,
+        // and a designer reads it as active configuration when nothing will
+        // ever consult it.
+        if (isset($frag['alternates']) && $frag['alternates'] !== null && $frag['alternates'] !== ''
+                && !in_array($type, ['single', 'pooled'], true)) {
+            return ['"alternates" applies only to ID checks (type "single" or "pooled"); a '
+                . $type . ' rule has no ID format to match.'];
+        }
         // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
         // It shares "when"/"blockSave" with check rules but none of the
         // check-character/pattern/pooled machinery, so it validates separately.
@@ -690,7 +700,23 @@ class AnnotationRules
         }
 
         $pattern = isset($frag['idPattern']) ? $frag['idPattern'] : null;
-        $hasAlts = isset($frag['alternates']) && is_array($frag['alternates']) && count($frag['alternates']);
+        // Shape FIRST. is_array() alone let a JSON object through, and the walk
+        // below builds 'alternate ' . ($i + 1) from the key - a TypeError on
+        // PHP 8, silent mis-numbering on the 7.4 floor, and inside
+        // validateSettings the throw is swallowed into an allowed save. An
+        // empty list was skipped entirely here while both runtimes refused it,
+        // which is exactly the cross-channel disagreement this file forbids.
+        $hasAlts = false;
+        if (isset($frag['alternates']) && $frag['alternates'] !== null && $frag['alternates'] !== '') {
+            $al = $frag['alternates'];
+            if (!is_array($al) || !count($al) || array_keys($al) !== range(0, count($al) - 1)) {
+                $errors[] = '"alternates" must be a non-empty JSON list [ ... ] of formats, not an '
+                    . 'object { ... } and not empty — the browser and the server order object keys '
+                    . 'differently, and alternates are tried in the order you write them.';
+            } else {
+                $hasAlts = true;
+            }
+        }
         $why = '';
         if ($pattern !== null && $pattern !== '') {
             // Single admission point, shared with the pooled parser and twinned
@@ -1015,6 +1041,12 @@ class AnnotationRules
         if (!is_array($alts) || !count($alts)) {
             return ['error' => '"alternates" must be a non-empty LIST of formats, e.g. '
                 . '[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}].'];
+        }
+        // Count first: checkFragment refuses anything over the cap anyway, and
+        // normalizing 20,000 entries before saying so is pure wasted work.
+        if (count($alts) > CheckCharacter::MAX_ALTERNATES) {
+            return ['error' => '"alternates" lists ' . count($alts) . ' formats — at most '
+                . CheckCharacter::MAX_ALTERNATES . ' are supported.'];
         }
         if (array_keys($alts) !== range(0, count($alts) - 1)) {
             // A JSON object would be ordered differently by the two runtimes

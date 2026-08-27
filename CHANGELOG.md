@@ -109,6 +109,26 @@ rather than silent - the browser shows a configuration error and the server logs
   introduced: a single-format rule declaring 32 exact lengths already cost the
   same, and the alternates equivalent is marginally cheaper.
 
+- **What the recalibration deliberately does NOT change, and what that costs.**
+  After it, the measured worst case is the module's own default pooled rule -
+  no format pattern, ID lengths 8 to 14 - at roughly 130 ms of server work for
+  a full 4096-character value, about twice the throttled 32-pair shape. The
+  reason is not the length count but the absence of a pattern: with nothing to
+  reject on, every candidate at every position runs the whole normalize,
+  source-extract and check-character path, which is the work that rule is
+  asking for.
+
+  Weighting pattern-less candidates in the divisor would bound it, at the cost
+  of cutting that default rule's scan cap from 4096 to about 1275 - so values
+  between those lengths would stop being validated in projects that configured
+  nothing unusual. That trade is not worth taking for a cost that predates this
+  work, is bounded, and is absorbed by the durable scan, which predicts
+  per-record cost and shrinks batches rather than stalling. The number is
+  recorded here instead: **budget roughly 130 ms per pooled field per save for
+  a pattern-less rule at the full cap, and about two minutes per thousand
+  records in a scan.** Giving such a rule a format pattern removes almost all
+  of it.
+
 ### Internals
 
 - `gatePattern` (both runtimes) is now the single place an ID pattern is admitted

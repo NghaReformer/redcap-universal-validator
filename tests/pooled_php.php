@@ -24,7 +24,11 @@ function canon(array $segs)
 {
     $out = [];
     foreach ($segs as $s) {
-        $out[] = ($s['type'] === 'id') ? ['id', $s['id'], (bool) $s['valid']] : ['junk', $s['text']];
+        // The alternate index is part of the contract: it decides whether a
+        // member is reported as check-verified or shape-only.
+        $out[] = ($s['type'] === 'id')
+            ? ['id', $s['id'], (bool) $s['valid'], isset($s['alt']) ? (int) $s['alt'] : -1]
+            : ['junk', $s['text']];
     }
     return $out;
 }

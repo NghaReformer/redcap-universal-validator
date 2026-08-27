@@ -628,10 +628,68 @@ check('L-01 a list at the cap is still accepted',
 
 check('patternWitness builds a verified witness for a supported pattern',
     CheckCharacter::patternWitness('SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness declines an alternation',
-    CheckCharacter::patternWitness('(a|b)[0-9]{3}') === null);
-check('patternWitness declines a negated class',
-    CheckCharacter::patternWitness('[^A-Z]{3}') === null);
+// Round 2: an unbuildable witness makes the overlap guard SILENT, so the
+// builder has to cover the ordinary ways an ID family gets written - a group,
+// an alternation of prefixes, a negated class. Taking the first branch is
+// enough: any one member of the check-bearing pattern proves the overlap.
+// Round 2 lows: checkFragment is public and documented as THE shared
+// validator returning a list of error strings, so a malformed alternates must
+// be REPORTED there, not throw (validateSettings swallows a throw into an
+// allowed save) and not be skipped while both runtimes refuse it.
+check('L-1 a non-list alternates is reported, not thrown',
+    ($e = AnnotationRules::checkFragment(['type' => 'single', 'alternates' => ['a' => ['pattern' => 'A[0-9]{4}']]]))
+    && is_array($e) && count($e) === 1 && strpos($e[0], 'JSON list') !== false);
+check('L-2 an empty alternates list is reported',
+    count(AnnotationRules::checkFragment(['type' => 'single', 'alternates' => []])) === 1);
+check('L-4 alternates on a rule kind that never reads it is refused',
+    strpos(implode(' ', AnnotationRules::checkFragment(
+        ['type' => 'unique', 'alternates' => [['pattern' => 'A[0-9]{4}']]])), 'applies only to ID checks') !== false);
+foreach (['constraint', 'required', 'choices'] as $mode) {
+    check('L-4 ... and on ' . $mode,
+        strpos(implode(' ', AnnotationRules::checkFragment(
+            ['type' => $mode, 'alternates' => [['pattern' => 'A[0-9]{4}']]])), 'applies only to ID checks') !== false);
+}
+check('L-5 the alternate count is refused before the list is normalized',
+    isset(AnnotationRules::normalizeAlternates(
+        array_fill(0, 20000, ['pattern' => 'A[0-9]{4}', 'algorithm' => 'none']))['error']));
+
+check('patternWitness expands a group and takes the first branch',
+    CheckCharacter::patternWitness('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
+check('patternWitness handles top-level alternation',
+    CheckCharacter::patternWitness('SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
+check('patternWitness handles a negated class, preferring an ID-like member',
+    CheckCharacter::patternWitness('[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]') === '0K1-00000');
+check('patternWitness handles an optional non-capturing group',
+    CheckCharacter::patternWitness('(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
+check('patternWitness declines lookaround rather than guess',
+    CheckCharacter::patternWitness('(?=SK)[A-Z]{2}[0-9]{5}') === null);
+check('patternWitness declines an unbalanced group',
+    CheckCharacter::patternWitness('(SK[0-9]{3}') === null);
+// every witness it DOES return is a genuine member - that is what makes the
+// guard "proven overlap only" rather than a guess
+foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
+          'FC[1-9]-[0-9]{4}', '(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]', 'A(B(C|D)E)?[0-9]{2}'] as $wp) {
+    $w = CheckCharacter::patternWitness($wp);
+    $why = '';
+    check('patternWitness output is a real member of ' . $wp,
+        $w === null || CheckCharacter::patTest(CheckCharacter::gatePattern($wp, $why, true), $w));
+}
+// ...and the guard now fires on all three shapes that bypassed it in round 1
+foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
+          'SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]',
+          '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]'] as $ck) {
+    check('H-1 the overlap guard fires on ' . $ck,
+        strpos($altErr([
+            ['label' => 'legacy', 'pattern' => '[A-Z0-9-]+', 'algorithm' => 'none'],
+            ['label' => 'SK',     'pattern' => $ck,          'algorithm' => $MOD],
+        ], ['type' => 'single']), 'never be tested') !== false);
+}
+// a genuinely disjoint alternation family is still accepted
+check('H-1 a disjoint alternation family is not refused',
+    $altErr([
+        ['label' => 'GHIT', 'pattern' => 'FC[1-9]-[0-9]{4}',              'algorithm' => 'none'],
+        ['label' => 'SKDT', 'pattern' => '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
+    ], ['type' => 'single']) === '');
 
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);

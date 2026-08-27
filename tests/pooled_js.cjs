@@ -24,8 +24,13 @@ global.document = {
 require(path.join(__dirname, '..', 'js', 'engine.js'));
 const NS = global.window.INSPIREUniversalValidator;
 
+// The alternate index is part of the contract: it decides whether a member is
+// reported as check-verified or shape-only, so the two runtimes disagreeing
+// about it would be a silent reporting divergence, not a cosmetic one.
 function canon(segs) {
-  return segs.map((s) => (s.type === 'id' ? ['id', s.id, !!s.valid] : ['junk', s.text]));
+  return segs.map((s) => (s.type === 'id'
+    ? ['id', s.id, !!s.valid, typeof s.alt === 'number' ? s.alt : -1]
+    : ['junk', s.text]));
 }
 
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'pooled_fixture.json'), 'utf8'));

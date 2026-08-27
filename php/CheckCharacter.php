@@ -579,53 +579,88 @@ class CheckCharacter
      * be produced. Used to decide, at config time, whether a format-only
      * alternate would swallow a value a check-bearing one is meant to verify.
      *
-     * Handles the pattern class this module supports - literals, escaped
-     * literals, character classes, "." and the quantifiers ?, +, *, {n}, {n,m}.
-     * Groups and alternation return null: no witness, no claim.
+     * Covers the pattern class this module supports: literals, escaped
+     * literals, character classes (including negated ones), ".", groups,
+     * alternation - the first branch is taken, which is enough, since ANY
+     * member of the check-bearing pattern proves the overlap - and the
+     * quantifiers ?, +, *, {n}, {n,m}. Lookaround returns null.
      *
      * The result is VERIFIED against the pattern's own compiled regex before it
      * is returned, so a witness this builder gets wrong is discarded rather
-     * than used - the guard can therefore only ever fire on a string both
-     * patterns provably accept, never on a guess.
+     * than used. The guard can therefore only ever fire on a string both
+     * patterns provably accept, never on a guess - which is what lets the
+     * builder pick ID-like members heuristically without risking a false
+     * refusal.
      */
     public static function patternWitness($pattern)
     {
         $p = preg_replace('/^\\^/', '', (string) $pattern);
         $p = preg_replace('/\\$$/', '', $p);
+        $i = 0;
+        $out = self::witnessSeq($p, $i, 0);
+        if ($out === null) return null;
+        // A top-level "|" is fine - the first branch was taken. Anything else
+        // left over (a stray ")") means the pattern is not balanced.
+        if ($i < strlen($p) && $p[$i] !== '|') return null;
+        $why = '';
+        $re = self::gatePattern($pattern, $why, true);
+        if ($re === null) return null;
+        return self::patTest($re, $out) ? $out : null;         // verify, or no claim
+    }
+
+    /**
+     * One alternative of a pattern, from $i, stopping at "|" or ")" at this
+     * level. Returns null when the shape is outside the supported class.
+     */
+    private static function witnessSeq($p, &$i, $depth)
+    {
+        if ($depth > 8) return null;                            // absurd nesting
         $n = strlen($p);
         $out = '';
-        $i = 0;
         while ($i < $n) {
             $c = $p[$i];
-            if ($c === '(' || $c === ')' || $c === '|') return null;   // not our class
-            $sample = null;
-            if ($c === '\\') {
+            if ($c === '|' || $c === ')') break;                // this alternative ends
+            $atom = null;
+            if ($c === '(') {
+                $i++;
+                if ($i < $n && $p[$i] === '?') {
+                    // "(?:" is an ordinary group; lookaround and the rest
+                    // constrain rather than contribute, so make no claim.
+                    if ($i + 1 < $n && $p[$i + 1] === ':') $i += 2;
+                    else return null;
+                }
+                $atom = self::witnessSeq($p, $i, $depth + 1);
+                if ($atom === null) return null;
+                if (!self::skipToGroupEnd($p, $i)) return null;
+            } elseif ($c === '\\') {
                 $i++;
                 if ($i >= $n) return null;
                 $e = $p[$i];
-                if ($e === 'd') $sample = '0';
-                elseif ($e === 'w') $sample = 'A';
-                elseif ($e === 's') $sample = ' ';
+                if ($e === 'd') $atom = '0';
+                elseif ($e === 'w') $atom = 'A';
+                elseif ($e === 's') $atom = ' ';
                 elseif ($e === 'D' || $e === 'W' || $e === 'S') return null;
-                else $sample = $e;                                     // escaped literal
+                else $atom = $e;                                // escaped literal
                 $i++;
             } elseif ($c === '[') {
-                $close = strpos($p, ']', $i + 1);
-                if ($close === false) return null;
+                $close = self::classEnd($p, $i);
+                if ($close === -1) return null;
                 $body = substr($p, $i + 1, $close - $i - 1);
-                if ($body === '' || $body[0] === '^') return null;      // negated: no cheap member
+                $neg = ($body !== '' && $body[0] === '^');
+                if ($neg) $body = substr($body, 1);
+                if ($body === '') return null;
                 $cls = self::expandClass($body);
-                if ($cls === null || $cls === '') return null;
-                $sample = $cls[0];
+                if ($cls === null) return null;
+                $atom = $neg ? self::firstOutside($cls) : self::firstInside($cls);
+                if ($atom === null) return null;
                 $i = $close + 1;
             } elseif ($c === '.') {
-                $sample = 'A';
+                $atom = 'A';
                 $i++;
             } else {
-                $sample = $c;
+                $atom = $c;
                 $i++;
             }
-            // quantifier
             $min = 1;
             if ($i < $n) {
                 $q = $p[$i];
@@ -642,12 +677,74 @@ class CheckCharacter
                 }
             }
             if ($min > self::MAX_ID_LEN) return null;
-            $out .= str_repeat($sample, $min);
+            $out .= str_repeat($atom, $min);
             if (strlen($out) > self::MAX_ID_LEN) return null;
         }
-        $re = self::gatePattern($pattern, $why, true);
-        if ($re === null) return null;
-        return self::patTest($re, $out) ? $out : null;                 // verify, or no claim
+        return $out;
+    }
+
+    /** Advance past the remaining alternatives of the group we are inside. */
+    private static function skipToGroupEnd($p, &$i)
+    {
+        $n = strlen($p);
+        $lvl = 1;
+        while ($i < $n) {
+            $ch = $p[$i];
+            if ($ch === '\\') { $i += 2; continue; }
+            if ($ch === '[') {
+                $close = self::classEnd($p, $i);
+                if ($close === -1) return false;
+                $i = $close + 1;
+                continue;
+            }
+            if ($ch === '(') $lvl++;
+            elseif ($ch === ')') { $lvl--; if ($lvl === 0) { $i++; return true; } }
+            $i++;
+        }
+        return false;
+    }
+
+    /** Index of the "]" closing the class at $i, or -1. */
+    private static function classEnd($p, $i)
+    {
+        $n = strlen($p);
+        $j = $i + 1;
+        if ($j < $n && $p[$j] === '^') $j++;
+        if ($j < $n && $p[$j] === ']') $j++;                    // a literal "]" first
+        for (; $j < $n; $j++) {
+            if ($p[$j] === '\\') { $j++; continue; }
+            if ($p[$j] === ']') return $j;
+        }
+        return -1;
+    }
+
+    // A real ID is far likelier to be alphanumeric than to start with a space,
+    // and a witness that LOOKS like an ID is the one most likely to expose an
+    // overlap. Only the choice among valid members is heuristic - every witness
+    // is still verified against the real regex before use, so a poor pick can
+    // cost a missed warning but never a false refusal.
+    const WITNESS_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz';
+
+    /** The most ID-like member of an expanded class. */
+    private static function firstInside($cls)
+    {
+        if ($cls === '') return null;
+        for ($k = 0; $k < strlen(self::WITNESS_PREFERENCE); $k++) {
+            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) !== false) return self::WITNESS_PREFERENCE[$k];
+        }
+        return $cls[0];
+    }
+
+    /** The most ID-like printable-ASCII character an expanded class excludes. */
+    private static function firstOutside($cls)
+    {
+        for ($k = 0; $k < strlen(self::WITNESS_PREFERENCE); $k++) {
+            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) === false) return self::WITNESS_PREFERENCE[$k];
+        }
+        for ($ch = 0x20; $ch <= 0x7E; $ch++) {
+            if (strpos($cls, chr($ch)) === false) return chr($ch);
+        }
+        return null;
     }
 
     /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
@@ -1043,13 +1140,14 @@ class CheckCharacter
         $s = self::normalize($raw, '', true, true, $st['KEEP']); // clean(): keep only KEEP chars
         $N = strlen($s);
         $sc = array_fill(0, $N + 1, null);
-        $sc[$N] = ['tok' => 0, 'maxL' => 0, 'runs' => 0, 'chars' => 0, 'startsJunk' => false, 'move' => -1];
+        $sc[$N] = ['tok' => 0, 'maxL' => 0, 'runs' => 0, 'chars' => 0, 'startsJunk' => false,
+                   'move' => -1, 'alt' => -1];
         for ($i = $N - 1; $i >= 0; $i--) {
             $c = $sc[$i + 1];
             $best = [
                 'tok' => $c['tok'], 'maxL' => $c['maxL'],
                 'runs' => $c['runs'] + ($c['startsJunk'] ? 0 : 1),
-                'chars' => $c['chars'] + 1, 'startsJunk' => true, 'move' => 0,
+                'chars' => $c['chars'] + 1, 'startsJunk' => true, 'move' => 0, 'alt' => -1,
             ];
             foreach ($st['PAIRS'] as $P) {          // length-ascending: shortest member wins ties
                 $L = $P['len'];
@@ -1059,6 +1157,7 @@ class CheckCharacter
                 $cand = [
                     'tok' => $ch['tok'] + 1, 'maxL' => ($L > $ch['maxL'] ? $L : $ch['maxL']),
                     'runs' => $ch['runs'], 'chars' => $ch['chars'], 'startsJunk' => false, 'move' => $L,
+                    'alt' => $P['alt'],
                 ];
                 if (self::pooledBetter($cand, $best)) $best = $cand;
             }
@@ -1069,7 +1168,12 @@ class CheckCharacter
             $m = $sc[$pos]['move'];
             if ($m > 0) {
                 if ($junk !== '') { $segs[] = ['type' => 'junk', 'text' => $junk]; $junk = ''; }
-                $segs[] = ['type' => 'id', 'id' => substr($s, $pos, $m), 'valid' => true];
+                // WHICH alternate won is already known here - carry it rather
+                // than re-deriving it later, which could credit a different,
+                // more permissive alternate than the one actually verified
+                // through. Still not an input to pooledBetter. Twin of the js.
+                $segs[] = ['type' => 'id', 'id' => substr($s, $pos, $m), 'valid' => true,
+                           'alt' => isset($sc[$pos]['alt']) ? $sc[$pos]['alt'] : -1];
                 $pos += $m;
             } else {
                 $junk .= $s[$pos]; $pos++;
@@ -1089,14 +1193,17 @@ class CheckCharacter
                     // contiguous range minLen..maxLen, so idLengths [10,12]
                     // tested length 11 and could stamp an "invalid ID" chip the
                     // segmentation pass can never produce. Twin of the js loop.
+                    $hitAlt = -1;
                     foreach ($st['RESCAN'] as $R) {
                         $L2 = $R['len'];
                         if ($L2 > strlen($rest)) break;             // length-ascending
-                        if (self::patTest($R['re'], substr($rest, 0, $L2))) { $hit = substr($rest, 0, $L2); break; }
+                        if (self::patTest($R['re'], substr($rest, 0, $L2))) {
+                            $hit = substr($rest, 0, $L2); $hitAlt = $R['alt']; break;
+                        }
                     }
                     if ($hit !== '') {
                         if ($buf !== '') { $out[] = ['type' => 'junk', 'text' => $buf]; $buf = ''; }
-                        $out[] = ['type' => 'id', 'id' => $hit, 'valid' => false];
+                        $out[] = ['type' => 'id', 'id' => $hit, 'valid' => false, 'alt' => $hitAlt];
                         $rest = substr($rest, strlen($hit));
                     } else {
                         $buf .= $rest[0]; $rest = substr($rest, 1);

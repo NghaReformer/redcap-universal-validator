@@ -3407,7 +3407,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         if(!verifiesAs(PAIRS[li], s.substr(i, L))) continue;
         var ch = sc[i + L];
         var cand = { tok: ch.tok + 1, maxL: (L > ch.maxL ? L : ch.maxL),
-                     runs: ch.runs, chars: ch.chars, startsJunk: false, move: L };
+                     runs: ch.runs, chars: ch.chars, startsJunk: false,
+                     move: L, alt: PAIRS[li].alt };
         if(betterThan(cand, best)) best = cand;
       }
       sc[i] = best;
@@ -3418,7 +3419,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       var m = sc[pos].move;
       if(m > 0){
         flushJunk();
-        segs.push({type:"id", id: s.substr(pos, m), valid: true});
+        /* WHICH alternate won is already known here — carry it rather than
+           re-deriving it later. A second pass that re-matched by pattern could
+           credit a different, more permissive alternate than the one the parser
+           actually verified through, and then report a check-verified member as
+           shape-only. This records the winning pair; it is still not an input to
+           betterThan, so segmentation stays deterministic. */
+        segs.push({type:"id", id: s.substr(pos, m), valid: true, alt: sc[pos].alt});
         pos += m;
       } else {
         junk += s.charAt(pos);
@@ -3445,14 +3452,15 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
              ID" chip the segmentation pass can never produce — an error message
              naming a length the rule forbids. Length ascending outer, alternate
              order inner, so the shortest hit still wins. */
+          var hitAlt = -1;
           for(var li2 = 0; li2 < RESCAN.length && !hit; li2++){
             var L2 = RESCAN[li2].len;
             if(L2 > rest.length) break;                /* RESCAN is length-ascending */
-            if(RESCAN[li2].a.re.test(rest.substr(0, L2))) hit = rest.substr(0, L2);
+            if(RESCAN[li2].a.re.test(rest.substr(0, L2))){ hit = rest.substr(0, L2); hitAlt = RESCAN[li2].alt; }
           }
           if(hit){
             if(buf){ out.push({type:"junk", text: buf}); buf = ""; }
-            out.push({type:"id", id: hit, valid: false});
+            out.push({type:"id", id: hit, valid: false, alt: hitAlt});
             rest = rest.slice(hit.length);
           } else {
             buf += rest.charAt(0);
@@ -3565,7 +3573,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     var ids = segs.filter(function(x){ return x.type === "id"; });
     var junkSegs = segs.filter(function(x){ return x.type === "junk"; });
     var bad = ids.filter(function(x){ return !x.valid; });
-    var seen = {}, dups = 0;
+    var seen = Object.create(null), dups = 0;
     ids.forEach(function(x){ if(seen[x.id]) dups++; seen[x.id] = true; });
     var expected = V.expectedIds;
     var problems = [];
@@ -3583,13 +3591,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     /* COR-005: member text is attacker-ish input for a plain object — a token
        reading "constructor" must not inherit prototype members and corrupt
        the lookups. Same prototype-free map the other registries use. */
-    var claim = Object.create(null), nFmtOnly = 0;
-    if(V.claimedBy && V.alts){
+    var nFmtOnly = 0;
+    if(V.alts){
       ids.forEach(function(x){
         if(!x.valid) return;
-        var k = V.claimedBy(x.id);
-        claim[x.id] = k;
-        if(k >= 0 && V.alts[k].regexOnly) nFmtOnly++;
+        /* the alternate the PARSER verified through, carried on the segment.
+           Re-matching by pattern here credited whichever alternate accepted the
+           shape FIRST, so a permissive format-only sibling could take credit
+           for a member that had in fact been check-verified — and the summary
+           then told the reader the field carries no check character. */
+        var k = (typeof x.alt === "number") ? x.alt : -1;
+        if(k >= 0 && V.alts[k] && V.alts[k].regexOnly) nFmtOnly++;
       });
     }
     /* A MIXED rule can say neither "all verified" nor "no check character in
@@ -3611,10 +3623,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     segs.forEach(function(x){
       if(x.type === "id"){
         occ[x.id] = (occ[x.id] || 0) + 1;
-        var k = claim[x.id];
-        var label = (V.mode.mixed && k >= 0 && V.alts[k].label) ? V.alts[k].label : "";
+        var k = (typeof x.alt === "number") ? x.alt : -1;
+        var label = (V.mode.mixed && k >= 0 && V.alts[k] && V.alts[k].label) ? V.alts[k].label : "";
         if(x.valid && occ[x.id] > 1) html += chip(esc(x.id), "dup", label);   /* repeat scans stand out */
-        else html += chip(esc(x.id), x.valid ? (k >= 0 && V.alts[k].regexOnly ? "fmt" : "ok") : "bad", label);
+        else html += chip(esc(x.id), x.valid ? (k >= 0 && V.alts[k] && V.alts[k].regexOnly ? "fmt" : "ok") : "bad", label);
       } else {
         html += chip(esc(x.text), "junk");
       }
