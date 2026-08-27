@@ -178,6 +178,22 @@ check('idMaxLen beyond the cap rejected', count(fragErrors(['idMaxLen' => 200]))
 check('expectedIds beyond the cap rejected', count(fragErrors(['expectedIds' => 100000])) === 1);
 check('pooled sum-swallow lengths rejected',
     strpos(implode(' ', fragErrors(['type' => 'pooled', 'idLengths' => [8, 16]])), 'swallow') !== false);
+// A length reachable by adding THREE or more of the others is just as unsafe as
+// a pairwise sum, and the pairwise-only test used to accept it: [4,12] passed,
+// and a valid 4-char member plus eight characters of debris then read back as
+// one verified 12-character ID with zero junk.
+check('pooled 3-term sum-swallow rejected (12 = 4+4+4)',
+    strpos(implode(' ', fragErrors(['type' => 'pooled', 'idLengths' => [4, 12]])), 'swallow') !== false);
+check('pooled 3-term sum-swallow names the whole decomposition',
+    strpos(implode(' ', fragErrors(['type' => 'pooled', 'idLengths' => [4, 12]])), '12 = 4 + 4 + 4') !== false);
+check('pooled mixed-term sum-swallow rejected (8 = 3+5)',
+    strpos(implode(' ', fragErrors(['type' => 'pooled', 'idLengths' => [3, 5, 8]])), 'swallow') !== false);
+// The driving multi-format case must survive: no length in {8,9,10} is the sum
+// of two or more of them (the smallest such sum is 16).
+check('pooled 8/9/10 accepted (no reachable sum)',
+    fragErrors(['type' => 'pooled', 'idLengths' => [8, 9, 10]]) === []);
+check('pooled non-contiguous 10/12 accepted (10+10=20, 12+12=24, 10+12=22)',
+    fragErrors(['type' => 'pooled', 'idLengths' => [10, 12]]) === []);
 check('pooled max >= 2*min rejected',
     strpos(implode(' ', fragErrors(['type' => 'pooled', 'idMinLen' => 8, 'idMaxLen' => 16])), 'LESS than 2 x') !== false);
 check('pooled max < min rejected',

@@ -889,6 +889,49 @@ function QRID_gatePattern(raw, label){
       " (Python-only syntax like (?P<name>...) or inline flags is not supported)." };
   }
 }
+/* Can any declared member length be built by adding TWO OR MORE of the declared
+   lengths together? If so one token can span several real members and still
+   verify, so a mis-scan is reported as a clean ID — the failure the pooled
+   parser's structural guarantee exists to make impossible.
+
+   Returns null when the set is safe, else {target, parts} naming one witness
+   decomposition so the designer is told which lengths collide.
+
+   Supersedes the pairwise test this replaces, which only ever compared TWO
+   lengths and therefore accepted [4,12] even though 12 = 4+4+4 — a valid 4-char
+   member plus eight characters of scan debris read back as one verified
+   12-character ID with zero junk. Unbounded-coin reachability, O(maxLen x |U|).
+   Twin of CheckCharacter::swallowSum (php); keep the witness identical, because
+   both runtimes print it. */
+function QRID_swallowSum(LENS){
+  var i, L, s, maxL = 0;
+  for(i = 0; i < LENS.length; i++) if(LENS[i] > maxL) maxL = LENS[i];
+  /* rep1[s] = s is the sum of ONE OR MORE declared lengths; via[s] = a length
+     used in that sum, so a witness can be reconstructed. */
+  var rep1 = new Array(maxL + 1), via = new Array(maxL + 1);
+  for(s = 0; s <= maxL; s++){ rep1[s] = false; via[s] = 0; }
+  for(s = 1; s <= maxL; s++){
+    for(i = 0; i < LENS.length; i++){
+      L = LENS[i];
+      if(L > s) continue;                       /* LENS is sorted ascending */
+      if(L === s || rep1[s - L]){ rep1[s] = true; via[s] = L; break; }
+    }
+  }
+  /* L is a sum of >= 2 lengths iff some SHORTER declared length leaves a
+     remainder that is itself a sum of one or more. */
+  for(i = 0; i < LENS.length; i++){
+    L = LENS[i];
+    for(var j = 0; j < LENS.length; j++){
+      var first = LENS[j];
+      if(first >= L) break;
+      if(!rep1[L - first]) continue;
+      var parts = [first], rest = L - first;
+      while(rest > 0){ parts.push(via[rest]); rest -= via[rest]; }
+      return { target: L, parts: parts };
+    }
+  }
+  return null;
+}
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
 var QRID_MAX_POOLED_LEN = 4096;   /* pooled field: cap total scanned length        */
 /* Rule-config work caps — mirror php/CheckCharacter.php MAX_* constants (the
@@ -2962,14 +3005,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       } else if(maxLen > QRID_MAX_ID_LEN){
         configError = "ID lengths above " + QRID_MAX_ID_LEN + " characters are not supported.";
       }
-      /* a member length equal to the sum of two others would let one token
-         swallow two real members */
-      for(var _a = 0; _a < LENS.length && !configError; _a++)
-        for(var _b = _a; _b < LENS.length && !configError; _b++)
-          if(LENS.indexOf(LENS[_a] + LENS[_b]) >= 0)
-            configError = "idLengths " + JSON.stringify(LENS) + " is unsafe: " +
-              (LENS[_a] + LENS[_b]) + " = " + LENS[_a] + " + " + LENS[_b] +
-              ", so one \"member\" could swallow two real ones. Split such projects into separate fields/rules.";
+      /* a member length reachable by adding two OR MORE of the others would let
+         one token swallow that many real members */
+      if(!configError){
+        var sw = QRID_swallowSum(LENS);
+        if(sw) configError = "idLengths " + JSON.stringify(LENS) + " is unsafe: " +
+          sw.target + " = " + sw.parts.join(" + ") + ", so one \"member\" could swallow " +
+          sw.parts.length + " real ones. Split such projects into separate fields/rules.";
+      }
     }
   } else if(!configError){
     if(!isPosInt(minLen) || !isPosInt(maxLen)){
@@ -3117,8 +3160,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         var rest = segs[g].text, buf = "";
         while(rest.length){
           var hit = "";
-          var lim2 = Math.min(maxLen, rest.length);
-          for(var L2 = minLen; L2 <= lim2 && !hit; L2++){
+          /* Only lengths the rule actually DECLARES. This walked the contiguous
+             range minLen..maxLen, so idLengths [10,12] tested length 11 and
+             could stamp an "invalid ID" chip the segmentation pass can never
+             produce — an error message naming a length the rule forbids. */
+          for(var li2 = 0; li2 < LENS.length && !hit; li2++){
+            var L2 = LENS[li2];
+            if(L2 > rest.length) break;                /* LENS is ascending */
             if(fullRe.test(rest.substr(0, L2))) hit = rest.substr(0, L2);
           }
           if(hit){

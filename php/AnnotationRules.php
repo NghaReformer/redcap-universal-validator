@@ -730,16 +730,12 @@ class AnnotationRules
             if ($lens) {
                 $ints = array_values(array_unique(array_map('intval', $lens)));
                 sort($ints);
-                $set = array_flip($ints);
-                foreach ($ints as $a) {
-                    foreach ($ints as $b) {
-                        if (isset($set[$a + $b])) {
-                            $errors[] = 'ID lengths ' . implode(', ', $ints) . ' are unsafe: '
-                                . ($a + $b) . ' = ' . $a . ' + ' . $b . ', so one "member" could swallow '
-                                . 'two real ones. Split such projects into separate fields/rules.';
-                            break 2;
-                        }
-                    }
+                $sw = CheckCharacter::swallowSum($ints);
+                if ($sw !== null) {
+                    $errors[] = 'ID lengths ' . implode(', ', $ints) . ' are unsafe: '
+                        . $sw['target'] . ' = ' . implode(' + ', $sw['parts']) . ', so one "member" '
+                        . 'could swallow ' . count($sw['parts']) . ' real ones. Split such projects '
+                        . 'into separate fields/rules.';
                 }
             } else {
                 $min = isset($frag['idMinLen']) && self::posInt($frag['idMinLen']) ? (int) $frag['idMinLen'] : 8;

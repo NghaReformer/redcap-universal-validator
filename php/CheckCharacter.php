@@ -446,6 +446,51 @@ class CheckCharacter
         return $m === 1;
     }
 
+    /**
+     * Can any declared member length be built by adding TWO OR MORE of the
+     * declared lengths together? If so one token can span several real members
+     * and still verify, so a mis-scan is reported as a clean ID — the failure
+     * the pooled parser's structural guarantee exists to make impossible.
+     *
+     * Returns null when the set is safe, else ['target' => L, 'parts' => [...]]
+     * naming one witness decomposition.
+     *
+     * Supersedes the pairwise test this replaces, which only ever compared TWO
+     * lengths and so accepted [4,12] even though 12 = 4+4+4. Unbounded-coin
+     * reachability, O(maxLen x |U|). Twin of QRID_swallowSum (js) — keep the
+     * witness identical, because both runtimes print it.
+     *
+     * $lens must already be deduped, integer-normalised and sorted ascending.
+     */
+    public static function swallowSum(array $lens)
+    {
+        if (!count($lens)) return null;
+        $maxL = $lens[count($lens) - 1];
+        // rep1[s] = s is the sum of ONE OR MORE declared lengths; via[s] = a
+        // length used in that sum, so a witness can be reconstructed.
+        $rep1 = array_fill(0, $maxL + 1, false);
+        $via  = array_fill(0, $maxL + 1, 0);
+        for ($s = 1; $s <= $maxL; $s++) {
+            foreach ($lens as $L) {
+                if ($L > $s) break;                 // ascending
+                if ($L === $s || $rep1[$s - $L]) { $rep1[$s] = true; $via[$s] = $L; break; }
+            }
+        }
+        // L is a sum of >= 2 lengths iff some SHORTER declared length leaves a
+        // remainder that is itself a sum of one or more.
+        foreach ($lens as $L) {
+            foreach ($lens as $first) {
+                if ($first >= $L) break;
+                if (!$rep1[$L - $first]) continue;
+                $parts = [$first];
+                $rest  = $L - $first;
+                while ($rest > 0) { $parts[] = $via[$rest]; $rest -= $via[$rest]; }
+                return ['target' => $L, 'parts' => $parts];
+            }
+        }
+        return null;
+    }
+
     /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
     public static function patternCompiles($pattern)
     {
@@ -640,8 +685,7 @@ class CheckCharacter
             foreach ($lens as $L) if (!self::isPosInt($L)) return null;
             $lens = array_values(array_unique(array_map('intval', $lens)));
             sort($lens);
-            $set = array_flip($lens);
-            foreach ($lens as $a) foreach ($lens as $b) if (isset($set[$a + $b])) return null; // sum-swallow
+            if (self::swallowSum($lens) !== null) return null; // sum-swallow (2+ terms)
             $LENS = $lens;
             $minLen = $lens[0];
             $maxLen = $lens[count($lens) - 1];
@@ -758,9 +802,13 @@ class CheckCharacter
                 $rest = $seg['text']; $buf = '';
                 while (strlen($rest)) {
                     $hit = '';
-                    $lim2 = min($st['maxLen'], strlen($rest));
-                    for ($L2 = $st['minLen']; $L2 <= $lim2 && $hit === ''; $L2++) {
-                        if (self::patTest($st['re'], substr($rest, 0, $L2))) $hit = substr($rest, 0, $L2);
+                    // Only lengths the rule actually DECLARES. This walked the
+                    // contiguous range minLen..maxLen, so idLengths [10,12]
+                    // tested length 11 and could stamp an "invalid ID" chip the
+                    // segmentation pass can never produce. Twin of the js loop.
+                    foreach ($st['LENS'] as $L2) {
+                        if ($L2 > strlen($rest)) break;             // ascending
+                        if (self::patTest($st['re'], substr($rest, 0, $L2))) { $hit = substr($rest, 0, $L2); break; }
                     }
                     if ($hit !== '') {
                         if ($buf !== '') { $out[] = ['type' => 'junk', 'text' => $buf]; $buf = ''; }

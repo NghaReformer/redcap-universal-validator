@@ -211,6 +211,45 @@
           "text": "XY"
         }
       ]
+    },
+    {
+      "label": "idLengths gap: re-scan must skip the undeclared length",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idPattern": "Z[0-9A-Z]{10}",
+        "idLengths": [
+          10,
+          12
+        ]
+      },
+      "input": "ZQQQQQQQQQQ",
+      "segs": [
+        {
+          "type": "junk",
+          "text": "ZQQQQQQQQQQ"
+        }
+      ]
+    },
+    {
+      "label": "idMinLen/idMaxLen range: the same length IS declared, so it is reported",
+      "config": {
+        "algorithm": "iso7064_mod37_36",
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "idPattern": "Z[0-9A-Z]{10}",
+        "idMinLen": 10,
+        "idMaxLen": 12
+      },
+      "input": "ZQQQQQQQQQQ",
+      "segs": [
+        {
+          "type": "id",
+          "id": "ZQQQQQQQQQQ",
+          "valid": false
+        }
+      ]
     }
   ]
 }
