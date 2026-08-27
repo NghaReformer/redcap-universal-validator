@@ -268,6 +268,34 @@ function singleEnv(value, extra) {
     const { api } = pooled(FC);
     check('pooled: mode reports a mixed rule', api.mode.mixed === true && api.mode.alternates === 4);
   }
+
+  // ---- 6) the summary must not over-claim in a mixed rule ----------------
+  // Neither "all verified" nor "no check character in this project" is true
+  // when some families carry a check character and others do not.
+  {
+    const { msg } = pooled(FC + SK + DT);
+    check('summary: a mixed pool counts verified and format-only separately',
+      /2 verified/.test(msg.innerHTML) && /1 format-only/.test(msg.innerHTML));
+    check('summary: a mixed pool never claims "all verified"',
+      !/all verified/.test(msg.innerHTML));
+    check('summary: a mixed pool never claims the PROJECT has no check character',
+      !/no check character in this project/.test(msg.innerHTML));
+    check('summary: the format-only member gets its own chip mark, not a green tick',
+      /&#9675;/.test(msg.innerHTML));
+    check('summary: each member is labelled with its family',
+      /GHIT/.test(msg.innerHTML) && /START4KIDS/.test(msg.innerHTML) && /DARETB/.test(msg.innerHTML));
+  }
+  {
+    const { msg } = pooled(FC + 'FC3-0179');
+    check('summary: an all-format-only pool says so, scoped to that format',
+      /all match the ID format/.test(msg.innerHTML)
+      && /no check character in that format/.test(msg.innerHTML));
+  }
+  {
+    const { msg } = pooled(SK + DT);
+    check('summary: an all-check-bearing pool still says "all verified"',
+      /all verified/.test(msg.innerHTML) && !/format-only/.test(msg.innerHTML));
+  }
 }
 
 console.log(`alternates_dom_js: ${n} checks, ${fail} failure(s)`);

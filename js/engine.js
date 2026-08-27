@@ -3487,20 +3487,29 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   });
 
   function esc(t){ return String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
-  function chip(text, kind){
+  function chip(text, kind, label){
     /* Color families: hard problems (bad check character AND junk that is not
        an ID) are red; a DUPLICATE of a valid ID is a warning, not an error —
        amber. Amber #8a5500 on #fbf6e8 measures 5.7:1 and red #c62828 on
        #fbeceb 4.9:1 — WCAG 2.2 AA for normal text needs 4.5:1, and chips are
        12px (A11Y-002). Every state also has a non-color mark
-       (check / circled-x / cross / question mark). */
+       (check / circled-x / cross / question mark).
+       "fmt" is a member accepted by a FORMAT-ONLY alternate in a mixed rule:
+       it is not an error, but it did not have a check character to verify, and
+       a green tick beside genuinely verified members would over-claim. Grey +
+       a circle mark, and the same 4.5:1 floor (#4a4a4a on #f2f2f2 = 8.9:1). */
     var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+          : (kind === "fmt") ? "#cfcfcf;background:#f2f2f2;color:#4a4a4a"
           : (kind === "dup") ? "#e6d4a8;background:#fbf6e8;color:#8a5500"
           : "#e0b4b0;background:#fbeceb;color:#c62828";   /* bad + junk share red */
     var mark = (kind === "ok") ? "&#10003;&nbsp;"
+             : (kind === "fmt") ? "&#9675;&nbsp;"          /* open circle = shape only */
              : (kind === "dup") ? "&#8855;&nbsp;"          /* circled x = scanned again */
              : (kind === "bad") ? "&#10007;&nbsp;" : "?&nbsp;";
     var suffix = (kind === "dup") ? "&nbsp;(again!)" : "";
+    /* the alternate's name is project configuration, so it is escaped like any
+       other setting that reaches innerHTML (UV-001) */
+    if(label) suffix += '&nbsp;<span style="opacity:.7">' + QRID_escapeHtml(label) + "</span>";
     return '<span style="display:inline-block;margin:2px 4px 2px 0;padding:2px 8px;border-radius:10px;' +
       'font-family:monospace;font-size:12px;border:1px solid ' + c + '">' + mark + text + suffix + '</span>';
   }
@@ -3553,16 +3562,40 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
       "font-size:13px;font-family:inherit;border:1px solid " +
       (ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32" : "#e0b4b0;background:#fbeceb;color:#c62828");
-    var okWord = V.mode.regexOnly ? "all match the ID format &#10003; (no check character in this project)"
-                                  : "all verified &#10003;";
+    /* Which alternate claimed each member? Declaration order, computed after
+       segmentation — reporting only, never an input to the DP score. */
+    var claim = {}, nFmtOnly = 0;
+    if(V.claimedBy && V.alts){
+      ids.forEach(function(x){
+        if(!x.valid) return;
+        var k = V.claimedBy(x.id);
+        claim[x.id] = k;
+        if(k >= 0 && V.alts[k].regexOnly) nFmtOnly++;
+      });
+    }
+    /* A MIXED rule can say neither "all verified" nor "no check character in
+       this project" — both are false when some families carry a check character
+       and others do not. Say what actually happened instead. */
+    var okWord;
+    if(V.mode.mixed && nFmtOnly > 0 && nFmtOnly < ids.length){
+      okWord = (ids.length - nFmtOnly) + " verified &#10003;, " + nFmtOnly +
+        " format-only (no check character in " + (nFmtOnly === 1 ? "that format" : "those formats") + ")";
+    } else if(V.mode.regexOnly || (V.mode.mixed && nFmtOnly === ids.length && ids.length)){
+      okWord = "all match the ID format &#10003; (no check character in " +
+        (V.mode.mixed ? "that format" : "this project") + ")";
+    } else {
+      okWord = "all verified &#10003;";
+    }
     var html = "<b>" + ids.length + " ID" + (ids.length === 1 ? "" : "s") + " read" +
       (ok ? " &mdash; " + okWord : " &mdash; " + esc(problems.join("; "))) + "</b><br>";
     var occ = {};
     segs.forEach(function(x){
       if(x.type === "id"){
         occ[x.id] = (occ[x.id] || 0) + 1;
-        if(x.valid && occ[x.id] > 1) html += chip(esc(x.id), "dup");   /* repeat scans stand out */
-        else html += chip(esc(x.id), x.valid ? "ok" : "bad");
+        var k = claim[x.id];
+        var label = (V.mode.mixed && k >= 0 && V.alts[k].label) ? V.alts[k].label : "";
+        if(x.valid && occ[x.id] > 1) html += chip(esc(x.id), "dup", label);   /* repeat scans stand out */
+        else html += chip(esc(x.id), x.valid ? (k >= 0 && V.alts[k].regexOnly ? "fmt" : "ok") : "bad", label);
       } else {
         html += chip(esc(x.text), "junk");
       }
