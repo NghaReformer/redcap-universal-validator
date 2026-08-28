@@ -57,10 +57,29 @@ class CheckCharacter
     // The unit is nominal, not literal: one step is a substr, a regex test and
     // - whenever the pattern does not reject first - a full normalize + source
     // + check-character computation, around an order of magnitude above a
-    // character comparison. Measured at each config's own cap, the old
-    // 2,000,000 admitted ~300 ms per pooled field per save, paid again per
-    // record by the durable scan. 500,000 leaves every ordinary rule at the
-    // full 4096 and shrinks only the wide tail. Keep in sync with
+    // character comparison. What that buys, measured at each config's own cap
+    // (php 8.3, one pooled field, one save):
+    //
+    //   legacy 8..15, no pattern      cap 4096   ~195 ms   <- worst admitted
+    //   legacy 8..14 (the default)    cap 4096   ~160 ms
+    //   legacy 8..14 + a pattern      cap 4096   ~130 ms
+    //   legacy exact [9]              cap 4096    ~30 ms
+    //   alternates x8 over 15..22     cap 2840    ~31 ms
+    //   the four-family example       cap 4096    ~25 ms
+    //
+    // Read the first two rows before trusting the constant: MAX_POOLED_LEN, not
+    // this budget, is what binds a pattern-less legacy rule, and it bound it at
+    // 2,000,000 as well - so lowering the budget did NOT move the worst case,
+    // and the earlier "~300 ms before, ~75 ms after" reading of these numbers
+    // was wrong (M-3). What the lower budget does bound is the wide tail, where
+    // the cap really does fall (4096 -> 2840 above). The multi-format rule this
+    // feature exists for is an order of magnitude cheaper than the legacy
+    // default it sits beside, because each alternate's pattern rejects before
+    // any check character is computed - which is also the fix for an expensive
+    // legacy rule: give it a format pattern. The durable scan pays this per
+    // record, and sizes its batches from the cost it MEASURES rather than an
+    // assumed one (Scan\WorkBudget::next), so an expensive field makes batches
+    // smaller instead of making a request overrun. Keep in sync with
     // QRID_POOLED_WORK_BUDGET (js).
     const POOLED_WORK_BUDGET = 500000;
     // Config-time bound on BOUNDED-quantifier backtracking (riskyPattern stage
@@ -487,6 +506,12 @@ class CheckCharacter
      */
     public static function alternatesOf(array $cfg)
     {
+        // The rule-level scalars reach validateId as array keys and preg_match
+        // subjects; a non-string in any of them threw instead of returning a
+        // verdict (L-1). Unusable shape, same answer as every other one here.
+        foreach (['algorithm', 'source', 'strip', 'idPattern'] as $sk) {
+            if (isset($cfg[$sk]) && $cfg[$sk] !== null && !is_string($cfg[$sk])) return null;
+        }
         $algo   = (isset($cfg['algorithm']) && $cfg['algorithm'] !== '') ? $cfg['algorithm'] : 'iso7064_mod37_36';
         $source = (isset($cfg['source']) && $cfg['source'] !== '') ? $cfg['source'] : 'normalized_id';
         $strip  = (array_key_exists('strip', $cfg) && $cfg['strip'] !== null) ? $cfg['strip'] : '';
@@ -508,6 +533,14 @@ class CheckCharacter
         foreach ($raw as $a) {
             if (!is_array($a)) return null;
             if (!isset($a['pattern']) || !is_string($a['pattern']) || $a['pattern'] === '') return null;
+            // Every remaining scalar is cast or compared as a string below, and
+            // an array in any of them used to raise a TypeError rather than a
+            // verdict. Inside validateSettings the throw is swallowed into an
+            // ALLOWED save, so a normalizer that fails closed is the difference
+            // between refusing a rule and shipping an unvalidated one (L-1).
+            foreach (['label', 'algorithm', 'source', 'strip'] as $sk) {
+                if (isset($a[$sk]) && $a[$sk] !== null && !is_string($a[$sk])) return null;
+            }
             $label = (isset($a['label']) && $a['label'] !== null) ? (string) $a['label'] : '';
             if (strlen($label) > self::MAX_ALT_LABEL || preg_match('/[^\x20-\x7E]/', $label)) return null;
             $lens = null;
@@ -592,16 +625,20 @@ class CheckCharacter
      * builder pick ID-like members heuristically without risking a false
      * refusal.
      */
-    public static function patternWitness($pattern)
+    public static function patternWitness($pattern, $mode = 0)
     {
         $p = preg_replace('/^\\^/', '', (string) $pattern);
         $p = preg_replace('/\\$$/', '', $p);
         $i = 0;
-        $out = self::witnessSeq($p, $i, 0);
+        $out = self::witnessSeq($p, $i, 0, $mode);
         if ($out === null) return null;
         // A top-level "|" is fine - the first branch was taken. Anything else
         // left over (a stray ")") means the pattern is not balanced.
         if ($i < strlen($p) && $p[$i] !== '|') return null;
+        // An empty witness is no claim: every pattern that can match nothing
+        // accepts it, so it proves no overlap, and "for example """ is not a
+        // sentence to put in front of a designer (L-4).
+        if ($out === '') return null;
         $why = '';
         $re = self::gatePattern($pattern, $why, true);
         if ($re === null) return null;
@@ -609,10 +646,35 @@ class CheckCharacter
     }
 
     /**
+     * Every distinct witness this builder can produce for $pattern, in probe
+     * order. One witness only ever probes ONE point of the pattern, so a
+     * format-only sibling that overlaps somewhere else - SK5-[0-9]{4}[0-9A-Z]
+     * beside SK[1-5]-[0-9]{4}[0-9A-Z], where the "SK1" witness misses - read as
+     * clean. A second probe biased the other way (the LAST member of each class
+     * rather than the most ID-like) finds that family.
+     *
+     * Adding probes can only ever find MORE real overlaps, never invent one:
+     * each witness is still verified against the pattern's own compiled regex
+     * before it is returned, so every string here is a genuine member. It is a
+     * probe, not a proof - two patterns that overlap only at a point neither
+     * probe reaches are still admitted, which is why the alternates are also
+     * separated by length wherever the mode allows it.
+     */
+    public static function patternWitnesses($pattern)
+    {
+        $out = [];
+        foreach ([0, 1] as $mode) {
+            $w = self::patternWitness($pattern, $mode);
+            if ($w !== null && !in_array($w, $out, true)) $out[] = $w;
+        }
+        return $out;
+    }
+
+    /**
      * One alternative of a pattern, from $i, stopping at "|" or ")" at this
      * level. Returns null when the shape is outside the supported class.
      */
-    private static function witnessSeq($p, &$i, $depth)
+    private static function witnessSeq($p, &$i, $depth, $mode = 0)
     {
         if ($depth > 8) return null;                            // absurd nesting
         $n = strlen($p);
@@ -629,17 +691,29 @@ class CheckCharacter
                     if ($i + 1 < $n && $p[$i + 1] === ':') $i += 2;
                     else return null;
                 }
-                $atom = self::witnessSeq($p, $i, $depth + 1);
+                $atom = self::witnessSeq($p, $i, $depth + 1, $mode);
                 if ($atom === null) return null;
                 if (!self::skipToGroupEnd($p, $i)) return null;
             } elseif ($c === '\\') {
                 $i++;
                 if ($i >= $n) return null;
                 $e = $p[$i];
-                if ($e === 'd') $atom = '0';
-                elseif ($e === 'w') $atom = 'A';
+                // Probe 1 biases every choice the other way (see
+                // patternWitnesses) so an overlap the ID-like pick misses is
+                // still found; probe 0 is the shape a real ID has.
+                if ($e === 'd') $atom = $mode ? '9' : '0';
+                elseif ($e === 'w') $atom = $mode ? 'z' : 'A';
                 elseif ($e === 's') $atom = ' ';
-                elseif ($e === 'D' || $e === 'W' || $e === 'S') return null;
+                // The negated shorthands are as ordinary in a hand-written ID
+                // pattern as the positive ones, and declining them used to
+                // silence the overlap guard completely - \D[0-9A-Z]{8} beside a
+                // format-only [0-9A-Z]{9} shipped as a silent accept of every
+                // broken check character (H-1). Pick an ID-like member; the
+                // self-verification below discards the choice if it is wrong.
+                elseif ($e === 'D') $atom = $mode ? 'z' : 'A';  // non-digit
+                elseif ($e === 'W') $atom = $mode ? ' ' : '-';  // non-word
+                elseif ($e === 'S') $atom = $mode ? 'z' : '0';  // non-space
+                elseif ($e === 'b' || $e === 'B') $atom = '';   // zero-width assertion
                 else $atom = $e;                                // escaped literal
                 $i++;
             } elseif ($c === '[') {
@@ -651,11 +725,11 @@ class CheckCharacter
                 if ($body === '') return null;
                 $cls = self::expandClass($body);
                 if ($cls === null) return null;
-                $atom = $neg ? self::firstOutside($cls) : self::firstInside($cls);
+                $atom = $neg ? self::firstOutside($cls, $mode) : self::firstInside($cls, $mode);
                 if ($atom === null) return null;
                 $i = $close + 1;
             } elseif ($c === '.') {
-                $atom = 'A';
+                $atom = $mode ? 'z' : 'A';
                 $i++;
             } else {
                 $atom = $c;
@@ -725,20 +799,28 @@ class CheckCharacter
     // cost a missed warning but never a false refusal.
     const WITNESS_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz';
 
-    /** The most ID-like member of an expanded class. */
-    private static function firstInside($cls)
+    /**
+     * The most ID-like member of an expanded class, or in probe mode 1 the
+     * LEAST ID-like one — the second probe exists to land somewhere the first
+     * cannot reach (see patternWitnesses).
+     */
+    private static function firstInside($cls, $mode = 0)
     {
         if ($cls === '') return null;
-        for ($k = 0; $k < strlen(self::WITNESS_PREFERENCE); $k++) {
+        $n = strlen(self::WITNESS_PREFERENCE);
+        for ($j = 0; $j < $n; $j++) {
+            $k = $mode ? $n - 1 - $j : $j;
             if (strpos($cls, self::WITNESS_PREFERENCE[$k]) !== false) return self::WITNESS_PREFERENCE[$k];
         }
-        return $cls[0];
+        return $mode ? $cls[strlen($cls) - 1] : $cls[0];
     }
 
     /** The most ID-like printable-ASCII character an expanded class excludes. */
-    private static function firstOutside($cls)
+    private static function firstOutside($cls, $mode = 0)
     {
-        for ($k = 0; $k < strlen(self::WITNESS_PREFERENCE); $k++) {
+        $n = strlen(self::WITNESS_PREFERENCE);
+        for ($j = 0; $j < $n; $j++) {
+            $k = $mode ? $n - 1 - $j : $j;
             if (strpos($cls, self::WITNESS_PREFERENCE[$k]) === false) return self::WITNESS_PREFERENCE[$k];
         }
         for ($ch = 0x20; $ch <= 0x7E; $ch++) {
@@ -756,8 +838,12 @@ class CheckCharacter
 
     /**
      * Whether $pattern uses a regex escape that only works with JavaScript's "u"
-     * flag — \p{...} \P{...} \u{...} \x{...} or \k<...> — which the browser (no u
-     * flag) and the server (PCRE /u) enforce DIFFERENTLY (F2, F2-BYPASS-01).
+     * flag — \p{...} \P{...} \pL \PL \u{...} \x{...} or \k<...> — which the
+     * browser (no u flag) and the server (PCRE /u) enforce DIFFERENTLY (F2,
+     * F2-BYPASS-01). The BRACE-LESS single-letter property form is the same
+     * split and was not caught by keying on the brace: PCRE reads \pL as a
+     * Unicode letter, a browser as the literal "pL", so both engines admitted
+     * the pattern and then disagreed about every value (M-1).
      * Escaped-backslash pairs are stripped first so a literal-backslash pattern
      * like "\\u{2}" is NOT mistaken for a real \u escape (F2-OVERREJECT-02). Keep
      * in sync with QRID_uFlagEscape (js).
@@ -765,7 +851,46 @@ class CheckCharacter
     public static function usesUFlagEscape($pattern)
     {
         $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
-        return preg_match('/\\\\[pPux]\{/', $d) === 1 || strpos($d, '\\k<') !== false;
+        return preg_match('/\\\\[pP][{A-Za-z]|\\\\[ux]\{/', $d) === 1 || strpos($d, '\\k<') !== false;
+    }
+
+    /**
+     * Whether $pattern uses PCRE syntax a browser reads as something else.
+     * Every one of \K \G \h \H \v \V \R \N \X \C \Q \E \z \g is a PCRE construct
+     * that a JavaScript RegExp compiles as an identity escape (or, for \v, as a
+     * vertical tab), and a POSIX class such as [[:digit:]] is a class to PCRE and
+     * the class [[:digt] followed by a literal "]" to a browser. Both engines
+     * accept them, then classify the same value differently — the F2 split, one
+     * family wider (M-1). Escaped-backslash pairs are stripped first, exactly as
+     * in usesUFlagEscape. Keep in sync with QRID_pcreOnly (js).
+     */
+    public static function usesPcreOnlySyntax($pattern)
+    {
+        $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
+        return preg_match('/\\\\[KGhHvVRNXCQEzg]/', $d) === 1
+            || preg_match('/\[:\^?[a-z]+:\]/', $d) === 1;
+    }
+
+    /**
+     * Whether $pattern uses a "(?..." group form JavaScript cannot compile:
+     * inline flags (?i) (?x) (?m) (?s), comments (?#...), atomic groups (?>...),
+     * conditionals (?(1)...) and the PCRE named forms (?P...) (?'n'...). PCRE
+     * compiles all of them, so the server used to accept a rule the browser
+     * could not run — the field silently stopped being checked in front of the
+     * fielder while the post-save audit kept filing findings (M-2).
+     *
+     * Allow-list, not deny-list: "(?" must be followed by ":", "=", "!" or "<",
+     * which covers the non-capturing, lookahead, lookbehind and named-group
+     * forms both engines share; anything else is refused by the same sentence on
+     * both sides. Escaped characters are dropped first so a literal "\(?" is not
+     * read as a group. A "(?" written inside a character class is refused too —
+     * an over-rejection no ID format needs, and the price of staying textual
+     * enough to be twinned exactly. Keep in sync with QRID_nonJsGroup (js).
+     */
+    public static function usesNonJsGroup($pattern)
+    {
+        $d = preg_replace('/\\\\./s', '', (string) $pattern);   // drop escaped chars
+        return preg_match('/\(\?([^:=!<]|$)/', $d) === 1;
     }
 
     /**
@@ -807,6 +932,18 @@ class CheckCharacter
                     . 'which JavaScript cannot compile.';
                 return null;
             }
+            if (self::usesNonJsGroup($pattern)) {
+                // PCRE compiles inline flags and atomic/conditional groups; a
+                // browser refuses them. Left to the compile step this rule
+                // passed the server gate and died in the browser, so live
+                // checking stopped while the audit kept enforcing (M-2).
+                $why = 'the format pattern uses a group form JavaScript cannot compile — inline flags '
+                    . '((?i) (?x) (?m) (?s)), comments ((?#...)), atomic groups ((?>...)), conditionals '
+                    . '((?(1)...)) or the PCRE named forms ((?P...) (?\'n\'...)). Patterns are JavaScript '
+                    . 'regex: use (?:...) for a plain group, (?=...) or (?!...) for lookahead, (?<=...) or '
+                    . '(?<!...) for lookbehind, and (?<name>...) for a named group.';
+                return null;
+            }
             if (self::usesUFlagEscape($pattern)) {
                 // \p{}, \P{}, \u{}, \x{} and \k<> only work with JavaScript's "u"
                 // flag; the browser compiles ID patterns WITHOUT it (so \p reads as
@@ -819,6 +956,27 @@ class CheckCharacter
                     . 'JavaScript\'s "u" flag — the browser compiles ID patterns without it, so the '
                     . 'value would validate differently in the browser and on the server. Use explicit '
                     . 'character classes such as [A-Z] or [0-9] instead.';
+                return null;
+            }
+            if (self::usesPcreOnlySyntax($pattern)) {
+                // Same split as \p{...}, one family wider: both engines compile
+                // these and then read them differently, so the value would
+                // validate in one runtime and not the other (M-1).
+                $why = 'the format pattern uses PCRE-only syntax (\K, \G, \h, \v, \R, \N, \X, \C, '
+                    . '\Q...\E, \g, \z or a POSIX class such as [[:digit:]]) that a browser reads as an '
+                    . 'ordinary character, so the value would validate differently in the browser and on '
+                    . 'the server. Use explicit character classes such as [A-Z] or [0-9] instead.';
+                return null;
+            }
+            if (preg_match('/\[\^?\]/', preg_replace('/\\\\./s', '', $pattern))) {
+                // "[]" is a compile error to PCRE and an empty class — one that
+                // can never match — to a browser, so the server refused the rule
+                // for a reason the browser would never have reached (M-2). Say
+                // the same thing on both sides instead.
+                $why = 'the format pattern contains an empty character class ("[]" or "[^]"). PCRE '
+                    . 'refuses it and JavaScript compiles it to a class that can never match, so the '
+                    . 'pattern would behave differently in the browser and on the server — write out the '
+                    . 'characters the class should contain.';
                 return null;
             }
             if (self::riskyPattern($pattern)) {
@@ -1111,20 +1269,6 @@ class CheckCharacter
         if ($P['re'] !== null && !self::patTest($P['re'], $t)) return false;
         if ($P['regexOnly']) return true;
         return self::validateId($P['algo'], $P['source'], $P['strip'], $t);
-    }
-
-    /**
-     * Which alternate claims this token? First in declaration order, computed
-     * AFTER segmentation for reporting only - never an input to the DP score.
-     * Twin of claimedBy (js).
-     */
-    public static function pooledClaimedBy(array $st, $t)
-    {
-        foreach ($st['ALTS'] as $i => $A) {
-            if ($A['re'] !== null && !self::patTest($A['re'], $t)) continue;
-            if ($A['regexOnly'] || self::validateId($A['algorithm'], $A['source'], $A['strip'], $t)) return $i;
-        }
-        return -1;
     }
 
     private static function pooledBetter(array $a, array $b)

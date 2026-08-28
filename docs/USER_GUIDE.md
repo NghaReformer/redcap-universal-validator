@@ -493,6 +493,20 @@ the rule is saved, with a message naming the two entries. The same applies to
 lengths where one is the sum of two or more others: a single token could then
 swallow several real members and still verify.
 
+In a **single**-value field there are no lengths to separate the families, so
+the same question is answered by looking for a value both patterns accept. If a
+check-bearing pattern is written in a form that cannot be analysed — lookaround,
+a backreference, a named group — the rule is refused rather than assumed safe,
+because the alternative is a mis-scan recorded as clean. Writing the pattern
+with plain character classes (`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
+
+**Write patterns in portable regex.** They run as JavaScript in the browser and
+as PCRE on the server, so anything the two read differently is refused when the
+rule is saved: `\pL` and `\p{L}`, `\K \G \h \v \R \N \X \C \Q...\E \g \z`, POSIX
+classes like `[[:digit:]]`, inline flags `(?i)` `(?x)`, comments `(?#...)`,
+atomic groups `(?>...)` and an empty class `[]`. Explicit classes, `(?:...)`,
+lookahead, lookbehind and `(?<name>...)` all work.
+
 ### Scenario 7: Bulk-configure many fields from the data dictionary
 
 **Goal.** Twenty fields across the project hold Verhoeff-checked IDs. Configure

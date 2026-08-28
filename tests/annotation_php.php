@@ -664,7 +664,7 @@ check('patternWitness handles an optional non-capturing group',
 check('patternWitness declines lookaround rather than guess',
     CheckCharacter::patternWitness('(?=SK)[A-Z]{2}[0-9]{5}') === null);
 check('patternWitness declines an unbalanced group',
-    CheckCharacter::patternWitness('(SK[0-9]{3}') === null);
+    CheckCharacter::patternWitness('([A-Z])\\1[0-9]{7}') === null);
 // every witness it DOES return is a genuine member - that is what makes the
 // guard "proven overlap only" rather than a guess
 foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
@@ -691,6 +691,117 @@ check('H-1 a disjoint alternation family is not refused',
         ['label' => 'SKDT', 'pattern' => '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
     ], ['type' => 'single']) === '');
 
+// ---- round 3 ------------------------------------------------------------
+// H-1: "no witness" is UNKNOWN, not "safe". A check-bearing pattern the builder
+// cannot analyse used to silence the guard completely, and a single-value field
+// has nothing else: every mis-scanned ID of that family recorded as clean.
+foreach (['(?=[A-Z])[0-9A-Z]{9}', '(?![0])[0-9A-Z]{9}', '(?<x>[A-Z])[0-9]{8}', '([A-Z])\\1[0-9]{7}'] as $opaque) {
+    check('H-1 an unanalysable check-bearing pattern is refused: ' . $opaque,
+        strpos($altErr([
+            ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}', 'algorithm' => 'none'],
+            ['label' => 'MINTED', 'pattern' => $opaque,       'algorithm' => $MOD],
+        ], ['type' => 'single']), 'too complex to prove') !== false);
+}
+// The negated shorthands are ordinary regex, so the builder covers them rather
+// than refusing the rule that uses them.
+check('H-1 the builder covers the negated shorthands',
+    CheckCharacter::patternWitness('\D[0-9A-Z]{8}') === 'A00000000'
+    && CheckCharacter::patternWitness('\S[0-9]{8}') === '000000000'
+    && CheckCharacter::patternWitness('\b[A-Z]{9}') === 'AAAAAAAAA');
+check('H-1 a rule using them is still accepted when the shapes are disjoint',
+    $altErr([
+        ['label' => 'GHIT', 'pattern' => '[^a-z]C[1-9]-[0-9]{4}',   'algorithm' => 'none'],
+        ['label' => 'S4K',  'pattern' => '\D[0-9]{4}[0-9A-Z]{4}',   'algorithm' => $MOD],
+    ], ['type' => 'single']) === '');
+// A pooled rule is proved safe the other way - the shared-length guard, which
+// is complete there - so it must NOT be refused for an unanalysable pattern.
+check('H-1 pooled is not refused for an unanalysable pattern',
+    $altErr([
+        ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
+        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
+    ]) === '');
+check('H-1 ... and the pooled shared-length guard still fires',
+    strpos($altErr([
+        ['label' => 'GHIT',   'pattern' => '[0-9A-Z]{9}',      'algorithm' => 'none', 'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '\D[0-9A-Z]{8}',    'algorithm' => $MOD,   'lengths' => [9]],
+    ]), 'never be tested') !== false);
+// One witness probes ONE point, so a format-only alternate that overlaps
+// somewhere the ID-like pick does not reach read as clean. The second probe is
+// biased the other way; both are still verified against the pattern's own
+// regex, so a probe can only ever find a REAL overlap.
+check('H-1 the second probe finds a subset overlap the first misses',
+    strpos($altErr([
+        ['label' => 'SUB', 'pattern' => 'SK5-[0-9]{4}[0-9A-Z]',      'algorithm' => 'none'],
+        ['label' => 'S4K', 'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',  'algorithm' => $MOD],
+    ], ['type' => 'single']), 'SK5-9999Z') !== false);
+foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
+          '\D[0-9A-Z]{8}', 'A(B(C|D)E)?[0-9]{2}', 'FC[1-9]-[0-9]{4}'] as $wp) {
+    $why = '';
+    $re  = CheckCharacter::gatePattern($wp, $why, true);
+    $all = CheckCharacter::patternWitnesses($wp);
+    check('every probe for ' . $wp . ' is a real member', $all !== [] && count(array_filter(
+        $all, function ($w) use ($re) { return !CheckCharacter::patTest($re, $w); })) === 0);
+}
+// L-4: an empty string is not a witness - every pattern that can match nothing
+// accepts it, so it proves no overlap, and it reads as `for example ""`.
+check('L-4 an empty witness is no claim', CheckCharacter::patternWitness('A{0,9}') === null);
+// L-1: checkFragment is documented as THE gate every channel goes through, so
+// it has to report on a hostile shape rather than throw - validateSettings
+// swallows a throw into an ALLOWED save of a rule nothing validated.
+foreach ([['label' => ['x'], 'pattern' => 'A[0-9]{4}'],
+          ['label' => 'L', 'pattern' => 'A[0-9]{4}', 'algorithm' => ['damm']],
+          ['label' => 'L', 'pattern' => 'A[0-9]{4}', 'strip' => ['-']],
+          ['label' => 'L', 'pattern' => 'A[0-9]{4}', 'source' => ['x']],
+          ['label' => 'L', 'pattern' => ['A']],
+          'not-an-object'] as $ai => $hostile) {
+    $threw = false;
+    $errs  = [];
+    try {
+        $errs = AnnotationRules::checkFragment(['type' => 'single', 'alternates' => [$hostile]]);
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    check('L-1 hostile alternate ' . $ai . ' is reported, not thrown', !$threw && count($errs) > 0);
+}
+foreach ([['algorithm' => ['damm']], ['strip' => ['-']], ['source' => [1]], ['idPattern' => ['A']]] as $ci => $cfg) {
+    $threw = false;
+    $res   = null;
+    try {
+        $res = CheckCharacter::validateSingleField($cfg, 'FC1-0589');
+    } catch (\Throwable $e) {
+        $threw = true;
+    }
+    check('L-1 validateSingleField survives hostile cfg ' . $ci,
+        !$threw && $res['reason'] === 'unconfigurable');
+}
+// L-2: the standalone claimedBy twins were dead in both runtimes - the parser
+// records the winning alternate on the segment, which is what reporting reads.
+check('L-2 the dead pooledClaimedBy twin is gone',
+    !method_exists('INSPIRE\\UniversalValidator\\CheckCharacter', 'pooledClaimedBy'));
+
+// L-3: swallowSum and alternatesOf are hand-mirrored across the two runtimes
+// and neither had a direct cross-runtime test - swallowSum was reachable only
+// through configError text. tests/alternates_dom_js.cjs reads the same corpus
+// and asserts the same expectations, written from the definitions.
+$fx = json_decode(file_get_contents(__DIR__ . '/alternates_fixture.json'), true);
+check('L-3 the shared alternates corpus loads', is_array($fx) && count($fx['swallow']) && count($fx['normalize']));
+foreach ($fx['swallow'] as $c) {
+    $got  = CheckCharacter::swallowSum($c['lens']);
+    $want = $c['target'] === null ? 'safe' : json_encode(['target' => $c['target'], 'parts' => $c['parts']]);
+    $has  = $got === null ? 'safe' : json_encode(['target' => $got['target'], 'parts' => $got['parts']]);
+    check('swallowSum [' . implode(',', $c['lens']) . ']: ' . $c['why'], $has === $want);
+}
+foreach ($fx['normalize'] as $c) {
+    $got = CheckCharacter::alternatesOf($c['cfg']);
+    if (empty($c['ok'])) {
+        check('alternatesOf refuses: ' . $c['why'], $got === null);
+        continue;
+    }
+    // The js twin reports an error string where this one returns null, so the
+    // corpus compares the NORMALIZED entries, which both runtimes must agree on.
+    check('alternatesOf normalizes: ' . $c['why'],
+        $got !== null && json_encode($got) === json_encode($c['entries']));
+}
 
 echo sprintf("annotation_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

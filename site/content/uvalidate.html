@@ -63,7 +63,18 @@ entries per rule. When <code>alternates</code> is used the rule-level
 rule is saved, each with a message naming the entry and the fix: lengths where
 one is the sum of two or more others, a format-only entry sharing a length with
 a check-bearing one, and entries that disagree about which characters survive
-cleaning.</p>
+cleaning. A single-value rule has no lengths to separate the families, so it is
+refused instead when a check-bearing pattern cannot be analysed for overlap
+&mdash; lookaround, a backreference, a named group. Plain character classes
+avoid it.</p>
+<p>Patterns run as JavaScript in the browser and as PCRE on the server, so
+syntax the two read differently is refused when the rule is saved:
+<code>\pL</code> and <code>\p{L}</code>, <code>\K \G \h \v \R \N \X \C
+\Q&hellip;\E \g \z</code>, POSIX classes such as <code>[[:digit:]]</code>,
+inline flags <code>(?i)</code> <code>(?x)</code>, comments
+<code>(?#&hellip;)</code>, atomic groups <code>(?&gt;&hellip;)</code> and an
+empty class <code>[]</code>. Explicit classes, <code>(?:&hellip;)</code>,
+lookahead, lookbehind and <code>(?&lt;name&gt;&hellip;)</code> all work.</p>
 
 <h2 id="pooled">Pooled fields</h2>
 <pre><code>@UVALIDATE={"type":"pooled","idLengths":[9],"expectedIds":3}

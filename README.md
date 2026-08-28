@@ -126,7 +126,18 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    sharing a length with a check-bearing one (the format-only entry would
    accept first, so that check character would never be tested), and entries
    that disagree about which characters survive cleaning. Each message names
-   the entry and the fix.
+   the entry and the fix. A single-value rule has no lengths to separate the
+   families, so it is refused instead when a check-bearing pattern cannot be
+   analysed for overlap — lookaround, a backreference, a named group. Plain
+   character classes avoid it.
+
+   **Patterns must be portable.** They run as JavaScript in the browser and as
+   PCRE on the server, so syntax the two engines read differently is refused
+   when the rule is saved: `\pL` and `\p{L}`, `\K \G \h \v \R \N \X \C \Q...\E
+   \g \z`, POSIX classes such as `[[:digit:]]`, inline flags `(?i)` `(?x)`,
+   comments `(?#...)`, atomic groups `(?>...)` and an empty class `[]`.
+   Explicit classes, `(?:...)`, lookahead, lookbehind and `(?<name>...)` all
+   work.
 
    JSON keys: `type`, `algorithm`, `source`, `pattern`, `alternates`, `strip`,
    `keepChars`, `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`,

@@ -1,0 +1,116 @@
+{
+  "note": "Shared corpus locking the two hand-mirrored alternates twins across runtimes: QRID_swallowSum / CheckCharacter::swallowSum and QRID_alternatesOf / CheckCharacter::alternatesOf. Both are load-bearing — swallowSum is the structural proof that no member length can be built by adding others (a mis-scan reading back as one verified ID), and alternatesOf is the normalizer every consumer runs on. Neither had a direct cross-runtime test: swallowSum was reachable only through configError text and the JS twins were not exported (round 3, L-3). Expectations are hand-written from the definitions, not recorded from a run. Read by tests/alternates_dom_js.cjs and tests/annotation_php.php.",
+  "swallow": [
+    { "why": "the four driving families: the smallest 2-sum is 16, above the longest member", "lens": [8, 9, 10], "target": null, "parts": null },
+    { "why": "one exact length can never be a sum of others", "lens": [9], "target": null, "parts": null },
+    { "why": "the shipped default range, contiguous but safe (8+8 > 14)", "lens": [8, 9, 10, 11, 12, 13, 14], "target": null, "parts": null },
+    { "why": "non-contiguous and safe", "lens": [10, 12], "target": null, "parts": null },
+    { "why": "the pairwise case: 8 = 4+4", "lens": [4, 8], "target": 8, "parts": [4, 4] },
+    { "why": "THREE terms — what the pairwise test this replaced accepted (P1)", "lens": [4, 12], "target": 12, "parts": [4, 4, 4] },
+    { "why": "two different lengths sum to a third", "lens": [3, 5, 8], "target": 8, "parts": [3, 5] },
+    { "why": "the shortest unsafe target is reported, not the first found", "lens": [2, 3, 4, 5], "target": 4, "parts": [2, 2] },
+    { "why": "a long member swallowing two real ones", "lens": [8, 9, 10, 17], "target": 17, "parts": [8, 9] }
+  ],
+  "normalize": [
+    {
+      "why": "a legacy scalar rule normalizes to a ONE-element list — this is what makes it byte-identical to the pre-alternates engine",
+      "cfg": { "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-", "idPattern": "FC[1-9]-[0-9]{4}" },
+      "ok": true,
+      "entries": [
+        { "label": "", "pattern": "FC[1-9]-[0-9]{4}", "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-", "lengths": null }
+      ]
+    },
+    {
+      "why": "a legacy rule with no pattern at all",
+      "cfg": { "algorithm": "damm", "source": "digits_only", "strip": "" },
+      "ok": true,
+      "entries": [
+        { "label": "", "pattern": null, "algorithm": "damm", "source": "digits_only", "strip": "", "lengths": null }
+      ]
+    },
+    {
+      "why": "per-alternate algorithm wins; an alternate that omits one inherits the rule's",
+      "cfg": {
+        "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-",
+        "alternates": [
+          { "label": "GHIT", "pattern": "FC[1-9]-[0-9]{4}", "algorithm": "none", "lengths": [8] },
+          { "label": "S4K", "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]", "lengths": [9] }
+        ]
+      },
+      "ok": true,
+      "entries": [
+        { "label": "GHIT", "pattern": "FC[1-9]-[0-9]{4}", "algorithm": "none", "source": "normalized_id", "strip": "-", "lengths": [8] },
+        { "label": "S4K", "pattern": "SK[1-5]-[0-9]{4}[0-9A-Z]", "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-", "lengths": [9] }
+      ]
+    },
+    {
+      "why": "lengths are deduped and sorted, so the pair list is built in one order in both runtimes",
+      "cfg": {
+        "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-",
+        "alternates": [{ "pattern": "A[0-9]{2,4}", "lengths": [3, 3, 2] }]
+      },
+      "ok": true,
+      "entries": [
+        { "label": "", "pattern": "A[0-9]{2,4}", "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-", "lengths": [2, 3] }
+      ]
+    },
+    {
+      "why": "an alternate's own source and strip override the rule's",
+      "cfg": {
+        "algorithm": "iso7064_mod37_36", "source": "normalized_id", "strip": "-",
+        "alternates": [{ "pattern": "A[0-9]{8}", "source": "digits_only", "strip": "/" }]
+      },
+      "ok": true,
+      "entries": [
+        { "label": "", "pattern": "A[0-9]{8}", "algorithm": "iso7064_mod37_36", "source": "digits_only", "strip": "/", "lengths": null }
+      ]
+    },
+    {
+      "why": "an empty list is not a rule",
+      "cfg": { "algorithm": "damm", "alternates": [] },
+      "ok": false
+    },
+    {
+      "why": "an alternate without a pattern would accept every value and the ones after it would never be reached",
+      "cfg": { "algorithm": "damm", "alternates": [{ "label": "X", "lengths": [8] }] },
+      "ok": false
+    },
+    {
+      "why": "over the eight-alternate cap",
+      "cfg": {
+        "algorithm": "damm",
+        "alternates": [
+          { "pattern": "A[0-9]{4}" }, { "pattern": "B[0-9]{4}" }, { "pattern": "C[0-9]{4}" },
+          { "pattern": "D[0-9]{4}" }, { "pattern": "E[0-9]{4}" }, { "pattern": "F[0-9]{4}" },
+          { "pattern": "G[0-9]{4}" }, { "pattern": "H[0-9]{4}" }, { "pattern": "I[0-9]{4}" }
+        ]
+      },
+      "ok": false
+    },
+    {
+      "why": "a non-ASCII label reaches innerHTML and splits the two runtimes' string handling",
+      "cfg": { "algorithm": "damm", "alternates": [{ "label": "GHÍT", "pattern": "A[0-9]{4}" }] },
+      "ok": false
+    },
+    {
+      "why": "L-1: a non-string algorithm reached validateId as an array key and threw instead of returning a verdict",
+      "cfg": { "algorithm": "damm", "alternates": [{ "pattern": "A[0-9]{4}", "algorithm": ["damm"] }] },
+      "ok": false
+    },
+    {
+      "why": "L-1: a non-string strip reached normalize() the same way",
+      "cfg": { "algorithm": "damm", "alternates": [{ "pattern": "A[0-9]{4}", "strip": ["-"] }] },
+      "ok": false
+    },
+    {
+      "why": "L-1: a non-string rule-level scalar, on the legacy path that has no alternates at all",
+      "cfg": { "algorithm": ["damm"] },
+      "ok": false
+    },
+    {
+      "why": "lengths must be positive whole numbers",
+      "cfg": { "algorithm": "damm", "alternates": [{ "pattern": "A[0-9]{4}", "lengths": [0] }] },
+      "ok": false
+    }
+  ]
+}

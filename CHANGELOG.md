@@ -86,48 +86,65 @@ rather than silent - the browser shows a configuration error and the server logs
 - The pooled work budget was recalibrated (below). A rule declaring many
   candidate lengths over long members now scans fewer characters per field; a
   value longer than the new cap gets no verdict and says so.
+- **A format pattern using syntax the two regex engines read differently is now
+  refused.** The browser compiles ID patterns as JavaScript regex without the
+  `u` flag; the server matches with PCRE. `\pL` (the brace-less form of
+  `\p{L}`), `\K \G \h \H \v \V \R \N \X \C \Q...\E \g \z` and POSIX classes like
+  `[[:digit:]]` compile in both and then classify the same value differently.
+  Inline flags `(?i)` `(?x)` `(?m)` `(?s)`, comments `(?#...)`, atomic groups
+  `(?>...)`, conditionals and the PCRE named forms compile on the server only,
+  so the rule passed its save-time gate and then died in the browser - live
+  checking stopped in front of the fielder while the post-save audit went on
+  filing findings. An empty character class `[]` is refused by both for the same
+  stated reason rather than by PCRE's compile error alone. Portable syntax is
+  unaffected: `(?:...)`, `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)`,
+  `(?<name>...)` and explicit classes all still compile.
 
 ### Performance
 
-- **The pooled work budget now reflects measured cost.** `POOLED_WORK_BUDGET`
-  bounds `(scanned length) x |PAIRS| x (member length)`, but its unit was
-  nominal: one step is a substring, a regex test and - unless the pattern
-  rejects first - a full normalize, source-extract and check-character
-  computation, which measures around an order of magnitude above a character
-  comparison. At 2,000,000 the formula admitted roughly 300 ms of server work
-  per pooled field per save, paid again per record by the durable scan.
+- **The pooled work budget was recalibrated, and here is what that did and did
+  not buy.** `POOLED_WORK_BUDGET` bounds `(scanned length) x |PAIRS| x (member
+  length)`, but its unit is nominal: one step is a substring, a regex test and -
+  unless the pattern rejects first - a full normalize, source-extract and
+  check-character computation, around an order of magnitude above a character
+  comparison. Lowering it from 2,000,000 to 500,000 shrinks the scan cap only
+  where the formula, rather than the 4096-character ceiling, is the binding
+  constraint. Measured at each configuration's own cap (PHP 8.3, one pooled
+  field, one save):
 
-  Measured at each configuration's own cap and lowered to 500,000, every
-  ordinary rule keeps the full 4096-character ceiling - the 8..14 default, an
-  exact-length rule, a 64-character single format, the four-family mixed case -
-  and only the wide tail shrinks: 32 candidate pairs over 64-character members
-  drop from 976 characters to the 256 floor, and the worst case falls to about
-  a quarter of what it was. `tests/pooled_php.php` locks which configurations
-  move and which do not.
+  | configuration | cap | ms/parse |
+  |---|---|---|
+  | legacy 8..15, no format pattern | 4096 | ~195 |
+  | legacy 8..14 (the shipped default) | 4096 | ~160 |
+  | legacy 8..14 with a format pattern | 4096 | ~130 |
+  | legacy exact `[9]` | 4096 | ~30 |
+  | 8 alternates over lengths 15..22 | 2840 | ~31 |
+  | the four-family example above | 4096 | ~25 |
 
-  This was a pre-existing calibration, not something multi-format rules
-  introduced: a single-format rule declaring 32 exact lengths already cost the
-  same, and the alternates equivalent is marginally cheaper.
+  The first two rows are the correction. Their caps were 4096 at 2,000,000 as
+  well - `MAX_POOLED_LEN` binds first for a pattern-less legacy rule - so the
+  recalibration did **not** move the worst case, and an earlier draft of this
+  entry claiming it fell to about a quarter was reading the nominal unit as if
+  it were time. What the lower budget does bound is the wide tail, where the cap
+  really does fall: the 8-alternate row above, and 32 candidate pairs over
+  64-character members dropping from 976 characters to the 256 floor.
+  `tests/pooled_php.php` locks which configurations move and which do not.
 
-- **What the recalibration deliberately does NOT change, and what that costs.**
-  After it, the measured worst case is the module's own default pooled rule -
-  no format pattern, ID lengths 8 to 14 - at roughly 130 ms of server work for
-  a full 4096-character value, about twice the throttled 32-pair shape. The
-  reason is not the length count but the absence of a pattern: with nothing to
-  reject on, every candidate at every position runs the whole normalize,
-  source-extract and check-character path, which is the work that rule is
-  asking for.
+  **The multi-format feature is not the expensive part.** The four-family rule
+  this release is written around costs an order of magnitude less than the
+  legacy default it sits beside, because each alternate's pattern rejects before
+  any check character is computed. The worst admitted configuration is a legacy
+  contiguous range with no pattern at all - that cost predates this work, and
+  the fix for it is a format pattern, which removes almost all of it.
 
-  Weighting pattern-less candidates in the divisor would bound it, at the cost
-  of cutting that default rule's scan cap from 4096 to about 1275 - so values
+  Bounding the pattern-less case in the divisor was considered and rejected: it
+  would cut the default rule's scan cap from 4096 to about 1275, so values
   between those lengths would stop being validated in projects that configured
-  nothing unusual. That trade is not worth taking for a cost that predates this
-  work, is bounded, and is absorbed by the durable scan, which predicts
-  per-record cost and shrinks batches rather than stalling. The number is
-  recorded here instead: **budget roughly 130 ms per pooled field per save for
-  a pattern-less rule at the full cap, and about two minutes per thousand
-  records in a scan.** Giving such a rule a format pattern removes almost all
-  of it.
+  nothing unusual. **Budget roughly 200 ms per pooled field per save for a
+  pattern-less rule at the full cap.** The durable scan pays it per record but
+  sizes each batch from the cost it measures rather than an assumed one
+  (`Scan\WorkBudget::next`), so an expensive field makes batches smaller instead
+  of making a request overrun.
 
 ### Internals
 
@@ -161,12 +178,47 @@ rather than silent - the browser shows a configuration error and the server logs
   (`M-01`, `M-04`); and an unknown per-alternate algorithm was reported as a
   failed check character rather than a configuration problem (`M-02`).
 
-- **Tests.** New `tests/alternates_dom_js.cjs` (37 checks). `annotation_php`
-  151 -> 175, `hook_php` 286 -> 294, `branching_php` 28 -> 32, `risky_php`
-  102 -> 127, `pooled_php` 8 -> 21 cases, `pooled_fixture.json` 8 -> 15 cases. `branching_php` now asserts
-  structurally that `BRANCH_KEYS` covers every option `checkFragment` reads: a
-  key missing there validates fine and then vanishes, after which the audit runs
-  the rule under default settings nobody configured.
+- **Two further passes over the same branch, and what they found.** Round two:
+  the overlap guard's witness builder made no claim on `(SK|DT)...`, a negated
+  class or a top-level alternation, so `H-01`'s refusal never fired on three
+  ordinary ways to write an ID family; and the pooled reporter re-derived which
+  alternate had claimed a member instead of reading the one the parser chose, so
+  a permissive sibling could take the credit. Round three found that **"no
+  witness" was still being read as "no overlap"** - a check-bearing pattern
+  using `\D`, lookaround, a backreference or a named group silenced the guard
+  completely, and a single-value field has nothing else, so every mis-scanned ID
+  of that family recorded as clean. The builder now covers the negated
+  shorthands, and what it still cannot analyse is **refused** rather than
+  assumed safe. A pooled rule is exempt, because there the shared-length guard
+  proves the same thing outright. A second probe, biased the other way, catches
+  a format-only alternate that overlaps somewhere the first one does not reach
+  (`SK5-...` beside `SK[1-5]-...`); every probe is still verified against the
+  pattern's own compiled regex before use, so a probe can only ever find a real
+  overlap, never invent one.
+
+  Round three also closed the two dialect gaps above, made `checkFragment` and
+  `alternatesOf` report on a hostile shape rather than throw - `validateSettings`
+  ends in `catch (\Throwable) { return null; }`, which turns a validator crash
+  into an *allowed* save of a rule nothing validated - stopped an empty string
+  being offered to a designer as `for example ""`, dropped a `claimedBy` twin
+  that was dead in both runtimes, and fixed the pooled field handler comparing
+  UTF-16 code units against a cap the parser and the server both compare code
+  points against: an astral value between the two counts was announced as
+  unscannable on a field both of them still read.
+
+- **Tests.** New `tests/alternates_dom_js.cjs` (63 checks) and
+  `tests/alternates_fixture.json`, a shared corpus locking the two hand-mirrored
+  twins - `swallowSum` and `alternatesOf` - which had no direct cross-runtime
+  test; both are now exported from the browser namespace and read by the PHP and
+  JS suites from the same file. `risky_patterns.json` gained a `dialect_reject` /
+  `dialect_accept` corpus asserting that no pattern is admitted by one runtime
+  and refused by the other. `annotation_php` 151 -> 263, `hook_php` 286 -> 296,
+  `branching_php` 28 -> 32, `risky_php` 102 -> 174, `risky_js` 116 -> 159,
+  `pooled_php` 8 -> 21 cases, `pooled_fixture.json` 8 -> 15 cases.
+  `branching_php` now asserts structurally that `BRANCH_KEYS` covers every
+  option `checkFragment` reads: a key missing there validates fine and then
+  vanishes, after which the audit runs the rule under default settings nobody
+  configured.
 
 ## 1.9.10 - the diagnostic that killed the request it was diagnosing
 

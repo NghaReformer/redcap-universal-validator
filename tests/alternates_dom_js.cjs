@@ -244,8 +244,11 @@ function singleEnv(value, extra) {
     const segs = api.parse(FC + SK + DT + ST);
     check('pooled: jammed mixed run splits into four members',
       segs.length === 4 && segs.every((s) => s.type === 'id' && s.valid));
-    check('pooled: each member is claimed by the right alternate',
-      [FC, SK, DT, ST].every((id, i) => api.claimedBy(id) === i));
+    // The alternate index the PARSER recorded, which is what the summary and
+    // the server fixture both read — the standalone claimedBy() twins this used
+    // to assert on were dead in both runtimes and were dropped.
+    check('pooled: each member carries the right alternate index',
+      segs.every((s, i) => s.alt === i));
     check('pooled: a clean mixed pool does not block the save', box.__qridInvalid === false);
     check('pooled: the summary does not claim the project is check-free',
       !/no check character in this project/.test(msg.innerHTML));
@@ -337,6 +340,65 @@ for (const extra of [{ idLengths: [8] }, { idMinLen: 8 }, { idMaxLen: 14 }, { id
   ] });
   check('C-01: a rule setting ' + Object.keys(extra)[0] + ' alongside alternates is still refused',
     /must not also set/.test(env.NS.lastPooled.mode.configError || ''));
+}
+
+// ---- round 3: the hand-mirrored twins, against the shared corpus ----------
+// swallowSum is the structural proof that no member length can be built by
+// adding others, and alternatesOf is the normalizer every consumer runs on.
+// Both are hand-mirrored in php and neither had a direct cross-runtime test
+// (L-3). tests/annotation_php.php reads the same file and asserts the same
+// expectations, which are hand-written from the definitions, not recorded.
+{
+  const fs = require('fs');
+  const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'alternates_fixture.json'), 'utf8'));
+  const NS = (() => {
+    const box = makeEl('input'); box.name = 'pool';
+    return boot([box], { singleFields: [], pooledFields: [], rules: [
+      { type: 'pooled', fields: ['pool'], strip: '-', alternates: ALTS },
+    ] }).NS;
+  })();
+  check('L-3: the twins are exported',
+    typeof NS.swallowSum === 'function' && typeof NS.alternatesOf === 'function');
+  for (const c of fx.swallow) {
+    const got = NS.swallowSum(c.lens);
+    const want = c.target === null ? 'safe'
+      : JSON.stringify({ target: c.target, parts: c.parts });
+    const has = got === null ? 'safe'
+      : JSON.stringify({ target: got.target, parts: got.parts });
+    check('swallowSum [' + c.lens.join(',') + ']: ' + c.why, has === want);
+  }
+  for (const c of fx.normalize) {
+    const got = NS.alternatesOf(c.cfg);
+    if (!c.ok) {
+      check('alternatesOf refuses: ' + c.why, got.error !== '' && got.list.length === 0);
+      continue;
+    }
+    const norm = got.list.map((a) => ({
+      label: a.label, pattern: (a.pattern === undefined ? null : a.pattern),
+      algorithm: a.algorithm, source: a.source, strip: a.strip, lengths: a.lengths,
+    }));
+    check('alternatesOf normalizes: ' + c.why,
+      got.error === '' && JSON.stringify(norm) === JSON.stringify(c.entries));
+  }
+  // L-5: the field handler compared UTF-16 units against a cap the parser and
+  // the server (mb_strlen) both compare CODE POINTS against, so an astral value
+  // between the two counts was announced as unscannable on a field both of them
+  // still read — and the audit went on filing findings against it. The rule's
+  // cap here is the full 4096, so 2049 emoji are 4098 units and 2049 points.
+  const tooLong = (value) => {
+    const box = makeEl('input'); box.name = 'pool'; box.value = value;
+    const env = boot([box], { singleFields: [], pooledFields: [], rules: [
+      { type: 'pooled', fields: ['pool'], strip: '-', alternates: ALTS },
+    ] });
+    return /too long to scan/.test(msgOf(env, 'pool').innerHTML);
+  };
+  check('L-5: over the UTF-16 count but under the cap is still scanned',
+    tooLong('\u{1F600}'.repeat(2049)) === false);
+  check('L-5: over the code-point cap is still refused',
+    tooLong('\u{1F600}'.repeat(4097)) === true);
+  check('L-5: the parser agrees with the handler at the same boundary',
+    NS.lastPooled.parse('\u{1F600}'.repeat(4097)) === null
+    && NS.lastPooled.parse('\u{1F600}'.repeat(2049)) !== null);
 }
 
 console.log(`alternates_dom_js: ${n} checks, ${fail} failure(s)`);

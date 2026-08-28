@@ -759,6 +759,26 @@ class AnnotationRules
             $shapes = [];
             $fwhy = '';
             foreach ($alts as $i => $a) {
+                if (!is_array($a)) {
+                    $errors[] = 'alternate ' . ($i + 1) . ' must be a JSON object { ... } describing one '
+                        . 'format.';
+                    continue;
+                }
+                // Type BEFORE content. Every scalar below is cast or concatenated
+                // as a string, and an array in any of them raised a TypeError
+                // instead of an error message - which validateSettings swallows
+                // into an ALLOWED save of a rule nothing validated (L-1). This
+                // file is documented as the gate every channel goes through, so
+                // it has to be safe standing on its own, not only behind the
+                // normalizers that happen to run first today.
+                $bad = null;
+                foreach (['label', 'pattern', 'algorithm', 'source', 'strip'] as $sk) {
+                    if (isset($a[$sk]) && $a[$sk] !== null && !is_string($a[$sk])) { $bad = $sk; break; }
+                }
+                if ($bad !== null) {
+                    $errors[] = 'alternate ' . ($i + 1) . ': "' . $bad . '" must be text.';
+                    continue;
+                }
                 $nm = isset($a['label']) && $a['label'] !== '' ? (string) $a['label'] : 'alternate ' . ($i + 1);
                 if (isset($a['label']) && strlen((string) $a['label']) > CheckCharacter::MAX_ALT_LABEL) {
                     $errors[] = 'alternate ' . ($i + 1) . ': "label" is limited to '
@@ -846,19 +866,40 @@ class AnnotationRules
             // value a check-bearing alternate is meant to verify, that check
             // character is never tested and a mis-scan passes as clean. Pattern
             // subsumption is undecidable in general; this asks the decidable
-            // question instead - is there a CONCRETE string both accept? - and
-            // stays silent whenever no witness can be produced.
-            // The pooled path also has the length guard below; this is the only
-            // protection a single-value field gets.
+            // question instead - is there a CONCRETE string both accept?
+            //
+            // When no witness can be produced the answer is UNKNOWN, and this
+            // used to treat unknown as safe. It is not: \D[0-9A-Z]{8} beside a
+            // format-only [0-9A-Z]{9} produced no witness, drew no complaint,
+            // and then recorded every mis-scanned ID as clean (H-1). A pooled
+            // rule is proved safe a second way - the shared-length guard below,
+            // which is complete there because the parser only tries a format at
+            // a length that format declared - so unknown is refused for
+            // single-value fields, where this is the only protection there is.
             if (!$errors && count($shapes) > 1) {
                 foreach ($shapes as $fi => $F) {
                     if (!$F['formatOnly']) continue;
                     foreach ($shapes as $ki => $K) {
                         if ($K['formatOnly']) continue;
-                        $w = CheckCharacter::patternWitness($K['pattern']);
-                        if ($w === null) continue;                  // no witness, no claim
+                        $ws = CheckCharacter::patternWitnesses($K['pattern']);
+                        if (!$ws) {
+                            if ($type === 'pooled') continue;        // lengths prove it instead
+                            $errors[] = $K['name'] . '\'s pattern is too complex to prove it does not '
+                                . 'overlap ' . $F['name'] . ', which has no check character. Whichever '
+                                . 'alternate accepts first wins, so if the two shapes do overlap, '
+                                . $K['name'] . '\'s check character would never be tested and a mis-scan '
+                                . 'would pass as a clean ID. Write ' . $K['name'] . '\'s pattern with '
+                                . 'explicit character classes (no lookaround, backreferences or '
+                                . 'assertions), or narrow ' . $F['name'] . '\'s so the two cannot overlap.';
+                            break 2;
+                        }
                         $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
-                        if ($fre === null || !CheckCharacter::patTest($fre, $w)) continue;
+                        if ($fre === null) continue;
+                        $w = null;
+                        foreach ($ws as $cand) {
+                            if (CheckCharacter::patTest($fre, $cand)) { $w = $cand; break; }
+                        }
+                        if ($w === null) continue;                  // no probe landed in both
                         $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
                             . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). Whichever '
                             . 'alternate accepts first wins, so ' . $K['name'] . '\'s check character '

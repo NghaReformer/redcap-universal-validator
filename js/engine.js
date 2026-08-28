@@ -682,7 +682,30 @@ function QRID_escapeHtml(t){
    "\\u{2}" is not misread (F2-OVERREJECT-02). Twin of usesUFlagEscape (php). */
 function QRID_uFlagEscape(p){
   var d = String(p).replace(/\\\\/g, "");                  /* drop escaped-backslash pairs (parity) */
-  return /\\[pPux]\{/.test(d) || d.indexOf("\\k<") !== -1;
+  /* The BRACE-LESS property form is the same split: PCRE reads \pL as a Unicode
+     letter, this engine as the literal "pL", so both runtimes admitted the
+     pattern and then disagreed about every value (M-1). */
+  return /\\[pP][{A-Za-z]/.test(d) || /\\[ux]\{/.test(d) || d.indexOf("\\k<") !== -1;
+}
+/* PCRE syntax a browser reads as something else. \K \G \h \H \v \V \R \N \X \C
+   \Q \E \z \g all compile here as identity escapes (or, for \v, a vertical tab)
+   and mean something else to PCRE; [[:digit:]] is a POSIX class on the server
+   and the class [[:digt] plus a literal "]" here. Both engines accept them and
+   then classify the same value differently — the F2 split, one family wider
+   (M-1). Twin of CheckCharacter::usesPcreOnlySyntax (php). */
+function QRID_pcreOnly(p){
+  var d = String(p).replace(/\\\\/g, "");                  /* drop escaped-backslash pairs (parity) */
+  return /\\[KGhHvVRNXCQEzg]/.test(d) || /\[:\^?[a-z]+:\]/.test(d);
+}
+/* A "(?..." group form this engine cannot compile: inline flags, comments,
+   atomic groups, conditionals and the PCRE named forms. PCRE compiles all of
+   them, so the server accepted a rule the browser could not run — the field
+   silently stopped being checked in front of the fielder while the post-save
+   audit kept filing findings (M-2). Allow-list: "(?" must be followed by ":",
+   "=", "!" or "<". Twin of CheckCharacter::usesNonJsGroup (php). */
+function QRID_nonJsGroup(p){
+  var d = String(p).replace(/\\[\s\S]/g, "");              /* drop escaped chars */
+  return /\(\?([^:=!<]|$)/.test(d);
 }
 /* Conservative catastrophic-backtracking detector. Two stages, both at CONFIG
    time. Stage one rejects the EXPONENTIAL shapes: nested quantifiers AND any
@@ -870,6 +893,17 @@ function QRID_gatePattern(raw, label){
     return { re: null, error: pre + "idPattern" + " must contain printable ASCII only — the browser and server " +
       "regex engines are only guaranteed to agree on that subset." };
   }
+  if(QRID_nonJsGroup(src)){
+    /* left to the compile step below this refused with a JavaScript syntax
+       message the SERVER never produced — PCRE compiles (?i) and (?>...) — so a
+       rule could pass the server gate and die here, stopping live checking
+       while the post-save audit kept enforcing it (M-2) */
+    return { re: null, error: pre + "idPattern" + " uses a group form JavaScript cannot compile — inline " +
+      "flags ((?i) (?x) (?m) (?s)), comments ((?#...)), atomic groups ((?>...)), conditionals ((?(1)...)) " +
+      "or the PCRE named forms ((?P...) (?'n'...)). Patterns are JavaScript regex: use (?:...) for a " +
+      "plain group, (?=...) or (?!...) for lookahead, (?<=...) or (?<!...) for lookbehind, and " +
+      "(?<name>...) for a named group." };
+  }
   if(QRID_uFlagEscape(src)){
     /* \p{}, \P{}, \u{}, \x{}, \k<> only work with JS's "u" flag; the browser
        compiles ID patterns WITHOUT it (so \p reads as literal "p" and \x{41} as
@@ -878,6 +912,24 @@ function QRID_gatePattern(raw, label){
       "\\P{...}, \\u{...}, \\x{...} or \\k<...>) that only works with JavaScript's \"u\" flag — the " +
       "browser compiles ID patterns without it, so the value would validate differently in the " +
       "browser and on the server. Use explicit character classes such as [A-Z] or [0-9] instead." };
+  }
+  if(QRID_pcreOnly(src)){
+    /* same split as \p{...}, one family wider: both engines compile these and
+       then read them differently, so the value would validate in one runtime
+       and not the other (M-1) */
+    return { re: null, error: pre + "idPattern" + " uses PCRE-only syntax (\\K, \\G, \\h, \\v, \\R, \\N, " +
+      "\\X, \\C, \\Q...\\E, \\g, \\z or a POSIX class such as [[:digit:]]) that a browser reads as an " +
+      "ordinary character, so the value would validate differently in the browser and on the server. " +
+      "Use explicit character classes such as [A-Z] or [0-9] instead." };
+  }
+  if(/\[\^?\]/.test(src.replace(/\\[\s\S]/g, ""))){
+    /* "[]" is a compile error to PCRE and an empty class — one that can never
+       match — here, so the server refused the rule for a reason this side would
+       never have reached (M-2) */
+    return { re: null, error: pre + "idPattern" + " contains an empty character class (\"[]\" or \"[^]\"). " +
+      "PCRE refuses it and JavaScript compiles it to a class that can never match, so the pattern would " +
+      "behave differently in the browser and on the server — write out the characters the class should " +
+      "contain." };
   }
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
@@ -910,11 +962,23 @@ function QRID_gatePattern(raw, label){
 function QRID_altName(alt, i){ return alt.label ? alt.label : "alternate " + (i + 1); }
 function QRID_alternatesOf(cfg){
   var raw = cfg.alternates;
+  function bad(msg){ return { list: [], error: msg }; }
+  /* The rule-level scalars are read as regex sources and algorithm names by
+     every consumer below. The php twin returns null (an unconfigurable rule)
+     when one of them is not text rather than throwing on it (L-1); refuse the
+     same shapes here so the two channels still agree about what is a rule. */
+  var ALT_SCALARS = ["algorithm", "source", "strip"];        /* also valid per entry */
+  var SCALARS = ALT_SCALARS.concat(["idPattern"]);
+  for(var ri = 0; ri < SCALARS.length; ri++){
+    var rk = SCALARS[ri];
+    if(cfg[rk] !== undefined && cfg[rk] !== null && typeof cfg[rk] !== "string"){
+      return bad("\"" + rk + "\" must be text.");
+    }
+  }
   if(raw === undefined || raw === null || raw === ""){
     return { list: [{ label: "", pattern: (cfg.idPattern || null), algorithm: cfg.algorithm,
                       source: cfg.source, strip: cfg.strip, lengths: null }], error: "" };
   }
-  function bad(msg){ return { list: [], error: msg }; }
   if(!(raw instanceof Array) || !raw.length){
     return bad("alternates must be a non-empty LIST of formats, e.g. " +
       "[{\"pattern\":\"FC[1-9]-[0-9]{4}\",\"algorithm\":\"none\",\"lengths\":[8]}]. " +
@@ -939,6 +1003,12 @@ function QRID_alternatesOf(cfg){
          /[^\x20-\x7E]/.test(a.label)){
         return bad(nm + " has a \"label\" that is not printable ASCII of at most " +
           QRID_MAX_ALT_LABEL + " characters.");
+      }
+    }
+    for(var si = 0; si < ALT_SCALARS.length; si++){
+      var sk = ALT_SCALARS[si];
+      if(a[sk] !== undefined && a[sk] !== null && typeof a[sk] !== "string"){
+        return bad(nm + " has a \"" + sk + "\" that is not text.");
       }
     }
     var lens = null;
@@ -1007,6 +1077,18 @@ function QRID_swallowSum(LENS){
 }
 var QRID_MAX_SINGLE_LEN = 512;    /* one ID field: refuse to validate absurd input */
 var QRID_MAX_POOLED_LEN = 4096;   /* pooled field: cap total scanned length        */
+/* Length in CODE POINTS — the unit parse() and CheckCharacter::pooledParse
+   (mb_strlen) both compare against the scan cap. The field handler compared
+   String.length, which counts UTF-16 units, so an astral value near the cap made
+   the browser announce "too long to scan" for a field the parser and the server
+   both still read — findings on a field the fielder was told was not checked
+   (L-5). The UTF-16 count is an upper bound on this one, so the exact walk is
+   only paid when it could change the answer. */
+function QRID_codePointLen(v){
+  var s = String(v);
+  if(!/[\uD800-\uDBFF]/.test(s)) return s.length;         /* no surrogate pair possible */
+  return s.length - (s.match(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g) || []).length;
+}
 /* Rule-config work caps — mirror php/CheckCharacter.php MAX_* constants (the
    server rejects the same limits at settings-save time and treats them as
    unconfigurable at audit time); keep the values in sync. */
@@ -1024,13 +1106,28 @@ var QRID_MAX_KEEP        = 64;
    The unit is nominal, not literal: one step is a substr, a regex test and -
    whenever the pattern does not reject first - a full normalize + source +
    check-character computation, which measures around an order of magnitude
-   above a character comparison. Measured at each config's own cap, the old
-   2,000,000 admitted ~300 ms of server work per pooled field per save (and the
-   durable scan pays it again per record). 500,000 leaves every ordinary rule
-   at the full 4096 - the 8..14 default, an exact-length rule, the four-family
-   mixed case - and only shrinks the wide tail: 32 candidate pairs over 64-char
-   members drop from 976 to the 256 floor. Keep in sync with
-   php/CheckCharacter.php POOLED_WORK_BUDGET. */
+   above a character comparison. What that buys, measured at each config's own
+   cap (php 8.3, one pooled field, one save):
+
+     legacy 8..15, no pattern      cap 4096   ~195 ms   <- worst admitted
+     legacy 8..14 (the default)    cap 4096   ~160 ms
+     legacy 8..14 + a pattern      cap 4096   ~130 ms
+     legacy exact [9]              cap 4096    ~30 ms
+     alternates x8 over 15..22     cap 2840    ~31 ms
+     the four-family example       cap 4096    ~25 ms
+
+   Read the first two rows before trusting the constant: QRID_MAX_POOLED_LEN,
+   not this budget, is what binds a pattern-less legacy rule, and it bound it at
+   2,000,000 as well - so lowering the budget did NOT move the worst case, and
+   the earlier "~300 ms before, ~75 ms after" reading of these numbers was wrong
+   (M-3). What the lower budget does bound is the wide tail, where the cap
+   really does fall: alternates x8 above, and 32 candidate pairs over 64-char
+   members dropping from 976 to the 256 floor. The multi-format rule this
+   feature exists for is an order of magnitude cheaper than the legacy default
+   it sits beside, because each alternate's pattern rejects before any check
+   character is computed - which is also the fix for an expensive legacy rule:
+   give it a format pattern. Keep in sync with php/CheckCharacter.php
+   POOLED_WORK_BUDGET. */
 var QRID_POOLED_WORK_BUDGET = 500000;
 /* How long after the last keystroke before validating (change/blur validate
    immediately). Bounds per-keystroke work on slow machines (PER-002). */
@@ -3356,20 +3453,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     if(P.a.regexOnly) return true;
     return Q.validateIdCheck(t, P.a.scheme);
   }
-  /* Which alternate claims this token? First in declaration order, computed
-     AFTER segmentation for reporting only — never an input to the DP score. */
-  function claimedBy(t){
-    for(var ci = 0; ci < ALTS.length; ci++){
-      var C = ALTS[ci];
-      if(C.re && !C.re.test(t)) continue;
-      if(C.regexOnly || Q.validateIdCheck(t, C.scheme)) return ci;
-    }
-    return -1;
-  }
   function parse(raw){
     /* over-budget input: no verdict at all (null), never a slow parse — the
        server bails identically, so the two runtimes cannot disagree here */
-    if(Array.from(String(raw)).length > SCAN_CAP) return null;
+    if(QRID_codePointLen(raw) > SCAN_CAP) return null;
     var s = clean(raw);
     var N = s.length;
     /* Optimal segmentation into verified members + junk, scored lexicographically:
@@ -3480,7 +3567,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   /* optional "when" condition: null when absent (no behavior change) */
   var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
   return { configError: configError, clean: clean, parse: parse, scanCap: SCAN_CAP,
-           claimedBy: claimedBy, alts: ALTS,
+           alts: ALTS,
            expectedIds: (cfg.expectedIds == null ? null : cfg.expectedIds),
            blockSave: BLOCK, gate: GATE,
            when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
@@ -3495,7 +3582,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
   var ANY_BLOCK = VS.firstBlock !== "off";
   var V0 = VS.all[0];
   var api = { clean: V0.clean, parse: V0.parse,        /* exposed for testing / power users */
-              claimedBy: V0.claimedBy, alts: V0.alts,
+              alts: V0.alts,
               mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly,
                       mixed: V0.mode.mixed, alternates: V0.mode.alternates,
                       configError: configError } };
@@ -3560,7 +3647,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       QRID_setInvalidState(input, null);
       return;
     }
-    if(v.length > V.scanCap){
+    if(QRID_codePointLen(v) > V.scanCap){
       msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
         "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
       msg.innerHTML = "&#10007; This field is too long to scan (over " + V.scanCap +
@@ -3826,6 +3913,8 @@ window.INSPIREUniversalValidator = {
   engine: Q,
   riskyPattern: QRID_riskyPattern,          /* cross-runtime gate, locked by tests/risky_js.cjs */
   gatePattern: QRID_gatePattern,            /* the one pattern admission point, locked by tests/risky_js.cjs */
+  swallowSum: QRID_swallowSum,              /* hand-mirrored php twins, locked by tests/alternates_dom_js.cjs */
+  alternatesOf: QRID_alternatesOf,
   configErrorNotice: QRID_configErrorNotice, /* exercised by tests/config_notice_js.cjs */
   whenLogic: {                               /* "when" twins, locked by tests/when_js.cjs */
     parse: QRID_whenParse,

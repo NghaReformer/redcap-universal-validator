@@ -148,5 +148,49 @@ if (CheckCharacter::patternCompiles('[a-') !== false) {
     fwrite(STDERR, "patternCompiles accepted an uncompilable pattern\n");
 }
 
+// ---- dialect parity (M-1, M-2) ----
+// A pattern one runtime admits and the other refuses splits enforcement: either
+// the browser stops checking the field while the post-save audit keeps filing
+// findings, or both engines compile it and then disagree about every value.
+// Same list as risky_js.cjs; the two suites assert the same verdicts.
+foreach ($fx['dialect_reject'] as $p) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($p, $why) !== null) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern admitted a dialect-split pattern: ' . json_encode($p) . "\n");
+    }
+}
+foreach ($fx['dialect_accept'] as $p) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($p, $why) === null) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern refused a portable pattern: ' . json_encode($p) . ' -> ' . $why . "\n");
+    }
+}
+// The refusals that used to fall through to the compile step now say WHY, in
+// the same terms the browser does.
+foreach ([
+    ['\pL{8}[0-9A-Z]', 'Unicode-property'],
+    ['[[:digit:]]{4}', 'PCRE-only syntax'],
+    ['(?i)FC[0-9]{4}', 'group form JavaScript cannot compile'],
+    ['FC[][0-9]{4}',   'empty character class'],
+] as $case) {
+    $n++;
+    $why = '';
+    if (CheckCharacter::gatePattern($case[0], $why) !== null || strpos($why, $case[1]) === false) {
+        $fail++;
+        fwrite(STDERR, 'gatePattern(' . json_encode($case[0]) . ') -> ' . json_encode($why) . "\n");
+    }
+}
+// compileOnly still skips the parity gates: the overlap guard needs a matcher
+// for a pattern the dialect gates would refuse, and PCRE compiles those fine.
+$n++;
+if (CheckCharacter::patternCompiles('[[:digit:]]{4}') !== true) {
+    $fail++;
+    fwrite(STDERR, "patternCompiles wrongly applied the PCRE-only gate\n");
+}
+
 echo sprintf("risky_php: %d checks, %d mismatch(es)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

@@ -118,5 +118,45 @@ n++;
   }
 }
 
+// ---- dialect parity (M-1, M-2) ----
+// A pattern one runtime admits and the other refuses splits enforcement: either
+// the browser stops checking the field while the post-save audit keeps filing
+// findings, or both engines compile it and then disagree about every value.
+// Same list as risky_php.php; the two suites assert the same verdicts.
+for (const p of fx.dialect_reject) {
+  n++;
+  const g = Q.gatePattern(p, '');
+  if (g.re !== null || g.error === '') {
+    fail++;
+    console.error('gatePattern admitted a dialect-split pattern: ' + JSON.stringify(p));
+  }
+}
+for (const p of fx.dialect_accept) {
+  n++;
+  const g = Q.gatePattern(p, '');
+  if (g.re === null || g.error !== '') {
+    fail++;
+    console.error(`gatePattern refused a portable pattern: ${JSON.stringify(p)} -> ${g.error}`);
+  }
+}
+// The refusals that used to fall through to the compile step now say WHY, in
+// the same terms the server does.
+n++;
+{
+  const cases = [
+    ['\\pL{8}[0-9A-Z]', 'Unicode-property'],
+    ['[[:digit:]]{4}', 'PCRE-only syntax'],
+    ['(?i)FC[0-9]{4}', 'group form JavaScript cannot compile'],
+    ['FC[][0-9]{4}', 'empty character class'],
+  ];
+  for (const [pat, needle] of cases) {
+    const g = Q.gatePattern(pat, '');
+    if (g.re !== null || g.error.indexOf(needle) === -1) {
+      fail++;
+      console.error(`gatePattern(${JSON.stringify(pat)}) -> ${JSON.stringify(g.error)}`);
+    }
+  }
+}
+
 console.log(`risky_js: ${n} patterns checked, ${fail} mismatch(es)`);
 process.exit(fail === 0 ? 0 : 1);
