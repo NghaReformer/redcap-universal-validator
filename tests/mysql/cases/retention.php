@@ -62,6 +62,10 @@ $NEIGHBOUR = uv_neighbour($PID);
                                  'record_hash' => hash('sha256', 'R1', true),
             'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
+            // commitBatch refuses a finding with no ordinal: it is what
+            // attributes the evidence to a record this worker proved it
+            // still holds. ScanWorker stamps it; a hand-built batch must.
+            'ordinal' => 1,
             'project_id' => $PID,
             'generation_id' => $gen, 'identity' => hash('sha256', 'x', true),
             'valid_from_seq' => $seq,
@@ -94,8 +98,23 @@ $NEIGHBOUR = uv_neighbour($PID);
         $ret->purgeRuns($PID, 1) === 0);
 
     // Abandonment: the lease lapsed and nothing has moved.
+    //
+    // "NOTHING HAS MOVED" IS progress_at, NOT updated_at, and the difference is
+    // the whole point of the column. updated_at moves on every touch, including
+    // a touch that did nothing - so a worker looping on a batch it can never
+    // commit keeps updated_at fresh forever and would never be reaped. This
+    // test used to backdate updated_at alone, which stopped being the question
+    // being asked; the run had committed a batch a moment earlier, so its
+    // progress_at was genuinely current and refusing to expire it was correct.
     $A->query('UPDATE ' . Schema::table('scan_run')
         . " SET lease_expires_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
+    check('retention: a run that made progress recently is NOT abandoned, '
+        . 'however old updated_at looks',
+        $ret->expireAbandoned(1) === 0);
+
+    // Now age the PROGRESS clock, which is the one the predicate reads.
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET progress_at = '2000-01-01 00:00:00' WHERE run_id = " . $rid);
     check('retention: an abandoned run is expired', $ret->expireAbandoned(1) === 1);
     $ex = $store->run(800, $rid);
     check('retention: as a real terminal state, never as complete',
