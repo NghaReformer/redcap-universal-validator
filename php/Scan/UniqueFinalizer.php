@@ -298,9 +298,36 @@ final class UniqueFinalizer implements DuplicateFinalizer
      */
     private function nextUnfinished($generationId)
     {
+        // FORCE INDEX, AND IT IS NOT A MICRO-OPTIMISATION. Two indexes can serve
+        // this: uq_group_v2 (project_id, generation_id, group_hmac) supplies the
+        // ORDER BY for free and then has to read every group to test phase;
+        // ix_pending (project_id, generation_id, phase, group_hmac) seeks
+        // straight to the pending rows and stops.
+        //
+        // The difference only shows in the state this method spends most of its
+        // life in - every group settled, nothing pending - because that is when
+        // uq_group_v2's "stop at the first match" never happens and it walks the
+        // whole generation instead. Measured on 1,200 groups with the four-engine
+        // matrix:
+        //
+        //   MySQL 5.7 / 8.0     ix_pending,   3 rows      either way
+        //   MariaDB 10.5/10.11  uq_group_v2,  1,200 rows  without fresh statistics
+        //                       ix_pending,   3 rows      after ANALYZE TABLE
+        //
+        // So on MariaDB the plan depends on how fresh the table statistics are,
+        // and the moment this runs is the moment they are stalest: discover()
+        // bulk-inserts every group and step() walks them immediately, so the
+        // optimiser is reading statistics that describe the table before the
+        // insert. The good plan was not chosen by luck on MySQL and the bad one
+        // was not bad luck on MariaDB; neither is a plan to leave to chance.
+        //
+        // Safe to force: both indexes are created by the same version-2
+        // migration, and project_id is a version-2 column too - so a schema on
+        // which ix_pending is missing is a schema on which this statement's
+        // WHERE clause could not compile either.
         $r = $this->db->select('SELECT group_id, group_hmac, candidate_epoch, verify_cursor,
             emit_cursor, phase, representative, distinct_records
-            FROM ' . Schema::table('unique_group') . '
+            FROM ' . Schema::table('unique_group') . ' FORCE INDEX (ix_pending)
             WHERE project_id = ? AND generation_id = ? AND phase IN (?,?,?)
             ORDER BY group_hmac LIMIT 1',
             [$this->pid, $generationId, self::G_NEW, self::G_VERIFYING, self::G_EMITTING]);
