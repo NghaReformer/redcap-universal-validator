@@ -110,6 +110,14 @@ function uv_plant_neighbour($db, $pid) {
         // installation-wide by design, and a neighbour carrying a preview would
         // change what they count rather than what they reach.
         $batch['findings'][] = array(
+            // THE ORDINAL ATTRIBUTES THE EVIDENCE TO A CLAIMED RECORD, and
+            // commitBatch refuses a finding without one - it gates the write on
+            // the claim token the record UPDATE proved this worker still holds.
+            // ScanWorker stamps it (ScanWorker.php:655); this fixture builds a
+            // batch by hand, so it has to stamp it too. It did not, and every
+            // case here calls this function, so the whole database matrix threw
+            // the same RuntimeException before its first assertion.
+            'ordinal' => $c['ordinal'],
             // The project is what makes this row the neighbour's rather than
             // nobody's. SqlScanStore refuses a missing or zero one outright.
             'project_id' => $nb,

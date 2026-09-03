@@ -61,6 +61,10 @@ $NEIGHBOUR = uv_neighbour($PID);
                                  'record_hash' => hash('sha256', 'R1', true),
             'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
+            // commitBatch refuses a finding with no ordinal: it is what
+            // attributes the evidence to a record this worker proved it
+            // still holds. ScanWorker stamps it; a hand-built batch must.
+            'ordinal' => 1,
             'project_id' => $PID,
             'generation_id' => $gen, 'identity' => hash('sha256', 'bad', true),
             'valid_from_seq' => uv_run_seq($dbA, $rid),
