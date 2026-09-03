@@ -801,6 +801,39 @@ namespace {
             $V::csv('a=b') === '"a=b"');
         check('ScanPageView::csv passes an empty value through untouched',
             $V::csv('') === '""');
+
+        // THE BYTES THE DEFUSING USED TO WALK PAST. The leading-byte scan ran
+        // on the raw value and stopped at the first byte outside its skip set;
+        // a control byte is outside that set, so the cell was judged "not a
+        // formula" and got no apostrophe - and then scrub() deleted exactly
+        // that byte, promoting the '=' to the emitted cell's first content
+        // byte. Every prefix below is drawn from scrub()'s own removal set,
+        // which is what made the bypass reliable rather than lucky: the
+        // sanitiser was the thing that armed the payload.
+        //
+        // Asserted on the EMITTED cell rather than on an expected string,
+        // because the property is "a spreadsheet cannot read this as a
+        // formula", not "the output equals this literal".
+        $liveFormula = function ($raw) use ($V) {
+            $cell = $V::csv($raw);
+            $inner = substr($cell, 1, -1);              // strip the unconditional quotes
+            return $inner !== '' && strpos('=+-@', $inner[0]) !== false;
+        };
+        foreach (["\x01", "\x1A", "\x1B", "\x7F", "\x05", "\x0E", "\x1F"] as $b) {
+            check('ScanPageView::csv defuses a formula behind a leading \x'
+                . strtoupper(bin2hex($b)),
+                !$liveFormula($b . '=1+1'));
+        }
+        check('ScanPageView::csv defuses the mixed whitespace-and-control prefix',
+            !$liveFormula(" \x01 =cmd|'/c calc'"));
+        check('ScanPageView::csv defuses a control byte in front of every formula lead',
+            !$liveFormula("\x01+1") && !$liveFormula("\x01-1")
+            && !$liveFormula("\x01@SUM(1)"));
+        // Controls: the fix must not start quoting things that are not formulas.
+        check('ScanPageView::csv still leaves a scrubbed non-formula alone',
+            $V::csv("\x01plain") === '"plain"');
+        check('ScanPageView::csv still leaves an interior = alone after scrubbing',
+            $V::csv("a\x01=b") === '"a=b"');
     }
 
     /* =====================================================================

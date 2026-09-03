@@ -66,7 +66,25 @@ class ScanPageView
      */
     public static function csv($s)
     {
-        $s = (string) $s;
+        // SCRUB FIRST, THEN LOOK. This order is the fix, and the order it
+        // replaces was defended by a comment that had the causality backwards:
+        // "scrubbing first could delete a control byte and expose a '=' that
+        // the pre-scrub scan had already accounted for". The pre-scrub scan did
+        // not account for it. It walked the leading bytes, stopped at the first
+        // one not in $skip, and if that byte was a control byte it concluded
+        // the cell was not a formula and added no apostrophe - and then scrub()
+        // deleted exactly that byte, leaving '=' as the emitted cell's first
+        // content byte. So "\x01=1+1" left here as a live =1+1, as did a
+        // leading \x1B, \x1A or \x7F, and " \x01 =cmd|'/c calc'" survived the
+        // leading-space handling the same way. One byte, chosen from the set
+        // this module's own sanitiser is guaranteed to remove, walked through
+        // the defence.
+        //
+        // Scrubbing first cannot hide a formula start, only reveal one: scrub()
+        // removes control bytes and nothing else, so it never removes =, +, -
+        // or @, and every byte it does remove is one the scan below would have
+        // had to decide about anyway.
+        $s = self::scrub((string) $s);
         // Excel and Sheets strip leading whitespace, tabs, carriage returns and a
         // BOM BEFORE deciding whether a cell is a formula, so inspecting byte zero
         // alone is not enough: " =cmd|'/c calc'", a tab- or CR-prefixed payload,
@@ -81,15 +99,10 @@ class ScanPageView
             break;
         }
         if ($i < $len && strpos('=+-@', $s[$i]) !== false) $s = "'" . $s;
-        // Control bytes are removed, not quoted around - see scrub(), which the
-        // page shares, so one stored value cannot be sanitised in the download
-        // and passed through raw into the HTML table.
-        //
-        // The ORDER matters: the formula scan above runs on the bytes as stored,
-        // because that is what a spreadsheet's own parser sees. Scrubbing first
-        // could delete a control byte and expose a '=' that the pre-scrub scan
-        // had already accounted for.
-        return '"' . str_replace('"', '""', self::scrub($s)) . '"';
+        // Control bytes were removed above, not quoted around - see scrub(),
+        // which the page shares, so one stored value cannot be sanitised in the
+        // download and passed through raw into the HTML table.
+        return '"' . str_replace('"', '""', $s) . '"';
     }
 
     /**
