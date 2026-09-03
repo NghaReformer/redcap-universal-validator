@@ -94,7 +94,7 @@ namespace {
 
         // -- wave 10, the safeguards. Each is dangerous before its dependency
         //    lands, which is why they are last and not first.
-        'ScanRetention::expireValues'    => 'wave 10 (B6/H8) wires the cron; wave 8 must page it first, or the purge becomes the outage',
+        'ScanRetention::expireValues'    => 'wave 10 (B6/H8) wires the cron; wave 8 must page it first, or the purge becomes the outage; and it is installation-wide while preview() is per-project, so wiring them together without deciding shows an administrator a number the module will not act on',
         'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::expireAbandoned' => 'wave 10 (B6) wires it: one closed browser tab holds a project\'s only slot forever',

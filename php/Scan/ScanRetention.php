@@ -48,7 +48,27 @@ final class ScanRetention
      *
      * The column, not the row. See the class note: the finding stays true.
      *
-     * @return int findings whose value was cleared
+     * INSTALLATION-WIDE, AND preview() IS NOT. Both were unscoped until the
+     * project-scoping pass, which gave preview() a project predicate - rightly,
+     * since it answers "what would retention do HERE" and used to show an
+     * administrator the consequence of somebody else's data - and left this
+     * one alone. So the two now disagree by construction: preview() promises N
+     * for this project and this clears N + M across the installation.
+     *
+     * NEITHER IS WRONG ON ITS OWN. Expiry is a per-row fact and a cron sweeping
+     * the installation is the right shape for it; a preview scoped to the
+     * project asking is the right shape for that. What is wrong is wiring them
+     * together without deciding, because an administrator who is shown 5 and
+     * whose log then reports 47 has been told the module did something it did
+     * not do.
+     *
+     * WHOEVER ADDS THE CALLER OWNS THE DECISION - wave 10 for the cron, and it
+     * has to be one of: give this an optional project scope so a project-scoped
+     * caller gets a project-scoped clear, or make preview() say plainly that
+     * the count is this project's share of an installation-wide sweep. There is
+     * no third option in which the two numbers are quietly compared.
+     *
+     * @return int findings whose value was cleared, across every project
      */
     public function expireValues($now = null)
     {
@@ -198,7 +218,13 @@ final class ScanRetention
         // This answers a question about ONE project - "what would retention do
         // here?" - and used to count every expired preview on the
         // installation, so an administrator of a small project was shown the
-        // consequence of somebody else s data.
+        // consequence of somebody else's data.
+        //
+        // IT NO LONGER MATCHES WHAT expireValues() DOES, which is
+        // installation-wide. See that method: the disagreement is deliberate at
+        // both ends and unresolved in the middle, and whoever wires the cron
+        // has to resolve it rather than assume these two numbers describe the
+        // same operation.
         $vals = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
             . ' WHERE project_id = ? AND value_expires_at IS NOT NULL'
             . ' AND value_expires_at <= ?', [$pid, self::now()]);
