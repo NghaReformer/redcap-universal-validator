@@ -57,7 +57,7 @@
   "system-settings": [
     {
       "key": "scan-system-enable-durable",
-      "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> The scan creates its own tables, runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",
+      "name": "<b>Validation scan</b> — enable the durable, resumable scan on this installation. <b>Off by default, and it should stay off until you have piloted it on a real project here.</b> The scan creates its own tables when you turn this on (one small counter table backing the survey uniqueness throttle is created either way, because that throttle runs whether or not the scan does), runs in bounded batches across several requests, and stores its findings; a project must ALSO turn it on for itself before anything runs. While either switch is off, the Validation scan page shows an explanatory notice and nothing is scanned.",
       "type": "checkbox"
     },
     {

@@ -1460,11 +1460,40 @@ namespace {
         };
         $mig = new \INSPIRE\UniversalValidator\UniversalValidator();
 
-        // OFF: nothing is installed. Ten tables in the database of an
-        // administrator who never asked for the feature is not a default.
+        // OFF: no SCAN table is installed. Ten tables in the database of an
+        // administrator who never asked for the feature is not a default, and
+        // that decision is unchanged.
+        //
+        // EXACTLY ONE TABLE IS THE EXCEPTION, and it is not the scan's.
+        // uv_rate_bucket backs the survey uniqueness throttle, which runs on
+        // every installation with this module enabled. Its DDL used to sit
+        // inside statementsV2(), so it was created only when the scan flag was
+        // on - and the flag is off by default and documented to stay off until
+        // a pilot. The throttle on the module's only unauthenticated endpoint
+        // was therefore inert on every default installation. This assertion is
+        // the one that would have caught it, so it names the table rather than
+        // counting: a count would pass again the day the next non-scan table
+        // drifts behind the flag.
+        $named = function ($m) {
+            $out = [];
+            foreach ($m->sql as $q) {
+                if (stripos($q, 'CREATE TABLE') === false) continue;
+                if (preg_match('/CREATE TABLE (?:IF NOT EXISTS )?(\S+)/i', $q, $mm)) $out[] = $mm[1];
+            }
+            sort($out);
+            return array_values(array_unique($out));
+        };
         $mig->sql = [];
         $mig->redcap_module_save_configuration(null);
-        check('migrate: with the switch off, no table is created', $creates($mig) === 0);
+        check('migrate: with the switch off, exactly one table is created',
+            $creates($mig) === 1);
+        check('migrate: and it is the throttle counter, not a scan table',
+            $named($mig) === ['uv_rate_bucket']);
+        check('migrate: the throttle counter is created IF NOT EXISTS, so a re-save is a no-op',
+            count(array_filter($mig->sql, function ($q) {
+                return stripos($q, 'CREATE TABLE') !== false
+                    && stripos($q, 'IF NOT EXISTS') !== false;
+            })) === 1);
 
         // ON: the administrator ticked the box and pressed Save, which IS the
         // choice, so the schema is installed.
@@ -1474,8 +1503,23 @@ namespace {
         $made = array_values(array_filter($mig->sql, function ($q) {
             return stripos($q, 'CREATE TABLE') !== false;
         }));
+        // THE SET, NOT THE COUNT. uv_rate_bucket is now issued twice on this
+        // path - once unconditionally beside installScanSchema(), once inside
+        // statementsV2() - and that duplication is deliberate: the throttle
+        // must not depend on the scan's flag, and the scan must not depend on
+        // the unconditional installer having succeeded. Both statements are
+        // IF NOT EXISTS, so the second is a no-op. Asserting the set says what
+        // is actually required (every table this module owns ends up created)
+        // and does not have to be edited each time the redundancy changes.
+        $want = \INSPIRE\UniversalValidator\Scan\Schema::tables();
+        sort($want);                                  // $named sorts; tables() is in creation order
         check('migrate: saving the system settings with the switch on installs the schema',
-            count($made) === count(\INSPIRE\UniversalValidator\Scan\Schema::tables()));
+            $named($mig) === array_values($want));
+        check('migrate: and the throttle counter is installed either way, so it is issued twice',
+            count(array_filter($mig->sql, function ($q) {
+                return stripos($q, 'CREATE TABLE') !== false
+                    && stripos($q, 'uv_rate_bucket') !== false;
+            })) === 2);
         check('migrate: every statement is IF NOT EXISTS, so a re-save is a no-op',
             count(array_filter($made, function ($q) {
                 return stripos($q, 'IF NOT EXISTS') !== false;

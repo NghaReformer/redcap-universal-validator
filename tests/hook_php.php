@@ -67,10 +67,32 @@ namespace ExternalModules {
         public $rateBuckets = [];            // "pid|bucket" => hits
         public $lastInsertId = 0;
         public $rateStatements = [];         // every statement, for assertions
+        /**
+         * The two ways the counter can be unreachable, both of which used to
+         * pass silently.
+         *
+         * $queryThrows models the DEFAULT INSTALLATION. uv_rate_bucket shipped
+         * inside statementsV2(), which runs only when the durable scan's flag
+         * is on, and that flag is off by default and documented to stay off
+         * until a pilot - so on the recommended configuration the table did not
+         * exist and every increment threw. This stub answering every statement
+         * is the reason the suite could not see it: there is no table here to
+         * be missing.
+         *
+         * $lastInsertIdUnreadable models the subtler one - the table present,
+         * nothing thrown, and a result shape ModuleDb::rows() cannot walk, so
+         * the read-back produced no value. The old code read that as 0 hits,
+         * which is the most permissive answer there is.
+         */
+        public $queryThrows = false;
+        public $lastInsertIdUnreadable = false;
         public function query($sql, $params = []) {
             $this->rateStatements[] = $sql;
+            if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) {
+                throw new \RuntimeException("Table 'redcap.uv_rate_bucket' doesn't exist");
+            }
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) {
-                return [[$this->lastInsertId]];
+                return $this->lastInsertIdUnreadable ? [] : [[$this->lastInsertId]];
             }
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
             if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0) {
@@ -2023,6 +2045,92 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-8']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
+
+    // F6: THE COUNTER'S STORAGE IS NOT REACHABLE. Two shapes, both of which
+    // shipped as a silent pass. The first is the one that mattered: with the
+    // table behind the durable scan's opt-in flag, this was not an edge case,
+    // it was every default installation.
+    //
+    // The tier still fails OPEN - the live check is a convenience, never a gate
+    // on data entry - so what is asserted here is that the failure is RECORDED.
+    // An operator cannot notice an absence, and an absence was the only
+    // evidence the module produced for a whole release.
+    $bucketNow = (int) floor(time() / 60);
+
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->queryThrows = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-7']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: a missing counter table does not refuse the caller (the tier fails open)',
+        isset($r['used']));
+    $warn = array_values(array_filter($m->logCalls, function ($l) {
+        return $l[0] === 'uv-throttle-storage-unavailable';
+    }));
+    check('F6: but it is recorded, so the control cannot be inert in silence',
+        count($warn) === 1);
+    check('F6: and the record names the project',
+        isset($warn[0][1]['project_id']) && (int) $warn[0][1]['project_id'] === 149);
+    check('F6: and the exception class, which a message cannot be trusted to carry safely',
+        isset($warn[0][1]['class']) && $warn[0][1]['class'] === 'RuntimeException');
+    // DbError rebuilds a recognised shape from structural captures only, so the
+    // table is named and the statement and its parameters are not.
+    check('F6: and a redacted detail that still names the table',
+        isset($warn[0][1]['detail']) && strpos($warn[0][1]['detail'], 'uv_rate_bucket') !== false);
+
+    // ONCE PER PROJECT PER WINDOW, not once per request. The endpoint is
+    // unauthenticated, so a log row per request would trade a throttle for a
+    // flood of the log an operator would use to notice the flood.
+    for ($i = 0; $i < 20; $i++) {
+        $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-' . $i]],
+            149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    }
+    check('F6: 21 failing checks in one window produce one log row, not 21',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 1);
+    check('F6: and the window marker is stored so the next window speaks again',
+        (string) $m->systemSettings['uv_throttle_down_149'] === (string) $bucketNow);
+    $m->systemSettings['uv_throttle_down_149'] = (string) ($bucketNow - 1);   // pretend a window passed
+    $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-X']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: a new window says so again',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 2);
+
+    // THE SECOND SHAPE: the table is there, nothing throws, and the count comes
+    // back unreadable. "I do not know" used to be read as 0, which is silently
+    // the most permissive answer available - no throttle, and no pruning. It is
+    // now treated as the storage failure it is.
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->lastInsertIdUnreadable = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-6']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: an unreadable count is not read as "under the cap"',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 1);
+    check('F6: and the caller is still answered', isset($r['used']));
+
+    // THE INSTALLER IS WHAT MAKES THE TIER REACHABLE AT ALL. Its own assertions
+    // live in hosting_php.php; this one only fixes the seam, so that moving the
+    // DDL back behind the scan's flag fails a test in the file that owns the
+    // throttle.
+    $inst = newModule([], $f5Dict, $f5Data, 149);
+    $inst->rateStatements = [];
+    $inst->systemSettings['scan-system-enable-durable'] = '0';       // the default, and the point
+    $inst->redcap_module_system_enable('1.9.10');
+    $made = array_values(array_filter($inst->rateStatements, function ($q) {
+        return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') !== false;
+    }));
+    check('F6: enabling the module creates the throttle counter with the scan flag OFF',
+        count($made) === 1);
+    check('F6: and creates no scan table, so the scan stays opt-in',
+        count(array_filter($inst->rateStatements, function ($q) {
+            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false;
+        })) === 0);
+    check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
+        stripos($made[0], 'IF NOT EXISTS') !== false);
 
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);

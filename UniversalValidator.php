@@ -2287,6 +2287,13 @@ class UniversalValidator extends AbstractExternalModule
             $this->mintRuleIds($project_id);
             return;
         }
+        // BESIDE the scan's schema, not inside it. uv_rate_bucket backs the
+        // survey throttle, which runs whether or not the scan was ever asked
+        // for; installScanSchema() below returns early unless the scan flag is
+        // set, and gating the throttle's storage on the scan's flag is what
+        // left the module's only unauthenticated endpoint unthrottled by
+        // default. See Schema::ensureRateBucket().
+        Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
     }
 
@@ -2355,6 +2362,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_enable($version = null)
     {
+        // See the note in redcap_module_save_configuration(): the throttle's
+        // table is not the scan's, and is installed either way.
+        Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
     }
 
@@ -4329,7 +4339,17 @@ class UniversalValidator extends AbstractExternalModule
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $bucket]);
             $r = $db->select('SELECT LAST_INSERT_ID()', []);
-            $hits = isset($r[0][0]) ? (int) $r[0][0] : 0;
+            // "I DO NOT KNOW" IS NOT "UNDER THE CAP". This read used to answer
+            // 0 for any shape it could not walk, which is silently the most
+            // permissive answer available: no throttle, no pruning, and nothing
+            // logged. ModuleDb::exec() already refuses to guess a row count for
+            // exactly this reason and the read-back must not be more trusting
+            // than the write. Raised rather than returned, so it lands in the
+            // catch below and is recorded like any other storage failure.
+            if (!isset($r[0][0]) || $r[0][0] === null) {
+                throw new \RuntimeException('the counter did not report a value');
+            }
+            $hits = (int) $r[0][0];
             // Self-pruning, and only on the request that created the bucket, so
             // this is one DELETE per project per window rather than one per
             // check. Two windows of slack because a request can be in flight
@@ -4340,11 +4360,48 @@ class UniversalValidator extends AbstractExternalModule
             }
             return $hits > $pmax;
         } catch (\Throwable $e) {
-            // FAILS OPEN, as the whole method does. The live check is a
-            // convenience and never a gate on data entry, so a missing table on
-            // an installation that has not migrated yet must not start refusing
-            // survey responses.
+            // FAILS OPEN, as the whole method does: the live check is a
+            // convenience and never a gate on data entry, so a database that
+            // is briefly unreachable must not start refusing survey responses.
+            //
+            // BUT IT SAYS SO. Failing open in silence is how this tier came to
+            // be inert on every default installation for a whole release - the
+            // table lived behind the durable scan's opt-in flag, the increment
+            // threw on every request, and the only evidence was an absence.
+            // An operator cannot notice an absence. One log row per project per
+            // window is enough to see it and cheap enough to survive a flood.
+            $this->noteThrottleUnavailable($pid, (int) floor($now / $window), $e);
             return false;
+        }
+    }
+
+    /**
+     * Record that the sessionless throttle could not reach its counter, at most
+     * once per project per window.
+     *
+     * The marker is a system setting rather than the counter's own table, for
+     * the obvious reason that this runs precisely when that table cannot be
+     * reached. A lost update here costs one duplicate log row, which is why the
+     * read-modify-write that was wrong for the counter is right for the marker.
+     */
+    private function noteThrottleUnavailable($pid, $bucket, \Throwable $e)
+    {
+        try {
+            $key  = 'uv_throttle_down_' . (int) $pid;
+            $seen = $this->getSystemSetting($key);
+            if ((string) $seen === (string) $bucket) return;      // already said so this window
+            $this->setSystemSetting($key, (string) $bucket);
+            // The CLASS, not the message. A message from here can name the
+            // installation's schema and its database user to a caller who is
+            // unauthenticated by definition; the class plus the redacted detail
+            // is what DbError exists to produce.
+            $this->log('uv-throttle-storage-unavailable', [
+                'project_id' => (int) $pid,
+                'class'      => get_class($e),
+                'detail'     => Scan\DbError::safe($e),
+            ]);
+        } catch (\Throwable $ignored) {
+            // A failure to record a failure is not worth a second failure.
         }
     }
 

@@ -699,6 +699,59 @@ final class Schema
      *
      * @return array{ok: bool, from: ?int, to: int, applied: int, why: ?string}
      */
+    /**
+     * The one table that is NOT part of the durable scan, installed whether or
+     * not the scan was asked for.
+     *
+     * WHY IT IS SEPARATE. uv_rate_bucket backs the survey uniqueness throttle,
+     * and that throttle runs on every installation that has this module
+     * enabled - including every installation that will never turn the scan on.
+     * Its DDL nevertheless shipped inside statementsV2(), reachable only
+     * through installScanSchema(), which returns early unless the scan flag is
+     * set. The flag is off by default and config.json tells the administrator
+     * to leave it off until they have piloted the scan. So on the recommended
+     * configuration the table did not exist, the increment threw, and the
+     * catch in surveyRateLimited() returned false: the only rate limit on the
+     * module's only unauthenticated endpoint was inert by default.
+     *
+     * This is deliberately NOT a version bump and writes no version row. It is
+     * one CREATE TABLE IF NOT EXISTS, so calling it on every save and every
+     * enable costs one no-op statement. statementsV2() keeps its own copy, so
+     * an installation that has already migrated is unaffected and a scan
+     * installation whose DB user later loses CREATE rights still has the table.
+     *
+     * THE SCAN'S OPT-IN IS NOT WEAKENED. The docblock on installScanSchema()
+     * is a contract - "ten tables in the database of an administrator who never
+     * asked for the feature is not a default" - and it still holds: no scan
+     * table is created with the flag off. One throttle table for a throttle
+     * that always runs is a different thing from the scan's schema, which is
+     * why this is called BESIDE installScanSchema() and not inside it.
+     *
+     * Returns nothing and throws nothing: both callers are framework hooks
+     * during a settings save, and an exception here would fail the SAVE.
+     *
+     * @return bool whether the statement was issued without error
+     */
+    public static function ensureRateBucket($module)
+    {
+        if (!is_callable([$module, 'query'])) return false;
+        try {
+            $module->query('CREATE TABLE IF NOT EXISTS ' . self::table('rate_bucket') . ' (
+                project_id INT UNSIGNED NOT NULL,
+                bucket INT UNSIGNED NOT NULL,
+                hits INT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (project_id, bucket)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4', []);
+            return true;
+        } catch (\Throwable $e) {
+            // An installation whose database user has no CREATE right is a
+            // real deployment, not a broken one. The throttle logs its own
+            // unavailability from the request path; there is nothing useful to
+            // do here except decline to fail the administrator's save.
+            return false;
+        }
+    }
+
     public static function migrate($module)
     {
         $from = self::currentVersion($module);
