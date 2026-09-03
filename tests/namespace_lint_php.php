@@ -244,6 +244,43 @@ namespace {
         return $findings;
     }
 
+    /**
+     * A `//` comment written INSIDE a string literal, which is not a comment.
+     *
+     * THE INCIDENT. revokePreviews() explained its own join with five `//`
+     * lines placed between `'UPDATE ... f` and `JOIN '` — inside the quotes.
+     * PHP sees string content and is happy; MySQL sees query text and answers
+     * ERROR 1064, because it takes `#`, `-- ` and slash-star and has never
+     * taken `//`. The statement could not parse on any server, so the
+     * cross-project scoping fix that those five lines describe had never once
+     * run. The method has no production caller yet, which is the only reason a
+     * plain syntax error survived a green suite — and is exactly why a lint,
+     * not a test, is the thing that catches it.
+     *
+     * THE RULE IS DELIBERATELY BLUNT: any MULTI-LINE string literal with a line
+     * whose first non-blank characters are `//`. No attempt is made to decide
+     * whether the string is SQL. Measured against the whole shipped tree the
+     * blunt rule flags nothing but the defect, so the precision a cleverer rule
+     * would buy is precision nobody needs, and a cleverer rule is one that can
+     * be wrong. Single-line strings are left alone, so `http://` in a URL — the
+     * one shape that would otherwise cry wolf — never reaches the test.
+     *
+     * @return array<int,array{line:int, text:string}>
+     */
+    function uv_string_comment_lint($source) {
+        $out = [];
+        foreach (token_get_all($source) as $tok) {
+            if (!is_array($tok)) continue;
+            // Both halves of the quoting world: a plain literal, and the text
+            // runs of a double-quoted or heredoc string that interpolates.
+            if ($tok[0] !== T_CONSTANT_ENCAPSED_STRING && $tok[0] !== T_ENCAPSED_AND_WHITESPACE) continue;
+            if (strpos($tok[1], "\n") === false) continue;
+            if (!preg_match('~(?:^|\n)[ \t]*//~', $tok[1])) continue;
+            $out[] = ['line' => $tok[2], 'text' => substr(preg_replace('/\s+/', ' ', trim($tok[1])), 0, 70)];
+        }
+        return $out;
+    }
+
     $globals = uv_global_classes();
     $files   = uv_production_files();
 
@@ -394,6 +431,60 @@ namespace {
             $lint("namespace A;\n\$c = 'Throwable'; \$x = new \$c();") === []);
         check('L-05 control: imports do not leak into the next namespace block',
             count($lint("namespace A { use RuntimeException; }\nnamespace B { try { f(); } catch (RuntimeException \$e) {} }")) === 1);
+    }
+
+
+    /* =====================================================================
+     * L-06  no `//` comment inside a string literal
+     *
+     * The second spelling defect this file has been paid for. See
+     * uv_string_comment_lint() for the incident: a five-line explanation
+     * written inside the quotes of a statement, which MySQL then had to parse.
+     * ===================================================================== */
+    {
+        $hits = [];
+        foreach ($files as $f) {
+            foreach (uv_string_comment_lint(file_get_contents($f)) as $h) {
+                $hits[] = str_replace('\\', '/', $f) . ':' . $h['line'] . '  ' . $h['text'];
+            }
+        }
+        check('L-06: no shipped file writes a // comment inside a string literal',
+            $hits === []);
+        if ($hits) foreach ($hits as $h) fwrite(STDERR, "      $h\n");
+
+        // MUTATION PROOF. The lint has to be shown to fail, or it proves
+        // nothing: the corpus passing could equally mean the check is inert.
+        // This is the real statement from ScanRetention::revokePreviews() with
+        // the comment put back where it was.
+        $broken = "<?php\n\$db->exec('UPDATE ' . T('finding') . ' f\n"
+                . "    // BOTH SIDES OF THE JOIN. It matched on generation_id alone.\n"
+                . "    JOIN ' . T('scan_run') . ' r ON r.generation_id = f.generation_id\n"
+                . "    SET f.value_bin = NULL WHERE r.project_id = ?', [\$pid]);\n";
+        $m = uv_string_comment_lint($broken);
+        check('L-06: the incident shape is caught', count($m) === 1);
+        check('L-06: and reported at the line the string starts on',
+            isset($m[0]['line']) && $m[0]['line'] === 2);
+        check('L-06: and the report quotes the offending text',
+            isset($m[0]['text']) && strpos($m[0]['text'], 'BOTH SIDES OF THE JOIN') !== false);
+
+        // CONTROLS. Each is a shape that must NOT be flagged, and each is a
+        // shape this codebase actually writes.
+        check('L-06 control: a URL in a single-line string is not a comment',
+            uv_string_comment_lint("<?php \$u = 'https://example.org/a//b';") === []);
+        check('L-06 control: nor is a URL in a multi-line string',
+            uv_string_comment_lint("<?php \$u = 'see\nhttps://example.org/a\nfor more';") === []);
+        check('L-06 control: a real PHP comment beside a string is untouched',
+            uv_string_comment_lint("<?php\n// a genuine comment\n\$s = 'SELECT 1\n  FROM t';") === []);
+        check('L-06 control: SQL comment markers MySQL does accept are legal',
+            uv_string_comment_lint("<?php \$s = 'SELECT 1\n  -- a comment\n  # another\n  /* third */\n  FROM t';") === []);
+        check('L-06 control: a double-quoted string is read too',
+            count(uv_string_comment_lint("<?php \$s = \"UPDATE \$t\n  // nope\n  SET a = 1\";")) === 1);
+        check('L-06 control: a heredoc is read too',
+            count(uv_string_comment_lint("<?php \$s = <<<SQL\nUPDATE t\n  // nope\n  SET a = 1\nSQL;\n")) === 1);
+        check('L-06 control: an indented // deep in a string is still caught',
+            count(uv_string_comment_lint("<?php \$s = 'a\n\t\t\t// x\nb';")) === 1);
+        check('L-06 control: a slash pair mid-line is not a comment',
+            uv_string_comment_lint("<?php \$s = 'SELECT a\n  FROM t WHERE p = 1//2\n  AND q = 3';") === []);
     }
 
     echo "namespace_lint_php: $n checks, $fail failure(s)\n";

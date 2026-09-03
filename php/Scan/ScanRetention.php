@@ -80,12 +80,20 @@ final class ScanRetention
         // Then clear, in the same call rather than on a later schedule: the
         // window between "unreadable" and "gone" is small and bounded, instead
         // of being however long until the next cron.
+        // BOTH SIDES OF THE JOIN. It matched on generation_id alone, and the
+        // generation was 1 for every run of every project - so tightening ONE
+        // project's policy cleared the stored previews of every project on the
+        // installation. A join that scopes only one side is a join that can
+        // still cross projects.
+        //
+        // THIS COMMENT LIVES IN PHP, NOT IN THE STATEMENT. It was written
+        // inside the single-quoted string below, where `//` is not a comment
+        // but query text: MySQL takes `#`, `-- ` and `/* */`, and answers `//`
+        // with ERROR 1064. So the statement could not parse, and the
+        // cross-project fix these five lines describe had never once run. The
+        // method has no production caller yet, which is the only reason a
+        // syntax error survived a test suite.
         $this->db->exec('UPDATE ' . Schema::table('finding') . ' f
-            // BOTH SIDES OF THE JOIN. It matched on generation_id alone, and
-            // the generation was 1 for every run of every project - so
-            // tightening ONE project s policy cleared the stored previews of
-            // every project on the installation. A join that scopes only one
-            // side is a join that can still cross projects.
             JOIN ' . Schema::table('scan_run') . ' r
                  ON r.generation_id = f.generation_id AND r.project_id = f.project_id
             SET f.value_bin = NULL, f.value_fingerprint = NULL, f.value_expires_at = NULL
