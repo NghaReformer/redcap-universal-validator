@@ -4261,19 +4261,40 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    /** Per-session window. Cheap, and keyed on something the caller controls. */
+    const THROTTLE_SESSION = 30;
+
     /**
-     * Sliding-window throttle for the UNAUTHENTICATED (survey) uniqueness path.
-     * Two tiers, so a caller is bounded whether or not it carries a session:
+     * Per-project windows, which are keyed on something the caller does not.
+     *
+     * The sessionless cap is the older number and keeps its meaning: a
+     * cookieless enumerator gets 600 a minute for the whole project. The
+     * sessioned cap has to sit above what a busy public survey really spends -
+     * tier 1 allows each session 30 a minute, so 600 would be twenty people
+     * typing at once - while still being a bound rather than none.
+     */
+    const THROTTLE_PROJECT_ANON = 600;
+    const THROTTLE_PROJECT_SESSIONED = 6000;
+
+    /**
+     * Throttle for the UNAUTHENTICATED (survey) uniqueness path.
+     *
+     * TWO TIERS THAT BOTH RUN, which is the correction. They were alternatives:
+     * tier 1 returned as soon as it passed, so tier 2 was reached only by a
+     * caller carrying no session at all. That made the throttle keyed, in
+     * practice, on something the caller chooses - discard the cookie between
+     * requests and each one starts a fresh 30-request budget, without ever
+     * meeting the per-project cap. The evasion costs an attacker one header.
      *
      *   (1) With an active session (a normal survey respondent): a per-SESSION
-     *       window (30 / minute), cheap and touching no shared storage.
-     *   (2) With NO session (a cookieless or cookie-rotating caller — the actual
-     *       sessionless flood vector v1.4.1's session-only throttle could not
-     *       count): a per-PROJECT fixed window (F5) held as a COUNTER IN THE
-     *       DATABASE, incremented by one statement, so the flood is bounded
-     *       even with nothing to key a session on. Legitimate respondents carry
-     *       a session and never reach tier (2), so it adds no write load or
-     *       false throttling to normal traffic.
+     *       window, cheap and touching no shared storage. It can only ever
+     *       refuse; passing it no longer ends the check.
+     *   (2) Always: a per-PROJECT fixed window (F5) held as a COUNTER IN THE
+     *       DATABASE, incremented by one statement, so a flood is bounded even
+     *       with nothing to key a session on. Sessioned and sessionless traffic
+     *       are counted in SEPARATE buckets with separate caps, so extending
+     *       this tier to normal traffic bounds the evasion without turning a
+     *       busy survey into an outage.
      *
      *       Tier (2) was a read-modify-write over a system setting holding an
      *       array of timestamps, and concurrency defeated it exactly under the
@@ -4292,23 +4313,34 @@ class UniversalValidator extends AbstractExternalModule
         $window = 60;
         $now = time();
         // Tier (1): per-session window for a caller that has a session.
+        //
+        // IT DOES NOT RETURN WHEN IT PASSES, and that is the whole point of the
+        // tier. It used to, which made the two tiers ALTERNATIVES: tier 2 was
+        // reached only by a caller with no session at all, so the cheapest
+        // possible evasion - discard the session cookie between requests, which
+        // costs an attacker one header and nothing else - took a fresh
+        // 30-request budget every time and never once met the per-project cap.
+        // A budget keyed on something the caller chooses is not a budget.
+        $sessioned = false;
         try {
             if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-                $max = 30;
+                $sessioned = true;
                 $key = 'uvalidate_unique_hits';
                 $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
                 $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
                     return is_int($t) && ($now - $t) < $window;
                 }));
-                if (count($hits) >= $max) { $_SESSION[$key] = $hits; return true; }
+                if (count($hits) >= self::THROTTLE_SESSION) { $_SESSION[$key] = $hits; return true; }
                 $hits[] = $now;
                 $_SESSION[$key] = $hits;
-                return false;
             }
         } catch (\Throwable $e) {
-            return false;
+            // Session state that cannot be read is not session state to trust.
+            // The project tier below still runs, which is the tier that does
+            // not depend on the caller keeping anything.
+            $sessioned = false;
         }
-        // Tier (2): no session - bound the sessionless flood per project.
+        // Tier (2): bound the flood per project, whether or not tier 1 ran.
         //
         // A COUNTER THE DATABASE OWNS, not a timestamp array this process reads,
         // edits and writes back. The read-modify-write was defeated by the exact
@@ -4327,9 +4359,31 @@ class UniversalValidator extends AbstractExternalModule
         // way round.
         try {
             if (!$pid) return false;
-            $pmax = 600;                                       // no-auth checks / project / window (>> the per-session cap)
+            // TWO BUDGETS, NOT ONE, because the two populations are not alike.
+            // Sessioned traffic is mostly real respondents, and a busy public
+            // survey can legitimately spend more than the sessionless cap: tier
+            // 1 allows each session 30 a minute, so 600 is only twenty people
+            // typing at once. Charging both populations to one bucket would
+            // have turned this hardening change into an outage for exactly the
+            // projects that use the feature most. Separate buckets mean the
+            // sessionless cap keeps the value it was chosen for, and the
+            // sessioned cap only has to be low enough to bound enumeration -
+            // which it is: it converts "unbounded" into "a day and a half for a
+            // six-digit space", on an endpoint whose real defences are the
+            // per-rule opt-in and the Identifier refusal.
+            //
+            // NOT SETTINGS. Every other tunable in this module is a setting,
+            // deliberately; these are not, because the failure mode of a
+            // mistyped rate limit is a security control quietly set to zero,
+            // and there is no reading of it that an administrator needs.
+            $pmax = $sessioned ? self::THROTTLE_PROJECT_SESSIONED : self::THROTTLE_PROJECT_ANON;
             $db = new Scan\ModuleDb($this);
-            $bucket = (int) floor($now / $window);
+            // ONE BUCKET COLUMN, TWO NAMESPACES. The primary key is
+            // (project_id, bucket) and a third dimension would mean an ALTER on
+            // a table that is now created with IF NOT EXISTS on every
+            // installation - so the tier rides in the low bit instead. INT
+            // UNSIGNED holds a doubled minute-counter until the year 6000.
+            $bucket = ((int) floor($now / $window)) * 2 + ($sessioned ? 1 : 0);
             // LAST_INSERT_ID(expr) on both paths, so the fresh-bucket INSERT and
             // the existing-bucket UPDATE both answer with the number they wrote.
             // The table has no AUTO_INCREMENT, so without it the insert path
@@ -4353,10 +4407,11 @@ class UniversalValidator extends AbstractExternalModule
             // Self-pruning, and only on the request that created the bucket, so
             // this is one DELETE per project per window rather than one per
             // check. Two windows of slack because a request can be in flight
-            // across a boundary.
+            // across a boundary - and four slots, not two, because the doubled
+            // bucket number interleaves the two tiers.
             if ($hits === 1) {
                 $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
-                    . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 2]);
+                    . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 4]);
             }
             return $hits > $pmax;
         } catch (\Throwable $e) {

@@ -2014,7 +2014,12 @@ namespace {
     $m = newModule([], $f5Dict, $f5Data, 149);
     // The budget spent, in the counter the database owns. 600 is the cap, so the
     // next check makes 601 and is refused.
-    $m->rateBuckets['149|' . (int) floor(time() / 60)] = 600;
+    //
+    // THE BUCKET NUMBER IS DOUBLED and carries the tier in its low bit, because
+    // sessioned and sessionless traffic are counted separately - see
+    // surveyRateLimited(). CLI has no session, so this is the even slot.
+    $anonSlot = ((int) floor(time() / 60)) * 2;
+    $m->rateBuckets['149|' . $anonSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
     check('F5: a sessionless caller is throttled once the per-project budget is spent',
@@ -2131,6 +2136,90 @@ namespace {
         })) === 0);
     check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
         stripos($made[0], 'IF NOT EXISTS') !== false);
+
+    // F7: A ROTATED SESSION IS NOT A FRESH BUDGET.
+    //
+    // The two tiers used to be alternatives - tier 1 returned as soon as it
+    // passed, so tier 2 ran only for a caller carrying no session at all. That
+    // made the throttle keyed on something the caller chooses: drop the cookie
+    // between requests and every request starts a new 30-request budget, while
+    // the per-project cap is never consulted. These checks need a REAL session,
+    // because the defect lives in the branch CLI never took, which is exactly
+    // why 289 green checks could not see it.
+    @session_start();
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $slotOf = function ($sessioned) {
+            return ((int) floor(time() / 60)) * 2 + ($sessioned ? 1 : 0);
+        };
+        $call = function ($m, $tok) {
+            return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $tok]],
+                149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+        };
+
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION = [];
+        $r = $call($m, 'S-1');
+        check('F7: a caller WITH a session is still answered', isset($r['used']));
+        check('F7: and tier 1 counted it', count($_SESSION['uvalidate_unique_hits']) === 1);
+        check('F7: and tier 2 counted it too, which it never used to',
+            (int) array_sum($m->rateBuckets) === 1);
+        check('F7: in the SESSIONED bucket, not the sessionless one',
+            isset($m->rateBuckets['149|' . $slotOf(true)])
+            && !isset($m->rateBuckets['149|' . $slotOf(false)]));
+
+        // THE EVASION. Discarding the session is free and resets tier 1
+        // completely; the project counter is the thing that must not move back.
+        for ($i = 0; $i < 5; $i++) { $_SESSION = []; $call($m, 'S-r' . $i); }
+        check('F7: rotating the session resets tier 1',
+            count($_SESSION['uvalidate_unique_hits']) === 1);
+        check('F7: but the project budget keeps counting through the rotation',
+            (int) $m->rateBuckets['149|' . $slotOf(true)] === 6);
+
+        // And the cap is real: spend it, then present a brand-new session.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(true)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED;
+        $_SESSION = [];
+        $r = $call($m, 'S-over');
+        check('F7: a fresh session does not buy a spent project budget',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+
+        // THE TWO POPULATIONS DO NOT CHARGE EACH OTHER. A sessionless flood
+        // must not be able to throttle real respondents, and a busy survey must
+        // not spend the sessionless budget.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(false)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
+        $_SESSION = [];
+        $r = $call($m, 'S-sep');
+        check('F7: a spent SESSIONLESS budget does not throttle a respondent',
+            isset($r['used']));
+        check('F7: and the sessioned cap is the higher of the two, deliberately',
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED
+            > \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON);
+
+        // Tier 1 still refuses on its own, and refuses BEFORE spending a
+        // statement on the project counter.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION['uvalidate_unique_hits'] = array_fill(0, 30, time());
+        $m->rateStatements = [];
+        $r = $call($m, 'S-t1');
+        check('F7: tier 1 still refuses a single session that floods',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+        check('F7: and does it without touching shared storage',
+            count(array_filter($m->rateStatements, function ($q) {
+                return strpos($q, 'uv_rate_bucket') !== false;
+            })) === 0);
+
+        // Leave no session behind: every check after this one assumes CLI has
+        // none, and a leaked session would silently move them onto tier 1.
+        $_SESSION = [];
+        session_write_close();
+        check('F7: the test leaves no session behind for the checks after it',
+            session_status() !== PHP_SESSION_ACTIVE);
+    } else {
+        check('F7: SKIPPED - this build cannot start a session in CLI', true);
+    }
 
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);
