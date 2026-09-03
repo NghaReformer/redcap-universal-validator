@@ -841,3 +841,89 @@ of what wave 8 is about to build properly.
 wave 8. That is deliberate and is the one column in this migration deliberately ahead of its code —
 adding it later would mean a second `ALTER` pass over an ~800 MB table, which is the trap version 1
 fell into. Wave 8 owns it.
+
+### W5-N1 — two suites were already red at wave 4's head, and nothing said so
+
+Found on the first full run of wave 5, not by looking for it. `tests/scan_page_php.php` (7 failures)
+and `tests/scan_sqlstore_fault_php.php` (1 failure) were failing at `183ae57`, and both are in
+`.github/workflows/parity.yml`, so CI has been red since `c86a974`.
+
+One cause. Both build a run row as a **positional array** matched against `SqlScanStore::run()`'s
+projection; wave 4 added `run_seq` to that projection and to the key list, and neither fixture grew
+the column. `array_combine()` refuses a row whose length does not match its keys, so `run()` returned
+`false`. In the panel suite that made every state assertion fail loudly; in the fault suite it was
+quieter and worse — `startRun` still reported `ok`, with `run` set to `false`, and only a check that
+asked for the run row would have noticed.
+
+Wave 4's completion report said 27 suites green. It was wrong: it was 25 of 27, and the number was
+taken from a run made before the last two commits rather than after them.
+
+**Fixed in wave 5**, with both rows carrying `run_seq`, a comment on each saying it is positional and
+has drifted once, and one new assertion in the fault suite that asks for the run row itself rather
+than only for `ok`. **The lesson is procedural, not technical:** a positional fixture against a
+projection is a fixture that will drift again, and the only thing that catches it is running every
+suite after the last commit rather than before it.
+
+### W5-N2 — the in-memory store reported a refused batch as a finished record
+
+Found by the new worker-level wedge test, which is the first test in the repository to drive a
+PERMANENTLY refused batch through `ScanWorker` rather than through the store directly.
+
+`ArrayScanStore::commitBatch` has no transaction, so when wave 5 reordered the commit to write record
+states first — necessary, because those writes are what evaluate the per-record claim fence — the
+refusal path returned after the states had already been written and nothing undid them. The real
+store rolls back. So the two stores disagreed about the state a project is left in by a write that
+failed, which is the exact case the retry cap exists for: the fast suite would have reported a
+permanently unstorable record as `done`.
+
+**The contract had no assertion covering it.** "A batch carrying one identity twice is refused
+ENTIRE" existed only in `tests/mysql/cases/store.php`, where a real transaction gives it away for
+free. Two stores judged by one assertion set are worth having only where the assertion set reaches;
+this is the second time a divergence has lived in the gap (the first was the store being literally
+`$this->findings[] = $f;`).
+
+Fixed by making the in-memory commit decide everything before it writes anything, and by moving the
+refused-entire assertion into `tests/scan_store_contract.php` where both stores answer it.
+
+### W5-D1 — the claim token is a project sequence value, not a random number
+
+Recorded because the column is named `claim_seq` and a future reader will want to know why it is not
+simply a counter on the row.
+
+A per-row `claim_seq + 1` would be a true per-record sequence, but it makes every write about a batch
+carry a different token per row, which the release and attempt paths would then have to group by. A
+random token is adequate for the fence — it only has to differ from whatever the previous holder was
+given — but leaves a column named for a sequence holding something that is not one. A millisecond
+clock is not safe: two workers claiming inside the same millisecond get the same token, which is
+precisely the case the fence exists for.
+
+So a claim draws one value from `uv_project_seq`, the same per-project sequence that numbers runs and
+generations. It is monotonic, unique, needs no new column, and costs one statement pair **per claim**
+— not per record — against a row this project's single active run already serialises on. It is
+allocated before the transaction opens, so the sequence row is not locked for the life of a claim; a
+token burned by a rolled-back claim costs nothing, because these numbers are identifiers and never
+counts.
+
+### W5-N3 — the MySQL matrix could not be run for this wave
+
+The Docker engine on the development machine will not start (its `docker-desktop` WSL distribution
+stays `Stopped` and the CLI hangs), so `tests/mysql/run.php` did not execute against a real server
+for wave 5. Everything below IS verified:
+
+- 27 PHP suites and 20 JavaScript suites green, including 410 checks in `tests/scan_worker_php.php`
+  and 98 in `tests/scan_store_php.php` — both stores through the shared contract.
+- Three targeted mutations, each producing exactly the expected red and nothing else: not counting
+  the attempt (8 checks), returning early from a failed read as 1.9.10 did (5 checks), and removing
+  the per-record claim fence (2 in the worker suite, 4 in the contract).
+
+What is NOT verified for this wave, and must be before the wave is called done:
+
+| what | where |
+|---|---|
+| the claim token, the terminal fence and `progress_at` against real InnoDB | `tests/mysql/cases/store.php`, `fence.php` |
+| `LEAST(attempts + 1, 254)` under a strict and a permissive `sql_mode` | `tests/mysql/cases/store.php` |
+| P8's chunked insert count and P7's `ix_pending` EXPLAIN | `tests/mysql/cases/uniqueness.php` (written, not run) |
+| M16's `uv_rate_bucket` counter under two connections | no case yet — wave 5 tested it against the hook stub only |
+
+The uniqueness case's new block is written against the real harness and has never executed; treat it
+as unproven until it has.

@@ -278,6 +278,119 @@ real server have - and asserts what that makes visible, including the one that
 was red before this release: purging one project leaves the other's findings
 exactly where they were.
 
+**A run that could not store what it found retried until somebody closed the
+tab.** `attempts` was incremented by exactly one statement in the whole
+codebase - the record update inside `commitBatch` - so it moved only when the
+commit had already succeeded. The retry cap was therefore unreachable by the one
+path that needed it: a batch the database refused rolled the increment back with
+everything else, `recordAttempts` could never trip, the run never became
+terminal, and it held the project's one active scan slot. Any persistent write
+error did this, not only the duplicate key that started it. Forty identical
+batches is what the pilot logged.
+
+An attempt is now counted for work that was ATTEMPTED, by a transaction the
+failure cannot roll back, and a record that runs out of attempts becomes a fifth
+terminal state: `unstored`. Not a tombstone - the record is still in the
+project, and a run that recorded it as deleted would be lying about the source.
+Not unreadable - it was read and examined perfectly well. What failed is this
+module's own write, which is a different fact about a different system. It is
+always blocking, so the run ends and releases the slot while never being able to
+claim it checked the project.
+
+**One transient export failure held a project's scan slot indefinitely.** When
+`getData` failed for a whole batch the worker returned early: no commit, no
+release, no attempt. The rows stayed claimed, the straggler sweep could not see
+them for fifteen minutes, and the phase machine correctly refused to advance
+over records nobody had examined. Both failure paths - a whole-batch read
+failure and a refused commit - now hand the records straight back and count the
+attempt, and a read that keeps failing ends as a reported exclusion instead of a
+permanent wait.
+
+**Takeover had no fence at all.** `lease_epoch + 1` occurs in exactly one
+statement in this codebase, inside `cancel()`, so a second worker could reclaim
+a stale worker's rows while both held the same epoch and the first worker's
+later commit sailed through - inserting findings for records the second had
+already committed, which the identity key then refused, killing the whole batch.
+The obvious fix is to bump the epoch on takeover and it is wrong: that
+invalidates the fence for the entire run, so every other worker's in-flight
+batch is discarded to invalidate one record's. The claim now lives on the row.
+`claim()` and `claimPending()` stamp a token drawn from the project's own
+sequence, every write about a record carries it back, and a batch commits the
+records it still holds while silently dropping the findings of the ones it lost.
+
+**A finished run kept accepting work.** Measured on 8.0.46: a run retired to
+`expired` accepted a late commit from the worker that had been abandoned, wrote
+its findings and advanced `manifest_done` - so a run that had ended kept
+growing, and its stored coverage verdict stopped describing its own counters.
+The batch fence reads the terminal column now and says so in those words rather
+than blaming the epoch.
+
+**`updated_at` measured activity, and the stale-run sweep needed progress.** It
+is written by `claim()`, `advancePhase()`, `setProgressState()` and every batch
+fence alike, so a run stuck in a retry loop refreshed it several times a second
+and could not be reaped at any `staleHours` setting - while the sweep's own
+`terminal_reason` said "no progress within the configured stale-run window".
+`progress_at` is written in exactly two places, both of them real progress: a
+batch that finished at least one record, and the manifest freezing.
+
+**`commitBatch`'s `$expectCursor` is gone rather than implemented.** It was in
+the contract, documented as invariant I2, and read by neither store and no test.
+Implementing it would have meant a cursor compare-and-set judged by affected
+rows, which is the bug this file's own docblock documents: MySQL reports rows
+CHANGED, not rows MATCHED, so writing a value that already held reports zero and
+rolls back a good batch. I2 now describes the locking read that actually holds
+the invariant.
+
+**A slot lease nobody renewed.** `WorkerSlots::renew()` had no caller, so a
+batch outliving the 300-second TTL kept working while the semaphore considered
+its slot free and a second worker could lease the same one. Not reachable
+through the browser, where a pass is budgeted at three seconds; reachable the
+moment a cron pass or a budgeted planning phase runs longer, both of which are
+scheduled. The worker renews once per turn of its loop and stops when the
+renewal is refused, because a worker that lost its slot is the excess the
+semaphore exists to prevent.
+
+**The in-memory store reported a refused batch as a finished record.** It has no
+transaction, so it wrote the record states and then returned the refusal, and
+nothing undid them - while the real store rolls back and leaves the record
+claimable. The two stores disagreed about the state a project is left in by a
+write that failed, which is precisely the case the retry cap exists for. It
+decides everything before it writes anything now, and the shared contract has
+the assertion that was missing: a batch carrying one identity twice leaves no
+record marked examined, no progress counted, and not one detail row for the
+perfectly good finding it also carried.
+
+**The survey throttle could not count the flood it was written for.** The
+sessionless tier held its budget as an array of timestamps in a system setting
+and did a read, an edit and a write - so concurrent requests all read the same
+array, each appended one entry, and the last write won. It is now a fixed-window
+counter incremented by one statement against `uv_rate_bucket`, with no read
+before it. The window is fixed rather than sliding because a sliding one needs
+the timestamps, and keeping the timestamps is what made the count loseable; a
+burst straddling a boundary can spend up to twice the cap inside one minute,
+which for a throttle meant to bound a flood rather than meter it is the right
+way round.
+
+**Discovering duplicate groups was one INSERT per group.** Measured on 8.0.46:
+811 seconds per 100,000 groups direct, and worse again through the External
+Modules adapter, which runs a second statement per write to read `ROW_COUNT()`.
+The rebuild plan's own non-negotiable - "query counts scale as O(chunks), not
+O(findings)" - was not met. It is one multi-row insert per 500 groups now: five
+placeholders a row against MySQL's 65,535 limit, so 1,200 groups cost three
+statements rather than 1,200. The pending-group walk, which degraded from 2.88
+ms to 283.82 ms as groups settled, is asserted against the index that fixes it -
+by EXPLAINing the statement the finalizer actually issued, captured as it ran,
+rather than a copy of it pasted into a test.
+
+**Two suites had been red since the previous wave and nothing said so.** Both
+`tests/scan_page_php.php` and `tests/scan_sqlstore_fault_php.php` build a run
+row as a positional array against `SqlScanStore::run()`'s projection, and
+`run_seq` was added to that projection without being added to them.
+`array_combine()` refuses a row of the wrong length, so `run()` answered false
+and, in the fault suite, `startRun` reported `ok` with a `run` of false. Both
+now carry the column, the fault suite asks for the run row rather than only for
+`ok`, and both say in a comment that the row is positional and has drifted once.
+
 **Findings filed against the wrong rule.** scanPlan() builds its live rule list
 with the keys preserved from the full list, because a finding cites its rule by
 ordinal - it skips config-broken rules, and the per-instrument-rights gate
