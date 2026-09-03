@@ -140,6 +140,90 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
     }
 }
 
+/**
+ * A ScanDb that remembers every statement, and changes nothing else.
+ *
+ * WHAT IT IS FOR. Two properties of this module are about the SHAPE of the
+ * traffic rather than its result, and a test that only reads rows back cannot
+ * see either: how many statements a page of work costs, and which index the
+ * server chose. Both were measured defects - discover() issued one INSERT per
+ * group, 811 seconds per 100,000 groups; nextUnfinished() degraded from 2.88 ms
+ * to 283.82 ms as groups settled, because no key carried `phase`.
+ *
+ * IT CAPTURES THE STATEMENT THE CODE ACTUALLY ISSUED, which is the point. An
+ * EXPLAIN of SQL copied into a test proves that the copy uses an index; an
+ * EXPLAIN of the captured statement proves the production one does.
+ */
+class UvRecordingDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
+    /** @var array list of [kind, sql, params] */
+    public $log = [];
+    private $inner;
+    public function __construct(INSPIRE\UniversalValidator\Scan\ScanDb $inner) { $this->inner = $inner; }
+    public function select($sql, array $params = []) {
+        $this->log[] = ['select', $sql, $params];
+        return $this->inner->select($sql, $params);
+    }
+    public function exec($sql, array $params = []) {
+        $this->log[] = ['exec', $sql, $params];
+        $this->inner->exec($sql, $params);
+    }
+    public function affected() { return $this->inner->affected(); }
+    public function begin()    { $this->inner->begin(); }
+    public function commit()   { $this->inner->commit(); }
+    public function rollback() { $this->inner->rollback(); }
+
+    /** Statements of one kind whose text contains every one of $needles. */
+    public function matching($kind, array $needles) {
+        $out = [];
+        foreach ($this->log as $row) {
+            if ($row[0] !== $kind) continue;
+            $hit = true;
+            foreach ($needles as $n) { if (strpos($row[1], $n) === false) { $hit = false; break; } }
+            if ($hit) $out[] = $row;
+        }
+        return $out;
+    }
+}
+
+/**
+ * A captured statement with its parameters inlined, for EXPLAIN.
+ *
+ * EXPLAIN cannot take a prepared statement's placeholders through this suite's
+ * ScanDb, so the bound values go in as literals. Everything bound by the code
+ * under test here is an integer or one of its own phase constants - never a
+ * value read from a project - and the string is thrown away after the EXPLAIN.
+ */
+function uv_inline_params($conn, $sql, array $params) {
+    $out = '';
+    $i = 0;
+    for ($p = 0; $p < strlen($sql); $p++) {
+        $ch = $sql[$p];
+        if ($ch !== '?') { $out .= $ch; continue; }
+        $v = isset($params[$i]) ? $params[$i] : null;
+        $i++;
+        if ($v === null) { $out .= 'NULL'; continue; }
+        if (is_int($v) || (is_string($v) && ctype_digit($v))) { $out .= (int) $v; continue; }
+        $out .= "'" . $conn->real_escape_string((string) $v) . "'";
+    }
+    return $out;
+}
+
+/**
+ * The index the server chose for a captured statement, or ''.
+ *
+ * EXPLAIN's column ORDER differs between MySQL and MariaDB - MySQL has a
+ * `partitions` column MariaDB does not - so the row is read by NAME. A
+ * positional read would silently report `possible_keys` on one engine and `key`
+ * on the other, and this suite runs on both.
+ */
+function uv_explain_key($conn, $sql, array $params) {
+    $r = $conn->query('EXPLAIN ' . uv_inline_params($conn, $sql, $params));
+    if ($r === false) return '';
+    $row = $r->fetch_assoc();
+    $r->free();
+    return ($row && isset($row['key']) && $row['key'] !== null) ? (string) $row['key'] : '';
+}
+
 /** Two INDEPENDENT connections. One cannot see the other's uncommitted work. */
 function uv_connect($host, $user, $pass, $name, $port) {
     $c = new mysqli($host, $user, $pass, $name, $port);

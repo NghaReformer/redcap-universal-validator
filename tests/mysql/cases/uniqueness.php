@@ -382,3 +382,106 @@ $NEIGHBOUR = uv_neighbour($PID);
         $A->query('DELETE FROM ' . Schema::table($t));
     }
 }
+
+// -- WHAT THE FINALIZER COSTS, MEASURED RATHER THAN ASSUMED -------------------
+//
+// Two defects the assertions above cannot see, because both are about the shape
+// of the traffic and neither changes a single row of the answer.
+//
+//   P8  discover() issued ONE INSERT PER GROUP. Measured on this server before
+//       the fix: 811 seconds for 100,000 groups direct, and worse again through
+//       the External Modules wrapper, which runs a second statement per write to
+//       read ROW_COUNT(). The rebuild plan's own non-negotiable - "query counts
+//       scale as O(chunks), not O(findings)" - was simply not met.
+//
+//   P7  nextUnfinished() had no index carrying `phase`, so the optimiser used
+//       the group key and the walk got SLOWER as groups settled: 2.88 ms with
+//       none settled, 283.82 ms with all of them, and a flat 1.49-1.73 ms once
+//       ix_pending existed. That shape - fine on an empty project, unusable on
+//       a finished one - is the one a functional test never reaches.
+{
+    $KEY = 'cost-test-key';
+    $GEN = uv_generation('finalizer-cost');
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+
+    // 1,200 groups of one candidate each. Singletons on purpose: they settle
+    // immediately, which is exactly the state P7's measurement degrades in, and
+    // they need no read closure to decide.
+    $N = 1200;
+    $vals = array();
+    for ($i = 1; $i <= $N; $i++) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(
+            \INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, 'cost-' . $i, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(
+            \INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, 'CR-' . $i, $KEY));
+        $vals[] = "(" . $PID . ", " . $GEN . ", 'r1', REPEAT('c',64), UNHEX('" . $g . "'), '',"
+                . " UNHEX('" . $h . "'), 'CR-" . $i . "', 0, 1, 'fa', 'x', NULL)";
+    }
+    foreach (array_chunk($vals, 200) as $chunk) {
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . '
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+            VALUES ' . implode(',', $chunk));
+    }
+    $planted = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_candidate')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN));
+    check('cost: 1,200 candidate groups are on the table', (int) $planted[0][0] === $N);
+
+    $rec = new UvRecordingDb($dbA);
+    $finC = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($rec,
+        array('pid' => $PID, 'hmacKey' => $KEY, 'read' => function () {
+            return array('ok' => true, 'values' => array(), 'why' => null);
+        }));
+    $made = $finC->discover($GEN, $N);
+    check('cost: discovery creates a group row for every candidate group', $made === $N);
+
+    $inserts = $rec->matching('exec', array('INSERT INTO ' . Schema::table('unique_group')));
+    // ceil(1200 / DISCOVER_CHUNK). Written as the arithmetic rather than as 3,
+    // so raising the chunk size does not require editing a magic number here -
+    // and so the assertion still says what it means if someone lowers it.
+    $expect = (int) ceil($N / \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::DISCOVER_CHUNK);
+    check('cost: written in one statement per chunk, not one per group',
+        count($inserts) === $expect);
+    if (count($inserts) !== $expect) {
+        fwrite(STDERR, '  discovery issued ' . count($inserts) . ' inserts, expected '
+            . $expect . "\n");
+    }
+    // O(chunks) is the claim, and a claim about growth needs the other end of
+    // it: 1,200 rows written by 3 statements is only meaningful beside the fact
+    // that 1,200 statements is what it used to be.
+    check('cost: so the statement count is bounded by the chunk size, not the group count',
+        count($inserts) < $N / 100);
+    $rows = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_group')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GEN));
+    check('cost: and every group really is on the table', (int) $rows[0][0] === $N);
+    $single = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('unique_group')
+        . ' WHERE project_id = ? AND generation_id = ? AND phase = ?',
+        array($PID, $GEN, \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::G_SINGLETON));
+    check('cost: each recorded as the singleton it is, not as pending work',
+        (int) $single[0][0] === $N);
+
+    // P7: THE STATEMENT THE CODE ISSUED, EXPLAINED. Not a copy of it - the
+    // recording db hands back what nextUnfinished() actually sent, so an
+    // optimiser plan proved here is the plan production gets. Every group above
+    // is settled, which is the state the old plan was 100x slower in.
+    $rec->log = array();
+    $step = $finC->step($GEN, 10);
+    check('cost: with every group settled the finalizer reports done', $step['done'] === true);
+    $walk = $rec->matching('select', array(Schema::table('unique_group'), 'phase IN'));
+    check('cost: and it asked for the next unfinished group to find that out',
+        count($walk) >= 1);
+    if ($walk) {
+        $key = uv_explain_key($A, $walk[0][1], $walk[0][2]);
+        check('cost: the pending-group walk uses ix_pending rather than the group key',
+            $key === 'ix_pending');
+        if ($key !== 'ix_pending') {
+            fwrite(STDERR, '  the optimiser chose: ' . ($key === '' ? '(no index)' : $key) . "\n");
+        }
+    }
+
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
