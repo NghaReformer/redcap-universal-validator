@@ -10,8 +10,9 @@ findings then went to three adversaries each — one trying to refute outright, 
 severity, one attacking the proposed fix. Most agents wrote throwaway PHP probes that drove the
 shipped classes; those probes are quoted in the evidence and were deleted.
 
-No MySQL: the Docker engine on this machine will not start, so `tests/mysql/` did not run and
-anything needing a live server is marked below rather than guessed at.
+The verification itself ran with no MySQL available, so anything needing a live server was
+marked rather than guessed at. **The matrix has since run** — see "The database matrix" below,
+which resolves most of what was open and found one defect of its own.
 
 ## The headline
 
@@ -199,18 +200,61 @@ another scoping bug is found later.
    setting currently does nothing.
 5. **H-4** — the unwired optional dependencies. The verification produced a full dep-vs-supplied diff.
 
+## The database matrix
+
+Docker came up, so the matrix ran for the first time since wave 3: four engines (MySQL 5.7 and 8.0,
+MariaDB 10.5 and 10.11), each on the server default isolation and again under READ COMMITTED, plus
+CI's check that no table is left behind. **8 runs, 399 checks each (401 under READ COMMITTED), 0
+failures, nothing left behind.**
+
+Getting there took three fixes, and the first two are why the gap mattered.
+
+**The matrix could not reach its first assertion.** Wave 5 made `commitBatch` refuse a finding with
+no record ordinal. `ScanWorker` stamps it, so every mocked suite stayed green; the database cases
+build batches by hand, and `uv_plant_neighbour()` in the shared fixture did not. All eight cases
+threw the same exception before asserting anything. The refusal is correct and production supplies
+the field, so this was the test suite lagging the contract — but it meant 27 green PHP suites stood
+over a store that would have refused every batch shape the cases meant to exercise. 144 checks
+reached before the fix, 373 after.
+
+**Abandonment was tested on the wrong clock.** Wave 5 moved `expireAbandoned()` from `updated_at` to
+`COALESCE(progress_at, created_at)`, precisely because `updated_at` moves on a touch that did
+nothing. The test still backdated `updated_at` and expected expiry. It did not expire, correctly:
+the run had committed a batch moments earlier. The test now asserts both halves — an ancient
+`updated_at` with recent progress is not abandonment; an aged `progress_at` is — which is the
+distinction wave 5 introduced and nothing tested.
+
+**And one real defect in production code.** `UniqueFinalizer::nextUnfinished()` can be served by two
+indexes: `uq_group_v2` gives the `ORDER BY` for free and then reads every group to test `phase`;
+`ix_pending` seeks straight to the pending rows. The difference shows only when nothing is pending,
+which is the state the method spends most of its life in, because that is how `step()` learns it is
+done. Measured on 1,200 groups:
+
+| Engine | Without fresh statistics | After `ANALYZE TABLE` |
+|---|---|---|
+| MySQL 5.7 / 8.0 | `ix_pending`, 3 rows | `ix_pending`, 3 rows |
+| MariaDB 10.5 / 10.11 | `uq_group_v2`, **1,200 rows** | `ix_pending`, 3 rows |
+
+MariaDB takes the scan, and which plan it takes depends on statistics freshness. The timing is the
+worst available: `discover()` bulk-inserts every group and `step()` walks them immediately, so the
+optimiser reads statistics describing the table before the insert. `FORCE INDEX (ix_pending)` holds
+the plan at 3 rows on all four engines with statistics deliberately stale. This is the P7 work
+sitting inert on half the supported fleet, and only an `EXPLAIN` assertion on the statement the code
+actually issued could have attributed it — a timing test would have called it noise.
+
 ## Still not verified
 
-- **The MySQL matrix has never run against waves 5 or these fixes.** The new contract checks do run
-  against `SqlScanStore` via `tests/mysql/cases/store.php:556`, so that coverage is pending rather
-  than absent — but `tests/mysql/cases/uniqueness.php`'s P8/P7 block has never executed at all, and
-  there is still no case for the rate-limit counter under two connections.
-- **M-2**'s performance claim needs `EXPLAIN` on a real server. Its code claims are confirmed; the
-  optimiser behaviour is not, and the verification declined to guess.
+- **No case for the rate-limit counter under two connections.** `uv_rate_bucket`'s atomicity is
+  still asserted only against a single-process stub. The matrix is the right home for it and does
+  not have one yet.
+- **M-2**'s `GROUP BY CAST(pk AS BINARY)` claim on `redcap_log_event` needs its own `EXPLAIN`
+  against a table with realistic cardinality. Its code claims are confirmed; the optimiser
+  behaviour is not, and after the `nextUnfinished()` result it should be measured rather than
+  reasoned about.
 
 ## Suites
 
-27 PHP and 18 JS suites green at every commit. Each fix was mutation-tested: the fix reverted, the
+27 PHP, 18 JS, and the 8-run database matrix green at every commit.
 suite re-run, and the specific checks confirmed red. The `//` lint reports `ScanRetention.php:83`;
 removing the throttle installer reddens 2 hook and 4 hosting checks; restoring the guess-zero
 reddens 1; removing the log call reddens 8; restoring the tier-1 short-circuit reddens exactly the
