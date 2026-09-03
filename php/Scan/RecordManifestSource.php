@@ -179,7 +179,15 @@ final class RecordManifestSource
     public function dagsOf(array $ids)
     {
         $out = array_fill_keys(array_map('strval', $ids), null);
-        if (!$ids || $this->dagCol === null) return $out;
+        if (!$ids) return $out;
+        if ($this->dagCol === null) {
+            // Same fallback page() uses. Without it this source reported every
+            // record as ungrouped and inScope() then refused all of them.
+            $map = $this->groupsFromDataTable($ids);
+            if ($map === null) return $out;
+            foreach ($map as $id => $g) if (array_key_exists($id, $out)) $out[$id] = $g;
+            return $out;
+        }
         try {
             $marks = implode(',', array_fill(0, count($ids), '?'));
             $params = [$this->pid];
@@ -212,7 +220,8 @@ final class RecordManifestSource
             // An unscoped run admits everything the project holds.
             return array_fill_keys(array_map('strval', $ids), true);
         }
-        if ($this->dagCol === null) {
+        if ($this->dagCol === null && $this->dataTable === null) {
+            // No way at all to establish a group: fail closed, as documented.
             return array_fill_keys(array_map('strval', $ids), false);
         }
         $out = [];
@@ -365,19 +374,40 @@ final class RecordManifestSource
         if ($this->dataTable === null) return;
         $ids = [];
         foreach ($rows as $r) $ids[] = $r['id'];
+        $map = $this->groupsFromDataTable($ids);
+        if ($map === null) return;    // caller sees null groups and reports the degradation
+        foreach ($rows as $i => $r) {
+            if (isset($map[$r['id']])) $rows[$i]['dag'] = $map[$r['id']];
+        }
+    }
+
+    /**
+     * record id => group id, from the data table's `__GROUPID__` rows. Null when
+     * the question could not be asked at all.
+     *
+     * EXTRACTED so page() and dagsOf() cannot drift. They had drifted: page()
+     * fell back to these rows when the record index carried no group column,
+     * dagsOf() did not, and inScope() refused every record on that source
+     * because it only looked at the index. hasDag() answers true for it, so a
+     * group-scoped scan was allowed to start and then admitted nothing.
+     * One query per page, never per record.
+     */
+    private function groupsFromDataTable(array $ids)
+    {
+        if ($this->dataTable === null || !$ids) return null;
         $marks = implode(',', array_fill(0, count($ids), '?'));
         try {
             $q = $this->db->select('SELECT record, value FROM ' . $this->dataTable . '
                 WHERE project_id = ? AND field_name = ? AND record IN (' . $marks . ')',
-                array_merge([$this->pid, '__GROUPID__'], $ids));
+                array_merge([$this->pid, '__GROUPID__'], array_map('strval', $ids)));
         } catch (\Throwable $e) {
-            return;    // the caller sees null groups and reports the degradation
+            return null;
         }
         $map = [];
-        foreach ($q as $row) $map[(string) $row[0]] = ($row[1] === null ? null : (string) $row[1]);
-        foreach ($rows as $i => $r) {
-            if (isset($map[$r['id']])) $rows[$i]['dag'] = $map[$r['id']];
+        foreach ($q as $row) {
+            $map[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
         }
+        return $map;
     }
 
     /**

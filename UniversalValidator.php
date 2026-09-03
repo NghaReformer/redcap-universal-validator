@@ -427,7 +427,7 @@ class UniversalValidator extends AbstractExternalModule
                         return $out;
                     }
                 }
-                if (Logic::evaluate($ast, $values)) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT)) $active[] = $bi;
             }
             if (count($active) > 1) {
                 $out['unconfigurable'][] = ['fields' => $rule['fields'],
@@ -491,7 +491,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values)) return $out;
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT)) return $out;
         }
 
         // Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
@@ -629,7 +629,7 @@ class UniversalValidator extends AbstractExternalModule
                 // server logged a violation (M-04).
                 if ($value === null || is_array($value)) continue;
                 if (trim((string) $value, " \t\r\n") === '') continue;
-                if (!Logic::evaluate($a['ast'], $values)) {
+                if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES)) {
                     $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . $rule['assert']];
                 }
             }
@@ -1006,6 +1006,7 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $folded = [];
+        $foldedAssert = []; // the same conditions folded with ASSERT polarity
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -1013,10 +1014,25 @@ class UniversalValidator extends AbstractExternalModule
             $f = false;
             $b = [];
             $sn = [];
-            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn);
+            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
+            // FOLDED TWICE, because this map is keyed by condition TEXT and one
+            // string may legally serve as both a gate and a test — the same rule
+            // can carry {"assert":"[a]<=[b]","when":"[a]<=[b]"}. A comparison
+            // settled off-page becomes ['const', bool], and since a blank
+            // operand now settles to the CALLER's polarity (CRIT-01), one
+            // constant cannot stand for both roles: the gate copy would ship an
+            // assert's "passes" as "this rule applies". Parsing stays single
+            // pass; only the fold is repeated, over a handful of small ASTs.
+            // The freshness diagnostics come from reference resolution and
+            // liveness alone — never from a verdict — so this pass discards
+            // them rather than overwriting the ones above.
+            $f2 = false;
+            $b2 = [];
+            $sn2 = [];
+            $foldedAssert[$w] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES);
         }
         // With the form unknown, NOTHING is live — not because these fields are
         // genuinely elsewhere but because we cannot see the page at all. Every
@@ -1058,7 +1074,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) $snapFields[$sf] = true;
             }
             if (isset($r['assert']) && isset($folded[$r['assert']])) {
-                $rules[$i]['assertAst'] = $folded[$r['assert']];
+                $rules[$i]['assertAst'] = $foldedAssert[$r['assert']];
                 // A frozen ASSERT must never block: its verdict is stale the
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
@@ -1098,7 +1114,7 @@ class UniversalValidator extends AbstractExternalModule
                         if (!empty($frozen[$b['when']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                     }
                     if (isset($b['assert']) && isset($folded[$b['assert']])) {
-                        $rules[$i]['branches'][$bi]['assertAst'] = $folded[$b['assert']];
+                        $rules[$i]['branches'][$bi]['assertAst'] = $foldedAssert[$b['assert']];
                         if (!empty($frozen[$b['assert']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                         if (!empty($blocked[$b['assert']])) {
                             $noteFor($i, $b['assert']);
@@ -2328,9 +2344,114 @@ class UniversalValidator extends AbstractExternalModule
                 'added' => (int) $added,
                 'total' => (int) $census['total'],
             ]);
-        } catch (Throwable $e) {
+        } catch (\Throwable $e) {
             // Swallowed on purpose - see the docblock. The scan stays disabled
             // and the page explains itself.
+        }
+    }
+
+    // -- scheduled maintenance ---------------------------------------------
+
+    /**
+     * Release the slot held by a run that stopped making progress.
+     *
+     * php/Scan/ScanRetention.php has always held this logic and NOTHING EVER
+     * CALLED IT: config.json declared no crons and this class declared no cron
+     * method, so the only code paths into ScanRetention were its own tests
+     * (H-2). The consequence is not cosmetic. A project has one scan slot; a run
+     * whose browser closed or whose worker died keeps holding it, and every
+     * later scan on that project is told the server is busy - forever, because
+     * the reaper that exists to break exactly that deadlock never ran.
+     *
+     * A cron in this framework runs ONCE GLOBALLY, not per project, and
+     * expireAbandoned() is a single project-independent UPDATE, so there is
+     * nothing to iterate. Fifteen minutes is chosen against the lease, not
+     * against the retention windows: a slot is the scarce thing.
+     *
+     * NEVER THROWS. A cron method that throws is reported to administrators on
+     * every tick and has no user who can act on it, so the same posture as
+     * installScanSchema applies - do nothing, loudly, in the module log.
+     */
+    public function uvScanReapCron($cronInfo = [])
+    {
+        return $this->scanMaintenance('reap', function (Scan\ScanRetention $ret, array $policy) {
+            $n = $ret->expireAbandoned($policy['staleHours']);
+            return ['runs_expired' => (int) $n, 'stale_hours' => (int) $policy['staleHours']];
+        });
+    }
+
+    /**
+     * Clear stored value previews whose retention window has passed.
+     *
+     * The column, not the row: the finding stays true and stops being a copy of
+     * the project. Daily, because a value's window is measured in days.
+     *
+     * PURGING WHOLE RUNS IS DELIBERATELY NOT WIRED HERE, and that is not an
+     * oversight. ScanRetention::purgeRuns() deletes findings with
+     * `DELETE FROM uv_finding WHERE generation_id = ?`, but uv_finding carries
+     * NO project_id (php/Scan/Schema.php) and every run in every project is
+     * written with generation_id = 1 - ScanPlanner never receives a 'generation'
+     * and SqlScanStore defaults it. Calling purgeRuns() on any one project would
+     * therefore delete EVERY project's findings on this installation. Wiring it
+     * would turn a missing cron into silent data loss across the server, so run
+     * retention stays manual until generation_id is genuinely per project.
+     */
+    public function uvScanExpireValuesCron($cronInfo = [])
+    {
+        return $this->scanMaintenance('expire-values', function (Scan\ScanRetention $ret, array $policy) {
+            $n = $ret->expireValues();
+            return ['values_cleared' => (int) $n];
+        });
+    }
+
+    /**
+     * The shared body of both crons: refuse cheaply unless the feature is on and
+     * its tables are actually there, then do the work and log what happened.
+     *
+     * Checked in that order for the same reason ScanService::available() uses
+     * it: an installation that never turned the scan on should not have its
+     * schema inspected on a timer.
+     *
+     * @return string the one-line summary REDCap shows beside the cron
+     */
+    private function scanMaintenance($what, callable $work)
+    {
+        try {
+            $on = $this->getSystemSetting(Scan\ScanService::SYS_FLAG);
+            if (!($on === true || $on === 1 || $on === '1' || $on === 'true')) {
+                return 'the durable validation scan is not enabled here; nothing to do';
+            }
+            if (!is_callable([$this, 'query'])) {
+                return 'this framework build exposes no query(); nothing to do';
+            }
+            $health = Scan\Schema::health($this);
+            if (empty($health['ok'])) {
+                // Reported, never repaired on a timer. A migration nobody chose
+                // is the thing installScanSchema is careful not to do either.
+                $this->log('scan-cron-skipped', ['what' => (string) $what,
+                    'why' => isset($health['why']) ? (string) $health['why'] : 'schema not ready']);
+                return 'the scan tables are not ready; nothing was done';
+            }
+            $sys = [];
+            foreach (['scan-system-stale-run-hours', 'scan-system-max-concurrent-projects'] as $k) {
+                $sys[$k] = $this->getSystemSetting($k);
+            }
+            $policy = Scan\ScanPolicy::resolve($sys, []);
+            $ret = new Scan\ScanRetention(new Scan\ModuleDb($this));
+            $out = $work($ret, $policy);
+            $this->log('scan-cron', array_merge(['what' => (string) $what], $out));
+            $bits = [];
+            foreach ($out as $k => $v) $bits[] = $k . '=' . $v;
+            return $what . ': ' . implode(', ', $bits);
+        } catch (\Throwable $e) {
+            // Same posture as installScanSchema: a throw out of a cron is mailed
+            // to administrators every tick and nobody can act on it.
+            try {
+                $this->log('scan-cron-failed', ['what' => (string) $what,
+                    'error' => get_class($e) . ': ' . $e->getMessage()]);
+            } catch (\Throwable $ignored) {
+            }
+            return $what . ': failed, logged to the module log';
         }
     }
 
@@ -3696,7 +3817,7 @@ class UniversalValidator extends AbstractExternalModule
                         . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
-                if (Logic::evaluate($p['ast'], $ctx['values'])) $active[] = $bi;
+                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT)) $active[] = $bi;
             }
             if (count($active) === 1) {
                 $pick = $active[0];
@@ -3724,7 +3845,7 @@ class UniversalValidator extends AbstractExternalModule
                 $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
                 return;
             }
-            if (!Logic::evaluate($p['ast'], $ctx['values'])) return;
+            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT)) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
@@ -4116,7 +4237,7 @@ class UniversalValidator extends AbstractExternalModule
                 : [];
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values)) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT)) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;

@@ -122,6 +122,8 @@ jobs:
           php -l UniversalValidator.php
           php -l pages/scan.php
           php -l pages/export.php
+      - name: No unqualified global class inside a namespaced file
+        run: php tests/namespace_lint_php.php
       - name: PHP port vs fixture (compute + normalize + scheme_ops)
         run: php tests/parity_php.php
       - name: PHP pooled parser vs fixture
@@ -162,6 +164,8 @@ jobs:
         run: php tests/scan_store_php.php
       - name: Durable scan entrypoints (feature flags, refusals, reason codes)
         run: php tests/scan_service_php.php
+      - name: Scheduled scan maintenance is declared and wired (crons -> methods)
+        run: php tests/scan_cron_php.php
       - name: Durable scan worker (phases, stable reads, catch-up, promotion)
         run: php tests/scan_worker_php.php
       - name: Algorithm set is complete (fixture == PHP engine == allow-list == dropdown)

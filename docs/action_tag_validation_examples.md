@@ -635,9 +635,19 @@ Semantics:
   in: `=` and `<>` still answer by string identity, but `<` `>` `<=` `>=` are false
   whichever way round you ask them. Ordering across domains produced cycles — with
   `'2'`, `'10'` and `'1e1'` every one of `a<=b`, `b<=c` and `a>c` was true — and a rule
-  built on that is unsatisfiable in a way no message can explain. An **empty** side is
-  exempt: empty is absence, not a rival domain, so `[end_date]>=[start_date]` with
-  `start_date` not yet entered still passes.
+  built on that is unsatisfiable in a way no message can explain.
+- **An empty side has no answer, and the role decides what that means.** Empty is
+  absence, not a rival domain, so there is nothing to order it against. In an
+  `@UVASSERT` test a value nobody has entered cannot violate a constraint, so the
+  comparison passes — `[end_date]>=[start_date]` with `start_date` not yet entered
+  still passes, and so do `[start_date]<=[end_date]` and `not([end_date]<[start_date])`,
+  which ask the same question. In a `when` gate or a branch selector it means the
+  module cannot tell whether the rule applies, so the rule stays inert:
+  `when:"[age]<=18"` does not fire on a record whose age is blank. Before 1.11.0 the
+  answer came from byte order instead, where `''` sorts lowest — so `>=` recipes
+  passed and `<=` recipes reported a violation on a field nobody had filled in.
+  `=` and `<>` never consulted it and still do not: `[field]<>''` is the way to ask
+  whether a field has been filled in.
 - A missing or empty field reads as `''`. A checkbox reference `[f(code)]` reads `'1'`
   when checked, `'0'` otherwise.
 - **Fields on the same instrument react live.** A calc field updates without DOM events,

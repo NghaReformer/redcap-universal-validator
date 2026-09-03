@@ -1214,6 +1214,13 @@ function QRID_findAnchor(name){
    ships the result as a prebuilt AST, so no record value reaches the page. */
 var QRID_WHEN_MAX_LEN = 500, QRID_WHEN_MAX_REFS = 20, QRID_WHEN_MAX_DEPTH = 10;
 var QRID_WHEN_NUM_RE = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/;
+/* The verdict an ORDERED comparison (< > <= >=) yields when it has NO ANSWER,
+   i.e. an operand is blank so there is nothing to order. Twins of
+   Logic::BLANK_PASSES / Logic::BLANK_INERT — see that docblock for why the two
+   roles settle it in opposite directions. An @UVASSERT test reads no answer as
+   "not a violation"; a "when" gate reads it as "cannot say the rule applies". */
+var QRID_BLANK_PASSES = true;
+var QRID_BLANK_INERT  = false;
 
 function QRID_whenErr(msg){ return { ok: false, error: msg }; }
 
@@ -1389,22 +1396,29 @@ function QRID_whenPeekKw(st, kw){
 /* Evaluate against a resolver callback (field, codeOrNull) -> string. The
    runtime gate resolves from the live DOM/snapshot; the map form below is the
    fixture-locked entry point. */
-function QRID_whenEvaluateWith(ast, resolve){
+function QRID_whenEvaluateWith(ast, resolve, blank){
+  if(blank === undefined) blank = QRID_BLANK_PASSES;
   switch(ast[0]){
     case "const":
       return !!ast[1];
     case "or":
-      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve)) return true; }
+      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve, blank)) return true; }
       return false;
     case "and":
-      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve)) return false; }
+      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve, blank)) return false; }
       return true;
     case "not":
-      return !QRID_whenEvaluateWith(ast[1], resolve);
+      /* THE FLIP — twin of Logic::evaluate. "No answer" must mean the same
+         thing about the WHOLE condition however deeply it is negated, so
+         descending through a "not" inverts the constant substituted for it.
+         Without it, not([dose]>[max]) and [dose]<=[max] disagree on a blank
+         [max], which is the original defect in a different spelling. */
+      return !QRID_whenEvaluateWith(ast[1], resolve, !blank);
     case "cmp":
       return QRID_whenCompare(ast[1],
         QRID_whenOperandVal(ast[2], resolve),
-        QRID_whenOperandVal(ast[3], resolve));
+        QRID_whenOperandVal(ast[3], resolve),
+        blank);
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
 }
@@ -1413,7 +1427,8 @@ function QRID_whenOperandVal(op, resolve){
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
-function QRID_whenEvaluate(ast, values){
+function QRID_whenEvaluate(ast, values, blank){
+  if(blank === undefined) blank = QRID_BLANK_PASSES;
   return QRID_whenEvaluateWith(ast, function(f, code){
     var v = (values && Object.prototype.hasOwnProperty.call(values, f)) ? values[f] : null;
     if(code !== null){
@@ -1424,7 +1439,7 @@ function QRID_whenEvaluate(ast, values){
     }
     if(v === null || v === undefined || typeof v === "object") return "";
     return String(v);
-  });
+  }, blank);
 }
 function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
 /* Numeric compare (floats) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
@@ -1480,7 +1495,8 @@ function QRID_whenDecCmp(a, b){
   }
   return sa > 0 ? mag : -mag;
 }
-function QRID_whenCompare(op, a, b){
+function QRID_whenCompare(op, a, b, blank){
+  if(blank === undefined) blank = QRID_BLANK_PASSES;
   a = QRID_whenTrim(a); b = QRID_whenTrim(b);
   if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
     var c = QRID_whenDecCmp(a, b);
@@ -1499,16 +1515,23 @@ function QRID_whenCompare(op, a, b){
      "10"<="1e1" and "2">"1e1" were all true at once. Ordering is defined only
      within a domain; one-of-each is false either way round, so no cycle forms.
      Equality is untouched. */
-  /* EMPTY is exempt: absence, not a competing domain. See Logic::compare. */
-  var mixed = (a !== "" && b !== "") &&
+  /* EMPTY is absence, so an ORDERED comparison against it has NO ANSWER and
+     `blank` — the caller's polarity, already flipped for every enclosing "not"
+     — stands in. It used to fall through to code-point order, where "" sorts
+     lowest, so [end]>=[start] passed on a blank start by luck while
+     [start]<=[end] invented a violation (CRIT-01). = and <> are untouched:
+     they answer by identity, and [field]<>'' is the "is this filled in" idiom.
+     See Logic::compare, the normative twin. */
+  var blankSide = (a === "" || b === "");
+  var mixed = !blankSide &&
               (QRID_WHEN_NUM_RE.test(a) !== QRID_WHEN_NUM_RE.test(b));
   switch(op){
     case "=":  return a === b;
     case "<>": return a !== b;
-    case ">":  return !mixed && QRID_cmpStr(a, b) > 0;
-    case "<":  return !mixed && QRID_cmpStr(a, b) < 0;
-    case ">=": return !mixed && QRID_cmpStr(a, b) >= 0;
-    case "<=": return !mixed && QRID_cmpStr(a, b) <= 0;
+    case ">":  return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) > 0);
+    case "<":  return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) < 0);
+    case ">=": return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) >= 0);
+    case "<=": return blankSide ? blank : (!mixed && QRID_cmpStr(a, b) <= 0);
   }
   return false;
 }
@@ -1697,7 +1720,14 @@ var QRID_WHEN = (function(){
      it — fails OPEN: the rule goes inert (never traps a save), the reason
      lands on the console, and the server audit (which skips the rule as a
      config error) keeps it from passing silently. */
-  function gateFor(exprRaw, astRaw){
+  /* `blank` is the verdict an ordered comparison yields when an operand is
+     blank (CRIT-01). It defaults to QRID_BLANK_INERT because this is the GATE
+     factory: an unanswerable threshold cannot say the rule applies, so it does
+     not fire. The one caller that is NOT a gate — the @UVASSERT test — passes
+     QRID_BLANK_PASSES explicitly, so no gate site can acquire assert polarity
+     by forgetting an argument. */
+  function gateFor(exprRaw, astRaw, blank){
+    if(blank === undefined) blank = QRID_BLANK_INERT;
     var ast;
     if(astRaw && typeof astRaw === "object" && astRaw.length){
       ast = astRaw;
@@ -1717,7 +1747,7 @@ var QRID_WHEN = (function(){
     var refs = QRID_whenRefs(ast);
     return {
       active: function(){
-        try { return QRID_whenEvaluateWith(ast, readRef); }
+        try { return QRID_whenEvaluateWith(ast, readRef, blank); }
         catch(e){ return false; } /* fail open: never trap a save on a gate bug */
       },
       onChange: function(cb){
@@ -1789,10 +1819,20 @@ function QRID_registerBlocker(input, fieldName, blockMode){
 /* Wire one message region under one input: polite live region + programmatic
    error relationship, so dynamic verdicts are exposed to assistive technology
    (WCAG 2.2 SC 4.1.3 / F103 — A11Y-001). */
-function QRID_attachMsgRegion(input, fieldName){
+/* $mode namespaces the region, because MODES COMPOSE on one field: a check rule
+   and a constraint rule may both govern [study_id], and each attaches its own
+   region. They all used to be given the same id, so a field under two rules got
+   two elements with one DOM id and an aria-describedby naming it twice — invalid
+   HTML, and an ambiguous programmatic relationship for a screen reader. The
+   suffix follows the precedent QRID_attachErrorRegion already set with "-cfg".
+   The check mode keeps the bare id: it is the original region, it is what
+   tests/a11y_dom_js.cjs pins byte-for-byte, and single/pooled are mutually
+   exclusive on a field so they can share it. */
+function QRID_attachMsgRegion(input, fieldName, mode){
+  var id = QRID_msgId(fieldName) + (mode ? "-" + mode : "");
   var msg = document.createElement("div");
   msg.style.display = "none";
-  msg.id = QRID_msgId(fieldName);
+  msg.id = id;
   if(msg.setAttribute){
     msg.setAttribute("role", "status");
     msg.setAttribute("aria-live", "polite");
@@ -1801,9 +1841,47 @@ function QRID_attachMsgRegion(input, fieldName){
   input.parentNode.insertBefore(msg, input.nextSibling);
   if(input.setAttribute && input.getAttribute){
     var desc = input.getAttribute("aria-describedby") || "";
-    input.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+    /* Never list the same region twice — a re-attach, or two modes racing, must
+       not grow the attribute. */
+    var seen = desc ? desc.split(/\s+/) : [];
+    var dup = false;
+    for(var i = 0; i < seen.length; i++) if(seen[i] === id) dup = true;
+    if(!dup) input.setAttribute("aria-describedby", desc ? desc + " " + id : id);
   }
   return msg;
+}
+/* ---- composite per-field presentation state -------------------------------
+   The outline and aria-invalid live on the INPUT, which is shared by every mode
+   attached to it, so the last mode to run used to decide what the field looked
+   like. A field failing its format check could be painted green and announced
+   as valid because a constraint rule on the same field happened to be satisfied
+   — while the check rule's blocker still, correctly, refused the save.
+   State is therefore kept PER MODE and reduced:
+     outline      bad (red) > info (blue) > ok (green) > nothing
+     aria-invalid any mode bad -> "true"; else any mode with an opinion ->
+                  "false"; else the attribute is removed.
+   "info" is deliberately not an opinion about validity (it is the uniqueness
+   check saying "asking the server"), which keeps today's behaviour of clearing
+   aria-invalid while a check is in flight.
+   Save-blocking is NOT routed through here: each mode keeps its own guard item,
+   which is what makes composition correct in the first place. */
+var QRID_OUTLINE = { bad: "2px solid #c62828", info: "2px solid #0067c0", ok: "2px solid #2e9e44" };
+function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "info" | null */
+  if(!input) return;
+  var st = input.__qridModeState;
+  if(!st){ st = {}; input.__qridModeState = st; }
+  if(kind === null || kind === undefined) delete st[mode]; else st[mode] = kind;
+  var bad = false, info = false, ok = false;
+  for(var k in st){
+    if(!Object.prototype.hasOwnProperty.call(st, k)) continue;
+    if(st[k] === "bad") bad = true;
+    else if(st[k] === "info") info = true;
+    else if(st[k] === "ok") ok = true;
+  }
+  input.style.outline = bad ? QRID_OUTLINE.bad
+                     : info ? QRID_OUTLINE.info
+                     : ok   ? QRID_OUTLINE.ok : "";
+  QRID_setInvalidState(input, bad ? true : (ok ? false : null));
 }
 function QRID_setInvalidState(input, state){  /* true | false | null (empty field) */
   if(!input.setAttribute) return;
@@ -1919,7 +1997,7 @@ function QRID_activeVariants(vs){
 /* More than one branch condition is true at once: a configuration problem,
    not a data problem — show it (generic on surveys), validate nothing, and
    NEVER hold the save (the server audit logs the same conflict). */
-function QRID_renderConflict(msg, input, act){
+function QRID_renderConflict(msg, input, act, mode){
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
   msg.innerHTML = QRID_IS_SURVEY
@@ -1927,8 +2005,8 @@ function QRID_renderConflict(msg, input, act){
     : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
       QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
       '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-  input.style.outline = ""; input.__qridInvalid = false;
-  QRID_setInvalidState(input, null);
+  input.__qridInvalid = false;
+  QRID_setModeState(input, mode || "check", null);
 }
 /* NO variant is active AND the server deferred the whole rule. That is not the
    ordinary "no branch applies here" — it means every branch SELECTOR rested on
@@ -1940,24 +2018,24 @@ function QRID_renderConflict(msg, input, act){
    fields they must not learn about, and they could not act on a design problem
    anyway. Returns true when it rendered the notice; false leaves the caller's
    own inert path untouched, so an ordinary inapplicable rule is unchanged. */
-function QRID_renderRuleDeferral(msg, input, cfg){
+function QRID_renderRuleDeferral(msg, input, cfg, mode){
   if(QRID_IS_SURVEY || !cfg || !cfg.deferred) return false;
   var why = cfg.deferredWhy;
   if(!why || !why.length) return false;
-  QRID_renderDeferralNotice(msg, input, why);
+  QRID_renderDeferralNotice(msg, input, why, mode);
   return true;
 }
 /* The one wording for "this rule is not being checked", shared by the rule-level
    notice above and every validator's per-variant deferral. It was wrong once
    already — it promised the value would still be checked after saving, which the
    audit does not do for an unresolved reference — so there is exactly one copy. */
-function QRID_renderDeferralNotice(msg, input, why){
+function QRID_renderDeferralNotice(msg, input, why, mode){
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
   msg.innerHTML = "&#9888; This rule is not being checked — " +
     QRID_escapeHtml(why.join(" ")) +
     " It is not checked after saving either; the study team needs to correct the rule.";
-  input.style.outline = "";
+  QRID_setModeState(input, mode || "check", null);
 }
 function QRIDSingleInit(QRID_CONFIG){
 
@@ -2269,37 +2347,37 @@ function QRIDSingleInit(QRID_CONFIG){
            Unless no branch could be CHOSEN at all, which is a rule problem and
            has to be said out loud (M-01). */
         input.__qridInvalid = false;
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ QRID_setInvalidState(input, null); return; }
-        msg.style.display = "none"; input.style.outline = "";
-        QRID_setInvalidState(input, null);
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "check")){ QRID_setModeState(input, "check", null); return; }
+        msg.style.display = "none"; QRID_setModeState(input, "check", null);
+        QRID_setModeState(input, "check", null);
         return;
       }
       if(act.length > 1){
-        QRID_renderConflict(msg, input, act);
+        QRID_renderConflict(msg, input, act, "check");
         return;
       }
       var V = act[0];
       input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
       var v = (input.value || "").trim();
       if(!v){
-        msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
-        QRID_setInvalidState(input, null);
+        msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
+        QRID_setModeState(input, "check", null);
         return;
       }
       if(v.length > QRID_MAX_SINGLE_LEN){
         styleMsg(msg, false);
         msg.innerHTML = "&#10007; This value is too long for an ID field (over " +
           QRID_MAX_SINGLE_LEN + " characters) — validation skipped.";
-        input.style.outline = "2px solid #c62828"; input.__qridInvalid = true;
-        QRID_setInvalidState(input, true);
+        QRID_setModeState(input, "check", "bad"); input.__qridInvalid = true;
+        QRID_setModeState(input, "check", "bad");
         return;
       }
       var r = V.verdict(v, !!isFinal);
       styleMsg(msg, r.ok);
-      input.style.outline = (r.ok === true) ? "2px solid #2e9e44"
-                          : (r.ok === "info") ? "2px solid #0067c0" : "2px solid #c62828";
+      QRID_setModeState(input, "check", (r.ok === true) ? "ok"
+                          : (r.ok === "info") ? "info" : "bad");
       input.__qridInvalid = (r.ok !== true);          /* "info" (still typing) also blocks a save */
-      QRID_setInvalidState(input, r.ok === false);    /* "info" is not announced as an error yet */
+      QRID_setModeState(input, "check", (r.ok === true) ? "ok" : ((r.ok === "info") ? "info" : "bad"));    /* "info" is not announced as an error yet */
       msg.innerHTML = r.html;
     }
     var debounced = QRID_debounced(function(){ check(false); });
@@ -2384,7 +2462,12 @@ function QRIDConstraintInit(QRID_CONFIG){
        that reaches the client has been syntax-validated by every config
        channel, so gateFor returns a real gate; null only when there is no
        condition at all, which is a configuration error for a constraint. */
-    var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst);
+    /* The ONE non-gate use of gateFor: this is the constraint's TEST, where
+       true means VALID. An operand that has not been entered cannot violate a
+       constraint, so an unanswerable ordered comparison passes rather than
+       inventing a violation (CRIT-01) — the opposite of a "when" gate four
+       lines below, which stays on the inert default. */
+    var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst, QRID_BLANK_PASSES);
     if(!configError && !assertGate){
       configError = "@UVASSERT has no condition to check — set an \"assert\" such as [end_date]>=[start_date].";
     }
@@ -2442,7 +2525,7 @@ function QRIDConstraintInit(QRID_CONFIG){
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-c")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-c", "1");
-    var msg = QRID_attachMsgRegion(input, fieldName);
+    var msg = QRID_attachMsgRegion(input, fieldName, "c");
     /* Own guard item — a WRAPPER, not the input element. A check rule (or a
        later required/unique rule) may sit on the SAME input; each mode keeps an
        INDEPENDENT invalid/block state so they compose instead of stomping one
@@ -2457,13 +2540,13 @@ function QRIDConstraintInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no applicability gate true -> inert, unless no branch could be CHOSEN
            at all, which is a rule problem and has to be said out loud (M-01). */
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "c")){ setGuard(false); QRID_setModeState(input, "c", null); return; }
         inert(); return;
       }
       if(act.length > 1){                               /* branch conflict: show, validate nothing, never block */
@@ -2473,7 +2556,7 @@ function QRIDConstraintInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+        QRID_setModeState(input, "c", null); setGuard(false); QRID_setModeState(input, "c", null); return;
       }
       var V = act[0];
       /* Frozen assert: state no VERDICT rather than a stale one (see
@@ -2494,8 +2577,8 @@ function QRIDConstraintInit(QRID_CONFIG){
              overstatement as calling the deferred path "enforcement". Say what is
              true: this rule is not checking anything, anywhere, until the study
              team fixes the configuration. */
-          QRID_renderDeferralNotice(msg, input, V.deferredWhy);
-          setGuard(false); QRID_setInvalidState(input, null);
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "c");
+          setGuard(false); QRID_setModeState(input, "c", null);
           return;
         }
         inert(); return;
@@ -2510,9 +2593,9 @@ function QRIDConstraintInit(QRID_CONFIG){
       var ok = true;
       try { ok = V.assertGate.active(); } catch(e){ ok = true; }          /* fail open: a gate bug never traps a save */
       styleMsg(msg, ok);
-      input.style.outline = ok ? "2px solid #2e9e44" : "2px solid #c62828";
+      QRID_setModeState(input, "c", ok ? "ok" : "bad");
       setGuard(!ok, V.blockSave);
-      QRID_setInvalidState(input, !ok);
+      QRID_setModeState(input, "c", ok ? "ok" : "bad");
       var base = V.message ? QRID_escapeHtml(V.message)
             : (QRID_IS_SURVEY ? "This entry is not valid together with the other answers."
                               : "This value fails its validation rule for this field.");
@@ -2610,7 +2693,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-r")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-r", "1");
-    var msg = QRID_attachMsgRegion(input, fieldName);
+    var msg = QRID_attachMsgRegion(input, fieldName, "r");
     /* Own guard item (see QRIDConstraintInit): independent invalid/block state
        so required composes with any other mode on the same input. */
     var GITEM = null;
@@ -2622,13 +2705,13 @@ function QRIDRequiredInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no requirement in force — unless no branch could be CHOSEN at all,
            which is a rule problem and has to be said out loud (M-01). */
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "r")){ setGuard(false); QRID_setModeState(input, "r", null); return; }
         clear(); return;
       }
       if(act.length > 1){                               /* branch conflict: show, never block */
@@ -2638,7 +2721,7 @@ function QRIDRequiredInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The requirement was <b>NOT</b> enforced; make the conditions mutually exclusive.';
-        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
       var V = act[0];
       /* deferred: the server could not resolve this rule's references (or its
@@ -2646,18 +2729,18 @@ function QRIDRequiredInit(QRID_CONFIG){
          never block. Mirrors QRIDConstraintInit. */
       if(V.deferred){
         if(V.deferredWhy && !QRID_IS_SURVEY){
-          QRID_renderDeferralNotice(msg, input, V.deferredWhy);
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "r");
         } else {
           msg.style.display = "none"; msg.innerHTML = "";
         }
-        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+        QRID_setModeState(input, "r", null); setGuard(false); QRID_setModeState(input, "r", null); return;
       }
       var blank = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "") === "";
       if(!blank){ clear(); return; }                    /* satisfied — no green OK on purpose */
       styleMsg(msg);
-      input.style.outline = "2px solid #c62828";
+      QRID_setModeState(input, "r", "bad");
       setGuard(true, V.blockSave);
-      QRID_setInvalidState(input, true);
+      QRID_setModeState(input, "r", "bad");
       msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
         : "This field must not be left blank" + (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") + ".");
     }
@@ -2805,7 +2888,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-cf")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-cf", "1");
-    var msg = QRID_attachMsgRegion(input, fieldName);
+    var msg = QRID_attachMsgRegion(input, fieldName, "ch");
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -2900,14 +2983,14 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       return out;
     }
     var NONE = Object.create(null);
-    function clear(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "ch", null); setGuard(false); QRID_setModeState(input, "ch", null); }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no filter in force — everything shown. Unless no branch could be
            CHOSEN at all, which is a rule problem, not an empty filter (M-01). */
         render(NONE);
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "ch")){ setGuard(false); QRID_setModeState(input, "ch", null); return; }
         clear(); return;
       }
       if(act.length > 1){                                  /* branch conflict: show, never filter, never block */
@@ -2918,16 +3001,16 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The choice filter was <b>NOT</b> applied; make the conditions mutually exclusive.';
-        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+        QRID_setModeState(input, "ch", null); setGuard(false); QRID_setModeState(input, "ch", null); return;
       }
       var V = act[0];
       render(V.hiddenSet);
       var stale = staleCodes(V);
       if(!stale.length){ clear(); return; }
       styleMsg(msg);
-      input.style.outline = "2px solid #c62828";
+      QRID_setModeState(input, "ch", "bad");
       setGuard(true, V.blockSave);
-      QRID_setInvalidState(input, true);
+      QRID_setModeState(input, "ch", "bad");
       msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
         : "The selected choice is no longer available" +
           (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") +
@@ -3046,7 +3129,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-q")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
-    var msg = QRID_attachMsgRegion(input, fieldName);
+    var msg = QRID_attachMsgRegion(input, fieldName, "q");
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -3056,7 +3139,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* candidate key already asked, awaiting an answer */
     var lastResp = null;    /* {key, resp} — one-deep answer cache. The direct input
@@ -3066,17 +3149,17 @@ function QRIDUniqueInit(QRID_CONFIG){
     function renderResp(resp, V){
       if(resp.used){
         styleMsg(msg, false);
-        input.style.outline = "2px solid #c62828";
+        QRID_setModeState(input, "q", "bad");
         setGuard(true, V.blockSave);
-        QRID_setInvalidState(input, true);
+        QRID_setModeState(input, "q", "bad");
         msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
             : "This value is already recorded" +
               (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".");
       } else {
         styleMsg(msg, true);
-        input.style.outline = "2px solid #2e9e44";
+        QRID_setModeState(input, "q", "ok");
         setGuard(false);
-        QRID_setInvalidState(input, false);
+        QRID_setModeState(input, "q", "ok");
         msg.innerHTML = "&#10003; Not used before.";
       }
     }
@@ -3084,7 +3167,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* inert — unless no branch could be CHOSEN at all (M-01). */
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG)){ setGuard(false); QRID_setInvalidState(input, null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "q")){ setGuard(false); QRID_setModeState(input, "q", null); return; }
         inert(); return;
       }
       if(act.length > 1){
@@ -3094,7 +3177,7 @@ function QRIDUniqueInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The value was <b>NOT</b> checked; make the conditions mutually exclusive.';
-        input.style.outline = ""; setGuard(false); QRID_setInvalidState(input, null); return;
+        QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); return;
       }
       var V = act[0];
       /* Surveys are opt-in per rule: a used/free answer is record-derived
@@ -3121,9 +3204,9 @@ function QRIDUniqueInit(QRID_CONFIG){
       /* pending: informative, never blocking (fail open if no answer comes) */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking whether this value is already recorded&hellip;";
-      input.style.outline = "2px solid #0067c0";
+      QRID_setModeState(input, "q", "info");
       setGuard(false);
-      QRID_setInvalidState(input, null);
+      QRID_setModeState(input, "q", null);
       function render(err, resp){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
@@ -3630,21 +3713,21 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     if(!act.length){
       input.__qridInvalid = false;
       /* inert — unless no branch could be CHOSEN at all (M-01). */
-      if(QRID_renderRuleDeferral(msg, input, QRID_MULTI_CONFIG)){ QRID_setInvalidState(input, null); return; }
-      msg.style.display = "none"; input.style.outline = "";
-      QRID_setInvalidState(input, null);
+      if(QRID_renderRuleDeferral(msg, input, QRID_MULTI_CONFIG, "check")){ QRID_setModeState(input, "check", null); return; }
+      msg.style.display = "none"; QRID_setModeState(input, "check", null);
+      QRID_setModeState(input, "check", null);
       return;
     }
     if(act.length > 1){
-      QRID_renderConflict(msg, input, act);
+      QRID_renderConflict(msg, input, act, "check");
       return;
     }
     var V = act[0];
     input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
     var v = (input.value || "").trim();
     if(!v){
-      msg.style.display = "none"; input.style.outline = ""; input.__qridInvalid = false;
-      QRID_setInvalidState(input, null);
+      msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
+      QRID_setModeState(input, "check", null);
       return;
     }
     if(QRID_codePointLen(v) > V.scanCap){
@@ -3652,8 +3735,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         "font-size:13px;font-family:inherit;border:1px solid #e0b4b0;background:#fbeceb;color:#c62828";
       msg.innerHTML = "&#10007; This field is too long to scan (over " + V.scanCap +
         " characters for this rule's ID lengths) — split the pool into smaller entries.";
-      input.style.outline = "2px solid #c62828"; input.__qridInvalid = true;
-      QRID_setInvalidState(input, true);
+      QRID_setModeState(input, "check", "bad"); input.__qridInvalid = true;
+      QRID_setModeState(input, "check", "bad");
       return;
     }
     var segs = V.parse(v);
@@ -3719,9 +3802,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       }
     });
     msg.innerHTML = html;
-    input.style.outline = ok ? "2px solid #2e9e44" : "2px solid #c62828";
+    QRID_setModeState(input, "check", ok ? "ok" : "bad");
     input.__qridInvalid = !ok;
-    QRID_setInvalidState(input, !ok);
+    QRID_setModeState(input, "check", ok ? "ok" : "bad");
   }
   /* ---- optional save blocking (shared QRID_registerBlocker semantics) ---- */
   function attach(fieldName){
@@ -3920,6 +4003,11 @@ window.INSPIREUniversalValidator = {
     parse: QRID_whenParse,
     evaluate: QRID_whenEvaluate,
     referencedFields: QRID_whenRefs,
+    /* The blank-operand polarity (CRIT-01), so the fixture can drive BOTH
+       roles through the same evaluator the runtime uses. Twins of
+       Logic::BLANK_PASSES / Logic::BLANK_INERT. */
+    BLANK_PASSES: QRID_BLANK_PASSES,
+    BLANK_INERT: QRID_BLANK_INERT,
     caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
   },
   singleInit: QRIDSingleInit,

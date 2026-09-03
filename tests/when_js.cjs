@@ -46,10 +46,21 @@ check('caps maxDepth', W.caps.maxDepth === fx.caps.maxDepth);
 
 // ---- eval: parse must succeed, evaluate must match ----
 for (const c of fx.eval) {
+  /* JSON has no comments, and a fixture whose rows nobody can annotate is a
+     fixture nobody maintains. A row carrying only "_comment" is prose. */
+  if (c.expr === undefined) continue;
   const r = W.parse(c.expr);
   check('eval parses: ' + c.name, !!r.ok);
   if (r.ok) {
-    check('eval verdict: ' + c.name, W.evaluate(r.ast, c.values || {}) === c.expect);
+    /* EVERY case runs in BOTH roles — twin of tests/when_php.php. The
+       blank-operand polarity (CRIT-01) is the one thing about this dialect that
+       differs between an @UVASSERT test and a "when" gate, and pinning only the
+       default is how the defect shipped. 'expectGate' defaults to 'expect'. */
+    check('eval verdict (assert): ' + c.name,
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES) === c.expect);
+    const wantGate = Object.prototype.hasOwnProperty.call(c, 'expectGate') ? c.expectGate : c.expect;
+    check('eval verdict (gate): ' + c.name,
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT) === wantGate);
   }
 }
 
@@ -64,7 +75,11 @@ for (const c of fx.errors) {
 
 // ---- astEval: prebuilt ASTs, incl. the server-folded ['const',bool] node ----
 for (const c of fx.astEval) {
-  check('astEval verdict: ' + c.name, W.evaluate(c.ast, c.values || {}) === c.expect);
+  check('astEval verdict (assert): ' + c.name,
+    W.evaluate(c.ast, c.values || {}, W.BLANK_PASSES) === c.expect);
+  const wantGate = Object.prototype.hasOwnProperty.call(c, 'expectGate') ? c.expectGate : c.expect;
+  check('astEval verdict (gate): ' + c.name,
+    W.evaluate(c.ast, c.values || {}, W.BLANK_INERT) === wantGate);
 }
 for (const c of fx.astRefs) {
   check('astRefs list: ' + c.name,

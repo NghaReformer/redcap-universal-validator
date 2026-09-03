@@ -381,7 +381,10 @@ namespace {
         if (isset($opts['proj'])) { $GLOBALS['Proj'] = (object) $opts['proj']; }
         else { unset($GLOBALS['Proj']); }
         $scope = \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID);
-        $res = $m->scanProject(PID, $scope['dag'], 200, null,
+        // scanProject() is the LEGACY path and compares the exported
+        // redcap_data_access_group NAME (see its docblock), so it takes
+        // 'dagName'. The durable planner takes 'dag', the numeric group id.
+        $res = $m->scanProject(PID, $scope['dagName'], 200, null,
             ['valueCeiling' => $scope['valueCeiling'], 'enforceFormRights' => true]);
         return [$m, $res, $scope];
     }
@@ -494,6 +497,21 @@ namespace {
         list(, $resC) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
         check('S-01 control: a DAG-bound user scans only their own group',
             $resC['stats']['manifest'] === 1);
+
+        // C-1 SEAM. The scope value is compared downstream against three things
+        // that all speak the NUMERIC group id: redcap_record_list.dag_id (via
+        // ScanPlanner::stream and RecordManifestSource::inScope) and
+        // $rights['group_id'] (via ScanAuthorization::scopeMatches). It used to
+        // be the unique name, so every one of those comparisons failed: a
+        // group-scoped run froze an empty manifest and called the project clean,
+        // and its own creator was refused every follow-up call on it.
+        list(, , $scopeC) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
+        check('C-1: the scope travels as the numeric group id',
+            $scopeC['dag'] === '7');
+        check('C-1: the group name is carried separately for display',
+            $scopeC['dagName'] === 'north');
+        check('C-1: the scope matches what the authorisation layer compares',
+            (string) $scopeC['dag'] === (string) $scopeC['rights']['group_id']);
 
         // THE LEAK. Design rights are declared and granted; only getRights() is
         // proxied. method_exists() answers false for that one call, so the old

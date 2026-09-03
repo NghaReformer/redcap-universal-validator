@@ -579,8 +579,12 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
   is true), and exact case-sensitive text when neither does. If the sides are in
   different domains — one numeric, one not, both filled in — `=` and `<>` still
   answer, but `<` `>` `<=` `>=` come back false either way round; ordering across
-  domains is not defined. An empty side is exempt, so `[end]>=[start]` with
-  `start` still blank passes rather than failing. A missing or empty field reads
+  domains is not defined. An empty side has no answer at all, and what that means
+  depends on the question: in an `@UVASSERT` test a value nobody has entered
+  cannot break a rule, so `[end]>=[start]` and `[start]<=[end]` both pass while
+  `start` is blank; in a `when` condition it means the rule cannot be shown to
+  apply, so it stays inert. `=` and `<>` are unaffected — `[field]<>''` is still
+  how you ask whether a field has been filled in. A missing or empty field reads
   as empty; a checkbox reference reads `'1'` or `'0'`.
 - References are checked against the data dictionary when you save — an unknown
   field or a wrong checkbox code is a configuration error, not a silent surprise.

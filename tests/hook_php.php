@@ -1039,6 +1039,62 @@ namespace {
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('empty constrained field -> inert (no audit)', count(invalidLogs($m)) === 0);
 
+    // CRIT-01: a blank REFERENCED field must not be audited as a violation.
+    // The browser and the audit have to agree here or the module contradicts
+    // itself: the field saves cleanly and then the module logs a violation
+    // against it. Before the fix, [end]>=[start] with a blank [start] passed by
+    // luck of the operand order while the <= spelling of the same question
+    // logged one, so both spellings are pinned, plus the negated one.
+    // The spellings below are the ones that ACTUALLY BROKE. With [start] blank,
+    // [end]>=[start] passed by luck (the blank sorts lowest, so >= held), which
+    // is why the shipped fixture never noticed. The failing directions are the
+    // blank on the losing side of the operator: <= with the blank on the right,
+    // >= with the blank on the left, and the negation of the first.
+    foreach ([
+        ['[end]<=[start]',     'blank on the right, <='],
+        ['[start]>=[end]',     'blank on the left, >='],
+        ['not([end]>[start])', 'the same question, negated'],
+    ] as $spelling) {
+        list($assertExpr, $why) = $spelling;
+        $cDictB = $cDict;
+        $cDictB['end']['field_annotation'] =
+            '@UVASSERT={"assert":"' . $assertExpr . '","message":"end after start"}';
+        // [end] is filled in (so the rule is not inert on its own field);
+        // [start] — the field it compares against — has not been entered yet.
+        $cDataB = [2 => [351 => ['record_id' => '2', 'start' => '', 'end' => '2024-01-05', 'grade' => '2']]];
+        $m = newModule([], $cDictB, $cDataB, 149);
+        $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+        check("CRIT-01 audit ($why): blank reference is not a violation",
+            !in_array('end', loggedFields($m), true));
+
+        // ...and the same rule STILL BITES once the referenced field exists and
+        // the constraint is genuinely broken (end AFTER start, for a <= rule).
+        $cDataB2 = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-01', 'end' => '2024-01-05', 'grade' => '2']]];
+        $m = newModule([], $cDictB, $cDataB2, 149);
+        $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+        check("CRIT-01 audit ($why): still audited once start is entered",
+            in_array('end', loggedFields($m), true));
+    }
+
+    // CRIT-01, the gate half: a "when" condition the module cannot answer must
+    // leave the rule INERT, never switch it on. An ordered gate against a blank
+    // field used to fire for <= and <, so a rule meant for one group of records
+    // was enforced on every record where the gating field was simply not filled.
+    $cDictG = $cDict;
+    $cDictG['end']['field_annotation'] =
+        '@UVASSERT={"assert":"[end]>=[start]","when":"[grade]<=\'5\'"}';
+    $cDataG = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-10', 'end' => '2024-01-05', 'grade' => '']]];
+    $m = newModule([], $cDictG, $cDataG, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('CRIT-01 audit (gate): unanswerable ordered gate leaves the rule inert',
+        !in_array('end', loggedFields($m), true));
+    // ...and fires normally once the gating field is answered.
+    $cDataG2 = [2 => [351 => ['record_id' => '2', 'start' => '2024-01-10', 'end' => '2024-01-05', 'grade' => '2']]];
+    $m = newModule([], $cDictG, $cDataG2, 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('CRIT-01 audit (gate): fires once the gating field is answered',
+        in_array('end', loggedFields($m), true));
+
     // when-gate false -> constraint not enforced
     $cDictW = $cDict;
     $cDictW['end']['field_annotation'] = '@UVASSERT={"assert":"[end]>=[start]","when":"[grade]=\'1\'"}';

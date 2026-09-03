@@ -173,14 +173,29 @@ class ScanPageView
      * rights itself, and "re-derive" must not mean "a second copy that ages
      * differently from the first".
      *
-     * @return array{ok: bool, dag: ?string, why: ?string}
+     * 'dag' is the NUMERIC group id, because that is the identity every
+     * comparison downstream actually speaks: ScanPlanner::stream() matches it
+     * against redcap_record_list.dag_id, RecordManifestSource::inScope() against
+     * the same column or the data table's __GROUPID__ rows, and
+     * ScanAuthorization::scopeMatches() against $rights['group_id'] from the
+     * framework. It used to be the unique NAME, so all three compared "site_a"
+     * against "7" and none of them could ever match: a group-scoped scan froze a
+     * manifest of zero records and reported the project clean, and its own
+     * creator was then refused every scan-work, scan-status and scan-cancel call
+     * on the run they had just started (C-1). The id is also stable under a
+     * rename, which a persisted run's authorised scope has to be.
+     *
+     * 'dagName' is that group's unique name, for display and for the legacy
+     * name-comparing scanProject() path. It is never compared against a record.
+     *
+     * @return array{ok: bool, dag: ?string, dagName: ?string, why: ?string}
      *         ok=false means REFUSE and say why. dag=null means unconfined.
      */
     public static function scanScope($module, $pid)
     {
         $no = function ($why) {
-            return ['ok' => false, 'dag' => null, 'why' => $why, 'valueCeiling' => 'locations',
-                    'mayExport' => false, 'rights' => null];
+            return ['ok' => false, 'dag' => null, 'dagName' => null, 'why' => $why,
+                    'valueCeiling' => 'locations', 'mayExport' => false, 'rights' => null];
         };
         try {
             $user = $module->getUser();
@@ -216,8 +231,8 @@ class ScanPageView
                 // and a second read of getRights() could legitimately differ
                 // from this one - which would mean the scope and the entitlement
                 // were decided from two different readings of the same user.
-                return ['ok' => true, 'dag' => null, 'why' => null, 'valueCeiling' => $ceiling,
-                        'mayExport' => $mayExport, 'rights' => $rights];
+                return ['ok' => true, 'dag' => null, 'dagName' => null, 'why' => null,
+                        'valueCeiling' => $ceiling, 'mayExport' => $mayExport, 'rights' => $rights];
             }
 
             $gd = null;
@@ -237,7 +252,11 @@ class ScanPageView
                 return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
                          . 'The validation scan was not run.');
             }
-            return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling,
+            // The NAME still has to resolve: an unresolvable group means the
+            // rights row cannot be described, and refusing is the honest answer
+            // (see above). But the value that travels as the scope is the ID.
+            return ['ok' => true, 'dag' => (string) $rights['group_id'], 'dagName' => $gd,
+                    'why' => null, 'valueCeiling' => $ceiling,
                     'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');

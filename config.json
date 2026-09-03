@@ -31,6 +31,23 @@
     "redcap-version-min": "13.7.0"
   },
 
+  "crons": [
+    {
+      "cron_name": "uv_scan_reap_abandoned",
+      "cron_description": "Release the scan slot held by a validation-scan run that stopped making progress, so a new scan can start.",
+      "method": "uvScanReapCron",
+      "cron_frequency": "900",
+      "cron_max_run_time": "300"
+    },
+    {
+      "cron_name": "uv_scan_expire_values",
+      "cron_description": "Clear stored value previews from validation-scan findings once their retention window has passed.",
+      "method": "uvScanExpireValuesCron",
+      "cron_frequency": "86400",
+      "cron_max_run_time": "1800"
+    }
+  ],
+
   "action-tags": [
     {
       "tag": "@UVALIDATE",

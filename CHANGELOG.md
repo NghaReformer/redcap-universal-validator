@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.11.0 - blank operands, composed field state, and the scan's group identity
+
+Five defects confirmed by a code audit of 1.10.0, each reproduced before it was
+fixed and each pinned by a test that fails on the previous tree.
+
+- **An ordered comparison against a blank operand no longer invents a
+  violation.** `<` `>` `<=` `>=` fell through to byte order when either side was
+  empty, and since `''` sorts lowest the verdict depended on which way round the
+  operator was written. `[end]>=[start]` passed with `start` blank; the
+  documented `@UVASSERT={"assert":"[dose]<=[max_dose]","blockSave":"hard"}`
+  recipe reported a violation and refused the save over a field nobody had
+  filled in. Blank is now ABSENCE: the comparison has no answer, and the role
+  settles it. An `@UVASSERT` test reads no answer as "not a violation" and
+  passes; a `when` gate or branch selector reads it as "cannot say this rule
+  applies" and stays inert.
+
+  The polarity flips under `not`, which makes `not([dose]>[max_dose])` behave
+  exactly like `[dose]<=[max_dose]`. Without that flip the fix would only move
+  the defect into every negated spelling — `not([end]<[start])` would have
+  turned from passing to violating. `=` and `<>` are untouched, so `[field]<>''`
+  still means "is this field filled in".
+
+  This changes `when` gates that use an ordered operator on a blank field:
+  `when:"[age]<=18"` used to fire on records where age was blank and enforce a
+  paediatric rule on all of them. It no longer does. Both runtimes agree on all
+  4048 differential fuzz cases in both roles.
+
+- **Modes on one field compose instead of clobbering each other.** A field under
+  two rules got two DOM elements with the same id and an `aria-describedby`
+  naming it twice, and the outline and `aria-invalid` were shared, so whichever
+  validator ran last decided how the field looked. A field holding an invalid ID
+  could show green and be announced valid because a constraint on the same field
+  happened to hold. Each mode now owns a namespaced region, and the field's
+  appearance is reduced across modes: any mode invalid wins. Save-blocking is
+  unchanged — it was always per mode and always correct.
+
+- **A group-scoped validation scan actually scans its group.** The scan's scope
+  travelled as the DAG's unique name while everything that compared it spoke the
+  numeric group id — `redcap_record_list.dag_id`, the data table's `__GROUPID__`
+  rows, and `$rights['group_id']`. Nothing ever matched: a group-scoped run froze
+  a manifest of zero records and reported the project clean, and its own creator
+  was then refused every follow-up call on the run they had just started. The
+  scope is now the numeric id, with the name carried separately for display.
+  `dagsOf()` also gained the `__GROUPID__` fallback that the record walk already
+  had, so a project without a record index no longer reports every record as
+  ungrouped.
+
+- **Scheduled maintenance is wired.** `ScanRetention` held working cleanup
+  routines that nothing ever called, so a run whose browser closed kept its
+  project's only scan slot and every later scan was told the server was busy —
+  permanently. Two crons now run it. Purging whole runs is deliberately NOT
+  wired: it deletes findings by `generation_id`, `uv_finding` has no
+  `project_id`, and every run in every project is written with `generation_id`
+  1, so it would delete every project's findings on the installation.
+
+- **A dead `catch` is live again.** `installScanSchema()` guarded its migration
+  with `catch (Throwable $e)` inside a namespace, which resolves to a class that
+  does not exist, so a failing `CREATE TABLE` or slot insert escaped the one
+  handler documented to swallow it and failed the administrator's settings save.
+  `php -l` cannot see this, so `tests/namespace_lint_php.php` now does.
+
 ## 1.10.0 - one field, several ID formats
 
 A sample-transportation project scans QR codes from four studies into the same

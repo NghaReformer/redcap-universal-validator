@@ -44,11 +44,16 @@ function detail($msg)
 }
 
 /** The six verdicts a single -1/0/1 comparison has to produce. */
-function verdictFor($op, $cmp, $path = 'numeric')
+function verdictFor($op, $cmp, $path = 'numeric', $blank = true)
 {
     // MIXED domains have no ordering: < > <= >= are false whichever way round
     // they are asked, so no cycle can form. Equality is unaffected.
     if ($path === 'mixed' && in_array($op, ['<', '>', '<=', '>='], true)) return false;
+    // BLANK is absence: an ordered comparison against it has NO ANSWER, so the
+    // caller's polarity stands in (CRIT-01). Byte order used to decide it, which
+    // is why "" > "0" was false but "" < "0" was true — an ordering over a value
+    // that is not there. Equality is unaffected: "" is a fine string to test.
+    if ($path === 'blank' && in_array($op, ['<', '>', '<=', '>='], true)) return $blank;
     switch ($op) {
         case '=':  return $cmp === 0;
         case '<>': return $cmp !== 0;
@@ -108,7 +113,7 @@ foreach ($fx['cases'] as $c) {
     check("case is well formed: $label",
         isset($c['name'], $c['a'], $c['b'], $c['path'], $c['cmp'])
         && is_string($c['a']) && is_string($c['b'])
-        && in_array($c['path'], ['numeric', 'string', 'mixed'], true)
+        && in_array($c['path'], ['numeric', 'string', 'mixed', 'blank'], true)
         && in_array($c['cmp'], [-1, 0, 1], true));
     $names[] = $label;
 }
@@ -149,8 +154,37 @@ foreach ($fx['cases'] as $c) {
     check("path {$c['name']}", $bothNumeric === ($c['path'] === 'numeric'));
 
     // A string-path case is pinned to plain byte order, computed independently.
-    if ($c['path'] === 'string' || $c['path'] === 'mixed') {
+    // A BLANK case keeps its recorded cmp for = and <> (identity still answers)
+    // and byte order still describes it, but its ORDERED verdicts no longer come
+    // from that order at all — they come from the caller's polarity, which is
+    // what the both-polarity block below pins.
+    if ($c['path'] === 'string' || $c['path'] === 'mixed' || $c['path'] === 'blank') {
         check("string path is byte order: {$c['name']}", byteCmp($c['a'], $c['b']) === $cmp);
+    }
+
+    // BOTH POLARITIES, for the cases that have one. The digest above runs the
+    // default (BLANK_PASSES, the @UVASSERT role); an ordered comparison in a
+    // "when" gate must answer the other way, and nothing else in this file would
+    // notice if it did not. This is the regression that shipped: the fixture
+    // pinned only the direction that happened to pass.
+    if ($c['path'] === 'blank') {
+        foreach ($fx['shapes'] as $shape) {
+            list($lk, $rk) = explode('_', $shape, 2);
+            foreach (['<', '>', '<=', '>='] as $op) {
+                $ast = ['cmp', $op, operandNode($lk, 'a', $c['a']), operandNode($rk, 'b', $c['b'])];
+                check("blank passes an assert: {$c['name']} [$shape] $op",
+                    Logic::evaluate($ast, $values, Logic::BLANK_PASSES) === true);
+                check("blank leaves a gate inert: {$c['name']} [$shape] $op",
+                    Logic::evaluate($ast, $values, Logic::BLANK_INERT) === false);
+                // ...and the negated spelling must agree with the plain one, or
+                // the fix is just the bug relocated (the leaf-substitution trap).
+                $neg = ['not', $ast];
+                check("negation agrees, assert: {$c['name']} [$shape] not $op",
+                    Logic::evaluate($neg, $values, Logic::BLANK_PASSES) === true);
+                check("negation agrees, gate: {$c['name']} [$shape] not $op",
+                    Logic::evaluate($neg, $values, Logic::BLANK_INERT) === false);
+            }
+        }
     }
 
     // A floatTrap case only earns its keep while the old cast still disagrees.

@@ -28,9 +28,12 @@
     "eq_trailing_point",
     "ord_neg5_gt_neg10",
     "sci_1e3_vs_1000",
-    "hex_0x1f_vs_31"
+    "hex_0x1f_vs_31",
+    "ws_empty_both",
+    "ws_empty_vs_zero",
+    "ws_blank_vs_zero"
   ],
-  "digest": "0e163147bad66fcafe38d302518e728af26e38b5f2c38b0713e01a615de8080c",
+  "digest": "19779d75bc3a1a52a7f8276bd89428b292ebf326ebd766a7e67e79ac15c2d327",
   "cases": [
     {
       "name": "h03_counterexample",
@@ -434,21 +437,21 @@
       "name": "ws_empty_both",
       "a": "",
       "b": "",
-      "path": "string",
+      "path": "blank",
       "cmp": 0
     },
     {
       "name": "ws_empty_vs_zero",
       "a": "",
       "b": "0",
-      "path": "string",
+      "path": "blank",
       "cmp": -1
     },
     {
       "name": "ws_blank_vs_zero",
       "a": "   ",
       "b": "0",
-      "path": "string",
+      "path": "blank",
       "cmp": -1
     },
     {

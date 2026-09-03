@@ -204,8 +204,15 @@ Semantics worth knowing before relying on it:
   still answer by string identity, but `<` `>` `<=` `>=` are false whichever way
   round you ask: ordering across domains produced cycles (`'2' <= '10'`,
   `'10' <= '1e1'` and `'2' > '1e1'` were all true at once). An **empty** side is
-  exempt, because empty is absence rather than a rival domain — `[end]>=[start]`
-  with `start` not yet entered still passes. A missing or empty field reads as
+  different again: empty is absence, so an ordered comparison against it has no
+  answer, and what that means depends on which question is being asked. In an
+  `@UVASSERT` test a value nobody has entered cannot violate a constraint, so
+  the comparison passes: `[end]>=[start]` and `[start]<=[end]` both hold while
+  `start` is blank, and so does `not([end]<[start])`. In a `when` gate or a
+  branch selector it means the module cannot tell whether the rule applies, so
+  the rule stays inert: `when:"[age]<=18"` does not fire on a record whose age
+  is blank. `=` and `<>` are unaffected either way — `[field]<>''` is still how
+  you ask whether a field has been filled in. A missing or empty field reads as
   `''`; a checkbox reference reads `'1'`/`'0'`.
 - **Referenced fields on the same instrument react live**: pick the right
   dropdown option and the gated field's verdict appears or clears immediately —

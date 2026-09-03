@@ -66,8 +66,35 @@
     { "name": "order_mixed_domain_equality_still_works", "expr": "[s]<>'9'", "values": { "s": "A" }, "expect": true },
     { "name": "order_same_domain_strings_still_ordered", "expr": "[s]>'A'", "values": { "s": "B" }, "expect": true },
     { "name": "order_same_domain_numbers_still_ordered", "expr": "[s]>'9'", "values": { "s": "10" }, "expect": true },
-    { "name": "order_blank_exempt_from_mixed_rule", "expr": "[s]<='0'", "values": { "s": "" }, "expect": true },
-    { "name": "order_blank_ref_does_not_invent_a_violation", "expr": "[a]>=[b]", "values": { "a": "2026-01-10", "b": "" }, "expect": true },
+    { "name": "order_blank_exempt_from_mixed_rule", "expr": "[s]<='0'", "values": { "s": "" }, "expect": true, "expectGate": false },
+    { "name": "order_blank_ref_does_not_invent_a_violation", "expr": "[a]>=[b]", "values": { "a": "2026-01-10", "b": "" }, "expect": true, "expectGate": false },
+
+    { "_comment": "CRIT-01. Ordered comparison against a blank operand has NO ANSWER; the ROLE settles it. Before the fix these fell through to byte order, where '' sorts lowest, so the verdict depended on which way round the operator was written: the >= rows passed and the <= rows invented a violation. Every row below is a direction the old fixture never asked about." },
+    { "name": "crit01_lte_blank_right", "expr": "[dose]<=[max_dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_lt_blank_right", "expr": "[dose]<[max_dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_gte_blank_right", "expr": "[dose]>=[max_dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_gt_blank_right", "expr": "[dose]>[max_dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_lte_blank_left", "expr": "[max_dose]<=[dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_lt_blank_left", "expr": "[max_dose]<[dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_gte_blank_left", "expr": "[max_dose]>=[dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_gt_blank_left", "expr": "[max_dose]>[dose]", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+
+    { "_comment": "THE NEGATION ROWS. A leaf-level substitution passes every row above and still fails these: without flipping the polarity under not, not([dose]>[max_dose]) contradicts the equivalent [dose]<=[max_dose], and not([end]<[start]) flips from passing to violating. These are the rows that distinguish a fix from the bug re-spelled." },
+    { "name": "crit01_not_gt_blank_right", "expr": "not([dose]>[max_dose])", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_not_lte_blank_right", "expr": "not([dose]<=[max_dose])", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_not_lt_blank_left", "expr": "not([end_date]<[start_date])", "values": { "end_date": "2026-01-10", "start_date": "" }, "expect": true, "expectGate": false },
+    { "name": "crit01_double_negation_agrees", "expr": "not(not([dose]<=[max_dose]))", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+
+    { "_comment": "COMPOSITION. A blank comparison must collapse like Kleene UNKNOWN: a true sibling still carries an or, a false sibling still sinks an and, in BOTH roles." },
+    { "name": "crit01_or_true_sibling_wins", "expr": "[dose]<=[max_dose] or [dose]='10'", "values": { "dose": "10", "max_dose": "" }, "expect": true },
+    { "name": "crit01_and_false_sibling_sinks", "expr": "[dose]<=[max_dose] and [dose]='99'", "values": { "dose": "10", "max_dose": "" }, "expect": false },
+    { "name": "crit01_and_true_sibling_defers", "expr": "[dose]<=[max_dose] and [dose]='10'", "values": { "dose": "10", "max_dose": "" }, "expect": true, "expectGate": false },
+
+    { "_comment": "AND THE IDIOM THAT MUST NOT MOVE. = and <> answer by identity and never consult the polarity, so [field]<>'' keeps meaning 'is this filled in' in both roles. A fix that returns a constant for any blank operand before the switch breaks these." },
+    { "name": "crit01_blank_test_still_works_blank", "expr": "[t]<>''", "values": { "t": "" }, "expect": false },
+    { "name": "crit01_blank_test_still_works_filled", "expr": "[t]<>''", "values": { "t": "x" }, "expect": true },
+    { "name": "crit01_blank_eq_still_works_filled", "expr": "[t]=''", "values": { "t": "x" }, "expect": false },
+    { "name": "crit01_blank_eq_still_works_blank", "expr": "[t]=''", "values": { "t": "" }, "expect": true },
     {
       "name": "and_binds_tighter_false",
       "expr": "[a]='1' or [b]='1' and [c]='1'",
@@ -187,7 +214,8 @@
       "name": "empty_string_ordering",
       "expr": "[t]<'1'",
       "values": {},
-      "expect": true
+      "expect": true,
+      "expectGate": false
     },
     {
       "name": "zero_value_string",

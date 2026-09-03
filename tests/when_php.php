@@ -40,11 +40,24 @@ check('caps maxDepth', Logic::MAX_DEPTH === $fx['caps']['maxDepth']);
 
 // ---- eval: parse must succeed, evaluate must match ----
 foreach ($fx['eval'] as $c) {
+    // JSON has no comments, and a fixture whose rows nobody can annotate is a
+    // fixture nobody maintains. A row carrying only "_comment" is prose.
+    if (!isset($c['expr'])) { continue; }
     $r = Logic::parse($c['expr']);
     check('eval parses: ' . $c['name'], !empty($r['ok']));
     if (!empty($r['ok'])) {
         $values = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
-        check('eval verdict: ' . $c['name'], Logic::evaluate($r['ast'], $values) === $c['expect']);
+        // EVERY case runs in BOTH roles. The blank-operand polarity (CRIT-01) is
+        // the one thing about this dialect that differs between an @UVASSERT
+        // test and a "when" gate, and pinning only the default is exactly how
+        // the defect shipped: the fixture happened to cover the directions that
+        // passed. 'expectGate' defaults to 'expect', so a case that does not
+        // care says nothing and a case that does cannot forget to.
+        check('eval verdict (assert): ' . $c['name'],
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES) === $c['expect']);
+        $wantGate = array_key_exists('expectGate', $c) ? $c['expectGate'] : $c['expect'];
+        check('eval verdict (gate): ' . $c['name'],
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT) === $wantGate);
     }
 }
 
@@ -62,7 +75,11 @@ foreach ($fx['errors'] as $c) {
 // ---- astEval: prebuilt ASTs, incl. the server-folded ['const',bool] node ----
 foreach ($fx['astEval'] as $c) {
     $values = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
-    check('astEval verdict: ' . $c['name'], Logic::evaluate($c['ast'], $values) === $c['expect']);
+    check('astEval verdict (assert): ' . $c['name'],
+        Logic::evaluate($c['ast'], $values, Logic::BLANK_PASSES) === $c['expect']);
+    $wantGate = array_key_exists('expectGate', $c) ? $c['expectGate'] : $c['expect'];
+    check('astEval verdict (gate): ' . $c['name'],
+        Logic::evaluate($c['ast'], $values, Logic::BLANK_INERT) === $wantGate);
 }
 foreach ($fx['astRefs'] as $c) {
     check('astRefs list: ' . $c['name'],

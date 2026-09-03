@@ -46,7 +46,26 @@ foreach ($fx['cases'] as $c) {
     if (!$phpOk) { $rejBoth++; continue; }
     $okBoth++;
     $vals = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
-    $php = Logic::evaluate($r['ast'], $vals);
+    $php = Logic::evaluate($r['ast'], $vals, Logic::BLANK_PASSES);
+    // The GATE role too, wherever the corpus carries it (CRIT-01). A blank
+    // operand in an ordered comparison is the one input on which the two roles
+    // disagree, so checking only the default would leave half the dialect
+    // unpinned across 4000 cases. array_key_exists, not isset: a legitimately
+    // false verdict must still be checked, and an older corpus without the key
+    // degrades to the assert check rather than failing every row.
+    if (array_key_exists('jsInert', $c)) {
+        $phpInert = Logic::evaluate($r['ast'], $vals, Logic::BLANK_INERT);
+        if ($phpInert !== $c['jsInert']) {
+            $fail++;
+            report("EVAL DISAGREES (gate role): " . json_encode($c['expr'])
+                . "
+  values: " . json_encode($vals)
+                . "
+  js: " . json_encode($c['jsInert'])
+                . "  php: " . json_encode($phpInert) . "
+");
+        }
+    }
     if ($php !== $c['js']) {
         $fail++;
         report("EVAL DISAGREE: " . json_encode($c['expr']) . "\n  values: " . json_encode($c['values'])

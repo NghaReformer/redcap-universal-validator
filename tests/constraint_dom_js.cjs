@@ -137,6 +137,74 @@ function submitEv() {
   check('empty field: save never trapped', ev._prevented === false);
 }
 
+// ---- 1b) CRIT-01: a blank REFERENCED field never invents a violation -------
+// The whole defect, at the level a data-entry clerk meets it. [dose]<=[max_dose]
+// is README.md's own recipe, shipped with blockSave:"hard". With [max_dose] not
+// yet entered the ordered comparison fell through to byte order, where "" sorts
+// lowest, so the field turned red and the save was refused over a field nobody
+// had filled in. The >= spelling passed, purely by luck of the operand order.
+{
+  const forms = [
+    { assert: '[dose]<=[max_dose]', why: 'blank on the right, <=' },
+    { assert: '[max_dose]>=[dose]', why: 'blank on the left, >=' },
+    { assert: 'not([dose]>[max_dose])', why: 'the same question, negated' },
+  ];
+  for (const f of forms) {
+    const maxd = makeEl('input'); maxd.name = 'max_dose'; maxd.value = '';   // not entered yet
+    const dose = makeEl('input'); dose.name = 'dose'; dose.value = '10';
+    const env = boot([dose, maxd], {
+      singleFields: [], pooledFields: [],
+      rules: [{ type: 'constraint', fields: ['dose'], assert: f.assert,
+                message: 'Dose exceeds the protocol maximum', blockSave: 'hard' }],
+    });
+    const msg = cMsg(env, 'dose');
+    check('CRIT-01 (' + f.why + '): no violation invented',
+      !/exceeds the protocol maximum/.test(msg.innerHTML));
+    check('CRIT-01 (' + f.why + '): field not flagged invalid',
+      dose.getAttribute('aria-invalid') !== 'true');
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    check('CRIT-01 (' + f.why + '): hard block does not trap the save',
+      ev._prevented === false);
+
+    // ...and the constraint still BITES once the referenced value exists.
+    maxd.value = '5';
+    maxd.fire('change');
+    check('CRIT-01 (' + f.why + '): still enforced once max_dose is entered',
+      /exceeds the protocol maximum/.test(msg.innerHTML)
+      && dose.getAttribute('aria-invalid') === 'true');
+  }
+}
+
+// ---- 1c) CRIT-01: the "when" gate must NOT inherit the assert's polarity ----
+// makeVariant builds the assert gate and the applicability gate a few lines
+// apart, and only the assert one is entitled to BLANK_PASSES. If the polarity
+// argument reached the wrong gateFor call, a rule gated on an ordered condition
+// would switch itself ON for every record where the gated field is still blank
+// — the failure this fix exists to prevent, moved one level up.
+{
+  const age = makeEl('input'); age.name = 'age'; age.value = '';   // not entered yet
+  const dose = makeEl('input'); dose.name = 'dose'; dose.value = '10';
+  const env = boot([dose, age], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['dose'], assert: "[dose]='999'",
+              when: '[age]<=18', message: 'Paediatric dose rule',
+              blockSave: 'hard' }],
+  });
+  const msg = cMsg(env, 'dose');
+  check('CRIT-01 gate: blank age leaves the rule inert', msg.style.display === 'none');
+  check('CRIT-01 gate: no violation from an ungated rule',
+    !/Paediatric dose rule/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('CRIT-01 gate: save not trapped while the gate cannot answer',
+    ev._prevented === false);
+
+  // ...and the gate still fires normally once the field it reads is answered.
+  age.value = '10';
+  age.fire('change');
+  check('CRIT-01 gate: fires once age is entered',
+    /Paediatric dose rule/.test(msg.innerHTML));
+}
+
 // ---- 2) live reaction to a referenced field --------------------------------
 {
   const start = makeEl('input'); start.name = 'start'; start.value = '2024-06-01';
@@ -668,6 +736,88 @@ function submitEv() {
   const ev = submitEv(); env.doc.fire('submit', ev);
   check('H-01 survey: no block', ev._prevented === false);
   check('H-01 survey: no off-page field name leaks', !/b_open/.test(msg.innerHTML));
+}
+
+// ---- HIGH-03: two modes on ONE field compose instead of clobbering ---------
+// A check rule and a constraint rule may both govern a field (README: "modes
+// compose"). Each attaches its own status region and its own save guard, but the
+// OUTLINE and aria-invalid live on the shared input, so whichever validator ran
+// last used to decide what the field looked like. A field holding an invalid ID
+// could be painted green and announced valid because the constraint on the same
+// field happened to hold — while the check rule's blocker still, correctly,
+// refused the save. Nothing in the suite covered a field under two modes.
+{
+  const other = makeEl('input'); other.name = 'other'; other.value = '5';
+  const id = makeEl('input'); id.name = 'study_id'; id.value = '';
+  const env = boot([id, other], {
+    singleFields: [], pooledFields: [],
+    rules: [
+      { type: 'single', fields: ['study_id'], algorithm: 'iso7064_mod37_36', blockSave: 'hard' },
+      { type: 'constraint', fields: ['study_id'], assert: "[other]='5'",
+        message: 'other must be 5', blockSave: 'hard' },
+    ],
+  });
+
+  // (a) two regions, two DISTINCT ids, each named once in aria-describedby.
+  const regions = env.holders['study_id'].children.filter(
+    (e) => e.getAttribute && e.id && /^uvalidate-msg-/.test(e.id));
+  const ids = regions.map((e) => e.id);
+  check('HIGH-03: both modes attached a region', regions.length === 2);
+  check('HIGH-03: region ids are distinct', new Set(ids).size === ids.length);
+  check('HIGH-03: the check region keeps the bare id', ids.indexOf('uvalidate-msg-study_id') !== -1);
+  check('HIGH-03: the constraint region is namespaced', ids.indexOf('uvalidate-msg-study_id-c') !== -1);
+  const desc = (id.getAttribute('aria-describedby') || '').split(/\s+/).filter(Boolean);
+  check('HIGH-03: aria-describedby names both regions', desc.length === 2);
+  check('HIGH-03: aria-describedby has no duplicate token',
+    new Set(desc).size === desc.length);
+  for (const rid of ids) {
+    check('HIGH-03: aria-describedby names ' + rid, desc.indexOf(rid) !== -1);
+  }
+
+  // Mint a genuinely valid id with the engine itself, exactly as
+  // tests/a11y_dom_js.cjs does, so the CHECK rule is satisfied.
+  const MINT = env.NS.engine.makeScheme({ algorithm: 'iso7064_mod37_36',
+    source: 'normalized_id', placement: 'append', enabled: true,
+    normalize_rules: { strip_delimiters: '', uppercase: true,
+                       unify_unicode_dashes: true, keep_only: null } });
+  const GOOD = env.NS.engine.appendCheck('0ABC0000', MINT);
+
+  // (b) both satisfied -> the field reads valid.
+  id.value = GOOD;
+  id.fire('change');
+  check('HIGH-03: both modes valid -> aria-invalid false',
+    id.getAttribute('aria-invalid') === 'false');
+
+  // (c) break ONLY the check rule. The constraint is still satisfied and would,
+  // on its own, paint green. Red must win, and the save must be refused.
+  id.value = '0ABC00001X';                 // wrong check character
+  id.fire('change');
+  check('HIGH-03: one mode invalid -> field reads invalid',
+    id.getAttribute('aria-invalid') === 'true');
+  check('HIGH-03: one mode invalid -> outline is the error colour',
+    /#c62828/.test(id.style.outline));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('HIGH-03: the failing mode still blocks the save', ev._prevented === true);
+
+  // (d) break ONLY the constraint, with the check rule satisfied again.
+  id.value = GOOD;
+  id.fire('change');
+  other.value = '9';
+  other.fire('change');
+  check('HIGH-03: the other mode invalid -> field still reads invalid',
+    id.getAttribute('aria-invalid') === 'true');
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('HIGH-03: the other failing mode blocks the save', ev._prevented === true);
+
+  // (e) both satisfied again -> the field returns to valid, not stuck red.
+  other.value = '5';
+  other.fire('change');
+  check('HIGH-03: both valid again -> aria-invalid false',
+    id.getAttribute('aria-invalid') === 'false');
+  check('HIGH-03: both valid again -> outline is the ok colour',
+    /#2e9e44/.test(id.style.outline));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('HIGH-03: save allowed once every mode is satisfied', ev._prevented === false);
 }
 
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);

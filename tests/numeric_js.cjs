@@ -50,10 +50,16 @@ function detail(msg) {
 }
 
 /* The six verdicts a single -1/0/1 comparison has to produce. */
-function verdictFor(op, cmp, pathKind) {
+function verdictFor(op, cmp, pathKind, blank) {
   /* MIXED domains have no ordering — see the fixture spec. Parameter is NOT
      called "path": that would shadow the require('path') module used above. */
+  if (blank === undefined) blank = true;
   if (pathKind === 'mixed' && (op === '<' || op === '>' || op === '<=' || op === '>=')) return false;
+  /* BLANK is absence: an ordered comparison against it has NO ANSWER, so the
+     caller's polarity stands in (CRIT-01). Code-point order used to decide it,
+     which is why "" > "0" was false but "" < "0" was true — an ordering over a
+     value that is not there. Equality is unaffected. */
+  if (pathKind === 'blank' && (op === '<' || op === '>' || op === '<=' || op === '>=')) return blank;
   switch (op) {
     case '=':  return cmp === 0;
     case '<>': return cmp !== 0;
@@ -120,7 +126,7 @@ for (const c of fx.cases) {
   // double on the way in and the fixture would lose the very digits it pins.
   check('case is well formed: ' + label,
     typeof c.a === 'string' && typeof c.b === 'string'
-    && ['numeric', 'string', 'mixed'].includes(c.path)
+    && ['numeric', 'string', 'mixed', 'blank'].includes(c.path)
     && (c.cmp === -1 || c.cmp === 0 || c.cmp === 1));
   names.push(label);
 }
@@ -153,9 +159,36 @@ for (const c of fx.cases) {
   }
 
   // A string- OR mixed-path case is pinned to plain code-point order, computed
-  // independently (for mixed, that order still governs = and <>).
-  if (c.path === 'string' || c.path === 'mixed') {
+  // independently (for mixed, that order still governs = and <>). A BLANK case
+  // is still DESCRIBED by that order for = and <>, but its ORDERED verdicts no
+  // longer come from it — they come from the caller's polarity, pinned below.
+  if (c.path === 'string' || c.path === 'mixed' || c.path === 'blank') {
     check('string path is code-point order: ' + c.name, codePointCmp(c.a, c.b) === c.cmp);
+  }
+
+  // BOTH POLARITIES. The digest loop runs the default (BLANK_PASSES, the
+  // @UVASSERT role); a "when" gate must answer the other way, and nothing else
+  // here would notice if it did not. Twin of the block in tests/numeric_php.php.
+  if (c.path === 'blank') {
+    for (const shape of fx.shapes) {
+      const kinds = shape.split('_');
+      for (const op of ['<', '>', '<=', '>=']) {
+        const ast = ['cmp', op,
+          operandNode(kinds[0], 'a', c.a),
+          operandNode(kinds[1], 'b', c.b)];
+        check('blank passes an assert: ' + c.name + ' [' + shape + '] ' + op,
+          W.evaluate(ast, values, W.BLANK_PASSES) === true);
+        check('blank leaves a gate inert: ' + c.name + ' [' + shape + '] ' + op,
+          W.evaluate(ast, values, W.BLANK_INERT) === false);
+        /* ...and the negated spelling must agree, or the fix is just the bug
+           relocated (the leaf-substitution trap). */
+        const neg = ['not', ast];
+        check('negation agrees, assert: ' + c.name + ' [' + shape + '] not ' + op,
+          W.evaluate(neg, values, W.BLANK_PASSES) === true);
+        check('negation agrees, gate: ' + c.name + ' [' + shape + '] not ' + op,
+          W.evaluate(neg, values, W.BLANK_INERT) === false);
+      }
+    }
   }
 
   // A floatTrap case only earns its keep while the old cast still disagrees.

@@ -57,9 +57,25 @@
  *     round they are asked, because a per-pair comparator produced ordering
  *     CYCLES (a<=b, b<=c and a>c all true for "2", "10", "1e1") that no error
  *     message could explain;
- *   - EMPTY is exempt from that rule: it is absence, not a rival domain, so
- *     [end]>=[start] with start not yet entered still passes rather than
- *     inventing a violation on every part-filled record.
+ *   - EMPTY is not a rival domain either: it is ABSENCE, and an ordered
+ *     comparison against an absent operand has NO ANSWER. It does not fall
+ *     through to byte order. It used to, and because '' sorts lowest that made
+ *     the verdict depend on which way round the operator was written:
+ *     [end]>=[start] with start blank passed, while [start]<=[end] — the same
+ *     question — reported a violation, and so did every <= recipe in the docs
+ *     (CRIT-01). The CALLER now says which way "no answer" collapses, by
+ *     passing BLANK_PASSES or BLANK_INERT to evaluate(): an @UVASSERT test
+ *     reads no answer as "not a violation" (so [end]>=[start] with start not
+ *     yet entered still passes, and so does [start]<=[end]), while a "when"
+ *     gate or a branch selector reads it as "cannot say this rule applies" and
+ *     stays inert. The polarity FLIPS under "not", which is what makes
+ *     not([dose]>[max]) behave exactly like [dose]<=[max] — without the flip
+ *     the fix would just relocate the bug into every negated spelling. That
+ *     flip makes this identical to three-valued (Kleene) logic collapsed to
+ *     the caller's default, with no tri-state on the wire;
+ *   - = and <> never consult the polarity: '' is a perfectly good string to
+ *     test identity against, and [field]<>'' is the documented "is this filled
+ *     in" idiom. It answers the same in both roles.
  *
  * Caps (parse errors beyond): MAX_EXPR_LEN chars, MAX_REFS field references,
  * MAX_DEPTH nesting levels (parentheses + not).
@@ -80,6 +96,25 @@ class Logic
     // match for a comparison to be numeric. No exponents, no hex, no leading
     // "0x" — PHP and JavaScript disagree about those, printable digits do not.
     const NUM_RE = '/^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/';
+
+    // The verdict an ORDERED comparison (< > <= >=) yields when it has NO
+    // ANSWER, i.e. an operand is blank so there is nothing to order. The two
+    // ROLES this one dialect serves settle "no answer" in OPPOSITE directions,
+    // which is exactly why a single context-free constant cannot work:
+    //
+    //   BLANK_PASSES — an @UVASSERT TEST, where true means VALID. An absent
+    //     value cannot violate a constraint, so no answer is not a violation.
+    //     This is the shipped promise (README, USER_GUIDE, the examples).
+    //
+    //   BLANK_INERT — a "when" gate or a branch selector, where true means THE
+    //     RULE APPLIES. If a threshold cannot be answered, the module cannot
+    //     say the rule applies, so it does not fire. That matches the fail-safe
+    //     posture everywhere else: a gate that errors is caught and read false.
+    //
+    // The caller passes its own; evaluate() flips it under "not" on the way
+    // down, so a condition and its negation agree.
+    const BLANK_PASSES = true;
+    const BLANK_INERT  = false;
 
     /**
      * Parse one condition. Returns ['ok'=>true, 'ast'=>array] or
@@ -121,24 +156,31 @@ class Logic
      * field => [code => '0'|'1'] for checkboxes). Missing fields resolve to ''
      * (checkbox refs to '0'), so the caller may pass a sparse map.
      */
-    public static function evaluate(array $ast, array $values)
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES)
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank)) return false; }
                 return true;
             case 'not':
-                return !self::evaluate($ast[1], $values);
+                // THE FLIP. "No answer" has to mean the same thing about the
+                // WHOLE condition however deeply it is negated, so descending
+                // through a "not" inverts the constant that will be substituted
+                // for it. Without this, not([dose]>[max]) and [dose]<=[max] —
+                // the same question — give opposite verdicts on a blank [max],
+                // which is the original defect wearing a different spelling.
+                return !self::evaluate($ast[1], $values, !$blank);
             case 'cmp':
                 return self::compare(
                     $ast[1],
                     self::operandValue($ast[2], $values),
-                    self::operandValue($ast[3], $values)
+                    self::operandValue($ast[3], $values),
+                    $blank
                 );
         }
         return false; // unreachable for parse()-produced ASTs
@@ -200,16 +242,19 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [])
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES)
     {
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank);
                 return [$ast[0], $out];
             case 'not':
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot)];
+                // Flipped exactly as evaluate() flips it, so a comparison
+                // settled into a ['const', b] here sits under the same number
+                // of "not"s as the live one it replaced and agrees with it.
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -277,7 +322,7 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values)];
+                return ['const', self::evaluate($ast, $values, $blank)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
     }
@@ -585,7 +630,7 @@ class Logic
     }
 
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
-    private static function compare($op, $a, $b)
+    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES)
     {
         $a = trim((string) $a, " \t\r\n");
         $b = trim((string) $b, " \t\r\n");
@@ -612,19 +657,23 @@ class Logic
         // neither. One-of-each yields false for < > <= >=, whichever way round
         // it is asked, so no cycle can form. Equality is unaffected — "2" and
         // "1e1" are simply different strings, which is exactly right.
-        // EMPTY is exempt: it is absence, not a competing numeric domain.
-        // Without this, [end_date]>=[start_date] with start_date legitimately
-        // blank would flip from passing to failing and invent a violation on
-        // every record where the field simply has not been entered yet.
-        $mixed = ($a !== '' && $b !== '')
+        // EMPTY is absence, so an ORDERED comparison against it has NO ANSWER
+        // and $blank — the caller's polarity, already flipped by evaluate() for
+        // every "not" above this node — is substituted instead. It used to fall
+        // through to strcmp, where '' sorts lowest, so [end]>=[start] passed on
+        // a blank start by luck while [start]<=[end] invented a violation
+        // (CRIT-01). = and <> are untouched: they answer by identity, and
+        // [field]<>'' is the documented "is this filled in" idiom.
+        $blankSide = ($a === '' || $b === '');
+        $mixed = !$blankSide
                && ((bool) preg_match(self::NUM_RE, $a) !== (bool) preg_match(self::NUM_RE, $b));
         switch ($op) {
             case '=':  return $a === $b;
             case '<>': return $a !== $b;
-            case '>':  return !$mixed && strcmp($a, $b) > 0;
-            case '<':  return !$mixed && strcmp($a, $b) < 0;
-            case '>=': return !$mixed && strcmp($a, $b) >= 0;
-            case '<=': return !$mixed && strcmp($a, $b) <= 0;
+            case '>':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) > 0);
+            case '<':  return $blankSide ? $blank : (!$mixed && strcmp($a, $b) < 0);
+            case '>=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) >= 0);
+            case '<=': return $blankSide ? $blank : (!$mixed && strcmp($a, $b) <= 0);
         }
         return false;
     }
