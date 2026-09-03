@@ -200,14 +200,23 @@ class FaultyStore implements ScanStore
         return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds);
     }
 
-    public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch)
     {
         $this->gate('commitBatch');
-        return $this->inner->commitBatch($runId, $owner, $epoch, $expectCursor, $batch);
+        return $this->inner->commitBatch($runId, $owner, $epoch, $batch);
     }
 
-    public function releaseClaims($runId, $epoch, array $ordinals)
-    { $this->gate('releaseClaims'); return $this->inner->releaseClaims($runId, $epoch, $ordinals); }
+    public function releaseClaims($runId, $epoch, $owner, array $claims)
+    {
+        $this->gate('releaseClaims');
+        return $this->inner->releaseClaims($runId, $epoch, $owner, $claims);
+    }
+
+    public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted)
+    {
+        $this->gate('noteAttempts');
+        return $this->inner->noteAttempts($runId, $epoch, $owner, $claims, $maxAttempts, $exhausted);
+    }
 
     public function manifestComplete($runId)
     { $this->gate('manifestComplete'); return $this->inner->manifestComplete($runId); }
@@ -222,7 +231,14 @@ class FaultyStore implements ScanStore
     { $this->gate('cancel'); return $this->inner->cancel($pid, $runId, $actor); }
 
     public function findings($projectId, $generationId, array $filter, $afterId, $limit)
-    { $this->gate('findings'); return $this->inner->findings($generationId, $filter, $afterId, $limit); }
+    {
+        // FIVE ARGUMENTS, NOT FOUR. This delegate dropped $projectId and shifted
+        // every other one along, so the generation arrived as the project. It
+        // has never been caught because nothing calls findings() yet - which is
+        // exactly what tests/scan_wiring_php.php says about it.
+        $this->gate('findings');
+        return $this->inner->findings($projectId, $generationId, $filter, $afterId, $limit);
+    }
 
     public function aggregates($runId)
     { $this->gate('aggregates'); return $this->inner->aggregates($runId); }

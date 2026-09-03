@@ -121,6 +121,13 @@ namespace {
         'ScanDimensions::isDegraded'             => 'wave 11 (M5): uv_scan_dim has no producer, so nothing can be degraded yet',
         'ScanDimensions::degradedSummary'        => 'wave 11 (M5), with isDegraded',
 
+        // -- WorkerSlots::renew was deleted from this list the same way. It
+        //    stood under "nothing is scheduled", saying that a long batch's
+        //    slot lease simply expires under the worker still using it;
+        //    ScanWorker::loop now renews it once per turn and stops when the
+        //    renewal is refused, because a worker that lost its slot is the
+        //    excess the semaphore exists to prevent.
+
         // -- ScanPageView::labels, panelPrefill and isJsIdentifierPath sat here
         //    for one afternoon and were removed the same day, when the
         //    browser-client item taught pages/scan.php to call them. That is
@@ -133,7 +140,6 @@ namespace {
         'ArrayScanStore::writeManifest' => 'no scheduled caller, with the contract',
         'SqlScanStore::writeManifest'   => 'no scheduled caller, with the contract',
         'WorkerSlots::idleAbove'        => 'no scheduled caller: a lowered concurrency limit therefore never takes effect',
-        'WorkerSlots::renew'            => 'no scheduled caller: a long batch\'s slot lease is never renewed, it simply expires under the worker still using it',
         'ScanPhase::consistent'         => 'no scheduled caller: the phase/state agreement it checks is never checked',
         'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',

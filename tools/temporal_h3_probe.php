@@ -53,7 +53,7 @@ $bad = ['bytes' => 10,
         'rule_revision' => str_repeat('c',64), 'check_type' => 'required',
         'reason_code' => str_repeat('z',200)]]];   // column is VARCHAR(64)
 
-$refused = $store->commitBatch($rid, 'w', $epoch, 0, $bad);
+$refused = $store->commitBatch($rid, 'w', $epoch, $bad);
 echo "MESSAGE THE OPERATOR SEES:\n  " . $refused . "\n\n";
 printf("  contains 'reason_code' (the column name) : %s\n", strpos($refused,'reason_code') !== false ? 'YES' : 'NO');
 printf("  contains 'too long'    (the generic half): %s\n", strpos($refused,'too long')    !== false ? 'YES' : 'NO');

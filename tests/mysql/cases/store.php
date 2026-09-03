@@ -117,8 +117,10 @@ foreach ($claim as $c) {
     // ones. A record row without it commits, and silently exercises a path no
     // worker takes.
     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
-                           'state' => ScanStore::REC_DONE, 'version' => 'v1'];
+                           'state' => ScanStore::REC_DONE, 'version' => 'v1',
+                           'claim' => $c['claim']];
     $batch['findings'][] = [
+        'ordinal' => $c['ordinal'],
         'project_id' => $PID,
         'generation_id' => $gen, 'identity' => hash('sha256', 'f' . $c['ordinal'], true),
         'valid_from_seq' => $runSeq,
@@ -128,7 +130,7 @@ foreach ($claim as $c) {
         'check_type' => 'required', 'reason_code' => 'required-blank',
     ];
 }
-check('store: a fenced batch commits', $storeA->commitBatch($runId, 'workerA', $epoch, 0, $batch) === true);
+check('store: a fenced batch commits', $storeA->commitBatch($runId, 'workerA', $epoch, $batch) === true);
 $run = $storeA->run($PID, $runId);
 check('store: advancing manifest_done by the records it finished',
     (int) $run['manifest_done'] === 3);
@@ -156,8 +158,9 @@ check('store: cancel bumps the epoch', (int) $after['lease_epoch'] === $epoch + 
 $rows0 = $storeA->run($PID, $runId)['detail_rows'];
 $lost = ['bytes' => 10,
          'records' => [['ordinal' => 4, 'record_hash' => hash('sha256', 'REC-4', true),
-                        'state' => ScanStore::REC_DONE]],
+                        'state' => ScanStore::REC_DONE, 'claim' => $claim[0]['claim']]],
          'findings' => [[
+            'ordinal' => 4,
             'project_id' => $PID,
             'generation_id' => $gen, 'identity' => hash('sha256', 'f-lost', true),
             'valid_from_seq' => $runSeq,
@@ -165,7 +168,7 @@ $lost = ['bytes' => 10,
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
             'reason_code' => 'required-blank']]];
-$overtaken = $storeA->commitBatch($runId, 'workerA', $epoch, 0, $lost);
+$overtaken = $storeA->commitBatch($runId, 'workerA', $epoch, $lost);
 check('store: an overtaken worker cannot commit', $overtaken !== true);
 // The refusal names WHICH fence stopped it. During the pilot a run failed its
 // very first commit and one message covered a stopped run, a taken-over run and
@@ -238,8 +241,9 @@ $SECOND = 720;
     // second time. That is the point: it is what makes the interval real, and
     // it is what the second scan used to die on.
     $identity = hash('sha256', 'the-same-finding-both-times', true);
-    $finding = function ($gen, $seq) use ($SECOND, $rec, $identity) {
-        return ['project_id' => $SECOND, 'generation_id' => $gen, 'identity' => $identity,
+    $finding = function ($gen, $seq, $ordinal) use ($SECOND, $rec, $identity) {
+        return ['ordinal' => $ordinal,
+                'project_id' => $SECOND, 'generation_id' => $gen, 'identity' => $identity,
                 'valid_from_seq' => $seq, 'record_hash' => $rec['hash'],
                 'record_id_bin' => $rec['id_bin'], 'instance' => 1,
                 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
@@ -254,10 +258,10 @@ $SECOND = 720;
     $ep1 = (int) $s->run($SECOND, $rid1)['lease_epoch'];
     $c1 = $s->claim($rid1, 'w', $ep1, 1);
     check('store: the first scan of a fresh project commits its findings',
-        $s->commitBatch($rid1, 'w', $ep1, 0, ['bytes' => 0,
+        $s->commitBatch($rid1, 'w', $ep1, ['bytes' => 0,
             'records' => [['ordinal' => $c1[0]['ordinal'], 'record_hash' => $c1[0]['hash'],
-                           'state' => ScanStore::REC_DONE]],
-            'findings' => [$finding($gen1, uv_run_seq($dbA, $rid1))]]) === true);
+                           'state' => ScanStore::REC_DONE, 'claim' => $c1[0]['claim']]],
+            'findings' => [$finding($gen1, uv_run_seq($dbA, $rid1), $c1[0]['ordinal'])]]) === true);
     $s->finish($rid1, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]));
 
     $two = $s->startRun($SECOND, ['created_by' => 'bob']);
@@ -268,10 +272,10 @@ $SECOND = 720;
     $s->writeManifest($rid2, [$rec]);
     $ep2 = (int) $s->run($SECOND, $rid2)['lease_epoch'];
     $c2 = $s->claim($rid2, 'w', $ep2, 1);
-    $again = $s->commitBatch($rid2, 'w', $ep2, 0, ['bytes' => 0,
+    $again = $s->commitBatch($rid2, 'w', $ep2, ['bytes' => 0,
         'records' => [['ordinal' => $c2[0]['ordinal'], 'record_hash' => $c2[0]['hash'],
-                       'state' => ScanStore::REC_DONE]],
-        'findings' => [$finding($gen2, uv_run_seq($dbA, $rid2))]]);
+                       'state' => ScanStore::REC_DONE, 'claim' => $c2[0]['claim']]],
+        'findings' => [$finding($gen2, uv_run_seq($dbA, $rid2), $c2[0]['ordinal'])]]);
     check('store: and the SECOND scan commits the same finding rather than rolling back',
         $again === true);
     if ($again !== true) fwrite(STDERR, '  the second scan said: ' . (string) $again . "\n");
@@ -306,11 +310,12 @@ $REEXAMINED = 730;
     $identity = hash('sha256', 'still-blank-both-times', true);
     $s->writeManifest($rid, [['id_bin' => 'X-1', 'hash' => $hash, 'dag' => null]]);
     $ep = (int) $s->run($REEXAMINED, $rid)['lease_epoch'];
-    $batch = function ($ordinal) use ($REEXAMINED, $gen, $seq, $hash, $identity) {
+    $batch = function ($ordinal, $claim) use ($REEXAMINED, $gen, $seq, $hash, $identity) {
         return ['bytes' => 0,
                 'records' => [['ordinal' => $ordinal, 'record_hash' => $hash,
-                               'state' => ScanStore::REC_DONE]],
-                'findings' => [['project_id' => $REEXAMINED, 'generation_id' => $gen,
+                               'state' => ScanStore::REC_DONE, 'claim' => $claim]],
+                'findings' => [['ordinal' => $ordinal,
+                                'project_id' => $REEXAMINED, 'generation_id' => $gen,
                                 'identity' => $identity, 'valid_from_seq' => $seq,
                                 'record_hash' => $hash, 'record_id_bin' => 'X-1',
                                 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
@@ -319,7 +324,7 @@ $REEXAMINED = 730;
     };
     $first = $s->claim($rid, 'w', $ep, 1);
     check('store: the first examination of the record commits',
-        $s->commitBatch($rid, 'w', $ep, 0, $batch($first[0]['ordinal'])) === true);
+        $s->commitBatch($rid, 'w', $ep, $batch($first[0]['ordinal'], $first[0]['claim'])) === true);
 
     // Someone saves the record. Catch-up is the one sanctioned exception to the
     // frozen manifest, so the requeue only exists inside that phase.
@@ -329,7 +334,7 @@ $REEXAMINED = 730;
     $back = $s->claimPending($rid, 'w', $ep, 1);
     check('store: and the straggler sweep offers it again', is_array($back) && count($back) === 1);
 
-    $second = $s->commitBatch($rid, 'w', $ep, 0, $batch($back[0]['ordinal']));
+    $second = $s->commitBatch($rid, 'w', $ep, $batch($back[0]['ordinal'], $back[0]['claim']));
     check('store: a record re-examined inside one run commits the same finding again',
         $second === true);
     if ($second !== true) fwrite(STDERR, '  the re-examination said: ' . (string) $second . "\n");
@@ -375,17 +380,18 @@ $CHECKBOX = 740;
     $s->writeManifest($rid, [['id_bin' => 'C-1', 'hash' => $hash, 'dag' => null]]);
     $ep = (int) $s->run($CHECKBOX, $rid)['lease_epoch'];
     $c = $s->claim($rid, 'w', $ep, 1);
-    $one = function ($identity) use ($CHECKBOX, $gen, $seq, $hash, $where) {
-        return ['project_id' => $CHECKBOX, 'generation_id' => $gen, 'identity' => $identity,
+    $one = function ($identity) use ($CHECKBOX, $gen, $seq, $hash, $where, $c) {
+        return ['ordinal' => $c[0]['ordinal'],
+                'project_id' => $CHECKBOX, 'generation_id' => $gen, 'identity' => $identity,
                 'valid_from_seq' => $seq, 'record_hash' => $hash, 'record_id_bin' => 'C-1',
                 'event_id' => null, 'instance' => 1, 'host_form' => $where['host_form'],
                 'field' => $where['field'], 'rule_source_id' => $where['rule_source_id'],
                 'rule_revision' => str_repeat('c', 64), 'check_type' => 'choices',
                 'reason_code' => $where['reason_code']];
     };
-    $both = $s->commitBatch($rid, 'w', $ep, 0, ['bytes' => 0,
+    $both = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0,
         'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $hash,
-                       'state' => ScanStore::REC_DONE]],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]],
         'findings' => [$one($idA), $one($idB)]]);
     check('store: and both store, rather than the batch being refused entire', $both === true);
     if ($both !== true) fwrite(STDERR, '  the checkbox batch said: ' . (string) $both . "\n");
@@ -416,24 +422,27 @@ $REPEATED = 750;
     $s->writeManifest($rid, $recs);
     $ep = (int) $s->run($REPEATED, $rid)['lease_epoch'];
     $c = $s->claim($rid, 'w', $ep, 2);
-    $mk = function ($identity, $rec) use ($REPEATED, $gen, $seq) {
-        return ['project_id' => $REPEATED, 'generation_id' => $gen, 'identity' => $identity,
+    $mk = function ($identity, $rec, $ordinal) use ($REPEATED, $gen, $seq) {
+        return ['ordinal' => $ordinal,
+                'project_id' => $REPEATED, 'generation_id' => $gen, 'identity' => $identity,
                 'valid_from_seq' => $seq, 'record_hash' => $rec['hash'],
                 'record_id_bin' => $rec['id_bin'], 'instance' => 1, 'host_form' => 'fa',
                 'field' => 'x', 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
                 'check_type' => 'required', 'reason_code' => 'required-blank'];
     };
     $same = hash('sha256', 'emitted-twice-by-mistake', true);
-    $refused = $s->commitBatch($rid, 'w', $ep, 0, ['bytes' => 0,
+    $refused = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0,
         'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
-                       'state' => ScanStore::REC_DONE],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
                       ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'],
-                       'state' => ScanStore::REC_DONE]],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]],
         // The third finding is perfectly good, and that is why it is here: the
         // claim is that NOTHING from the batch is stored, not that the repeat
         // was dropped.
-        'findings' => [$mk($same, $recs[0]), $mk($same, $recs[0]),
-                       $mk(hash('sha256', 'a-different-finding', true), $recs[1])]]);
+        'findings' => [$mk($same, $recs[0], $c[0]['ordinal']),
+                       $mk($same, $recs[0], $c[0]['ordinal']),
+                       $mk(hash('sha256', 'a-different-finding', true), $recs[1],
+                           $c[1]['ordinal'])]]);
     check('store: a batch carrying one identity twice is refused', $refused !== true);
     check('store: and says the database refused it rather than a phantom cancellation',
         is_string($refused) && strpos($refused, 'database refused') !== false);
@@ -510,14 +519,15 @@ $UNOWNED = 770;
               'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
               'reason_code' => 'required-blank'];
         if ($project !== null) $f['project_id'] = $project;
+        $f['ordinal'] = $c[0]['ordinal'];
         return ['bytes' => 0,
                 'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $hash,
-                               'state' => ScanStore::REC_DONE]],
+                               'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]],
                 'findings' => [$f]];
     };
-    $absent = $s->commitBatch($rid, 'w', $ep, 0, $with(null, 'absent'));
+    $absent = $s->commitBatch($rid, 'w', $ep, $with(null, 'absent'));
     check('store: a finding that names no project is refused', $absent !== true);
-    $zero = $s->commitBatch($rid, 'w', $ep, 0, $with(0, 'zero'));
+    $zero = $s->commitBatch($rid, 'w', $ep, $with(0, 'zero'));
     check('store: and a project id of zero is refused too, which the column cannot do',
         $zero !== true);
     // ASKED OF THE WHOLE TABLE, on purpose. "Nothing belongs to no project" is

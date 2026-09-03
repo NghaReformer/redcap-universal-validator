@@ -42,7 +42,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null),
         array('id_bin' => 'R2', 'hash' => hash('sha256', 'R2', true), 'dag' => null)));
     $epoch = (int) $store->run($PID, $rid)['lease_epoch'];
-    $store->claim($rid, 'w', $epoch, 2);
+    $claimed = $store->claim($rid, 'w', $epoch, 2);
 
     // A finding whose reason_code exceeds its column. The batch must roll back
     // ENTIRELY - a half-written batch would mark records done whose findings
@@ -57,7 +57,8 @@ $NEIGHBOUR = uv_neighbour($PID);
     $gen = (int) $r['run']['generation_id'];
     $bad = array(
         'bytes' => 10,
-        'records' => array(array('ordinal' => 1, 'record_hash' => hash('sha256', 'R1', true),
+        'records' => array(array('ordinal' => 1, 'claim' => $claimed[0]['claim'],
+                                 'record_hash' => hash('sha256', 'R1', true),
             'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
             'project_id' => $PID,
@@ -67,7 +68,7 @@ $NEIGHBOUR = uv_neighbour($PID);
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
             'reason_code' => str_repeat('z', 200))));   // column is VARCHAR(64)
-    $refused = $store->commitBatch($rid, 'w', $epoch, 0, $bad);
+    $refused = $store->commitBatch($rid, 'w', $epoch, $bad);
     check('fault: a batch whose write fails does not commit', $refused !== true);
     check('fault: and names the database as the cause, not a phantom cancellation',
         is_string($refused) && strpos($refused, 'database refused') !== false);
@@ -120,7 +121,7 @@ $NEIGHBOUR = uv_neighbour($PID);
     try {
         // Writing to a table not named in LOCK TABLES is refused while the lock
         // is held - a real server-side write failure, not a simulated one.
-        $store->commitBatch($rid, 'w', $epoch, 0, array(
+        $store->commitBatch($rid, 'w', $epoch, array(
             'bytes' => 0, 'records' => array(), 'findings' => array()));
     } catch (\Throwable $e) {
         $ok = false;

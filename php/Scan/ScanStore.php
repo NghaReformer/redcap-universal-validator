@@ -18,13 +18,38 @@ namespace INSPIRE\UniversalValidator\Scan;
  *
  *  I1  At most one active run per project. Enforced by the storage engine, never
  *      by a read-then-write check, which is a race by construction.
- *  I2  A batch's findings, its record states and its cursor advance commit in
- *      ONE transaction, cursor last, conditioned on its own old value and the
- *      lease epoch. Zero affected rows means roll everything back: another
- *      worker moved past us, or a cancellation bumped the epoch.
+ *  I2  A batch's findings, its uniqueness candidates and its record states
+ *      commit in ONE transaction, opened by a LOCKING READ of the run row that
+ *      is held for the life of that transaction. The epoch, the cancellation
+ *      flag and the terminal state are then compared in PHP, where "unchanged"
+ *      is not mistaken for "absent".
+ *
+ *      IT IS NOT A COMPARE-AND-SET ON A CURSOR, and it must not become one.
+ *      This invariant used to say "cursor last, conditioned on its own old
+ *      value ... zero affected rows means roll everything back", which
+ *      described neither implementation: there is no cursor advance in
+ *      commitBatch at all (claim() moves it), and a CAS judged by affected rows
+ *      is the exact bug documented at SqlScanStore.php:24-31 - MySQL reports
+ *      rows CHANGED, not rows MATCHED, so writing a value that already held
+ *      reports zero and rolls back a good batch. The parameter that carried the
+ *      expected cursor was read by neither store and by no test; it is gone
+ *      rather than implemented.
+ *  I2b Within that transaction the fence is also PER RECORD. A batch may only
+ *      write the rows it still holds - see the claim token on claim() - and it
+ *      writes only the findings belonging to those rows. A run-wide fence
+ *      cannot express this: it is either open, in which case a taken-over
+ *      record's stale findings are inserted over the new holder's and the
+ *      unique key kills the whole batch, or it is closed, in which case the
+ *      records nobody took are discarded with it.
  *  I3  Nothing marks a record done except the transaction that scanned it. So a
  *      lost batch, a crash, a retry and an OOM are indistinguishable from "not
  *      attempted", which is the only safe reading.
+ *  I3b An ATTEMPT, however, is counted for work that was attempted, not for
+ *      work that was committed - so it is written by a transaction the failure
+ *      cannot roll back. Counting it inside the batch made the retry cap
+ *      unreachable by construction: the only path that incremented it was the
+ *      one that had already succeeded, so a batch the database refused was
+ *      retried without bound and the run never became terminal.
  *  I4  Completeness is a PREDICATE over record states, never an accumulated
  *      counter. A counter can be incremented twice; a predicate cannot.
  *  I5  A finding has one active version per identity per generation. Closing is
@@ -62,6 +87,24 @@ interface ScanStore
     const REC_UNREADABLE = 101;   // read failed after the configured attempts
     const REC_UNSTABLE   = 102;   // changed under us every time we looked
     const REC_TOMBSTONE  = 103;   // deleted from the project mid-run
+
+    /**
+     * Examined, and the result could not be STORED, after every attempt.
+     *
+     * A fifth state rather than a reuse of one of the four, because the four
+     * make claims this one cannot. It is not TOMBSTONE - the record is still in
+     * the project, and a run that recorded it as deleted would be lying about
+     * the source. It is not UNREADABLE - the record was read and examined
+     * perfectly well. It is not UNSTABLE - it held still. What failed is this
+     * module's own write, and that is a different fact about a different system.
+     *
+     * ALWAYS BLOCKING. Terminal, so the run can finish and give the project its
+     * slot back rather than retrying forever; and counted with the exclusions,
+     * so it can never finish CLEAN. A scan that could not store what it found
+     * has not checked the project, and the one outcome it must not produce is
+     * the one that looks like a pass.
+     */
+    const REC_UNSTORED   = 104;
 
     /**
      * Create a run and take the project's active slot, or report busy.
@@ -138,6 +181,24 @@ interface ScanStore
      * look, and an implementation that answers `false` over one of those hands
      * the worker a sentence about contention for a database that is down.
      *
+     * EVERY ROW CARRIES A CLAIM TOKEN, and it is not decoration. The row shape
+     * is {ordinal, id_bin, hash, dag, attempts, version, claim}, where `claim`
+     * is a number stamped on the STORED row inside this same transaction. The
+     * worker hands it back on every subsequent write about that row -
+     * commitBatch(), releaseClaims(), noteAttempts() - and a write whose token
+     * no longer matches the row touches nothing.
+     *
+     * WHY NOT THE LEASE EPOCH. Because it does not move. `lease_epoch + 1`
+     * occurs in exactly one statement in this codebase, inside cancel(), so
+     * takeover fencing did not exist: a second worker re-claimed a stale
+     * worker's rows while both held the same epoch, and the first worker's
+     * later commit passed the fence and inserted findings for records the
+     * second had already committed - which, the identity key being what it is,
+     * refused the whole batch. Bumping the epoch on takeover is the obvious fix
+     * and is wrong: it invalidates the fence for the WHOLE RUN rather than for
+     * the records that actually changed hands, so every other worker of that
+     * run loses its in-flight batch too. The claim belongs on the row.
+     *
      * @return array|false
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
@@ -157,19 +218,38 @@ interface ScanStore
      * too long and a crash costs a delay. Neither can produce a false complete,
      * because a record is only marked done by the transaction that scanned it.
      *
+     * Rows come back with a claim token, exactly as claim()'s do, and taking a
+     * straggler over REPLACES the token the previous holder was given. That is
+     * the whole of the takeover fence: the old holder's commit then matches no
+     * row and is discarded, without disturbing any other worker of the run.
+     *
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900);
 
     /**
-     * Commit one batch: findings, record terminal states, aggregates, and the
-     * cursor advance, in one transaction with the cursor LAST (I2).
+     * Commit one batch: record states, findings and uniqueness candidates, in
+     * one transaction behind a locking read of the run row (I2).
      *
-     * @return bool true when the compare-and-set held; false means the caller
-     *              must discard everything it buffered and stop.
+     * THE RECORD STATES ARE WRITTEN FIRST, not last, and the reason the old
+     * order existed does not survive inspection: inside one transaction a crash
+     * rolls back every statement regardless of the order they were issued in,
+     * so "states last" bought nothing. What the new order buys is real - the
+     * per-record fence (I2b) is evaluated by those UPDATEs, so writing them
+     * first is what tells the rest of the transaction WHICH records this worker
+     * still holds. Findings and candidates are then inserted only for those.
+     *
+     * Every entry of $batch['records'] carries the `claim` token claim() gave
+     * it, and every finding and candidate carries the `ordinal` of the record
+     * that produced it. Both are required: a row without a token cannot be
+     * fenced, and a finding that cannot be attributed to a claimed record
+     * cannot be held back when that record is lost.
+     *
+     * @return true|string true when it committed; otherwise the sentence to
+     *         show, and the caller must discard everything it buffered.
      */
-    public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch);
+    public function commitBatch($runId, $owner, $epoch, array $batch);
 
     /**
      * Hand claimed records back so another worker can take them immediately.
@@ -180,13 +260,47 @@ interface ScanStore
      * it goes stale. Combined with a phase machine that refuses to advance over
      * unexamined records, that is a deadlock rather than a delay.
      *
-     * Fenced on the epoch the caller held: a worker whose rows were taken over
-     * must not be able to pull them back out of the new holder's hands.
+     * FENCED TWICE. On the run's lease epoch, and per row on the claim token -
+     * a worker whose rows were taken over must not be able to pull them back
+     * out of the new holder's hands, and the epoch alone cannot say that
+     * because takeover does not move it.
      *
+     * @param array $claims ordinal => claim token, as claim() reported them
      * @return int rows handed back
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
-    public function releaseClaims($runId, $epoch, array $ordinals);
+    public function releaseClaims($runId, $epoch, $owner, array $claims);
+
+    /**
+     * Count one attempt against records this worker tried and could not finish,
+     * and retire the ones that have now run out of attempts.
+     *
+     * THE POINT IS THE TRANSACTION IT IS NOT IN. `attempts` was incremented in
+     * exactly one place - the record UPDATE inside commitBatch - so it moved
+     * only when the commit succeeded. A batch the database refused rolled that
+     * increment back with everything else, `recordAttempts` could never be
+     * reached, the run never became terminal, and it held the project's one
+     * active slot while retrying the same failing write forever. Any persistent
+     * write error did this, not only the duplicate key that started it.
+     *
+     * So the caller invokes this AFTER the failing transaction has rolled back,
+     * and it opens its own. The two paths that need it are a whole-batch read
+     * failure and a refused commit; both leave records that were genuinely
+     * attempted, and neither may leave them looking untouched.
+     *
+     * Saturating, not wrapping: `attempts` is a TINYINT UNSIGNED and a run that
+     * somehow reached 255 must not roll over to 0 and start again, nor be
+     * silently clamped by a permissive sql_mode.
+     *
+     * @param array $claims   ordinal => claim token, as claim() reported them
+     * @param int   $maxAttempts  the run's configured limit
+     * @param int   $exhausted    the terminal state for rows that reach it -
+     *                            REC_UNSTORED for a refused commit,
+     *                            REC_UNREADABLE for a failed read
+     * @return array{counted:int, retired:int}
+     * @throws ScanStoreUnavailable when the storage failed rather than refused
+     */
+    public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted);
 
     /**
      * Is every manifest row terminal? A PREDICATE over states (I4), never a

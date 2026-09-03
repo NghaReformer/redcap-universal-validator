@@ -15,17 +15,23 @@
  *   1  the SECOND scan of a project        COMMITTED   (findings 2 -> 4)
  *   2  two hidden codes ticked on one box  COMMITTED   (2 stored, not 0)
  *   4  purging ONE project's run           2 findings left, not 0
- *   5  the record reaches a terminal state state=100 attempts=1
+ *   5  a permanently refused batch         3 attempts, then UNSTORED and done
  *
  * The scenario labels below still describe the DEFECT each one was written to
  * catch, because that is what makes the output readable as a before-and-after.
  *
- * ONE CAVEAT ON SCENARIO 5. It was written to show that a refused batch never
- * incremented `attempts`, so the retry cap could never trip and the run retried
- * forever. The batch now commits, so this harness can no longer reach that
- * path - the TRIGGER is fixed, not the defect. Counting an attempt outside the
- * failing transaction is wave 5; until it lands, any other persistent write
- * error still retries without bound.
+ * SCENARIO 5 WAS REWRITTEN, and the reason is worth keeping. It was written to
+ * show that a refused batch never incremented `attempts`, so the retry cap
+ * could never trip - and it used the two-hidden-codes checkbox to produce the
+ * refusal. Fixing the identity made that batch COMMIT, so the harness stopped
+ * being able to reach the path at all: the trigger was fixed, not the defect,
+ * and for one release this file printed a green line over an unbounded retry
+ * loop that was still there.
+ *
+ * It now drives the REAL ScanWorker against an evaluation that emits one
+ * identity twice - a write the database will refuse every time, forever - and
+ * shows the run reaching a terminal state instead of retrying. Any persistent
+ * write error takes the same path.
  *
  * Run:
  *   UV_DB_HOST=127.0.0.1 UV_DB_PORT=33306 UV_DB_USER=root UV_DB_PASS=uvtest \
@@ -43,6 +49,8 @@ require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
 require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../php/Scan/Hmac.php';
 require_once __DIR__ . '/../php/Scan/ScanRetention.php';
+require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+require_once __DIR__ . '/../php/Scan/ScanWorker.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 use INSPIRE\UniversalValidator\Scan\SqlScanStore;
@@ -187,7 +195,7 @@ function oneRun($store, $pid, $records, $specFor, $label) {
                                    'state' => ScanStore::REC_DONE,
                                    'version' => '1'];
         }
-        $res = $store->commitBatch($runId, 'owner-1', $epoch, null, $batch);
+        $res = $store->commitBatch($runId, 'owner-1', $epoch, $batch);
         $results[] = $res;
         echo "$label: batch of " . count($claim) . " records -> "
            . ($res === true ? "COMMITTED" : "REFUSED: $res") . "\n";
@@ -276,10 +284,83 @@ $after = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_ro
 echo "purged $purged run(s) of project 111 -> findings left across ALL projects: $after";
 echo ($after == 0 && $before > 1) ? "  <-- PROJECT 222's FINDINGS WERE DELETED TOO\n" : "\n";
 
-echo "\n=== SCENARIO 5: a refused batch does not increment attempts (retry cap never trips) ===\n";
+echo "\n=== SCENARIO 5: a permanently refused batch has a way out (it used to retry forever) ===\n";
 foreach (array_reverse(Schema::tables()) as $t) $c->query('DROP TABLE IF EXISTS ' . $t);
 Schema::migrate($m);
-oneRun($store, 333, ['C1'], $spec2, 'first run (checkbox, refused)');
-$row = $c->query('SELECT state, attempts FROM ' . Schema::table('scan_record'))->fetch_row();
-echo "record state=" . $row[0] . " attempts=" . $row[1]
-   . "  (state 0 = pending, so it is handed straight back; attempts stays 0 forever)\n";
+
+// THE REAL WORKER, not a hand-rolled imitation of it. The whole finding is
+// about the ORDER of three store calls - commit, count the attempt, hand the
+// records back - and a harness that made those calls itself would prove only
+// that the harness knows the order. ScanWorker is what has to know it.
+//
+// The evaluation below emits ONE IDENTITY TWICE for the same record, which is
+// what a @UVCHOICES checkbox with two ticked hidden codes did before the locus
+// discriminator landed. It is used here as a PERMANENT write refusal: the
+// database says no, it will say no again next time, and nothing the worker can
+// do will change that. On 1.9.10 the consequences were:
+//
+//   the batch rolled back, taking the `attempts` increment with it, because the
+//   only statement that incremented it lived inside the failing transaction;
+//   `recordAttempts` was therefore unreachable; the run never became terminal;
+//   and it held the project's one active scan slot until somebody went into the
+//   database. Forty identical batches is what the pilot logged.
+{
+    $PID5 = 333;
+    $rec5 = 'C1';
+    $hash5 = Hmac::raw(Hmac::P_RECORD, $PID5, $rec5, str_repeat('k', 32));
+    $started = $store->startRun($PID5, ['created_by' => 'pilot']);
+    $rid5 = (int) $started['run']['run_id'];
+    $store->writeManifest($rid5, [['id_bin' => $rec5, 'hash' => $hash5, 'dag' => null]]);
+    $row5 = $store->run($PID5, $rid5);
+    $gen5 = (int) $row5['generation_id'];
+    $seq5 = (int) $row5['run_seq'];
+
+    $ATTEMPTS = 3;
+    $same = Hmac::raw(Hmac::P_FINDING, $PID5, 'the-same-identity-twice', str_repeat('k', 32));
+    $one = [
+        'project_id' => $PID5, 'generation_id' => $gen5, 'identity' => $same,
+        'valid_from_seq' => $seq5, 'record_hash' => $hash5, 'record_id_bin' => $rec5,
+        'event_id' => 13, 'instance' => 1, 'host_form' => 'visit', 'field' => 'symptoms',
+        'rule_source_id' => 'ann:bbbb:choices:0', 'rule_revision' => str_repeat('c', 64),
+        'rule_ord' => 2, 'check_type' => 'choices', 'reason_code' => 'hidden-choice',
+    ];
+    $worker = new INSPIRE\UniversalValidator\Scan\ScanWorker($store, [
+        'read'     => function (array $ids) use ($rec5) {
+            $out = [];
+            foreach ($ids as $id) $out[$id] = ['record_id' => $rec5];
+            return ['ok' => true, 'data' => $out, 'why' => null];
+        },
+        'evaluate' => function ($id, array $node) use ($one) {
+            return ['findings' => [$one, $one], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+        },
+        'budget'   => new INSPIRE\UniversalValidator\Scan\WorkBudget(['mode' => 'browser']),
+        'owner'    => 'pilot-worker',
+        'attempts' => $ATTEMPTS,
+        'note'     => function ($event, array $ctx) {
+            echo "  log: $event - " . (isset($ctx['detail']) ? $ctx['detail'] : '') . "\n";
+        },
+    ]);
+
+    $state = function () use ($c, $rid5) {
+        return $c->query('SELECT state, attempts FROM ' . Schema::table('scan_record')
+            . ' WHERE run_id = ' . $rid5)->fetch_row();
+    };
+    for ($pass = 1; $pass <= $ATTEMPTS + 2; $pass++) {
+        $r = $worker->work($PID5, $rid5);
+        $st = $state();
+        echo "pass $pass: stop=" . (string) $r['stop']
+           . " blocked=" . (int) $r['blocked']
+           . " -> record state=" . $st[0] . " attempts=" . $st[1] . "\n";
+        if ((int) $st[0] >= 100) break;
+    }
+    $st = $state();
+    $unstored = INSPIRE\UniversalValidator\Scan\ScanStore::REC_UNSTORED;
+    echo "final: state=" . $st[0] . " attempts=" . $st[1]
+       . ((int) $st[0] === $unstored
+            ? "  <-- UNSTORED: terminal, blocking, and the run can now end\n"
+            : "  <-- STILL NOT TERMINAL: the run is wedged\n");
+    echo "manifest complete: " . ($store->manifestComplete($rid5) ? 'yes' : 'no')
+       . "  (this is what releases the project's scan slot)\n";
+    $left = $c->query('SELECT COUNT(*) FROM ' . Schema::table('finding'))->fetch_row()[0];
+    echo "findings stored from the refused batches: $left  (nothing was half-written)\n";
+}

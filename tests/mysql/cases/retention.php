@@ -55,10 +55,11 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('retention: the neighbour shares this project\'s generation, as two projects do',
         (int) $nb['generation_id'] === $gen);
     $epoch = (int) $store->run($PID, $rid)['lease_epoch'];
-    $store->claim($rid, 'w', $epoch, 1);
-    $store->commitBatch($rid, 'w', $epoch, 0, array(
+    $claimed = $store->claim($rid, 'w', $epoch, 1);
+    $store->commitBatch($rid, 'w', $epoch, array(
         'bytes' => 10,
-        'records' => array(array('ordinal' => 1, 'record_hash' => hash('sha256', 'R1', true),
+        'records' => array(array('ordinal' => 1, 'claim' => $claimed[0]['claim'],
+                                 'record_hash' => hash('sha256', 'R1', true),
             'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE)),
         'findings' => array(array(
             'project_id' => $PID,

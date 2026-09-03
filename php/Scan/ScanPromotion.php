@@ -87,7 +87,15 @@ final class ScanPromotion
         };
 
         $pending = $n(ScanStore::REC_PENDING) + $n(ScanStore::REC_CLAIMED);
-        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE);
+        // EVERY NON-EXAMINING TERMINAL STATE EXCEPT THE TOMBSTONE. A record
+        // that could not be read, would not hold still, or whose result could
+        // not be stored is a record this run did not check - and a run with one
+        // of those in it must never be able to say `clean`. REC_UNSTORED is the
+        // newest of the three and the easiest to forget: it is written by the
+        // give-back path rather than by a commit, so nothing else in this file
+        // would ever have mentioned it.
+        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE)
+                 + $n(ScanStore::REC_UNSTORED);
 
         $cancelled = !empty($run['cancel_requested_at'])
                      || (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING);

@@ -69,6 +69,12 @@ namespace INSPIRE\UniversalValidator\Scan {
         $db->rows = [
             // claim() and claimPending() read (epoch, phase, cancel, cursor).
             'FOR UPDATE' => [[0, ScanPhase::SCANNING, null, 0]],
+            // AND, BEFORE EITHER OPENS A TRANSACTION, the claim token: which
+            // project this run belongs to, so the per-project sequence can be
+            // drawn on. A stub that did not answer this would send both methods
+            // down the "no such run" path and every fence assertion below would
+            // pass without the fence having been reached.
+            'SELECT project_id FROM' => [[77]],
         ];
         return $db;
     }
@@ -104,10 +110,38 @@ namespace INSPIRE\UniversalValidator\Scan {
     $db = scanningDb();
     $db->failAt('FOR UPDATE', 1);
     $r = outcomeOf(function () use ($db) {
-        return (new SqlScanStore($db))->releaseClaims(1, 0, [1, 2, 3]);
+        return (new SqlScanStore($db))->releaseClaims(1, 0, 'w1', [1 => 9, 2 => 9, 3 => 9]);
     });
     check('fault: releaseClaims does not report zero rows handed back',
         $r['kind'] === 'unavailable' && $db->rollbacks === 1);
+
+    // THE STATEMENT BEFORE THE TRANSACTION. Allocating a claim token is a read
+    // and a write against uv_project_seq, and it happens OUTSIDE claim()'s try
+    // so the sequence row is not locked for the life of a claim. Outside the
+    // try is also outside the classification the rest of this file asserts, so
+    // it gets its own: a deadlock there must still be a storage failure and not
+    // a fence refusal, or the worker is told to come back later about a
+    // database that is down.
+    $db = scanningDb();
+    $db->failAt('SELECT project_id FROM', 1);
+    $r = outcomeOf(function () use ($db) {
+        return (new SqlScanStore($db))->claim(1, 'w1', 0, 10);
+    });
+    check('fault: a fault allocating the claim token is a storage failure too',
+        $r['kind'] === 'unavailable' && strpos($r['detail'], 'Deadlock') !== false);
+    check('fault: and no transaction was opened to roll back',
+        $db->rollbacks === 0 && !in_array('BEGIN', $db->log, true));
+
+    // A RUN THAT IS GONE IS STILL A REFUSAL, from the same statement. The token
+    // allocator answering zero must reach the caller as claim()'s ordinary
+    // false - the answer its own fence would have given one statement later -
+    // rather than as an exception about a missing project.
+    $db = new ScriptedDb();       // no run row at all
+    $r = outcomeOf(function () use ($db) {
+        return (new SqlScanStore($db))->claim(1, 'w1', 0, 10);
+    });
+    check('fault: a run with no project refuses rather than throwing',
+        $r['kind'] === 'returned' && $r['value'] === false);
 
     // THE ONE THAT REPORTED A RUN DONE. advancePhase's false is read by
     // ScanWorker as "there is no next phase".
@@ -231,15 +265,28 @@ namespace INSPIRE\UniversalValidator\Scan {
     // THE PROBE COSTS NOTHING ON THE HAPPY PATH. It is on the failure branch
     // only, so an ordinary start is still one insert and one read.
     $db = new ScriptedDb();
+    // TWENTY-TWO VALUES, and they are positional. run() projects a fixed column
+    // list and array_combine() refuses a row of the wrong length, so a stub row
+    // that has drifted from the projection makes startRun answer with a `run`
+    // of false while still reporting ok - which is what this check caught: the
+    // run_seq column was added to the projection and never added here.
     $db->rows = ['SELECT run_id FROM' => [[42]],
                  'SELECT run_id, project_id' => [[42, 700, null, 'planning', null, 'partial',
-                    'complete', 'none', 1, str_repeat('0', 64), 0, 0, 0, 0, 1, 'alice', 0, 0,
+                    'complete', 'none', 1, str_repeat('0', 64), 0, 0, 0, 0, 1, 1, 'alice', 0, 0,
                     null, null, null]]];
     $r = outcomeOf(function () use ($db) {
         return (new SqlScanStore($db))->startRun(700, []);
     });
     check('start: a successful start still succeeds',
         $r['kind'] === 'returned' && $r['value']['ok'] === true);
+    // ok:true was not enough. The projection can drift, array_combine can
+    // refuse the row, and startRun still answers ok with `run` set to false -
+    // which is what happened when run_seq was added to run() and this stub was
+    // not. Ask for the run itself.
+    check('start: and hands back the run row it just created',
+        isset($r['value']['run']) && is_array($r['value']['run'])
+        && (int) $r['value']['run']['run_id'] === 42
+        && (int) $r['value']['run']['project_id'] === 700);
     $probes = 0;
     foreach ($db->log as $sql) {
         if (strpos($sql, 'SELECT 1 FROM') !== false) $probes++;

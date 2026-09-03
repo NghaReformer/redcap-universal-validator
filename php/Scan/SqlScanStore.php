@@ -125,6 +125,47 @@ final class SqlScanStore implements ScanStore
         return $seq;
     }
 
+    /**
+     * A claim token for one claim, drawn from the run's own project sequence.
+     *
+     * NOT A RANDOM NUMBER, and not a timestamp. Random would be adequate for
+     * the fence - the token only has to differ from whatever the previous
+     * holder was given - but the column is `claim_seq` and a column named for a
+     * sequence should hold one, so that "this row was claimed after that one"
+     * is a comparison a reader can make rather than a coincidence. A
+     * millisecond clock was the other candidate and is not safe: two workers
+     * claiming inside the same millisecond would be handed the same token,
+     * which is precisely the case the fence exists for.
+     *
+     * The cost is one extra statement pair per CLAIM - not per record - against
+     * a single row this project's one active run already serialises on.
+     *
+     * ZERO MEANS THE RUN IS GONE, and the caller answers `false` to that -
+     * which is the same answer its own fence gives, from one statement later.
+     * Throwing here instead would turn "there is no such run", an ordinary
+     * refusal that claim() has always handled, into a storage failure.
+     *
+     * @return int the token, or 0 when there is no such run
+     * @throws ScanStoreUnavailable when the storage failed rather than answered
+     */
+    private function claimToken($runId)
+    {
+        try {
+            $r = $this->db->select('SELECT project_id FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ?', [$runId]);
+            $pid = isset($r[0][0]) ? (int) $r[0][0] : 0;
+            if ($pid < 1) return 0;
+            return $this->allocateSeq($pid);
+        } catch (ScanStoreUnavailable $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            // No transaction is open yet, so there is nothing to roll back -
+            // but the classification is the same one every other read in this
+            // file makes, and making it differently here is how the fence's
+            // vocabulary ends up on something the fence never decided.
+            throw $this->unavailable($e);
+        }
+    }
 
     /**
      * I1: at most one active run per project, enforced by the UNIQUE key.
@@ -361,9 +402,16 @@ final class SqlScanStore implements ScanStore
             $c = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
                 . ' WHERE run_id = ?', [$runId]);
             $total = isset($c[0][0]) ? (int) $c[0][0] : 0;
+            // THE SECOND OF THE TWO PLACES progress_at is written. Freezing
+            // the manifest IS progress - it is the moment the run stops
+            // planning and becomes work - and without it a run that planned a
+            // large project and then wedged before its first batch would carry
+            // a NULL progress_at forever and be indistinguishable from one that
+            // had never started.
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
-                SET manifest_total = ?, phase = ?, updated_at = ? WHERE run_id = ?',
-                [$total, ScanPhase::SCANNING, self::now(), $runId]);
+                SET manifest_total = ?, phase = ?, updated_at = ?, progress_at = ?
+                WHERE run_id = ?',
+                [$total, ScanPhase::SCANNING, self::now(), self::now(), $runId]);
             $this->db->commit();
             return $total;
         } catch (\Throwable $e) {
@@ -414,6 +462,14 @@ final class SqlScanStore implements ScanStore
     public function claim($runId, $owner, $epoch, $limit)
     {
         $limit = max(1, (int) $limit);
+        // THE CLAIM TOKEN IS ALLOCATED BEFORE THE TRANSACTION OPENS, so the
+        // project's sequence row is not locked for the life of a claim. It is
+        // the same per-project sequence that numbers runs and generations,
+        // which makes the token monotonic rather than merely distinct - and a
+        // token burned by a rolled-back claim costs nothing, because these
+        // numbers are identifiers and never counts.
+        $token = $this->claimToken($runId);
+        if ($token < 1) return false;            // no such run: refused, not empty
         $this->db->begin();
         try {
             // THE FENCE IS A LOCKING READ. It was an UPDATE gated on
@@ -442,6 +498,7 @@ final class SqlScanStore implements ScanStore
                 WHERE run_id = ? AND ordinal > ? AND state = ?
                 ORDER BY ordinal LIMIT ' . $limit, [$runId, $from, self::REC_PENDING]);
             $out = [];
+            $ords = [];
             $to = $from;
             foreach ($rows as $row) {
                 $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
@@ -451,8 +508,25 @@ final class SqlScanStore implements ScanStore
                           // record that will not hold still and declaring it a
                           // blocking exclusion - a decision it cannot make from
                           // what it can see in one request.
-                          'attempts' => (int) $row[4], 'version' => $row[5]];
+                          'attempts' => (int) $row[4], 'version' => $row[5],
+                          'claim' => $token];
+                $ords[] = (int) $row[0];
                 if ((int) $row[0] > $to) $to = (int) $row[0];
+            }
+            // STAMP THE CLAIM, LEAVE THE STATE ALONE.
+            //
+            // In this phase the advancing cursor is what keeps two workers
+            // apart, and marking these rows CLAIMED would change more than the
+            // fence: a scanning row abandoned by a dead worker is PENDING and
+            // catch-up picks it up at once, where a CLAIMED one is invisible to
+            // the straggler sweep for a quarter of an hour. So the token is
+            // written and the state is not.
+            if ($ords) {
+                $marks = implode(',', array_fill(0, count($ords), '?'));
+                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                    SET claim_owner = ?, claim_seq = ?, updated_at = ?
+                    WHERE run_id = ? AND ordinal IN (' . $marks . ')',
+                    array_merge([$owner, $token, self::now(), $runId], $ords));
             }
             $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
                 SET cursor_ordinal = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ?
@@ -481,6 +555,8 @@ final class SqlScanStore implements ScanStore
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
     {
         $limit = max(1, (int) $limit);
+        $token = $this->claimToken($runId);
+        if ($token < 1) return false;            // no such run: refused, not empty
         $this->db->begin();
         try {
             $r = $this->db->select('SELECT lease_epoch, phase, cancel_requested_at FROM '
@@ -506,15 +582,21 @@ final class SqlScanStore implements ScanStore
             foreach ($rows as $row) {
                 $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
                           'hash' => $row[2], 'dag' => $row[3],
-                          'attempts' => (int) $row[4], 'version' => $row[5]];
+                          'attempts' => (int) $row[4], 'version' => $row[5],
+                          'claim' => $token];
             }
             if ($out) {
                 $ords = [];
                 foreach ($out as $o) $ords[] = $o['ordinal'];
                 $marks = implode(',', array_fill(0, count($ords), '?'));
-                $this->db->exec('UPDATE ' . $t . ' SET state = ?, updated_at = ?
+                // TAKING A STRAGGLER REPLACES ITS TOKEN. That single assignment
+                // is the takeover fence: whoever held the row before now
+                // matches nothing, and no other worker of this run is affected.
+                $this->db->exec('UPDATE ' . $t . '
+                    SET state = ?, claim_owner = ?, claim_seq = ?, updated_at = ?
                     WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
-                    array_merge([self::REC_CLAIMED, self::now(), $runId], $ords, [self::REC_DONE]));
+                    array_merge([self::REC_CLAIMED, $owner, $token, self::now(), $runId],
+                                $ords, [self::REC_DONE]));
             }
             $this->db->commit();
             return $out;
@@ -526,15 +608,56 @@ final class SqlScanStore implements ScanStore
     }
 
     /**
-     * I2/I3: findings, record states and the cursor commit as one transaction.
+     * I2/I2b/I3: record states, findings and candidates as one transaction.
      *
-     * The record states are written LAST inside the transaction and only for
-     * rows this worker claimed, so a crash anywhere leaves them pending and the
-     * batch is simply re-claimable. Nothing marks a record done except the
-     * transaction that scanned it.
+     * THE ORDER INSIDE THE TRANSACTION CHANGED, and the old order's stated
+     * reason did not survive inspection. It was "record states LAST ... so a
+     * crash anywhere leaves them pending", which a transaction already
+     * guarantees whatever order the statements were issued in - a crash rolls
+     * back all of them. The new order buys something real: the per-record fence
+     * is evaluated BY those UPDATEs, so writing them first is what tells the
+     * rest of the transaction which records this worker still holds.
+     *
+     *   1. the run fence, a locking read, held for the whole transaction
+     *   2. record states, fenced per row on the claim token -> $held
+     *   3. supersede the previous evidence of the HELD records only
+     *   4. insert the findings and candidates of HELD records only
+     *   5. counters
+     *
+     * WHY 4 IS FILTERED. A record taken over by another worker while this one
+     * was evaluating it may already have been committed by that worker. Writing
+     * our copy of its findings inserts an identity that is already active, the
+     * unique key refuses it, and the WHOLE batch rolls back - so one taken-over
+     * record used to destroy the work of every record beside it. Dropping its
+     * findings costs nothing: the new holder is committing them.
      */
-    public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch)
     {
+        $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
+        $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
+        $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
+
+        // SHAPE FIRST, AND OUTSIDE THE TRANSACTION. A missing claim token or an
+        // unattributable finding is a programming error, not a database
+        // refusal, and throwing it inside the try below would dress it as one:
+        // the caller would be told "the database refused to store these
+        // findings" about a database that was never asked.
+        foreach ($records as $rec) {
+            if (!isset($rec['claim']) || (int) $rec['claim'] < 1) {
+                throw new \RuntimeException('a batch record reached the store with no claim token; '
+                    . 'refusing to write a row this worker cannot prove it still holds');
+            }
+        }
+        foreach ([$findings, $candidates] as $rows) {
+            foreach ($rows as $row) {
+                if (!isset($row['ordinal'])) {
+                    throw new \RuntimeException('a finding reached the store with no record '
+                        . 'ordinal; refusing to write evidence that cannot be attributed to a '
+                        . 'claimed record');
+                }
+            }
+        }
+
         $this->db->begin();
         try {
             // THE FENCE IS A LOCKING READ, NOT AN UPDATE.
@@ -555,11 +678,8 @@ final class SqlScanStore implements ScanStore
             // code did not do: a concurrent cancel now serialises behind us
             // rather than racing us, and the epoch is compared in PHP where
             // "unchanged" is not mistaken for "absent".
-            // The same row, the same lock, four columns instead of two: the
-            // supersede below needs the project, the generation and the run
-            // sequence, and reading them here costs nothing extra.
             $fence = $this->db->select('SELECT lease_epoch, cancel_requested_at, project_id,
-                       generation_id, run_seq FROM '
+                       generation_id, run_seq, terminal FROM '
                 . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             // SAY WHICH FENCE REFUSED. "Cancelled or taken over" covered three
             // different causes, and during the pilot a run failed its very first
@@ -575,6 +695,17 @@ final class SqlScanStore implements ScanStore
                 return 'this scan was stopped while these records were being examined, so nothing '
                      . 'from them was kept';
             }
+            // A FINISHED RUN TAKES NO MORE WORK. Measured on 8.0.46: a run
+            // retired to terminal='expired' accepted a late commit from the
+            // worker that had been abandoned, wrote its findings and advanced
+            // manifest_done - so a run reported as having examined a fraction of
+            // the project kept growing after it had ended, and its stored
+            // coverage verdict described a manifest that no longer matched it.
+            if ($fence[0][5] !== null) {
+                $this->db->rollback();
+                return 'this scan had already finished when these records were offered, so '
+                     . 'nothing from them was kept';
+            }
             if ((int) $fence[0][0] !== (int) $epoch) {
                 $this->db->rollback();
                 return 'another worker took over this scan while these records were being '
@@ -584,6 +715,47 @@ final class SqlScanStore implements ScanStore
             $projectId    = (int) $fence[0][2];
             $generationId = (int) $fence[0][3];
             $runSeq       = (int) $fence[0][4];
+
+            // WHICH RECORDS ARE STILL OURS. Each UPDATE carries its own row's
+            // claim token in the WHERE clause, so a record another worker took
+            // over between our claim and now matches nothing and is simply
+            // absent from $held.
+            //
+            // affected() IS MEANINGFUL HERE, which is not true of every fence in
+            // this file. The claim columns are CLEARED by the same statement -
+            // claim_owner goes from this worker's name to NULL - so a matching
+            // row always changes, whatever the clock did and whatever the state
+            // was. That is deliberate: it is what makes the count a fence rather
+            // than an accident of timing.
+            $held = [];
+            $applied = 0;
+            foreach ($records as $rec) {
+                // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
+                // claimed by claimPending() is in CLAIMED, and must still be
+                // committable. Terminal rows stay untouched, which is I3 - only
+                // the transaction that scanned a record marks it done, and it
+                // never marks it done twice.
+                //
+                // LEAST(attempts + 1, 254): attempts is a TINYINT UNSIGNED. A
+                // bare +1 wraps to 0 at 255 under a permissive sql_mode and
+                // errors under a strict one, and the wrap is the worse of the
+                // two - a record tried 255 times would start again at nothing
+                // and the retry cap would silently stop existing.
+                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                    SET state = ?, attempts = LEAST(attempts + 1, 254), version_scanned = ?,
+                        claim_owner = NULL, claim_seq = 0, updated_at = ?
+                    WHERE run_id = ? AND ordinal = ? AND state < ?
+                      AND claim_owner = ? AND claim_seq = ?',
+                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
+                     $runId, $rec['ordinal'], self::REC_DONE, $owner, (int) $rec['claim']]);
+                if ($this->db->affected() !== 1) continue;
+                $held[(int) $rec['ordinal']] = true;
+                // Terminal rows only. A requeued record is written back as
+                // pending, which changes its attempt count and its timestamp -
+                // so it affects a row without having been finished, and
+                // counting it would walk progress past the manifest total.
+                if ((int) $rec['state'] >= self::REC_DONE) $applied++;
+            }
 
             // SUPERSEDE THIS BATCH'S RECORDS BEFORE WRITING THEIR NEW EVIDENCE.
             //
@@ -595,23 +767,27 @@ final class SqlScanStore implements ScanStore
             // run of a fresh installation, with no prior scan involved.
             //
             // Every clause of where this sits is load-bearing:
-            //   AFTER the three fences, so a cancelled or taken-over worker
-            //     cannot close a live worker's findings;
+            //   AFTER the four fences, so a cancelled, finished or taken-over
+            //     worker cannot close a live worker's findings;
             //   INSIDE the transaction, so a batch that rolls back does not
             //     leave the previous evidence closed and silently empty the
             //     report for records nobody re-examined;
             //   BEFORE any insert, so the unique key sees only the new rows as
             //     active;
             //   under the row lock the SELECT ... FOR UPDATE above already
-            //     holds, which serialises two workers of the same run.
+            //     holds, which serialises two workers of the same run;
+            //   over HELD records only, because a record we lost is one whose
+            //     new evidence we are about to drop - closing its old rows
+            //     would blank the report for a record still under examination.
             //
             // BY RECORD, not by the identities in this batch. A violation FIXED
             // between the two examinations produces no finding the second time,
             // and an identity-scoped close would leave it active forever - the
             // report would show corrected data as still broken.
             $closing = [];
-            foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
+            foreach ($records as $rec) {
                 if (!isset($rec['record_hash'])) continue;
+                if (empty($held[(int) $rec['ordinal']])) continue;
                 $st = (int) $rec['state'];
                 // Only a record that has just been examined, or one that is
                 // gone. A record REQUEUED because it moved commits no new
@@ -641,8 +817,11 @@ final class SqlScanStore implements ScanStore
                     array_merge([$runSeq, $projectId, $generationId], $closing));
             }
 
-            foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
+            $stored = 0;
+            foreach ($findings as $f) {
+                if (empty($held[(int) $f['ordinal']])) continue;
                 $this->insertFinding($f);
+                $stored++;
             }
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
@@ -650,43 +829,42 @@ final class SqlScanStore implements ScanStore
             // a candidate written outside the batch that produced it could
             // survive a rolled-back batch and make a record look like a
             // duplicate of a reading that was discarded.
-            foreach (isset($batch['candidates']) ? $batch['candidates'] : [] as $c) {
+            foreach ($candidates as $c) {
+                if (empty($held[(int) $c['ordinal']])) continue;
                 $this->insertCandidate($c);
             }
-            $applied = 0;
-            foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
-                // `state < REC_DONE` rather than `= REC_PENDING`: a straggler
-                // claimed by claimPending() is in CLAIMED, and must still be
-                // committable. Terminal rows stay untouched, which is I3 - only
-                // the transaction that scanned a record marks it done, and it
-                // never marks it done twice.
-                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
-                    SET state = ?, attempts = attempts + 1, version_scanned = ?, updated_at = ?
-                    WHERE run_id = ? AND ordinal = ? AND state < ?',
-                    [$rec['state'], isset($rec['version']) ? $rec['version'] : null, self::now(),
-                     $runId, $rec['ordinal'], self::REC_DONE]);
-                // Terminal rows only. A requeued record is written back as
-                // pending, which changes its attempt count and its timestamp -
-                // so it affects a row without having been finished, and
-                // counting it would walk progress past the manifest total.
-                $applied += ($this->db->affected() === 1
-                    && (int) $rec['state'] >= self::REC_DONE) ? 1 : 0;
-            }
+
             // Counters last, and NOT gated on affected(): a batch that finished
             // zero records and found zero findings changes no column, reports
             // zero, and would roll itself back for having nothing to say. The
             // fence above already decided whether this transaction may commit -
             // asking twice, with a weaker question, only adds a way to be wrong.
-            // What ACTUALLY became terminal, not what was offered. A record
-            // re-offered after a requeue would otherwise be counted twice and
-            // the progress figure would pass the manifest total.
-            $done = $applied;
-            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+            // What ACTUALLY became terminal and what was actually STORED, not
+            // what was offered: a record re-offered after a requeue would
+            // otherwise be counted twice and walk progress past the manifest
+            // total, and a lost record's dropped findings would be counted as
+            // detail rows that do not exist.
+            //
+            // PROGRESS_AT IS ONE OF ONLY TWO PLACES, and that is the whole point
+            // of the column. updated_at is written by claim(), advancePhase(),
+            // setProgressState() and by this method's own fence, so a wedged run
+            // refreshes it continuously and the stale-run sweep can never see it
+            // at any staleHours setting - while the sweep's own terminal_reason
+            // says "no progress within the configured window". This column
+            // measures progress: records actually finished, and the manifest
+            // freezing. The other place is freezeManifest().
+            $sql = 'UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_done = manifest_done + ?, detail_rows = detail_rows + ?,
-                    detail_bytes = detail_bytes + ?, updated_at = ?
-                WHERE run_id = ?',
-                [$done, count(isset($batch['findings']) ? $batch['findings'] : []),
-                 isset($batch['bytes']) ? (int) $batch['bytes'] : 0, self::now(), $runId]);
+                    detail_bytes = detail_bytes + ?, updated_at = ?';
+            $args = [$applied, $stored, isset($batch['bytes']) ? (int) $batch['bytes'] : 0,
+                     self::now()];
+            if ($applied > 0) {
+                $sql .= ', progress_at = ?';
+                $args[] = self::now();
+            }
+            $sql .= ' WHERE run_id = ?';
+            $args[] = $runId;
+            $this->db->exec($sql, $args);
 
             $this->db->commit();
             return true;
@@ -715,19 +893,25 @@ final class SqlScanStore implements ScanStore
      * Without this the two safe behaviours combine into a deadlock: the pilot
      * sat at 0 of 39 answering "waiting" for a quarter of an hour.
      *
-     * FENCED, and on the epoch this worker held. A worker whose rows were taken
-     * over by someone else must not be able to yank them back out of the new
-     * holder's hands, so a moved epoch releases nothing.
+     * FENCED TWICE, and the second fence is the one that does the work. The
+     * epoch says the run has not been cancelled from under us; the CLAIM TOKEN
+     * says these particular rows are still ours. Only the second can express
+     * takeover, because takeover does not move the epoch - so a worker whose
+     * rows were reclaimed by the straggler sweep used to be able to yank them
+     * straight back out of the new holder's hands, on a fence that had passed.
      *
-     * The cursor moves back with them. Scanning hands out rows ABOVE the cursor,
-     * so released rows below it would only ever be reachable by the straggler
-     * sweep - which is a slower path for records that were never examined at all.
+     * THE CURSOR MOVES BACK ONLY OVER ROWS ACTUALLY RELEASED. Scanning hands
+     * out rows ABOVE the cursor, so a released row below it would otherwise be
+     * reachable only by the straggler sweep - a slower path for records that
+     * were never examined at all. Rewinding over rows we did NOT release would
+     * re-offer another worker's live claim.
      *
+     * @param array $claims ordinal => claim token
      * @return int rows handed back
      */
-    public function releaseClaims($runId, $epoch, array $ordinals)
+    public function releaseClaims($runId, $epoch, $owner, array $claims)
     {
-        if (!$ordinals) return 0;
+        if (!$claims) return 0;
         $this->db->begin();
         try {
             $r = $this->db->select('SELECT lease_epoch, cursor_ordinal FROM '
@@ -736,18 +920,49 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return 0;
             }
-            $marks = implode(',', array_fill(0, count($ordinals), '?'));
-            $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
-                SET state = ?, updated_at = ?
-                WHERE run_id = ? AND state = ? AND ordinal IN (' . $marks . ')',
-                array_merge([self::REC_PENDING, self::now(), $runId, self::REC_CLAIMED],
-                            $ordinals));
-            $n = $this->db->affected();
-            $low = min($ordinals) - 1;
-            if ($low < (int) $r[0][1]) {
-                $this->db->exec('UPDATE ' . Schema::table('scan_run')
-                    . ' SET cursor_ordinal = ?, updated_at = ? WHERE run_id = ? AND lease_epoch = ?',
-                    [$low, self::now(), $runId, $epoch]);
+            $n = 0;
+            $released = [];
+            // One statement per DISTINCT token rather than per row. A batch is
+            // claimed in one call and therefore carries one token, so this is
+            // normally a single statement; grouping keeps it correct if a caller
+            // ever hands back rows from two claims at once.
+            foreach (self::byToken($claims) as $token => $ords) {
+                $marks = implode(',', array_fill(0, count($ords), '?'));
+                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                    SET state = ?, claim_owner = NULL, claim_seq = 0, updated_at = ?
+                    WHERE run_id = ? AND state = ? AND claim_owner = ? AND claim_seq = ?
+                      AND ordinal IN (' . $marks . ')',
+                    array_merge([self::REC_PENDING, self::now(), $runId, self::REC_CLAIMED,
+                                 $owner, (int) $token], $ords));
+                $hit = $this->db->affected();
+                if ($hit > 0) {
+                    $n += $hit;
+                    foreach ($ords as $o) $released[] = (int) $o;
+                }
+                // AND THE SCANNING-PHASE ROWS, which are never marked CLAIMED -
+                // there the advancing cursor keeps workers apart, so a claim
+                // stamps the token and leaves the state PENDING. Their claim
+                // still has to be dropped, or the row would be re-offered to
+                // another worker while this one's stale token still sat on it
+                // and could be committed by nobody.
+                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                    SET claim_owner = NULL, claim_seq = 0, updated_at = ?
+                    WHERE run_id = ? AND state = ? AND claim_owner = ? AND claim_seq = ?
+                      AND ordinal IN (' . $marks . ')',
+                    array_merge([self::now(), $runId, self::REC_PENDING, $owner, (int) $token],
+                                $ords));
+                if ($this->db->affected() > 0) {
+                    foreach ($ords as $o) $released[] = (int) $o;
+                }
+            }
+            if ($released) {
+                $low = min($released) - 1;
+                if ($low < (int) $r[0][1]) {
+                    $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                        . ' SET cursor_ordinal = ?, updated_at = ?'
+                        . ' WHERE run_id = ? AND lease_epoch = ?',
+                        [$low, self::now(), $runId, $epoch]);
+                }
             }
             $this->db->commit();
             return $n;
@@ -758,6 +973,96 @@ final class SqlScanStore implements ScanStore
             // invisible to the straggler sweep until they go stale.
             throw $this->rolledBack($e);
         }
+    }
+
+    /**
+     * Count one attempt against records this worker tried and could not finish.
+     *
+     * SEE ScanStore::noteAttempts FOR WHY THIS IS NOT PART OF commitBatch. The
+     * short version is that the only statement which incremented `attempts`
+     * lived inside the transaction that a refused batch rolls back, so the
+     * counter moved only when the commit had already succeeded: `recordAttempts`
+     * was unreachable, the run never became terminal, and it held the project's
+     * one active slot retrying the same failing write for as long as anybody
+     * kept a browser tab open.
+     *
+     * FENCED ON THE EPOCH AS WELL AS THE CLAIM. A cancelled run bumps the epoch,
+     * and retiring records to a blocking terminal state inside a run that is
+     * being stopped would put an exclusion in a report about work nobody asked
+     * for. A takeover does not bump it, which is exactly why the claim token is
+     * the other half.
+     *
+     * TWO STATEMENTS, NOT ONE PER ROW. The increment saturates in SQL, then the
+     * rows that have reached the limit are retired in a second pass over the
+     * same predicate - which is also what makes `retired` a count of rows that
+     * really changed rather than an inference from the first statement.
+     *
+     * @return array{counted:int, retired:int}
+     */
+    public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted)
+    {
+        if (!$claims) return ['counted' => 0, 'retired' => 0];
+        $cap = max(1, (int) $maxAttempts);
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT lease_epoch FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch) {
+                $this->db->rollback();
+                return ['counted' => 0, 'retired' => 0];
+            }
+            $t = Schema::table('scan_record');
+            $counted = 0;
+            $retired = 0;
+            foreach (self::byToken($claims) as $token => $ords) {
+                $marks = implode(',', array_fill(0, count($ords), '?'));
+                $where = ' WHERE run_id = ? AND state < ? AND claim_owner = ? AND claim_seq = ?'
+                       . ' AND ordinal IN (' . $marks . ')';
+                $args  = array_merge([$runId, self::REC_DONE, $owner, (int) $token], $ords);
+                // LEAST(attempts + 1, 254), for the reason commitBatch gives:
+                // attempts is a TINYINT UNSIGNED, and a bare +1 wraps to zero at
+                // 255 under a permissive sql_mode - which would not merely lose
+                // a count, it would silently un-cap the retry loop this method
+                // exists to bound.
+                $this->db->exec('UPDATE ' . $t . '
+                    SET attempts = LEAST(attempts + 1, 254), updated_at = ?' . $where,
+                    array_merge([self::now()], $args));
+                $counted += $this->db->affected();
+                // OUT OF ATTEMPTS. Terminal, so the run can finish and give the
+                // project its slot back; blocking, so it can never finish clean.
+                // The claim is cleared with it - a terminal row is nobody's.
+                $this->db->exec('UPDATE ' . $t . '
+                    SET state = ?, claim_owner = NULL, claim_seq = 0, updated_at = ?'
+                    . $where . ' AND attempts >= ?',
+                    array_merge([(int) $exhausted, self::now()], $args, [$cap]));
+                $retired += $this->db->affected();
+            }
+            $this->db->commit();
+            return ['counted' => $counted, 'retired' => $retired];
+        } catch (\Throwable $e) {
+            throw $this->rolledBack($e);
+        }
+    }
+
+    /**
+     * ordinal => token, regrouped as token => [ordinals].
+     *
+     * A batch is claimed in one call and so carries one token; this exists so
+     * that stays an optimisation rather than an assumption.
+     */
+    private static function byToken(array $claims)
+    {
+        $out = [];
+        foreach ($claims as $ordinal => $token) {
+            // A TOKEN OF ZERO IS DROPPED, NOT PASSED THROUGH. Zero is the column
+            // default - what an unclaimed row carries - so a caller that lost a
+            // token somewhere would fence on it and match every record of the
+            // run that nobody holds. Refusing is the safe direction: the write
+            // does nothing rather than everything.
+            if ((int) $token < 1) continue;
+            $out[(int) $token][] = (int) $ordinal;
+        }
+        return $out;
     }
 
     /**
@@ -1125,8 +1430,13 @@ final class SqlScanStore implements ScanStore
             $params = [$state, self::now()];
             foreach ($recordIds as $id) $params[] = $id;
             $params[] = $runId;
+            // THE CLAIM GOES WITH THE STATE. A record sent back to pending
+            // while still carrying its token could be committed by the worker
+            // that was holding it when catch-up requeued it - and that reading's
+            // staleness is the entire reason the record was requeued.
             $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
-                SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '') . 'updated_at = ?
+                SET state = ?, ' . ($clearScan ? 'version_scanned = NULL, ' : '')
+                . 'claim_owner = NULL, claim_seq = 0, updated_at = ?
                 WHERE record_id_bin IN (' . $marks . ') AND run_id = ?', $params);
             $n = $this->db->affected();
             // manifest_done is a counter and this moved rows out of (or into) a

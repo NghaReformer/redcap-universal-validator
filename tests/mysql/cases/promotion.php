@@ -55,8 +55,9 @@ $NEIGHBOUR = uv_neighbour($PID);
 
     // Finish the record and walk the phases to the end.
     $claimed = $store->claim($rid, 'w', $epoch, 5);
-    $store->commitBatch($rid, 'w', $epoch, 0, array('bytes' => 0, 'findings' => array(),
+    $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(),
         'records' => array(array('ordinal' => $claimed[0]['ordinal'],
+                                 'claim' => $claimed[0]['claim'],
                                  'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'version' => '500'))));
     $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
     $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE);

@@ -140,11 +140,24 @@ final class ScanRetention
     /**
      * Give up on runs that stopped making progress, and release their slots.
      *
-     * A run whose lease has expired and which has not been updated within the
+     * A run whose lease has expired and which has made no PROGRESS within the
      * stale window is abandoned: its browser closed, its worker died, or its
      * request was killed. It becomes terminally `expired` - a real terminal
      * state with `partial` coverage, never `complete` - and its project slot is
      * freed so a new scan can start.
+     *
+     * PROGRESS, NOT ACTIVITY, and the distinction is the whole finding. This
+     * read updated_at, which is written by claim(), advancePhase(),
+     * setProgressState() and every batch fence - so a run stuck in a retry loop
+     * refreshed it several times a second and could not be reaped at ANY
+     * staleHours setting, while this method's own terminal_reason said "no
+     * progress within the configured stale-run window". progress_at is written
+     * in exactly two places, both of them real progress: a batch that finished
+     * at least one record, and the manifest freezing.
+     *
+     * COALESCE, because progress_at is NULL until one of those two happens. A
+     * run that wedged during planning has never made progress and created_at is
+     * then the honest measure of how long it has been failing to.
      *
      * The predicate requires active_slot = 1, so this is idempotent: a run it
      * already expired is no longer a candidate.
@@ -157,7 +170,7 @@ final class ScanRetention
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
             SET phase = ?, terminal = ?, coverage = ?, active_slot = NULL,
                 terminal_reason = ?, updated_at = ?
-            WHERE active_slot = 1 AND updated_at < ?
+            WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?
               AND (lease_expires_at IS NULL OR lease_expires_at < ?)',
             ['terminal', ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
              'no progress within the configured stale-run window; the scan slot was released',

@@ -836,6 +836,150 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('worker: and the claimed records are handed back, not stranded',
         $store->claimPending($runId, 'w2', (int) $store->run(800, $runId)['lease_epoch'], 5) !== []);
 
+
+    // -- NO RUN MAY WEDGE FOREVER --------------------------------------------
+    //
+    // B8, B12 and H13 are three routes into one state: work was attempted,
+    // nothing could be stored, and nothing recorded that it had been tried. The
+    // records stayed claimable, the phase machine correctly refused to advance
+    // over records nobody had examined, and the run held the project's one
+    // active scan slot until somebody went into the database. The live pilot
+    // logged forty identical batches.
+    //
+    // The counter is the whole of it. `attempts` was incremented by exactly one
+    // statement - the record UPDATE inside commitBatch - so it moved only when
+    // the commit had already succeeded. The retry cap was unreachable by the
+    // path that needed it, BY CONSTRUCTION.
+
+    // A WRITE THE STORE WILL REFUSE EVERY TIME. Two findings sharing one
+    // identity is what a @UVCHOICES checkbox with two ticked hidden codes used
+    // to produce; here it stands for any permanent write refusal, because the
+    // worker cannot tell them apart and must not need to.
+    $doomed = function ($id, $node) {
+        $one = ['project_id' => 800, 'generation_id' => 1,
+                'identity' => hash('sha256', 'the-same-identity-twice', true),
+                'valid_from_seq' => 1, 'record_hash' => hash('sha256', $id, true),
+                'record_id_bin' => $id, 'host_form' => 'f', 'field' => 'x',
+                'rule_source_id' => 'r', 'rule_revision' => str_repeat('c', 64),
+                'check_type' => 'required', 'reason_code' => 'required-blank'];
+        return ['findings' => [$one, $one], 'bytes' => 10, 'contexts' => 1, 'why' => null];
+    };
+    list($store, $runId) = $fixture(['A']);
+    $logged = [];
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $doomed, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(),
+        'note' => function ($event, array $ctx) use (&$logged) { $logged[] = [$event, $ctx]; }]);
+    $first = $w->work(800, $runId);
+    check('wedge: a refused batch stops the pass rather than reporting success',
+        $first['ok'] === false && $first['stop'] === 'fenced');
+    check('wedge: saying the database refused it, not that the fence did',
+        strpos($first['why'], 'database refused') !== false);
+    // THE ATTEMPT IS COUNTED, and this is the assertion the whole release turns
+    // on. It has to be visible from OUTSIDE the transaction that failed.
+    $back = $store->claimPending($runId, 'w1', (int) $store->run(800, $runId)['lease_epoch'], 5);
+    check('wedge: the record is handed back rather than left claimed', count($back) === 1);
+    check('wedge: and the attempt was counted even though nothing committed',
+        (int) $back[0]['attempts'] === 1);
+    // The operator gets to know WHY, which is the only place the reason a record
+    // ends up excluded is written down.
+    check('wedge: the refusal reaches the module log',
+        count($logged) >= 1 && $logged[0][0] === 'scan batch refused'
+        && strpos($logged[0][1]['detail'], 'database refused') !== false);
+
+    // AND IT ENDS. Three attempts, then the record becomes a reported exclusion
+    // and the run can reach a terminal state.
+    list($store, $runId) = $fixture(['A']);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $doomed, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $passes = 0;
+    for ($i = 0; $i < 10; $i++) {
+        $passes++;
+        $w->work(800, $runId);
+        if ($store->manifestComplete($runId)) break;
+    }
+    check('wedge: a permanently refused record stops being retried', $passes === 3);
+    check('wedge: it reaches a terminal state and the run can finish',
+        $store->manifestComplete($runId) === true);
+    $states = $store->recordStates($runId);
+    check('wedge: the state is UNSTORED - not done, not a tombstone, not unreadable',
+        isset($states[ScanStore::REC_UNSTORED]) && (int) $states[ScanStore::REC_UNSTORED] === 1);
+    // A SCAN THAT COULD NOT STORE WHAT IT FOUND HAS NOT CHECKED THE PROJECT.
+    // Ending is necessary; ending CLEAN would be the worse failure.
+    $facts = ScanPromotion::facts($store->run(800, $runId), $states, []);
+    check('wedge: and it can never be reported clean',
+        $facts['facts']['blocked'] === true);
+    check('wedge: with nothing half-written from the batches that failed',
+        (int) $store->run(800, $runId)['detail_rows'] === 0);
+
+    // -- B12: A WHOLE-BATCH READ FAILURE TAKES THE SAME PATH ------------------
+    //
+    // It returned early: no commit, no release, no attempt. The rows stayed
+    // CLAIMED, invisible to the straggler sweep for fifteen minutes, and one
+    // transient REDCap export failure held the project's slot. Nothing more
+    // exotic than that was needed to wedge a run permanently.
+    list($store, $runId) = $fixture(['A', 'B']);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $broken,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2,
+        'finalizer' => $fin()]);
+    $r = $w->work(800, $runId);
+    check('wedge: a failed read stops the pass and says the export failed',
+        $r['ok'] === false && $r['stop'] === 'read'
+        && strpos($r['why'], 'export') !== false);
+    $ep = (int) $store->run(800, $runId)['lease_epoch'];
+    $handed = $store->claimPending($runId, 'w2', $ep, 5);
+    check('wedge: the batch is released rather than left claimed for a quarter of an hour',
+        count($handed) === 2);
+    check('wedge: with the attempt counted against both records',
+        (int) $handed[0]['attempts'] === 1 && (int) $handed[1]['attempts'] === 1);
+    // H13: the same shape on the catch-up path, where the rows really are
+    // CLAIMED and the straggler sweep is the only thing that could free them.
+    list($store, $runId) = $fixture(['A', 'B']);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $broken,
+        'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2,
+        'finalizer' => $fin()]);
+    $w->work(800, $runId);
+    $w->work(800, $runId);
+    check('wedge: a read that keeps failing ends the run instead of retrying it forever',
+        $store->manifestComplete($runId) === true);
+    $states = $store->recordStates($runId);
+    check('wedge: reported UNREADABLE, which is what actually happened',
+        isset($states[ScanStore::REC_UNREADABLE])
+        && (int) $states[ScanStore::REC_UNREADABLE] === 2);
+
+    // -- B9: ONE TAKEN-OVER RECORD DOES NOT KILL THE BATCH --------------------
+    //
+    // lease_epoch moves on cancellation and on nothing else, so takeover had no
+    // fence at all: a second worker re-claimed a stale worker's rows while both
+    // held the same epoch, and the first worker's commit passed. Bumping the
+    // epoch is the obvious fix and is wrong - it throws away every other
+    // worker's in-flight batch to invalidate one record's.
+    list($store, $runId) = $fixture(['A', 'B']);
+    $ep = (int) $store->run(800, $runId)['lease_epoch'];
+    $stole = false;
+    $stealing = function ($id, $node) use (&$store, $runId, $ep, $finder, &$stole) {
+        // ONCE. The evaluator runs per record, so a sweep on every call would
+        // take the whole batch over and the assertion below - that the records
+        // this worker KEPT still commit - would be vacuous.
+        if (!$stole) { $store->claimPending($runId, 'w2', $ep, 1); $stole = true; }
+        $f = $finder(1);
+        return $f($id, $node);
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $stealing, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $r = $w->work(800, $runId);
+    check('wedge: the batch commits despite losing one record to another worker',
+        $r['ok'] === true);
+    $states = $store->recordStates($runId);
+    check('wedge: the record it still held is finished',
+        isset($states[ScanStore::REC_DONE]) && (int) $states[ScanStore::REC_DONE] === 1);
+    check('wedge: and the epoch was not bumped, so no other worker was disturbed',
+        (int) $store->run(800, $runId)['lease_epoch'] === $ep);
+    check('wedge: only the held record\'s finding was written',
+        (int) $store->run(800, $runId)['detail_rows'] === 1);
+
     // -- the configuration moved underneath the run --------------------------
     list($store, $runId) = $fixture(['A']);
     $fpNow = str_repeat('a', 64);
@@ -986,9 +1130,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
         foreach ($claimed as $c) {
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
-                                   'version' => $scannedAt];
+                                   'version' => $scannedAt, 'claim' => $c['claim']];
         }
-        $store->commitBatch($runId, 'w1', $epoch, 0, $batch);
+        $store->commitBatch($runId, 'w1', $epoch, $batch);
         $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
         return [$store, $runId, $epoch];
     };
@@ -1074,9 +1218,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     // Pretend the worker re-scanned it at a version past the change.
     $store->requeue($runId, $epoch, []);
     $claimed = $store->claimPending($runId, 'w1', $epoch, 10);
-    $store->commitBatch($runId, 'w1', $epoch, 0, ['bytes' => 0, 'findings' => [],
+    $store->commitBatch($runId, 'w1', $epoch, ['bytes' => 0, 'findings' => [],
         'records' => [['ordinal' => $claimed[0]['ordinal'], 'state' => ScanStore::REC_DONE,
-                       'version' => '400']]]);
+                       'version' => '400', 'claim' => $claimed[0]['claim']]]]);
     $r3 = $cu->step(800, $runId, $epoch, 100);        // page: A now settled
     $r4 = $cu->step(800, $runId, $epoch, 100);        // end of a clean round
     check('catchup: a round that changes nothing settles the phase', $r4['done'] === true);
@@ -1111,9 +1255,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         // project edit it again inside the same window.
         $claimed = $store->claimPending($runId, 'w1', $epoch, 10);
         if ($claimed) {
-            $store->commitBatch($runId, 'w1', $epoch, 0, ['bytes' => 0, 'findings' => [],
+            $store->commitBatch($runId, 'w1', $epoch, ['bytes' => 0, 'findings' => [],
                 'records' => [['ordinal' => $claimed[0]['ordinal'],
-                               'state' => ScanStore::REC_DONE, 'version' => (string) $bump]]]);
+                               'state' => ScanStore::REC_DONE, 'version' => (string) $bump,
+                               'claim' => $claimed[0]['claim']]]]);
             $bump += 100;
             $log->changed = ['A' => (string) $bump];
         }

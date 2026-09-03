@@ -55,7 +55,7 @@ function startAndFill($store, $db, $pid, $form, $dag, $n, $KEY) {
             'check_type' => 'checkchar', 'reason_code' => 'checkdigit', 'dag_key' => $dag];
     }
     foreach ($claim as $row) $batch['records'][] = ['ordinal' => $row['ordinal'], 'state' => ScanStore::REC_DONE, 'version' => '1'];
-    $r = $store->commitBatch($runId, 'o', $epoch, 0, $batch);
+    $r = $store->commitBatch($runId, 'o', $epoch, $batch);
     echo "project $pid: commit " . ($r === true ? 'ok' : $r) . "\n";
     return [$runId, $epoch];
 }

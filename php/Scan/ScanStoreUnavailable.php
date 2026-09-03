@@ -8,7 +8,8 @@ namespace INSPIRE\UniversalValidator\Scan;
  * THE INCIDENT THIS CLASS EXISTS FOR. SqlScanStore's four hot-path fences —
  * claim(), claimPending(), releaseClaims() and advancePhase() — each caught
  * every Throwable and returned the value that means "the fence refused you":
- * false, false, 0, false. A deadlock (1213) and a lock-wait timeout (1205) were
+ * false, false, 0, false. (noteAttempts() joined them later and was written
+ * throwing from the start, which is what having this class is for.) A deadlock (1213) and a lock-wait timeout (1205) were
  * therefore reported to the worker in the same words as a cancelled run and a
  * moved epoch, and the worker did what those words tell it to do. Nothing
  * anywhere recorded that the DATABASE had failed. Five pilot rounds were spent

@@ -103,7 +103,8 @@ function uv_plant_neighbour($db, $pid) {
         // record_hash travels with the state because commitBatch closes that
         // record's own prior findings from it. A neighbour built without one
         // would exercise a path no worker takes.
-        $batch['records'][] = array('ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+        $batch['records'][] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'],
+                                    'record_hash' => $c['hash'],
             'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE, 'version' => 'nb');
         // No value_bin and no value_expires_at: the retention clocks are
         // installation-wide by design, and a neighbour carrying a preview would
@@ -123,7 +124,7 @@ function uv_plant_neighbour($db, $pid) {
     // A refused commit returns null rather than an array, so a case asserting
     // is_array() on this fails where the neighbour was planted rather than
     // several checks later where its rows are missing.
-    if ($store->commitBatch($runId, 'neighbour-worker', $epoch, 0, $batch) !== true) return null;
+    if ($store->commitBatch($runId, 'neighbour-worker', $epoch, $batch) !== true) return null;
 
     return array('pid' => $nb, 'run_id' => $runId, 'generation_id' => $gen, 'run_seq' => $seq,
                  'records' => array('NB-1', 'NB-2'));
