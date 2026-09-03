@@ -46,6 +46,51 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
+
+        /**
+         * The rate-limit bucket table, and only that.
+         *
+         * WHY THE STUB GAINED A DATABASE. The sessionless survey throttle used
+         * to be a read-modify-write over a system setting, which this stub
+         * already modelled as an array - and that is exactly why concurrency
+         * defeated it in production while every test here stayed green: a
+         * single-process test cannot lose a lost update. It is now one atomic
+         * statement against uv_rate_bucket, so the stub has to answer that
+         * statement or the throttle silently fails open and the F5 checks below
+         * pass over a throttle that never ran.
+         *
+         * LAST_INSERT_ID(expr) is modelled faithfully - set by the write,
+         * returned by the read - because the counter's whole correctness rests
+         * on the insert path and the update path both reporting the value they
+         * wrote.
+         */
+        public $rateBuckets = [];            // "pid|bucket" => hits
+        public $lastInsertId = 0;
+        public $rateStatements = [];         // every statement, for assertions
+        public function query($sql, $params = []) {
+            $this->rateStatements[] = $sql;
+            if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) {
+                return [[$this->lastInsertId]];
+            }
+            if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
+            if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0) {
+                $k = (int) $params[0] . '|' . (int) $params[1];
+                $this->rateBuckets[$k] = isset($this->rateBuckets[$k]) ? $this->rateBuckets[$k] + 1 : 1;
+                $this->lastInsertId = $this->rateBuckets[$k];
+                return [];
+            }
+            if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'DELETE') === 0) {
+                foreach (array_keys($this->rateBuckets) as $k) {
+                    list($p, $b) = explode('|', $k);
+                    if ((int) $p === (int) $params[0] && (int) $b < (int) $params[1]) {
+                        unset($this->rateBuckets[$k]);
+                    }
+                }
+                return [];
+            }
+            return [];
+        }
+
         // JSMO plumbing (framework AJAX transport for @UVUNIQUE)
         public function initializeJavascriptModuleObject() { return '<script>/* jsmo bootstrap */</script>'; }
         public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
@@ -1945,7 +1990,9 @@ namespace {
     ];
     $f5Data = ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-1']]];
     $m = newModule([], $f5Dict, $f5Data, 149);
-    $m->systemSettings['uv_noauth_hits_149'] = array_fill(0, 600, time());   // budget exhausted
+    // The budget spent, in the counter the database owns. 600 is the cap, so the
+    // next check makes 601 and is refused.
+    $m->rateBuckets['149|' . (int) floor(time() / 60)] = 600;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
     check('F5: a sessionless caller is throttled once the per-project budget is spent',
@@ -1956,8 +2003,26 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F5: a fresh sessionless caller is answered (not throttled)', isset($r['used']));
     check('F5: the sessionless check is recorded in the per-project budget',
-        is_array($m->systemSettings['uv_noauth_hits_149'] ?? null)
-        && count($m->systemSettings['uv_noauth_hits_149']) === 1);
+        (int) array_sum($m->rateBuckets) === 1);
+    // M16: ONE STATEMENT, NO READ BEFORE IT. The lost-update window was the read
+    // - N concurrent requests read the same array, each appended one entry, and
+    // the last write won, so the tier could not count the flood it was written
+    // for. There is nothing here to read.
+    $inserts = 0; $reads = 0;
+    foreach ($m->rateStatements as $sql) {
+        if (strpos($sql, 'uv_rate_bucket') === false) continue;
+        if (strpos($sql, 'INSERT') === 0) $inserts++;
+        if (strpos($sql, 'SELECT') === 0) $reads++;
+    }
+    check('M16: the throttle increments with one statement', $inserts === 1);
+    check('M16: and reads nothing from the bucket before writing it', $reads === 0);
+    // The old array is not consulted any more, so a stale system setting from
+    // before the upgrade cannot throttle anybody.
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->systemSettings['uv_noauth_hits_149'] = array_fill(0, 600, time());
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-8']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
 
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);

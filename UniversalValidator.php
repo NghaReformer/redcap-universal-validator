@@ -4259,11 +4259,17 @@ class UniversalValidator extends AbstractExternalModule
      *       window (30 / minute), cheap and touching no shared storage.
      *   (2) With NO session (a cookieless or cookie-rotating caller — the actual
      *       sessionless flood vector v1.4.1's session-only throttle could not
-     *       count): a per-PROJECT window (F5) in a single, hard-capped,
-     *       self-pruning system setting, so the flood is bounded even with
-     *       nothing to key a session on. Legitimate respondents carry a session
-     *       and never reach tier (2), so it adds no write load or false
-     *       throttling to normal traffic.
+     *       count): a per-PROJECT fixed window (F5) held as a COUNTER IN THE
+     *       DATABASE, incremented by one statement, so the flood is bounded
+     *       even with nothing to key a session on. Legitimate respondents carry
+     *       a session and never reach tier (2), so it adds no write load or
+     *       false throttling to normal traffic.
+     *
+     *       Tier (2) was a read-modify-write over a system setting holding an
+     *       array of timestamps, and concurrency defeated it exactly under the
+     *       traffic it was written for: every concurrent request read the same
+     *       array, appended one entry, and the last write won. See the tier's
+     *       own comment for why the window is fixed rather than sliding.
      *
      * Still defence in depth, not THE defence: a single TARGETED probe is
      * inherent to answering "is this value already used?" at all, which is why
@@ -4292,23 +4298,52 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return false;
         }
-        // Tier (2): no session — bound the sessionless flood per project.
+        // Tier (2): no session - bound the sessionless flood per project.
+        //
+        // A COUNTER THE DATABASE OWNS, not a timestamp array this process reads,
+        // edits and writes back. The read-modify-write was defeated by the exact
+        // traffic the tier was written for: N concurrent requests all read the
+        // same array, each appended one entry, and the last write won - so a
+        // flood of 600 concurrent checks recorded a handful of hits and the cap
+        // was never reached. There is no read here at all. One statement
+        // increments, and the value it returns is the count after this request.
+        //
+        // A FIXED WINDOW, not a sliding one, and that is a deliberate trade. A
+        // sliding window needs the timestamps, and keeping the timestamps is
+        // what made the counter loseable. The cost is that a burst straddling a
+        // boundary can spend up to 2 x $pmax inside one 60-second span; the
+        // benefit is that no increment can ever be lost. For a throttle whose
+        // purpose is to bound a flood rather than to meter it, that is the right
+        // way round.
         try {
             if (!$pid) return false;
             $pmax = 600;                                       // no-auth checks / project / window (>> the per-session cap)
-            $skey = 'uv_noauth_hits_' . (int) $pid;
-            $raw = $this->getSystemSetting($skey);
-            $hits = is_array($raw) ? $raw : ((is_string($raw) && $raw !== '') ? json_decode($raw, true) : []);
-            if (!is_array($hits)) $hits = [];
-            $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
-                return is_int($t) && ($now - $t) < $window;
-            }));
-            if (count($hits) >= $pmax) { $this->setSystemSetting($skey, $hits); return true; }
-            $hits[] = $now;
-            if (count($hits) > $pmax + 100) $hits = array_slice($hits, -$pmax);   // hard cap the stored array
-            $this->setSystemSetting($skey, $hits);
-            return false;
+            $db = new Scan\ModuleDb($this);
+            $bucket = (int) floor($now / $window);
+            // LAST_INSERT_ID(expr) on both paths, so the fresh-bucket INSERT and
+            // the existing-bucket UPDATE both answer with the number they wrote.
+            // The table has no AUTO_INCREMENT, so without it the insert path
+            // would report whatever the session last happened to set.
+            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
+                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
+                [(int) $pid, $bucket]);
+            $r = $db->select('SELECT LAST_INSERT_ID()', []);
+            $hits = isset($r[0][0]) ? (int) $r[0][0] : 0;
+            // Self-pruning, and only on the request that created the bucket, so
+            // this is one DELETE per project per window rather than one per
+            // check. Two windows of slack because a request can be in flight
+            // across a boundary.
+            if ($hits === 1) {
+                $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
+                    . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 2]);
+            }
+            return $hits > $pmax;
         } catch (\Throwable $e) {
+            // FAILS OPEN, as the whole method does. The live check is a
+            // convenience and never a gate on data entry, so a missing table on
+            // an installation that has not migrated yet must not start refusing
+            // survey responses.
             return false;
         }
     }
