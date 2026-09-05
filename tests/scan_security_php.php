@@ -225,25 +225,33 @@ namespace INSPIRE\UniversalValidator\Scan {
      * READ / WORK  the same entitlement, re-evaluated, plus exact scope
      * ===================================================================== */
     {
-        $dagUser = rights(['group_id' => 'north']);
+        // THE NUMERIC GROUP ID ON BOTH SIDES, because that is the only axis
+        // production has. This matrix used to be internally consistent on DAG
+        // NAMES while the planning suite was internally consistent on ids, and
+        // neither suite ever held both sides - which is how 1,228 green checks
+        // sat over a page that produced a name and a store that compared an id.
+        // Reseeding it here is not cosmetic: readable() derives the scope from
+        // $rights['group_id'], so a name in that key tests a value production
+        // can never contain.
+        $dagUser = rights(['group_id' => 7]);
 
         check('read: an unrestricted user may read a project-wide run',
             ScanAuthorization::mayRead(rights(), $ENT, null)['ok'] === true);
         check('read: and a DAG-scoped one',
-            ScanAuthorization::mayRead(rights(), $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayRead(rights(), $ENT, '7')['ok'] === true);
 
         check('read: a DAG user may read their OWN group\'s run',
-            ScanAuthorization::mayRead($dagUser, $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayRead($dagUser, $ENT, '7')['ok'] === true);
         check('read: but NOT another group\'s',
-            ScanAuthorization::mayRead($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayRead($dagUser, $ENT, '31')['ok'] === false);
         check('read: nor a project-wide run, which is wider than their scope',
             ScanAuthorization::mayRead($dagUser, $ENT, null)['ok'] === false);
 
         // NON-DISCLOSING: "another group's run" and "no such run" must read the
         // same, or the message is an existence oracle.
-        $other = ScanAuthorization::mayRead($dagUser, $ENT, 'south');
+        $other = ScanAuthorization::mayRead($dagUser, $ENT, '31');
         check('read: the cross-scope refusal does not confirm the run exists',
-            strpos($other['why'], 'south') === false && strpos($other['why'], 'exist') === false
+            strpos($other['why'], '31') === false && strpos($other['why'], 'exist') === false
             && strpos($other['why'], 'another') === false);
 
         // Rights revoked mid-run stop reads; the run id does not restore them.
@@ -256,34 +264,44 @@ namespace INSPIRE\UniversalValidator\Scan {
                 $ENT, null)['ok'] === false);
 
         check('work: carries exactly the read entitlement',
-            ScanAuthorization::mayWork($dagUser, $ENT, 'north')['ok'] === true
-            && ScanAuthorization::mayWork($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayWork($dagUser, $ENT, '7')['ok'] === true
+            && ScanAuthorization::mayWork($dagUser, $ENT, '31')['ok'] === false);
+
+        // B3: THE AXIS AS A PROPERTY, not as a reseeded fixture. The second
+        // half is the load-bearing one - it asserts that a NAME in scope_dag is
+        // REFUSED, so a revert that puts the name back fails here loudly rather
+        // than merely failing to match somewhere quieter. This is the check a
+        // future author reads to learn which value belongs in that column.
+        check('B3: the rights key this class reads and the scope it compares are ONE axis '
+            . '- the numeric group id',
+            ScanAuthorization::mayWork(rights(['group_id' => 7]), $ENT, '7')['ok'] === true
+            && ScanAuthorization::mayWork(rights(['group_id' => 7]), $ENT, 'north')['ok'] === false);
     }
 
     /* =====================================================================
      * CANCEL  wider than working, and never across scopes
      * ===================================================================== */
     {
-        $dagUser = rights(['group_id' => 'north']);
+        $dagUser = rights(['group_id' => 7]);
         check('cancel: an unrestricted user may cancel a global run',
             ScanAuthorization::mayCancel(rights(), $ENT, null)['ok'] === true);
         check('cancel: a DAG user may NOT cancel a global run',
             ScanAuthorization::mayCancel($dagUser, $ENT, null)['ok'] === false);
         check('cancel: a DAG user may cancel their own group\'s run',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '7')['ok'] === true);
         // The rule is SCOPE, not ownership - stated without the two parameters
         // that used to carry it. They were inert: mayCancel compared them and
         // then returned the same expression either way, so this check passed
         // over a control that decided nothing. Asserting the rule directly is
         // what makes it a test rather than a decoration.
         check('cancel: even one another user in that group started',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '7')['ok'] === true);
         check('cancel: but not another group\'s run',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '31')['ok'] === false);
         check('cancel: an unrestricted user may cancel any DAG run',
-            ScanAuthorization::mayCancel(rights(), $ENT, 'south')['ok'] === true);
+            ScanAuthorization::mayCancel(rights(), $ENT, '31')['ok'] === true);
         check('cancel: an unentitled user may cancel nothing',
-            ScanAuthorization::mayCancel(rights(['design' => false]), $ENT, 'north')['ok'] === false);
+            ScanAuthorization::mayCancel(rights(['design' => false]), $ENT, '7')['ok'] === false);
     }
 
     /* =====================================================================

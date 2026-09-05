@@ -26,6 +26,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
+    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
@@ -150,6 +151,91 @@ namespace {
         public $proj = [];
         public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
         public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
+    }
+
+    /**
+     * A ScanDb serving redcap_record_list for one project, and nothing else.
+     *
+     * DISPATCHED ON THE SQL, because the point of this fixture is that the REAL
+     * RecordManifestSource issues the queries. A hand-written source would
+     * prove the fake agrees with the planner.
+     *
+     * THREE RECORDS IN TWO GROUPS, and the middle one is elsewhere: 7, 31, 7.
+     * The assertion that matters is appended === 2, which no single-group
+     * fixture could distinguish from a filter that matched everything.
+     */
+    class FakeSourceDb implements \INSPIRE\UniversalValidator\Scan\ScanDb
+    {
+        public $rows = [['R001', '7'], ['R002', '31'], ['R003', '7']];
+
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'information_schema.columns') !== false) {
+                if (isset($params[0]) && $params[0] === 'redcap_record_list') {
+                    return [['project_id'], ['record'], ['dag_id']];
+                }
+                return [];                        // no data table on this build
+            }
+            if (strpos($sql, 'redcap_projects') !== false) return [];
+            if (strpos($sql, 'FROM redcap_record_list') === false) return [];
+
+            // boundaryGroup(): every id equal to one id.
+            if (strpos($sql, 'record = ?') !== false) {
+                $want = (string) $params[count($params) - 1];
+                $out = [];
+                foreach ($this->rows as $r) if ($r[0] === $want) $out[] = [$r[0]];
+                return $out;
+            }
+            $wantsDag = strpos($sql, 'dag_id') !== false;
+            $after = null;
+            if (strpos($sql, 'record >= ?') !== false) $after = (string) $params[1];
+            $out = [];
+            foreach ($this->rows as $r) {
+                if ($after !== null && strcmp($r[0], $after) < 0) continue;
+                $out[] = $wantsDag ? [$r[0], $r[1]] : [$r[0]];
+            }
+            if (preg_match('/LIMIT (\d+)/', $sql, $m)) $out = array_slice($out, 0, (int) $m[1]);
+            return $out;
+        }
+
+        public function exec($sql, array $params = []) { return 0; }
+        public function affected() { return 0; }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    }
+
+    /** A module whose user is a designer confined to group 7. */
+    class DagUserModule
+    {
+        public function getUser() { return new \DagUser(); }
+    }
+
+    /**
+     * AN OBJECT, NOT AN ARRAY. scanScope() calls hasDesignRights() and
+     * getRights($pid) on whatever getUser() returns, through is_callable - so a
+     * fixture that handed back an array would exercise the refusal path and
+     * prove nothing about the scope.
+     */
+    class DagUser
+    {
+        public function hasDesignRights() { return true; }
+        public function getRights($pid = null)
+        {
+            return ['design' => true, 'data_export_tool' => '1', 'group_id' => 7,
+                    'forms' => ['fa' => '1']];
+        }
+    }
+
+    /** Only what dagNameOf() reads. */
+    class REDCap
+    {
+        public static $groupNames = [];
+        public static function getGroupNames($unique = false, $groupId = null)
+        {
+            if ($groupId === null) return self::$groupNames;
+            return isset(self::$groupNames[(int) $groupId]) ? self::$groupNames[(int) $groupId] : '';
+        }
     }
 }
 
@@ -337,6 +423,66 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('reason: an over-long code is cut to the column', strlen($long) <= ReasonCode::MAX);
     check('reason: and marked, so it is visibly odd rather than quietly wrong',
         substr($long, -1) === '~');
+
+/* =========================================================================
+ * B3  ONE DAG AXIS, END TO END, WITH NO DATABASE
+ *
+ * This file had no occurrence of 'dag' at all, and that absence is why the
+ * seam stayed open through 1,228 green checks: scan_security_php was
+ * internally consistent on DAG NAMES, the planning matrix was internally
+ * consistent on numeric IDS, and neither suite ever held both sides of the
+ * comparison at once.
+ *
+ * The join below does. ScanPageView::scanScope() is the real producer, driven
+ * by a module whose getUser() answers a real rights array; RecordManifestSource
+ * is the real walker over a fake ScanDb serving redcap_record_list; ScanPlanner
+ * is the real planner over ArrayScanStore. The scope value is never written
+ * down - it is taken from the producer and handed to the consumer.
+ *
+ * WHY appended IS THE ASSERTION AND outOfScope IS NOT. outOfScope === listed is
+ * produced identically by a group that genuinely holds no records and by a
+ * scope compared on the wrong axis, and ScanService::start discards the stats
+ * array anyway. Measured against the shipped tree: listed 3, appended 0,
+ * outOfScope 3, manifest_total 0 - and an empty frozen manifest is exactly what
+ * promotes to coverage=complete-through-fence clean=true. Against the fixed
+ * tree: listed 3, appended 2, outOfScope 1, manifest_total 2.
+ * ===================================================================== */
+{
+    $db  = new \FakeSourceDb();
+    $mod = new \DagUserModule();
+    \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+
+    $scope = \INSPIRE\UniversalValidator\ScanPageView::scanScope($mod, 149);
+    check('B3 GATE 2: the page produces a scope for a DAG-bound designer',
+        $scope['ok'] === true && $scope['dag'] === '7');
+
+    $open = RecordManifestSource::open($db, 149, ['pk' => null]);
+    check('B3 GATE 2: and the record index is usable as a source',
+        $open['ok'] === true && $open['source']->hasDag());
+
+    $planner = new ScanPlanner(new ArrayScanStore(), str_repeat('k', 32));
+    $r = $planner->plan(149, [
+        'source'    => $open['source'],
+        'fence'     => null,
+        'dagFilter' => $scope['dag'],          // TAKEN, never written down
+        'rules'     => [['type' => 'required', 'fields' => ['a']]],
+        'ownership' => ['a' => 'fa'],
+        'policy'    => [],
+        'createdBy' => 'u',
+        'engine'    => '1',
+    ]);
+
+    check('B3 GATE 2: a group-scoped run planned from the page\'s own scope APPENDS the '
+        . 'records in that group',
+        $r['stats']['listed'] === 3 && $r['stats']['appended'] === 2
+        && $r['stats']['outOfScope'] === 1);
+    check('B3 GATE 2: the frozen manifest is not empty, so nothing can promote over nothing',
+        (int) $r['run']['manifest_total'] === 2);
+    check('B3 GATE 2: the run stores the id it was scoped by',
+        $r['run']['scope_dag'] === '7');
+    check('B3 GATE 2: and the user who started it may work it',
+        ScanAuthorization::mayWork($scope['rights'], ['fa'], $r['run']['scope_dag'])['ok'] === true);
+}
 }
 
 namespace {

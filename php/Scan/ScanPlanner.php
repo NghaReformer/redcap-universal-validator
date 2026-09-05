@@ -103,7 +103,14 @@ final class ScanPlanner
      *   choices:       array
      *   policy:        array   from ScanPolicy::resolve()
      *   engine:        string  the validation engine's version
-     *   dagFilter:     ?string scope this run to one group
+     *   dagFilter:     ?string scope this run to one group. THE NUMERIC GROUP
+     *                  ID, as a string - never the friendly DAG name. It is
+     *                  compared at stream() against redcap_record_list.dag_id
+     *                  and stored verbatim as scope_dag, which
+     *                  ScanAuthorization then compares against
+     *                  $rights['group_id']. ScanPageView::scanScope() is the
+     *                  only production producer and returns the id as 'dag';
+     *                  its 'dagName' is for prose and must never arrive here.
      *   createdBy:     string
      *   generation:    int
      *   pageSize:      int
@@ -332,6 +339,18 @@ final class ScanPlanner
             $batch = [];
             foreach ($pg['rows'] as $row) {
                 $stats['listed']++;
+                // BOTH SIDES ARE GROUP IDS. $row['dag'] is
+                // redcap_record_list.dag_id (or the __GROUPID__ value on the
+                // data-table fallback), which REDCap stores as the numeric
+                // group id; $dag is scanScope()['dag'], which is the same. A
+                // friendly name on either side matches nothing, and the failure
+                // is silent in the worst possible direction: every record is
+                // counted out of scope, the manifest freezes at zero, and the
+                // run promotes to a clean certificate over nothing. The
+                // outOfScope counter below does NOT catch it - ScanService::start
+                // discards the whole stats array, and outOfScope === listed is
+                // produced identically by a group that genuinely holds no
+                // records. The gate is the domain test, not the counter.
                 if ($dag !== null && (string) $row['dag'] !== (string) $dag) {
                     $stats['outOfScope']++;
                     continue;

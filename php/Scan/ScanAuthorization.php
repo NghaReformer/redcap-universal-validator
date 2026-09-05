@@ -217,6 +217,17 @@ final class ScanAuthorization
         if (empty($rights['design'])) {
             return self::no('you need project design rights to use the validation scan');
         }
+        // THE SCOPE IS THE GROUP ID AND MUST STAY THE GROUP ID.
+        //
+        // $rights['group_id'] is REDCap's numeric group id, and scopeMatches()
+        // compares it against uv_scan_run.scope_dag. Anything that resolves it
+        // to the friendly name here - or stores the friendly name there -
+        // breaks both sides of that comparison at once, and the failure is not
+        // a leak: it fails CLOSED, refusing the designer who started the run
+        // access to scan-work, scan-status and scan-cancel on their own run,
+        // which then holds the project's only slot with nothing to reap it.
+        // That is the shape the page shipped with, and no amount of correctness
+        // in this file could have compensated for it.
         $dag = (isset($rights['group_id']) && $rights['group_id'] !== '' && $rights['group_id'] !== null)
              ? (string) $rights['group_id'] : null;
         return ['ok' => true, 'why' => null, 'scope' => $dag, 'unrestricted' => ($dag === null)];
@@ -285,7 +296,36 @@ final class ScanAuthorization
         return $bad;
     }
 
-    /** A DAG user may only touch a run whose immutable scope is exactly theirs. */
+    /**
+     * The SCOPE half of the entitlement, on its own, for a page deciding what
+     * to OFFER.
+     *
+     * NECESSARY, NEVER SUFFICIENT, and this sentence is the contract. It skips
+     * export level and instrument access, so it may admit a caller that
+     * mayWork() will refuse - which is the safe direction, because every verb
+     * re-asks mayWork() before doing anything. It exists because the page has
+     * to decide whether to render a Continue button, and rebuilding the whole
+     * plan (durableScanContext) to answer that costs a second full plan build
+     * on every page load. Nothing that WRITES may call this.
+     *
+     * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
+     */
+    public static function mayTouchScope($rights, $runScopeDag)
+    {
+        $base = self::readable($rights);
+        if (!$base['ok']) return $base;
+        return self::scopeMatches($base, $runScopeDag);
+    }
+
+    /**
+     * A DAG user may only touch a run whose immutable scope is exactly theirs.
+     *
+     * BOTH SIDES ARE GROUP IDS. $base['scope'] comes from readable() above and
+     * $runScopeDag from uv_scan_run.scope_dag, written by
+     * ScanPageView::scanScope()['dag']. The string cast below makes an int and
+     * a numeric string equal; it does not make a name and an id equal, and
+     * nothing here can.
+     */
     private static function scopeMatches(array $base, $runScopeDag)
     {
         if ($base['unrestricted']) return $base;

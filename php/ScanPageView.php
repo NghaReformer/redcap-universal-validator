@@ -382,8 +382,13 @@ class ScanPageView
      * rights itself, and "re-derive" must not mean "a second copy that ages
      * differently from the first".
      *
-     * @return array{ok: bool, dag: ?string, why: ?string}
+     * @return array{ok: bool, dag: ?string, dagName: ?string, why: ?string}
      *         ok=false means REFUSE and say why. dag=null means unconfined.
+     *         dag is the numeric Data Access Group ID as a string - the axis
+     *         every consumer compares on. dagName is the friendly name and is
+     *         for display only; comparing it is the defect this shape exists to
+     *         prevent. It is absent (not null) on the ok=false and unconfined
+     *         returns, so a caller that reads it must use isset().
      */
     public static function scanScope($module, $pid)
     {
@@ -429,14 +434,17 @@ class ScanPageView
                         'mayExport' => $mayExport, 'rights' => $rights];
             }
 
-            $gd = null;
-            try {
-                if (is_callable(['\REDCap', 'getGroupNames'])) {
-                    $g = \REDCap::getGroupNames(true, $rights['group_id']);
-                    if (is_string($g) && $g !== '') $gd = $g;
-                }
-            } catch (\Throwable $e) {
-            }
+            // STILL THE RESOLVABILITY CHECK, and that is the only reason the
+            // lookup survives the move to the id axis. The scope this method
+            // returns is now the numeric group id, which needs no lookup - but a
+            // group whose name this installation cannot read is a group whose
+            // membership it cannot establish either, and 1.6.2 already learned
+            // what happens when that case scans on: an '__unresolvable__'
+            // sentinel matched no record, the scan read nothing, reported
+            // 'complete', and rendered a green tick over zero records. Asking
+            // the question and refusing on a blank answer is what keeps that
+            // refusal live; pinned by tests/scan_page_php.php S-03.
+            $gd = self::dagNameOf($rights['group_id']);
             if ($gd === null) {
                 // This used to set an '__unresolvable__' sentinel and scan on.
                 // The sentinel matched no record, so the scan read nothing,
@@ -446,11 +454,64 @@ class ScanPageView
                 return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
                          . 'The validation scan was not run.');
             }
-            return ['ok' => true, 'dag' => $gd, 'why' => null, 'valueCeiling' => $ceiling,
+            // THE ID, NOT THE NAME, AND THIS IS THE WHOLE FIX.
+            //
+            // 'dag' is stored verbatim as uv_scan_run.scope_dag and is then
+            // compared, unchanged, against three id-shaped values:
+            // redcap_record_list.dag_id (ScanPlanner::stream and
+            // RecordManifestSource::inScope) and $rights['group_id']
+            // (ScanAuthorization::readable). Returning the friendly name here
+            // meant a group-scoped run listed every record, appended none,
+            // called an empty manifest complete and promoted to
+            // coverage=complete-through-fence clean=true - and refused the
+            // designer who started it scan-work, scan-status and scan-cancel on
+            // their own run, which then held the project's only slot with no
+            // reaper. Reproduced end to end, both sides of the comparison
+            // printed.
+            //
+            // 'dagName' is for PROSE ONLY, and nothing reads it yet. That is
+            // deliberate rather than an oversight: the one place that needs the
+            // name is the legacy scanProject() facade, whose record groups come
+            // from \REDCap::getData() and are therefore unique NAMES, and it
+            // re-derives the name from the id through dagNameOf() instead of
+            // being handed this. So the id is the only value that crosses a
+            // module boundary, and a page that later wants to print the group
+            // has the name here without anyone being tempted to compare it.
+            return ['ok' => true, 'dag' => (string) $rights['group_id'], 'dagName' => $gd,
+                    'why' => null, 'valueCeiling' => $ceiling,
                     'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');
         }
+    }
+
+    /**
+     * A group id resolved to its unique DAG name, or null when it cannot be.
+     *
+     * ONE RESOLUTION, BECAUSE THERE WERE ALREADY TWO. This exact six-line body
+     * existed inline in scanScope() and again as a private dagNameOf() on
+     * UniversalValidator, which the live unique-check endpoint calls to decide
+     * whether a colliding record id may be shown. Two copies of a name lookup is
+     * two chances for one of them to be reading a different thing from the other,
+     * and the axis defect this method exists because of is exactly that shape.
+     *
+     * NULL IS AN ANSWER AND IT MEANS REFUSE. A group whose name cannot be read is
+     * a group whose membership cannot be established, and the callers turn that
+     * into a refusal rather than into an unconfined read. A throw is caught here
+     * and reported as null for the same reason: "the question failed" and "there
+     * is no such group" both have to fail closed.
+     */
+    public static function dagNameOf($groupId)
+    {
+        if ($groupId === null || $groupId === '') return null;
+        try {
+            if (is_callable(['\REDCap', 'getGroupNames'])) {
+                $g = \REDCap::getGroupNames(true, $groupId);
+                if (is_string($g) && $g !== '') return $g;
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
     }
 
     /** One CSV line from a list of values, each quoted and formula-defused. */

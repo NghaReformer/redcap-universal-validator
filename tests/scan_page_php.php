@@ -615,6 +615,40 @@ namespace {
         list(, $resOk, $scopeOk) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
         check('S-03 contrast: a resolvable DAG resolves to a scope and scans',
             $scopeOk['ok'] && $scopeOk['dag'] !== null && $resOk['stats']['manifest'] >= 1);
+
+        /* -----------------------------------------------------------------
+         * B3  ONE DAG AXIS: the value the page PRODUCES is the value every
+         *     consumer COMPARES
+         *
+         * The page resolved $rights['group_id'] to the friendly DAG name and
+         * returned that as the scope. It is stored verbatim as
+         * uv_scan_run.scope_dag and then compared, unchanged, against
+         * redcap_record_list.dag_id and against $rights['group_id'] - three
+         * id-shaped values. A group-scoped run therefore listed every record,
+         * appended none, froze an empty manifest, and promoted it to
+         * coverage=complete-through-fence clean=true; and it refused the
+         * designer who started it scan-work, scan-status and scan-cancel on
+         * their own run, which then held the project's only slot.
+         *
+         * THE VALUES BELOW ARE OBTAINED, NEVER CONSTRUCTED. Each check takes
+         * the scope from the production producer and hands it to a production
+         * consumer, so the assertion is about a join rather than about a
+         * literal agreeing with itself - which is what 1,228 green checks did
+         * while the seam was open, because no suite ever held both sides.
+         * ----------------------------------------------------------------- */
+        list($mG, $resG, $scG) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
+        check('B3 GATE 1a: the scope the page produces is the group ID, byte-identical to '
+            . 'what every consumer compares',
+            $scG['dag'] === '7' && $scG['dag'] === (string) $scG['rights']['group_id']);
+        check('B3 GATE 1b: and the designer who started the run may work their own run',
+            \INSPIRE\UniversalValidator\Scan\ScanAuthorization::mayWork(
+                $scG['rights'], ['fa'], $scG['dag'])['ok'] === true);
+        check('B3 GATE 1c: the friendly name travels beside the id, never instead of it',
+            $scG['dagName'] === 'north' && $scG['dag'] !== $scG['dagName']);
+        check('B3 GATE 1d: and the id round-trips back to that name through the production '
+            . 'resolver, which is what the legacy scan compares on',
+            \INSPIRE\UniversalValidator\ScanPageView::dagNameOf($scG['dag']) === $scG['dagName']
+            && $resG['stats']['manifest'] === 1);
     }
 
     /* =====================================================================

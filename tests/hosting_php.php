@@ -214,7 +214,19 @@ namespace {
             $f = \ExternalModules\TestUser::$forms;
             return $f === null ? [] : ['nurse' => ['forms' => $f]];
         }
-        public static function getGroupNames($a = false, $b = null) { return ''; }
+        // AN ID->NAME MAP, BECAUSE THE MODULE NOW HAS ONE DAG AXIS. Wave 6
+        // moved every scope value onto the numeric group id; scanProject()
+        // resolves it back to the exported unique name through
+        // ScanPageView::dagNameOf(), which reads exactly this. A stub that
+        // returned '' unconditionally made every group unresolvable, which the
+        // production code now correctly refuses - so the four DAG-scoped cases
+        // below hand in ids and this answers with the names their fixture data
+        // carries in redcap_data_access_group.
+        public static $groupNames = [7 => 'north', 31 => 'south'];
+        public static function getGroupNames($a = false, $b = null) {
+            if ($b === null) return self::$groupNames;
+            return isset(self::$groupNames[(int) $b]) ? self::$groupNames[(int) $b] : '';
+        }
         public static function getRecordIdField() { return self::$pkAvailable ? 'record_id' : ''; }
         public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
         public static function getEventNames($u = false, $x = false, $evt = null) { return 'event_' . $evt . '_arm_1'; }
@@ -1098,7 +1110,7 @@ namespace {
         $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
         $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'redcap_data_access_group' => 'north']]];
 
-        $res = mkMod($D, $data)->scanProject(PID, 'south');
+        $res = mkMod($D, $data)->scanProject(PID, '31');   // 'south'
         check('H-10: a DAG that matches no record is NOT reported complete',
             $res['status'] === 'incomplete');
         check('H-10: and it says the group had nothing in scope',
@@ -1116,7 +1128,7 @@ namespace {
 
         // CONTRAST: a DAG that DOES match still scans and can still be clean.
         $clean = [1 => [1 => ['record_id' => '1', 'a_val' => 'ok', 'redcap_data_access_group' => 'north']]];
-        $res3 = mkMod($D, $clean)->scanProject(PID, 'north');
+        $res3 = mkMod($D, $clean)->scanProject(PID, '7');   // 'north'
         check('H-10 contrast: a matching DAG with clean data still completes',
             $res3['status'] === 'complete' && count($res3['violations']) === 0);
     }
@@ -1179,7 +1191,7 @@ namespace {
         $whole = mkMod($DU, $du)->scanProject(PID);
         check('X3: project-wide, the cross-group duplicate IS found',
             count(array_filter($whole['violations'], function ($v) { return $v['type'] === 'unique'; })) === 2);
-        $scoped = mkMod($DU, $du)->scanProject(PID, 'north');
+        $scoped = mkMod($DU, $du)->scanProject(PID, '7');   // 'north'
         check('X3: DAG-scoped, the rule is reported as unevaluable rather than silently passing',
             (bool) array_filter($scoped['unconfigurable'], function ($u) {
                 return stripos($u['why'], 'whole project') !== false;
@@ -1228,7 +1240,7 @@ namespace {
         ];
         $m = mkMod($DD, $dagData);
         \REDCap::$getDataMode = 'badnode';
-        $res = $m->scanProject(PID, 'north');
+        $res = $m->scanProject(PID, '7');   // 'north'
         $recs = [];
         foreach ($res['violations'] as $v) $recs[(string) $v['record']] = true;
         // On the MANIFEST, not on the violation rows. The unreadable record has

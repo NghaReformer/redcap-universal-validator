@@ -150,6 +150,7 @@ $cases = array(
     'retention',    // three clocks, and nothing silently losing a finding
     'fault',        // what the store does when the server says no
     'walk',         // RecordManifestSource over REDCap-shaped tables
+    'dag',          // one group axis, and the two halves of a run agreeing about a record
     'fence',        // SourceFence: versions, retention of the log, catch-up paging
     'planning',     // ScanPlanner: a project to a frozen manifest
     'worker',       // ScanWorker against the real store and a real fence

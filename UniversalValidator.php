@@ -2480,9 +2480,13 @@ class UniversalValidator extends AbstractExternalModule
      * (grouping by value + composite key + scope) instead of a whole-project
      * read per record.
      *
-     * $dagFilter: a DAG unique name — only records in that DAG are scanned
-     * (pass the acting user's DAG so a DAG-bound user never sees other
-     * groups' record ids). null scans everything.
+     * $dagFilter: a DAG GROUP ID — only records in that group are scanned (pass
+     * ScanPageView::scanScope()['dag'], which produces it, so a DAG-bound user
+     * never sees other groups' record ids). null scans everything. It USED to
+     * be the unique name, and the module now has exactly one DAG axis: the id.
+     * The name is derived from it internally, because this path's record groups
+     * come from the export, which reports names. A group id that cannot be
+     * resolved to a name refuses the scan rather than scanning unconfined.
      *
      * Returns ['violations' => [ ['record','event_id','instance','field',
      * 'type','reason','rule' => 1-based index], ... ], 'unconfigurable' =>
@@ -2507,6 +2511,35 @@ class UniversalValidator extends AbstractExternalModule
         // before 1.7.0 expected and what every test still asserts against.
         $collect = ($sink === null);
         if ($collect) $sink = new ArrayFindingSink();
+
+        // ONE AXIS FOR THE WHOLE MODULE, AND THIS IS THE CONVERSION.
+        //
+        // $dagFilter now arrives as the numeric group id, because that is what
+        // ScanPageView::scanScope() produces and what every durable consumer
+        // compares on. This path cannot compare ids: its record groups come from
+        // \REDCap::getData(exportDataAccessGroups => true), whose
+        // redcap_data_access_group field is the DAG's unique NAME. So the id is
+        // resolved back to a name HERE, once, through the same resolver the page
+        // uses - rather than leaving a second parameter on a second axis for
+        // somebody to fill from the wrong producer. Verified: with the page
+        // returning the id and this resolution absent, five checks in
+        // tests/scan_page_php.php go red, all of them a scan that listed zero
+        // records because it compared 'north' against '7'.
+        //
+        // AN UNRESOLVABLE GROUP REFUSES, exactly as scanScope() does. Scanning
+        // on with a name we could not read means matching no record, and this
+        // method's own H-10 note records what that produced: a green tick over
+        // "Scanned 0 record(s)".
+        $dagName = null;
+        if ($dagFilter !== null && $dagFilter !== '') {
+            $dagName = ScanPageView::dagNameOf($dagFilter);
+            if ($dagName === null) {
+                $result['incomplete'][] = 'the Data Access Group this scan was confined to could '
+                    . 'not be resolved, so no record could be placed inside or outside it and '
+                    . 'nothing was examined';
+                return $result;                  // status stays 'failed'
+            }
+        }
 
         $plan = $this->scanPlan($pid, $opts, $dagFilter);
         if ($plan['fatal'] !== null) {
@@ -2585,7 +2618,13 @@ class UniversalValidator extends AbstractExternalModule
                 // printed under a header stating the file covers one group only.
                 // A group that cannot be read is not this group.
                 if (!is_array($node)) { $ungrouped++; continue; }
-                if (self::dagOfRecordNode($node) !== $dagFilter) continue;
+                // NAME AGAINST NAME. dagOfRecordNode() returns
+                // redcap_data_access_group from the export, which is the unique
+                // NAME; $dagName is the same name, resolved once above from the
+                // group id the caller passed. Comparing $dagFilter here - the id
+                // - excludes every record in the project and reports a clean,
+                // complete scan of nothing.
+                if (self::dagOfRecordNode($node) !== $dagName) continue;
             }
             $ids[] = $rec;
         }
@@ -2617,7 +2656,7 @@ class UniversalValidator extends AbstractExternalModule
             // nothing.
             $result['incomplete'][] = $dagFilter === null
                 ? 'the project contains no records, so there was nothing to examine'
-                : 'no record was in scope for Data Access Group "' . $dagFilter . '", so nothing was '
+                : 'no record was in scope for Data Access Group "' . $dagName . '", so nothing was '
                   . 'examined — this is not evidence that the group\'s data is clean';
             $result['status'] = 'incomplete';
             return $result;
@@ -4270,7 +4309,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($group_id !== null && $group_id !== '') {
                     // A DAG-bound user may learn THAT the value is used, but a
                     // record id outside their DAG is not theirs to see.
-                    $userDag = self::dagNameOf($group_id);
+                    $userDag = ScanPageView::dagNameOf($group_id);
                     if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
                 }
             }
@@ -4613,7 +4652,7 @@ class UniversalValidator extends AbstractExternalModule
                 $currentDag = self::dagOfRecordNode($data[$excludeRecord]);
             }
             if ($currentDag === null && $groupId !== null && $groupId !== '') {
-                $currentDag = self::dagNameOf($groupId);
+                $currentDag = ScanPageView::dagNameOf($groupId);
             }
         }
 
@@ -4673,18 +4712,12 @@ class UniversalValidator extends AbstractExternalModule
         return null;
     }
 
-    /** Resolve a numeric group id to its unique DAG name, or null. */
-    private static function dagNameOf($groupId)
-    {
-        try {
-            if (is_callable(['\REDCap', 'getGroupNames'])) {
-                $g = \REDCap::getGroupNames(true, $groupId);
-                if (is_string($g) && $g !== '') return $g;
-            }
-        } catch (\Throwable $e) {
-        }
-        return null;
-    }
+    // dagNameOf() USED TO LIVE HERE, as a byte-for-byte copy of the six lines
+    // inside ScanPageView::scanScope(). Two copies of one lookup is two chances
+    // for one of them to drift, and the axis defect this release fixes is
+    // precisely that shape one layer up. It is now
+    // ScanPageView::dagNameOf(), which the page, this file's live unique-check
+    // endpoint and scanProject() all call.
 
     // -- server-side value read --------------------------------------------
 

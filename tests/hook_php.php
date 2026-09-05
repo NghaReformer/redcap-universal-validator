@@ -1547,7 +1547,14 @@ namespace {
     // DAG filter: scanning as a 'north' user sees only north records — and the
     // duplicate pair (split across DAGs, project scope) is NOT reported because
     // the south record is outside the visible set.
-    $res = $m->scanProject(149, 'north');
+    // THE GROUP ID, NOT THE NAME. Wave 6 put every scope value on the id axis;
+    // scanProject() resolves it back to the exported name once, at the top, so
+    // the fixture has to be able to answer that resolution. Seeded and cleared
+    // here rather than globally, because \REDCap::$groupNames is shared and an
+    // unresolvable group is now a refusal rather than a silent empty scan.
+    \REDCap::$groupNames = [7 => 'north'];
+    $res = $m->scanProject(149, '7');
+    \REDCap::$groupNames = [];
     check('scan: DAG filter scopes the record set', $res['stats']['records'] === 2);
     $recs = array_unique(array_map(function ($v) { return $v['record']; }, $res['violations']));
     check('scan: DAG filter never names another group\'s record', !in_array('2', $recs, true));

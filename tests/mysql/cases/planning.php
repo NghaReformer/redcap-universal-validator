@@ -12,11 +12,13 @@
  * about ONE project, and each of them is a plausible-looking number when it is
  * wrong.
  *
- * THE GROUP FILTER IS STILL HANDED IN AS A LITERAL '7'. That is the shape of the
- * problem this fixture exists to expose rather than a decision made here: the
- * scoped-run assertions below inject the group id the code is supposed to derive
- * from the group NAME the page passes. Wave 6 owns that comparison; when it
- * lands, the derivation belongs in this fixture and the literal goes.
+ * THE GROUP FILTER IS A LITERAL '7', AND THAT IS NOW THE PRODUCTION SHAPE. It
+ * used to be a note about a defect: the page resolved $rights['group_id'] to the
+ * friendly DAG name and stored that as scope_dag, while every consumer here
+ * compares against redcap_record_list.dag_id - so a scoped run listed every
+ * record, appended none, and promoted an empty manifest to a clean certificate.
+ * Wave 6 moved the page onto the id axis, so ScanPageView::scanScope()['dag'] is
+ * the numeric id and this literal is what it produces. Nothing to derive.
  */
 
 use INSPIRE\UniversalValidator\Scan\Schema;
@@ -93,7 +95,17 @@ $NEIGHBOUR = uv_neighbour($PID);
     // A group-scoped run must carry a group-scoped manifest. Building the whole
     // project and filtering at display time is the leak the persisted store
     // creates.
-    $scoped = $planner->plan($PID, array_merge($baseReq, array('dagFilter' => '7')));
+    // THE SCOPE IS TAKEN FROM THE SOURCE, NOT WRITTEN DOWN. The literal '7' that
+    // used to sit here injected the value the code is supposed to derive, so the
+    // three assertions below proved the planner agrees with a constant rather
+    // than with the record index. Asking dagsOf() for it first states the axis
+    // as a property - the source reports a group as the numeric id REDCap
+    // stores - and then feeds that answer to the consumer, which is the join a
+    // hand-partitioned fixture can never make.
+    $srcDags = $srcP['source']->dagsOf(array('P003', 'P001'));
+    check('plan: the record index reports a group as the numeric id REDCap stores',
+        $srcDags['P003'] === '7' && $srcDags['P001'] === null);
+    $scoped = $planner->plan($PID, array_merge($baseReq, array('dagFilter' => $srcDags['P003'])));
     check('plan: a group-scoped run lists only that group',
         $scoped['ok'] === true && (int) $scoped['run']['manifest_total'] === 8);
     check('plan: and says how many records it left out',
