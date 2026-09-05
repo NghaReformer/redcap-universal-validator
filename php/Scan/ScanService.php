@@ -365,15 +365,142 @@ final class ScanService
                 'why' => $ok ? null : 'this scan had already finished, so there was nothing to stop'];
     }
 
-    /** The run this project is currently working on, if any, for the page to resume. */
-    public function activeRun($pid)
+    /**
+     * The run this project is working on, and whether THIS caller may work it.
+     *
+     * M3: THREE ANSWERS, NOT TWO. This returned a bare run id or null, and null
+     * meant both "there is no run" and "there is one you cannot touch" - so the
+     * page rendered a Continue button, printed the run id into the client, and
+     * every click came back refused with nothing on the page explaining why.
+     * When the scope axis was wrong that was the designer's OWN run; now that it
+     * is right it is another group's, and handing out its id makes a page load
+     * an enumeration of other groups' runs. A run id is a locator and never an
+     * authorisation, so emitting one is not a breach - but there is no reason
+     * to, and the button it enables is a lie either way.
+     *
+     * THE SCOPE GATE ONLY, AND ON PURPOSE. mayTouchScope() skips the export and
+     * instrument checks, because asking for those means rebuilding the whole
+     * plan on every page load. It is necessary, not sufficient: work(), status()
+     * and cancel() each re-ask mayWork() and can still refuse what this offered.
+     *
+     * $scope is ScanPageView::scanScope()'s answer, passed in rather than
+     * re-read: the page has already computed it, and two readings of the same
+     * user's rights in one request can legitimately differ.
+     *
+     * @return array{run_id:?int, state:string, why:?string}
+     *         state is one of 'none', 'yours', 'other', 'unknown'. run_id is
+     *         non-null ONLY for 'yours'.
+     */
+    public function activeRun($pid, $scope = null)
     {
         try {
-            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+            $r = $this->db->select('SELECT run_id, scope_dag FROM ' . Schema::table('scan_run')
                 . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
-            return isset($r[0][0]) ? (int) $r[0][0] : null;
+            if (!isset($r[0][0])) return ['run_id' => null, 'state' => 'none', 'why' => null];
+            $rights = (is_array($scope) && isset($scope['rights'])) ? $scope['rights'] : null;
+            if ($rights === null) {
+                // No rights in hand is not "no restriction". Fail closed: the
+                // page offers nothing and the verbs still answer honestly.
+                return ['run_id' => null, 'state' => 'unknown', 'why' => ScanStore::BUSY_WHY];
+            }
+            $may = ScanAuthorization::mayTouchScope($rights, $r[0][1]);
+            if (!empty($may['ok'])) {
+                return ['run_id' => (int) $r[0][0], 'state' => 'yours', 'why' => null];
+            }
+
+            // THE MIGRATION, SITED WHERE THE WEDGE ACTUALLY SHOWS.
+            //
+            // A run started before the axis fix carries a DAG NAME in
+            // scope_dag, which no group id can equal - so nobody, including the
+            // designer who started it, can work, read or cancel it, and it
+            // holds the project's one active slot forever. The 1->2 data
+            // migration (Schema::upgradeDataV2) retires exactly this shape, but
+            // an installation already AT version 2 never re-enters that path,
+            // and version 2 is every installation carrying this build. There is
+            // deliberately no version 3 for it: a version bump is a second
+            // ALTER pass over an ~800 MB uv_finding and disables the scan on
+            // every piloting installation until an administrator re-saves the
+            // configuration - to retire at most a handful of rows.
+            //
+            // HERE, AND NOT IN available() OR openRun(). available() states in
+            // its own body that it reports rather than repairs, because a
+            // migration that runs because someone opened a page is a migration
+            // nobody chose; openRun() is reached only by pressing Start, which
+            // is the button a wedged run hides. This branch is the one moment
+            // the defect is observable AND the observer is the person it
+            // blocks, and it costs nothing on the path where the scope matches.
+            if ($this->reapUnworkableScopes($pid) > 0) {
+                $again = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+                    . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
+                if (!isset($again[0][0])) {
+                    return ['run_id' => null, 'state' => 'none', 'why' => null];
+                }
+            }
+            // BUSY_WHY, and nothing more specific. That this project is busy is
+            // already disclosed to anyone who presses Start - the store answers
+            // with this same sentence - so repeating it here reveals nothing
+            // new, and saying anything MORE would confirm the run's scope to
+            // somebody outside it.
+            return ['run_id' => null, 'state' => 'other', 'why' => ScanStore::BUSY_WHY];
         } catch (\Throwable $e) {
-            return null;
+            return ['run_id' => null, 'state' => 'unknown', 'why' => null];
+        }
+    }
+
+    /**
+     * Retire any active run whose scope no user of this project could match.
+     *
+     * THE AUTHORITY IS THE PROJECT'S OWN GROUP LIST. A run is unworkable when
+     * its scope_dag is not one of this project's current group ids. That covers
+     * both populations exactly: a run stamped with a friendly DAG name before
+     * the axis was fixed, and a run scoped to a group that has since been
+     * deleted. Neither can ever be worked by anybody, and both hold the slot.
+     * Testing the SHAPE of the value instead - ctype_digit, say - would be a
+     * guess: a DAG whose label is a year has an all-digit unique name, and the
+     * cost of guessing wrong here is destroying a live run.
+     *
+     * READ FROM THE TABLE, NOT FROM REDCap::getGroupNames(). That function
+     * answers for the AMBIENT project - the one $Proj and PROJECT_ID name - and
+     * this method is handed a $pid. On a request where the two differ it would
+     * validate this project's runs against another project's groups, and every
+     * scope would look invalid: the failure mode is retiring live runs, which
+     * is the one outcome worse than leaving a wedged one alone.
+     *
+     * FAILS TOWARD LEAVING RUNS ALONE. A group list that cannot be read at all
+     * throws, is caught, and retires nothing. The next request tries again.
+     *
+     * @return int runs retired
+     */
+    private function reapUnworkableScopes($pid)
+    {
+        try {
+            $valid = [];
+            foreach ($this->db->select('SELECT group_id FROM redcap_data_access_groups
+                WHERE project_id = ?', [$pid]) as $g) {
+                $valid[(string) $g[0]] = true;
+            }
+            $rows = $this->db->select('SELECT run_id, scope_dag FROM ' . Schema::table('scan_run')
+                . ' WHERE project_id = ? AND active_slot = 1 AND scope_dag IS NOT NULL', [$pid]);
+            $n = 0;
+            foreach ($rows as $row) {
+                if (isset($valid[(string) $row[1]])) continue;
+                // `expired`, because that is what Schema::upgradeDataV2 writes
+                // for the same condition - the two migrations must not leave
+                // rows a reader can tell apart.
+                $this->store()->finish((int) $row[0], ScanOutcome::derive(['expired' => true]));
+                // The run id and the project are enough to act on. The scope
+                // value is deliberately NOT logged: it may be another group's
+                // name, and this record is readable by whoever can read the
+                // module log.
+                $this->note('scan run retired: unworkable scope',
+                    ['project_id' => (int) $pid, 'run_id' => (int) $row[0]]);
+                $n++;
+            }
+            return $n;
+        } catch (\Throwable $e) {
+            // As reapCancelled(): a reap that fails must not stop the caller
+            // getting an honest answer about the run that is still there.
+            return 0;
         }
     }
 
@@ -451,6 +578,10 @@ final class ScanService
         }
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights'],
                 'forms' => array_keys($forms), 'unknown' => $unknown,
+                // The CALLER's scope, kept beside the run's own. The two are
+                // equal for any request the authorisation above let through -
+                // they are compared as ids by mayWork() - and keeping both is
+                // what let the seam be asserted rather than assumed.
                 'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
     }
 

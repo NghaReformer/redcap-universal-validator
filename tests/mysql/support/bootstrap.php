@@ -35,6 +35,14 @@ require_once __DIR__ . '/../../../php/Scan/ScanWorker.php';
 require_once __DIR__ . '/../../../php/Scan/UniqueFinalizer.php';
 require_once __DIR__ . '/../../../php/Scan/RollupBuilder.php';
 require_once __DIR__ . '/../../../php/Scan/ScanPromotion.php';
+// The composition root, for the cases that assert what it does to the STORE
+// rather than what it decides. ScanService pulls ScanPageView and
+// ScanCapabilities through its own file, and ScanAuthorization is what the
+// scope gate reads.
+require_once __DIR__ . '/../../../php/Scan/ScanAuthorization.php';
+require_once __DIR__ . '/../../../php/ScanPageView.php';
+require_once __DIR__ . '/../../../php/ScanCapabilities.php';
+require_once __DIR__ . '/../../../php/Scan/ScanService.php';
 
 use INSPIRE\UniversalValidator\Scan\Schema;
 

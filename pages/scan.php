@@ -50,7 +50,20 @@ $dagFilter = $scope['dag'];
 
 $svc = new Scan\ScanService($module);
 $available = $svc->available($pid);
-$activeRun = $available['ok'] ? $svc->activeRun($pid) : null;
+// M3: THREE ANSWERS, NOT TWO. activeRun() used to return a run id or null, and
+// null meant both "there is no run" and "there is one you may not touch" - so
+// this page rendered Continue over a run every click would be refused on, and
+// printed its id into the client. $activeState carries the distinction;
+// $activeRun stays the id and is non-null ONLY when this caller may work it, so
+// every use of it below keeps its old meaning.
+//
+// $scope is passed in rather than re-read. It was computed at the top of this
+// request from the same rights the verbs will re-check, and two readings of one
+// user in one request can legitimately differ.
+$activeState = $available['ok']
+    ? $svc->activeRun($pid, $scope)
+    : ['run_id' => null, 'state' => 'none', 'why' => null];
+$activeRun = $activeState['run_id'];
 
 // THE STATE, READ HERE RATHER THAN PROMISED HERE.
 //
@@ -125,6 +138,7 @@ if ($available['ok']) {
                       'why' => 'the scan cannot be driven from this page',
                       'detail' => $jsmoWhy];
         $activeRun = null;
+        $activeState = ['run_id' => null, 'state' => 'none', 'why' => null];
     }
 }
 
@@ -221,6 +235,16 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
     </button>
     <span id="uv-scan-phase" style="font-weight:600"><?php echo ScanPageView::h($prefill['phase']); ?></span>
   </div>
+<?php if ($activeState['state'] === 'other' || $activeState['state'] === 'unknown') { ?>
+  <?php /* M3: SAY IT BEFORE THE CLICK, NOT AFTER. With a run on the server that
+           this caller may not touch, Continue is hidden and Start is offered -
+           and Start is refused by the store with this same sentence. Printing it
+           here costs nothing and turns a button that always fails into a state
+           the reader can see. It is BUSY_WHY verbatim: a more specific sentence
+           would confirm the run's scope to somebody outside it. */ ?>
+  <p id="uv-scan-busy" role="status" style="margin-top:10px;font-size:13px;color:#a30"><?php
+     echo ScanPageView::h($activeState['why']); ?></p>
+<?php } ?>
 
   <?php // The TRACK carries the semantics and the fill stays presentational. An
         // ABSENT aria-valuenow is what ARIA means by an indeterminate progress
@@ -250,7 +274,15 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
      style="margin-top:8px;font-size:13px;color:#a30"></p>
 
   <noscript>
-<?php if ($activeRun === null) { ?>
+<?php if ($activeState['state'] === 'other' || $activeState['state'] === 'unknown') { ?>
+    <?php /* THE THIRD SENTENCE. Without it this said "Nothing has been run" over a
+             run that is on the server at that moment, which is the same false
+             reassurance the whole rebuild exists to remove - and it said it
+             specifically to the person who cannot see the run. It repeats the
+             store's own busy wording and adds nothing to it, because anything
+             more would confirm the run's scope to somebody outside it. */ ?>
+    <p style="color:#a30"><?php echo ScanPageView::h($activeState['why']); ?></p>
+<?php } elseif ($activeRun === null) { ?>
     <p style="color:#a30">This page needs JavaScript to start a scan. Nothing has been run.</p>
 <?php } else { ?>
     <p style="color:#a30">A validation scan for this project is on the server right now, and the

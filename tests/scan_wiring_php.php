@@ -105,7 +105,6 @@ namespace {
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
         'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
         'ScanPolicy::floor'              => 'wave 10, transitively: tightened() is its only intended caller',
-        'ScanAuthorization::mayTouchScope' => 'wave 6 (M3): the page has to decide whether to OFFER a Continue button, and rebuilding durableScanContext to answer costs a second full plan build per page load; extracted with B3 because it is the scope comparison and belongs beside it, wired when M3 lands the reaper',
         'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
 
         // -- wave 11, the report. It could not have been built earlier:

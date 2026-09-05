@@ -144,4 +144,139 @@ $FBPID = 902;          // deliberately not uv_neighbour($PID) - 901 is the plant
     check('dag: and the manifest row carries the same id, unaltered',
         count($stored) === 1 && (string) $stored[0][0] === 'R1'
         && (string) $stored[0][1] === '7');
+
+    /* -----------------------------------------------------------------------
+     * CASE 4  the wedged run, and the one thing that unwedges it (M3)
+     *
+     * A run started before the axis fix carries a DAG NAME in scope_dag. No
+     * group id can equal it, so nobody - not even the designer who started it -
+     * can work, read or cancel it, and it holds the project's one active slot
+     * with nothing to release it. Schema::upgradeDataV2 retires exactly this
+     * shape on an installation migrating from version 1, but an installation
+     * already AT version 2 never re-enters that path, and version 2 is every
+     * installation carrying this build.
+     *
+     * PROVED HERE AND NOT IN THE MOCKED SUITES, because retiring a run means
+     * calling store()->finish(): the page fixture answers null to that UPDATE,
+     * the store raises ScanStoreUnavailable, and the reaper swallows it. A
+     * control asserting "nothing was retired" against a store that can retire
+     * nothing is green for a reason unconnected to the code.
+     * -------------------------------------------------------------------- */
+    $A->query('CREATE TABLE IF NOT EXISTS redcap_data_access_groups (
+        group_id INT NOT NULL, project_id INT NOT NULL, group_name VARCHAR(150) NULL,
+        KEY (project_id)) ENGINE=InnoDB');
+    $A->query('DELETE FROM redcap_data_access_groups');
+    $A->query('INSERT INTO redcap_data_access_groups (group_id, project_id, group_name) VALUES ('
+        . '7, ' . $PID . ", 'north'), (31, " . $PID . ", 'south')");
+    // The NEIGHBOUR has a group 42 that this project does not. A reaper that
+    // dropped its project predicate would call 42 valid here.
+    $A->query('INSERT INTO redcap_data_access_groups (group_id, project_id, group_name) VALUES ('
+        . '42, ' . uv_neighbour($PID) . ", 'elsewhere')");
+
+    $rights = array('design' => true, 'data_export_tool' => '1', 'group_id' => 7,
+                    'forms' => array('demographics' => '1'));
+    $scope7 = array('ok' => true, 'dag' => '7', 'rights' => $rights);
+    $svc = new \INSPIRE\UniversalValidator\Scan\ScanService(new \UvDagModule($A));
+
+    // A LIVE, WORKABLE RUN FIRST: the control has to run against the same store
+    // and the same reaper, or "left alone" means nothing.
+    $store->finish((int) $p['run']['run_id'],
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    $live = $planner->plan($PID, array_merge($req, array('dagFilter' => '7')));
+    $liveId = (int) $live['run']['run_id'];
+    $seen = $svc->activeRun($PID, $scope7);
+    check('dag: your own group id is a scope you may work, and you get the run id',
+        $seen['state'] === 'yours' && $seen['run_id'] === $liveId);
+    $still = $dbA->select('SELECT terminal FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', array($liveId));
+    check('dag: and a live run in a group that still exists is NOT retired',
+        isset($still[0]) && $still[0][0] === null);
+
+    // NOW THE WEDGE. The same run, restamped with the friendly name the page
+    // used to produce - which is exactly what a pre-fix run carries on disk.
+    $dbA->exec('UPDATE ' . Schema::table('scan_run') . " SET scope_dag = 'north'
+        WHERE run_id = ?", array($liveId));
+    $wedged = $svc->activeRun($PID, $scope7);
+    check('dag: a run stamped with a DAG name is retired rather than held forever',
+        $wedged['state'] === 'none' && $wedged['run_id'] === null);
+    $gone = $dbA->select('SELECT terminal, coverage, active_slot FROM '
+        . Schema::table('scan_run') . ' WHERE run_id = ?', array($liveId));
+    // `expired`, matching what Schema::upgradeDataV2 writes for the same
+    // condition: the two migrations must not leave rows a reader can tell apart.
+    check('dag: retired as expired, the same terminal state the 1-to-2 migration writes',
+        isset($gone[0]) && $gone[0][0] === 'expired');
+    // THE SLOT IS THE POINT. A terminal row that still held active_slot = 1
+    // would leave the project just as busy as before.
+    check('dag: and the slot is released, so the project can scan again',
+        isset($gone[0]) && $gone[0][2] === null);
+    $next = $planner->plan($PID, array_merge($req, array('dagFilter' => '7')));
+    check('dag: proved by starting one, which is what the operator was blocked from',
+        $next['ok'] === true && $next['busy'] === false);
+    $store->finish((int) $next['run']['run_id'],
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+
+    // A GROUP THAT BELONGS TO THE PROJECT NEXT DOOR IS NOT THIS PROJECT'S
+    // GROUP. This is the check that fails if the group-list read loses its
+    // project predicate - which is what \REDCap::getGroupNames() would have
+    // done, answering for the ambient project rather than for $pid.
+    // A RECORD IN 42, or the plan is refused before the reaper can be asked
+    // about it: an empty manifest is now a refusal rather than a certificate
+    // (ScanOutcome::EMPTY_SCOPE), so a run scoped to a group holding nothing
+    // never reaches active_slot at all. The point of this case is a run that
+    // DID start against a scope this project cannot work, which is what a
+    // deleted group leaves behind.
+    $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
+        . $PID . ", 'R4', 42)");
+    $foreign = $planner->plan($PID, array_merge($req, array('dagFilter' => '42')));
+    check('dag: a run may be planned against any scope the planner is handed',
+        $foreign['ok'] === true);
+    $svc->activeRun($PID, $scope7);
+    $fg = $dbA->select('SELECT terminal FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', array((int) $foreign['run']['run_id']));
+    check('dag: but a group belonging to another project is not a scope this one can work',
+        isset($fg[0]) && $fg[0][0] === 'expired');
+
+    // AND THE FAIL-SAFE. With no group table at all the read throws, and a
+    // reaper that retired runs on a failed lookup would destroy live work -
+    // the one outcome worse than leaving a wedged run for the next request.
+    $safe = $planner->plan($PID, array_merge($req, array('dagFilter' => '7')));
+    $safeId = (int) $safe['run']['run_id'];
+    $A->query('DROP TABLE redcap_data_access_groups');
+    $svc->activeRun($PID, array('ok' => true, 'dag' => '31',
+        'rights' => array_merge($rights, array('group_id' => 31))));
+    $alive = $dbA->select('SELECT terminal FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', array($safeId));
+    check('dag: a group list that cannot be read at all retires nothing',
+        isset($alive[0]) && $alive[0][0] === null);
+    $store->finish($safeId,
+        \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+}
+
+/**
+ * The thinnest module ScanService will accept: a query() over the case's own
+ * connection, and a log() that keeps what it was told.
+ *
+ * ModuleDb reads a mysqli_result through fetch_row(), and exec() asks for
+ * SELECT ROW_COUNT() straight afterwards on the same connection - so a shim
+ * that hands back the raw result of a real query satisfies both halves without
+ * reimplementing either.
+ */
+class UvDagModule
+{
+    private $c;
+    public $logCalls = array();
+    public function __construct($c) { $this->c = $c; }
+    public function query($sql, $params = array())
+    {
+        if (!$params) return $this->c->query($sql);
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $r = $st->get_result();
+        // get_result() answers false for a statement with no result set, which
+        // is what every UPDATE here is. ModuleDb reads that as "no rows", and
+        // its own ROW_COUNT() probe is where the count comes from.
+        return $r === false ? true : $r;
+    }
+    public function log($m, $p = array()) { $this->logCalls[] = array($m, $p); return count($this->logCalls); }
 }

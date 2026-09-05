@@ -98,6 +98,18 @@ namespace ExternalModules {
          * from a test.
          */
         public $activeRunId = null;
+        /**
+         * The scope stamped on that run, and the project's real group list.
+         *
+         * M3 made activeRun() read scope_dag beside run_id and decide whether
+         * THIS caller may touch it, so a fixture that answers one column tests
+         * the null-scope branch and nothing else. $projectGroups is what
+         * reapUnworkableScopes() validates against; an empty list means "this
+         * project has no groups", which is a real answer and retires a scoped
+         * run, so cases that must NOT reap have to populate it.
+         */
+        public $activeRunScope = null;
+        public $projectGroups = [];
         public $runRow = null;
         public $recordStates = [];
         public function query($sql, $params = []) {
@@ -105,7 +117,7 @@ namespace ExternalModules {
             if (strpos($sql, 'uv_scan_run') !== false) {
                 if (strpos($sql, 'active_slot = 1') !== false) {
                     return new \ExternalModules\FakeRes($this->activeRunId === null
-                        ? [] : [[(string) $this->activeRunId]]);
+                        ? [] : [[(string) $this->activeRunId, $this->activeRunScope]]);
                 }
                 if (strpos($sql, 'WHERE run_id = ?') !== false) {
                     return new \ExternalModules\FakeRes($this->runRow === null ? [] : [$this->runRow]);
@@ -113,6 +125,11 @@ namespace ExternalModules {
             }
             if (strpos($sql, 'uv_scan_record') !== false && strpos($sql, 'GROUP BY state') !== false) {
                 return new \ExternalModules\FakeRes($this->recordStates);
+            }
+            if (strpos($sql, 'redcap_data_access_groups') !== false) {
+                $g = [];
+                foreach ($this->projectGroups as $id) $g[] = [(string) $id];
+                return new \ExternalModules\FakeRes($g);
             }
             if (strpos($sql, 'SHOW TABLES') !== false)      return new \ExternalModules\FakeRes([['redcap_record_list']]);
             if (strpos($sql, 'log_event_table') !== false)  return new \ExternalModules\FakeRes([['redcap_log_event7']]);
@@ -360,6 +377,8 @@ namespace {
         $m->jsmoThrows = !empty($opts['jsmoThrows']);
         if (isset($opts['jsmoName'])) $m->jsmoName = $opts['jsmoName'];
         $m->activeRunId = isset($opts['activeRun']) ? $opts['activeRun'] : null;
+        $m->activeRunScope = isset($opts['activeScope']) ? $opts['activeScope'] : null;
+        $m->projectGroups = isset($opts['groups']) ? $opts['groups'] : [];
         $m->runRow = isset($opts['runRow']) ? $opts['runRow'] : null;
         $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
         \REDCap::$dictionary = $dict;
@@ -1483,6 +1502,87 @@ namespace {
         list($noRights, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, [], $on());
         check('PANEL: a user without design rights gets no panel',
             strpos($noRights, 'uv-scan-panel') === false);
+
+        /* -----------------------------------------------------------------
+         * M3  a run you may not touch is not the same as no run
+         *
+         * activeRun() answered a run id or null, and null carried two
+         * meanings. The page read it as "no run", rendered Continue, printed
+         * the id into the client, and every click came back refused with
+         * nothing on the page saying why. While the DAG scope was on the wrong
+         * axis that was the designer's OWN run; now that it is right it is
+         * another group's, and a page load that emits its id is a page load
+         * that enumerates other groups' runs.
+         *
+         * FOUR STATES, AND THE FOURTH IS THE MIGRATION. A run stamped with a
+         * DAG NAME before the axis was fixed can never be worked by anybody
+         * and holds the project's one slot with no reaper. It is retired at
+         * exactly the moment somebody who cannot touch it looks at it.
+         * ----------------------------------------------------------------- */
+        \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+        $DAG = function () { return new \ExternalModules\PlainUser(true, 7); };
+        $act = function ($m) {
+            $svc = new \INSPIRE\UniversalValidator\Scan\ScanService($m);
+            return $svc->activeRun(PID,
+                \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID));
+        };
+        $BUSY = \INSPIRE\UniversalValidator\Scan\ScanStore::BUSY_WHY;
+        $run = ['activeRun' => 55, 'runRow' => $ROW,
+                'recordStates' => [['100', '3'], ['0', '7']], 'groups' => [7, 31]];
+
+        // YOURS. The scope on the run is this user's own group id.
+        list($htmlY, $mY) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => '7'])));
+        $aY = $act($mY);
+        check('M3: a run scoped to your own group is yours, and you get its id',
+            $aY['state'] === 'yours' && $aY['run_id'] === 55 && $aY['why'] === null);
+
+        // OTHER. The same user, a run scoped to the group next door.
+        list($htmlO, $mO) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => '31'])));
+        $aO = $act($mO);
+        check('M3: another group\'s run is not yours, and its id is withheld',
+            $aO['state'] === 'other' && $aO['run_id'] === null);
+        // THE SAME SENTENCE THE STORE USES. A distinct one here would be an
+        // oracle: it would tell somebody outside the scope that a run exists.
+        check('M3: and the reason is the store\'s own busy wording, not a new sentence',
+            $aO['why'] === $BUSY);
+        check('M3: which discloses no id, no scope and no digit',
+            strpos($aO['why'], '31') === false && strpos($aO['why'], '55') === false
+            && preg_match('/[0-9]/', $aO['why']) === 0);
+
+        // UNKNOWN. No rights in hand is not "no restriction".
+        $svcU = new \INSPIRE\UniversalValidator\Scan\ScanService($mO);
+        $aU = $svcU->activeRun(PID, null);
+        check('M3: with no rights to compare against, nothing is offered',
+            $aU['state'] === 'unknown' && $aU['run_id'] === null);
+
+        // A SCOPE NOBODY CAN MATCH IS STILL 'other' HERE, AND THAT IS THE
+        // POINT. scope_dag holding a DAG NAME is what every run started before
+        // the axis fix carries; no group id can equal it, so this caller is
+        // refused exactly as they are refused another group's run. The
+        // RETIREMENT that unwedges it is proved in tests/mysql/cases/dag.php
+        // and not here: it calls store()->finish(), which this fixture's db
+        // cannot serve - it answers null to the UPDATE, the store raises
+        // ScanStoreUnavailable, and the reaper swallows it. A control asserting
+        // "nothing was retired" against a store that can retire nothing would
+        // be green for a reason that has nothing to do with the code.
+        list(, $mM) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => 'north'])));
+        $aM = $act($mM);
+        check('M3: a run scoped to a value no group id can equal is refused, not offered',
+            $aM['state'] === 'other' && $aM['run_id'] === null && $aM['why'] === $BUSY);
+
+        // THE PAGE, not just the service. This is where the defect was visible.
+        check('M3 page: another group\'s run id never reaches the client',
+            strpos($htmlO, 'runId: 55') === false && strpos($htmlO, 'runId: null') !== false);
+        check('M3 page: and the reader is told the project is busy before they click',
+            strpos($htmlO, \INSPIRE\UniversalValidator\ScanPageView::h($BUSY)) !== false);
+        check('M3 page: the noscript block no longer says nothing has been run',
+            strpos($htmlO, 'Nothing has been run') === false);
+        check('M3 page contrast: your own run still reaches the client',
+            strpos($htmlY, 'runId: 55') !== false);
+        \REDCap::$groupNames = [];
     }
 
     /* =====================================================================
