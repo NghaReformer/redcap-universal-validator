@@ -4033,6 +4033,35 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
+        // M1: A 'dag' SCOPE NEEDS A DAG, AND A RECORD IN NO GROUP HAS NONE.
+        //
+        // The bucket key below appends (string) $recDag, and $recDag is null for
+        // a record REDCap returned with no redcap_data_access_group. (string)
+        // null is '', so every ungrouped record in the project fell into ONE
+        // bucket and any two of them sharing a value were reported as duplicates
+        // OF EACH OTHER - under a rule whose entire meaning is "unique within a
+        // Data Access Group", for records that are not in one. The rule's
+        // question has no answer for these records, and this module's contract
+        // is that an unevaluable condition is reported, never answered wrongly.
+        //
+        // A PROPERTY OF THE RECORD, NOT OF THE RULE. The same rule stays live and
+        // is still evaluated on every record that does have a group; only this
+        // record's contribution is withheld. $refuse() keys $unconf by
+        // ruleIndex|suffix, so a project with ten thousand ungrouped records
+        // produces ONE rule problem rather than ten thousand - which is the
+        // deduplication every other refusal in this function relies on and the
+        // reason the report stays bounded.
+        //
+        // AFTER the composite-key loop above, so a rule broken in two ways
+        // reports the more specific problem first, and a `return` rather than a
+        // `continue`, because the group is a property of the CONTEXT and not of
+        // any one field - matching every other context-level refusal here.
+        if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) {
+            $refuse('this rule requires values to be unique within a Data Access Group, and this '
+                . 'record is not in one, so the rule was NOT evaluated for it. Records with no '
+                . 'group are not compared with each other.', 'dag-no-group');
+            return;
+        }
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;

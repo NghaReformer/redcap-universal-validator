@@ -1566,6 +1566,65 @@ namespace {
     $res = $m->scanProject(149);
     check('scan: dag-scoped unique ignores cross-DAG repeats', count(scanHits($res, 'unique')) === 0);
 
+    /* M1  a record in NO group cannot be judged by a rule scoped to groups.
+     *
+     * The bucket key appends (string) $recDag, and $recDag is null for a record
+     * REDCap returned with no redcap_data_access_group. (string) null is '', so
+     * every ungrouped record in the project fell into ONE bucket and any two of
+     * them sharing a value were reported as duplicates OF EACH OTHER - under a
+     * rule that means "unique within a Data Access Group", for records that are
+     * not in one. Two silent wrongs at once: a violation nobody can act on, and
+     * a green report for a question that was never asked.
+     */
+    $scDataNoDag = [
+        '1' => [351 => ['record_id' => '1', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '677', 'sid' => 'LOOSE']],
+        '2' => [351 => ['record_id' => '2', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '678', 'sid' => 'LOOSE']],
+        '3' => [351 => ['record_id' => '3', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '679', 'sid' => 'LOOSE',
+                        'redcap_data_access_group' => 'north']],
+    ];
+    $resND = newModule([], $scDictD, $scDataNoDag, 149)->scanProject(149);
+    check('M1: two records in no group are NOT duplicates of each other',
+        count(scanHits($resND, 'unique')) === 0);
+    // AND IT SAYS SO. Withholding the comparison silently would be the same
+    // false reassurance in the other direction - the report would look clean
+    // for a question nobody answered.
+    check('M1: and the rule is reported as unevaluable for them, not silently skipped',
+        (bool) array_filter($resND['unconfigurable'], function ($u) {
+            return stripos($u['why'], 'not in one') !== false
+                && stripos($u['why'], 'NOT evaluated') !== false;
+        }));
+    // ONE PROBLEM, NOT ONE PER RECORD. $refuse keys $unconf by ruleIndex|suffix,
+    // which is what keeps the report bounded on a project with ten thousand
+    // ungrouped records.
+    check('M1: two ungrouped records produce ONE rule problem, not one each',
+        count(array_filter($resND['unconfigurable'], function ($u) {
+            return stripos($u['why'], 'not in one') !== false;
+        })) === 1);
+    // THE RULE STAYS LIVE. It is the RECORD that cannot be judged, not the rule,
+    // so a genuine within-group duplicate must still be caught in the same run.
+    $scDataMixed = $scDataNoDag;
+    $scDataMixed['4'] = [351 => ['record_id' => '4', 'pid' => '70', 'start' => '2024-01-01',
+                                 'end' => '2024-02-01', 'phone' => '680', 'sid' => 'LOOSE',
+                                 'redcap_data_access_group' => 'north']];
+    $resMix = newModule([], $scDictD, $scDataMixed, 149)->scanProject(149);
+    $mixRecs = [];
+    foreach (scanHits($resMix, 'unique') as $v) $mixRecs[(string) $v['record']] = true;
+    check('M1: a real duplicate INSIDE a group is still found in the same run',
+        isset($mixRecs['3']) && isset($mixRecs['4']));
+    check('M1: and the ungrouped records are still not among the duplicates',
+        !isset($mixRecs['1']) && !isset($mixRecs['2']));
+    // THE CONTROL FOR THE SCOPE ITSELF. Under project scope the very same three
+    // records ARE duplicates, so the refusal above is about the dag scope and
+    // not about the fixture.
+    $scDictP = $scDictD;
+    $scDictP['sid']['field_annotation'] = '@UVUNIQUE';
+    $resProj = newModule([], $scDictP, $scDataNoDag, 149)->scanProject(149);
+    check('M1 control: under project scope the same ungrouped records ARE duplicates',
+        count(scanHits($resProj, 'unique')) === 3);
+
     // repeating instruments: a violation on instance 2 carries its instance
     $scDataR = [
         '1' => [
