@@ -167,4 +167,43 @@ $NEIGHBOUR = uv_neighbour($PID);
         $dbA->select('SELECT COUNT(*) FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')
             . ' WHERE project_id = ' . $NEIGHBOUR)[0][0] === '1');
 
+
+    // AN EMPTY MANIFEST AGAINST A REAL STORE. freezeManifest() answers an INT,
+    // so a census of zero passed the `=== false` guard, the run walked four
+    // phases over nothing, and it promoted to complete-through-fence with clean
+    // true - a certificate over nothing. The mocked suites use ArrayScanStore,
+    // where the same case was green.
+    $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $PID);
+    $A->query('DELETE FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')
+        . ' WHERE project_id = ' . $PID);
+    $emptyPlan = $planner->plan($PID, $baseReq);
+    check('plan: a project with no records is refused rather than certified',
+        $emptyPlan['ok'] === false && $emptyPlan['busy'] === false
+        && strpos($emptyPlan['why'], 'has no records') !== false);
+    $emptyRow = $dbA->select('SELECT terminal, coverage FROM '
+        . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')
+        . ' WHERE project_id = ' . $PID . ' AND active_slot IS NULL');
+    check('plan: and the refused run is terminal, so it does not keep the project slot',
+        isset($emptyRow[0]) && $emptyRow[0][0] === 'partial'
+        && $emptyRow[0][1] === 'empty-scope');
+    check('plan: the walk counters survive the refusal, so an operator can diagnose it',
+        isset($emptyPlan['stats']['listed']) && (int) $emptyPlan['stats']['listed'] === 0);
+
+    // A GROUP SCOPE THAT MATCHES NOTHING IS THE SAME HOLE, and it is the one a
+    // scope compared on the wrong axis produces: the manifest is emptied
+    // exactly as a genuinely empty group empties it, and the two are not
+    // distinguishable from here.
+    $A->query('DELETE FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')
+        . ' WHERE project_id = ' . $PID);
+    $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
+        . $PID . ", 'G1', 7)");
+    $emptyDag = $planner->plan($PID, array_merge($baseReq, array('dagFilter' => '9')));
+    check('plan: a group scope that matched no record is refused, not certified',
+        $emptyDag['ok'] === false
+        && strpos($emptyDag['why'], 'Data Access Group') !== false);
+    check('plan: and the refusal does not assert the group is empty',
+        strpos($emptyDag['why'], 'check the scan scope') !== false);
+    check('plan: nor does it disclose how many records the project holds',
+        preg_match('/[0-9]/', $emptyDag['why']) === 0);
+
 }

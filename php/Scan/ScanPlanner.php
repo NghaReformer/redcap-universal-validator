@@ -209,6 +209,30 @@ final class ScanPlanner
         $run = $started['run'];
         $runId = (int) $run['run_id'];
 
+        // WHAT THIS RUN ALREADY KNOWS IT CANNOT CHECK, written before it reads a
+        // record. The plan knows at this point which rules have a configuration
+        // error, cannot be located on an instrument, sit on an instrument no
+        // event collects, or cannot be decided under a group scope. None of that
+        // was ever recorded, so ScanOutcome's `ruleProblems` term had no
+        // producer and `clean` silently meant "no findings" - a project whose
+        // rules enforce nothing got the same certificate as one whose rules all
+        // pass.
+        //
+        // A FAILURE HERE FINISHES THE RUN rather than leaving it. Everything
+        // after startRun() in this method obeys that rule - see the method note,
+        // an abandoned run holds the project scan slot - and it matters twice as
+        // much here: a scan that could not record what it cannot check must not
+        // be the scan that goes on to certify the project without it.
+        $problems = isset($req['ruleProblems']) && is_array($req['ruleProblems'])
+            ? $req['ruleProblems'] : [];
+        try {
+            ScanPromotion::noteRuleProblems($this->store, $runId, $problems);
+        } catch (\Throwable $e) {
+            $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+            return self::no('this scan could not record which of the project rules it is unable '
+                . 'to evaluate, so it was not started rather than started without them');
+        }
+
         $walk = $this->stream($runId, $src, $pid, $dag, $req);
         if (!$walk['ok']) {
             // Terminal, not abandoned. See the method note: an abandoned run
@@ -224,6 +248,47 @@ final class ScanPlanner
             return self::no('the record list could not be frozen, so the run was not started');
         }
         $walk['stats']['total'] = (int) $total;
+
+        // AN EMPTY MANIFEST IS NOT A CLEAN PROJECT.
+        //
+        // freezeManifest() answers `false` for a refusal and an INT for a
+        // census, and the guard above tests only for `false` - so 0 fell through
+        // into `ok => true`. The run then walked four phases over nothing,
+        // promoted with `pending === 0` reading as a finished manifest, and the
+        // page printed "Every record was checked, including changes made while
+        // it ran." beside "Preparing" and "Nothing found yet". Reproduced end to
+        // end against these classes before this line was written.
+        //
+        // Closed HERE, and not only at promotion, because a refusal costs a
+        // sentence while a started run costs the project its scan slot and shows
+        // somebody a progress bar for a scan that will certify nothing. The
+        // promotion-side fact stays as the backstop for a manifest emptied after
+        // it was frozen, which this check cannot see.
+        //
+        // Terminal, not abandoned - the same rule the two refusals above obey.
+        if ((int) $total === 0) {
+            $this->store->finish($runId, ScanOutcome::derive(['emptyScope' => true]));
+            return ['ok' => false, 'busy' => false, 'run' => null,
+                    // The walk counters travel, unlike self::no()'s empty stats:
+                    // `listed` and `outOfScope` are the two numbers that
+                    // distinguish a genuinely empty group from a scope value
+                    // compared on the wrong axis, and they are the first thing
+                    // anybody asks for when this refusal is reported.
+                    'stats' => $walk['stats'],
+                    // The group wording does NOT assert that the group is empty,
+                    // because this code cannot tell that apart from a scope
+                    // compared on the wrong axis - and a false statement about
+                    // the project, made by the guard that exists to stop false
+                    // statements, would be the worst possible place for one. No
+                    // counts in the sentence either: how many records the project
+                    // holds is not something a group-scoped user is entitled to.
+                    'why' => $dag === null
+                        ? 'this project has no records, so there was nothing to scan'
+                        : 'no records were found in the Data Access Group this scan was scoped '
+                        . 'to, so there was nothing to scan. If you expect records in that '
+                        . 'group, ask an administrator to check the scan scope before treating '
+                        . 'this as an empty group.'];
+        }
         return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
                 'why' => null, 'stats' => $walk['stats']];
     }

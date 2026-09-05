@@ -1478,7 +1478,7 @@ namespace {
 
         $cov = $V::coverageSentences();
         $missingCov = [];
-        foreach (['FENCED', 'MANIFEST', 'COV_PARTIAL', 'COV_FAILED'] as $c) {
+        foreach (['FENCED', 'MANIFEST', 'EMPTY_SCOPE', 'COV_PARTIAL', 'COV_FAILED'] as $c) {
             $val = constant('\INSPIRE\UniversalValidator\Scan\ScanOutcome::' . $c);
             if (!isset($cov[$val])) $missingCov[] = $c;
         }
@@ -1501,6 +1501,33 @@ namespace {
         $unknownTrunc = $V::coverageSentence('some-future-value', 'truncated');
         check('LABELS: the truncation note never becomes a headless sentence',
             $unknownTrunc[0] !== ' ' && strpos($unknownTrunc, 'not kept') !== false);
+        // THE LIST ABOVE IS HAND-MAINTAINED AND IT ALREADY LAGGED ONCE. This
+        // asks the PRODUCER instead: every coverage derive() can actually
+        // return must be one this page can word, or a finished run renders the
+        // unknown-value fallback where its own sentence should be.
+        $produced = [];
+        foreach ([['failed' => true], ['cancelled' => true], ['expired' => true],
+                  ['emptyScope' => true], ['blocked' => true], [],
+                  ['fenced' => true, 'manifestDone' => false],
+                  ['fenced' => true, 'manifestDone' => true, 'truncated' => true],
+                  ['fenced' => true, 'manifestDone' => true]] as $facts) {
+            $produced[\INSPIRE\UniversalValidator\Scan\ScanOutcome::derive($facts)['coverage']] = true;
+        }
+        check('LABELS: every coverage derive() can produce has a sentence on this page',
+            array_keys(array_diff_key($produced, $cov)) === []);
+        // The sentence must not be misreadable as the fenced certificate, and
+        // it must survive the page's own encoding: pages/scan.php prints this
+        // table with JSON_HEX_APOS, and the render check in this file searches
+        // the HTML for each sentence's literal opening. An apostrophe here
+        // would break that silently.
+        $esSentence = $V::coverageSentence(
+            \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE);
+        check('LABELS: the empty-scope sentence never claims a record was checked',
+            stripos($esSentence, 'Every record was checked') === false
+            && stripos($esSentence, 'nothing was checked') !== false);
+        check('LABELS: and it survives json_encode into the page unaltered',
+            strpos(json_encode($esSentence,
+                JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), '\\u') === false);
         check('LABELS: and it is stated even over a complete coverage',
             strpos($V::coverageSentence('complete-through-fence', 'truncated'), 'not kept') !== false);
         check('LABELS: an unrecognised phase falls back to its stored name',

@@ -425,6 +425,21 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('outcome: but the caller is obliged to show them', $g['mustShowGaps'] === true);
         check('outcome: and none means no obligation', $r['mustShowGaps'] === false);
 
+        // An empty manifest satisfied `pending === 0`, read as a finished
+        // manifest, and took the clean row - so a run that examined nothing
+        // produced the same certificate as one that examined everything.
+        $es = ScanOutcome::derive(array_merge($base, ['emptyScope' => true]));
+        check('outcome: an empty scope is never clean and never complete',
+            $es['clean'] === false && $es['terminal'] !== ScanOutcome::COMPLETE);
+        check('outcome: it is not called a failure, because an empty project is not one',
+            $es['terminal'] !== ScanOutcome::FAILED
+            && $es['coverage'] !== ScanOutcome::COV_FAILED);
+        check('outcome: nor manifest-complete, which would claim a manifest that does not exist',
+            $es['coverage'] !== ScanOutcome::MANIFEST
+            && $es['coverage'] === ScanOutcome::EMPTY_SCOPE);
+        check('outcome: and its export says _NO_RECORDS rather than nothing at all',
+            ScanOutcome::suffix($es) === '_NO_RECORDS');
+
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
         check('outcome: an empty fact set is never clean and never complete',

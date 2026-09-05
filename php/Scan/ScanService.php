@@ -194,6 +194,12 @@ final class ScanService
             'policy'    => $policy,
             'createdBy' => (string) $this->username(),
             'engine'    => $this->engineVersion(),
+            // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
+            // unlocatable, unmapped-instrument and group-unscopable rules are
+            // decided before a record is read; the planner records them so
+            // ScanOutcome's `ruleProblems` term has a producer at all. Without
+            // this line the term is dead and `clean` means only "no findings".
+            'ruleProblems' => isset($ctx['problems']) ? $ctx['problems'] : [],
         ]);
         if (empty($r['ok'])) {
             return ['ok' => false, 'busy' => !empty($r['busy']), 'run_id' => null,
@@ -282,6 +288,12 @@ final class ScanService
         $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
         ScanPromotion::promote($store, $pid, $runId, [
             'blockingAggregates' => $store->blockingAggregates($runId),
+            // PERMANENTLY ZERO, AND KNOWN TO BE. Nothing in the shipped tree
+            // writes a 'collection-gap' aggregate, because no gap detector
+            // exists. It is left wired rather than deleted because it is
+            // harmless - gaps never block clean, and the only thing a zero
+            // reaches is mustShowGaps, which no production caller reads. Do not
+            // infer from a green suite that gaps are being counted.
             'gapCount'       => $this->aggregateTotal($store, $runId, 'collection-gap'),
             'ruleProblems'   => $this->aggregateTotal($store, $runId, 'rule-problem'),
             'uniqueDone'     => $u['done'],

@@ -15,7 +15,7 @@ namespace INSPIRE\UniversalValidator\Scan;
  * FOUR INDEPENDENT DIMENSIONS, deliberately not collapsed:
  *
  *   terminal  did the run finish, and how          complete|partial|cancelled|failed|expired
- *   coverage  what finishing is worth here         complete-through-fence|manifest-complete|partial|failed
+ *   coverage  what finishing is worth here         complete-through-fence|manifest-complete|empty-scope|partial|failed
  *   detail    did every finding survive the budget complete|truncated
  *   clean     a claim about the PROJECT            bool
  *
@@ -42,6 +42,22 @@ final class ScanOutcome
     const MANIFEST = 'manifest-complete';
     const COV_PARTIAL = 'partial';
     const COV_FAILED  = 'failed';
+    /**
+     * The scope held no records, so nothing was examined and nothing may be
+     * claimed about the project.
+     *
+     * ITS OWN VALUE RATHER THAN `failed` OR `manifest-complete`, and both of
+     * those were tried on paper first. `failed` is what the two neighbouring
+     * refusals in ScanPlanner use, but it is not true: an empty project is a
+     * fact about the PROJECT and a failure is a fact about the RUN, and
+     * `_FAILED` is the one piece of metadata that survives a year of being
+     * forwarded. `manifest-complete` is worse - it claims every record on the
+     * opening list was checked, which is a claim about a manifest that does not
+     * exist.
+     *
+     * coverage is VARCHAR(32) (Schema.php:168), so this needs no migration.
+     */
+    const EMPTY_SCOPE = 'empty-scope';
 
     // Detail.
     const DETAIL_COMPLETE  = 'complete';
@@ -63,6 +79,7 @@ final class ScanOutcome
      *   cancelled:     bool  cancellation was requested and honoured
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
+ *   emptyScope:    bool  the scope held no records at all; nothing was examined
      *   violations:    int
      *   ruleProblems:  int
      *   gaps:          int   collection gaps; never a violation, never blocking
@@ -95,6 +112,34 @@ final class ScanOutcome
         if ($b('expired')) {
             return self::out(self::EXPIRED, self::COV_PARTIAL, $detail, false, $gaps,
                 'the run was abandoned beyond its configured lifetime');
+        }
+
+        // NOTHING WAS IN SCOPE, so there is nothing to be blocked on, no
+        // manifest to have completed, and no fence worth proving. This check did
+        // not exist, so a census of zero satisfied `pending === 0`, was read as
+        // manifestDone, and fell all the way through to the clean row: a run
+        // that examined nothing produced the same certificate as a run that
+        // examined everything. That is the founding defect of this rebuild
+        // reappearing at the other end of the pipeline.
+        //
+        // RANKED HERE ON PURPOSE. Below the three run-level terminals, because a
+        // cancelled run over an empty scope is still a cancelled run and that is
+        // the weaker claim; above `blocked`, because an empty scope cannot be
+        // partially covered.
+        //
+        // TERMINAL IS `partial`, NOT a fifth terminal state. The run did finish;
+        // what finishing is WORTH is a coverage question, and keeping those two
+        // axes apart is what this file is for. `complete` is unavailable anyway,
+        // since mayClaimClean() keys on it.
+        //
+        // The default is FALSE, which looks like the wrong direction for a file
+        // whose rule is that a forgotten field yields the weaker claim. It is
+        // not: a false emptyScope falls through to weaker rows, while a true one
+        // ASSERTS that the scope was empty. Asserting is never the safe default.
+        if ($b('emptyScope')) {
+            return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
+                'no records were in scope for this run, so nothing was examined and it '
+                . 'says nothing about the project');
         }
 
         // A record that could not be read, or a degradation that blocks
@@ -133,6 +178,16 @@ final class ScanOutcome
         // NON-blocking: an event shown by id rather than by name is a worse
         // report, not a worse scan, and refusing to certify over it would make
         // the tick unreachable on any installation with a metadata gap.
+        // BOTH TERMS MUST HAVE A PRODUCER, and for the whole of this file's life
+        // one of them did not. `ruleProblems` reaches here from
+        // ScanService::aggregateTotal(..., 'rule-problem'), and nothing in the
+        // shipped tree ever wrote an aggregate of that kind: every addAggregate
+        // call site wrote a reconciled-*, reconcile-unsettled, fence-unprovable
+        // or rollup-* kind instead. So `clean` reduced to `violations === 0`,
+        // and a project whose rules enforce nothing was certified clean - the
+        // case ScanPageView::verdict names as M-02 and the legacy path already
+        // refuses to imply. ScanPromotion::noteRuleProblems() is the producer
+        // now; do not remove either term without checking it still has one.
         $clean = ($i('violations') === 0 && $i('ruleProblems') === 0);
         $why = $clean
             ? ($b('labelDegraded')
@@ -163,6 +218,10 @@ final class ScanOutcome
             default:
                 // partial: say WHICH kind of partial.
                 if ($outcome['coverage'] === self::MANIFEST) $s = '_MANIFEST_ONLY';
+                // Correctness, not tidiness: with no arm here the default leaves
+                // $s empty, so an empty-scope export would carry the same
+                // unmarked filename a fully covered run gets.
+                elseif ($outcome['coverage'] === self::EMPTY_SCOPE) $s = '_NO_RECORDS';
                 elseif ($outcome['coverage'] === self::COV_PARTIAL) $s = '_INCOMPLETE';
                 break;
         }

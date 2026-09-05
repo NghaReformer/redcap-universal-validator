@@ -114,6 +114,8 @@ UV.labels = {
                        + 'the project did not change during the scan.',
     'partial': 'Some records could not be checked. This is not a complete picture of the project.',
     'failed': 'The scan failed, so it describes nothing.',
+    'empty-scope': 'No records were in scope for this scan, so nothing was checked and this '
+                 + 'result says nothing about the project.',
   },
   coverageUnknown: 'This scan finished, but this page does not recognise the result it recorded '
                  + '({value}). Treat it as incomplete and run it again.',
@@ -503,6 +505,20 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   UV.start(); await ticks(6);
   check('client: a partial run says it is not a complete picture',
     els['uv-scan-done'].textContent.indexOf('not a complete picture') !== -1);
+
+  // The client holds no coverage vocabulary of its own - it renders whatever
+  // ScanPageView::labels() handed it - so this pins that a NEW coverage value
+  // arrives as its own sentence rather than as the unknown-value fallback.
+  // That drift is exactly what the label tables did the last time a constant
+  // landed in PHP without its client entry.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: finished('empty-scope') }]);
+  UV.start(); await ticks(6);
+  check('client: an empty-scope run gets its own sentence, not the unknown fallback',
+    els['uv-scan-done'].textContent.indexOf('No records were in scope') === 0
+    && els['uv-scan-done'].textContent.indexOf('does not recognise') === -1);
+  check('client: and it never claims a record was checked',
+    els['uv-scan-done'].textContent.indexOf('Every record was checked') === -1
+    && els['uv-scan-done'].textContent.indexOf('nothing was checked') !== -1);
 
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.

@@ -220,6 +220,14 @@ class ScanPageView
             Scan\ScanOutcome::FENCED      => 'Every record was checked, including changes made while it ran.',
             Scan\ScanOutcome::MANIFEST    => 'Every record on the opening list was checked. This server '
                                            . 'cannot prove the project did not change during the scan.',
+            // NO APOSTROPHE, AND THAT IS A CONSTRAINT RATHER THAN A STYLE.
+            // pages/scan.php prints this table through json_encode with
+            // JSON_HEX_APOS, so an apostrophe leaves here as an escape sequence -
+            // and tests/scan_page_php.php checks that the first 40 characters of
+            // each sentence appear literally in the HTML. Every existing
+            // sentence happens to avoid one; this one avoids it on purpose.
+            Scan\ScanOutcome::EMPTY_SCOPE => 'No records were in scope for this scan, so nothing was '
+                                           . 'checked and this result says nothing about the project.',
             Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
                                            . 'picture of the project.',
             Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',

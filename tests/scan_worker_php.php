@@ -221,6 +221,13 @@ namespace INSPIRE\UniversalValidator\Scan {
          ['failed' => true], 'failed', 'failed', 'complete', false, '_FAILED'],
         ['abandonment beyond the configured lifetime',
          ['expired' => true], 'expired', 'partial', 'complete', false, '_EXPIRED'],
+        // A scope that held no records. NOT `failed` - an empty project is a
+        // fact about the project and a failure is a fact about the run - and
+        // NOT `manifest-complete`, which would claim a manifest that does not
+        // exist. $base carries fenced and manifestDone, so this row also pins
+        // that an empty scope OUTRANKS the fenced clean row.
+        ['a scope that held no records at all',
+         ['emptyScope' => true], 'partial', 'empty-scope', 'complete', false, '_NO_RECORDS'],
         // The row that exists so the green tick stays reachable: an event shown
         // by id rather than by name is a worse REPORT, not a worse scan.
         ['non-blocking label degradation only',
@@ -1339,6 +1346,65 @@ namespace INSPIRE\UniversalValidator\Scan {
     $no($all, ['uniqueDone' => false],
         'promote: nor a run whose duplicate groups are still being decided');
     $no($all, ['rollupDone' => false], 'promote: nor one whose summary is unfinished');
+
+    // AN EMPTY CENSUS SATISFIED `pending === 0`, which read as a finished
+    // manifest - so a run that listed nothing promoted to
+    // complete-through-fence and clean, the same certificate a run that checked
+    // everything gets. Reproduced end to end before this block was written.
+    $emptyRun = array_merge($run, ['manifest_total' => 0]);
+    $ef = ScanPromotion::facts($emptyRun, [], $ok);
+    check('promote: a run whose scope held no records is marked empty-scope',
+        $ef['facts']['emptyScope'] === true);
+    check('promote: and manifestDone is STILL true, which is why the fact was needed',
+        $ef['facts']['manifestDone'] === true);
+    check('promote: so it cannot be clean however complete the run looks',
+        ScanOutcome::mayClaimClean(ScanOutcome::derive($ef['facts'])) === false
+        && ScanOutcome::derive($ef['facts'])['coverage'] === ScanOutcome::EMPTY_SCOPE);
+
+    // BOTH SOURCES MUST SAY EMPTY. manifest_total is 0 for the whole of
+    // planning and rows exist before they are frozen, so a run mid-plan with
+    // records queued is NOT an empty scope.
+    $midPlan = ScanPromotion::facts(array_merge($run, ['manifest_total' => 0]),
+        [ScanStore::REC_PENDING => 3], $ok);
+    check('promote: a manifest with rows queued but not yet frozen is not an empty scope',
+        $midPlan['facts']['emptyScope'] === false);
+
+    check('promote: an empty scope does not outrank a cancellation or a failure',
+        ScanOutcome::derive(['emptyScope' => true, 'cancelled' => true])['terminal']
+            === ScanOutcome::CANCELLED
+        && ScanOutcome::derive(['emptyScope' => true, 'failed' => true])['terminal']
+            === ScanOutcome::FAILED);
+    check('promote: but it does outrank blocked, because nothing can block on nothing',
+        ScanOutcome::derive(['emptyScope' => true, 'blocked' => true])['coverage']
+            === ScanOutcome::EMPTY_SCOPE);
+
+    // PROVENANCE: the value is OBTAINED from the production producer rather
+    // than constructed. `ruleProblems` was read from an aggregate kind nothing
+    // ever wrote, so `clean` really meant `violations === 0` and a project
+    // whose rules enforce nothing was certified.
+    $rp = new ArrayScanStore();
+    $rpRun = $rp->startRun(803, ['created_by' => 'alice']);
+    $rpId = (int) $rpRun['run']['run_id'];
+    check('rule problems: a run with none records no aggregate at all',
+        ScanPromotion::noteRuleProblems($rp, $rpId, []) === 0);
+    ScanPromotion::noteRuleProblems($rp, $rpId, [
+        ['rule' => 1, 'fields' => ['dob'], 'why' => 'configuration error - this rule validates nothing'],
+        ['rule' => 4, 'fields' => ['nid'], 'why' => 'instrument xray is not designated to any event'],
+    ]);
+    $rpTotal = 0;
+    foreach ($rp->aggregates($rpId) as $a) {
+        if ($a['kind'] === ScanPromotion::RULE_KINDS) $rpTotal += (int) $a['cnt'];
+    }
+    check('rule problems: the producer writes the kind the clean predicate reads',
+        $rpTotal === 2);
+    check('rule problems: and it does not block coverage, only clean',
+        (int) $rp->blockingAggregates($rpId) === 0);
+    check('rule problems: a fenced, finished, finding-free run with one is NOT clean',
+        ScanOutcome::mayClaimClean(ScanOutcome::derive(ScanPromotion::facts(
+            $run, $all, array_merge($ok, ['ruleProblems' => $rpTotal]))['facts'])) === false);
+    check('rule problems: CONTROL - the same run with none IS clean',
+        ScanOutcome::mayClaimClean(ScanOutcome::derive(ScanPromotion::facts(
+            $run, $all, array_merge($ok, ['ruleProblems' => 0]))['facts'])) === true);
 
     // Ready, but with much less to claim.
     $blocked = ScanPromotion::facts($run, [ScanStore::REC_DONE => 9,

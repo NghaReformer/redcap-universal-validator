@@ -2999,19 +2999,30 @@ class UniversalValidator extends AbstractExternalModule
      * looks like good news.
      *
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
-     *               read:?callable, rules:array, ownership:array}
+     *               read:?callable, rules:array, ownership:array, problems:array}
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
         $plan = $this->scanPlan($pid, $opts, $dagFilter);
+        // THE SHAPE IS THE SAME ON EVERY RETURN, including the refusals. A
+        // caller that has to know which branch answered before it knows which
+        // keys exist is a caller that will read the wrong one.
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
-                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => []];
+                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
+                    'problems' => array_values($plan['unconf'])];
         }
         if (!empty($plan['nothingToScan'])) {
+            // The rule problems survive the refusal even though no run can carry
+            // them today. scanPlan()'s own note says every rule barred is not
+            // nothing to scan - the rule problems ARE the report, and they must
+            // survive - and this return is where they stopped surviving. Closing
+            // it completely needs a run that can exist with no live rules, which
+            // is a later decision; handing them back is what makes it possible.
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
-                    'rules' => [], 'ownership' => []];
+                    'rules' => [], 'ownership' => [],
+                    'problems' => array_values($plan['unconf'])];
         }
 
         $key = $this->hmacKey();
@@ -3094,8 +3105,16 @@ class UniversalValidator extends AbstractExternalModule
             }
         };
 
+        // THE RULE PROBLEMS TRAVEL. They were computed by scanPlan() - config
+        // errors, rules whose instrument cannot be resolved, rules on an
+        // instrument no event collects, project-scope uniqueness under a group
+        // scope - and then dropped right here, which is why ScanOutcome's
+        // `ruleProblems` term had nothing to read and `clean` quietly meant "no
+        // findings". array_values because the keys are the dedupe (rule|reason),
+        // not data anything downstream should depend on.
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
-                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership];
+                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
+                'problems' => array_values($plan['unconf'])];
     }
 
     /**
