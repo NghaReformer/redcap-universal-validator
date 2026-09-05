@@ -162,10 +162,14 @@ final class ScanService
         // Every instrument the run will read, from the plan rather than from a
         // list somebody maintains. A field the plan could not place on an
         // instrument is an unknown ownership, and unknown ownership is denial.
+        // THE NAMES, NOT MERELY THE FACT. mayStart() prints them, and an
+        // unplaceable field is a fixable dictionary problem: the field exists,
+        // its form_name does not. A refusal that says only "at least one field"
+        // sends an administrator looking through the whole dictionary.
         $forms = [];
-        $unknown = false;
+        $unknown = [];
         foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown = true; continue; }
+            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
             $forms[$form] = true;
         }
         $auth = ScanAuthorization::mayStart($scope['rights'], array_keys($forms), $unknown);
@@ -328,7 +332,9 @@ final class ScanService
         foreach ($store->recordStates($runId) as $st => $n) {
             if ((int) $st >= ScanStore::REC_DONE) $done += (int) $n;
         }
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag']);
+        // cancelForms, NOT forms - see entitlement(). A run nobody may stop
+        // holds the project's only slot with no reaper behind it.
+        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
 
         return [
             'ok'        => true,
@@ -357,7 +363,8 @@ final class ScanService
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag']);
+        // cancelForms, NOT forms - see entitlement().
+        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         $ok = $store->cancel($pid, $runId, (string) $this->username());
@@ -570,14 +577,55 @@ final class ScanService
         ], $run['scope_dag']);
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why']];
 
+        // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
+        // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
+        // is a field whose access cannot be checked, so it sets $unknown and
+        // mayStart() refuses - it is never merely dropped from the set, which
+        // would be a silent widening of what the run may read.
         $forms = [];
-        $unknown = false;
+        $unknown = [];
         foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown = true; continue; }
+            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
             $forms[$form] = true;
+        }
+        // TWO SETS, BECAUSE READING A RUN AND STOPPING ONE ARE DIFFERENT
+        // QUESTIONS.
+        //
+        // 'forms' is the read set: every instrument the run actually reads,
+        // operands included. That is the right entitlement for start, work and
+        // read, and widening it is the fix this commit exists for.
+        //
+        // Feeding it to CANCEL as well would be a new way for a run to become
+        // permanently unstoppable. A run legitimately started before this
+        // deploy, on a project where a when/assert/with operand sits on an
+        // instrument the actor cannot read, would become unworkable AND
+        // unreadable AND uncancellable at once - and it holds active_slot = 1,
+        // so openRun() answers busy for everyone on that project. The three
+        // paths that release a slot are finish() from a worker pass (gated by
+        // mayWork), reapCancelled() (needs phase `cancelling`, which needs a
+        // successful cancel), and ScanRetention::expireAbandoned(), which has
+        // no caller (tests/scan_wiring_php.php). The exit would be a DBA.
+        //
+        // mayCancel's own docblock forbids this shape in the general case -
+        // "Ownership would only add a way for a wedged run to become
+        // unstoppable" - and keying it on instrument entitlement rather than on
+        // creator identity does not make it a different shape.
+        //
+        // So cancel keeps the NARROWER, host-only set: the instruments the
+        // rules themselves live on, which is what every gate was asked about
+        // before this commit. It is not a hole: mayCancel still requires full
+        // export rights, design rights and an exact scope match, and cancelling
+        // reads no record value at all.
+        $cancelForms = [];
+        foreach ((isset($ctx['plan']['hostFields']) && is_array($ctx['plan']['hostFields'])
+                  ? $ctx['plan']['hostFields'] : []) as $hosts) {
+            foreach ((is_array($hosts) ? $hosts : []) as $form => $_) {
+                if ($form !== null && $form !== '') $cancelForms[$form] = true;
+            }
         }
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights'],
                 'forms' => array_keys($forms), 'unknown' => $unknown,
+                'cancelForms' => array_keys($cancelForms),
                 // The CALLER's scope, kept beside the run's own. The two are
                 // equal for any request the authorisation above let through -
                 // they are compared as ids by mayWork() - and keeping both is

@@ -46,6 +46,13 @@ final class ScanAuthorization
      * Unknown ownership is a denial rather than an omission, because a field
      * whose form cannot be determined is a field whose access cannot be checked.
      *
+     * $unknownOwnership is a bool OR the list of fields that could not be
+     * placed. A list is truthy exactly when the bool would be true, so every
+     * existing caller keeps its meaning - and the ones that pass names get a
+     * refusal that says which fields, which is the difference between a
+     * diagnosis and a dead end.
+     *
+     * @param bool|string[] $unknownOwnership
      * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
      */
     public static function mayStart($rights, array $entitlement, $unknownOwnership = false)
@@ -69,13 +76,42 @@ final class ScanAuthorization
                 . 'rights; ' . self::exportLevelPhrase($rights));
         }
         if ($unknownOwnership) {
+            // NAMED, for the same reason the export-level refusal above says
+            // which level it read. This arm was unreachable in production until
+            // the entitlement moved onto the read set, and it names a fixable
+            // dictionary problem: the field exists, its form_name does not.
+            // Without the names it is a refusal nobody can act on - the exact
+            // objection that put the instrument names in the branch below.
+            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
             return self::no('at least one field a rule depends on could not be located on an '
-                . 'instrument, so access to it cannot be checked and the scan was not started');
+                . 'instrument, so access to it cannot be checked and the scan was not started'
+                . ($who === '' ? '' : ': ' . $who));
         }
         $barred = self::barredForms($rights, $entitlement);
         if ($barred) {
+            // TWO DIFFERENT FAILURES, TWO DIFFERENT SENTENCES.
+            //
+            // barredForms() returns the WHOLE entitlement when the rights row
+            // itself could not be read, which is not a statement about any
+            // instrument. Now that the entitlement is the read set, printing
+            // that list would enumerate every instrument the run touches for a
+            // failure that has nothing to do with instruments - misleading, and
+            // longer the more the project does.
+            //
+            // Where the row WAS readable, every barred name is printed and none
+            // is truncated. A cap would make the survivors a lexicographic
+            // accident: sorting and then keeping twelve hides form3 behind
+            // form19, and a refusal listing twelve arbitrary names is no more
+            // actionable than a count. Naming them discloses nothing - the
+            // caller has already been established as a project designer, who
+            // sees every instrument in the Online Designer.
+            if (!self::rightsListedForms($rights)) {
+                return self::no('your instrument access for this project could not be read, so '
+                    . 'the scan was refused rather than run against instruments it may not be '
+                    . 'entitled to');
+            }
             return self::no('this scan reads instrument(s) you do not have access to, so the whole '
-                . 'report is refused rather than quietly narrowed');
+                . 'report is refused rather than quietly narrowed: ' . self::plainList($barred));
         }
         return $base;
     }
@@ -278,6 +314,36 @@ final class ScanAuthorization
      * a rights row that says nothing about an instrument is not a rights row
      * that grants it.
      */
+    /**
+     * Did the rights row actually LIST instruments?
+     *
+     * The half of barredForms()'s answer its return value cannot carry: a full
+     * entitlement comes back both when every instrument is genuinely barred and
+     * when the row could not be read at all, and those need different sentences.
+     * A super-user has no row and is barred from nothing, so it answers true.
+     */
+    private static function rightsListedForms($rights)
+    {
+        if (is_array($rights) && !empty($rights['superUser'])) return true;
+        return is_array($rights) && isset($rights['forms']) && is_array($rights['forms']);
+    }
+
+    /** Names in a sentence: "a", "a and b", "a, b and c". Never truncated. */
+    private static function plainList(array $names)
+    {
+        $n = [];
+        foreach ($names as $x) {
+            $x = (string) $x;
+            if ($x !== '') $n[$x] = true;
+        }
+        $n = array_keys($n);
+        sort($n, SORT_STRING);
+        if (!$n) return '';
+        if (count($n) === 1) return $n[0];
+        $last = array_pop($n);
+        return implode(', ', $n) . ' and ' . $last;
+    }
+
     private static function barredForms($rights, array $entitlement)
     {
         // An administrator reads every instrument, and has no per-instrument

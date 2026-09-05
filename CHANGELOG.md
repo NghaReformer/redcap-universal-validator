@@ -453,6 +453,44 @@ actually ships - a run is cancellable by anyone equally entitled in the same
 scope, because the person who started it is precisely the person who may have
 gone home - is now stated in the docblock and asserted directly.
 
+**The entitlement gate was asked about the wrong set of instruments.** A scan
+reads more than its rules' own fields: every field a `when` or `assert` operand
+references, and every unique-composite partner. `getData` was asked for all of
+them. `ScanAuthorization::mayStart()` was asked about the instruments the RULES
+live on. A project designer with explicit No Access to an instrument could
+therefore start a scan that read it, and whose findings differed by its values.
+It reproduced on every rule kind, on branch conditions, and on rules configured
+through the dialog as well as through annotations. `mayStart()`'s own docblock
+already said the entitlement is every form the run will read; the caller was the
+half that was wrong.
+
+The map is now derived from the read set itself, in `scanPlan()`, and taken from
+the plan the way the rule ids already are. It is deliberately not a second
+derivation through `ruleRefFields()`: that helper computes the same three
+sources and would agree today, which is exactly the shape that drifts. A field
+whose instrument cannot be determined maps to NULL and refuses the run, and
+that refusal now names the field - it was unreachable before, because the old
+map only ever held instruments that HAD been determined.
+
+**Stopping a run is a different question from reading one, and this release
+keeps them apart.** Widening the entitlement would otherwise have made a run
+that was legitimately started before the upgrade simultaneously unworkable,
+unreadable and uncancellable - while it still holds the project's one active
+slot, so the whole project answers busy. The three paths that release a slot are
+a worker pass (gated by the same widened check), the cancelled-run reaper (which
+needs a successful cancel), and abandoned-run expiry, which has no caller. The
+exit would have been a database administrator. Cancel therefore keeps the
+narrower, host-only entitlement; it still requires design rights, full export
+rights and an exact scope match, and cancelling reads no record value at all.
+
+**Two refusals now say what they refused.** The barred-instrument message names
+the instruments, and does not truncate the list: a designer already sees every
+instrument in the Online Designer, and a sorted list cut at twelve hides
+`form3` behind `form19`. Where the rights row itself could not be read, the
+message says so instead of enumerating every instrument the run touches - that
+failure is not about any instrument, and now that the entitlement is the read
+set the list would have been long and misleading.
+
 ## 1.9.10 - the diagnostic that killed the request it was diagnosing
 
 1.9.9 was supposed to name the column. Instead `scan-work` returned HTTP 200

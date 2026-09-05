@@ -1311,10 +1311,16 @@ class UniversalValidator extends AbstractExternalModule
      * composite unique partners.
      *
      * The same three sources scanPlan() unions into $readSet, gathered per rule
-     * rather than per project, because an entitlement question is asked of one
-     * rule at a time. Kept beside them so the two cannot drift: a source added
-     * to the read set and forgotten here would be a field the scan reads and
-     * never checks the reader's right to.
+     * rather than per project.
+     *
+     * IT IS NO LONGER THE ENTITLEMENT DERIVATION, and this sentence replaces one
+     * that said it was ("kept beside them so the two cannot drift: a source
+     * added to the read set and forgotten here would be a field the scan reads
+     * and never checks the reader's right to"). That mechanism is gone: the
+     * entitlement now comes from $readSet itself, in scanPlan(), because two
+     * derivations of one set is two things that can drift and the drift is what
+     * opened the hole. What remains for this helper is the per-rule form the
+     * enforceFormRights gate needs - and that gate has no production caller.
      *
      * @return string[]
      */
@@ -3098,14 +3104,16 @@ class UniversalValidator extends AbstractExternalModule
         // planner disagree about which rule an ordinal named.
         $ids = isset($plan['ruleIds']) && is_array($plan['ruleIds']) ? $plan['ruleIds'] : [];
 
-        // Which instrument owns which field, for the fingerprint. Computed here
-        // because it comes from the plan, and recomputed nowhere else.
-        $ownership = [];
-        foreach ($plan['hostFields'] as $i => $hosts) {
-            foreach ($hosts as $form => $fields) {
-                foreach ($fields as $f) $ownership[$f] = $form;
-            }
-        }
+        // TAKEN FROM THE PLAN, exactly as $ids is one block above, and for the
+        // same reason. It used to be built HERE by walking $plan['hostFields'],
+        // which ruleHostForms() fills from $rule['fields'] alone - so the map
+        // ScanService turns into an entitlement named the forms the RULES live
+        // on while getData was asked for the read set, which also carries every
+        // when/assert operand and every unique-composite partner. scanPlan()
+        // derives it from $readSet now; a second derivation here is the drift
+        // this file keeps paying for.
+        $ownership = isset($plan['ownership']) && is_array($plan['ownership'])
+                   ? $plan['ownership'] : [];
 
         $module = $this;
         // No generation, no evaluator. A caller that only needs the rule list
@@ -3338,11 +3346,18 @@ class UniversalValidator extends AbstractExternalModule
      * in with per-record notes.
      *
      * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
+     *               ownership: array<string,?string> field => owning instrument, NULL when it
+     *               could not be placed - the fail-closed encoding ScanService reads as
+     *               unknown ownership and mayStart() refuses on,
      *               readSet: array, dupes: array, unconf: array}
      */
     private function scanPlan($pid, array $opts = [], $dagFilter = null)
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+                // Present on EVERY return, including the refusals. An entitlement
+                // key that exists only on the success path is one a caller reads as
+                // "no forms" on the path where it should read as "no answer".
+                'ownership' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
@@ -3630,6 +3645,68 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $out['readSet'] = $readSet;
+
+        // WHICH INSTRUMENT OWNS EACH FIELD THE RUN WILL READ - derived from the
+        // READ SET, and from nothing else.
+        //
+        // It used to be built in durableScanContext() by walking
+        // $plan['hostFields'], which ruleHostForms() fills from $rule['fields']
+        // alone. The read is $readSet: that list PLUS every field a `when` or
+        // `assert` operand references PLUS every unique-composite "with" field.
+        // ScanService turns this map into the entitlement set
+        // ScanAuthorization::mayStart() is asked about, so the gate was being
+        // asked where the RULES LIVE while getData was being asked for the
+        // OPERANDS. A designer with explicit No Access to an instrument could
+        // therefore start a scan that read it, and whose findings differed by
+        // its values - reproduced on every rule kind (@UVALIDATE, @UVASSERT,
+        // @UVREQUIRED, @UVUNIQUE, @UVCHOICES), on branch operands, and on both
+        // configuration channels. mayStart()'s own docblock already said the
+        // entitlement is "every form the run will read"; the caller was the half
+        // that was wrong.
+        //
+        // DERIVED FROM $readSet, NOT FROM ruleRefFields(). That helper computes
+        // the same three sources per rule and would give the same answer today -
+        // which is the problem: a second derivation of the same set is a second
+        // thing that can drift, the same reason ruleIds is derived once from the
+        // final $live and taken from the plan thereafter. $readSet is the array
+        // durableScanContext() hands to getData, so $readSet is the only honest
+        // answer to "what does this run read".
+        //
+        // NULL means "could not be placed", and it is the fail-closed direction:
+        // ScanService reads a null or empty form as unknown ownership and
+        // mayStart() refuses the run rather than dropping the field from the set.
+        // Nothing could set that flag before - hostFields only ever contains
+        // forms that WERE determined - so that arm of the control was dead in
+        // production. A dictionary that came back unreadable is the same answer:
+        // a form that cannot be read cannot clear an instrument.
+        //
+        // AND THAT ARM IS NOW REACHABLE FOR A RULE'S OWN FIELD, which is a real
+        // behaviour change and was argued both ways. The `n|unlocatable` note at
+        // the top of this method already reports such a field by name and says
+        // the field is not scanned - so the case for excluding it here is that
+        // the rule is already refused. That case is FALSE: $readSet above is
+        // built from every live rule's `fields` unconditionally, the unlocatable
+        // note does not remove the rule from $live, and $fields at :3122 is
+        // array_keys($plan['readSet']). The value IS read. A field that is read
+        // and cannot be placed is a field whose access cannot be checked, and
+        // refusing is the only answer consistent with the rest of this file. The
+        // refusal names the fields (ScanAuthorization::mayStart) so it is a
+        // diagnosis rather than an undiagnosable no.
+        //
+        // WITH enforceFormRights ON, this map now includes a host form the
+        // narrowing gate removed from $hostFields at the barred-host block
+        // above. Harmless today - durableScanContext never passes that flag and
+        // scanProject has no production caller - but whoever re-wires that gate
+        // has to decide whether the narrowed run should be entitled to the form
+        // it narrowed away, and this is where the two meet.
+        $ddOwn = $this->dataDictionary($pid);
+        $ownership = [];
+        foreach (array_keys($readSet) as $f) {
+            $ownership[(string) $f] =
+                (is_array($ddOwn) && isset($ddOwn[$f]['form_name']) && $ddOwn[$f]['form_name'] !== '')
+                    ? (string) $ddOwn[$f]['form_name'] : null;
+        }
+        $out['ownership'] = $ownership;
         return $out;
     }
 
