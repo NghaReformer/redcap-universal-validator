@@ -17,3 +17,7 @@ site/_site/
 # python bytecode
 __pycache__/
 *.py[cod]
+
+# stray local files (not part of the module)
+/Dr Aminu Business Card.pdf
+*auto_query_tracker.db
