@@ -24,7 +24,9 @@ namespace {
     require_once __DIR__ . '/../php/ScanCapabilities.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
+    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
@@ -43,6 +45,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
+    require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
 
     $n = 0; $fail = 0;
@@ -93,6 +96,53 @@ namespace {
         }
     }
 
+
+    /**
+     * A module healthy enough to reach the store, and a database that fails.
+     *
+     * The two halves matter equally. Every earlier check in this file stops at
+     * available(), so nothing here had ever driven a verb past its gate; the
+     * fixture below passes the gate and then breaks the ONE statement the test
+     * names, which is how a storage failure arrives in production - not as a
+     * broken installation, but as a working one whose server stopped answering
+     * halfway through a request.
+     */
+    class StorageFaultModule extends FakeModule
+    {
+        /** @var ?string statements containing this fail */
+        public $failOn = null;
+        /** @var array list of [event, context] */
+        public $logs = [];
+
+        public function query($sql, $params = [])
+        {
+            if ($this->failOn !== null && strpos($sql, $this->failOn) !== false) {
+                throw new \INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable(
+                    '[1213] Deadlock found when trying to get lock; the work was rolled back');
+            }
+            // The record index answers for this project, so the capability gate
+            // passes and the refusal that follows is the one under test.
+            if (strpos($sql, 'FROM redcap_record_list') !== false) return [['R1']];
+            return parent::query($sql, $params);
+        }
+
+        public function log($event, $context = [])
+        {
+            $this->logs[] = [$event, $context];
+            return 1;
+        }
+
+        /** Everything logged under one event name, as a flat list of contexts. */
+        public function logged($event)
+        {
+            $out = [];
+            foreach ($this->logs as $l) {
+                if ($l[0] === $event) $out[] = $l[1];
+            }
+            return $out;
+        }
+    }
+
     // A build with no query() method at all. is_callable must answer false, so
     // it is a separate class rather than a flag on the one above.
     class NoDbModule
@@ -101,6 +151,91 @@ namespace {
         public $proj = [];
         public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
         public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
+    }
+
+    /**
+     * A ScanDb serving redcap_record_list for one project, and nothing else.
+     *
+     * DISPATCHED ON THE SQL, because the point of this fixture is that the REAL
+     * RecordManifestSource issues the queries. A hand-written source would
+     * prove the fake agrees with the planner.
+     *
+     * THREE RECORDS IN TWO GROUPS, and the middle one is elsewhere: 7, 31, 7.
+     * The assertion that matters is appended === 2, which no single-group
+     * fixture could distinguish from a filter that matched everything.
+     */
+    class FakeSourceDb implements \INSPIRE\UniversalValidator\Scan\ScanDb
+    {
+        public $rows = [['R001', '7'], ['R002', '31'], ['R003', '7']];
+
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'information_schema.columns') !== false) {
+                if (isset($params[0]) && $params[0] === 'redcap_record_list') {
+                    return [['project_id'], ['record'], ['dag_id']];
+                }
+                return [];                        // no data table on this build
+            }
+            if (strpos($sql, 'redcap_projects') !== false) return [];
+            if (strpos($sql, 'FROM redcap_record_list') === false) return [];
+
+            // boundaryGroup(): every id equal to one id.
+            if (strpos($sql, 'record = ?') !== false) {
+                $want = (string) $params[count($params) - 1];
+                $out = [];
+                foreach ($this->rows as $r) if ($r[0] === $want) $out[] = [$r[0]];
+                return $out;
+            }
+            $wantsDag = strpos($sql, 'dag_id') !== false;
+            $after = null;
+            if (strpos($sql, 'record >= ?') !== false) $after = (string) $params[1];
+            $out = [];
+            foreach ($this->rows as $r) {
+                if ($after !== null && strcmp($r[0], $after) < 0) continue;
+                $out[] = $wantsDag ? [$r[0], $r[1]] : [$r[0]];
+            }
+            if (preg_match('/LIMIT (\d+)/', $sql, $m)) $out = array_slice($out, 0, (int) $m[1]);
+            return $out;
+        }
+
+        public function exec($sql, array $params = []) { return 0; }
+        public function affected() { return 0; }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    }
+
+    /** A module whose user is a designer confined to group 7. */
+    class DagUserModule
+    {
+        public function getUser() { return new \DagUser(); }
+    }
+
+    /**
+     * AN OBJECT, NOT AN ARRAY. scanScope() calls hasDesignRights() and
+     * getRights($pid) on whatever getUser() returns, through is_callable - so a
+     * fixture that handed back an array would exercise the refusal path and
+     * prove nothing about the scope.
+     */
+    class DagUser
+    {
+        public function hasDesignRights() { return true; }
+        public function getRights($pid = null)
+        {
+            return ['design' => true, 'data_export_tool' => '1', 'group_id' => 7,
+                    'forms' => ['fa' => '1']];
+        }
+    }
+
+    /** Only what dagNameOf() reads. */
+    class REDCap
+    {
+        public static $groupNames = [];
+        public static function getGroupNames($unique = false, $groupId = null)
+        {
+            if ($groupId === null) return self::$groupNames;
+            return isset(self::$groupNames[(int) $groupId]) ? self::$groupNames[(int) $groupId] : '';
+        }
     }
 }
 
@@ -209,6 +344,53 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('service: and neither reveals whether run 5 exists',
         $offSvc->work(1, 5)['why'] === $offSvc->work(1, 99999)['why']);
 
+    // -- A STORAGE FAILURE IS NOT A 500, AND NOT A LEAK ----------------------
+    //
+    // ScanService is the last frame before the AJAX handler. Now that the store
+    // throws rather than answering a deadlock with the fence's own vocabulary,
+    // something has to decide what an operator is told and what an
+    // administrator is told, and this is the only place that can decide both.
+    //
+    // The stand-in raises the failure at the query seam, which is where the
+    // real one arrives from: ModuleDb::exec() throws ScanStoreUnavailable when
+    // the server will not say how many rows a write changed, and SqlScanStore's
+    // read methods deliberately do not catch it.
+    $ready = new \StorageFaultModule();
+    $ready->sys[ScanService::SYS_FLAG] = '1';
+    $ready->proj[ScanService::PROJ_FLAG] = '1';
+    $ready->version = Schema::VERSION;
+    $ready->tables = Schema::tables();
+    check('service: the fixture is otherwise healthy, so the next refusal is the fault',
+        (new ScanService($ready))->available(1)['ok'] === true);
+
+    $ready->failOn = 'FROM ' . Schema::table('scan_run');
+    $svcF = new ScanService($ready);
+    $w = $svcF->work(1, 5);
+    check('service: a storage failure during work is a refusal, not an uncaught throw',
+        is_array($w) && $w['ok'] === false);
+    check('service: and the operator gets the one fixed sentence',
+        $w['why'] === ScanStoreUnavailable::OPERATOR_TEXT);
+    check('service: which names no table, column, value or error number',
+        preg_match('/\d/', $w['why']) === 0
+        && stripos($w['why'], 'uv_') === false && stripos($w['why'], 'deadlock') === false);
+
+    $logged = $ready->logged('scan storage failure');
+    check('service: what the server said reaches the module log',
+        count($logged) === 1 && strpos($logged[0]['detail'], 'Deadlock') !== false);
+    check('service: with the run and project it happened on',
+        $logged[0]['run_id'] === 5 && $logged[0]['project_id'] === 1);
+    check('service: and none of it reaches the browser',
+        strpos(json_encode($w), 'Deadlock') === false);
+
+    // START TAKES THE SAME BOUNDARY, through the same helper, and it cannot be
+    // driven from here: every gate in front of startRun() - the availability
+    // probe, the scope read, the manifest source - catches Throwable and turns
+    // it into its own refusal, so nothing a stand-in can raise reaches the
+    // catch except by going all the way through the planner. The store half of
+    // it is proved in tests/scan_sqlstore_fault_php.php, where a write failure
+    // over an EMPTY project slot throws instead of reporting contention; the
+    // service half needs the database matrix, and is named for it.
+
     // -- reason codes --------------------------------------------------------
     //
     // The column is 64 characters and `assert:` carries up to 507 of expression.
@@ -241,6 +423,66 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('reason: an over-long code is cut to the column', strlen($long) <= ReasonCode::MAX);
     check('reason: and marked, so it is visibly odd rather than quietly wrong',
         substr($long, -1) === '~');
+
+/* =========================================================================
+ * B3  ONE DAG AXIS, END TO END, WITH NO DATABASE
+ *
+ * This file had no occurrence of 'dag' at all, and that absence is why the
+ * seam stayed open through 1,228 green checks: scan_security_php was
+ * internally consistent on DAG NAMES, the planning matrix was internally
+ * consistent on numeric IDS, and neither suite ever held both sides of the
+ * comparison at once.
+ *
+ * The join below does. ScanPageView::scanScope() is the real producer, driven
+ * by a module whose getUser() answers a real rights array; RecordManifestSource
+ * is the real walker over a fake ScanDb serving redcap_record_list; ScanPlanner
+ * is the real planner over ArrayScanStore. The scope value is never written
+ * down - it is taken from the producer and handed to the consumer.
+ *
+ * WHY appended IS THE ASSERTION AND outOfScope IS NOT. outOfScope === listed is
+ * produced identically by a group that genuinely holds no records and by a
+ * scope compared on the wrong axis, and ScanService::start discards the stats
+ * array anyway. Measured against the shipped tree: listed 3, appended 0,
+ * outOfScope 3, manifest_total 0 - and an empty frozen manifest is exactly what
+ * promotes to coverage=complete-through-fence clean=true. Against the fixed
+ * tree: listed 3, appended 2, outOfScope 1, manifest_total 2.
+ * ===================================================================== */
+{
+    $db  = new \FakeSourceDb();
+    $mod = new \DagUserModule();
+    \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+
+    $scope = \INSPIRE\UniversalValidator\ScanPageView::scanScope($mod, 149);
+    check('B3 GATE 2: the page produces a scope for a DAG-bound designer',
+        $scope['ok'] === true && $scope['dag'] === '7');
+
+    $open = RecordManifestSource::open($db, 149, ['pk' => null]);
+    check('B3 GATE 2: and the record index is usable as a source',
+        $open['ok'] === true && $open['source']->hasDag());
+
+    $planner = new ScanPlanner(new ArrayScanStore(), str_repeat('k', 32));
+    $r = $planner->plan(149, [
+        'source'    => $open['source'],
+        'fence'     => null,
+        'dagFilter' => $scope['dag'],          // TAKEN, never written down
+        'rules'     => [['type' => 'required', 'fields' => ['a']]],
+        'ownership' => ['a' => 'fa'],
+        'policy'    => [],
+        'createdBy' => 'u',
+        'engine'    => '1',
+    ]);
+
+    check('B3 GATE 2: a group-scoped run planned from the page\'s own scope APPENDS the '
+        . 'records in that group',
+        $r['stats']['listed'] === 3 && $r['stats']['appended'] === 2
+        && $r['stats']['outOfScope'] === 1);
+    check('B3 GATE 2: the frozen manifest is not empty, so nothing can promote over nothing',
+        (int) $r['run']['manifest_total'] === 2);
+    check('B3 GATE 2: the run stores the id it was scoped by',
+        $r['run']['scope_dag'] === '7');
+    check('B3 GATE 2: and the user who started it may work it',
+        ScanAuthorization::mayWork($scope['rights'], ['fa'], $r['run']['scope_dag'])['ok'] === true);
+}
 }
 
 namespace {

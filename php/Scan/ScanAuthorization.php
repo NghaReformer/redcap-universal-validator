@@ -46,6 +46,13 @@ final class ScanAuthorization
      * Unknown ownership is a denial rather than an omission, because a field
      * whose form cannot be determined is a field whose access cannot be checked.
      *
+     * $unknownOwnership is a bool OR the list of fields that could not be
+     * placed. A list is truthy exactly when the bool would be true, so every
+     * existing caller keeps its meaning - and the ones that pass names get a
+     * refusal that says which fields, which is the difference between a
+     * diagnosis and a dead end.
+     *
+     * @param bool|string[] $unknownOwnership
      * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
      */
     public static function mayStart($rights, array $entitlement, $unknownOwnership = false)
@@ -69,13 +76,42 @@ final class ScanAuthorization
                 . 'rights; ' . self::exportLevelPhrase($rights));
         }
         if ($unknownOwnership) {
+            // NAMED, for the same reason the export-level refusal above says
+            // which level it read. This arm was unreachable in production until
+            // the entitlement moved onto the read set, and it names a fixable
+            // dictionary problem: the field exists, its form_name does not.
+            // Without the names it is a refusal nobody can act on - the exact
+            // objection that put the instrument names in the branch below.
+            $who = is_array($unknownOwnership) ? self::plainList($unknownOwnership) : '';
             return self::no('at least one field a rule depends on could not be located on an '
-                . 'instrument, so access to it cannot be checked and the scan was not started');
+                . 'instrument, so access to it cannot be checked and the scan was not started'
+                . ($who === '' ? '' : ': ' . $who));
         }
         $barred = self::barredForms($rights, $entitlement);
         if ($barred) {
+            // TWO DIFFERENT FAILURES, TWO DIFFERENT SENTENCES.
+            //
+            // barredForms() returns the WHOLE entitlement when the rights row
+            // itself could not be read, which is not a statement about any
+            // instrument. Now that the entitlement is the read set, printing
+            // that list would enumerate every instrument the run touches for a
+            // failure that has nothing to do with instruments - misleading, and
+            // longer the more the project does.
+            //
+            // Where the row WAS readable, every barred name is printed and none
+            // is truncated. A cap would make the survivors a lexicographic
+            // accident: sorting and then keeping twelve hides form3 behind
+            // form19, and a refusal listing twelve arbitrary names is no more
+            // actionable than a count. Naming them discloses nothing - the
+            // caller has already been established as a project designer, who
+            // sees every instrument in the Online Designer.
+            if (!self::rightsListedForms($rights)) {
+                return self::no('your instrument access for this project could not be read, so '
+                    . 'the scan was refused rather than run against instruments it may not be '
+                    . 'entitled to');
+            }
             return self::no('this scan reads instrument(s) you do not have access to, so the whole '
-                . 'report is refused rather than quietly narrowed');
+                . 'report is refused rather than quietly narrowed: ' . self::plainList($barred));
         }
         return $base;
     }
@@ -115,9 +151,17 @@ final class ScanAuthorization
      * must be stoppable by anyone equally entitled in the same scope. A GLOBAL
      * run, though, may only be cancelled by an unrestricted user - a DAG user
      * cancelling a project-wide run affects every other group.
+     *
+     * CREATOR IDENTITY IS DELIBERATELY NOT CONSULTED, and this sentence is here
+     * so it is not re-added. Ownership would only add a way for a wedged run to
+     * become unstoppable: the person who started it is precisely the person who
+     * may have gone home. This function used to TAKE a creator and a username
+     * and compare them, and both arms of that comparison returned the same
+     * expression - so the control read as live, was tested as live, and decided
+     * nothing. Two inert parameters that every call site fills in earnest are a
+     * better disguise than no parameters at all.
      */
-    public static function mayCancel($rights, array $entitlement, $runScopeDag,
-                                     $creator = null, $username = null)
+    public static function mayCancel($rights, array $entitlement, $runScopeDag)
     {
         $base = self::mayStart($rights, $entitlement);
         if (!$base['ok']) return $base;
@@ -131,25 +175,21 @@ final class ScanAuthorization
             return $base;
         }
         if ($unrestricted) return $base;                       // may cancel any DAG run
-        if ($creator !== null && $username !== null && (string) $creator === (string) $username) {
-            return self::scopeMatches($base, $runScopeDag);     // their own run
-        }
-        return self::scopeMatches($base, $runScopeDag);
+        return self::scopeMatches($base, $runScopeDag);        // same group, whoever started it
     }
 
-    /**
-     * What `scan-start` may say when another scope already owns the project.
-     *
-     * GENERIC BY CONSTRUCTION. No run id, no owner, no scope, no progress, no
-     * timing. A DAG user learning that a project-wide run is in progress learns
-     * that someone with wider rights is looking at their project, and a run id
-     * would let them ask about it. The message is identical whoever asks.
-     */
-    public static function busy()
-    {
-        return ['ok' => false, 'busy' => true, 'why' => 'a validation scan is already running for '
-            . 'this project. Try again when it has finished.', 'scope' => null, 'unrestricted' => false];
-    }
+    // busy() USED TO LIVE HERE, and it was never called.
+    //
+    // It existed so the "already running" sentence would be identical whoever
+    // asked - and both stores wrote their own copy of it anyway, which had
+    // already drifted from this one by a sentence. Its only two mentions in the
+    // shipped tree were inside comments, so the wiring test could not see that
+    // nothing invoked it until the call-site corpus stopped counting prose.
+    //
+    // The sentence now belongs to ScanStore::BUSY_WHY, which is the contract
+    // that produces the refusal, and both stores answer with it. A wrapper that
+    // only reshapes a constant is a third place for the wording to drift.
+
 
     /**
      * What `scan-status` may disclose about a DAG-scoped run that has NOT yet
@@ -213,6 +253,17 @@ final class ScanAuthorization
         if (empty($rights['design'])) {
             return self::no('you need project design rights to use the validation scan');
         }
+        // THE SCOPE IS THE GROUP ID AND MUST STAY THE GROUP ID.
+        //
+        // $rights['group_id'] is REDCap's numeric group id, and scopeMatches()
+        // compares it against uv_scan_run.scope_dag. Anything that resolves it
+        // to the friendly name here - or stores the friendly name there -
+        // breaks both sides of that comparison at once, and the failure is not
+        // a leak: it fails CLOSED, refusing the designer who started the run
+        // access to scan-work, scan-status and scan-cancel on their own run,
+        // which then holds the project's only slot with nothing to reap it.
+        // That is the shape the page shipped with, and no amount of correctness
+        // in this file could have compensated for it.
         $dag = (isset($rights['group_id']) && $rights['group_id'] !== '' && $rights['group_id'] !== null)
              ? (string) $rights['group_id'] : null;
         return ['ok' => true, 'why' => null, 'scope' => $dag, 'unrestricted' => ($dag === null)];
@@ -263,6 +314,36 @@ final class ScanAuthorization
      * a rights row that says nothing about an instrument is not a rights row
      * that grants it.
      */
+    /**
+     * Did the rights row actually LIST instruments?
+     *
+     * The half of barredForms()'s answer its return value cannot carry: a full
+     * entitlement comes back both when every instrument is genuinely barred and
+     * when the row could not be read at all, and those need different sentences.
+     * A super-user has no row and is barred from nothing, so it answers true.
+     */
+    private static function rightsListedForms($rights)
+    {
+        if (is_array($rights) && !empty($rights['superUser'])) return true;
+        return is_array($rights) && isset($rights['forms']) && is_array($rights['forms']);
+    }
+
+    /** Names in a sentence: "a", "a and b", "a, b and c". Never truncated. */
+    private static function plainList(array $names)
+    {
+        $n = [];
+        foreach ($names as $x) {
+            $x = (string) $x;
+            if ($x !== '') $n[$x] = true;
+        }
+        $n = array_keys($n);
+        sort($n, SORT_STRING);
+        if (!$n) return '';
+        if (count($n) === 1) return $n[0];
+        $last = array_pop($n);
+        return implode(', ', $n) . ' and ' . $last;
+    }
+
     private static function barredForms($rights, array $entitlement)
     {
         // An administrator reads every instrument, and has no per-instrument
@@ -281,7 +362,36 @@ final class ScanAuthorization
         return $bad;
     }
 
-    /** A DAG user may only touch a run whose immutable scope is exactly theirs. */
+    /**
+     * The SCOPE half of the entitlement, on its own, for a page deciding what
+     * to OFFER.
+     *
+     * NECESSARY, NEVER SUFFICIENT, and this sentence is the contract. It skips
+     * export level and instrument access, so it may admit a caller that
+     * mayWork() will refuse - which is the safe direction, because every verb
+     * re-asks mayWork() before doing anything. It exists because the page has
+     * to decide whether to render a Continue button, and rebuilding the whole
+     * plan (durableScanContext) to answer that costs a second full plan build
+     * on every page load. Nothing that WRITES may call this.
+     *
+     * @return array{ok:bool, why:?string, scope:?string, unrestricted:bool}
+     */
+    public static function mayTouchScope($rights, $runScopeDag)
+    {
+        $base = self::readable($rights);
+        if (!$base['ok']) return $base;
+        return self::scopeMatches($base, $runScopeDag);
+    }
+
+    /**
+     * A DAG user may only touch a run whose immutable scope is exactly theirs.
+     *
+     * BOTH SIDES ARE GROUP IDS. $base['scope'] comes from readable() above and
+     * $runScopeDag from uv_scan_run.scope_dag, written by
+     * ScanPageView::scanScope()['dag']. The string cast below makes an int and
+     * a numeric string equal; it does not make a name and an id equal, and
+     * nothing here can.
+     */
     private static function scopeMatches(array $base, $runScopeDag)
     {
         if ($base['unrestricted']) return $base;

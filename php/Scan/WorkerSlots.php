@@ -84,21 +84,56 @@ final class WorkerSlots
     /**
      * Take a slot, or null when the installation is at its limit.
      *
-     * One statement. The free-or-expired test and the claim are the same
-     * operation, so there is no window between deciding and taking.
+     * NAME THE SLOT BEFORE TAKING IT. This was one statement — `UPDATE ...
+     * WHERE owner IS NULL ORDER BY slot_no LIMIT 1` — followed by a read-back
+     * asking which slot the owner now held, and the read-back was written as
+     * `WHERE owner = ? ORDER BY slot_no LIMIT 1`. That finds the LOWEST slot
+     * this owner holds, which is the one just taken only if the owner held none
+     * before. Measured against MySQL 8.0.46: an owner leasing twice is told
+     * "slot 1" both times, the table shows it holding slots 1 and 2, and
+     * releasing what it was told frees slot 1 and strands slot 2 until its TTL
+     * expires. The owner string is not unique by construction — ScanWorker
+     * falls back to the literal 'worker' when no owner is configured — so this
+     * is reachable rather than theoretical.
+     *
+     * So the free slot is chosen by a read, and the claim is a compare-and-set
+     * on the epoch that read returned. Three properties come out of that:
+     *
+     *   The slot number is known BEFORE the write, so nothing has to be guessed
+     *   afterwards and there is no second read to be wrong.
+     *
+     *   The epoch is written explicitly as old + 1 rather than as `epoch + 1`,
+     *   so the value handed back is the value in the row, not an inference
+     *   about it. This is the store's own rule from SqlScanStore's docblock: if
+     *   success does not change a value, affected() cannot tell you whether it
+     *   happened — and here it always changes, because old + 1 never equals old.
+     *
+     *   A worker that loses the race between the read and the write sees
+     *   affected() === 0 and moves to the next candidate, so contention costs a
+     *   statement rather than a false "the server is at its limit".
+     *
+     * The candidate list is not paged. It is bounded by the slot table, whose
+     * row count IS the configured concurrency limit — tens of rows, provisioned
+     * by an administrator.
      */
     public function acquire($owner, $runId, $ttlSeconds)
     {
         $t = Schema::table('scan_worker_slot');
-        $this->db->exec('UPDATE ' . $t . '
-            SET owner = ?, run_id = ?, epoch = epoch + 1, expires_at = ?
-            WHERE (owner IS NULL OR expires_at < ?) ORDER BY slot_no LIMIT 1',
-            [$owner, $runId, self::inSeconds($ttlSeconds), self::now()]);
-        if ($this->db->affected() !== 1) return null;
-        $r = $this->db->select('SELECT slot_no, epoch FROM ' . $t
-            . ' WHERE owner = ? ORDER BY slot_no LIMIT 1', [$owner]);
-        if (!isset($r[0])) return null;
-        return ['slot_no' => (int) $r[0][0], 'epoch' => (int) $r[0][1]];
+        $free = $this->db->select('SELECT slot_no, epoch FROM ' . $t
+            . ' WHERE owner IS NULL OR expires_at < ? ORDER BY slot_no', [self::now()]);
+        foreach ($free as $row) {
+            $no = (int) $row[0];
+            $next = (int) $row[1] + 1;
+            $this->db->exec('UPDATE ' . $t . '
+                SET owner = ?, run_id = ?, epoch = ?, expires_at = ?
+                WHERE slot_no = ? AND epoch = ? AND (owner IS NULL OR expires_at < ?)',
+                [$owner, $runId, $next, self::inSeconds($ttlSeconds), $no, (int) $row[1],
+                 self::now()]);
+            if ($this->db->affected() === 1) {
+                return ['slot_no' => $no, 'epoch' => $next];
+            }
+        }
+        return null;
     }
 
     /**

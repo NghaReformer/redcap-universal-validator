@@ -103,7 +103,14 @@ final class ScanPlanner
      *   choices:       array
      *   policy:        array   from ScanPolicy::resolve()
      *   engine:        string  the validation engine's version
-     *   dagFilter:     ?string scope this run to one group
+     *   dagFilter:     ?string scope this run to one group. THE NUMERIC GROUP
+     *                  ID, as a string - never the friendly DAG name. It is
+     *                  compared at stream() against redcap_record_list.dag_id
+     *                  and stored verbatim as scope_dag, which
+     *                  ScanAuthorization then compares against
+     *                  $rights['group_id']. ScanPageView::scanScope() is the
+     *                  only production producer and returns the id as 'dag';
+     *                  its 'dagName' is for prose and must never arrive here.
      *   createdBy:     string
      *   generation:    int
      *   pageSize:      int
@@ -135,12 +142,26 @@ final class ScanPlanner
 
         // Names and revisions first: the fingerprint is computed OVER them, so a
         // rule that cannot be named is a rule the fingerprint cannot cover.
-        $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : 0);
+        $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : null);
         $ruleSpec = [];
-        foreach ($ids as $i => $id) {
+        foreach ($ids as $id) {
             $ruleSpec[] = ['id' => $id['source_id'], 'rev' => $id['revision'],
-                           'ord' => $i + 1, 'origin' => $id['origin']];
+                           'origin' => $id['origin']];
         }
+        // A SET, NOT A SEQUENCE, and the ordinal is gone from it entirely.
+        //
+        // canonical() preserves list order, so folding the position in meant
+        // that merely REORDERING the rules - nothing added, removed or edited -
+        // changed the fingerprint, and fingerprintMatches() then declared the
+        // configuration had moved underneath the run. Annotation rule order
+        // follows data-dictionary field order, so moving a field in the Online
+        // Designer invalidated every resumable run on the project. identify()'s
+        // own docblock says moving a field must not rename the rule written on
+        // it; the run-level guard was contradicting the identity layer.
+        usort($ruleSpec, function ($a, $b) {
+            $c = strcmp($a['id'], $b['id']);
+            return $c !== 0 ? $c : strcmp($a['rev'], $b['rev']);
+        });
         try {
             $fp = self::fingerprint([
                 'engine'    => isset($req['engine']) ? $req['engine'] : '',
@@ -170,7 +191,16 @@ final class ScanPlanner
         $started = $this->store->startRun($pid, [
             'created_by'    => isset($req['createdBy']) ? $req['createdBy'] : '',
             'scope_dag'     => $dag,
-            'generation_id' => isset($req['generation']) ? $req['generation'] : 1,
+            // NO generation here. It was one of three places that defaulted
+            // it to 1, and between them no caller ever supplied one - so
+            // every run of every project on the installation wrote
+            // generation 1, and the second scan of anything re-inserted
+            // identities that were already active. The store allocates it
+            // now, from a per-project sequence, and is the only thing that
+            // can: allocation has to be atomic with the run insert or two
+            // starts race for the same number.
+            'run_kind'      => isset($req['runKind']) ? $req['runKind'] : 'full',
+            'baseline_generation' => isset($req['baseline']) ? $req['baseline'] : null,
             'fingerprint'   => $fp,
             'fence_open'    => $open,
             'policy_json'   => json_encode(isset($req['policy']) ? $req['policy'] : []),
@@ -185,6 +215,30 @@ final class ScanPlanner
         }
         $run = $started['run'];
         $runId = (int) $run['run_id'];
+
+        // WHAT THIS RUN ALREADY KNOWS IT CANNOT CHECK, written before it reads a
+        // record. The plan knows at this point which rules have a configuration
+        // error, cannot be located on an instrument, sit on an instrument no
+        // event collects, or cannot be decided under a group scope. None of that
+        // was ever recorded, so ScanOutcome's `ruleProblems` term had no
+        // producer and `clean` silently meant "no findings" - a project whose
+        // rules enforce nothing got the same certificate as one whose rules all
+        // pass.
+        //
+        // A FAILURE HERE FINISHES THE RUN rather than leaving it. Everything
+        // after startRun() in this method obeys that rule - see the method note,
+        // an abandoned run holds the project scan slot - and it matters twice as
+        // much here: a scan that could not record what it cannot check must not
+        // be the scan that goes on to certify the project without it.
+        $problems = isset($req['ruleProblems']) && is_array($req['ruleProblems'])
+            ? $req['ruleProblems'] : [];
+        try {
+            ScanPromotion::noteRuleProblems($this->store, $runId, $problems);
+        } catch (\Throwable $e) {
+            $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
+            return self::no('this scan could not record which of the project rules it is unable '
+                . 'to evaluate, so it was not started rather than started without them');
+        }
 
         $walk = $this->stream($runId, $src, $pid, $dag, $req);
         if (!$walk['ok']) {
@@ -201,6 +255,47 @@ final class ScanPlanner
             return self::no('the record list could not be frozen, so the run was not started');
         }
         $walk['stats']['total'] = (int) $total;
+
+        // AN EMPTY MANIFEST IS NOT A CLEAN PROJECT.
+        //
+        // freezeManifest() answers `false` for a refusal and an INT for a
+        // census, and the guard above tests only for `false` - so 0 fell through
+        // into `ok => true`. The run then walked four phases over nothing,
+        // promoted with `pending === 0` reading as a finished manifest, and the
+        // page printed "Every record was checked, including changes made while
+        // it ran." beside "Preparing" and "Nothing found yet". Reproduced end to
+        // end against these classes before this line was written.
+        //
+        // Closed HERE, and not only at promotion, because a refusal costs a
+        // sentence while a started run costs the project its scan slot and shows
+        // somebody a progress bar for a scan that will certify nothing. The
+        // promotion-side fact stays as the backstop for a manifest emptied after
+        // it was frozen, which this check cannot see.
+        //
+        // Terminal, not abandoned - the same rule the two refusals above obey.
+        if ((int) $total === 0) {
+            $this->store->finish($runId, ScanOutcome::derive(['emptyScope' => true]));
+            return ['ok' => false, 'busy' => false, 'run' => null,
+                    // The walk counters travel, unlike self::no()'s empty stats:
+                    // `listed` and `outOfScope` are the two numbers that
+                    // distinguish a genuinely empty group from a scope value
+                    // compared on the wrong axis, and they are the first thing
+                    // anybody asks for when this refusal is reported.
+                    'stats' => $walk['stats'],
+                    // The group wording does NOT assert that the group is empty,
+                    // because this code cannot tell that apart from a scope
+                    // compared on the wrong axis - and a false statement about
+                    // the project, made by the guard that exists to stop false
+                    // statements, would be the worst possible place for one. No
+                    // counts in the sentence either: how many records the project
+                    // holds is not something a group-scoped user is entitled to.
+                    'why' => $dag === null
+                        ? 'this project has no records, so there was nothing to scan'
+                        : 'no records were found in the Data Access Group this scan was scoped '
+                        . 'to, so there was nothing to scan. If you expect records in that '
+                        . 'group, ask an administrator to check the scan scope before treating '
+                        . 'this as an empty group.'];
+        }
         return ['ok' => true, 'busy' => false, 'run' => $this->store->run($pid, $runId),
                 'why' => null, 'stats' => $walk['stats']];
     }
@@ -244,6 +339,18 @@ final class ScanPlanner
             $batch = [];
             foreach ($pg['rows'] as $row) {
                 $stats['listed']++;
+                // BOTH SIDES ARE GROUP IDS. $row['dag'] is
+                // redcap_record_list.dag_id (or the __GROUPID__ value on the
+                // data-table fallback), which REDCap stores as the numeric
+                // group id; $dag is scanScope()['dag'], which is the same. A
+                // friendly name on either side matches nothing, and the failure
+                // is silent in the worst possible direction: every record is
+                // counted out of scope, the manifest freezes at zero, and the
+                // run promotes to a clean certificate over nothing. The
+                // outOfScope counter below does NOT catch it - ScanService::start
+                // discards the whole stats array, and outOfScope === listed is
+                // produced identically by a group that genuinely holds no
+                // records. The gate is the domain test, not the counter.
                 if ($dag !== null && (string) $row['dag'] !== (string) $dag) {
                     $stats['outOfScope']++;
                     continue;
@@ -413,6 +520,11 @@ final class ScanPlanner
         // without invalidating a 100,000-record baseline.
         unset($rule['label'], $rule['note'], $rule['ruleNote'], $rule['message'],
               $rule['uid'], $rule['rule-uid'], $rule['ruleUid']);
+        // Where the rule came from is already in the source_id's prefix
+        // (`set:` / `ann:` / `uid:`). Hashing it here as well would churn every
+        // existing revision for no gain, and would break this function's stated
+        // contract of hashing only what CHANGING the rule changes.
+        unset($rule['_origin']);
         return hash('sha256', self::canonical($rule));
     }
 
@@ -442,23 +554,45 @@ final class ScanPlanner
      * because the list order of identical siblings is itself derived from
      * content.
      *
-     * @param array $rules   as getRules() produced them
-     * @param int   $settingsCount how many leading entries came from settings
-     * @return array parallel to $rules
+     * KEYS ARE PART OF THE ANSWER. This used to walk array_values($rules) and
+     * append with $out[], which re-indexed the result densely - while its one
+     * caller passes $plan['live'], a SPARSE array whose keys are rule ordinals
+     * (scanPlan skips config-broken rules and the per-instrument-rights gate
+     * unsets more), and then looks the identity up by ordinal - 1. One dropped
+     * rule therefore shifted every later rule's name by one and pushed the last
+     * one off the end into the `unnamed:` fallback. Because rule_source_id is
+     * hashed into Hmac::findingIdentity(), that did not merely mislabel a
+     * finding: it gave the finding the identity of a rule that did not produce
+     * it, which is the key the supersede logic matches on.
+     *
+     * ORIGIN COMES FROM THE RULE, NOT FROM A COUNT. $settingsCount was a
+     * positional boundary no caller ever supplied, and it could not have been
+     * made correct: Branching::resolve() drops rules that lost every field to a
+     * branch rule and appends synthesized ones, so no integer survives it. It
+     * remains only as a fallback for a caller holding an untagged list.
+     *
+     * @param array $rules         as getRules() produced them; keys preserved
+     * @param ?int  $settingsCount DEPRECATED positional fallback, used only for
+     *                             rules carrying no _origin key
+     * @return array parallel to $rules, INCLUDING ITS KEYS
      */
-    public static function identifyAll(array $rules, $settingsCount)
+    public static function identifyAll(array $rules, $settingsCount = null)
     {
         $seen = [];
         $out = [];
-        foreach (array_values($rules) as $i => $r) {
-            $origin = ($i < (int) $settingsCount) ? 'settings' : 'annotation';
+        $pos = 0;
+        foreach ($rules as $k => $r) {
+            $origin = (isset($r['_origin']) && is_string($r['_origin']) && $r['_origin'] !== '')
+                ? (string) $r['_origin']
+                : (($pos < (int) $settingsCount) ? 'settings' : 'annotation');
+            $pos++;
             // Probe with occurrence zero to learn the un-numbered part of the
             // name, then count how many of those we have already issued.
             $probe = self::identify($r, $origin, 0);
             $stem = $probe['stem'];
             $n = isset($seen[$stem]) ? $seen[$stem] : 0;
             $seen[$stem] = $n + 1;
-            $out[] = self::identify($r, $origin, $n);
+            $out[$k] = self::identify($r, $origin, $n);
         }
         return $out;
     }

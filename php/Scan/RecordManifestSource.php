@@ -180,9 +180,21 @@ final class RecordManifestSource
     {
         $out = array_fill_keys(array_map('strval', $ids), null);
         if (!$ids) return $out;
+        // B3b: THE FALLBACK SOURCE CAN ANSWER THIS, AND USED TO REFUSE TO.
+        //
+        // On a project with no redcap_record_list rows the walk falls through to
+        // the data table, dagCol is null, and page() resolves each record's
+        // group perfectly well from the __GROUPID__ rows via fillGroups(). This
+        // method short-circuited on the same null and answered "no group" for
+        // every record - so planning and catch-up, on the same run, disagreed
+        // about the same record. Measured on a fallback source holding
+        // R001=7, R002=31, R003=7: page() returned dag 7 for R001 while
+        // dagsOf() returned null for all three and inScope('7') returned false
+        // for all three. The consequence is not a wrong count: catch-up admits
+        // NOTHING created during a group-scoped run, and the run still claims a
+        // proved fence over the window in which it admitted nothing.
+        // Both halves now read groupsFromDataTable(), the one query page() uses.
         if ($this->dagCol === null) {
-            // Same fallback page() uses. Without it this source reported every
-            // record as ungrouped and inScope() then refused all of them.
             $map = $this->groupsFromDataTable($ids);
             if ($map === null) return $out;
             foreach ($map as $id => $g) if (array_key_exists($id, $out)) $out[$id] = $g;
@@ -220,6 +232,15 @@ final class RecordManifestSource
             // An unscoped run admits everything the project holds.
             return array_fill_keys(array_map('strval', $ids), true);
         }
+        // ONE RESOLUTION FOR BOTH HALVES OF THE RUN. This used to refuse every
+        // record whenever dagCol was null, which on the data-table fallback
+        // meant a group-scoped run admitted nothing at catch-up while its
+        // manifest had been built from exactly the group information this
+        // branch claimed was unavailable. dagsOf() now answers on both sources,
+        // so both halves ask the same question of the same rows. A record whose
+        // group still cannot be established comes back null and is refused
+        // below - the fail-closed direction this method's docblock commits to,
+        // reached by an answer rather than by an assumption.
         if ($this->dagCol === null && $this->dataTable === null) {
             // No way at all to establish a group: fail closed, as documented.
             return array_fill_keys(array_map('strval', $ids), false);
@@ -302,6 +323,15 @@ final class RecordManifestSource
             $id = (string) $row[0];
             if (isset($skip[$id])) continue;         // already emitted at this boundary
             $out[] = ['id' => $id,
+                      // THE GROUP ID, VERBATIM. dag_id on the record index and
+                      // the __GROUPID__ value on the data table are both
+                      // REDCap's numeric group id; neither is the friendly
+                      // name. This is the value ScanPlanner::stream() compares
+                      // scope_dag against and the value written to
+                      // uv_scan_record.dag, so anything that normalised it into
+                      // a label here would move the whole manifest onto a second
+                      // axis. (uv_finding.dag_key is a DIFFERENT column on a
+                      // DIFFERENT axis - see UniversalValidator::dagOfRecordNode.)
                       'dag' => ($this->dagCol === null ? null
                                 : (($row[1] === null || $row[1] === '') ? null : (string) $row[1]))];
             if (count($out) >= $limit) break;
@@ -404,6 +434,13 @@ final class RecordManifestSource
             return null;
         }
         $map = [];
+        // '' IS NOT A GROUP. The __GROUPID__ row of a record that has been
+        // removed from its group holds the empty string, not NULL, and the
+        // index branch at page() already folds both onto null. Doing it here
+        // rather than in each caller is what keeps the two sources answering
+        // the same shape: dagsOf() reads this method on the fallback, and
+        // inScope() then refuses null - so an unfolded '' would be compared
+        // against a group id as a value rather than refused as an absence.
         foreach ($q as $row) {
             $map[(string) $row[0]] = ($row[1] === null || $row[1] === '') ? null : (string) $row[1];
         }

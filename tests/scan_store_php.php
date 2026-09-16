@@ -31,7 +31,7 @@ namespace {
     require_once __DIR__ . '/scan_store_contract.php';
 
     \INSPIRE\UniversalValidator\Scan\storeContract(function () {
-        return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore(2);
+        return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
     }, 'array-store');
 
     echo "scan_store_php: $n checks, $fail failure(s)\n";

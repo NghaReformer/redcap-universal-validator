@@ -46,6 +46,73 @@ namespace ExternalModules {
         public function getProjectId() { return $this->projectIdReturn; }
         public function getUrl($p) { return '/x/' . $p; }
         public function log($message, $parameters = []) { $this->logCalls[] = [$message, $parameters]; return count($this->logCalls); }
+
+        /**
+         * The rate-limit bucket table, and only that.
+         *
+         * WHY THE STUB GAINED A DATABASE. The sessionless survey throttle used
+         * to be a read-modify-write over a system setting, which this stub
+         * already modelled as an array - and that is exactly why concurrency
+         * defeated it in production while every test here stayed green: a
+         * single-process test cannot lose a lost update. It is now one atomic
+         * statement against uv_rate_bucket, so the stub has to answer that
+         * statement or the throttle silently fails open and the F5 checks below
+         * pass over a throttle that never ran.
+         *
+         * LAST_INSERT_ID(expr) is modelled faithfully - set by the write,
+         * returned by the read - because the counter's whole correctness rests
+         * on the insert path and the update path both reporting the value they
+         * wrote.
+         */
+        public $rateBuckets = [];            // "pid|bucket" => hits
+        public $lastInsertId = 0;
+        public $rateStatements = [];         // every statement, for assertions
+        /**
+         * The two ways the counter can be unreachable, both of which used to
+         * pass silently.
+         *
+         * $queryThrows models the DEFAULT INSTALLATION. uv_rate_bucket shipped
+         * inside statementsV2(), which runs only when the durable scan's flag
+         * is on, and that flag is off by default and documented to stay off
+         * until a pilot - so on the recommended configuration the table did not
+         * exist and every increment threw. This stub answering every statement
+         * is the reason the suite could not see it: there is no table here to
+         * be missing.
+         *
+         * $lastInsertIdUnreadable models the subtler one - the table present,
+         * nothing thrown, and a result shape ModuleDb::rows() cannot walk, so
+         * the read-back produced no value. The old code read that as 0 hits,
+         * which is the most permissive answer there is.
+         */
+        public $queryThrows = false;
+        public $lastInsertIdUnreadable = false;
+        public function query($sql, $params = []) {
+            $this->rateStatements[] = $sql;
+            if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) {
+                throw new \RuntimeException("Table 'redcap.uv_rate_bucket' doesn't exist");
+            }
+            if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) {
+                return $this->lastInsertIdUnreadable ? [] : [[$this->lastInsertId]];
+            }
+            if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
+            if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0) {
+                $k = (int) $params[0] . '|' . (int) $params[1];
+                $this->rateBuckets[$k] = isset($this->rateBuckets[$k]) ? $this->rateBuckets[$k] + 1 : 1;
+                $this->lastInsertId = $this->rateBuckets[$k];
+                return [];
+            }
+            if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'DELETE') === 0) {
+                foreach (array_keys($this->rateBuckets) as $k) {
+                    list($p, $b) = explode('|', $k);
+                    if ((int) $p === (int) $params[0] && (int) $b < (int) $params[1]) {
+                        unset($this->rateBuckets[$k]);
+                    }
+                }
+                return [];
+            }
+            return [];
+        }
+
         // JSMO plumbing (framework AJAX transport for @UVUNIQUE)
         public function initializeJavascriptModuleObject() { return '<script>/* jsmo bootstrap */</script>'; }
         public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
@@ -1734,7 +1801,14 @@ namespace {
     // DAG filter: scanning as a 'north' user sees only north records — and the
     // duplicate pair (split across DAGs, project scope) is NOT reported because
     // the south record is outside the visible set.
-    $res = $m->scanProject(149, 'north');
+    // THE GROUP ID, NOT THE NAME. Wave 6 put every scope value on the id axis;
+    // scanProject() resolves it back to the exported name once, at the top, so
+    // the fixture has to be able to answer that resolution. Seeded and cleared
+    // here rather than globally, because \REDCap::$groupNames is shared and an
+    // unresolvable group is now a refusal rather than a silent empty scan.
+    \REDCap::$groupNames = [7 => 'north'];
+    $res = $m->scanProject(149, '7');
+    \REDCap::$groupNames = [];
     check('scan: DAG filter scopes the record set', $res['stats']['records'] === 2);
     $recs = array_unique(array_map(function ($v) { return $v['record']; }, $res['violations']));
     check('scan: DAG filter never names another group\'s record', !in_array('2', $recs, true));
@@ -1745,6 +1819,65 @@ namespace {
     $m = newModule([], $scDictD, $scData, 149);
     $res = $m->scanProject(149);
     check('scan: dag-scoped unique ignores cross-DAG repeats', count(scanHits($res, 'unique')) === 0);
+
+    /* M1  a record in NO group cannot be judged by a rule scoped to groups.
+     *
+     * The bucket key appends (string) $recDag, and $recDag is null for a record
+     * REDCap returned with no redcap_data_access_group. (string) null is '', so
+     * every ungrouped record in the project fell into ONE bucket and any two of
+     * them sharing a value were reported as duplicates OF EACH OTHER - under a
+     * rule that means "unique within a Data Access Group", for records that are
+     * not in one. Two silent wrongs at once: a violation nobody can act on, and
+     * a green report for a question that was never asked.
+     */
+    $scDataNoDag = [
+        '1' => [351 => ['record_id' => '1', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '677', 'sid' => 'LOOSE']],
+        '2' => [351 => ['record_id' => '2', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '678', 'sid' => 'LOOSE']],
+        '3' => [351 => ['record_id' => '3', 'pid' => '70', 'start' => '2024-01-01',
+                        'end' => '2024-02-01', 'phone' => '679', 'sid' => 'LOOSE',
+                        'redcap_data_access_group' => 'north']],
+    ];
+    $resND = newModule([], $scDictD, $scDataNoDag, 149)->scanProject(149);
+    check('M1: two records in no group are NOT duplicates of each other',
+        count(scanHits($resND, 'unique')) === 0);
+    // AND IT SAYS SO. Withholding the comparison silently would be the same
+    // false reassurance in the other direction - the report would look clean
+    // for a question nobody answered.
+    check('M1: and the rule is reported as unevaluable for them, not silently skipped',
+        (bool) array_filter($resND['unconfigurable'], function ($u) {
+            return stripos($u['why'], 'not in one') !== false
+                && stripos($u['why'], 'NOT evaluated') !== false;
+        }));
+    // ONE PROBLEM, NOT ONE PER RECORD. $refuse keys $unconf by ruleIndex|suffix,
+    // which is what keeps the report bounded on a project with ten thousand
+    // ungrouped records.
+    check('M1: two ungrouped records produce ONE rule problem, not one each',
+        count(array_filter($resND['unconfigurable'], function ($u) {
+            return stripos($u['why'], 'not in one') !== false;
+        })) === 1);
+    // THE RULE STAYS LIVE. It is the RECORD that cannot be judged, not the rule,
+    // so a genuine within-group duplicate must still be caught in the same run.
+    $scDataMixed = $scDataNoDag;
+    $scDataMixed['4'] = [351 => ['record_id' => '4', 'pid' => '70', 'start' => '2024-01-01',
+                                 'end' => '2024-02-01', 'phone' => '680', 'sid' => 'LOOSE',
+                                 'redcap_data_access_group' => 'north']];
+    $resMix = newModule([], $scDictD, $scDataMixed, 149)->scanProject(149);
+    $mixRecs = [];
+    foreach (scanHits($resMix, 'unique') as $v) $mixRecs[(string) $v['record']] = true;
+    check('M1: a real duplicate INSIDE a group is still found in the same run',
+        isset($mixRecs['3']) && isset($mixRecs['4']));
+    check('M1: and the ungrouped records are still not among the duplicates',
+        !isset($mixRecs['1']) && !isset($mixRecs['2']));
+    // THE CONTROL FOR THE SCOPE ITSELF. Under project scope the very same three
+    // records ARE duplicates, so the refusal above is about the dag scope and
+    // not about the fixture.
+    $scDictP = $scDictD;
+    $scDictP['sid']['field_annotation'] = '@UVUNIQUE';
+    $resProj = newModule([], $scDictP, $scDataNoDag, 149)->scanProject(149);
+    check('M1 control: under project scope the same ungrouped records ARE duplicates',
+        count(scanHits($resProj, 'unique')) === 3);
 
     // repeating instruments: a violation on instance 2 carries its instance
     $scDataR = [
@@ -2199,7 +2332,14 @@ namespace {
     ];
     $f5Data = ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-1']]];
     $m = newModule([], $f5Dict, $f5Data, 149);
-    $m->systemSettings['uv_noauth_hits_149'] = array_fill(0, 600, time());   // budget exhausted
+    // The budget spent, in the counter the database owns. 600 is the cap, so the
+    // next check makes 601 and is refused.
+    //
+    // THE BUCKET NUMBER IS DOUBLED and carries the tier in its low bit, because
+    // sessioned and sessionless traffic are counted separately - see
+    // surveyRateLimited(). CLI has no session, so this is the even slot.
+    $anonSlot = ((int) floor(time() / 60)) * 2;
+    $m->rateBuckets['149|' . $anonSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
     check('F5: a sessionless caller is throttled once the per-project budget is spent',
@@ -2210,8 +2350,196 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F5: a fresh sessionless caller is answered (not throttled)', isset($r['used']));
     check('F5: the sessionless check is recorded in the per-project budget',
-        is_array($m->systemSettings['uv_noauth_hits_149'] ?? null)
-        && count($m->systemSettings['uv_noauth_hits_149']) === 1);
+        (int) array_sum($m->rateBuckets) === 1);
+    // M16: ONE STATEMENT, NO READ BEFORE IT. The lost-update window was the read
+    // - N concurrent requests read the same array, each appended one entry, and
+    // the last write won, so the tier could not count the flood it was written
+    // for. There is nothing here to read.
+    $inserts = 0; $reads = 0;
+    foreach ($m->rateStatements as $sql) {
+        if (strpos($sql, 'uv_rate_bucket') === false) continue;
+        if (strpos($sql, 'INSERT') === 0) $inserts++;
+        if (strpos($sql, 'SELECT') === 0) $reads++;
+    }
+    check('M16: the throttle increments with one statement', $inserts === 1);
+    check('M16: and reads nothing from the bucket before writing it', $reads === 0);
+    // The old array is not consulted any more, so a stale system setting from
+    // before the upgrade cannot throttle anybody.
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->systemSettings['uv_noauth_hits_149'] = array_fill(0, 600, time());
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-8']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
+
+    // F6: THE COUNTER'S STORAGE IS NOT REACHABLE. Two shapes, both of which
+    // shipped as a silent pass. The first is the one that mattered: with the
+    // table behind the durable scan's opt-in flag, this was not an edge case,
+    // it was every default installation.
+    //
+    // The tier still fails OPEN - the live check is a convenience, never a gate
+    // on data entry - so what is asserted here is that the failure is RECORDED.
+    // An operator cannot notice an absence, and an absence was the only
+    // evidence the module produced for a whole release.
+    $bucketNow = (int) floor(time() / 60);
+
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->queryThrows = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-7']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: a missing counter table does not refuse the caller (the tier fails open)',
+        isset($r['used']));
+    $warn = array_values(array_filter($m->logCalls, function ($l) {
+        return $l[0] === 'uv-throttle-storage-unavailable';
+    }));
+    check('F6: but it is recorded, so the control cannot be inert in silence',
+        count($warn) === 1);
+    check('F6: and the record names the project',
+        isset($warn[0][1]['project_id']) && (int) $warn[0][1]['project_id'] === 149);
+    check('F6: and the exception class, which a message cannot be trusted to carry safely',
+        isset($warn[0][1]['class']) && $warn[0][1]['class'] === 'RuntimeException');
+    // DbError rebuilds a recognised shape from structural captures only, so the
+    // table is named and the statement and its parameters are not.
+    check('F6: and a redacted detail that still names the table',
+        isset($warn[0][1]['detail']) && strpos($warn[0][1]['detail'], 'uv_rate_bucket') !== false);
+
+    // ONCE PER PROJECT PER WINDOW, not once per request. The endpoint is
+    // unauthenticated, so a log row per request would trade a throttle for a
+    // flood of the log an operator would use to notice the flood.
+    for ($i = 0; $i < 20; $i++) {
+        $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-' . $i]],
+            149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    }
+    check('F6: 21 failing checks in one window produce one log row, not 21',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 1);
+    check('F6: and the window marker is stored so the next window speaks again',
+        (string) $m->systemSettings['uv_throttle_down_149'] === (string) $bucketNow);
+    $m->systemSettings['uv_throttle_down_149'] = (string) ($bucketNow - 1);   // pretend a window passed
+    $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-X']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: a new window says so again',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 2);
+
+    // THE SECOND SHAPE: the table is there, nothing throws, and the count comes
+    // back unreadable. "I do not know" used to be read as 0, which is silently
+    // the most permissive answer available - no throttle, and no pruning. It is
+    // now treated as the storage failure it is.
+    $m = newModule([], $f5Dict, $f5Data, 149);
+    $m->lastInsertIdUnreadable = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-6']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('F6: an unreadable count is not read as "under the cap"',
+        count(array_filter($m->logCalls, function ($l) {
+            return $l[0] === 'uv-throttle-storage-unavailable';
+        })) === 1);
+    check('F6: and the caller is still answered', isset($r['used']));
+
+    // THE INSTALLER IS WHAT MAKES THE TIER REACHABLE AT ALL. Its own assertions
+    // live in hosting_php.php; this one only fixes the seam, so that moving the
+    // DDL back behind the scan's flag fails a test in the file that owns the
+    // throttle.
+    $inst = newModule([], $f5Dict, $f5Data, 149);
+    $inst->rateStatements = [];
+    $inst->systemSettings['scan-system-enable-durable'] = '0';       // the default, and the point
+    $inst->redcap_module_system_enable('1.9.10');
+    $made = array_values(array_filter($inst->rateStatements, function ($q) {
+        return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') !== false;
+    }));
+    check('F6: enabling the module creates the throttle counter with the scan flag OFF',
+        count($made) === 1);
+    check('F6: and creates no scan table, so the scan stays opt-in',
+        count(array_filter($inst->rateStatements, function ($q) {
+            return stripos($q, 'CREATE TABLE') !== false && strpos($q, 'uv_rate_bucket') === false;
+        })) === 0);
+    check('F6: and it is IF NOT EXISTS, so every save and enable is a no-op after the first',
+        stripos($made[0], 'IF NOT EXISTS') !== false);
+
+    // F7: A ROTATED SESSION IS NOT A FRESH BUDGET.
+    //
+    // The two tiers used to be alternatives - tier 1 returned as soon as it
+    // passed, so tier 2 ran only for a caller carrying no session at all. That
+    // made the throttle keyed on something the caller chooses: drop the cookie
+    // between requests and every request starts a new 30-request budget, while
+    // the per-project cap is never consulted. These checks need a REAL session,
+    // because the defect lives in the branch CLI never took, which is exactly
+    // why 289 green checks could not see it.
+    @session_start();
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $slotOf = function ($sessioned) {
+            return ((int) floor(time() / 60)) * 2 + ($sessioned ? 1 : 0);
+        };
+        $call = function ($m, $tok) {
+            return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $tok]],
+                149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+        };
+
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION = [];
+        $r = $call($m, 'S-1');
+        check('F7: a caller WITH a session is still answered', isset($r['used']));
+        check('F7: and tier 1 counted it', count($_SESSION['uvalidate_unique_hits']) === 1);
+        check('F7: and tier 2 counted it too, which it never used to',
+            (int) array_sum($m->rateBuckets) === 1);
+        check('F7: in the SESSIONED bucket, not the sessionless one',
+            isset($m->rateBuckets['149|' . $slotOf(true)])
+            && !isset($m->rateBuckets['149|' . $slotOf(false)]));
+
+        // THE EVASION. Discarding the session is free and resets tier 1
+        // completely; the project counter is the thing that must not move back.
+        for ($i = 0; $i < 5; $i++) { $_SESSION = []; $call($m, 'S-r' . $i); }
+        check('F7: rotating the session resets tier 1',
+            count($_SESSION['uvalidate_unique_hits']) === 1);
+        check('F7: but the project budget keeps counting through the rotation',
+            (int) $m->rateBuckets['149|' . $slotOf(true)] === 6);
+
+        // And the cap is real: spend it, then present a brand-new session.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(true)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED;
+        $_SESSION = [];
+        $r = $call($m, 'S-over');
+        check('F7: a fresh session does not buy a spent project budget',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+
+        // THE TWO POPULATIONS DO NOT CHARGE EACH OTHER. A sessionless flood
+        // must not be able to throttle real respondents, and a busy survey must
+        // not spend the sessionless budget.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $m->rateBuckets['149|' . $slotOf(false)] =
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
+        $_SESSION = [];
+        $r = $call($m, 'S-sep');
+        check('F7: a spent SESSIONLESS budget does not throttle a respondent',
+            isset($r['used']));
+        check('F7: and the sessioned cap is the higher of the two, deliberately',
+            \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_SESSIONED
+            > \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON);
+
+        // Tier 1 still refuses on its own, and refuses BEFORE spending a
+        // statement on the project counter.
+        $m = newModule([], $f5Dict, $f5Data, 149);
+        $_SESSION['uvalidate_unique_hits'] = array_fill(0, 30, time());
+        $m->rateStatements = [];
+        $r = $call($m, 'S-t1');
+        check('F7: tier 1 still refuses a single session that floods',
+            isset($r['error']) && strpos($r['error'], 'too many') !== false);
+        check('F7: and does it without touching shared storage',
+            count(array_filter($m->rateStatements, function ($q) {
+                return strpos($q, 'uv_rate_bucket') !== false;
+            })) === 0);
+
+        // Leave no session behind: every check after this one assumes CLI has
+        // none, and a leaked session would silently move them onto tier 1.
+        $_SESSION = [];
+        session_write_close();
+        check('F7: the test leaves no session behind for the checks after it',
+            session_status() !== PHP_SESSION_ACTIVE);
+    } else {
+        check('F7: SKIPPED - this build cannot start a session in CLI', true);
+    }
 
     // dialog channel refuses the same combination at save time
     $m = newModule([], $idDict, [], 149);

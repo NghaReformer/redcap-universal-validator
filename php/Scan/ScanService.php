@@ -113,6 +113,24 @@ final class ScanService
      */
     public function start($pid)
     {
+        // THE STORAGE-FAILURE BOUNDARY IS HERE, one frame above the body, and
+        // that is why the body is a method of its own. startRun() used to
+        // report a missing table as "a validation scan is already running for
+        // this project", so an administrator was told to wait for something
+        // that could never finish; it now throws, and every store call between
+        // here and it can throw the same way. One catch at the entrypoint
+        // answers all of them with a sentence that says what actually happened,
+        // and puts what the server said in the module log where it belongs.
+        try {
+            return $this->openRun($pid);
+        } catch (ScanStoreUnavailable $e) {
+            return self::noStart($this->storageFailed($pid, null, $e));
+        }
+    }
+
+    /** @see start() — the body, so that the catch above is not a page of indent. */
+    private function openRun($pid)
+    {
         $gate = $this->available($pid);
         if (!$gate['ok']) return self::noStart($gate['why']);
 
@@ -131,16 +149,27 @@ final class ScanService
         $dag = $scope['dag'];
 
         $policy = $this->policy($pid);
-        $ctx = $this->module->durableScanContext($pid, ['valueCeiling' => $policy['valueMode']], $dag);
+        // PLANNING CONTEXT. start() needs the rule list and the ownership map
+        // to authorise and to plan; the run - and therefore its generation -
+        // does not exist yet. Asking for a null generation says that, and gets
+        // back a context with no evaluator rather than one silently bound to
+        // generation 1, which is what every run of every project used to write.
+        $ctx = $this->module->durableScanContext($pid,
+            ['valueCeiling' => $policy['valueMode'], 'generation' => null,
+             'policy' => $policy], $dag);
         if (empty($ctx['ok'])) return self::noStart($ctx['why']);
 
         // Every instrument the run will read, from the plan rather than from a
         // list somebody maintains. A field the plan could not place on an
         // instrument is an unknown ownership, and unknown ownership is denial.
+        // THE NAMES, NOT MERELY THE FACT. mayStart() prints them, and an
+        // unplaceable field is a fixable dictionary problem: the field exists,
+        // its form_name does not. A refusal that says only "at least one field"
+        // sends an administrator looking through the whole dictionary.
         $forms = [];
-        $unknown = false;
+        $unknown = [];
         foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown = true; continue; }
+            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
             $forms[$form] = true;
         }
         $auth = ScanAuthorization::mayStart($scope['rights'], array_keys($forms), $unknown);
@@ -169,6 +198,12 @@ final class ScanService
             'policy'    => $policy,
             'createdBy' => (string) $this->username(),
             'engine'    => $this->engineVersion(),
+            // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
+            // unlocatable, unmapped-instrument and group-unscopable rules are
+            // decided before a record is read; the planner records them so
+            // ScanOutcome's `ruleProblems` term has a producer at all. Without
+            // this line the term is dead and `clean` means only "no findings".
+            'ruleProblems' => isset($ctx['problems']) ? $ctx['problems'] : [],
         ]);
         if (empty($r['ok'])) {
             return ['ok' => false, 'busy' => !empty($r['busy']), 'run_id' => null,
@@ -187,6 +222,20 @@ final class ScanService
      * were meant to agree would diverge on the day one of them was fixed.
      */
     public function work($pid, $runId, $mode = 'browser')
+    {
+        // As start(): one boundary for every way the storage can fail. The
+        // worker catches the failures raised inside its own loop and answers
+        // stop:'storage'; this catches the ones raised before it gets there -
+        // the entitlement reads, the slot acquisition, the status read.
+        try {
+            return $this->advanceRun($pid, $runId, $mode);
+        } catch (ScanStoreUnavailable $e) {
+            return ['ok' => false, 'why' => $this->storageFailed($pid, $runId, $e)];
+        }
+    }
+
+    /** @see work() — the body. */
+    private function advanceRun($pid, $runId, $mode)
     {
         $gate = $this->available($pid);
         if (!$gate['ok']) return ['ok' => false, 'why' => $gate['why']];
@@ -215,8 +264,26 @@ final class ScanService
             'finalizer' => $this->finalizer($pid, $ctx),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             'rollup'    => new RollupBuilder($this->db, $store),
+            'note'      => function ($event, array $context) {
+                $this->note($event, $context);
+            },
         ]);
         $r = $worker->work($pid, $runId);
+
+        // A RUN WHOSE STORAGE JUST FAILED IS NOT A RUN TO PROMOTE. Promotion
+        // reads statuses and counters and then writes a terminal verdict; doing
+        // that on the strength of reads that are failing is how a database
+        // blip becomes a permanent answer about a project. The run keeps its
+        // slot and its phase, and the next request promotes it if it can.
+        //
+        // The status is not re-read either, for the same reason: asking a
+        // database that has just refused one question to answer another one
+        // either fails again or answers from a state nobody should trust. The
+        // caller gets a refusal shaped like every other refusal.
+        if (isset($r['stop']) && $r['stop'] === 'storage') {
+            return array_merge($r, ['status' => ['ok' => false,
+                                                 'why' => ScanStoreUnavailable::OPERATOR_TEXT]]);
+        }
 
         // Promotion is attempted on every pass, not only the one that finishes.
         // It refuses until the run really is finishable, so asking early costs
@@ -225,6 +292,12 @@ final class ScanService
         $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
         ScanPromotion::promote($store, $pid, $runId, [
             'blockingAggregates' => $store->blockingAggregates($runId),
+            // PERMANENTLY ZERO, AND KNOWN TO BE. Nothing in the shipped tree
+            // writes a 'collection-gap' aggregate, because no gap detector
+            // exists. It is left wired rather than deleted because it is
+            // harmless - gaps never block clean, and the only thing a zero
+            // reaches is mustShowGaps, which no production caller reads. Do not
+            // infer from a green suite that gaps are being counted.
             'gapCount'       => $this->aggregateTotal($store, $runId, 'collection-gap'),
             'ruleProblems'   => $this->aggregateTotal($store, $runId, 'rule-problem'),
             'uniqueDone'     => $u['done'],
@@ -259,8 +332,9 @@ final class ScanService
         foreach ($store->recordStates($runId) as $st => $n) {
             if ((int) $st >= ScanStore::REC_DONE) $done += (int) $n;
         }
-        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag'],
-                                               $run['created_by'], $this->username());
+        // cancelForms, NOT forms - see entitlement(). A run nobody may stop
+        // holds the project's only slot with no reaper behind it.
+        $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
 
         return [
             'ok'        => true,
@@ -289,8 +363,8 @@ final class ScanService
 
         $ent = $this->entitlement($pid, $run);
         if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
-        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['forms'], $run['scope_dag'],
-                                             $run['created_by'], $this->username());
+        // cancelForms, NOT forms - see entitlement().
+        $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
         $ok = $store->cancel($pid, $runId, (string) $this->username());
@@ -298,15 +372,142 @@ final class ScanService
                 'why' => $ok ? null : 'this scan had already finished, so there was nothing to stop'];
     }
 
-    /** The run this project is currently working on, if any, for the page to resume. */
-    public function activeRun($pid)
+    /**
+     * The run this project is working on, and whether THIS caller may work it.
+     *
+     * M3: THREE ANSWERS, NOT TWO. This returned a bare run id or null, and null
+     * meant both "there is no run" and "there is one you cannot touch" - so the
+     * page rendered a Continue button, printed the run id into the client, and
+     * every click came back refused with nothing on the page explaining why.
+     * When the scope axis was wrong that was the designer's OWN run; now that it
+     * is right it is another group's, and handing out its id makes a page load
+     * an enumeration of other groups' runs. A run id is a locator and never an
+     * authorisation, so emitting one is not a breach - but there is no reason
+     * to, and the button it enables is a lie either way.
+     *
+     * THE SCOPE GATE ONLY, AND ON PURPOSE. mayTouchScope() skips the export and
+     * instrument checks, because asking for those means rebuilding the whole
+     * plan on every page load. It is necessary, not sufficient: work(), status()
+     * and cancel() each re-ask mayWork() and can still refuse what this offered.
+     *
+     * $scope is ScanPageView::scanScope()'s answer, passed in rather than
+     * re-read: the page has already computed it, and two readings of the same
+     * user's rights in one request can legitimately differ.
+     *
+     * @return array{run_id:?int, state:string, why:?string}
+     *         state is one of 'none', 'yours', 'other', 'unknown'. run_id is
+     *         non-null ONLY for 'yours'.
+     */
+    public function activeRun($pid, $scope = null)
     {
         try {
-            $r = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+            $r = $this->db->select('SELECT run_id, scope_dag FROM ' . Schema::table('scan_run')
                 . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
-            return isset($r[0][0]) ? (int) $r[0][0] : null;
+            if (!isset($r[0][0])) return ['run_id' => null, 'state' => 'none', 'why' => null];
+            $rights = (is_array($scope) && isset($scope['rights'])) ? $scope['rights'] : null;
+            if ($rights === null) {
+                // No rights in hand is not "no restriction". Fail closed: the
+                // page offers nothing and the verbs still answer honestly.
+                return ['run_id' => null, 'state' => 'unknown', 'why' => ScanStore::BUSY_WHY];
+            }
+            $may = ScanAuthorization::mayTouchScope($rights, $r[0][1]);
+            if (!empty($may['ok'])) {
+                return ['run_id' => (int) $r[0][0], 'state' => 'yours', 'why' => null];
+            }
+
+            // THE MIGRATION, SITED WHERE THE WEDGE ACTUALLY SHOWS.
+            //
+            // A run started before the axis fix carries a DAG NAME in
+            // scope_dag, which no group id can equal - so nobody, including the
+            // designer who started it, can work, read or cancel it, and it
+            // holds the project's one active slot forever. The 1->2 data
+            // migration (Schema::upgradeDataV2) retires exactly this shape, but
+            // an installation already AT version 2 never re-enters that path,
+            // and version 2 is every installation carrying this build. There is
+            // deliberately no version 3 for it: a version bump is a second
+            // ALTER pass over an ~800 MB uv_finding and disables the scan on
+            // every piloting installation until an administrator re-saves the
+            // configuration - to retire at most a handful of rows.
+            //
+            // HERE, AND NOT IN available() OR openRun(). available() states in
+            // its own body that it reports rather than repairs, because a
+            // migration that runs because someone opened a page is a migration
+            // nobody chose; openRun() is reached only by pressing Start, which
+            // is the button a wedged run hides. This branch is the one moment
+            // the defect is observable AND the observer is the person it
+            // blocks, and it costs nothing on the path where the scope matches.
+            if ($this->reapUnworkableScopes($pid) > 0) {
+                $again = $this->db->select('SELECT run_id FROM ' . Schema::table('scan_run')
+                    . ' WHERE project_id = ? AND active_slot = 1', [$pid]);
+                if (!isset($again[0][0])) {
+                    return ['run_id' => null, 'state' => 'none', 'why' => null];
+                }
+            }
+            // BUSY_WHY, and nothing more specific. That this project is busy is
+            // already disclosed to anyone who presses Start - the store answers
+            // with this same sentence - so repeating it here reveals nothing
+            // new, and saying anything MORE would confirm the run's scope to
+            // somebody outside it.
+            return ['run_id' => null, 'state' => 'other', 'why' => ScanStore::BUSY_WHY];
         } catch (\Throwable $e) {
-            return null;
+            return ['run_id' => null, 'state' => 'unknown', 'why' => null];
+        }
+    }
+
+    /**
+     * Retire any active run whose scope no user of this project could match.
+     *
+     * THE AUTHORITY IS THE PROJECT'S OWN GROUP LIST. A run is unworkable when
+     * its scope_dag is not one of this project's current group ids. That covers
+     * both populations exactly: a run stamped with a friendly DAG name before
+     * the axis was fixed, and a run scoped to a group that has since been
+     * deleted. Neither can ever be worked by anybody, and both hold the slot.
+     * Testing the SHAPE of the value instead - ctype_digit, say - would be a
+     * guess: a DAG whose label is a year has an all-digit unique name, and the
+     * cost of guessing wrong here is destroying a live run.
+     *
+     * READ FROM THE TABLE, NOT FROM REDCap::getGroupNames(). That function
+     * answers for the AMBIENT project - the one $Proj and PROJECT_ID name - and
+     * this method is handed a $pid. On a request where the two differ it would
+     * validate this project's runs against another project's groups, and every
+     * scope would look invalid: the failure mode is retiring live runs, which
+     * is the one outcome worse than leaving a wedged one alone.
+     *
+     * FAILS TOWARD LEAVING RUNS ALONE. A group list that cannot be read at all
+     * throws, is caught, and retires nothing. The next request tries again.
+     *
+     * @return int runs retired
+     */
+    private function reapUnworkableScopes($pid)
+    {
+        try {
+            $valid = [];
+            foreach ($this->db->select('SELECT group_id FROM redcap_data_access_groups
+                WHERE project_id = ?', [$pid]) as $g) {
+                $valid[(string) $g[0]] = true;
+            }
+            $rows = $this->db->select('SELECT run_id, scope_dag FROM ' . Schema::table('scan_run')
+                . ' WHERE project_id = ? AND active_slot = 1 AND scope_dag IS NOT NULL', [$pid]);
+            $n = 0;
+            foreach ($rows as $row) {
+                if (isset($valid[(string) $row[1]])) continue;
+                // `expired`, because that is what Schema::upgradeDataV2 writes
+                // for the same condition - the two migrations must not leave
+                // rows a reader can tell apart.
+                $this->store()->finish((int) $row[0], ScanOutcome::derive(['expired' => true]));
+                // The run id and the project are enough to act on. The scope
+                // value is deliberately NOT logged: it may be another group's
+                // name, and this record is readable by whoever can read the
+                // module log.
+                $this->note('scan run retired: unworkable scope',
+                    ['project_id' => (int) $pid, 'run_id' => (int) $row[0]]);
+                $n++;
+            }
+            return $n;
+        } catch (\Throwable $e) {
+            // As reapCancelled(): a reap that fails must not stop the caller
+            // getting an honest answer about the run that is still there.
+            return 0;
         }
     }
 
@@ -365,18 +566,70 @@ final class ScanService
             return ['ok' => false, 'why' => $scope['why']];
         }
         $policy = $this->policy($pid);
-        $ctx = $this->module->durableScanContext($pid,
-            ['valueCeiling' => $policy['valueMode']], $run['scope_dag']);
+        // The run is in hand, so the evaluator is bound to THIS run's
+        // generation and sequence - the numbers its findings are written under
+        // and the interval they open.
+        $ctx = $this->module->durableScanContext($pid, [
+            'valueCeiling' => $policy['valueMode'],
+            'generation'   => (int) $run['generation_id'],
+            'runSeq'       => (int) $run['run_seq'],
+            'policy'       => $policy,
+        ], $run['scope_dag']);
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why']];
 
+        // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
+        // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument
+        // is a field whose access cannot be checked, so it sets $unknown and
+        // mayStart() refuses - it is never merely dropped from the set, which
+        // would be a silent widening of what the run may read.
         $forms = [];
-        $unknown = false;
+        $unknown = [];
         foreach ($ctx['ownership'] as $field => $form) {
-            if ($form === null || $form === '') { $unknown = true; continue; }
+            if ($form === null || $form === '') { $unknown[] = (string) $field; continue; }
             $forms[$form] = true;
+        }
+        // TWO SETS, BECAUSE READING A RUN AND STOPPING ONE ARE DIFFERENT
+        // QUESTIONS.
+        //
+        // 'forms' is the read set: every instrument the run actually reads,
+        // operands included. That is the right entitlement for start, work and
+        // read, and widening it is the fix this commit exists for.
+        //
+        // Feeding it to CANCEL as well would be a new way for a run to become
+        // permanently unstoppable. A run legitimately started before this
+        // deploy, on a project where a when/assert/with operand sits on an
+        // instrument the actor cannot read, would become unworkable AND
+        // unreadable AND uncancellable at once - and it holds active_slot = 1,
+        // so openRun() answers busy for everyone on that project. The three
+        // paths that release a slot are finish() from a worker pass (gated by
+        // mayWork), reapCancelled() (needs phase `cancelling`, which needs a
+        // successful cancel), and ScanRetention::expireAbandoned(), which has
+        // no caller (tests/scan_wiring_php.php). The exit would be a DBA.
+        //
+        // mayCancel's own docblock forbids this shape in the general case -
+        // "Ownership would only add a way for a wedged run to become
+        // unstoppable" - and keying it on instrument entitlement rather than on
+        // creator identity does not make it a different shape.
+        //
+        // So cancel keeps the NARROWER, host-only set: the instruments the
+        // rules themselves live on, which is what every gate was asked about
+        // before this commit. It is not a hole: mayCancel still requires full
+        // export rights, design rights and an exact scope match, and cancelling
+        // reads no record value at all.
+        $cancelForms = [];
+        foreach ((isset($ctx['plan']['hostFields']) && is_array($ctx['plan']['hostFields'])
+                  ? $ctx['plan']['hostFields'] : []) as $hosts) {
+            foreach ((is_array($hosts) ? $hosts : []) as $form => $_) {
+                if ($form !== null && $form !== '') $cancelForms[$form] = true;
+            }
         }
         return ['ok' => true, 'why' => null, 'rights' => $scope['rights'],
                 'forms' => array_keys($forms), 'unknown' => $unknown,
+                'cancelForms' => array_keys($cancelForms),
+                // The CALLER's scope, kept beside the run's own. The two are
+                // equal for any request the authorisation above let through -
+                // they are compared as ids by mayWork() - and keeping both is
+                // what let the seam be asserted rather than assumed.
                 'policy' => $policy, 'ctx' => $ctx, 'dag' => $scope['dag']];
     }
 
@@ -578,5 +831,39 @@ final class ScanService
     private static function noStart($why)
     {
         return ['ok' => false, 'busy' => false, 'run_id' => null, 'why' => $why];
+    }
+
+    /**
+     * Record a storage failure, and answer with the sentence the operator gets.
+     *
+     * TWO AUDIENCES AND THEY NEVER SWAP. The return value is
+     * ScanStoreUnavailable::OPERATOR_TEXT - one fixed sentence, no table name,
+     * no column, no value, no error number - and it is the only thing that
+     * reaches the page. What the server said goes to the module log, which is
+     * the module's admin-only surface. Reporting nothing is how the pilot spent
+     * five rounds on misattributed causes; reporting the server's own text to
+     * the browser is how a batch of participant data leaves through an error
+     * message. This is the one place the module gets to choose both.
+     */
+    private function storageFailed($pid, $runId, ScanStoreUnavailable $e)
+    {
+        $this->note('scan storage failure', ['project_id' => $pid, 'run_id' => $runId,
+                                             'detail' => $e->safeDetail()]);
+        return ScanStoreUnavailable::OPERATOR_TEXT;
+    }
+
+    /**
+     * One line in the module log, and never an exception of its own.
+     *
+     * The log write goes through the same database connection that has just
+     * failed, so this is expected to fail too; a throw from here would replace
+     * the diagnosis with a second, less useful failure.
+     */
+    private function note($event, array $context)
+    {
+        try {
+            if (is_callable([$this->module, 'log'])) $this->module->log($event, $context);
+        } catch (\Throwable $ignored) {
+        }
     }
 }

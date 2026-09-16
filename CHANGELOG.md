@@ -1,5 +1,502 @@
 # Changelog
 
+## 2.0.0 - the tests that said it could
+
+2.0.0 is the scan-remediation line merged with 1.10.0 and 1.11.0, which were
+developed in parallel and are listed below it. Two fixes appear in both
+sections because both lines made them independently: the `installScanSchema()`
+catch, and the scan scope travelling as the numeric group id. Each is one
+change in the merged code.
+
+The durable scan failed five live pilots and the suite was green through every
+one of them. This release is the remediation of an adversarial review that read
+the whole feature and then ran it: twelve blocking findings, seventeen high,
+nineteen medium, and eleven measured performance defects. The full plan is in
+`reports/scan-remediation-plan-2026-08-25.md`; what follows is what changed.
+
+The through-line is not that the code was careless. The phase machine, the
+lease fencing, the HMAC separation and the outcome derivation are careful work.
+It is that a large fraction of the safety logic was written, unit-tested, and
+never called - and that the suite contained tests whose names asserted more
+than their expressions, which is worse than no test at all, because a test that
+cannot fail is the reason nobody looks.
+
+**The diagnostic never worked, in either direction.** 1.9.9 promised to name
+the failing column and 1.9.10 promised the message would survive being cut.
+Neither did. `safeDbMessage()` was built on the premise that MySQL backticks
+its identifiers - it does not, it single-quotes them, in the same quotes it puts
+round the offending value - so the blanket redaction erased the diagnosis from
+every error shape the server produces, not merely from the duplicate-key one.
+Measured against MySQL 8.0.46, `Data too long for column 'reason_code'` reached
+the operator as `Data too long for column '...'`.
+
+It could also disclose. `uq_active_identity` is keyed on a 32-byte HMAC, so the
+value MySQL echoes in a duplicate-entry error is raw binary, and roughly one
+identity in eight contains an apostrophe byte by chance. That byte closed the
+redaction's quoted run early and opened the next one in the wrong place, so the
+bytes between them were emitted verbatim while the key name was still destroyed.
+It lost the diagnosis and leaked at the same time.
+
+The replacement REBUILDS the message from structural captures instead of
+filtering the server's string, which is what lets the failing statement and its
+bound parameters - appended by the External Modules wrapper, and the largest
+disclosure risk in the whole text - be dropped rather than trimmed. It searches
+the tail as well as the head, because a wrapper that puts the statement first
+pushes the diagnosis past any head-only cut. It carries the errno, which names
+the fix on its own. And it lives in `php/Scan/DbError.php` rather than in one
+class's private section, because the lease predicates and `startRun()` need the
+same answer and had each invented a different one.
+
+The test that was supposed to guard all this asserted
+`contains('reason_code') || contains('too long')`. The column name had never
+been there; it was passing on the other half. It is now two checks, and it
+fails without the fix.
+
+**A catch that never caught.** `installScanSchema()` ends in
+`catch (Throwable $e)` with no leading backslash, inside
+`namespace INSPIRE\UniversalValidator` - so it names a class that does not
+exist. PHP does not warn about that; the clause simply never matches. Anything
+thrown after the migration returned - the log write, the policy read, the worker
+slot provisioning - escaped it and failed the administrator's settings save,
+which is the exact outcome its own docblock promises cannot happen.
+
+The test named for that guarantee was green over it for four releases. It throws
+from `query()`, so `Schema::migrate()` - which catches internally and reports
+`ok=false` - returned before execution ever reached the guarded block. The new
+test throws only on the worker-slot write, so the migration succeeds and the
+guard is the only thing in the way. A catch that finally starts catching must
+not trade a loud failure for an invisible one either, so the swallowed error is
+now logged.
+
+**A capability probe that could kill the request.** `fetchRow()` takes its
+argument by value, so for the array shape its `array_shift()` drained a copy and
+answered element 0 forever. `schemaPrivilege()` drove it in a `while` loop:
+unbounded memory, ending in an exhaustion fatal, which is not a `Throwable` and
+cannot be rescued by any of the three try/catch blocks around it. That is the
+empty-200-over-a-fatal that 1.9.10 exists to prevent, reached by another road.
+Rows are now materialised once, under a cap.
+
+**One open tab, tens of thousands of requests.** The scan panel re-issued
+`scan-work` at zero milliseconds on every non-terminal `ok:true` answer. Four
+server answers reach that line having done no work, and two of them carry no
+stop reason at all. A "waiting" answer persists until a dead worker's claim goes
+stale, which is fifteen minutes, and a no-work round trip is tens of
+milliseconds - so one person with the page open put a shared REDCap through tens
+of thousands of PHP requests and database round trips while nothing on screen
+changed.
+
+Scheduling is now keyed on PROGRESS rather than on which sentence the server
+used, because two of the hot paths say nothing at all. Any counter moving is
+progress and is re-issued at once; everything else climbs from 1.5 s to 30 s.
+1.5 because a browser batch aims at three seconds, so an answer saying another
+worker holds the claim cannot have become false sooner; 30 because the states
+that legitimately persist are bounded by the 900-second claim staleness, and a
+longer silence reads as a dead page. The server's own explanation of why nothing
+is moving used to be written and then blanked on the next successful response;
+it now survives. A synchronous throw from the transport can no longer escape the
+promise chain and leave the client insisting the run is alive. A second click
+cannot start a second pump. The panel has the ARIA wiring the module's own
+accessibility test has always demanded of its live validation, an unrecognised
+coverage value is named rather than rendered as an empty certificate, and the
+scripting-off text describes what the page actually does.
+
+**The gate probed a table the project does not use.** The availability check
+named `redcap_data` as a literal while the walk it gates resolves the project's
+real table from `redcap_projects.data_table`. REDCap keeps `redcap_data` present
+as the default even where per-project tables are in use, and the probe
+deliberately tolerates an empty result, so the usual outcome was not a wrong
+refusal but a vacuous pass: on a project whose data lives in `redcap_data7`, the
+hard gate proved a walk of a table that project will never touch, and said the
+scan was available. The resolution is delegated now rather than copied, because
+two copies of one table-name rule are what produced the disagreement.
+
+**Storage failures are their own answer.** Four of the store's fenced reads -
+claiming a range, sweeping stragglers, handing claimed records back, and
+advancing a phase - caught every error and returned the value that means
+"another worker took over". A deadlock and a lost connection arrived at the
+worker in the same words as a cancelled run, and nothing recorded that the
+database had failed at all. The swallowed error inside the phase advance was the
+worst of the four: it read as "there is no next phase", so a run was reported
+FINISHED over a transaction that never ran. Those four now raise a storage
+failure the worker stops on. The scan says it could not reach its storage, it
+never claims to be done, and what the server said goes to the module log. No
+table, column, value or error number reaches the page.
+
+**Starting a scan no longer reports every write failure as contention.** "A
+validation scan is already running for this project" tells an operator to wait,
+which is right when the slot is genuinely held and is a wait that never ends when
+the real problem is a missing table. The start now asks one question on the
+failure path - is the slot actually held? - and answers busy only when it is, in
+the same words as before.
+
+**And the adapter the module actually runs on had never been tested.** Every
+compare-and-set in the scan depends on how many rows a write changed, which the
+production adapter reads with a second statement, `SELECT ROW_COUNT()`. Measured
+against MySQL 8.0.46, that agrees with the driver's own count on every write
+shape the store uses - but it returns -1 after any intervening statement, and the
+adapter passed that straight through. A framework build that ran one extra query
+inside its own `query()` would have inverted every compare-and-set at once: the
+slot semaphore would report failure for a slot it had just taken and never
+release it, which is the 1.9.5 pilot's "the server is busy" over a free pool. It
+now refuses to guess.
+
+**The suite could not tell a second project from no project at all.** Every one
+of the 286 real-database checks ran in a schema holding exactly one project,
+which is the single shape in which a statement that scopes by project and one
+that does not give the same answer. The suite went further and hand-partitioned
+the very axis the scan gets wrong: it handed the planner a group id directly
+rather than letting the code derive one, and each finalizer scenario picked a
+private generation number so no scenario's rows could meet another's. Production
+has none of that isolation.
+
+Every fixture now names its project and plants a neighbour beside it, built
+through the same store the module uses. The first thing that neighbour did was
+reproduce the root cause against a real server: purging one project's finished
+run deleted the other project's findings. Where the neighbour cannot yet share a
+generation without turning the suite red, the file says so and names the
+assertion the scoping fix gets to write.
+
+**And a wiring test, which is the countermeasure this whole release argues for.**
+Forty-three public methods under `php/Scan/` have no caller outside the tests -
+retention, revocation, the value-expiry policy, the two predicates that decide
+whether the word "clean" may be printed, the entire read path for a finding. Each
+now has a line in an allow-list saying which wave wires it and what it costs
+until then, and the test fails both ways: a method that goes inert without a line,
+and a line that outlives its method. It caught its first drift within the hour,
+when the storage work deleted six methods it named.
+
+**The schema said it had never been installed anywhere, and that stopped being
+true five releases ago.** `Schema::VERSION` was 1, with a comment explaining that
+version 1 could keep changing in place because the durable scan had never been
+enabled on any installation. It was enabled and piloted on a live server at
+1.9.0. From that moment every DDL change written into version 1 was invisible to
+the one installation that mattered, because the migration is a no-op once the
+version row is present and the tables exist. Version 1 is now frozen, byte for
+byte, and is the definition of what a field installation contains.
+
+Version 2 is the change on top of it, and it is ALTERs. Re-issuing a changed
+`CREATE TABLE IF NOT EXISTS` against a populated table succeeds, warns, and
+changes nothing — so a schema change written that way reaches only installations
+that never had the table, which is the trap version 1 fell into.
+
+Four tables — findings, uniqueness candidates, uniqueness groups and the label
+dimension — had no project column at all, and every query over them filtered by
+generation alone. They gain one, and every key is rebuilt with it leading. Three
+separate specifications asked for the record index to be dropped on the grounds
+that nothing queries it. That was true of the code as it shipped and stops being
+true the moment a re-examined record has to close its own earlier findings, which
+is exactly the query that index serves: measured on 125,000 findings, 1.7 ms with
+it against 333 ms without, because the optimiser falls back to the identity key
+and examines sixty thousand rows. It is widened, not dropped.
+
+Three new tables. A per-project generation counter, which is the root cause of
+five failed pilots: the generation was the literal 1 for every run of every
+project, so the second scan of anything re-inserted identities that were already
+there. A resumable planning cursor. And a rate-limit counter the database owns,
+because the survey endpoint's read-modify-write over a setting loses increments
+under exactly the flood it exists to stop.
+
+**A migration that can be interrupted has to be resumable.** `ADD COLUMN` fails
+if the column is there, and this migration fails closed on the first error — so
+one interrupted between two statements could never be retried, which would have
+broken the class's own promise to complete a half-created schema. Every version-2
+statement now carries a predicate checked against `information_schema`, and the
+migration verifies the result before recording the version rather than inferring
+success from the absence of an error.
+
+**And it deletes the version-1 findings.** Their rule attribution, their identity
+tuple and their generation numbering all changed in this release, so they cannot
+be matched against a new run's rows and can never be closed; on a multi-project
+server they are also attributed to the wrong project. They are removed in pages,
+the runs still holding their projects' scan slots are retired, and the sequence
+is seeded past the generations those runs used. `docs/INSTALL.md` says all of
+this before an administrator reaches the switch. The findings are re-derivable by
+running a scan; the corruption was not detectable by a reader.
+
+**The generation was the literal 1, for every run of every project.** Three
+places defaulted it and no caller ever supplied one, so the second scan of
+anything re-inserted finding identities that were already active, the unique key
+refused them, the whole batch rolled back, and the worker handed the records
+back and tried again. Forty times, identically, in the last pilot - with no exit,
+because the attempt counter that was supposed to give up was only incremented
+inside the transaction that had just rolled back.
+
+There is no default now. The store allocates a per-project sequence in one
+statement, atomic under the row lock on that project's counter, and the context
+builder throws if a caller does not say which generation it means. `null` is a
+legitimate value and means planning: starting a run needs the rule list before a
+run exists to have a generation, so it asks for a context with no evaluator
+rather than inventing a number.
+
+**And the four tables the scan writes to had no project column at all.** Every
+query over them filtered by generation alone, and the generation was the same
+for everyone. Reproduced against a real server, three ways: one project's
+retention purge deleted every project's findings on the installation; one
+project's summary was built from another project's findings and carried its
+instrument and Data Access Group names; and the duplicate finalizer's keyset
+cursor was installation-wide, so once any project had discovered a group whose
+hash sorted high, a different project's first run discovered *none of its own*
+and then reported itself finished, having published the neighbour's group under
+its own name. A missed duplicate presented as a clean result.
+
+They carry one now, and all thirty-one predicates over them use it. Because the
+column has to keep `DEFAULT 0` permanently - that is what let it be added to a
+populated table - the store refuses a row that arrives without one rather than
+writing something that belongs to nothing.
+
+**Two hidden options ticked on one checkbox were the same finding twice.** A
+`@UVCHOICES` rule on a checkbox emits one finding per ticked hidden code, all at
+the same record, event, instance, form and field, under the same rule and the
+same reason - so the identity, which hashed exactly those seven facts, could not
+tell them apart. The unique key refused the second and the batch carrying both
+was rolled back entire. On a FIRST scan of a fresh project, with no prior run
+involved.
+
+The identity now carries the ticked choice code as a within-location
+discriminator. Deliberately not an ordinal: a counter renumbers every later
+finding when an earlier one is fixed, so a re-scan would close and reopen rows
+that nothing had changed, which is the one property the identity exists to
+provide.
+
+**And nothing ever closed a record's earlier findings.** A record edited during a
+run is requeued, re-examined, and produces the same violation again - so the
+commit inserted identities its own first pass had already written, and the same
+refusal followed. Committing a record's evidence now replaces that record's
+active evidence, in the same transaction, after the fences and before any
+insert: after, so a worker that has been taken over cannot close a live worker's
+findings; inside, so a batch that rolls back does not leave the previous
+evidence closed and silently empty the report; before, so the unique key sees
+only the new rows as active. By record rather than by identity, because a
+violation FIXED between the two readings produces no finding the second time,
+and closing only what came back would leave corrected data showing as broken.
+
+**The in-memory store now models both constraints.** It was one line -
+`$this->findings[] = $f;` - with no unique key, no column widths and no NOT
+NULL, so every mocked test passed on rows a real MySQL rejects. That is how a
+scan which could not commit a second batch shipped with 22 mocked suites and 285
+real-database checks all green.
+
+The database suite could not see it either: every one of those 285 checks ran in
+a schema holding exactly one project, which is the single shape in which a
+statement that scopes by project and one that does not give the same answer. It
+now plants a neighbouring project in the same generation - as two projects on a
+real server have - and asserts what that makes visible, including the one that
+was red before this release: purging one project leaves the other's findings
+exactly where they were.
+
+**A run that could not store what it found retried until somebody closed the
+tab.** `attempts` was incremented by exactly one statement in the whole
+codebase - the record update inside `commitBatch` - so it moved only when the
+commit had already succeeded. The retry cap was therefore unreachable by the one
+path that needed it: a batch the database refused rolled the increment back with
+everything else, `recordAttempts` could never trip, the run never became
+terminal, and it held the project's one active scan slot. Any persistent write
+error did this, not only the duplicate key that started it. Forty identical
+batches is what the pilot logged.
+
+An attempt is now counted for work that was ATTEMPTED, by a transaction the
+failure cannot roll back, and a record that runs out of attempts becomes a fifth
+terminal state: `unstored`. Not a tombstone - the record is still in the
+project, and a run that recorded it as deleted would be lying about the source.
+Not unreadable - it was read and examined perfectly well. What failed is this
+module's own write, which is a different fact about a different system. It is
+always blocking, so the run ends and releases the slot while never being able to
+claim it checked the project.
+
+**One transient export failure held a project's scan slot indefinitely.** When
+`getData` failed for a whole batch the worker returned early: no commit, no
+release, no attempt. The rows stayed claimed, the straggler sweep could not see
+them for fifteen minutes, and the phase machine correctly refused to advance
+over records nobody had examined. Both failure paths - a whole-batch read
+failure and a refused commit - now hand the records straight back and count the
+attempt, and a read that keeps failing ends as a reported exclusion instead of a
+permanent wait.
+
+**Takeover had no fence at all.** `lease_epoch + 1` occurs in exactly one
+statement in this codebase, inside `cancel()`, so a second worker could reclaim
+a stale worker's rows while both held the same epoch and the first worker's
+later commit sailed through - inserting findings for records the second had
+already committed, which the identity key then refused, killing the whole batch.
+The obvious fix is to bump the epoch on takeover and it is wrong: that
+invalidates the fence for the entire run, so every other worker's in-flight
+batch is discarded to invalidate one record's. The claim now lives on the row.
+`claim()` and `claimPending()` stamp a token drawn from the project's own
+sequence, every write about a record carries it back, and a batch commits the
+records it still holds while silently dropping the findings of the ones it lost.
+
+**A finished run kept accepting work.** Measured on 8.0.46: a run retired to
+`expired` accepted a late commit from the worker that had been abandoned, wrote
+its findings and advanced `manifest_done` - so a run that had ended kept
+growing, and its stored coverage verdict stopped describing its own counters.
+The batch fence reads the terminal column now and says so in those words rather
+than blaming the epoch.
+
+**`updated_at` measured activity, and the stale-run sweep needed progress.** It
+is written by `claim()`, `advancePhase()`, `setProgressState()` and every batch
+fence alike, so a run stuck in a retry loop refreshed it several times a second
+and could not be reaped at any `staleHours` setting - while the sweep's own
+`terminal_reason` said "no progress within the configured stale-run window".
+`progress_at` is written in exactly two places, both of them real progress: a
+batch that finished at least one record, and the manifest freezing.
+
+**`commitBatch`'s `$expectCursor` is gone rather than implemented.** It was in
+the contract, documented as invariant I2, and read by neither store and no test.
+Implementing it would have meant a cursor compare-and-set judged by affected
+rows, which is the bug this file's own docblock documents: MySQL reports rows
+CHANGED, not rows MATCHED, so writing a value that already held reports zero and
+rolls back a good batch. I2 now describes the locking read that actually holds
+the invariant.
+
+**A slot lease nobody renewed.** `WorkerSlots::renew()` had no caller, so a
+batch outliving the 300-second TTL kept working while the semaphore considered
+its slot free and a second worker could lease the same one. Not reachable
+through the browser, where a pass is budgeted at three seconds; reachable the
+moment a cron pass or a budgeted planning phase runs longer, both of which are
+scheduled. The worker renews once per turn of its loop and stops when the
+renewal is refused, because a worker that lost its slot is the excess the
+semaphore exists to prevent.
+
+**The in-memory store reported a refused batch as a finished record.** It has no
+transaction, so it wrote the record states and then returned the refusal, and
+nothing undid them - while the real store rolls back and leaves the record
+claimable. The two stores disagreed about the state a project is left in by a
+write that failed, which is precisely the case the retry cap exists for. It
+decides everything before it writes anything now, and the shared contract has
+the assertion that was missing: a batch carrying one identity twice leaves no
+record marked examined, no progress counted, and not one detail row for the
+perfectly good finding it also carried.
+
+**The survey throttle could not count the flood it was written for.** The
+sessionless tier held its budget as an array of timestamps in a system setting
+and did a read, an edit and a write - so concurrent requests all read the same
+array, each appended one entry, and the last write won. It is now a fixed-window
+counter incremented by one statement against `uv_rate_bucket`, with no read
+before it. The window is fixed rather than sliding because a sliding one needs
+the timestamps, and keeping the timestamps is what made the count loseable; a
+burst straddling a boundary can spend up to twice the cap inside one minute,
+which for a throttle meant to bound a flood rather than meter it is the right
+way round.
+
+**Discovering duplicate groups was one INSERT per group.** Measured on 8.0.46:
+811 seconds per 100,000 groups direct, and worse again through the External
+Modules adapter, which runs a second statement per write to read `ROW_COUNT()`.
+The rebuild plan's own non-negotiable - "query counts scale as O(chunks), not
+O(findings)" - was not met. It is one multi-row insert per 500 groups now: five
+placeholders a row against MySQL's 65,535 limit, so 1,200 groups cost three
+statements rather than 1,200. The pending-group walk, which degraded from 2.88
+ms to 283.82 ms as groups settled, is asserted against the index that fixes it -
+by EXPLAINing the statement the finalizer actually issued, captured as it ran,
+rather than a copy of it pasted into a test.
+
+**Two suites had been red since the previous wave and nothing said so.** Both
+`tests/scan_page_php.php` and `tests/scan_sqlstore_fault_php.php` build a run
+row as a positional array against `SqlScanStore::run()`'s projection, and
+`run_seq` was added to that projection without being added to them.
+`array_combine()` refuses a row of the wrong length, so `run()` answered false
+and, in the fault suite, `startRun` reported `ok` with a `run` of false. Both
+now carry the column, the fault suite asks for the run row rather than only for
+`ok`, and both say in a comment that the row is positional and has drifted once.
+
+**Findings filed against the wrong rule.** scanPlan() builds its live rule list
+with the keys preserved from the full list, because a finding cites its rule by
+ordinal - it skips config-broken rules, and the per-instrument-rights gate
+removes more, so the array is sparse and its keys ARE the ordinals. The naming
+pass then walked it with array_values() and re-indexed densely, and the
+evaluator looked the name up by ordinal minus one. One misconfigured rule
+therefore shifted every later rule's name by one and pushed the last rule off
+the end into a placeholder.
+
+That is not a labelling defect. rule_source_id is hashed into the finding's
+identity, so a shifted name gives a finding the IDENTITY of a rule that did not
+produce it - and identity is the key an incremental run matches on to close the
+previous run's row. The trigger is the most ordinary one the module supports:
+scanPlan goes out of its way to REPORT a config-broken rule rather than drop it
+silently, which is exactly why the gap it leaves is routine.
+
+The list is now derived once, by the planner, keyed identically to the rules it
+names, and handed to the evaluator rather than rebuilt from a copy. A second
+derivation of the same thing is a second thing that can drift.
+
+**And every settings rule was named as an annotation rule.** Origin was inferred
+from a positional count that no caller ever supplied. It could not have been
+made correct either: rule resolution drops rules that lost every field to a
+branch rule and appends synthesized ones, so no integer boundary survives it.
+The two naming branches share one namespace that the `set:` and `ann:` prefixes
+exist to keep apart, and the annotation branch names a rule by its field list -
+so a settings rule and an annotation rule of the same family on the same field
+produced the same name stem and were told apart only by a counter assigned in
+list order. Deleting one renamed the other. Origin now travels on the rule.
+
+**Settings rules have a persistent id.** The naming code has always preferred
+one, and its comment has always said why: an id survives editing the rule, which
+is the one thing a content hash cannot do. Nothing ever minted one. The fallback
+was worse than fragile - the content hash deliberately excludes the field list,
+so two rules of the same kind and options on different fields hashed identically
+and were separated only by their position. Dragging one row above another in the
+settings dialog swapped their identities. Rows are now given an id on save, once,
+and never reissued: an id that changes orphans stored findings, which is strictly
+worse than never having had one.
+
+**Reordering rules no longer looks like reconfiguring them.** The run
+fingerprint folded a positional ordinal in, so moving a field in the Online
+Designer - which reorders annotation rules, because their order follows
+dictionary order - made a resumed run report that the configuration had changed
+underneath it and fail. The identity layer's own docblock says moving a field
+must not rename the rule written on it; the run-level guard was contradicting
+it. The fingerprint now covers the rule SET.
+
+None of the above was visible to the suite. The full fix was applied to a scratch
+copy of the tree before it was written here, and all 22 suites plus 286
+real-database checks stayed green over it - because nothing in tests/ had ever
+called the seam where the rule engine's output becomes database rows. That seam
+now has its own suite, and every check in it fails on the old tree.
+
+**A cancellation control that decided nothing.** `mayCancel()` compared the
+run's creator against the acting user and then returned the same expression
+whichever way the comparison went. Two inert parameters that every call site
+filled in earnest are a better disguise than no parameters at all. The rule that
+actually ships - a run is cancellable by anyone equally entitled in the same
+scope, because the person who started it is precisely the person who may have
+gone home - is now stated in the docblock and asserted directly.
+
+**The entitlement gate was asked about the wrong set of instruments.** A scan
+reads more than its rules' own fields: every field a `when` or `assert` operand
+references, and every unique-composite partner. `getData` was asked for all of
+them. `ScanAuthorization::mayStart()` was asked about the instruments the RULES
+live on. A project designer with explicit No Access to an instrument could
+therefore start a scan that read it, and whose findings differed by its values.
+It reproduced on every rule kind, on branch conditions, and on rules configured
+through the dialog as well as through annotations. `mayStart()`'s own docblock
+already said the entitlement is every form the run will read; the caller was the
+half that was wrong.
+
+The map is now derived from the read set itself, in `scanPlan()`, and taken from
+the plan the way the rule ids already are. It is deliberately not a second
+derivation through `ruleRefFields()`: that helper computes the same three
+sources and would agree today, which is exactly the shape that drifts. A field
+whose instrument cannot be determined maps to NULL and refuses the run, and
+that refusal now names the field - it was unreachable before, because the old
+map only ever held instruments that HAD been determined.
+
+**Stopping a run is a different question from reading one, and this release
+keeps them apart.** Widening the entitlement would otherwise have made a run
+that was legitimately started before the upgrade simultaneously unworkable,
+unreadable and uncancellable - while it still holds the project's one active
+slot, so the whole project answers busy. The three paths that release a slot are
+a worker pass (gated by the same widened check), the cancelled-run reaper (which
+needs a successful cancel), and abandoned-run expiry, which has no caller. The
+exit would have been a database administrator. Cancel therefore keeps the
+narrower, host-only entitlement; it still requires design rights, full export
+rights and an exact scope match, and cancelling reads no record value at all.
+
+**Two refusals now say what they refused.** The barred-instrument message names
+the instruments, and does not truncate the list: a designer already sees every
+instrument in the Online Designer, and a sorted list cut at twelve hides
+`form3` behind `form19`. Where the rights row itself could not be read, the
+message says so instead of enumerating every instrument the run touches - that
+failure is not about any instrument, and now that the entitlement is the read
+set the list would have been long and misleading.
+
 ## 1.11.0 - blank operands, composed field state, and the scan's group identity
 
 Five defects confirmed by a code audit of 1.10.0, each reproduced before it was

@@ -30,18 +30,12 @@ final class ArrayScanStore implements ScanStore
     private $records = [];     // run_id => [ordinal => row]
     private $findings = [];    // list
     private $candidates = [];  // uniqueness candidates, keyed as the UNIQUE index is
-    private $slots = [];       // slot_no => row
     private $aggregates = [];  // run_id => list
     private $audits = [];
     private $nextRun = 1;
 
-    public function __construct($slotCount = 2)
-    {
-        for ($i = 1; $i <= max(1, (int) $slotCount); $i++) {
-            $this->slots[$i] = ['slot_no' => $i, 'owner' => null, 'epoch' => 0,
-                                'run_id' => null, 'expires_at' => null];
-        }
-    }
+    /** Per-project generation counters, the stand-in for uv_project_seq. */
+    private $seq = [];
 
     public function startRun($pid, array $run)
     {
@@ -50,9 +44,23 @@ final class ArrayScanStore implements ScanStore
             // DESCRIBES the invariant, it does not evidence it.
             if ((int) $r['project_id'] === (int) $pid && $r['active_slot'] === 1) {
                 return ['ok' => false, 'busy' => true, 'run' => null,
-                        'why' => 'a validation scan is already running for this project'];
+                        // The same one sentence the SQL store answers with.
+                        // Two stores writing their own copy is how the wording
+                        // drifted from the helper that exists to fix it.
+                        'why' => self::BUSY_WHY];
             }
         }
+        // THE SAME PER-PROJECT SEQUENCE THE REAL STORE ALLOCATES. It matters
+        // that this store models it rather than defaulting to 1: the constant
+        // generation is the defect the whole release turns on, and a stand-in
+        // that hands out 1 forever would keep every mocked test green over it
+        // exactly as it did before.
+        if (!isset($this->seq[(int) $pid])) $this->seq[(int) $pid] = 0;
+        $seq = ++$this->seq[(int) $pid];
+        $gen = (isset($run['run_kind']) && $run['run_kind'] === 'incremental'
+                && isset($run['baseline_generation']) && $run['baseline_generation'] !== null)
+            ? (int) $run['baseline_generation'] : $seq;
+
         $id = $this->nextRun++;
         $this->runs[$id] = array_merge([
             'run_id' => $id, 'project_id' => (int) $pid, 'scope_dag' => null,
@@ -60,7 +68,8 @@ final class ArrayScanStore implements ScanStore
             'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'none',
             'policy_revision' => 1, 'fingerprint' => str_repeat('0', 64),
             'manifest_total' => 0, 'manifest_done' => 0, 'cursor_ordinal' => 0,
-            'lease_epoch' => 0, 'generation_id' => 1, 'created_by' => '',
+            'lease_epoch' => 0, 'generation_id' => $gen, 'run_seq' => $seq,
+            'supersede_cursor' => 0, 'created_by' => '',
             'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
             // Reconciliation state. Present from the start so progressState()
@@ -69,6 +78,9 @@ final class ArrayScanStore implements ScanStore
             // here, and only one of them is safe to read.
             'fence_open' => null, 'fence_target' => null, 'catchup_cursor' => null,
             'catchup_round' => 0, 'catchup_dirty' => 0, 'rollup_cursor' => 0,
+            // Written in exactly two places, both real progress - see
+            // SqlScanStore::commitBatch. NULL until one of them happens.
+            'progress_at' => null,
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
              'fence_open'])));
@@ -116,7 +128,7 @@ final class ArrayScanStore implements ScanStore
                 'ordinal' => $ord, 'id_bin' => $rec['id_bin'], 'hash' => $rec['hash'],
                 'dag' => isset($rec['dag']) ? $rec['dag'] : null,
                 'state' => self::REC_PENDING, 'attempts' => 0, 'version' => null,
-                'claimed_at' => null,
+                'claimed_at' => null, 'claim_owner' => null, 'claim_seq' => 0,
             ];
             $added++;
         }
@@ -130,6 +142,8 @@ final class ArrayScanStore implements ScanStore
         $total = isset($this->records[$runId]) ? count($this->records[$runId]) : 0;
         $this->runs[$runId]['manifest_total'] = $total;
         $this->runs[$runId]['phase'] = ScanPhase::SCANNING;
+        // The second of the two places progress_at is written.
+        $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
         return $total;
     }
 
@@ -142,6 +156,8 @@ final class ArrayScanStore implements ScanStore
         if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return false;
         if ($r['cancel_requested_at'] !== null || !ScanPhase::mayWork($r['phase'])) return false;
         $limit = max(1, (int) $limit);
+        $token = $this->claimToken($runId);
+        if ($token < 1) return false;
         $cut = time() - max(1, (int) $staleSeconds);
         $out = [];
         if (!isset($this->records[$runId])) return [];
@@ -153,7 +169,11 @@ final class ArrayScanStore implements ScanStore
             if (!$free) continue;
             $this->records[$runId][$o]['state'] = self::REC_CLAIMED;
             $this->records[$runId][$o]['claimed_at'] = time();
-            $out[] = self::claimRow($rec);
+            // TAKING A STRAGGLER REPLACES ITS TOKEN, which is the whole
+            // takeover fence: whoever held it before now matches nothing.
+            $this->records[$runId][$o]['claim_owner'] = (string) $owner;
+            $this->records[$runId][$o]['claim_seq'] = $token;
+            $out[] = self::claimRow($this->records[$runId][$o]);
         }
         return $out;
     }
@@ -169,6 +189,8 @@ final class ArrayScanStore implements ScanStore
         // gap wherever a re-offered record was ignored - so the cursor moves to
         // the last row actually taken rather than by a count. Advancing by a
         // count steps over live rows and strands them below the cursor forever.
+        $token = $this->claimToken($runId);
+        if ($token < 1) return false;
         $out = [];
         $to = $from;
         if (isset($this->records[$runId])) {
@@ -176,7 +198,13 @@ final class ArrayScanStore implements ScanStore
                 if (count($out) >= $limit) break;
                 if ((int) $rec['ordinal'] <= $from) continue;
                 if ($rec['state'] !== self::REC_PENDING) continue;
-                $out[] = self::claimRow($rec);
+                // The token is stamped; the STATE is not. In this phase the
+                // advancing cursor keeps two workers apart, and marking these
+                // rows CLAIMED would hide an abandoned one from the straggler
+                // sweep for a quarter of an hour. See SqlScanStore::claim().
+                $this->records[$runId][$o]['claim_owner'] = (string) $owner;
+                $this->records[$runId][$o]['claim_seq'] = $token;
+                $out[] = self::claimRow($this->records[$runId][$o]);
                 if ((int) $rec['ordinal'] > $to) $to = (int) $rec['ordinal'];
             }
         }
@@ -187,8 +215,48 @@ final class ArrayScanStore implements ScanStore
         return $out;
     }
 
-    public function commitBatch($runId, $owner, $epoch, $expectCursor, array $batch)
+    /**
+     * The stand-in for uv_project_seq, drawn on for a claim token.
+     *
+     * Zero means there is no such run, and the caller answers `false` to that -
+     * matching SqlScanStore::claimToken(), because "there is no such run" is a
+     * refusal the claim fence has always handled and not a storage failure.
+     */
+    private function claimToken($runId)
     {
+        if (!isset($this->runs[$runId])) return 0;
+        $pid = (int) $this->runs[$runId]['project_id'];
+        if ($pid < 1) return 0;
+        if (!isset($this->seq[$pid])) $this->seq[$pid] = 0;
+        return ++$this->seq[$pid];
+    }
+
+    public function commitBatch($runId, $owner, $epoch, array $batch)
+    {
+        $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
+        $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
+        $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
+
+        // Shape first, and with the same words the SQL store uses: a missing
+        // claim token is a programming error, and a store that quietly accepted
+        // one here would let the fast suite bless a batch the real store throws
+        // on. That asymmetry is the whole reason this class is not a mock.
+        foreach ($records as $rec) {
+            if (!isset($rec['claim']) || (int) $rec['claim'] < 1) {
+                throw new \RuntimeException('a batch record reached the store with no claim token; '
+                    . 'refusing to write a row this worker cannot prove it still holds');
+            }
+        }
+        foreach ([$findings, $candidates] as $rows) {
+            foreach ($rows as $row) {
+                if (!isset($row['ordinal'])) {
+                    throw new \RuntimeException('a finding reached the store with no record '
+                        . 'ordinal; refusing to write evidence that cannot be attributed to a '
+                        . 'claimed record');
+                }
+            }
+        }
+
         // Both stores name WHICH fence refused - one contract, one set of
         // words. "Cancelled or taken over" covered three causes and told a
         // pilot nothing about which one it had hit.
@@ -200,32 +268,132 @@ final class ArrayScanStore implements ScanStore
             return 'this scan was stopped while these records were being examined, so nothing '
                  . 'from them was kept';
         }
+        if (isset($r['terminal']) && $r['terminal'] !== null) {
+            return 'this scan had already finished when these records were offered, so '
+                 . 'nothing from them was kept';
+        }
         if ((int) $r['lease_epoch'] !== (int) $epoch) {
             return 'another worker took over this scan while these records were being examined, '
                  . 'so nothing from them was kept; they will be examined again';
         }
-        foreach (isset($batch['findings']) ? $batch['findings'] : [] as $f) {
-            $this->findings[] = $f;
-        }
-        // In the same commit as the findings, for the reason in SqlScanStore:
-        // a candidate that outlived a rolled-back batch would make a record a
-        // duplicate of a reading that was discarded.
-        foreach (isset($batch['candidates']) ? $batch['candidates'] : [] as $c) {
-            $k = $c['group_hmac'] . '|' . $c['record_hash'] . '|' . $c['field'] . '|'
-               . (isset($c['event_id']) ? $c['event_id'] : '') . '|'
-               . (isset($c['instance']) ? $c['instance'] : 1);
-            $this->candidates[$k] = $c;
-        }
-        $applied = 0;
-        foreach (isset($batch['records']) ? $batch['records'] : [] as $rec) {
+
+        $projectId    = (int) $r['project_id'];
+        $generationId = (int) $r['generation_id'];
+        $runSeq       = (int) $r['run_seq'];
+
+        // DECIDE EVERYTHING, THEN WRITE. This store has no transaction, so the
+        // only way it can model one is to make no change at all until it knows
+        // the whole batch will be kept.
+        //
+        // THIS IS NOT HOUSEKEEPING. Written the other way round - states first,
+        // then the duplicate check - the fast suite reported a permanently
+        // refused batch as having marked its record DONE, because the refusal
+        // returned after the write and nothing undid it. The real store rolls
+        // back and leaves the record claimable, so the two stores disagreed
+        // about the state a project is left in by a failed write: the case the
+        // whole retry cap exists for.
+
+        // WHICH RECORDS ARE STILL OURS. Per-record, on the claim token, exactly
+        // as the SQL store's UPDATE predicate decides it - a record taken over
+        // between the claim and now is absent from $held and everything it
+        // produced is dropped with it.
+        $held = [];
+        foreach ($records as $rec) {
             $o = $rec['ordinal'];
             if (!isset($this->records[$runId][$o])) continue;
+            $row = $this->records[$runId][$o];
             // Not-yet-terminal rather than pending: a straggler taken by
             // claimPending() is CLAIMED and must still be committable, while a
             // terminal row is never rewritten.
-            if ($this->records[$runId][$o]['state'] >= self::REC_DONE) continue;
+            if ($row['state'] >= self::REC_DONE) continue;
+            if ((string) $row['claim_owner'] !== (string) $owner) continue;
+            if ((int) $row['claim_seq'] !== (int) $rec['claim']) continue;
+            $held[(int) $o] = true;
+        }
+
+        // WHAT WOULD BE SUPERSEDED, decided before anything is.
+        //
+        // BY RECORD, not by the identities in this batch. A violation FIXED
+        // between two examinations produces no finding the second time, and an
+        // identity-scoped close would leave it active forever - the report would
+        // show corrected data as still broken. Over HELD records only, because a
+        // record we lost is one whose new evidence we are about to drop, and
+        // closing its old rows would blank the report for a record still under
+        // examination.
+        $closing = [];
+        foreach ($records as $rec) {
+            if (!isset($rec['record_hash'])) continue;
+            if (empty($held[(int) $rec['ordinal']])) continue;
+            $st = (int) $rec['state'];
+            if ($st === self::REC_DONE || $st === self::REC_TOMBSTONE) {
+                $closing[$rec['record_hash']] = true;
+            }
+        }
+        $close = [];
+        foreach ($this->findings as $i => $old) {
+            if (!isset($old['active_slot']) || (int) $old['active_slot'] !== 1) continue;
+            if (isset($old['stage_epoch']) && $old['stage_epoch'] !== null) continue;
+            if ((int) $old['project_id'] !== $projectId) continue;
+            if ((int) $old['generation_id'] !== $generationId) continue;
+            if (!isset($closing[$old['record_hash']])) continue;
+            $close[$i] = true;
+        }
+
+        // ONE ACTIVE ROW PER IDENTITY, which in the real store is a UNIQUE key
+        // and here has to be a check. A batch carrying the same identity twice
+        // is refused ENTIRE, exactly as MySQL refuses it - because a store that
+        // quietly kept the first and dropped the second would let a defect
+        // through that costs the real one a rolled-back batch and, before the
+        // retry cap was fixed, an unbounded retry loop.
+        //
+        // The rows this batch is about to close are excluded, because by the
+        // time the inserts happen they will not be active any more. That is the
+        // supersede: it is what lets a re-examined record commit the same
+        // finding again.
+        $active = [];
+        foreach ($this->findings as $i => $old) {
+            if (isset($close[$i])) continue;
+            if (!isset($old['active_slot']) || (int) $old['active_slot'] !== 1) continue;
+            $active[(int) $old['project_id'] . '|' . (int) $old['generation_id']
+                    . '|' . bin2hex($old['identity'])] = true;
+        }
+        $incoming = [];
+        $keep = [];
+        foreach ($findings as $f) {
+            // A finding belonging to a record another worker took over is
+            // dropped rather than offered - offering it here would make this
+            // store refuse a batch the real one commits.
+            if (empty($held[(int) $f['ordinal']])) continue;
+            if (!isset($f['project_id']) || (int) $f['project_id'] < 1) {
+                return 'the database refused to store these findings, so nothing from these '
+                     . 'records was kept: a finding reached the store with no project';
+            }
+            $k = (int) $f['project_id'] . '|' . (int) $f['generation_id']
+               . '|' . bin2hex($f['identity']);
+            if (isset($active[$k]) || isset($incoming[$k])) {
+                return 'the database refused to store these findings, so nothing from these '
+                     . 'records was kept: Duplicate entry (value withheld) for key '
+                     . "'uv_finding.uq_active_identity_v2'";
+            }
+            $incoming[$k] = true;
+            $keep[] = $f;
+        }
+
+        // -- from here nothing can be refused, so the writing begins ----------
+
+        $applied = 0;
+        foreach ($records as $rec) {
+            $o = $rec['ordinal'];
+            if (empty($held[(int) $o])) continue;
             $this->records[$runId][$o]['state'] = $rec['state'];
-            $this->records[$runId][$o]['attempts']++;
+            // Saturating, as the SQL store's LEAST(attempts + 1, 254) does:
+            // attempts is a TINYINT UNSIGNED there, and a store that counted
+            // past 254 here would disagree with production at the exact point
+            // the retry cap is decided.
+            $this->records[$runId][$o]['attempts']
+                = min(254, (int) $this->records[$runId][$o]['attempts'] + 1);
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
             // The source version this record was examined AT. Catch-up compares
             // it against the change log to decide whether an edit is already
             // inside the reading we hold; a store that dropped it would requeue
@@ -236,24 +404,46 @@ final class ArrayScanStore implements ScanStore
             // Terminal rows only: a requeue changes the row without finishing it.
             if ((int) $rec['state'] >= self::REC_DONE) $applied++;
         }
+        foreach (array_keys($close) as $i) {
+            $this->findings[$i]['active_slot'] = null;
+            $this->findings[$i]['valid_to_seq'] = $runSeq;
+        }
+        foreach ($keep as $f) {
+            if (!isset($f['active_slot'])) $f['active_slot'] = 1;
+            if (!isset($f['valid_from_seq'])) $f['valid_from_seq'] = $runSeq;
+            $this->findings[] = $f;
+        }
+        // In the same commit as the findings, for the reason in SqlScanStore:
+        // a candidate that outlived a rolled-back batch would make a record a
+        // duplicate of a reading that was discarded.
+        foreach ($candidates as $c) {
+            if (empty($held[(int) $c['ordinal']])) continue;
+            $k = $c['group_hmac'] . '|' . $c['record_hash'] . '|' . $c['field'] . '|'
+               . (isset($c['event_id']) ? $c['event_id'] : '') . '|'
+               . (isset($c['instance']) ? $c['instance'] : 1);
+            $this->candidates[$k] = $c;
+        }
         $this->runs[$runId]['manifest_done'] += $applied;
-        $this->runs[$runId]['detail_rows'] += count(isset($batch['findings']) ? $batch['findings'] : []);
+        $this->runs[$runId]['detail_rows'] += count($keep);
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
+        // One of exactly two places, and only when a record actually finished.
+        if ($applied > 0) $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
         return true;
     }
 
     /**
-     * The four keys a worker gets, and only those.
+     * The keys a worker gets, and only those.
      *
-     * The SQL store selects four columns; returning the whole in-memory row
-     * here would let a test lean on a field production never sends, and the
+     * The SQL store selects a fixed column list; returning the whole in-memory
+     * row here would let a test lean on a field production never sends, and the
      * shared contract would pass against a shape only one implementation has.
      */
     private static function claimRow(array $rec)
     {
         return ['ordinal' => $rec['ordinal'], 'id_bin' => $rec['id_bin'],
                 'hash' => $rec['hash'], 'dag' => $rec['dag'],
-                'attempts' => (int) $rec['attempts'], 'version' => $rec['version']];
+                'attempts' => (int) $rec['attempts'], 'version' => $rec['version'],
+                'claim' => (int) $rec['claim_seq']];
     }
 
     /** Uniqueness candidates written so far. For assertions, not for production. */
@@ -262,32 +452,95 @@ final class ArrayScanStore implements ScanStore
         return array_values($this->candidates);
     }
 
-    /** A predicate over states, exactly as the SQL store computes it. */
     /**
      * Hand claimed rows back. See SqlScanStore::releaseClaims() for why: without
      * it, a rolled-back batch and a phase that refuses to advance over
      * unexamined records combine into a deadlock.
+     *
+     * Fenced on the epoch AND on the per-row claim token, because only the
+     * second can express takeover - the epoch does not move when a straggler
+     * changes hands.
      */
-    public function releaseClaims($runId, $epoch, array $ordinals)
+    public function releaseClaims($runId, $epoch, $owner, array $claims)
     {
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
         if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return 0;
-        if (!$ordinals || !isset($this->records[$runId])) return 0;
+        if (!$claims || !isset($this->records[$runId])) return 0;
         $n = 0;
-        foreach ($this->records[$runId] as $o => $rec) {
-            if (!in_array((int) $rec['ordinal'], array_map('intval', $ordinals), true)) continue;
-            if ($rec['state'] !== self::REC_CLAIMED) continue;
-            $this->records[$runId][$o]['state'] = self::REC_PENDING;
-            $this->records[$runId][$o]['claimed_at'] = null;
-            $n++;
+        $released = [];
+        foreach ($claims as $ordinal => $token) {
+            // Zero is the unclaimed default, never a token. See
+            // SqlScanStore::byToken() for why passing it through is dangerous.
+            if ((int) $token < 1) continue;
+            $o = (int) $ordinal;
+            if (!isset($this->records[$runId][$o])) continue;
+            $rec = $this->records[$runId][$o];
+            if ((string) $rec['claim_owner'] !== (string) $owner) continue;
+            if ((int) $rec['claim_seq'] !== (int) $token) continue;
+            if ($rec['state'] >= self::REC_DONE) continue;
+            // A scanning-phase row is PENDING and still carries a token; a
+            // straggler is CLAIMED. Both drop the token; only the second
+            // changes state, and only the second is counted as handed back.
+            if ($rec['state'] === self::REC_CLAIMED) {
+                $this->records[$runId][$o]['state'] = self::REC_PENDING;
+                $this->records[$runId][$o]['claimed_at'] = null;
+                $n++;
+            }
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
+            $released[] = $o;
         }
-        $low = min(array_map('intval', $ordinals)) - 1;
-        if ($low < (int) $this->runs[$runId]['cursor_ordinal']) {
-            $this->runs[$runId]['cursor_ordinal'] = $low;
+        // Over rows actually released. Rewinding past a row we did not release
+        // would re-offer another worker's live claim.
+        if ($released) {
+            $low = min($released) - 1;
+            if ($low < (int) $this->runs[$runId]['cursor_ordinal']) {
+                $this->runs[$runId]['cursor_ordinal'] = $low;
+            }
         }
         return $n;
     }
 
+    /**
+     * Count one attempt for work that was attempted, and retire what has run
+     * out of attempts. See ScanStore::noteAttempts for why it is not part of
+     * commitBatch: the counter used to move only when the commit succeeded, so
+     * the retry cap could not be reached by the path that needed it.
+     */
+    public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted)
+    {
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) {
+            return ['counted' => 0, 'retired' => 0];
+        }
+        if (!$claims || !isset($this->records[$runId])) return ['counted' => 0, 'retired' => 0];
+        $cap = max(1, (int) $maxAttempts);
+        $counted = 0;
+        $retired = 0;
+        foreach ($claims as $ordinal => $token) {
+            if ((int) $token < 1) continue;                 // never the unclaimed default
+            $o = (int) $ordinal;
+            if (!isset($this->records[$runId][$o])) continue;
+            $rec = $this->records[$runId][$o];
+            if ($rec['state'] >= self::REC_DONE) continue;
+            if ((string) $rec['claim_owner'] !== (string) $owner) continue;
+            if ((int) $rec['claim_seq'] !== (int) $token) continue;
+            // Saturating, as the SQL store's LEAST(attempts + 1, 254) is.
+            $now = min(254, (int) $rec['attempts'] + 1);
+            $this->records[$runId][$o]['attempts'] = $now;
+            $counted++;
+            if ($now >= $cap) {
+                $this->records[$runId][$o]['state'] = (int) $exhausted;
+                $this->records[$runId][$o]['claim_owner'] = null;
+                $this->records[$runId][$o]['claim_seq'] = 0;
+                $this->records[$runId][$o]['claimed_at'] = null;
+                $retired++;
+            }
+        }
+        return ['counted' => $counted, 'retired' => $retired];
+    }
+
+    /** A predicate over states, exactly as the SQL store computes it. */
     public function manifestComplete($runId)
     {
         if (!isset($this->records[$runId])) return false;
@@ -330,41 +583,28 @@ final class ArrayScanStore implements ScanStore
         return true;
     }
 
-    public function leaseSlot($owner, $runId, $ttlSeconds)
-    {
-        $now = time();
-        foreach ($this->slots as $no => $s) {
-            $free = ($s['owner'] === null)
-                 || ($s['expires_at'] !== null && $s['expires_at'] < $now);
-            if (!$free) continue;
-            $this->slots[$no]['owner'] = $owner;
-            $this->slots[$no]['run_id'] = $runId;
-            $this->slots[$no]['epoch']++;
-            $this->slots[$no]['expires_at'] = $now + (int) $ttlSeconds;
-            return ['slot_no' => $no, 'epoch' => $this->slots[$no]['epoch']];
-        }
-        return null;
-    }
+    // THE WORKER SLOTS ARE NOT MODELLED HERE ANY MORE. This class used to carry
+    // an in-memory copy of them because the contract declared leaseSlot() and
+    // releaseSlot(); the contract does not, because WorkerSlots is the one
+    // semaphore and the store's pair had no caller. The assertions that lived
+    // on this pair moved to the WorkerSlots contract, which runs against a real
+    // server - which is where a semaphore's behaviour can actually be shown,
+    // since the interesting half of it is two processes racing.
 
-    public function releaseSlot($slotNo, $owner, $epoch)
-    {
-        if (!isset($this->slots[$slotNo])) return false;
-        $s = $this->slots[$slotNo];
-        if ($s['owner'] !== $owner || (int) $s['epoch'] !== (int) $epoch) return false;
-        $this->slots[$slotNo]['owner'] = null;
-        $this->slots[$slotNo]['run_id'] = null;
-        $this->slots[$slotNo]['expires_at'] = null;
-        return true;
-    }
-
-    public function findings($generationId, array $filter, $afterId, $limit)
+    public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         $out = [];
         $i = 0;
         foreach ($this->findings as $f) {
             $i++;
             if ($i <= (int) $afterId) continue;
+            if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
+            // Closed rows belong to an earlier reading of a record and are
+            // kept so an "as of run N" view stays reproducible. A report
+            // shows the ACTIVE ones; the real store says the same with
+            // active_slot = 1 in its WHERE.
+            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
             $skip = false;
             foreach (['host_form', 'reason_code', 'check_type'] as $k) {
                 if (isset($filter[$k]) && $filter[$k] !== ''
@@ -396,16 +636,6 @@ final class ArrayScanStore implements ScanStore
         return $n;
     }
 
-    public function purgeRuns($pid, $olderThan)
-    {
-        $n = 0;
-        foreach ($this->runs as $id => $r) {
-            if ((int) $r['project_id'] !== (int) $pid || $r['active_slot'] === 1) continue;
-            unset($this->runs[$id], $this->records[$id]);
-            $n++;
-        }
-        return $n;
-    }
 
     public function audit($pid, $runId, $event, $actor, $detail)
     {
@@ -433,7 +663,11 @@ final class ArrayScanStore implements ScanStore
             $this->records[$runId][$ord] = ['ordinal' => $ord, 'id_bin' => $rec['id_bin'],
                 'hash' => $rec['hash'], 'dag' => isset($rec['dag']) ? $rec['dag'] : null,
                 'state' => ScanStore::REC_PENDING, 'attempts' => 0, 'version' => null,
-                'owner' => null];
+                // THE WHOLE ROW SHAPE, not most of it. These rows were built
+                // without 'claimed_at', so the very first straggler sweep to
+                // reach a reconciled record read a key that was not there - and
+                // the claim fence would now read two more.
+                'claimed_at' => null, 'claim_owner' => null, 'claim_seq' => 0];
             $have[$rec['id_bin']] = true;
             $added++;
         }
@@ -467,7 +701,13 @@ final class ArrayScanStore implements ScanStore
             // Attempts survive on purpose: see the SQL store's note. A record
             // being edited constantly must still reach its limit.
             if ($clearScan) $this->records[$runId][$o]['version'] = null;
-            $this->records[$runId][$o]['owner'] = null;
+            // The claim goes with the state. A record sent back to pending
+            // still carrying its old token could be committed by the worker
+            // that was holding it when catch-up requeued it - which is the one
+            // reading whose staleness is the reason it was requeued.
+            $this->records[$runId][$o]['claimed_at'] = null;
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
             $n++;
         }
         $done = 0;

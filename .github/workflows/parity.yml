@@ -103,6 +103,8 @@ jobs:
           php -l php/Scan/ScanPolicy.php
           php -l php/Scan/Hmac.php
           php -l php/Scan/ScanDb.php
+          php -l php/Scan/DbError.php
+          php -l php/Scan/ScanStoreUnavailable.php
           php -l php/Scan/SqlScanStore.php
           php -l php/Scan/ArrayScanStore.php
           php -l php/Scan/WorkerSlots.php
@@ -156,10 +158,22 @@ jobs:
         run: php tests/scan_page_php.php
       - name: Scan capabilities (what an installation may claim)
         run: php tests/scan_capabilities_php.php
+      - name: Namespace lint (no unqualified global class inside a namespaced file)
+        run: php tests/namespace_lint_php.php
+      - name: Durable scan wiring (no safeguard without a production caller)
+        run: php tests/scan_wiring_php.php
+      - name: Durable scan rule identity (which rule a finding is filed against)
+        run: php tests/scan_identity_php.php
+      - name: Durable scan store faults (a database failure is not a takeover)
+        run: php tests/scan_sqlstore_fault_php.php
+      - name: The production ScanDb itself (ROW_COUNT under the framework call)
+        run: php tests/scan_moduledb_php.php
       - name: Durable scan schema (allowlist, idempotency, fail-closed migration)
         run: php tests/scan_schema_php.php
       - name: Durable scan security (permission matrix, outcome table, HMAC, policy)
         run: php tests/scan_security_php.php
+      - name: Durable scan entitlement (the gate is asked about what the run READS)
+        run: php tests/scan_entitlement_php.php
       - name: Durable scan store contract (in-memory; the SQL store runs it in scan-database)
         run: php tests/scan_store_php.php
       - name: Durable scan entrypoints (feature flags, refusals, reason codes)
@@ -186,7 +200,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports tools; do

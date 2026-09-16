@@ -88,8 +88,49 @@ namespace ExternalModules {
         public $fenced = true;
         /** Whether the durable scan's ten tables exist on this installation. */
         public $tablesInstalled = true;
+        /**
+         * A run in progress, and the row the page reads to describe it.
+         *
+         * Absent until the panel learned to render its state before any script
+         * runs: with no run to find, activeRun() answered null in every scenario
+         * and the whole pre-render branch - including the noscript sentence that
+         * used to say "Nothing has been run" over a live scan - was unreachable
+         * from a test.
+         */
+        public $activeRunId = null;
+        /**
+         * The scope stamped on that run, and the project's real group list.
+         *
+         * M3 made activeRun() read scope_dag beside run_id and decide whether
+         * THIS caller may touch it, so a fixture that answers one column tests
+         * the null-scope branch and nothing else. $projectGroups is what
+         * reapUnworkableScopes() validates against; an empty list means "this
+         * project has no groups", which is a real answer and retires a scoped
+         * run, so cases that must NOT reap have to populate it.
+         */
+        public $activeRunScope = null;
+        public $projectGroups = [];
+        public $runRow = null;
+        public $recordStates = [];
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
+            if (strpos($sql, 'uv_scan_run') !== false) {
+                if (strpos($sql, 'active_slot = 1') !== false) {
+                    return new \ExternalModules\FakeRes($this->activeRunId === null
+                        ? [] : [[(string) $this->activeRunId, $this->activeRunScope]]);
+                }
+                if (strpos($sql, 'WHERE run_id = ?') !== false) {
+                    return new \ExternalModules\FakeRes($this->runRow === null ? [] : [$this->runRow]);
+                }
+            }
+            if (strpos($sql, 'uv_scan_record') !== false && strpos($sql, 'GROUP BY state') !== false) {
+                return new \ExternalModules\FakeRes($this->recordStates);
+            }
+            if (strpos($sql, 'redcap_data_access_groups') !== false) {
+                $g = [];
+                foreach ($this->projectGroups as $id) $g[] = [(string) $id];
+                return new \ExternalModules\FakeRes($g);
+            }
             if (strpos($sql, 'SHOW TABLES') !== false)      return new \ExternalModules\FakeRes([['redcap_record_list']]);
             if (strpos($sql, 'log_event_table') !== false)  return new \ExternalModules\FakeRes([['redcap_log_event7']]);
             if (strpos($sql, 'MAX(log_event_id)') !== false) return new \ExternalModules\FakeRes([['918273', '4412']]);
@@ -100,7 +141,8 @@ namespace ExternalModules {
             // installation state - the migration has not been run - and the page
             // must refuse over it rather than offer a panel nothing can drive.
             if (strpos($sql, 'MAX(version)') !== false) {
-                return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : null]]);
+                return new \ExternalModules\FakeRes([[$this->tablesInstalled
+                    ? (string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION : null]]);
             }
             if (strpos($sql, 'information_schema.tables') !== false) {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : '0']]);
@@ -131,7 +173,14 @@ namespace ExternalModules {
         public $forms = ['fa' => '1', 'fb' => '1', 'fc' => '1'];
         public function getUsername() { return 'probe'; }
         public function getRights($pid = null) {
-            $r = ['group_id' => $this->groupId, 'data_export_tool' => $this->export];
+            // 'design' is a COLUMN in redcap_user_rights and the durable scan's
+            // own gate reads it (ScanAuthorization::readable). This mock did not
+            // carry it, so every status() in this file refused with "you need
+            // project design rights" - which no assertion noticed, because until
+            // the panel rendered its state before any script runs, nothing here
+            // had ever read a status at all.
+            $r = ['design' => ($this->design ? '1' : '0'), 'group_id' => $this->groupId,
+                  'data_export_tool' => $this->export];
             if ($this->forms !== null) $r['forms'] = $this->forms;
             return $r;
         }
@@ -326,6 +375,12 @@ namespace {
         $m->tablesInstalled = !isset($opts['tables']) || $opts['tables'];
         $m->jsmoAvailable = !isset($opts['jsmo']) || $opts['jsmo'];
         $m->jsmoThrows = !empty($opts['jsmoThrows']);
+        if (isset($opts['jsmoName'])) $m->jsmoName = $opts['jsmoName'];
+        $m->activeRunId = isset($opts['activeRun']) ? $opts['activeRun'] : null;
+        $m->activeRunScope = isset($opts['activeScope']) ? $opts['activeScope'] : null;
+        $m->projectGroups = isset($opts['groups']) ? $opts['groups'] : [];
+        $m->runRow = isset($opts['runRow']) ? $opts['runRow'] : null;
+        $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -597,6 +652,40 @@ namespace {
         list(, $resOk, $scopeOk) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
         check('S-03 contrast: a resolvable DAG resolves to a scope and scans',
             $scopeOk['ok'] && $scopeOk['dag'] !== null && $resOk['stats']['manifest'] >= 1);
+
+        /* -----------------------------------------------------------------
+         * B3  ONE DAG AXIS: the value the page PRODUCES is the value every
+         *     consumer COMPARES
+         *
+         * The page resolved $rights['group_id'] to the friendly DAG name and
+         * returned that as the scope. It is stored verbatim as
+         * uv_scan_run.scope_dag and then compared, unchanged, against
+         * redcap_record_list.dag_id and against $rights['group_id'] - three
+         * id-shaped values. A group-scoped run therefore listed every record,
+         * appended none, froze an empty manifest, and promoted it to
+         * coverage=complete-through-fence clean=true; and it refused the
+         * designer who started it scan-work, scan-status and scan-cancel on
+         * their own run, which then held the project's only slot.
+         *
+         * THE VALUES BELOW ARE OBTAINED, NEVER CONSTRUCTED. Each check takes
+         * the scope from the production producer and hands it to a production
+         * consumer, so the assertion is about a join rather than about a
+         * literal agreeing with itself - which is what 1,228 green checks did
+         * while the seam was open, because no suite ever held both sides.
+         * ----------------------------------------------------------------- */
+        list($mG, $resG, $scG) = scanOf(new \ExternalModules\PlainUser(true, 7), $D, $data);
+        check('B3 GATE 1a: the scope the page produces is the group ID, byte-identical to '
+            . 'what every consumer compares',
+            $scG['dag'] === '7' && $scG['dag'] === (string) $scG['rights']['group_id']);
+        check('B3 GATE 1b: and the designer who started the run may work their own run',
+            \INSPIRE\UniversalValidator\Scan\ScanAuthorization::mayWork(
+                $scG['rights'], ['fa'], $scG['dag'])['ok'] === true);
+        check('B3 GATE 1c: the friendly name travels beside the id, never instead of it',
+            $scG['dagName'] === 'north' && $scG['dag'] !== $scG['dagName']);
+        check('B3 GATE 1d: and the id round-trips back to that name through the production '
+            . 'resolver, which is what the legacy scan compares on',
+            \INSPIRE\UniversalValidator\ScanPageView::dagNameOf($scG['dag']) === $scG['dagName']
+            && $resG['stats']['manifest'] === 1);
     }
 
     /* =====================================================================
@@ -783,6 +872,39 @@ namespace {
             $V::csv('a=b') === '"a=b"');
         check('ScanPageView::csv passes an empty value through untouched',
             $V::csv('') === '""');
+
+        // THE BYTES THE DEFUSING USED TO WALK PAST. The leading-byte scan ran
+        // on the raw value and stopped at the first byte outside its skip set;
+        // a control byte is outside that set, so the cell was judged "not a
+        // formula" and got no apostrophe - and then scrub() deleted exactly
+        // that byte, promoting the '=' to the emitted cell's first content
+        // byte. Every prefix below is drawn from scrub()'s own removal set,
+        // which is what made the bypass reliable rather than lucky: the
+        // sanitiser was the thing that armed the payload.
+        //
+        // Asserted on the EMITTED cell rather than on an expected string,
+        // because the property is "a spreadsheet cannot read this as a
+        // formula", not "the output equals this literal".
+        $liveFormula = function ($raw) use ($V) {
+            $cell = $V::csv($raw);
+            $inner = substr($cell, 1, -1);              // strip the unconditional quotes
+            return $inner !== '' && strpos('=+-@', $inner[0]) !== false;
+        };
+        foreach (["\x01", "\x1A", "\x1B", "\x7F", "\x05", "\x0E", "\x1F"] as $b) {
+            check('ScanPageView::csv defuses a formula behind a leading \x'
+                . strtoupper(bin2hex($b)),
+                !$liveFormula($b . '=1+1'));
+        }
+        check('ScanPageView::csv defuses the mixed whitespace-and-control prefix',
+            !$liveFormula(" \x01 =cmd|'/c calc'"));
+        check('ScanPageView::csv defuses a control byte in front of every formula lead',
+            !$liveFormula("\x01+1") && !$liveFormula("\x01-1")
+            && !$liveFormula("\x01@SUM(1)"));
+        // Controls: the fix must not start quoting things that are not formulas.
+        check('ScanPageView::csv still leaves a scrubbed non-formula alone',
+            $V::csv("\x01plain") === '"plain"');
+        check('ScanPageView::csv still leaves an interior = alone after scrubbing',
+            $V::csv("a\x01=b") === '"a=b"');
     }
 
     /* =====================================================================
@@ -1216,10 +1338,404 @@ namespace {
         check('PANEL: and says the tables are the reason',
             strpos($noTbl, 'tables are not ready') !== false);
 
+        /* -- THE ARIA CONTRACT ------------------------------------------------
+         *
+         * The module holds itself to this for a field's verdict: js/engine.js
+         * builds a polite live region and wires aria-describedby, and
+         * tests/a11y_dom_js.cjs asserts every part of it. The scan panel had not
+         * one ARIA attribute on it - a bare div with an inline width for a
+         * progress bar, and four text regions that changed every few seconds
+         * with nothing to announce them. This is the one surface in the module
+         * that ignored the standard the module advertises, and the reason it
+         * could is that nothing in the suite had ever asserted an ARIA contract
+         * over anything rendered from PHP.
+         */
+        check('PANEL: the progress bar says it is a progress bar',
+            strpos($html, 'role="progressbar"') !== false);
+        check('PANEL: with a range a reader can interpret',
+            strpos($html, 'aria-valuemin="0"') !== false
+            && strpos($html, 'aria-valuemax="100"') !== false);
+        check('PANEL: and a name, because "progressbar" alone says nothing',
+            strpos($html, 'aria-label="Validation scan progress"') !== false);
+        check('PANEL: the panel is a region labelled by the page heading',
+            strpos($html, 'role="region"') !== false
+            && strpos($html, 'aria-labelledby="uv-scan-heading"') !== false
+            && strpos($html, 'id="uv-scan-heading"') !== false);
+        check('PANEL: and says whether it is busy',
+            strpos($html, 'aria-busy="false"') !== false);
+        // role=status/polite, never alert/assertive: none of these are
+        // emergencies, and assertive would interrupt the reader mid-sentence
+        // every few seconds. Same choice js/engine.js makes for a verdict.
+        $liveRegion = 'role="status" aria-live="polite" aria-atomic="true"';
+        check('PANEL: the explanation line is a polite live region',
+            strpos($html, '<p id="uv-scan-note" ' . $liveRegion) !== false);
+        check('PANEL: so is the completion sentence',
+            strpos($html, '<p id="uv-scan-done" ' . $liveRegion) !== false);
+        check('PANEL: with one atomic region for the progress a reader cannot see',
+            strpos($html, '<span id="uv-scan-announce" ' . $liveRegion) !== false);
+        check('PANEL: which is off-screen rather than absent',
+            strpos($html, 'clip:rect(0 0 0 0)') !== false);
+
+        // A button with no type inside REDCap's project form defaults to
+        // type=submit, and one thrown handler away from preventDefault that is a
+        // page navigation in the middle of a scan.
+        check('PANEL: no control can submit the project form it sits inside',
+            substr_count($html, 'type="button" id="uv-scan-') === 3);
+
+        // N-C1. The client sets .uv-bar-indeterminate for a run with no total
+        // yet. The class was defined NOWHERE - this module ships no stylesheet -
+        // so the indeterminate bar rendered as a solid, full-width green one:
+        // a scan that has examined nothing, looking exactly like a scan that has
+        // examined everything. The class the client writes must ship with a rule
+        // that defines it.
+        // Asserted GENERALLY rather than by name, which is the same shape as the
+        // wiring test one layer up: the suite proved the client WRITES a class
+        // and nothing proved anybody DEFINES it.
+        $clientJs = file_get_contents(__DIR__ . '/../js/scan.js');
+        $assigned = [];
+        if (preg_match_all('/className\s*=\s*([^;]+);/', $clientJs, $mm)) {
+            foreach ($mm[1] as $expr) {
+                if (!preg_match_all("/'([^']+)'/", $expr, $lit)) continue;
+                foreach ($lit[1] as $l) {
+                    foreach (preg_split('/\s+/', trim($l)) as $c) if ($c !== '') $assigned[$c] = true;
+                }
+            }
+        }
+        $undefined = [];
+        foreach (array_keys($assigned) as $c) {
+            if (strpos($html, '.' . $c) === false) $undefined[] = $c;
+        }
+        check('PANEL: every class the client assigns is defined by a rule the page ships',
+            count($assigned) >= 2 && $undefined === []);
+        check('PANEL: and stops moving for a reader who asked for less motion',
+            strpos($html, 'prefers-reduced-motion') !== false
+            && strpos($html, 'animation: none') !== false);
+
+        /* -- THE VOCABULARY, HANDED OVER RATHER THAN DUPLICATED --------------- */
+        $labelsAt = strpos($html, 'window.UVScan.labels');
+        $attachAt = strpos($html, 'window.UVScan.attach');
+        check('PANEL: the page hands the client its phase and coverage sentences',
+            $labelsAt !== false);
+        check('PANEL: before it attaches, because attach renders immediately',
+            $labelsAt !== false && $attachAt !== false && $labelsAt < $attachAt);
+        $missingLabel = [];
+        foreach (\INSPIRE\UniversalValidator\ScanPageView::phaseLabels() as $k => $v) {
+            if (strpos($html, $v) === false) $missingLabel[] = $k;
+        }
+        foreach (\INSPIRE\UniversalValidator\ScanPageView::coverageSentences() as $k => $v) {
+            if (strpos($html, substr($v, 0, 40)) === false) $missingLabel[] = $k;
+        }
+        check('PANEL: every one of them, so the client needs no copy of its own',
+            $missingLabel === []);
+
+        /* -- L2: the transport NAME is validated before it is printed ---------
+         *
+         * Not an escaping bug and not reachable by a project user: the value
+         * comes from the framework, which derives it from the module's installed
+         * directory. It is a missing input contract. A name that is not a dotted
+         * identifier - a hyphen from a directory called universal_validator-1.9,
+         * which IS the External Modules convention - becomes a syntax error
+         * inside the <script> block and silently breaks the whole panel with no
+         * diagnostic at all.
+         */
+        foreach (['X;alert(1);//', 'uv-validator.ajaxObj', 'a b', str_repeat('n', 201)] as $bad) {
+            list($badHtml, ) = render($U(), $D, $data, [], $on(['jsmoName' => $bad]));
+            check('PANEL: a transport name that is not an identifier offers no panel',
+                strpos($badHtml, 'uv-scan-panel') === false);
+            check('PANEL: and says the scan cannot be driven from this page',
+                strpos($badHtml, 'cannot be driven') !== false);
+            check('PANEL: and the name itself is never printed',
+                strpos($badHtml, $bad) === false);
+        }
+
+        /* -- L3: the page renders the state BEFORE any script runs ------------
+         *
+         * The file has claimed this in its own header comment since it was
+         * written, and it was false: every value span was emitted empty, the bar
+         * was hardcoded to zero, and the noscript block said "Nothing has been
+         * run" while a run was on the server holding the project's slot. The
+         * claim is now a test rather than a comment.
+         */
+        check('PANEL: with no run the page says so, and says it plainly',
+            strpos($html, 'Nothing has been run') !== false);
+
+        // POSITIONAL, against SqlScanStore::run()'s projection. Twenty-two
+        // values in that column order - a row of any other length makes
+        // array_combine() refuse it, run() answer false, and every check below
+        // fail at once with nothing saying why. It has drifted once already:
+        // run_seq was added to the projection and not to this row.
+        //
+        // run_id, project_id, scope_dag, phase, terminal, coverage, detail,
+        // values_state, policy_revision, fingerprint, manifest_total,
+        // manifest_done, cursor_ordinal, lease_epoch, generation_id, run_seq,
+        // created_by, detail_rows, detail_bytes, fence_open, fence_target,
+        // cancel_requested_at
+        $ROW = ['55', (string) PID, null, 'scanning', null, 'partial', 'complete', 'none',
+                '1', 'fp', '10', '3', '3', '1', '1', '1', 'tester', '2', '400',
+                '918273', '918273', null];
+        list($live, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $ROW, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a run in progress is NOT described as nothing having been run',
+            strpos($live, 'Nothing has been run') === false);
+        check('PANEL: the noscript block says the scan is on the server',
+            strpos($live, 'on the server right now') !== false);
+        check('PANEL: and that it continues whatever this page can do',
+            strpos($live, 'unaffected and continues') !== false);
+        check('PANEL: Continue is offered rather than Start',
+            strpos($live, 'id="uv-scan-resume" class="btn btn-secondary btn-sm">') !== false);
+        check('PANEL: the phase is on the page before any script runs',
+            strpos($live, '>Checking records</span>') !== false);
+        check('PANEL: so are the counts',
+            strpos($live, '3 of 10 records') !== false);
+        check('PANEL: and the bar carries the position it is really at',
+            strpos($live, 'aria-valuenow="30"') !== false
+            && strpos($live, 'width:30%') !== false);
+        check('PANEL: and the panel says it is busy',
+            strpos($live, 'aria-busy="true"') !== false);
+
+        // A run whose total is not known yet is INDETERMINATE server-side too:
+        // no aria-valuenow at all, rather than a zero that announces a stall.
+        $PLANNING = $ROW;
+        $PLANNING[3] = 'planning'; $PLANNING[10] = '0';
+        list($planning, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $PLANNING, 'recordStates' => []]));
+        check('PANEL: a run with no total yet reports no position at all',
+            strpos($planning, 'aria-valuenow') === false);
+        check('PANEL: and shows the indeterminate bar rather than an empty one',
+            strpos($planning, 'class="uv-bar uv-bar-indeterminate"') !== false);
+        check('PANEL: saying it is preparing rather than 0 of 0',
+            strpos($planning, '>Preparing</span>') !== false);
+
+        // A run the page cannot read the status of must not invent one. The
+        // panel falls back to the empty shape and the client fills it in on its
+        // first poll - but the noscript sentence still tells the truth, because
+        // the run id is enough to know a scan exists.
+        list($opaque, ) = render($U(), $D, $data, [], $on(['activeRun' => 55]));
+        check('PANEL: an unreadable status does not become a made-up one',
+            strpos($opaque, '3 of 10 records') === false);
+        check('PANEL: but the page still says a scan is running',
+            strpos($opaque, 'on the server right now') !== false);
+
         // Rights still decide. The panel is not a way around them.
         list($noRights, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, [], $on());
         check('PANEL: a user without design rights gets no panel',
             strpos($noRights, 'uv-scan-panel') === false);
+
+        /* -----------------------------------------------------------------
+         * M3  a run you may not touch is not the same as no run
+         *
+         * activeRun() answered a run id or null, and null carried two
+         * meanings. The page read it as "no run", rendered Continue, printed
+         * the id into the client, and every click came back refused with
+         * nothing on the page saying why. While the DAG scope was on the wrong
+         * axis that was the designer's OWN run; now that it is right it is
+         * another group's, and a page load that emits its id is a page load
+         * that enumerates other groups' runs.
+         *
+         * FOUR STATES, AND THE FOURTH IS THE MIGRATION. A run stamped with a
+         * DAG NAME before the axis was fixed can never be worked by anybody
+         * and holds the project's one slot with no reaper. It is retired at
+         * exactly the moment somebody who cannot touch it looks at it.
+         * ----------------------------------------------------------------- */
+        \REDCap::$groupNames = [7 => 'north', 31 => 'south'];
+        $DAG = function () { return new \ExternalModules\PlainUser(true, 7); };
+        $act = function ($m) {
+            $svc = new \INSPIRE\UniversalValidator\Scan\ScanService($m);
+            return $svc->activeRun(PID,
+                \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID));
+        };
+        $BUSY = \INSPIRE\UniversalValidator\Scan\ScanStore::BUSY_WHY;
+        $run = ['activeRun' => 55, 'runRow' => $ROW,
+                'recordStates' => [['100', '3'], ['0', '7']], 'groups' => [7, 31]];
+
+        // YOURS. The scope on the run is this user's own group id.
+        list($htmlY, $mY) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => '7'])));
+        $aY = $act($mY);
+        check('M3: a run scoped to your own group is yours, and you get its id',
+            $aY['state'] === 'yours' && $aY['run_id'] === 55 && $aY['why'] === null);
+
+        // OTHER. The same user, a run scoped to the group next door.
+        list($htmlO, $mO) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => '31'])));
+        $aO = $act($mO);
+        check('M3: another group\'s run is not yours, and its id is withheld',
+            $aO['state'] === 'other' && $aO['run_id'] === null);
+        // THE SAME SENTENCE THE STORE USES. A distinct one here would be an
+        // oracle: it would tell somebody outside the scope that a run exists.
+        check('M3: and the reason is the store\'s own busy wording, not a new sentence',
+            $aO['why'] === $BUSY);
+        check('M3: which discloses no id, no scope and no digit',
+            strpos($aO['why'], '31') === false && strpos($aO['why'], '55') === false
+            && preg_match('/[0-9]/', $aO['why']) === 0);
+
+        // UNKNOWN. No rights in hand is not "no restriction".
+        $svcU = new \INSPIRE\UniversalValidator\Scan\ScanService($mO);
+        $aU = $svcU->activeRun(PID, null);
+        check('M3: with no rights to compare against, nothing is offered',
+            $aU['state'] === 'unknown' && $aU['run_id'] === null);
+
+        // A SCOPE NOBODY CAN MATCH IS STILL 'other' HERE, AND THAT IS THE
+        // POINT. scope_dag holding a DAG NAME is what every run started before
+        // the axis fix carries; no group id can equal it, so this caller is
+        // refused exactly as they are refused another group's run. The
+        // RETIREMENT that unwedges it is proved in tests/mysql/cases/dag.php
+        // and not here: it calls store()->finish(), which this fixture's db
+        // cannot serve - it answers null to the UPDATE, the store raises
+        // ScanStoreUnavailable, and the reaper swallows it. A control asserting
+        // "nothing was retired" against a store that can retire nothing would
+        // be green for a reason that has nothing to do with the code.
+        list(, $mM) = render($DAG(), $D, $data, [],
+            $on(array_merge($run, ['activeScope' => 'north'])));
+        $aM = $act($mM);
+        check('M3: a run scoped to a value no group id can equal is refused, not offered',
+            $aM['state'] === 'other' && $aM['run_id'] === null && $aM['why'] === $BUSY);
+
+        // THE PAGE, not just the service. This is where the defect was visible.
+        check('M3 page: another group\'s run id never reaches the client',
+            strpos($htmlO, 'runId: 55') === false && strpos($htmlO, 'runId: null') !== false);
+        check('M3 page: and the reader is told the project is busy before they click',
+            strpos($htmlO, \INSPIRE\UniversalValidator\ScanPageView::h($BUSY)) !== false);
+        check('M3 page: the noscript block no longer says nothing has been run',
+            strpos($htmlO, 'Nothing has been run') === false);
+        check('M3 page contrast: your own run still reaches the client',
+            strpos($htmlY, 'runId: 55') !== false);
+        \REDCap::$groupNames = [];
+    }
+
+    /* =====================================================================
+     * THE VOCABULARY — one table, and the guard that keeps it complete.
+     *
+     * The phase labels and the coverage sentences were literals inside
+     * js/scan.js AND decided again in PHP, so the two halves of one page each
+     * held half a vocabulary with no way of learning about the other. They live
+     * here now and the client is handed them. What follows is the part that
+     * matters for every wave after this one: a phase or a coverage value that
+     * arrives without a sentence FAILS HERE, rather than shipping as a blank
+     * paragraph on somebody's finished scan.
+     * ===================================================================== */
+    {
+        $V = '\INSPIRE\UniversalValidator\ScanPageView';
+
+        $phases = (new \ReflectionClass('\INSPIRE\UniversalValidator\Scan\ScanPhase'))->getConstants();
+        $labelled = $V::phaseLabels();
+        $missing = [];
+        foreach ($phases as $name => $val) {
+            if (is_string($val) && !isset($labelled[$val])) $missing[] = $name;
+        }
+        check('LABELS: every phase the state machine can reach has a sentence',
+            $missing === []);
+        check('LABELS: and none of them is the stored name',
+            !in_array('rollup-finalize', array_values($labelled), true));
+
+        $cov = $V::coverageSentences();
+        $missingCov = [];
+        foreach (['FENCED', 'MANIFEST', 'EMPTY_SCOPE', 'COV_PARTIAL', 'COV_FAILED'] as $c) {
+            $val = constant('\INSPIRE\UniversalValidator\Scan\ScanOutcome::' . $c);
+            if (!isset($cov[$val])) $missingCov[] = $c;
+        }
+        check('LABELS: every coverage a run can be promoted to has a sentence',
+            $missingCov === []);
+        check('LABELS: and each of them says something different',
+            count(array_unique(array_values($cov))) === count($cov));
+
+        // A finished run whose result this build does not recognise. Saying
+        // NOTHING is the outcome the whole rebuild exists to prevent - a run
+        // that examined nothing must not look like a run that examined
+        // everything, and a blank certificate looks like both.
+        $unknown = $V::coverageSentence('some-future-value');
+        check('LABELS: an unrecognised coverage is never a blank certificate',
+            trim($unknown) !== '');
+        check('LABELS: it names the value, so somebody can find out what it meant',
+            strpos($unknown, 'some-future-value') !== false);
+        check('LABELS: and refuses to be read as complete',
+            strpos($unknown, 'incomplete') !== false);
+        $unknownTrunc = $V::coverageSentence('some-future-value', 'truncated');
+        check('LABELS: the truncation note never becomes a headless sentence',
+            $unknownTrunc[0] !== ' ' && strpos($unknownTrunc, 'not kept') !== false);
+        // THE LIST ABOVE IS HAND-MAINTAINED AND IT ALREADY LAGGED ONCE. This
+        // asks the PRODUCER instead: every coverage derive() can actually
+        // return must be one this page can word, or a finished run renders the
+        // unknown-value fallback where its own sentence should be.
+        $produced = [];
+        foreach ([['failed' => true], ['cancelled' => true], ['expired' => true],
+                  ['emptyScope' => true], ['blocked' => true], [],
+                  ['fenced' => true, 'manifestDone' => false],
+                  ['fenced' => true, 'manifestDone' => true, 'truncated' => true],
+                  ['fenced' => true, 'manifestDone' => true]] as $facts) {
+            $produced[\INSPIRE\UniversalValidator\Scan\ScanOutcome::derive($facts)['coverage']] = true;
+        }
+        check('LABELS: every coverage derive() can produce has a sentence on this page',
+            array_keys(array_diff_key($produced, $cov)) === []);
+        // The sentence must not be misreadable as the fenced certificate, and
+        // it must survive the page's own encoding: pages/scan.php prints this
+        // table with JSON_HEX_APOS, and the render check in this file searches
+        // the HTML for each sentence's literal opening. An apostrophe here
+        // would break that silently.
+        $esSentence = $V::coverageSentence(
+            \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE);
+        check('LABELS: the empty-scope sentence never claims a record was checked',
+            stripos($esSentence, 'Every record was checked') === false
+            && stripos($esSentence, 'nothing was checked') !== false);
+        check('LABELS: and it survives json_encode into the page unaltered',
+            strpos(json_encode($esSentence,
+                JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), '\\u') === false);
+        check('LABELS: and it is stated even over a complete coverage',
+            strpos($V::coverageSentence('complete-through-fence', 'truncated'), 'not kept') !== false);
+        check('LABELS: an unrecognised phase falls back to its stored name',
+            $V::phaseLabel('some-future-phase') === 'some-future-phase');
+
+        // Null is not zero. A bar at 0% for the length of a planning phase reads
+        // as a scan that has stalled, and people stop scans that look stalled.
+        check('LABELS: an unknown total has no percentage, rather than a zero one',
+            $V::pct(0, 0) === null && $V::pct(3, 0) === null);
+        check('LABELS: a known one is floored, never rounded up past the truth',
+            $V::pct(1, 3) === 33 && $V::pct(9, 10) === 90);
+        check('LABELS: and it cannot exceed a hundred', $V::pct(11, 10) === 100);
+
+        $mid = $V::panelPrefill(['ok' => true, 'phase' => 'scanning', 'terminal' => null,
+            'coverage' => 'partial', 'detail' => 'complete', 'total' => 10, 'done' => 3,
+            'findings' => 1, 'active' => true]);
+        check('PREFILL: a running scan is described in words before any script runs',
+            $mid['phase'] === 'Checking records' && strpos($mid['counts'], '3 of 10') === 0);
+        check('PREFILL: with its findings so far, in the singular when there is one',
+            $mid['found'] === '1 finding so far');
+        check('PREFILL: and no completion sentence, because it has not completed',
+            $mid['done'] === null && $mid['pct'] === 30 && $mid['active'] === true);
+
+        $prep = $V::panelPrefill(['ok' => true, 'phase' => 'planning', 'terminal' => null,
+            'total' => 0, 'done' => 0, 'findings' => 0, 'active' => true]);
+        check('PREFILL: a run with no total says it is preparing, not 0 of 0',
+            $prep['counts'] === 'Preparing' && $prep['pct'] === null);
+
+        $end = $V::panelPrefill(['ok' => true, 'phase' => 'terminal', 'terminal' => 'complete',
+            'coverage' => 'manifest-complete', 'detail' => 'complete', 'total' => 10,
+            'done' => 10, 'findings' => 0, 'active' => false]);
+        check('PREFILL: a finished run carries the sentence its coverage earns',
+            strpos($end['done'], 'cannot prove') !== false);
+
+        // Nothing to describe must produce nothing, never a claim. A refused or
+        // unreadable status is exactly the case where inventing a reassuring
+        // default is how a page ends up certifying a scan it never saw.
+        foreach ([null, [], ['ok' => false, 'why' => 'no'], 'nonsense'] as $bad) {
+            $none = $V::panelPrefill($bad);
+            check('PREFILL: an unreadable status describes nothing rather than something',
+                $none['phase'] === '' && $none['counts'] === '' && $none['found'] === ''
+                && $none['pct'] === null && $none['done'] === null && $none['active'] === false);
+        }
+
+        // L2. The transport name crosses into a <script> block, so it is proved
+        // to be a dotted identifier rather than escaped - you cannot escape an
+        // expression and still have it evaluate.
+        foreach (['ExternalModules.INSPIRE.UniversalValidator', '$em', '_a.$b.c9'] as $good) {
+            check('LABELS: a dotted identifier is accepted as a transport name',
+                $V::isJsIdentifierPath($good) === true);
+        }
+        foreach (['', 'uv-validator.ajax', 'a b', 'X;alert(1)', '9lives', 'a..b', 'a.',
+                  str_repeat('n', 201), null, 42, ['a']] as $bad) {
+            check('LABELS: anything that is not one is refused before it is printed',
+                $V::isJsIdentifierPath($bad) === false);
+        }
     }
 
     echo "scan_page_php: $n checks, $fail failure(s)

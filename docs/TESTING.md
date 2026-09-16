@@ -1,10 +1,101 @@
 # Manual REDCap test checklist
 
 The repository's automated tests (see [`../tests/README.md`](../tests/README.md))
-prove engine correctness and JS/PHP parity, but they run against Node/PHP stubs —
-not a live REDCap. This checklist is the integration pass to run on a real REDCap
-instance (≥ 13.7.0) after installing or upgrading the module. Check every box
-before tagging a release.
+prove engine correctness and JS/PHP parity, and one of them — the database suite
+described below — runs against a real MySQL. None of them runs against a live
+REDCap. This checklist is the integration pass to run on a real REDCap instance
+(≥ 13.7.0) after installing or upgrading the module. Check every box before
+tagging a release.
+
+## The database suite — the invariants only a real server can prove
+
+One suite in this repository does not run against stubs. `tests/mysql/` opens two
+independent connections to a real MySQL or MariaDB and asserts what the **second**
+connection observes: the one-active-run slot, the installation-wide worker
+semaphore, lease-epoch fencing, a cancel beating an in-flight worker, and one
+active version per finding identity. None of that is decidable against a mock,
+and this module has already shipped a control that passed every mocked test and
+did nothing in production.
+
+Run it with the connection in the environment:
+
+```bash
+UV_DB_HOST=127.0.0.1 UV_DB_USER=root UV_DB_PASS=root UV_DB_NAME=uv_test \
+  php tests/mysql/run.php
+```
+
+`php tests/mysql/run.php` is the single entry point and CI calls exactly that,
+once with the server default isolation and once with `UV_DB_ISOLATION='READ
+COMMITTED'`.
+
+### Working on a server someone else is using
+
+The suite drops the module's tables to prove the migration installs them, so two
+people running it against one database destroy each other's results — which is
+exactly what happened twice while the durable scan was being audited, and neither
+run could tell a real failure from the other's teardown. The schema is therefore
+a parameter:
+
+| Variable | Effect |
+| --- | --- |
+| `UV_DB_NAME` | the database to connect to. Default `uv_test`. Used as-is when neither variable below is set, which is what CI does. |
+| `UV_DB_SCHEMA` | work in this database instead, creating it if it does not exist. Dropped at the end only if the suite created it. |
+| `UV_DB_SCHEMA_PREFIX` | mint a private database per run — prefix, process id, random suffix — and drop it at the end. Use this one whenever anybody else might be on the server. |
+
+```bash
+UV_DB_SCHEMA_PREFIX=uv_mine php tests/mysql/run.php   # touches nothing of anyone else's
+```
+
+`UV_CASES=store,fence` runs a subset while working on one area. CI never sets it.
+
+### Where the assertions live
+
+`run.php` decides the order, the schema and what happens when a case falls over.
+Everything it asserts lives in one file per area:
+
+| File | What it proves |
+| --- | --- |
+| `cases/schema.php` | the migration, and the four UNIQUE keys the design rests on |
+| `cases/store.php` | `SqlScanStore` end to end, plus the cross-store contract the fast suite runs against `ArrayScanStore` |
+| `cases/slots.php` | the installation-wide worker semaphore, and what a worker says when nobody provisioned one |
+| `cases/retention.php` | three clocks, and nothing silently losing a finding |
+| `cases/fault.php` | what the store does when the server refuses a write |
+| `cases/walk.php` | `RecordManifestSource` over REDCap-shaped tables, including the collation that decides whether a record can be skipped |
+| `cases/fence.php` | `SourceFence`: the opening fence, per-record versions, a pruned log, catch-up paging |
+| `cases/planning.php` | `ScanPlanner`: a project to a frozen manifest |
+| `cases/worker.php` | `ScanWorker` against the real store and a real fence |
+| `cases/uniqueness.php` | `UniqueFinalizer`: duplicates decided without holding the project |
+| `cases/rollup.php` | `RollupBuilder`: the summary, and the two ways a summary lies |
+| `cases/promotion.php` | `ScanPromotion`: which terminal state a run has earned |
+
+Shared machinery is in `support/bootstrap.php` (the check counter, the two
+connections, the `ScanDb` and framework stand-ins) and `support/fixture.php` (the
+two-project fixture). Neither asserts anything: a helper that can fail a check is
+a helper that decides what a case means.
+
+### Two rules a new case has to follow
+
+**Every fixture names its project, and there are two of them.** A case declares
+`$PID` and calls `uv_plant_neighbour()`, which builds a second project with a run
+and findings of its own through the same store the module uses. This is not
+decoration. Two hundred and eighty-six checks against a real server were blind to
+the durable scan's project-scoping bug because every one of them ran in a schema
+holding exactly one project, where a statement that scopes by project and one
+that does not give the same answer. If an assertion counts rows, it has to say
+which project it means.
+
+**A case starts on a schema no earlier case touched.** `run.php` drops and
+re-migrates everything between cases, so a case may not depend on what another
+left behind and a case that exits early cannot shift the next one's expected
+values. The old suite truncated a hand-kept list of tables between sections and
+the list was never complete. If a case needs to run after another one, that is
+shared state in the case rather than a scheduling requirement.
+
+A case that throws fails one check and the rest still run; the throw is reported
+with its class, message and line. Add a new case by writing
+`tests/mysql/cases/<name>.php` and adding `<name>` to the `$cases` list in
+`run.php` — a name in that list with no file is itself a failure, so the list
+cannot quietly drift away from the directory.
 
 ## Release gate — REDCap Repo submission blockers
 

@@ -48,7 +48,27 @@ final class ScanRetention
      *
      * The column, not the row. See the class note: the finding stays true.
      *
-     * @return int findings whose value was cleared
+     * INSTALLATION-WIDE, AND preview() IS NOT. Both were unscoped until the
+     * project-scoping pass, which gave preview() a project predicate - rightly,
+     * since it answers "what would retention do HERE" and used to show an
+     * administrator the consequence of somebody else's data - and left this
+     * one alone. So the two now disagree by construction: preview() promises N
+     * for this project and this clears N + M across the installation.
+     *
+     * NEITHER IS WRONG ON ITS OWN. Expiry is a per-row fact and a cron sweeping
+     * the installation is the right shape for it; a preview scoped to the
+     * project asking is the right shape for that. What is wrong is wiring them
+     * together without deciding, because an administrator who is shown 5 and
+     * whose log then reports 47 has been told the module did something it did
+     * not do.
+     *
+     * WHOEVER ADDS THE CALLER OWNS THE DECISION - wave 10 for the cron, and it
+     * has to be one of: give this an optional project scope so a project-scoped
+     * caller gets a project-scoped clear, or make preview() say plainly that
+     * the count is this project's share of an installation-wide sweep. There is
+     * no third option in which the two numbers are quietly compared.
+     *
+     * @return int findings whose value was cleared, across every project
      */
     public function expireValues($now = null)
     {
@@ -80,8 +100,22 @@ final class ScanRetention
         // Then clear, in the same call rather than on a later schedule: the
         // window between "unreadable" and "gone" is small and bounded, instead
         // of being however long until the next cron.
+        // BOTH SIDES OF THE JOIN. It matched on generation_id alone, and the
+        // generation was 1 for every run of every project - so tightening ONE
+        // project's policy cleared the stored previews of every project on the
+        // installation. A join that scopes only one side is a join that can
+        // still cross projects.
+        //
+        // THIS COMMENT LIVES IN PHP, NOT IN THE STATEMENT. It was written
+        // inside the single-quoted string below, where `//` is not a comment
+        // but query text: MySQL takes `#`, `-- ` and `/* */`, and answers `//`
+        // with ERROR 1064. So the statement could not parse, and the
+        // cross-project fix these five lines describe had never once run. The
+        // method has no production caller yet, which is the only reason a
+        // syntax error survived a test suite.
         $this->db->exec('UPDATE ' . Schema::table('finding') . ' f
-            JOIN ' . Schema::table('scan_run') . ' r ON r.generation_id = f.generation_id
+            JOIN ' . Schema::table('scan_run') . ' r
+                 ON r.generation_id = f.generation_id AND r.project_id = f.project_id
             SET f.value_bin = NULL, f.value_fingerprint = NULL, f.value_expires_at = NULL
             WHERE r.project_id = ?', [$pid]);
         return $n;
@@ -111,10 +145,20 @@ final class ScanRetention
             // cascade, and reversing it orphans rows whose parent is gone.
             $this->db->exec('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ?', [$runId]);
             $this->db->exec('DELETE FROM ' . Schema::table('scan_aggregate') . ' WHERE run_id = ?', [$runId]);
-            $this->db->exec('DELETE FROM ' . Schema::table('finding') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('unique_candidate') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('unique_group') . ' WHERE generation_id = ?', [$gen]);
-            $this->db->exec('DELETE FROM ' . Schema::table('scan_dim') . ' WHERE generation_id = ?', [$gen]);
+            // BY PROJECT AND GENERATION. These four deletes named the
+            // generation only, and the generation was 1 for every run of every
+            // project - so purging ONE finished run of ONE project deleted
+            // every project s findings on the whole installation. Reproduced
+            // against a real server before it was fixed: two projects, one
+            // purge, zero findings left anywhere.
+            $this->db->exec('DELETE FROM ' . Schema::table('finding')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('unique_candidate')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('unique_group')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
+            $this->db->exec('DELETE FROM ' . Schema::table('scan_dim')
+                . ' WHERE project_id = ? AND generation_id = ?', [$pid, $gen]);
             $this->db->exec('DELETE FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?', [$runId]);
             $n++;
         }
@@ -124,11 +168,24 @@ final class ScanRetention
     /**
      * Give up on runs that stopped making progress, and release their slots.
      *
-     * A run whose lease has expired and which has not been updated within the
+     * A run whose lease has expired and which has made no PROGRESS within the
      * stale window is abandoned: its browser closed, its worker died, or its
      * request was killed. It becomes terminally `expired` - a real terminal
      * state with `partial` coverage, never `complete` - and its project slot is
      * freed so a new scan can start.
+     *
+     * PROGRESS, NOT ACTIVITY, and the distinction is the whole finding. This
+     * read updated_at, which is written by claim(), advancePhase(),
+     * setProgressState() and every batch fence - so a run stuck in a retry loop
+     * refreshed it several times a second and could not be reaped at ANY
+     * staleHours setting, while this method's own terminal_reason said "no
+     * progress within the configured stale-run window". progress_at is written
+     * in exactly two places, both of them real progress: a batch that finished
+     * at least one record, and the manifest freezing.
+     *
+     * COALESCE, because progress_at is NULL until one of those two happens. A
+     * run that wedged during planning has never made progress and created_at is
+     * then the honest measure of how long it has been failing to.
      *
      * The predicate requires active_slot = 1, so this is idempotent: a run it
      * already expired is no longer a candidate.
@@ -141,7 +198,7 @@ final class ScanRetention
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
             SET phase = ?, terminal = ?, coverage = ?, active_slot = NULL,
                 terminal_reason = ?, updated_at = ?
-            WHERE active_slot = 1 AND updated_at < ?
+            WHERE active_slot = 1 AND COALESCE(progress_at, created_at) < ?
               AND (lease_expires_at IS NULL OR lease_expires_at < ?)',
             ['terminal', ScanOutcome::EXPIRED, ScanOutcome::COV_PARTIAL,
              'no progress within the configured stale-run window; the scan slot was released',
@@ -158,8 +215,19 @@ final class ScanRetention
      */
     public function preview($pid, array $policy)
     {
+        // This answers a question about ONE project - "what would retention do
+        // here?" - and used to count every expired preview on the
+        // installation, so an administrator of a small project was shown the
+        // consequence of somebody else's data.
+        //
+        // IT NO LONGER MATCHES WHAT expireValues() DOES, which is
+        // installation-wide. See that method: the disagreement is deliberate at
+        // both ends and unresolved in the middle, and whoever wires the cron
+        // has to resolve it rather than assume these two numbers describe the
+        // same operation.
         $vals = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
-            . ' WHERE value_expires_at IS NOT NULL AND value_expires_at <= ?', [self::now()]);
+            . ' WHERE project_id = ? AND value_expires_at IS NOT NULL'
+            . ' AND value_expires_at <= ?', [$pid, self::now()]);
         $runs = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?',
             [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90)]);

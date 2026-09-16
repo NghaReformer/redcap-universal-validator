@@ -50,7 +50,42 @@ $dagFilter = $scope['dag'];
 
 $svc = new Scan\ScanService($module);
 $available = $svc->available($pid);
-$activeRun = $available['ok'] ? $svc->activeRun($pid) : null;
+// M3: THREE ANSWERS, NOT TWO. activeRun() used to return a run id or null, and
+// null meant both "there is no run" and "there is one you may not touch" - so
+// this page rendered Continue over a run every click would be refused on, and
+// printed its id into the client. $activeState carries the distinction;
+// $activeRun stays the id and is non-null ONLY when this caller may work it, so
+// every use of it below keeps its old meaning.
+//
+// $scope is passed in rather than re-read. It was computed at the top of this
+// request from the same rights the verbs will re-check, and two readings of one
+// user in one request can legitimately differ.
+$activeState = $available['ok']
+    ? $svc->activeRun($pid, $scope)
+    : ['run_id' => null, 'state' => 'none', 'why' => null];
+$activeRun = $activeState['run_id'];
+
+// THE STATE, READ HERE RATHER THAN PROMISED HERE.
+//
+// This file has said since it was written that it "renders the state BEFORE any
+// script runs, so somebody with scripting disabled still sees whether their scan
+// is going rather than an empty box". It did not. Every value span was emitted
+// empty, the bar was hardcoded to zero, and the noscript block said "Nothing has
+// been run" over a run that was on the server at that moment. One extra read on
+// a page that has already looked up the run id is what the sentence costs.
+//
+// A status that cannot be read is not fatal and is not hidden: the panel falls
+// back to the empty shape and the client fills it in on its first poll.
+$activeStatus = null;
+if ($activeRun !== null) {
+    try {
+        $st = $svc->status($pid, $activeRun);
+        if (is_array($st) && !empty($st['ok'])) $activeStatus = $st;
+    } catch (\Throwable $e) {
+        $activeStatus = null;
+    }
+}
+$prefill = ScanPageView::panelPrefill($activeStatus);
 
 // THE TRANSPORT, resolved BEFORE the page decides what to offer.
 //
@@ -77,6 +112,15 @@ if ($available['ok']) {
             if (!is_string($name) || $name === '') {
                 $jsmoWhy = 'the framework started no JavaScript transport for this module '
                          . '(it returned no module object name)';
+            } elseif (!ScanPageView::isJsIdentifierPath($name)) {
+                // A name this page will not print. Not because it is expected to
+                // be hostile - it comes from the framework, which derives it from
+                // the module's installed directory - but because anything that is
+                // not a dotted identifier becomes a syntax error inside the
+                // <script> block below, and a panel that fails with a syntax
+                // error explains nothing to whoever has to fix it.
+                $jsmoWhy = 'the framework returned a JavaScript transport name this page '
+                         . 'cannot use';
             } else {
                 // Older builds echo the bootstrap and return null; newer ones
                 // hand back the markup. Both are supported, exactly as the
@@ -94,6 +138,7 @@ if ($available['ok']) {
                       'why' => 'the scan cannot be driven from this page',
                       'detail' => $jsmoWhy];
         $activeRun = null;
+        $activeState = ['run_id' => null, 'state' => 'none', 'why' => null];
     }
 }
 
@@ -106,7 +151,7 @@ $asked = (isset($_GET['run']) && $_GET['run'] === '1')
       || (isset($_GET['csv']) && $_GET['csv'] === '1')
       || (isset($_POST['csv']) && $_POST['csv'] === '1');
 ?>
-<h4 style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
+<h4 id="uv-scan-heading" style="margin-top:12px"><i class="fas fa-magnifying-glass"></i> Validation scan — Universal Field Validator</h4>
 
 <?php if (!$available['ok']) { ?>
 <?php
@@ -145,31 +190,105 @@ page load, and it survives closing this tab — come back and it resumes where i
 <?php } ?>
 </p>
 
-<div id="uv-scan-panel" style="max-width:760px;border:1px solid #ddd;border-radius:6px;padding:14px">
+<?php
+// A bar with no total is INDETERMINATE, never zero and never full. Zero for the
+// length of a planning phase reads as a scan that has stalled, and people stop
+// scans that look stalled; full reads as a scan that has FINISHED, which is this
+// module's founding complaint reproduced in a progress bar. The class the client
+// sets for that state was never defined anywhere - there is no stylesheet in
+// this module - so the "indeterminate" bar rendered as a solid full-width green
+// one. It is defined here, beside the only markup that uses it.
+//
+// The reduced-motion branch is not optional. A perpetually sliding bar is a
+// vestibular trigger, and the module commits to WCAG 2.2 elsewhere. Under
+// reduced motion the bar sits at a partial width, which still reads as "working,
+// amount unknown" rather than "finished".
+$barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
+?>
+<style>
+#uv-scan-panel .uv-bar { transition: width .25s linear; }
+#uv-scan-panel .uv-bar-indeterminate {
+  width: 35%;
+  background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.45) 0 8px, rgba(255,255,255,0) 8px 16px);
+  animation: uv-bar-slide 1.1s linear infinite;
+}
+@keyframes uv-bar-slide { from { transform: translateX(-120%); } to { transform: translateX(320%); } }
+@media (prefers-reduced-motion: reduce) {
+  #uv-scan-panel .uv-bar-indeterminate { animation: none; }
+}
+</style>
+<div id="uv-scan-panel" role="region" aria-labelledby="uv-scan-heading"
+     aria-busy="<?php echo $prefill['active'] ? 'true' : 'false'; ?>"
+     style="max-width:760px;border:1px solid #ddd;border-radius:6px;padding:14px">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-    <button id="uv-scan-start" class="btn btn-primary btn-sm"<?php echo $activeRun ? ' style="display:none"' : ''; ?>>
+    <?php // type="button" on every one of them: these sit inside REDCap's project
+          // form, and a control that reaches its default action submits the page
+          // out from under a running scan. ?>
+    <button type="button" id="uv-scan-start" class="btn btn-primary btn-sm"<?php echo $activeRun ? ' style="display:none"' : ''; ?>>
       Start a scan
     </button>
-    <button id="uv-scan-resume" class="btn btn-secondary btn-sm"<?php echo $activeRun ? '' : ' style="display:none"'; ?>>
+    <button type="button" id="uv-scan-resume" class="btn btn-secondary btn-sm"<?php echo $activeRun ? '' : ' style="display:none"'; ?>>
       Continue
     </button>
-    <button id="uv-scan-cancel" class="btn btn-outline-danger btn-sm" style="display:none">
+    <button type="button" id="uv-scan-cancel" class="btn btn-outline-danger btn-sm" style="display:none">
       Stop
     </button>
-    <span id="uv-scan-phase" style="font-weight:600"></span>
+    <span id="uv-scan-phase" style="font-weight:600"><?php echo ScanPageView::h($prefill['phase']); ?></span>
   </div>
+<?php if ($activeState['state'] === 'other' || $activeState['state'] === 'unknown') { ?>
+  <?php /* M3: SAY IT BEFORE THE CLICK, NOT AFTER. With a run on the server that
+           this caller may not touch, Continue is hidden and Start is offered -
+           and Start is refused by the store with this same sentence. Printing it
+           here costs nothing and turns a button that always fails into a state
+           the reader can see. It is BUSY_WHY verbatim: a more specific sentence
+           would confirm the run's scope to somebody outside it. */ ?>
+  <p id="uv-scan-busy" role="status" style="margin-top:10px;font-size:13px;color:#a30"><?php
+     echo ScanPageView::h($activeState['why']); ?></p>
+<?php } ?>
 
-  <div style="margin-top:10px;background:#eee;border-radius:3px;height:8px;overflow:hidden">
-    <div id="uv-scan-bar" class="uv-bar" style="width:0;height:8px;background:#0a7"></div>
+  <?php // The TRACK carries the semantics and the fill stays presentational. An
+        // ABSENT aria-valuenow is what ARIA means by an indeterminate progress
+        // bar, which is exactly the state a run with no total yet is in - so it
+        // is omitted rather than set to a number that would be a lie. ?>
+  <div id="uv-scan-bar-track" role="progressbar" aria-label="Validation scan progress"
+       aria-valuemin="0" aria-valuemax="100"<?php echo $barPct === null ? '' : ' aria-valuenow="' . (int) $barPct . '"'; ?>
+       style="margin-top:10px;background:#eee;border-radius:3px;height:8px;overflow:hidden">
+    <div id="uv-scan-bar" class="uv-bar<?php echo $barPct === null ? ' uv-bar-indeterminate' : ''; ?>" aria-hidden="true"
+         style="<?php echo $barPct === null ? '' : 'width:' . (int) $barPct . '%;'; ?>height:8px;background:#0a7"></div>
   </div>
   <div style="margin-top:6px;font-size:13px;color:#444">
-    <span id="uv-scan-counts"></span> &nbsp; <span id="uv-scan-found"></span>
+    <span id="uv-scan-counts"><?php echo ScanPageView::h($prefill['counts']); ?></span> &nbsp;
+    <span id="uv-scan-found"><?php echo ScanPageView::h($prefill['found']); ?></span>
   </div>
-  <p id="uv-scan-done" style="display:none;margin-top:10px;font-size:13px"></p>
-  <p id="uv-scan-note" style="margin-top:8px;font-size:13px;color:#a30"></p>
+  <?php // One atomic live region for the whole panel, written on a change rather
+        // than on every poll. The visible spans above are deliberately NOT live:
+        // a poll lands every few seconds, and announcing each one makes the page
+        // unusable with a screen reader. This is the shape js/engine.js already
+        // uses for a field's verdict. ?>
+  <span id="uv-scan-announce" role="status" aria-live="polite" aria-atomic="true"
+        style="position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap"></span>
+  <p id="uv-scan-done" role="status" aria-live="polite" aria-atomic="true"
+     style="<?php echo $prefill['done'] === null ? 'display:none;' : ''; ?>margin-top:10px;font-size:13px"><?php
+     echo $prefill['done'] === null ? '' : ScanPageView::h($prefill['done']); ?></p>
+  <p id="uv-scan-note" role="status" aria-live="polite" aria-atomic="true"
+     style="margin-top:8px;font-size:13px;color:#a30"></p>
 
   <noscript>
-    <p style="color:#a30">This page needs JavaScript to run a scan. Nothing has been run.</p>
+<?php if ($activeState['state'] === 'other' || $activeState['state'] === 'unknown') { ?>
+    <?php /* THE THIRD SENTENCE. Without it this said "Nothing has been run" over a
+             run that is on the server at that moment, which is the same false
+             reassurance the whole rebuild exists to remove - and it said it
+             specifically to the person who cannot see the run. It repeats the
+             store's own busy wording and adds nothing to it, because anything
+             more would confirm the run's scope to somebody outside it. */ ?>
+    <p style="color:#a30"><?php echo ScanPageView::h($activeState['why']); ?></p>
+<?php } elseif ($activeRun === null) { ?>
+    <p style="color:#a30">This page needs JavaScript to start a scan. Nothing has been run.</p>
+<?php } else { ?>
+    <p style="color:#a30">A validation scan for this project is on the server right now, and the
+    figures above are how far it had got when this page was loaded. This page needs JavaScript to
+    follow it or to stop it; the scan itself is unaffected and continues either way.</p>
+<?php } ?>
   </noscript>
 </div>
 
@@ -189,7 +308,18 @@ reporting a clean project.
     // client never constructs a URL of its own. The object name comes from the
     // framework and the bootstrap above is what creates it - printing the name
     // without the bootstrap is what broke the first pilot.
+    // The vocabulary, printed BEFORE attach() so nothing renders without it.
+    // The phase labels and the coverage sentences were literals in js/scan.js as
+    // well as here, which is two copies of one vocabulary with no way of
+    // learning about each other; there is now one table, in ScanPageView, and
+    // the client holds none. The JSON_HEX_* flags are what make json_encode safe
+    // inside a <script> block, even for values that are module constants.
+    window.UVScan.labels = <?php echo json_encode(ScanPageView::labels(),
+        JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
     window.UVScan.ajax = function (action, payload) {
+        // Printed unescaped ON PURPOSE, and safe because it was PROVED to be a
+        // dotted identifier above (ScanPageView::isJsIdentifierPath) - escaping
+        // an expression would leave an expression that no longer evaluates.
         return <?php echo $jsmo['name']; ?>.ajax(action, payload);
     };
     window.UVScan.attach({

@@ -128,6 +128,13 @@ class Branching
                     'type'        => 'single',
                     'fields'      => [$field],
                     'configError' => self::message($field, $conflict),
+                    // A synthesized rule inherits the origin of the first rule
+                    // that claimed the field. The scan names a rule by where it
+                    // came from, and a rule with no origin at all would be named
+                    // through the annotation branch and collide with the real
+                    // annotation rules in that namespace. First-claimant is the
+                    // only defensible answer for a rule assembled from both.
+                    '_origin'     => self::originOf($rules, $idxs[0]),
                 ];
                 continue;
             }
@@ -144,6 +151,7 @@ class Branching
                 'type'     => (isset($first['type']) && $first['type'] !== '') ? $first['type'] : 'single',
                 'fields'   => [$field],
                 'branches' => $branches,
+                '_origin'  => self::originOf($rules, $idxs[0]),
             ];
         }
 
@@ -160,6 +168,20 @@ class Branching
         }
         foreach ($extra as $r) $out[] = $r;
         return $out;
+    }
+
+    /**
+     * Where a synthesized rule came from: whoever claimed the field first.
+     *
+     * Separate function rather than an inline isset() twice, so the two
+     * synthesis sites cannot answer differently - which is exactly the drift
+     * that let the settings/annotation boundary be wrong for four releases.
+     */
+    private static function originOf(array $rules, $idx)
+    {
+        return (isset($rules[$idx]['_origin']) && is_string($rules[$idx]['_origin'])
+                && $rules[$idx]['_origin'] !== '')
+            ? $rules[$idx]['_origin'] : 'annotation';
     }
 
     /** The user-facing message for one fieldConflicts() entry. */

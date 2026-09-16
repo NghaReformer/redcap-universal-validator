@@ -66,7 +66,25 @@ class ScanPageView
      */
     public static function csv($s)
     {
-        $s = (string) $s;
+        // SCRUB FIRST, THEN LOOK. This order is the fix, and the order it
+        // replaces was defended by a comment that had the causality backwards:
+        // "scrubbing first could delete a control byte and expose a '=' that
+        // the pre-scrub scan had already accounted for". The pre-scrub scan did
+        // not account for it. It walked the leading bytes, stopped at the first
+        // one not in $skip, and if that byte was a control byte it concluded
+        // the cell was not a formula and added no apostrophe - and then scrub()
+        // deleted exactly that byte, leaving '=' as the emitted cell's first
+        // content byte. So "\x01=1+1" left here as a live =1+1, as did a
+        // leading \x1B, \x1A or \x7F, and " \x01 =cmd|'/c calc'" survived the
+        // leading-space handling the same way. One byte, chosen from the set
+        // this module's own sanitiser is guaranteed to remove, walked through
+        // the defence.
+        //
+        // Scrubbing first cannot hide a formula start, only reveal one: scrub()
+        // removes control bytes and nothing else, so it never removes =, +, -
+        // or @, and every byte it does remove is one the scan below would have
+        // had to decide about anyway.
+        $s = self::scrub((string) $s);
         // Excel and Sheets strip leading whitespace, tabs, carriage returns and a
         // BOM BEFORE deciding whether a cell is a formula, so inspecting byte zero
         // alone is not enough: " =cmd|'/c calc'", a tab- or CR-prefixed payload,
@@ -81,15 +99,10 @@ class ScanPageView
             break;
         }
         if ($i < $len && strpos('=+-@', $s[$i]) !== false) $s = "'" . $s;
-        // Control bytes are removed, not quoted around - see scrub(), which the
-        // page shares, so one stored value cannot be sanitised in the download
-        // and passed through raw into the HTML table.
-        //
-        // The ORDER matters: the formula scan above runs on the bytes as stored,
-        // because that is what a spreadsheet's own parser sees. Scrubbing first
-        // could delete a control byte and expose a '=' that the pre-scrub scan
-        // had already accounted for.
-        return '"' . str_replace('"', '""', self::scrub($s)) . '"';
+        // Control bytes were removed above, not quoted around - see scrub(),
+        // which the page shares, so one stored value cannot be sanitised in the
+        // download and passed through raw into the HTML table.
+        return '"' . str_replace('"', '""', $s) . '"';
     }
 
     /**
@@ -154,6 +167,202 @@ class ScanPageView
                 'fenced' => $fenced, 'clean' => $clean];
     }
 
+    /**
+     * How a phase reads to somebody who did not design this.
+     *
+     * Deliberately not the stored value. "unique-finalize" is a correct name for
+     * a state machine and an alarming one for a data manager watching a progress
+     * bar.
+     *
+     * THIS TABLE LIVES HERE AND NOWHERE ELSE. It was a literal inside
+     * js/scan.js, which meant PHP and JavaScript each held half of the same
+     * vocabulary and neither knew when the other changed. The page now renders
+     * from this table and hands the same table to the client, so a new phase is
+     * one entry rather than two edits a reviewer has to notice are a pair. The
+     * recorded lesson is the v1.6.0 rounds, where the reviews kept failing on
+     * callers of a shared helper that had not been converted with it.
+     */
+    public static function phaseLabels()
+    {
+        return [
+            Scan\ScanPhase::PLANNING   => 'Listing the records to check',
+            Scan\ScanPhase::SCANNING   => 'Checking records',
+            Scan\ScanPhase::CATCH_UP   => 'Checking what changed while it ran',
+            Scan\ScanPhase::UNIQUE     => 'Looking for duplicate values',
+            Scan\ScanPhase::ROLLUP     => 'Building the summary',
+            Scan\ScanPhase::CANCELLING => 'Stopping',
+            Scan\ScanPhase::TERMINAL   => 'Finished',
+        ];
+    }
+
+    /**
+     * One phase, in words. An unrecognised phase falls back to its stored name:
+     * a state-machine value on screen is ugly, and an empty label where the
+     * phase should be is a page that looks broken.
+     */
+    public static function phaseLabel($phase)
+    {
+        $m = self::phaseLabels();
+        $k = (string) $phase;
+        return isset($m[$k]) ? $m[$k] : $k;
+    }
+
+    /**
+     * What a finished run may be said to have achieved.
+     *
+     * Every one of these is a different sentence on purpose. The whole rebuild
+     * exists because one word - "complete" - was used for a run that examined
+     * everything and a run that examined nothing.
+     */
+    public static function coverageSentences()
+    {
+        return [
+            Scan\ScanOutcome::FENCED      => 'Every record was checked, including changes made while it ran.',
+            Scan\ScanOutcome::MANIFEST    => 'Every record on the opening list was checked. This server '
+                                           . 'cannot prove the project did not change during the scan.',
+            // NO APOSTROPHE, AND THAT IS A CONSTRAINT RATHER THAN A STYLE.
+            // pages/scan.php prints this table through json_encode with
+            // JSON_HEX_APOS, so an apostrophe leaves here as an escape sequence -
+            // and tests/scan_page_php.php checks that the first 40 characters of
+            // each sentence appear literally in the HTML. Every existing
+            // sentence happens to avoid one; this one avoids it on purpose.
+            Scan\ScanOutcome::EMPTY_SCOPE => 'No records were in scope for this scan, so nothing was '
+                                           . 'checked and this result says nothing about the project.',
+            Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
+                                           . 'picture of the project.',
+            Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',
+        ];
+    }
+
+    /**
+     * The sentence for a coverage value this build does not know.
+     *
+     * Saying nothing would be a blank certificate over a finished run, and that
+     * is the one outcome this module refuses. Naming the unrecognised value
+     * gives whoever has to fix it a thread to pull. {value} is substituted by
+     * both halves of the page - PHP here, JavaScript in js/scan.js - so the two
+     * cannot word it differently.
+     */
+    const COVERAGE_UNKNOWN = 'This scan finished, but this page does not recognise the result it '
+        . 'recorded ({value}). Treat it as incomplete and run it again.';
+
+    /**
+     * Stated even on a run whose coverage was complete: the report the reader
+     * holds is not the report the run produced.
+     */
+    const DETAIL_TRUNCATED = 'Some findings were not kept, because the scan reached the limit this '
+        . 'project allows.';
+
+    /**
+     * The completion sentence for one finished run, built as ONE string.
+     *
+     * Built rather than appended to whatever is already on screen. The client
+     * used to write the coverage sentence into the node and then concatenate the
+     * truncation note onto its text, so an unmapped coverage produced a sentence
+     * that began with a space and had no subject.
+     */
+    public static function coverageSentence($coverage, $detail = null)
+    {
+        $m = self::coverageSentences();
+        $k = (string) $coverage;
+        $s = isset($m[$k]) ? $m[$k] : str_replace('{value}', $k, self::COVERAGE_UNKNOWN);
+        if ((string) $detail === Scan\ScanOutcome::DETAIL_TRUNCATED) {
+            $s .= ' ' . self::DETAIL_TRUNCATED;
+        }
+        return $s;
+    }
+
+    /** The vocabulary the browser half renders from, so it holds no copy of its own. */
+    public static function labels()
+    {
+        return [
+            'phase'           => self::phaseLabels(),
+            'coverage'        => self::coverageSentences(),
+            'coverageUnknown' => self::COVERAGE_UNKNOWN,
+            'truncated'       => self::DETAIL_TRUNCATED,
+        ];
+    }
+
+    /**
+     * Percentage, or null when the total is not knowable yet.
+     *
+     * Null is not zero, and the distinction is the whole point: a bar sitting at
+     * 0% for the length of a planning phase reads as a scan that has stalled,
+     * and people stop scans that look stalled.
+     */
+    public static function pct($done, $total)
+    {
+        $total = (int) $total;
+        if ($total <= 0) return null;
+        $p = (int) floor(((int) $done / $total) * 100);
+        if ($p < 0) return 0;
+        return $p > 100 ? 100 : $p;
+    }
+
+    /**
+     * The panel's text BEFORE any script runs.
+     *
+     * pages/scan.php has claimed since it was written that it "renders the state
+     * before any script runs, so somebody with scripting disabled still sees
+     * whether their scan is going rather than an empty box". It did not: every
+     * value span was emitted empty and the bar was hardcoded to zero, so a
+     * reader without JavaScript got exactly the empty box the comment promised
+     * they would not, under a progress bar that read as a stalled run. This
+     * produces the same four strings js/scan.js produces, from the same status
+     * array, so the first paint and the first poll agree.
+     *
+     * @param  ?array $status a ScanService::status() array, or null when there is
+     *                no run or its status could not be read
+     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string, active:bool}
+     */
+    public static function panelPrefill($status)
+    {
+        if (!is_array($status) || empty($status['ok'])) {
+            return ['phase' => '', 'counts' => '', 'found' => '', 'pct' => null,
+                    'done' => null, 'active' => false];
+        }
+
+        $total = isset($status['total']) ? (int) $status['total'] : 0;
+        $done  = isset($status['done']) ? (int) $status['done'] : 0;
+        $pct   = self::pct($done, $total);
+        $found = isset($status['findings']) ? (int) $status['findings'] : 0;
+
+        return [
+            'phase'  => self::phaseLabel(isset($status['phase']) ? $status['phase'] : ''),
+            'counts' => $total > 0
+                ? ($done . ' of ' . $total . ' records' . ($pct === null ? '' : '  (' . $pct . '%)'))
+                : 'Preparing',
+            'found'  => $found === 0 ? 'Nothing found yet'
+                : ($found . ' finding' . ($found === 1 ? '' : 's') . ' so far'),
+            'pct'    => $pct,
+            'done'   => empty($status['terminal']) ? null
+                : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
+                                         isset($status['detail']) ? $status['detail'] : null),
+            'active' => !empty($status['active']),
+        ];
+    }
+
+    /**
+     * Is this a name the page may print inside a <script> block?
+     *
+     * The framework's JavaScript module object name is not project data and not
+     * user input - External Modules derives it from the module's installed
+     * directory - so this is not an escaping problem, and escaping cannot solve
+     * it: htmlspecialchars on an expression leaves an expression that no longer
+     * evaluates. It is a missing input contract. A name that is not a dotted
+     * identifier becomes a syntax error inside the block that prints it, and a
+     * panel that fails with a syntax error explains nothing to the person who
+     * has to fix it - which is how the first pilot's Start button failed, by a
+     * different route.
+     *
+     * The length cap is there so a pathological value cannot bloat the page.
+     */
+    public static function isJsIdentifierPath($name)
+    {
+        if (!is_string($name) || $name === '' || strlen($name) > 200) return false;
+        return (bool) preg_match('/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*$/', $name);
+    }
+
     /** The notice, rendered wherever a scan would otherwise have been started. */
     public static function unavailable($extra = '')
     {
@@ -185,11 +394,14 @@ class ScanPageView
      * on the run they had just started (C-1). The id is also stable under a
      * rename, which a persisted run's authorised scope has to be.
      *
-     * 'dagName' is that group's unique name, for display and for the legacy
-     * name-comparing scanProject() path. It is never compared against a record.
-     *
      * @return array{ok: bool, dag: ?string, dagName: ?string, why: ?string}
      *         ok=false means REFUSE and say why. dag=null means unconfined.
+     *         dag is the numeric Data Access Group ID as a string - the axis
+     *         every consumer compares on. dagName is the friendly name and is
+     *         for display only; comparing it is the defect this shape exists to
+     *         prevent. The legacy scanProject() facade takes the id too and
+     *         re-derives the name itself through dagNameOf(). dagName is null on
+     *         the ok=false and unconfined returns.
      */
     public static function scanScope($module, $pid)
     {
@@ -235,14 +447,17 @@ class ScanPageView
                         'valueCeiling' => $ceiling, 'mayExport' => $mayExport, 'rights' => $rights];
             }
 
-            $gd = null;
-            try {
-                if (is_callable(['\REDCap', 'getGroupNames'])) {
-                    $g = \REDCap::getGroupNames(true, $rights['group_id']);
-                    if (is_string($g) && $g !== '') $gd = $g;
-                }
-            } catch (\Throwable $e) {
-            }
+            // STILL THE RESOLVABILITY CHECK, and that is the only reason the
+            // lookup survives the move to the id axis. The scope this method
+            // returns is now the numeric group id, which needs no lookup - but a
+            // group whose name this installation cannot read is a group whose
+            // membership it cannot establish either, and 1.6.2 already learned
+            // what happens when that case scans on: an '__unresolvable__'
+            // sentinel matched no record, the scan read nothing, reported
+            // 'complete', and rendered a green tick over zero records. Asking
+            // the question and refusing on a blank answer is what keeps that
+            // refusal live; pinned by tests/scan_page_php.php S-03.
+            $gd = self::dagNameOf($rights['group_id']);
             if ($gd === null) {
                 // This used to set an '__unresolvable__' sentinel and scan on.
                 // The sentinel matched no record, so the scan read nothing,
@@ -252,15 +467,64 @@ class ScanPageView
                 return $no('Your Data Access Group could not be resolved, so there is no scope to scan. '
                          . 'The validation scan was not run.');
             }
-            // The NAME still has to resolve: an unresolvable group means the
-            // rights row cannot be described, and refusing is the honest answer
-            // (see above). But the value that travels as the scope is the ID.
+            // THE ID, NOT THE NAME, AND THIS IS THE WHOLE FIX.
+            //
+            // 'dag' is stored verbatim as uv_scan_run.scope_dag and is then
+            // compared, unchanged, against three id-shaped values:
+            // redcap_record_list.dag_id (ScanPlanner::stream and
+            // RecordManifestSource::inScope) and $rights['group_id']
+            // (ScanAuthorization::readable). Returning the friendly name here
+            // meant a group-scoped run listed every record, appended none,
+            // called an empty manifest complete and promoted to
+            // coverage=complete-through-fence clean=true - and refused the
+            // designer who started it scan-work, scan-status and scan-cancel on
+            // their own run, which then held the project's only slot with no
+            // reaper. Reproduced end to end, both sides of the comparison
+            // printed.
+            //
+            // 'dagName' is for PROSE ONLY, and nothing reads it yet. That is
+            // deliberate rather than an oversight: the one place that needs the
+            // name is the legacy scanProject() facade, whose record groups come
+            // from \REDCap::getData() and are therefore unique NAMES, and it
+            // re-derives the name from the id through dagNameOf() instead of
+            // being handed this. So the id is the only value that crosses a
+            // module boundary, and a page that later wants to print the group
+            // has the name here without anyone being tempted to compare it.
             return ['ok' => true, 'dag' => (string) $rights['group_id'], 'dagName' => $gd,
                     'why' => null, 'valueCeiling' => $ceiling,
                     'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
             return $no('Could not verify your rights — scan not run.');
         }
+    }
+
+    /**
+     * A group id resolved to its unique DAG name, or null when it cannot be.
+     *
+     * ONE RESOLUTION, BECAUSE THERE WERE ALREADY TWO. This exact six-line body
+     * existed inline in scanScope() and again as a private dagNameOf() on
+     * UniversalValidator, which the live unique-check endpoint calls to decide
+     * whether a colliding record id may be shown. Two copies of a name lookup is
+     * two chances for one of them to be reading a different thing from the other,
+     * and the axis defect this method exists because of is exactly that shape.
+     *
+     * NULL IS AN ANSWER AND IT MEANS REFUSE. A group whose name cannot be read is
+     * a group whose membership cannot be established, and the callers turn that
+     * into a refusal rather than into an unconfined read. A throw is caught here
+     * and reported as null for the same reason: "the question failed" and "there
+     * is no such group" both have to fail closed.
+     */
+    public static function dagNameOf($groupId)
+    {
+        if ($groupId === null || $groupId === '') return null;
+        try {
+            if (is_callable(['\REDCap', 'getGroupNames'])) {
+                $g = \REDCap::getGroupNames(true, $groupId);
+                if (is_string($g) && $g !== '') return $g;
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
     }
 
     /** One CSV line from a list of values, each quoted and formula-defused. */

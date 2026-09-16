@@ -35,6 +35,8 @@ require_once __DIR__ . '/php/ScanColumns.php';
 // asked - and the framework has no autoloader to fall back on.
 require_once __DIR__ . '/php/Scan/Schema.php';
 require_once __DIR__ . '/php/Scan/ScanDb.php';
+require_once __DIR__ . '/php/Scan/DbError.php';
+require_once __DIR__ . '/php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/php/Scan/ScanStore.php';
 require_once __DIR__ . '/php/Scan/ScanOutcome.php';
 require_once __DIR__ . '/php/Scan/ScanPhase.php';
@@ -574,8 +576,15 @@ class UniversalValidator extends AbstractExternalModule
                         $c = (string) $code;
                         if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
                         if (isset($hiddenSet[$c])) {
+                            // locus: WHICH hidden code. A checkbox can have
+                            // several ticked at once, and every one of them is
+                            // a separate problem at the same field - so without
+                            // this they were the same finding twice, the unique
+                            // key refused the second, and the batch that
+                            // carried them both was rolled back entire.
                             $out['invalid'][] = ['field' => $field, 'value' => $c, 'algo' => 'choices',
-                                                 'type' => 'choices', 'reason' => 'hidden-choice'];
+                                                 'type' => 'choices', 'reason' => 'hidden-choice',
+                                                 'locus' => $c];
                         }
                     }
                     continue;
@@ -924,6 +933,13 @@ class UniversalValidator extends AbstractExternalModule
         ]);
 
         $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
+        // _origin is ours, and it stops here. Not a disclosure - 'settings' or
+        // 'annotation' tells a reader nothing - but this payload is built per
+        // page and per rule, and an unexplained key in the engine's input is
+        // what a future strict-shape check rejects.
+        foreach ($config['rules'] as $i => $r) {
+            if (is_array($r) && array_key_exists('_origin', $r)) unset($config['rules'][$i]['_origin']);
+        }
         return $config;
     }
 
@@ -1331,10 +1347,16 @@ class UniversalValidator extends AbstractExternalModule
      * composite unique partners.
      *
      * The same three sources scanPlan() unions into $readSet, gathered per rule
-     * rather than per project, because an entitlement question is asked of one
-     * rule at a time. Kept beside them so the two cannot drift: a source added
-     * to the read set and forgotten here would be a field the scan reads and
-     * never checks the reader's right to.
+     * rather than per project.
+     *
+     * IT IS NO LONGER THE ENTITLEMENT DERIVATION, and this sentence replaces one
+     * that said it was ("kept beside them so the two cannot drift: a source
+     * added to the read set and forgotten here would be a field the scan reads
+     * and never checks the reader's right to"). That mechanism is gone: the
+     * entitlement now comes from $readSet itself, in scanPlan(), because two
+     * derivations of one set is two things that can drift and the drift is what
+     * opened the hole. What remains for this helper is the per-rule form the
+     * enforceFormRights gate needs - and that gate has no production caller.
      *
      * @return string[]
      */
@@ -1439,8 +1461,20 @@ class UniversalValidator extends AbstractExternalModule
         $key = (string) ($pid === null ? '' : $pid);
         if (array_key_exists($key, $this->rulesMemo)) return $this->rulesMemo[$key];
 
-        $out = $this->getSettingRules($pid);
-        foreach ($this->getAnnotationRules($pid) as $r) $out[] = $r;
+        // WHERE A RULE CAME FROM TRAVELS ON THE RULE.
+        //
+        // It used to be inferred from a count: the caller was expected to say
+        // how many leading entries were settings rules, and everything after
+        // that boundary was an annotation rule. No caller ever passed the
+        // count, so every settings rule was named through the annotation branch
+        // - and the count could not have been made correct anyway, because
+        // Branching::resolve() below DROPS rules that lost every field to a
+        // branch rule and APPENDS synthesized ones, so no integer boundary
+        // survives it. A key on the rule does survive it: resolve() copies
+        // surviving rules wholesale.
+        $out = [];
+        foreach ($this->getSettingRules($pid) as $r)    { $r['_origin'] = 'settings';   $out[] = $r; }
+        foreach ($this->getAnnotationRules($pid) as $r) { $r['_origin'] = 'annotation'; $out[] = $r; }
         // Shared fields become explicit per-field branch rules (or config
         // errors when the sharing is illegal), so the client engine, the
         // audit, and the snapshot all consume one resolved structure.
@@ -1473,7 +1507,28 @@ class UniversalValidator extends AbstractExternalModule
 
         foreach ($subs as $s) {
             $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers);
-            if ($rule !== null) $out[] = $rule;
+            if ($rule === null) continue;
+            // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
+            //
+            // ScanPlanner::identify() has always preferred a stored id and has
+            // always said so ("a persistent id stored on the row is the right
+            // answer, because it survives editing the rule"), and no project
+            // ever had one - so the content-hash fallback was what ran, and it
+            // cannot survive an edit. Worse, revision() deliberately discards
+            // the field list, so two settings rules of the same type and options
+            // on DIFFERENT fields share a stem and are told apart only by their
+            // position in the list: dragging one row past another swapped their
+            // identities and re-attributed every finding stored against them.
+            //
+            // Attached here rather than in settingRowToRule() because that
+            // method returns from two branches and a rule that got its id in
+            // only one of them is the same class of half-wiring this release is
+            // about.
+            if (isset($s['rule-uid']) && is_string($s['rule-uid'])
+                    && preg_match('/^[0-9a-f]{16}\z/', $s['rule-uid'])) {
+                $rule['rule-uid'] = $s['rule-uid'];
+            }
+            $out[] = $rule;
         }
         return $out;
     }
@@ -2296,8 +2351,76 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_save_configuration($project_id = null)
     {
-        if ($project_id !== null) return;          // project settings install nothing
+        if ($project_id !== null) {
+            // Project settings install nothing, but this is the one moment the
+            // module is certain the rule list has just been edited, so it is
+            // where a rule row is given the identity it will keep.
+            $this->mintRuleIds($project_id);
+            return;
+        }
+        // BESIDE the scan's schema, not inside it. uv_rate_bucket backs the
+        // survey throttle, which runs whether or not the scan was ever asked
+        // for; installScanSchema() below returns early unless the scan flag is
+        // set, and gating the throttle's storage on the scan's flag is what
+        // left the module's only unauthenticated endpoint unthrottled by
+        // default. See Schema::ensureRateBucket().
+        Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
+    }
+
+    /**
+     * Give every settings rule row a persistent id, once, and never again.
+     *
+     * WHY A ROW NEEDS AN ID. ScanPlanner::identify() prefers a stored id and
+     * always has - its comment says "a persistent id stored on the row is the
+     * right answer, because it survives editing the rule" - but nothing ever
+     * minted one, so every project ran the content-hash fallback. That fallback
+     * cannot survive an edit, and it is worse than it looks: revision()
+     * deliberately excludes the field list, so two rules of the same type and
+     * options on DIFFERENT fields hash the same and are separated only by their
+     * position. Dragging one row above the other swapped their identities and
+     * re-attributed every finding already stored against them.
+     *
+     * NEVER REGENERATED. An id that changes is worse than no id, because a
+     * changed id silently orphans findings instead of merely failing to match
+     * them. A row whose stored value is already a valid id is left exactly as
+     * it is; only blanks and malformed values are filled.
+     *
+     * NEVER FATAL. This runs inside a framework hook during a settings save. A
+     * failure here degrades to the old content-hash naming, which is what
+     * shipped for every release before this one; failing the administrator's
+     * save over it would be a much worse outcome than the fallback.
+     */
+    private function mintRuleIds($pid)
+    {
+        try {
+            if (!is_callable([$this, 'setProjectSetting'])) return;
+            $subs = $this->getSubSettings('rules', $pid);
+            if (!is_array($subs) || !$subs) return;
+
+            $col = [];
+            $minted = 0;
+            foreach ($subs as $s) {
+                $cur = (is_array($s) && isset($s['rule-uid']) && is_string($s['rule-uid']))
+                    ? $s['rule-uid'] : '';
+                if (preg_match('/^[0-9a-f]{16}\z/', $cur)) { $col[] = $cur; continue; }
+                $col[] = bin2hex(random_bytes(8));
+                $minted++;
+            }
+            if ($minted === 0) return;
+
+            // Written as the whole parallel column, because that is how the
+            // framework stores a repeatable sub-setting: a partial write would
+            // shift every row's id by one, which is the exact failure mode the
+            // id exists to prevent.
+            $this->setProjectSetting('rule-uid', $col, $pid);
+            $this->log('scan-rule-ids-minted', ['rows' => count($col), 'minted' => $minted]);
+        } catch (\Throwable $e) {
+            // Class only: the message comes from the framework's error path and
+            // can carry statement text.
+            try { $this->log('scan-rule-ids-mint-failed', ['error' => get_class($e)]); }
+            catch (\Throwable $ignored) { }
+        }
     }
 
     /**
@@ -2310,6 +2433,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     public function redcap_module_system_enable($version = null)
     {
+        // See the note in redcap_module_save_configuration(): the throttle's
+        // table is not the scan's, and is installed either way.
+        Scan\Schema::ensureRateBucket($this);
         $this->installScanSchema();
     }
 
@@ -2373,8 +2499,27 @@ class UniversalValidator extends AbstractExternalModule
                 'total' => (int) $census['total'],
             ]);
         } catch (\Throwable $e) {
-            // Swallowed on purpose - see the docblock. The scan stays disabled
-            // and the page explains itself.
+            // Swallowed on purpose - see the docblock - but NEVER SILENTLY.
+            //
+            // THE LEADING BACKSLASH IS THE WHOLE POINT. This file declares
+            // `namespace INSPIRE\UniversalValidator`, so an unqualified
+            // `catch (Throwable)` names INSPIRE\UniversalValidator\Throwable -
+            // a class that does not exist. PHP does not warn about that; it
+            // simply never matches. This catch was inert from the day it was
+            // written, so anything thrown after the migration returned - the
+            // log, the policy read, the slot provisioning - escaped it and took
+            // the administrator's settings save down with it, which is the
+            // exact outcome the docblock above promises cannot happen.
+            //
+            // And a catch that finally starts catching must not trade a loud
+            // failure for an invisible one: without this line a slot-
+            // provisioning failure would vanish, and the operator would meet it
+            // later as the 1.9.5 pilot symptom - "the server is busy" over an
+            // empty slot pool - with nothing anywhere to explain it. The CLASS
+            // only: the message is written by the framework's error path and
+            // can carry statement text.
+            try { $this->log('scan-schema-install-failed', ['error' => get_class($e)]); }
+            catch (\Throwable $ignored) { }
         }
     }
 
@@ -2415,14 +2560,15 @@ class UniversalValidator extends AbstractExternalModule
      * the project. Daily, because a value's window is measured in days.
      *
      * PURGING WHOLE RUNS IS DELIBERATELY NOT WIRED HERE, and that is not an
-     * oversight. ScanRetention::purgeRuns() deletes findings with
-     * `DELETE FROM uv_finding WHERE generation_id = ?`, but uv_finding carries
-     * NO project_id (php/Scan/Schema.php) and every run in every project is
-     * written with generation_id = 1 - ScanPlanner never receives a 'generation'
-     * and SqlScanStore defaults it. Calling purgeRuns() on any one project would
-     * therefore delete EVERY project's findings on this installation. Wiring it
-     * would turn a missing cron into silent data loss across the server, so run
-     * retention stays manual until generation_id is genuinely per project.
+     * oversight. ScanRetention::purgeRuns() used to delete findings with
+     * `DELETE FROM uv_finding WHERE generation_id = ?` while every run in every
+     * project was written with generation_id = 1, so one project's purge deleted
+     * every project's findings. 2.0.0 scopes those deletes by project and
+     * generation, but they are still unpaged: measured, an unpaged DELETE of
+     * 500,000 findings is one 160-second statement holding row locks throughout.
+     * Run retention stays manual until the remediation plan's wave 8 pages it.
+     * The value sweep below is the same kind of unpaged statement (an UPDATE),
+     * and is also on wave 8's list.
      */
     public function uvScanExpireValuesCron($cronInfo = [])
     {
@@ -2511,9 +2657,13 @@ class UniversalValidator extends AbstractExternalModule
      * (grouping by value + composite key + scope) instead of a whole-project
      * read per record.
      *
-     * $dagFilter: a DAG unique name — only records in that DAG are scanned
-     * (pass the acting user's DAG so a DAG-bound user never sees other
-     * groups' record ids). null scans everything.
+     * $dagFilter: a DAG GROUP ID — only records in that group are scanned (pass
+     * ScanPageView::scanScope()['dag'], which produces it, so a DAG-bound user
+     * never sees other groups' record ids). null scans everything. It USED to
+     * be the unique name, and the module now has exactly one DAG axis: the id.
+     * The name is derived from it internally, because this path's record groups
+     * come from the export, which reports names. A group id that cannot be
+     * resolved to a name refuses the scan rather than scanning unconfined.
      *
      * Returns ['violations' => [ ['record','event_id','instance','field',
      * 'type','reason','rule' => 1-based index], ... ], 'unconfigurable' =>
@@ -2538,6 +2688,35 @@ class UniversalValidator extends AbstractExternalModule
         // before 1.7.0 expected and what every test still asserts against.
         $collect = ($sink === null);
         if ($collect) $sink = new ArrayFindingSink();
+
+        // ONE AXIS FOR THE WHOLE MODULE, AND THIS IS THE CONVERSION.
+        //
+        // $dagFilter now arrives as the numeric group id, because that is what
+        // ScanPageView::scanScope() produces and what every durable consumer
+        // compares on. This path cannot compare ids: its record groups come from
+        // \REDCap::getData(exportDataAccessGroups => true), whose
+        // redcap_data_access_group field is the DAG's unique NAME. So the id is
+        // resolved back to a name HERE, once, through the same resolver the page
+        // uses - rather than leaving a second parameter on a second axis for
+        // somebody to fill from the wrong producer. Verified: with the page
+        // returning the id and this resolution absent, five checks in
+        // tests/scan_page_php.php go red, all of them a scan that listed zero
+        // records because it compared 'north' against '7'.
+        //
+        // AN UNRESOLVABLE GROUP REFUSES, exactly as scanScope() does. Scanning
+        // on with a name we could not read means matching no record, and this
+        // method's own H-10 note records what that produced: a green tick over
+        // "Scanned 0 record(s)".
+        $dagName = null;
+        if ($dagFilter !== null && $dagFilter !== '') {
+            $dagName = ScanPageView::dagNameOf($dagFilter);
+            if ($dagName === null) {
+                $result['incomplete'][] = 'the Data Access Group this scan was confined to could '
+                    . 'not be resolved, so no record could be placed inside or outside it and '
+                    . 'nothing was examined';
+                return $result;                  // status stays 'failed'
+            }
+        }
 
         $plan = $this->scanPlan($pid, $opts, $dagFilter);
         if ($plan['fatal'] !== null) {
@@ -2616,7 +2795,13 @@ class UniversalValidator extends AbstractExternalModule
                 // printed under a header stating the file covers one group only.
                 // A group that cannot be read is not this group.
                 if (!is_array($node)) { $ungrouped++; continue; }
-                if (self::dagOfRecordNode($node) !== $dagFilter) continue;
+                // NAME AGAINST NAME. dagOfRecordNode() returns
+                // redcap_data_access_group from the export, which is the unique
+                // NAME; $dagName is the same name, resolved once above from the
+                // group id the caller passed. Comparing $dagFilter here - the id
+                // - excludes every record in the project and reports a clean,
+                // complete scan of nothing.
+                if (self::dagOfRecordNode($node) !== $dagName) continue;
             }
             $ids[] = $rec;
         }
@@ -2648,7 +2833,7 @@ class UniversalValidator extends AbstractExternalModule
             // nothing.
             $result['incomplete'][] = $dagFilter === null
                 ? 'the project contains no records, so there was nothing to examine'
-                : 'no record was in scope for Data Access Group "' . $dagFilter . '", so nothing was '
+                : 'no record was in scope for Data Access Group "' . $dagName . '", so nothing was '
                   . 'examined — this is not evidence that the group\'s data is clean';
             $result['status'] = 'incomplete';
             return $result;
@@ -3030,38 +3215,84 @@ class UniversalValidator extends AbstractExternalModule
      * looks like good news.
      *
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
-     *               read:?callable, rules:array, ownership:array}
+     *               read:?callable, rules:array, ownership:array, problems:array}
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
         $plan = $this->scanPlan($pid, $opts, $dagFilter);
+        // THE SHAPE IS THE SAME ON EVERY RETURN, including the refusals. A
+        // caller that has to know which branch answered before it knows which
+        // keys exist is a caller that will read the wrong one.
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
-                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => []];
+                    'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
+                    'problems' => array_values($plan['unconf'])];
         }
         if (!empty($plan['nothingToScan'])) {
+            // The rule problems survive the refusal even though no run can carry
+            // them today. scanPlan()'s own note says every rule barred is not
+            // nothing to scan - the rule problems ARE the report, and they must
+            // survive - and this return is where they stopped surviving. Closing
+            // it completely needs a run that can exist with no live rules, which
+            // is a later decision; handing them back is what makes it possible.
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
-                    'rules' => [], 'ownership' => []];
+                    'rules' => [], 'ownership' => [],
+                    'problems' => array_values($plan['unconf'])];
         }
 
         $key = $this->hmacKey();
-        $gen = isset($opts['generation']) ? (int) $opts['generation'] : 1;
-        $ids = Scan\ScanPlanner::identifyAll($plan['live'],
-            isset($opts['settingsCount']) ? (int) $opts['settingsCount'] : 0);
 
-        // Which instrument owns which field, for the fingerprint. Computed here
-        // because it comes from the plan, and recomputed nowhere else.
-        $ownership = [];
-        foreach ($plan['hostFields'] as $i => $hosts) {
-            foreach ($hosts as $form => $fields) {
-                foreach ($fields as $f) $ownership[$f] = $form;
-            }
+        // THE GENERATION IS THE RUN'S, AND THERE IS NO DEFAULT.
+        //
+        // It used to be `isset($opts['generation']) ? ... : 1`, and no caller
+        // anywhere passed one - so every run of every project wrote generation
+        // 1. That single default is the root cause of five failed pilots: the
+        // second scan of any project re-inserted identities that were already
+        // active, the unique key refused them, and the batch rolled back
+        // forever. A default is what let it ship, so there is no longer one.
+        //
+        // NULL is a legitimate value and means "planning": start() needs the
+        // rules and the ownership map before a run exists to have a generation,
+        // so it asks for a context with no evaluator rather than inventing a
+        // number. Passing no key at all is still an error.
+        if (!array_key_exists('generation', $opts)) {
+            throw new \InvalidArgumentException(
+                'durableScanContext requires the run generation (null for planning)');
         }
+        $gen = ($opts['generation'] === null) ? null : (int) $opts['generation'];
+        $runSeq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 0;
+
+        // When a stored value preview expires, decided at WRITE time. The
+        // policy method that computes this had no callers at all, so every
+        // preview was written with a NULL expiry and the query that removes
+        // them could never have matched one.
+        $valueExpiry = Scan\ScanPolicy::valueExpiry(
+            isset($opts['policy']) && is_array($opts['policy']) ? $opts['policy'] : [], time());
+
+        // Taken from the plan, never re-derived. See scanPlan()'s note where
+        // ruleIds is built: deriving it twice is what let the evaluator and the
+        // planner disagree about which rule an ordinal named.
+        $ids = isset($plan['ruleIds']) && is_array($plan['ruleIds']) ? $plan['ruleIds'] : [];
+
+        // TAKEN FROM THE PLAN, exactly as $ids is one block above, and for the
+        // same reason. It used to be built HERE by walking $plan['hostFields'],
+        // which ruleHostForms() fills from $rule['fields'] alone - so the map
+        // ScanService turns into an entitlement named the forms the RULES live
+        // on while getData was asked for the read set, which also carries every
+        // when/assert operand and every unique-composite partner. scanPlan()
+        // derives it from $readSet now; a second derivation here is the drift
+        // this file keeps paying for.
+        $ownership = isset($plan['ownership']) && is_array($plan['ownership'])
+                   ? $plan['ownership'] : [];
 
         $module = $this;
-        $evaluate = function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids) {
-            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids);
+        // No generation, no evaluator. A caller that only needs the rule list
+        // gets one it cannot accidentally scan with.
+        $evaluate = ($gen === null) ? null : function ($recordId, array $node) use ($module, $plan, $pid, $gen, $key, $ids,
+                                                          $runSeq, $valueExpiry) {
+            return $module->durableEvaluateRecord($plan, $pid, $recordId, $node, $gen, $key, $ids,
+                                                  $runSeq, $valueExpiry);
         };
 
         // The read the worker performs. Explicit records, and only the fields
@@ -3092,8 +3323,16 @@ class UniversalValidator extends AbstractExternalModule
             }
         };
 
+        // THE RULE PROBLEMS TRAVEL. They were computed by scanPlan() - config
+        // errors, rules whose instrument cannot be resolved, rules on an
+        // instrument no event collects, project-scope uniqueness under a group
+        // scope - and then dropped right here, which is why ScanOutcome's
+        // `ruleProblems` term had nothing to read and `clean` quietly meant "no
+        // findings". array_values because the keys are the dedupe (rule|reason),
+        // not data anything downstream should depend on.
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
-                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership];
+                'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
+                'problems' => array_values($plan['unconf'])];
     }
 
     /**
@@ -3108,7 +3347,8 @@ class UniversalValidator extends AbstractExternalModule
      * @return array{findings:array, candidates:array, bytes:int, contexts:int,
      *               problems:array, why:?string}
      */
-    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key, array $ids)
+    public function durableEvaluateRecord(array $plan, $pid, $recordId, array $node, $gen, $key,
+                                          array $ids, $runSeq = 0, $valueExpiry = null)
     {
         $found = [];
         $sink = new CallbackFindingSink(function (array $v) use (&$found) { $found[] = $v; });
@@ -3117,34 +3357,65 @@ class UniversalValidator extends AbstractExternalModule
         $r = $this->scanRecord($plan, $pid, $recordId, $node, $sink, $seen, $unconf);
         if ($r['why'] !== null) {
             return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'contexts' => 0,
-                    'problems' => [], 'why' => $r['why']];
+                    'problems' => [], 'collapsed' => 0, 'why' => $r['why']];
         }
 
         $recHash = Scan\Hmac::raw(Scan\Hmac::P_RECORD, $pid, (string) $recordId, $key);
-        $rule = function ($ord) use ($ids) {
+        $missed = [];
+        $rule = function ($ord) use ($ids, &$missed) {
             $i = ((int) $ord) - 1;
             // A rule the planner could not name is still reported, under a name
             // that says so. Dropping the finding would be the silent skip.
-            return isset($ids[$i]) ? $ids[$i]
-                 : ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
+            //
+            // AND IT IS NOW LOUD. $ids is keyed by the same ordinals as
+            // $plan['live'], so after the key-preserving fix this branch is
+            // unreachable in normal operation - which means any occurrence is a
+            // bug in us, not a fact about the project. It used to be reachable
+            // on every project with one config-broken rule, and it produced a
+            // plausible-looking name ('unnamed:7') that no reader would question.
+            if (isset($ids[$i])) return $ids[$i];
+            $missed[(int) $ord] = true;
+            return ['source_id' => 'unnamed:' . (int) $ord, 'revision' => str_repeat('0', 64)];
         };
 
         $findings = [];
+        $byIdentity = [];
+        $collapsed = 0;
         $bytes = 0;
-        $seq = 0;
         foreach ($found as $v) {
             $id = $rule($v['rule']);
             $loc = ['record' => (string) $recordId, 'event_id' => $v['event_id'],
                     'instance' => $v['instance'], 'host_form' => $v['instrument'],
                     'field' => $v['field'], 'rule_source_id' => $id['source_id'],
-                    'reason_code' => Scan\ReasonCode::code($v['reason'])];
+                    'reason_code' => Scan\ReasonCode::code($v['reason']),
+                    // The within-location discriminator. See Hmac::findingIdentity.
+                    'locus' => isset($v['locus']) ? (string) $v['locus'] : ''];
             $val = empty($v['valueWithheld']) && isset($v['value']) ? $v['value'] : null;
             $blob = ($val === null) ? null : substr((string) $val, 0, 255);
+            $identity = Scan\Hmac::findingIdentity($pid, $loc, $key);
+
+            // BACKSTOP, NOT THE FIX. With the discriminator in place nothing
+            // legitimate produces one identity twice, so a repeat here is a bug
+            // in a rule kind rather than a fact about the project - and it must
+            // be COUNTED rather than allowed to reach the unique key, where it
+            // would roll back a whole batch of correctly examined records. The
+            // count travels out so the worker can raise it; swallowing it in
+            // SQL with ON DUPLICATE KEY UPDATE would hide exactly the thing
+            // this release exists to make visible.
+            $seenKey = bin2hex($identity);
+            if (isset($byIdentity[$seenKey])) { $collapsed++; continue; }
+            $byIdentity[$seenKey] = true;
+
             if ($blob !== null) $bytes += strlen($blob);
             $findings[] = [
+                'project_id' => (int) $pid,
                 'generation_id' => $gen,
-                'identity' => Scan\Hmac::findingIdentity($pid, $loc, $key),
-                'seq' => ++$seq,
+                'identity' => $identity,
+                // The RUN's sequence number, not a per-record ordinal. It used
+                // to be `++$seq`, which put valid_from_seq and valid_to_seq in
+                // different number spaces and made the interval columns the
+                // schema is built around describe nothing.
+                'valid_from_seq' => $runSeq,
                 'record_hash' => $recHash,
                 'record_id_bin' => (string) $recordId,
                 'event_id' => $v['event_id'],
@@ -3162,6 +3433,13 @@ class UniversalValidator extends AbstractExternalModule
                 'value_truncated' => ($val !== null && strlen((string) $val) > 255) ? 1 : 0,
                 'value_fingerprint' => ($val === null) ? null
                     : Scan\Hmac::raw(Scan\Hmac::P_VALUE, $pid, (string) $val, $key),
+                // WRITTEN AT WRITE TIME. The expiry policy was computed by a
+                // method with no callers, so every stored preview carried a NULL
+                // here and the query that expires them - WHERE value_expires_at
+                // IS NOT NULL - could never have matched a row even once it was
+                // wired. Participant data was retained indefinitely in a table
+                // any user with design rights can read.
+                'value_expires_at' => ($blob === null) ? null : $valueExpiry,
             ];
         }
 
@@ -3170,16 +3448,31 @@ class UniversalValidator extends AbstractExternalModule
         // path is reused verbatim and then keyed, so the live check, the audit
         // and the scan all agree about what "the same value" means.
         $candidates = [];
+        $candSeen = [];
         foreach ($seen as $groupKey => $rows) {
             $g = Scan\Hmac::raw(Scan\Hmac::P_UNIQUE, $pid, (string) $groupKey, $key);
             foreach ($rows as $row) {
                 $id = $rule($row['rule']);
+                // scope_key was the literal 'project' whatever the rule said, so
+                // a rule scoped to a Data Access Group or to an event was stored
+                // as though it were project-wide. The rule knows its own scope;
+                // the store was being told something else.
+                $scope = isset($row['scope']) && is_string($row['scope']) && $row['scope'] !== ''
+                    ? (string) $row['scope'] : 'project';
+                // The candidate key the store enforces, computed here so an
+                // intra-record repeat is dropped before it can refuse a batch -
+                // the same backstop the findings get, for the same reason.
+                $ck = $g . '|' . $recHash . '|' . (string) $row['event_id'] . '|'
+                    . (string) $row['instance'] . '|' . (string) $row['field'];
+                if (isset($candSeen[$ck])) { $collapsed++; continue; }
+                $candSeen[$ck] = true;
                 $candidates[] = [
+                    'project_id' => (int) $pid,
                     'generation_id' => $gen,
                     'rule_source_id' => $id['source_id'],
                     'rule_revision' => $id['revision'],
                     'group_hmac' => $g,
-                    'scope_key' => 'project',
+                    'scope_key' => $scope,
                     'record_hash' => $recHash,
                     'record_id_bin' => (string) $recordId,
                     'event_id' => $row['event_id'],
@@ -3190,8 +3483,26 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // A rule ordinal the planner could not name is an INTERNAL fault, and it
+        // travels as a rule problem rather than as a plausible name nobody
+        // questions. It is reported per record, which is where it was noticed;
+        // the aggregate that counts rule problems dedupes on the text.
+        $problems = array_values($unconf);
+        foreach (array_keys($missed) as $ord) {
+            $problems[] = [
+                'rule'   => (int) $ord,
+                'fields' => [],
+                'why'    => 'internal: this scan holds no identity for rule ' . (int) $ord
+                    . ', so any finding it produced is recorded under a placeholder name',
+            ];
+        }
+
         return ['findings' => $findings, 'candidates' => $candidates, 'bytes' => $bytes,
-                'contexts' => $r['contexts'], 'problems' => array_values($unconf), 'why' => null];
+                'contexts' => $r['contexts'], 'problems' => $problems,
+                // Non-zero means a rule kind produced one identity twice. With
+                // the locus discriminator in place nothing legitimate does, so
+                // this is a bug report rather than a fact about the project.
+                'collapsed' => $collapsed, 'why' => null];
     }
 
     /**
@@ -3206,11 +3517,18 @@ class UniversalValidator extends AbstractExternalModule
      * in with per-record notes.
      *
      * @return array{fatal: ?string, nothingToScan: bool, live: array, hostFields: array,
+     *               ownership: array<string,?string> field => owning instrument, NULL when it
+     *               could not be placed - the fail-closed encoding ScanService reads as
+     *               unknown ownership and mayStart() refuses on,
      *               readSet: array, dupes: array, unconf: array}
      */
     private function scanPlan($pid, array $opts = [], $dagFilter = null)
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+                // Present on EVERY return, including the refusals. An entitlement
+                // key that exists only on the success path is one a caller reads as
+                // "no forms" on the path where it should read as "no answer".
+                'ownership' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
@@ -3445,6 +3763,14 @@ class UniversalValidator extends AbstractExternalModule
         $out['live']       = $live;
         $out['hostFields'] = $hostFields;
         $out['unconf']     = $unconf;
+        // ONE LIST, ONE OWNER. The rule identities are derived HERE, from the
+        // final $live, and keyed identically to it by construction. They used
+        // to be derived a second time in durableScanContext() from a copy that
+        // had been re-indexed on the way, so the two disagreed about which rule
+        // an ordinal named - and since rule_source_id is hashed into the
+        // finding identity, the disagreement was silent and permanent. A second
+        // derivation of the same thing is a second thing that can drift.
+        $out['ruleIds'] = Scan\ScanPlanner::identifyAll($live);
         if (!$live) {
             // Every rule barred is not "nothing to scan": the rule problems above
             // are the report, and they must survive. nothingToScan short-circuits
@@ -3490,6 +3816,68 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         $out['readSet'] = $readSet;
+
+        // WHICH INSTRUMENT OWNS EACH FIELD THE RUN WILL READ - derived from the
+        // READ SET, and from nothing else.
+        //
+        // It used to be built in durableScanContext() by walking
+        // $plan['hostFields'], which ruleHostForms() fills from $rule['fields']
+        // alone. The read is $readSet: that list PLUS every field a `when` or
+        // `assert` operand references PLUS every unique-composite "with" field.
+        // ScanService turns this map into the entitlement set
+        // ScanAuthorization::mayStart() is asked about, so the gate was being
+        // asked where the RULES LIVE while getData was being asked for the
+        // OPERANDS. A designer with explicit No Access to an instrument could
+        // therefore start a scan that read it, and whose findings differed by
+        // its values - reproduced on every rule kind (@UVALIDATE, @UVASSERT,
+        // @UVREQUIRED, @UVUNIQUE, @UVCHOICES), on branch operands, and on both
+        // configuration channels. mayStart()'s own docblock already said the
+        // entitlement is "every form the run will read"; the caller was the half
+        // that was wrong.
+        //
+        // DERIVED FROM $readSet, NOT FROM ruleRefFields(). That helper computes
+        // the same three sources per rule and would give the same answer today -
+        // which is the problem: a second derivation of the same set is a second
+        // thing that can drift, the same reason ruleIds is derived once from the
+        // final $live and taken from the plan thereafter. $readSet is the array
+        // durableScanContext() hands to getData, so $readSet is the only honest
+        // answer to "what does this run read".
+        //
+        // NULL means "could not be placed", and it is the fail-closed direction:
+        // ScanService reads a null or empty form as unknown ownership and
+        // mayStart() refuses the run rather than dropping the field from the set.
+        // Nothing could set that flag before - hostFields only ever contains
+        // forms that WERE determined - so that arm of the control was dead in
+        // production. A dictionary that came back unreadable is the same answer:
+        // a form that cannot be read cannot clear an instrument.
+        //
+        // AND THAT ARM IS NOW REACHABLE FOR A RULE'S OWN FIELD, which is a real
+        // behaviour change and was argued both ways. The `n|unlocatable` note at
+        // the top of this method already reports such a field by name and says
+        // the field is not scanned - so the case for excluding it here is that
+        // the rule is already refused. That case is FALSE: $readSet above is
+        // built from every live rule's `fields` unconditionally, the unlocatable
+        // note does not remove the rule from $live, and $fields at :3122 is
+        // array_keys($plan['readSet']). The value IS read. A field that is read
+        // and cannot be placed is a field whose access cannot be checked, and
+        // refusing is the only answer consistent with the rest of this file. The
+        // refusal names the fields (ScanAuthorization::mayStart) so it is a
+        // diagnosis rather than an undiagnosable no.
+        //
+        // WITH enforceFormRights ON, this map now includes a host form the
+        // narrowing gate removed from $hostFields at the barred-host block
+        // above. Harmless today - durableScanContext never passes that flag and
+        // scanProject has no production caller - but whoever re-wires that gate
+        // has to decide whether the narrowed run should be entitled to the form
+        // it narrowed away, and this is where the two meet.
+        $ddOwn = $this->dataDictionary($pid);
+        $ownership = [];
+        foreach (array_keys($readSet) as $f) {
+            $ownership[(string) $f] =
+                (is_array($ddOwn) && isset($ddOwn[$f]['form_name']) && $ddOwn[$f]['form_name'] !== '')
+                    ? (string) $ddOwn[$f]['form_name'] : null;
+        }
+        $out['ownership'] = $ownership;
         return $out;
     }
 
@@ -3549,6 +3937,13 @@ class UniversalValidator extends AbstractExternalModule
                             'type' => $v['type'], 'reason' => $v['reason'], 'rule' => $i + 1,
                             'value' => ($rv === false) ? null : $rv,
                             'valueWithheld' => ($rv === false),
+                            // RAW, and never through reportValue(). The
+                            // discriminator is part of the LOCATION; routing it
+                            // through the value path would null it under a
+                            // withholding policy, and the collision this exists
+                            // to prevent would come back on exactly the privacy
+                            // setting the module recommends.
+                            'locus' => isset($v['locus']) ? (string) $v['locus'] : '',
                             // $hostForm, NOT $ctx['instrument']: that is null for
                             // every base row (:2297) and deliberately null for a
                             // repeating-EVENT context (:2320), which between them
@@ -3886,6 +4281,35 @@ class UniversalValidator extends AbstractExternalModule
                 return;
             }
         }
+        // M1: A 'dag' SCOPE NEEDS A DAG, AND A RECORD IN NO GROUP HAS NONE.
+        //
+        // The bucket key below appends (string) $recDag, and $recDag is null for
+        // a record REDCap returned with no redcap_data_access_group. (string)
+        // null is '', so every ungrouped record in the project fell into ONE
+        // bucket and any two of them sharing a value were reported as duplicates
+        // OF EACH OTHER - under a rule whose entire meaning is "unique within a
+        // Data Access Group", for records that are not in one. The rule's
+        // question has no answer for these records, and this module's contract
+        // is that an unevaluable condition is reported, never answered wrongly.
+        //
+        // A PROPERTY OF THE RECORD, NOT OF THE RULE. The same rule stays live and
+        // is still evaluated on every record that does have a group; only this
+        // record's contribution is withheld. $refuse() keys $unconf by
+        // ruleIndex|suffix, so a project with ten thousand ungrouped records
+        // produces ONE rule problem rather than ten thousand - which is the
+        // deduplication every other refusal in this function relies on and the
+        // reason the report stays bounded.
+        //
+        // AFTER the composite-key loop above, so a rule broken in two ways
+        // reports the more specific problem first, and a `return` rather than a
+        // `continue`, because the group is a property of the CONTEXT and not of
+        // any one field - matching every other context-level refusal here.
+        if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) {
+            $refuse('this rule requires values to be unique within a Data Access Group, and this '
+                . 'record is not in one, so the rule was NOT evaluated for it. Records with no '
+                . 'group are not compared with each other.', 'dag-no-group');
+            return;
+        }
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
@@ -4162,7 +4586,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($group_id !== null && $group_id !== '') {
                     // A DAG-bound user may learn THAT the value is used, but a
                     // record id outside their DAG is not theirs to see.
-                    $userDag = self::dagNameOf($group_id);
+                    $userDag = ScanPageView::dagNameOf($group_id);
                     if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
                 }
             }
@@ -4172,19 +4596,46 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    /** Per-session window. Cheap, and keyed on something the caller controls. */
+    const THROTTLE_SESSION = 30;
+
     /**
-     * Sliding-window throttle for the UNAUTHENTICATED (survey) uniqueness path.
-     * Two tiers, so a caller is bounded whether or not it carries a session:
+     * Per-project windows, which are keyed on something the caller does not.
+     *
+     * The sessionless cap is the older number and keeps its meaning: a
+     * cookieless enumerator gets 600 a minute for the whole project. The
+     * sessioned cap has to sit above what a busy public survey really spends -
+     * tier 1 allows each session 30 a minute, so 600 would be twenty people
+     * typing at once - while still being a bound rather than none.
+     */
+    const THROTTLE_PROJECT_ANON = 600;
+    const THROTTLE_PROJECT_SESSIONED = 6000;
+
+    /**
+     * Throttle for the UNAUTHENTICATED (survey) uniqueness path.
+     *
+     * TWO TIERS THAT BOTH RUN, which is the correction. They were alternatives:
+     * tier 1 returned as soon as it passed, so tier 2 was reached only by a
+     * caller carrying no session at all. That made the throttle keyed, in
+     * practice, on something the caller chooses - discard the cookie between
+     * requests and each one starts a fresh 30-request budget, without ever
+     * meeting the per-project cap. The evasion costs an attacker one header.
      *
      *   (1) With an active session (a normal survey respondent): a per-SESSION
-     *       window (30 / minute), cheap and touching no shared storage.
-     *   (2) With NO session (a cookieless or cookie-rotating caller — the actual
-     *       sessionless flood vector v1.4.1's session-only throttle could not
-     *       count): a per-PROJECT window (F5) in a single, hard-capped,
-     *       self-pruning system setting, so the flood is bounded even with
-     *       nothing to key a session on. Legitimate respondents carry a session
-     *       and never reach tier (2), so it adds no write load or false
-     *       throttling to normal traffic.
+     *       window, cheap and touching no shared storage. It can only ever
+     *       refuse; passing it no longer ends the check.
+     *   (2) Always: a per-PROJECT fixed window (F5) held as a COUNTER IN THE
+     *       DATABASE, incremented by one statement, so a flood is bounded even
+     *       with nothing to key a session on. Sessioned and sessionless traffic
+     *       are counted in SEPARATE buckets with separate caps, so extending
+     *       this tier to normal traffic bounds the evasion without turning a
+     *       busy survey into an outage.
+     *
+     *       Tier (2) was a read-modify-write over a system setting holding an
+     *       array of timestamps, and concurrency defeated it exactly under the
+     *       traffic it was written for: every concurrent request read the same
+     *       array, appended one entry, and the last write won. See the tier's
+     *       own comment for why the window is fixed rather than sliding.
      *
      * Still defence in depth, not THE defence: a single TARGETED probe is
      * inherent to answering "is this value already used?" at all, which is why
@@ -4197,40 +4648,150 @@ class UniversalValidator extends AbstractExternalModule
         $window = 60;
         $now = time();
         // Tier (1): per-session window for a caller that has a session.
+        //
+        // IT DOES NOT RETURN WHEN IT PASSES, and that is the whole point of the
+        // tier. It used to, which made the two tiers ALTERNATIVES: tier 2 was
+        // reached only by a caller with no session at all, so the cheapest
+        // possible evasion - discard the session cookie between requests, which
+        // costs an attacker one header and nothing else - took a fresh
+        // 30-request budget every time and never once met the per-project cap.
+        // A budget keyed on something the caller chooses is not a budget.
+        $sessioned = false;
         try {
             if (function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-                $max = 30;
+                $sessioned = true;
                 $key = 'uvalidate_unique_hits';
                 $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
                 $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
                     return is_int($t) && ($now - $t) < $window;
                 }));
-                if (count($hits) >= $max) { $_SESSION[$key] = $hits; return true; }
+                if (count($hits) >= self::THROTTLE_SESSION) { $_SESSION[$key] = $hits; return true; }
                 $hits[] = $now;
                 $_SESSION[$key] = $hits;
-                return false;
             }
         } catch (\Throwable $e) {
-            return false;
+            // Session state that cannot be read is not session state to trust.
+            // The project tier below still runs, which is the tier that does
+            // not depend on the caller keeping anything.
+            $sessioned = false;
         }
-        // Tier (2): no session — bound the sessionless flood per project.
+        // Tier (2): bound the flood per project, whether or not tier 1 ran.
+        //
+        // A COUNTER THE DATABASE OWNS, not a timestamp array this process reads,
+        // edits and writes back. The read-modify-write was defeated by the exact
+        // traffic the tier was written for: N concurrent requests all read the
+        // same array, each appended one entry, and the last write won - so a
+        // flood of 600 concurrent checks recorded a handful of hits and the cap
+        // was never reached. There is no read here at all. One statement
+        // increments, and the value it returns is the count after this request.
+        //
+        // A FIXED WINDOW, not a sliding one, and that is a deliberate trade. A
+        // sliding window needs the timestamps, and keeping the timestamps is
+        // what made the counter loseable. The cost is that a burst straddling a
+        // boundary can spend up to 2 x $pmax inside one 60-second span; the
+        // benefit is that no increment can ever be lost. For a throttle whose
+        // purpose is to bound a flood rather than to meter it, that is the right
+        // way round.
         try {
             if (!$pid) return false;
-            $pmax = 600;                                       // no-auth checks / project / window (>> the per-session cap)
-            $skey = 'uv_noauth_hits_' . (int) $pid;
-            $raw = $this->getSystemSetting($skey);
-            $hits = is_array($raw) ? $raw : ((is_string($raw) && $raw !== '') ? json_decode($raw, true) : []);
-            if (!is_array($hits)) $hits = [];
-            $hits = array_values(array_filter($hits, function ($t) use ($now, $window) {
-                return is_int($t) && ($now - $t) < $window;
-            }));
-            if (count($hits) >= $pmax) { $this->setSystemSetting($skey, $hits); return true; }
-            $hits[] = $now;
-            if (count($hits) > $pmax + 100) $hits = array_slice($hits, -$pmax);   // hard cap the stored array
-            $this->setSystemSetting($skey, $hits);
-            return false;
+            // TWO BUDGETS, NOT ONE, because the two populations are not alike.
+            // Sessioned traffic is mostly real respondents, and a busy public
+            // survey can legitimately spend more than the sessionless cap: tier
+            // 1 allows each session 30 a minute, so 600 is only twenty people
+            // typing at once. Charging both populations to one bucket would
+            // have turned this hardening change into an outage for exactly the
+            // projects that use the feature most. Separate buckets mean the
+            // sessionless cap keeps the value it was chosen for, and the
+            // sessioned cap only has to be low enough to bound enumeration -
+            // which it is: it converts "unbounded" into "a day and a half for a
+            // six-digit space", on an endpoint whose real defences are the
+            // per-rule opt-in and the Identifier refusal.
+            //
+            // NOT SETTINGS. Every other tunable in this module is a setting,
+            // deliberately; these are not, because the failure mode of a
+            // mistyped rate limit is a security control quietly set to zero,
+            // and there is no reading of it that an administrator needs.
+            $pmax = $sessioned ? self::THROTTLE_PROJECT_SESSIONED : self::THROTTLE_PROJECT_ANON;
+            $db = new Scan\ModuleDb($this);
+            // ONE BUCKET COLUMN, TWO NAMESPACES. The primary key is
+            // (project_id, bucket) and a third dimension would mean an ALTER on
+            // a table that is now created with IF NOT EXISTS on every
+            // installation - so the tier rides in the low bit instead. INT
+            // UNSIGNED holds a doubled minute-counter until the year 6000.
+            $bucket = ((int) floor($now / $window)) * 2 + ($sessioned ? 1 : 0);
+            // LAST_INSERT_ID(expr) on both paths, so the fresh-bucket INSERT and
+            // the existing-bucket UPDATE both answer with the number they wrote.
+            // The table has no AUTO_INCREMENT, so without it the insert path
+            // would report whatever the session last happened to set.
+            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
+                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
+                [(int) $pid, $bucket]);
+            $r = $db->select('SELECT LAST_INSERT_ID()', []);
+            // "I DO NOT KNOW" IS NOT "UNDER THE CAP". This read used to answer
+            // 0 for any shape it could not walk, which is silently the most
+            // permissive answer available: no throttle, no pruning, and nothing
+            // logged. ModuleDb::exec() already refuses to guess a row count for
+            // exactly this reason and the read-back must not be more trusting
+            // than the write. Raised rather than returned, so it lands in the
+            // catch below and is recorded like any other storage failure.
+            if (!isset($r[0][0]) || $r[0][0] === null) {
+                throw new \RuntimeException('the counter did not report a value');
+            }
+            $hits = (int) $r[0][0];
+            // Self-pruning, and only on the request that created the bucket, so
+            // this is one DELETE per project per window rather than one per
+            // check. Two windows of slack because a request can be in flight
+            // across a boundary - and four slots, not two, because the doubled
+            // bucket number interleaves the two tiers.
+            if ($hits === 1) {
+                $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
+                    . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 4]);
+            }
+            return $hits > $pmax;
         } catch (\Throwable $e) {
+            // FAILS OPEN, as the whole method does: the live check is a
+            // convenience and never a gate on data entry, so a database that
+            // is briefly unreachable must not start refusing survey responses.
+            //
+            // BUT IT SAYS SO. Failing open in silence is how this tier came to
+            // be inert on every default installation for a whole release - the
+            // table lived behind the durable scan's opt-in flag, the increment
+            // threw on every request, and the only evidence was an absence.
+            // An operator cannot notice an absence. One log row per project per
+            // window is enough to see it and cheap enough to survive a flood.
+            $this->noteThrottleUnavailable($pid, (int) floor($now / $window), $e);
             return false;
+        }
+    }
+
+    /**
+     * Record that the sessionless throttle could not reach its counter, at most
+     * once per project per window.
+     *
+     * The marker is a system setting rather than the counter's own table, for
+     * the obvious reason that this runs precisely when that table cannot be
+     * reached. A lost update here costs one duplicate log row, which is why the
+     * read-modify-write that was wrong for the counter is right for the marker.
+     */
+    private function noteThrottleUnavailable($pid, $bucket, \Throwable $e)
+    {
+        try {
+            $key  = 'uv_throttle_down_' . (int) $pid;
+            $seen = $this->getSystemSetting($key);
+            if ((string) $seen === (string) $bucket) return;      // already said so this window
+            $this->setSystemSetting($key, (string) $bucket);
+            // The CLASS, not the message. A message from here can name the
+            // installation's schema and its database user to a caller who is
+            // unauthenticated by definition; the class plus the redacted detail
+            // is what DbError exists to produce.
+            $this->log('uv-throttle-storage-unavailable', [
+                'project_id' => (int) $pid,
+                'class'      => get_class($e),
+                'detail'     => Scan\DbError::safe($e),
+            ]);
+        } catch (\Throwable $ignored) {
+            // A failure to record a failure is not worth a second failure.
         }
     }
 
@@ -4368,7 +4929,7 @@ class UniversalValidator extends AbstractExternalModule
                 $currentDag = self::dagOfRecordNode($data[$excludeRecord]);
             }
             if ($currentDag === null && $groupId !== null && $groupId !== '') {
-                $currentDag = self::dagNameOf($groupId);
+                $currentDag = ScanPageView::dagNameOf($groupId);
             }
         }
 
@@ -4428,18 +4989,12 @@ class UniversalValidator extends AbstractExternalModule
         return null;
     }
 
-    /** Resolve a numeric group id to its unique DAG name, or null. */
-    private static function dagNameOf($groupId)
-    {
-        try {
-            if (is_callable(['\REDCap', 'getGroupNames'])) {
-                $g = \REDCap::getGroupNames(true, $groupId);
-                if (is_string($g) && $g !== '') return $g;
-            }
-        } catch (\Throwable $e) {
-        }
-        return null;
-    }
+    // dagNameOf() USED TO LIVE HERE, as a byte-for-byte copy of the six lines
+    // inside ScanPageView::scanScope(). Two copies of one lookup is two chances
+    // for one of them to drift, and the axis defect this release fixes is
+    // precisely that shape one layer up. It is now
+    // ScanPageView::dagNameOf(), which the page, this file's live unique-check
+    // endpoint and scanProject() all call.
 
     // -- server-side value read --------------------------------------------
 

@@ -19,9 +19,13 @@
 namespace {
     require_once __DIR__ . '/../php/ScanPageView.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
+    // ScanAuthorization composes the store contract's refusal wording; the
+    // sentence itself belongs to the contract, so that has to be loaded too.
+    require_once __DIR__ . '/../php/Scan/ScanStore.php';
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
+    require_once __DIR__ . '/../php/Scan/DbError.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -221,25 +225,33 @@ namespace INSPIRE\UniversalValidator\Scan {
      * READ / WORK  the same entitlement, re-evaluated, plus exact scope
      * ===================================================================== */
     {
-        $dagUser = rights(['group_id' => 'north']);
+        // THE NUMERIC GROUP ID ON BOTH SIDES, because that is the only axis
+        // production has. This matrix used to be internally consistent on DAG
+        // NAMES while the planning suite was internally consistent on ids, and
+        // neither suite ever held both sides - which is how 1,228 green checks
+        // sat over a page that produced a name and a store that compared an id.
+        // Reseeding it here is not cosmetic: readable() derives the scope from
+        // $rights['group_id'], so a name in that key tests a value production
+        // can never contain.
+        $dagUser = rights(['group_id' => 7]);
 
         check('read: an unrestricted user may read a project-wide run',
             ScanAuthorization::mayRead(rights(), $ENT, null)['ok'] === true);
         check('read: and a DAG-scoped one',
-            ScanAuthorization::mayRead(rights(), $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayRead(rights(), $ENT, '7')['ok'] === true);
 
         check('read: a DAG user may read their OWN group\'s run',
-            ScanAuthorization::mayRead($dagUser, $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayRead($dagUser, $ENT, '7')['ok'] === true);
         check('read: but NOT another group\'s',
-            ScanAuthorization::mayRead($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayRead($dagUser, $ENT, '31')['ok'] === false);
         check('read: nor a project-wide run, which is wider than their scope',
             ScanAuthorization::mayRead($dagUser, $ENT, null)['ok'] === false);
 
         // NON-DISCLOSING: "another group's run" and "no such run" must read the
         // same, or the message is an existence oracle.
-        $other = ScanAuthorization::mayRead($dagUser, $ENT, 'south');
+        $other = ScanAuthorization::mayRead($dagUser, $ENT, '31');
         check('read: the cross-scope refusal does not confirm the run exists',
-            strpos($other['why'], 'south') === false && strpos($other['why'], 'exist') === false
+            strpos($other['why'], '31') === false && strpos($other['why'], 'exist') === false
             && strpos($other['why'], 'another') === false);
 
         // Rights revoked mid-run stop reads; the run id does not restore them.
@@ -252,37 +264,59 @@ namespace INSPIRE\UniversalValidator\Scan {
                 $ENT, null)['ok'] === false);
 
         check('work: carries exactly the read entitlement',
-            ScanAuthorization::mayWork($dagUser, $ENT, 'north')['ok'] === true
-            && ScanAuthorization::mayWork($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayWork($dagUser, $ENT, '7')['ok'] === true
+            && ScanAuthorization::mayWork($dagUser, $ENT, '31')['ok'] === false);
+
+        // B3: THE AXIS AS A PROPERTY, not as a reseeded fixture. The second
+        // half is the load-bearing one - it asserts that a NAME in scope_dag is
+        // REFUSED, so a revert that puts the name back fails here loudly rather
+        // than merely failing to match somewhere quieter. This is the check a
+        // future author reads to learn which value belongs in that column.
+        check('B3: the rights key this class reads and the scope it compares are ONE axis '
+            . '- the numeric group id',
+            ScanAuthorization::mayWork(rights(['group_id' => 7]), $ENT, '7')['ok'] === true
+            && ScanAuthorization::mayWork(rights(['group_id' => 7]), $ENT, 'north')['ok'] === false);
     }
 
     /* =====================================================================
      * CANCEL  wider than working, and never across scopes
      * ===================================================================== */
     {
-        $dagUser = rights(['group_id' => 'north']);
+        $dagUser = rights(['group_id' => 7]);
         check('cancel: an unrestricted user may cancel a global run',
             ScanAuthorization::mayCancel(rights(), $ENT, null)['ok'] === true);
         check('cancel: a DAG user may NOT cancel a global run',
             ScanAuthorization::mayCancel($dagUser, $ENT, null)['ok'] === false);
         check('cancel: a DAG user may cancel their own group\'s run',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'north')['ok'] === true);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '7')['ok'] === true);
+        // The rule is SCOPE, not ownership - stated without the two parameters
+        // that used to carry it. They were inert: mayCancel compared them and
+        // then returned the same expression either way, so this check passed
+        // over a control that decided nothing. Asserting the rule directly is
+        // what makes it a test rather than a decoration.
         check('cancel: even one another user in that group started',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'north', 'someone_else', 'me')['ok'] === true);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '7')['ok'] === true);
         check('cancel: but not another group\'s run',
-            ScanAuthorization::mayCancel($dagUser, $ENT, 'south')['ok'] === false);
+            ScanAuthorization::mayCancel($dagUser, $ENT, '31')['ok'] === false);
         check('cancel: an unrestricted user may cancel any DAG run',
-            ScanAuthorization::mayCancel(rights(), $ENT, 'south')['ok'] === true);
+            ScanAuthorization::mayCancel(rights(), $ENT, '31')['ok'] === true);
         check('cancel: an unentitled user may cancel nothing',
-            ScanAuthorization::mayCancel(rights(['design' => false]), $ENT, 'north')['ok'] === false);
+            ScanAuthorization::mayCancel(rights(['design' => false]), $ENT, '7')['ok'] === false);
     }
 
     /* =====================================================================
      * NON-DISCLOSURE  busy, pre-fence status, DAG drift
      * ===================================================================== */
     {
-        $busy = ScanAuthorization::busy();
-        check('busy: refuses', $busy['ok'] === false && $busy['busy'] === true);
+        // ON THE SENTENCE, which is what an operator reads, rather than on a
+        // wrapper that reshapes it. ScanAuthorization::busy() used to own this
+        // and nothing called it: both stores wrote their own copy, one of which
+        // had already lost a sentence. The wording now belongs to the store
+        // contract and both stores answer with it, so these properties are
+        // asserted where they are actually produced.
+        $busy = ['ok' => false, 'busy' => true, 'why' => ScanStore::BUSY_WHY, 'scope' => null];
+        check('busy: the contract owns one refusal sentence',
+            is_string(ScanStore::BUSY_WHY) && ScanStore::BUSY_WHY !== '');
         // On the PROPERTY, not on substrings: 'id' matches inside "validation"
         // and 'run' inside "running", so a substring check fails while the
         // property holds - the direction that teaches you to loosen a real test.
@@ -296,7 +330,11 @@ namespace INSPIRE\UniversalValidator\Scan {
             check("busy: says nothing about '$leak'", stripos($busy['why'], $leak) === false);
         }
         // The same words whoever asks: two different refusals are an oracle.
-        check('busy: is identical for every caller', ScanAuthorization::busy() == $busy);
+        // The same words whoever asks: two different refusals are an oracle.
+        // It is a constant now, so "identical for every caller" is structural
+        // rather than something a second implementation could get wrong.
+        check('busy: is one constant, not a value each caller derives',
+            defined('\INSPIRE\UniversalValidator\Scan\ScanStore::BUSY_WHY'));
 
         // Before the target fence a DAG projection is not yet provable, so
         // counts would be claims about a scope that has not been established.
@@ -404,6 +442,21 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('outcome: collection gaps do NOT block clean', $g['clean'] === true);
         check('outcome: but the caller is obliged to show them', $g['mustShowGaps'] === true);
         check('outcome: and none means no obligation', $r['mustShowGaps'] === false);
+
+        // An empty manifest satisfied `pending === 0`, read as a finished
+        // manifest, and took the clean row - so a run that examined nothing
+        // produced the same certificate as one that examined everything.
+        $es = ScanOutcome::derive(array_merge($base, ['emptyScope' => true]));
+        check('outcome: an empty scope is never clean and never complete',
+            $es['clean'] === false && $es['terminal'] !== ScanOutcome::COMPLETE);
+        check('outcome: it is not called a failure, because an empty project is not one',
+            $es['terminal'] !== ScanOutcome::FAILED
+            && $es['coverage'] !== ScanOutcome::COV_FAILED);
+        check('outcome: nor manifest-complete, which would claim a manifest that does not exist',
+            $es['coverage'] !== ScanOutcome::MANIFEST
+            && $es['coverage'] === ScanOutcome::EMPTY_SCOPE);
+        check('outcome: and its export says _NO_RECORDS rather than nothing at all',
+            ScanOutcome::suffix($es) === '_NO_RECORDS');
 
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
@@ -546,6 +599,122 @@ namespace INSPIRE\UniversalValidator\Scan {
                 check("drift: $k is a SYSTEM setting, not a project one", isset($sysKeys[$k]));
             }
         }
+    }
+
+    /* =====================================================================
+     * S-10  a database error names the SCHEMA and never the DATA
+     *
+     * This text reaches a page. MySQL puts the offending VALUE in single
+     * quotes - and, as it turns out, the IDENTIFIER too, in the same quotes -
+     * so the blanket redaction that shipped through 1.9.10 destroyed the
+     * diagnosis along with the value and three pilot rounds were spent on it.
+     * The replacement REBUILDS a template from structural captures instead of
+     * filtering the server's string, which is what lets the failing statement
+     * and its bound parameters be dropped rather than trimmed.
+     *
+     * safeDbMessage had no test of any kind before this block: no hit for it,
+     * for 'refused to store', for 'Duplicate entry' or for 'Data too long'
+     * anywhere under tests/. That absence is why an `||` in the MySQL suite was
+     * able to stand in for the guarantee for two releases.
+     * ===================================================================== */
+    {
+        $D = '\INSPIRE\UniversalValidator\Scan\DbError';
+        $err = function ($msg, $code = 0) { return new \RuntimeException($msg, $code); };
+
+        // --- the two shapes that carry participant data ---
+        $dup = $D::safe($err("Duplicate entry 'AB12-9' for key 'uv_finding.uq_active_identity'", 1062));
+        check('S-10: a duplicate key names the KEY', strpos($dup, 'uq_active_identity') !== false);
+        check('S-10: and never the duplicated value', strpos($dup, 'AB12-9') === false);
+        check('S-10: and carries the errno, which names the fix on its own',
+            strpos($dup, '1062') !== false);
+
+        $inc = $D::safe($err("Incorrect integer value: 'Mrs Smith' for column 'instance' at row 4", 1366));
+        check('S-10: an incorrect value names the column', strpos($inc, 'instance') !== false);
+        check('S-10: and withholds the value', strpos($inc, 'Mrs Smith') === false);
+
+        // --- the shapes whose quoted parts are all identifiers ---
+        $long = $D::safe($err("Data too long for column 'reason_code' at row 1", 1406));
+        check('S-10: data-too-long names the column, which is the whole diagnosis',
+            strpos($long, 'reason_code') !== false);
+        check('S-10: a null violation names its column',
+            strpos($D::safe($err("Column 'host_form' cannot be null", 1048)), 'host_form') !== false);
+        check('S-10: a missing default names its field',
+            strpos($D::safe($err("Field 'run_id' doesn't have a default value", 1364)), 'run_id') !== false);
+        check('S-10: an unknown column names itself',
+            strpos($D::safe($err("Unknown column 'zzz' in 'field list'", 1054)), 'zzz') !== false);
+        check('S-10: a missing table names itself',
+            strpos($D::safe($err("Table 'redcap.uv_finding' doesn't exist", 1146)), 'uv_finding') !== false);
+
+        // --- the value-free shapes the lease predicates need (H12) ---
+        check('S-10: a deadlock says deadlock, so it is not read as a takeover',
+            stripos($D::safe($err('Deadlock found when trying to get lock; try restarting transaction', 1213)),
+                    'deadlock') !== false);
+        check('S-10: a lock-wait timeout says so too',
+            stripos($D::safe($err('Lock wait timeout exceeded; try restarting transaction', 1205)),
+                    'lock wait timeout') !== false);
+
+        // --- THE TAIL WINDOW. The framework prepends the failing STATEMENT, and
+        // a findings batch is a multi-row INSERT with thousands of
+        // placeholders, so the server's own text can sit a megabyte in. A
+        // head-only cut finds nothing at all and reports a shrug.
+        $huge = 'ExternalModules framework error running query: INSERT INTO uv_finding ('
+              . str_repeat('?, ', 200000) . ') -- ' . "Duplicate entry 'SECRET' for key 'uv_finding.uq_active_identity'";
+        $tail = $D::safe($err($huge, 1062));
+        check('S-10: the diagnosis is found even when the statement pushes it past the head window',
+            strpos($tail, 'uq_active_identity') !== false);
+        check('S-10: and the megabyte of statement does not travel with it',
+            strpos($tail, 'INSERT INTO') === false && strlen($tail) < 200);
+        check('S-10: and the value at the far end is still withheld',
+            strpos($tail, 'SECRET') === false);
+
+        // --- REBUILDING IS THE SECURITY PROPERTY. On a recognised shape the
+        // output is assembled from captures, so anything the wrapper appended -
+        // statement, bound parameters - is dropped rather than trimmed.
+        $withParams = "Duplicate entry 'X' for key 'uv_finding.uq_active_identity' "
+                    . '[params: nhs_number=4857773456, dob=1974-02-11]';
+        $rebuilt = $D::safe($err($withParams, 1062));
+        check('S-10: bound parameters appended by the wrapper are dropped, not trimmed',
+            strpos($rebuilt, '4857773456') === false && strpos($rebuilt, '1974-02-11') === false);
+
+        // --- the ident() guard. A value carrying an apostrophe can re-frame the
+        // text so a fragment of it lands in a capture group; identifier shape is
+        // what makes that a withheld name rather than a disclosure.
+        $crafted = $D::safe($err("Duplicate entry 'a' for key 'Smith, Jane (DOB 1974-02-11)'", 1062));
+        check('S-10: a capture that is not identifier-shaped is withheld',
+            strpos($crafted, 'Smith') === false && strpos($crafted, '1974') === false);
+        check('S-10: and says so rather than printing nothing',
+            strpos($crafted, 'withheld') !== false);
+
+        // --- THE BINARY CASE, which is the one that actually leaked.
+        //
+        // uq_active_identity is keyed on a 32-byte HMAC, so the value MySQL
+        // echoes back in a duplicate-entry error is raw binary - and roughly one
+        // identity in eight contains an apostrophe byte (0x27) by chance. That
+        // byte closes the redaction pattern's quoted run early and opens the
+        // next one in the wrong place, so the old blanket redaction emitted the
+        // bytes BETWEEN the two apostrophes verbatim while still destroying the
+        // key name. It lost the diagnosis and disclosed at the same time. The
+        // template rebuild is immune because it never echoes the value capture.
+        $bin = "\x9f\x2c'" . "\x44\xa1SHOULD_NOT_APPEAR\x00\x11" . "'\xee\x03";
+        $binMsg = $D::safe($err("Duplicate entry '" . $bin
+                                . "' for key 'uv_finding.uq_active_identity'", 1062));
+        check('S-10: a quote byte inside a binary key value cannot re-frame the redaction',
+            strpos($binMsg, 'SHOULD_NOT_APPEAR') === false);
+        check('S-10: and the key name survives it, which the old pattern also lost',
+            strpos($binMsg, 'uq_active_identity') !== false);
+        check('S-10: and no raw NUL reaches the page',
+            strpos($binMsg, "\x00") === false);
+
+        // --- an unrecognised message still answers, still bounded, still redacted.
+        $odd = $D::safe($err("Some novel server condition involving 'AB12-9' and more", 9999));
+        check('S-10: an unrecognised error still redacts its quoted runs',
+            strpos($odd, 'AB12-9') === false);
+        check('S-10: and still names its errno', strpos($odd, '9999') !== false);
+        check('S-10: and is bounded', strlen($odd) <= 200);
+
+        // --- and it never returns nothing. An empty message is the one input
+        // that used to hand a bare class name to a page.
+        check('S-10: an empty message still answers', $D::safe($err('', 1213)) !== '');
     }
 
     echo "scan_security_php: $n checks, $fail failure(s)\n";

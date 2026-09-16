@@ -60,6 +60,14 @@ namespace ExternalModules {
         public function query($sql, $params = []) {
             $this->sql[] = $sql;
             if (strpos($sql, 'MAX(version)') !== false) return [[0]];
+            // Version 2 asks the server what is already there, so a
+            // migration interrupted between two ALTERs can resume. This
+            // fixture is about HOSTING, not about the schema, so it answers
+            // 'already applied' and lets migrate() get to the part this file
+            // is actually testing.
+            if (strpos($sql, 'information_schema.columns') !== false
+                    || strpos($sql, 'information_schema.statistics') !== false) return [[1]];
+            if (strpos($sql, 'project_id = 0') !== false) return [[0]];
             return [];
         }
         public function getProjectId() { return $this->projectIdReturn; }
@@ -206,7 +214,19 @@ namespace {
             $f = \ExternalModules\TestUser::$forms;
             return $f === null ? [] : ['nurse' => ['forms' => $f]];
         }
-        public static function getGroupNames($a = false, $b = null) { return ''; }
+        // AN ID->NAME MAP, BECAUSE THE MODULE NOW HAS ONE DAG AXIS. Wave 6
+        // moved every scope value onto the numeric group id; scanProject()
+        // resolves it back to the exported unique name through
+        // ScanPageView::dagNameOf(), which reads exactly this. A stub that
+        // returned '' unconditionally made every group unresolvable, which the
+        // production code now correctly refuses - so the four DAG-scoped cases
+        // below hand in ids and this answers with the names their fixture data
+        // carries in redcap_data_access_group.
+        public static $groupNames = [7 => 'north', 31 => 'south'];
+        public static function getGroupNames($a = false, $b = null) {
+            if ($b === null) return self::$groupNames;
+            return isset(self::$groupNames[(int) $b]) ? self::$groupNames[(int) $b] : '';
+        }
         public static function getRecordIdField() { return self::$pkAvailable ? 'record_id' : ''; }
         public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
         public static function getEventNames($u = false, $x = false, $evt = null) { return 'event_' . $evt . '_arm_1'; }
@@ -1090,7 +1110,7 @@ namespace {
         $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
         $data = [1 => [1 => ['record_id' => '1', 'a_val' => '', 'redcap_data_access_group' => 'north']]];
 
-        $res = mkMod($D, $data)->scanProject(PID, 'south');
+        $res = mkMod($D, $data)->scanProject(PID, '31');   // 'south'
         check('H-10: a DAG that matches no record is NOT reported complete',
             $res['status'] === 'incomplete');
         check('H-10: and it says the group had nothing in scope',
@@ -1108,7 +1128,7 @@ namespace {
 
         // CONTRAST: a DAG that DOES match still scans and can still be clean.
         $clean = [1 => [1 => ['record_id' => '1', 'a_val' => 'ok', 'redcap_data_access_group' => 'north']]];
-        $res3 = mkMod($D, $clean)->scanProject(PID, 'north');
+        $res3 = mkMod($D, $clean)->scanProject(PID, '7');   // 'north'
         check('H-10 contrast: a matching DAG with clean data still completes',
             $res3['status'] === 'complete' && count($res3['violations']) === 0);
     }
@@ -1171,7 +1191,7 @@ namespace {
         $whole = mkMod($DU, $du)->scanProject(PID);
         check('X3: project-wide, the cross-group duplicate IS found',
             count(array_filter($whole['violations'], function ($v) { return $v['type'] === 'unique'; })) === 2);
-        $scoped = mkMod($DU, $du)->scanProject(PID, 'north');
+        $scoped = mkMod($DU, $du)->scanProject(PID, '7');   // 'north'
         check('X3: DAG-scoped, the rule is reported as unevaluable rather than silently passing',
             (bool) array_filter($scoped['unconfigurable'], function ($u) {
                 return stripos($u['why'], 'whole project') !== false;
@@ -1220,7 +1240,7 @@ namespace {
         ];
         $m = mkMod($DD, $dagData);
         \REDCap::$getDataMode = 'badnode';
-        $res = $m->scanProject(PID, 'north');
+        $res = $m->scanProject(PID, '7');   // 'north'
         $recs = [];
         foreach ($res['violations'] as $v) $recs[(string) $v['record']] = true;
         // On the MANIFEST, not on the violation rows. The unreadable record has
@@ -1452,11 +1472,40 @@ namespace {
         };
         $mig = new \INSPIRE\UniversalValidator\UniversalValidator();
 
-        // OFF: nothing is installed. Ten tables in the database of an
-        // administrator who never asked for the feature is not a default.
+        // OFF: no SCAN table is installed. Ten tables in the database of an
+        // administrator who never asked for the feature is not a default, and
+        // that decision is unchanged.
+        //
+        // EXACTLY ONE TABLE IS THE EXCEPTION, and it is not the scan's.
+        // uv_rate_bucket backs the survey uniqueness throttle, which runs on
+        // every installation with this module enabled. Its DDL used to sit
+        // inside statementsV2(), so it was created only when the scan flag was
+        // on - and the flag is off by default and documented to stay off until
+        // a pilot. The throttle on the module's only unauthenticated endpoint
+        // was therefore inert on every default installation. This assertion is
+        // the one that would have caught it, so it names the table rather than
+        // counting: a count would pass again the day the next non-scan table
+        // drifts behind the flag.
+        $named = function ($m) {
+            $out = [];
+            foreach ($m->sql as $q) {
+                if (stripos($q, 'CREATE TABLE') === false) continue;
+                if (preg_match('/CREATE TABLE (?:IF NOT EXISTS )?(\S+)/i', $q, $mm)) $out[] = $mm[1];
+            }
+            sort($out);
+            return array_values(array_unique($out));
+        };
         $mig->sql = [];
         $mig->redcap_module_save_configuration(null);
-        check('migrate: with the switch off, no table is created', $creates($mig) === 0);
+        check('migrate: with the switch off, exactly one table is created',
+            $creates($mig) === 1);
+        check('migrate: and it is the throttle counter, not a scan table',
+            $named($mig) === ['uv_rate_bucket']);
+        check('migrate: the throttle counter is created IF NOT EXISTS, so a re-save is a no-op',
+            count(array_filter($mig->sql, function ($q) {
+                return stripos($q, 'CREATE TABLE') !== false
+                    && stripos($q, 'IF NOT EXISTS') !== false;
+            })) === 1);
 
         // ON: the administrator ticked the box and pressed Save, which IS the
         // choice, so the schema is installed.
@@ -1466,8 +1515,23 @@ namespace {
         $made = array_values(array_filter($mig->sql, function ($q) {
             return stripos($q, 'CREATE TABLE') !== false;
         }));
+        // THE SET, NOT THE COUNT. uv_rate_bucket is now issued twice on this
+        // path - once unconditionally beside installScanSchema(), once inside
+        // statementsV2() - and that duplication is deliberate: the throttle
+        // must not depend on the scan's flag, and the scan must not depend on
+        // the unconditional installer having succeeded. Both statements are
+        // IF NOT EXISTS, so the second is a no-op. Asserting the set says what
+        // is actually required (every table this module owns ends up created)
+        // and does not have to be edited each time the redundancy changes.
+        $want = \INSPIRE\UniversalValidator\Scan\Schema::tables();
+        sort($want);                                  // $named sorts; tables() is in creation order
         check('migrate: saving the system settings with the switch on installs the schema',
-            count($made) === count(\INSPIRE\UniversalValidator\Scan\Schema::tables()));
+            $named($mig) === array_values($want));
+        check('migrate: and the throttle counter is installed either way, so it is issued twice',
+            count(array_filter($mig->sql, function ($q) {
+                return stripos($q, 'CREATE TABLE') !== false
+                    && stripos($q, 'uv_rate_bucket') !== false;
+            })) === 2);
         check('migrate: every statement is IF NOT EXISTS, so a re-save is a no-op',
             count(array_filter($made, function ($q) {
                 return stripos($q, 'IF NOT EXISTS') !== false;
@@ -1510,6 +1574,52 @@ namespace {
         }
         check('migrate: a database that refuses does not break saving the settings',
             $threw === false);
+
+        // AND THE CASE THE ONE ABOVE CANNOT REACH.
+        //
+        // $boom throws on EVERY query, so Schema::migrate() - which catches
+        // internally and reports ok=false - returns before installScanSchema()
+        // gets anywhere near the block that provisions the worker slots. The
+        // check above is therefore green whether or not the guard around that
+        // block works, and for most of this module's life it did not: the catch
+        // was written `catch (Throwable)` inside `namespace INSPIRE\
+        // UniversalValidator`, which names a class that does not exist and so
+        // never matched. A test whose name states a guarantee it cannot
+        // exercise is worse than no test, because it stops anyone looking.
+        //
+        // This one throws ONLY on the worker-slot write, so the migration
+        // succeeds, execution reaches the provisioning block, and the guard is
+        // the only thing between the failure and the administrator's save.
+        $slotBoom = new class extends \INSPIRE\UniversalValidator\UniversalValidator {
+            public function query($sql, $params = []) {
+                // The slot table's own DDL must still succeed - otherwise
+                // migrate() fails, catches internally, and returns before the
+                // provisioning block, which is precisely the blind spot this
+                // test exists to cover.
+                if (strpos($sql, 'scan_worker_slot') !== false
+                        && strpos($sql, 'CREATE TABLE') === false) {
+                    throw new \RuntimeException('slot table write refused');
+                }
+                return parent::query($sql, $params);
+            }
+        };
+        $slotBoom->systemSettings['scan-system-enable-durable'] = '1';
+        $threw2 = false;
+        try {
+            $slotBoom->redcap_module_save_configuration(null);
+        } catch (\Throwable $e) {
+            $threw2 = true;
+        }
+        check('migrate: a slot provisioning that throws AFTER a good migration '
+            . 'does not break saving the settings either', $threw2 === false);
+        // Swallowed, but not silent: an operator who later meets "the server is
+        // busy" over an empty slot pool must be able to find out why.
+        $logged = false;
+        foreach ($slotBoom->logCalls as $entry) {
+            if ($entry[0] === 'scan-schema-install-failed') $logged = true;
+        }
+        check('migrate: and the swallowed failure is recorded rather than lost',
+            $logged === true);
     }
 
     echo "hosting_php: $n checks, $fail failure(s)\n";

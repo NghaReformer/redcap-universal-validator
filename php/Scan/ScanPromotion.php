@@ -56,6 +56,55 @@ final class ScanPromotion
     const RULE_KINDS = 'rule-problem';
 
     /**
+     * Record that this run knows of rules it cannot evaluate.
+     *
+     * THE CONSTANT ABOVE HAD NO WRITER. It was declared, it was read by
+     * ScanService::aggregateTotal() into ScanOutcome::derive()'s `ruleProblems`
+     * term, and nothing in the shipped tree ever produced an aggregate of that
+     * kind - every addAggregate() call site wrote a reconciled-*,
+     * reconcile-unsettled, fence-unprovable or rollup-* kind instead. So `clean`
+     * was really `violations === 0`, and a project whose rules enforce nothing
+     * was certified clean. This is the writer.
+     *
+     * IT IS PUBLIC FOR A REASON. tests/scan_wiring_php.php fails on any public
+     * method under php/Scan/ with no production caller, so the day somebody
+     * unwires this the suite says so, instead of the term quietly returning to
+     * zero the way it has been for the whole of this file's life.
+     *
+     * PLAN-TIME PROBLEMS ONLY, which is the whole of what it can honestly carry
+     * today. scanPlan() knows before the first record is read which rules have a
+     * configuration error, cannot be located on an instrument, sit on an
+     * instrument designated to no event, or cannot be evaluated under a group
+     * scope. That set is deduped by construction and bounded by the RULE list
+     * rather than by the data, so one row per run is exact, and it is known even
+     * on a run whose scope turns out to be empty. The per-record problems
+     * durableEvaluateRecord() returns need a dedupe and a presence-not-count
+     * store verb, and they stay in the wave that owns those.
+     *
+     * BLOCKS IS 0, and that is correctness rather than a default. A rule problem
+     * FORBIDS CLEAN BUT DOES NOT CAP COVERAGE. Passing 1 would put it into
+     * blockingAggregates(), which caps coverage at partial - so a project with
+     * one misconfigured rule could no longer report that every record was
+     * checked, which it was.
+     *
+     * @param array $problems each {rule:int, fields:array, why:string}
+     * @return int how many were recorded
+     */
+    public static function noteRuleProblems(ScanStore $store, $runId, array $problems)
+    {
+        if (!$problems) return 0;
+        $why = [];
+        foreach ($problems as $p) {
+            if (isset($p['why']) && is_string($p['why'])) $why[] = $p['why'];
+        }
+        // Bounded exactly as CatchUp::unfenced() bounds its sample, for the same
+        // reason: `samples` is a TEXT column and a rule list is unbounded.
+        $store->addAggregate($runId, self::RULE_KINDS, '', '', count($problems), 0,
+                             substr(implode(' | ', $why), 0, 500));
+        return count($problems);
+    }
+
+    /**
      * Everything the decision needs, in one shape.
      *
      * Every field defaults to the SAFE reading, matching ScanOutcome::derive():
@@ -69,6 +118,9 @@ final class ScanPromotion
      *   blockingAggregates: int
      *   gapCount:           int
      *   ruleProblems:       int
+ *   (emptyScope is NOT an input. It is derived below from the run row and the
+ *    census, because a caller that can be asked for it is a caller that can
+ *    forget it, and forgetting it is what this cost the first time.)
      *   uniqueDone:         bool
      *   uniqueBlocking:     int
      *   rollupDone:         bool
@@ -87,7 +139,15 @@ final class ScanPromotion
         };
 
         $pending = $n(ScanStore::REC_PENDING) + $n(ScanStore::REC_CLAIMED);
-        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE);
+        // EVERY NON-EXAMINING TERMINAL STATE EXCEPT THE TOMBSTONE. A record
+        // that could not be read, would not hold still, or whose result could
+        // not be stored is a record this run did not check - and a run with one
+        // of those in it must never be able to say `clean`. REC_UNSTORED is the
+        // newest of the three and the easiest to forget: it is written by the
+        // give-back path rather than by a commit, so nothing else in this file
+        // would ever have mentioned it.
+        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE)
+                 + $n(ScanStore::REC_UNSTORED);
 
         $cancelled = !empty($run['cancel_requested_at'])
                      || (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING);
@@ -101,6 +161,23 @@ final class ScanPromotion
         $polNow = $g('policyRevisionNow');
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
+
+        // AN EMPTY SCOPE, ASKED OF TWO INDEPENDENT SOURCES, because neither one
+        // alone is the question. `manifest_total` is 0 for the whole of planning
+        // and rows are appended before they are frozen, so a run mid-plan with
+        // records already queued would read as empty on that alone. The census
+        // is empty whenever a store read comes back with no rows. Both saying
+        // empty is the only reading that means nothing was listed AND nothing
+        // exists.
+        //
+        // ScanPlanner::plan() already refuses to start a run over an empty
+        // scope, so in normal operation this never fires. It is here because the
+        // real cost was never the empty project - it was that ANY bug which
+        // empties a manifest became a clean certificate rather than an error,
+        // and the planner cannot see a manifest emptied after it froze one.
+        $manifestTotal = isset($run['manifest_total']) ? (int) $run['manifest_total'] : 0;
+        $examined = 0;
+        foreach ($states as $c) $examined += (int) $c;
 
         $rows  = isset($run['detail_rows']) ? (int) $run['detail_rows'] : 0;
         $bytes = isset($run['detail_bytes']) ? (int) $run['detail_bytes'] : 0;
@@ -116,6 +193,10 @@ final class ScanPromotion
             // `manifest-complete`, which says exactly what it did.
             'fenced' => !empty($run['fence_target']),
             'manifestDone' => ($pending === 0),
+            // Beside manifestDone deliberately: `pending === 0` over an empty
+            // census is exactly what made manifestDone true, and the reader
+            // needs to see the correction next to the thing it corrects.
+            'emptyScope' => ($manifestTotal === 0 && $examined === 0),
             // Unread and unstable records, undecidable duplicate groups, and
             // anything an aggregate marked blocking. A TOMBSTONE IS ABSENT FROM
             // THIS LIST on purpose - see the class note.

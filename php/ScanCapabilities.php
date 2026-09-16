@@ -67,9 +67,9 @@ final class ScanCapabilities
             if ($walk['state'] === self::OK) return $walk;
         }
 
-        // Fallback: a keyset walk of redcap_data restricted to the record-id
-        // field. Bounded, but it needs both a usable query API and a known
-        // record-id field.
+        // Fallback: a keyset walk of the project's own data table, restricted
+        // to the record-id field. Bounded, but it needs both a usable query API
+        // and a known record-id field.
         $canQuery = self::canQuery($module);
         if ($canQuery['state'] !== self::OK) {
             return self::no('no paged record-list source, and ' . $canQuery['why']);
@@ -157,8 +157,18 @@ final class ScanCapabilities
         try {
             $q = $module->query('SHOW GRANTS FOR CURRENT_USER()', []);
             if (!$q) return self::no('SHOW GRANTS returned nothing');
+            // NOT `while ($row = self::fetchRow($q))`. fetchRow() takes its
+            // argument BY VALUE, so for the array shape its array_shift()
+            // drains a fresh copy on every call and hands back element 0
+            // forever: the loop never terminates and $all grows until the
+            // request dies of memory exhaustion, with no output at all. That is
+            // the same empty-200-over-a-fatal that 1.9.10 was written to
+            // eliminate, reached by a different road. Materialise the rows once,
+            // under a cap, and iterate a real list.
             $all = '';
-            while ($row = self::fetchRow($q)) $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
+            foreach (self::fetchAll($q) as $row) {
+                $all .= ' | ' . (isset($row[0]) ? $row[0] : '');
+            }
             $all = strtoupper($all);
             if ($all === '') return self::no('SHOW GRANTS returned no rows');
             // Only the privilege LIST is searched, never the ON/TO clauses: a
@@ -335,6 +345,59 @@ final class ScanCapabilities
         }
     }
 
+    /**
+     * The project's data table — resolved the same way the WALK resolves it.
+     *
+     * THE GATE MUST PROBE THE TABLE THE WALK WILL READ. This probe used to name
+     * `redcap_data` as a literal while RecordManifestSource::dataTable() read
+     * redcap_projects.data_table and accepted redcap_data[0-9]*. On an
+     * installation with per-project data tables the two disagreed, and because
+     * the probe deliberately tolerates an empty result, the usual outcome was
+     * not a wrong refusal but a VACUOUS PASS: the gate proved a walk of a table
+     * this project will never touch, on exactly the installations the
+     * per-project tables exist for. "Prove the walk, do not infer it" is the
+     * sentence above recordEnumeration(); a probe of the wrong table infers.
+     *
+     * The resolution is DELEGATED rather than copied, because two copies of a
+     * table-name rule are what produced the disagreement in the first place.
+     * The delegation is guarded because this file must keep loading on its own:
+     * tests/scan_capabilities_php.php requires ScanCapabilities.php and nothing
+     * else, and UniversalValidator.php requires this file BEFORE the Scan/*
+     * classes. class_exists() is called with autoload disabled on purpose — the
+     * question is whether the module's own require block has run, and a probe
+     * is not a place to trigger somebody else's autoloader.
+     *
+     * `redcap_data` remains the documented fallback, which is what shipped and
+     * what REDCap still installs by default. If it is the wrong answer here the
+     * probe below fails against it and says so, which is the honest outcome:
+     * the fallback cannot manufacture a pass.
+     *
+     * Both answers are safe to interpolate, and only for that reason are they
+     * interpolated: dataTable() allowlists the server's value against
+     * /^redcap_data[0-9]*\z/ and returns null otherwise, and the fallback is a
+     * literal in this file. A table name can never be a bound parameter, which
+     * is what makes the allowlist the whole of the defence — the same argument
+     * spelled out above logEventTable().
+     */
+    private static function dataTableFor($module, $pid)
+    {
+        if (class_exists('INSPIRE\UniversalValidator\Scan\RecordManifestSource', false)
+                && class_exists('INSPIRE\UniversalValidator\Scan\ModuleDb', false)
+                && is_object($module) && is_callable([$module, 'query'])) {
+            try {
+                $t = Scan\RecordManifestSource::dataTable(new Scan\ModuleDb($module), $pid);
+                // null means the walk could not recognise a data table either.
+                // Falling back to the default still asks a real question of the
+                // database, and a wrong answer is a refusal rather than a pass.
+                if (is_string($t) && $t !== '') return $t;
+            } catch (\Throwable $e) {
+                // A resolution that fails is not a capability answer; the probe
+                // below is. Fall through to the default and let it decide.
+            }
+        }
+        return 'redcap_data';
+    }
+
     private static function recordIdField($pid)
     {
         try {
@@ -347,7 +410,49 @@ final class ScanCapabilities
         return null;
     }
 
-    /** mysqli_result, or anything else that can hand back one row. */
+    /**
+     * EVERY row, once, from either shape - bounded.
+     *
+     * The cursor shape (mysqli_result) and the materialised shape (a plain
+     * array) cannot be drained by the same one-row call: advancing a cursor is
+     * a side effect on the object, and shifting an array is a side effect on
+     * whatever copy the callee happens to hold. Anything that needs more than
+     * the first row must come through here.
+     *
+     * The cap is not tidiness. SHOW GRANTS on a user with thousands of grants,
+     * or a driver that never signals exhaustion, must cost a bounded amount of
+     * memory rather than the request.
+     */
+    private static function fetchAll($q, $cap = 500)
+    {
+        $rows = [];
+        try {
+            if (is_array($q)) {
+                foreach ($q as $row) {
+                    $rows[] = $row;
+                    if (count($rows) >= $cap) break;
+                }
+                return $rows;
+            }
+            if (is_object($q) && is_callable([$q, 'fetch_row'])) {
+                while (count($rows) < $cap) {
+                    $row = $q->fetch_row();
+                    if ($row === null || $row === false) break;
+                    $rows[] = $row;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        return $rows;
+    }
+
+    /**
+     * ONE row, from either shape.
+     *
+     * Correct for a single read and used only for single reads - the array
+     * branch shifts a by-value copy, which answers element 0 and mutates
+     * nothing the caller can see. Never call it in a loop; see fetchAll().
+     */
     private static function fetchRow($q)
     {
         try {
@@ -375,19 +480,40 @@ final class ScanCapabilities
         }
     }
 
-    /** One bounded keyset read of redcap_data, to prove the fallback walk works. */
+    /**
+     * One bounded keyset read of the project's OWN data table, to prove the
+     * fallback walk works.
+     *
+     * The record-id field is not re-checked here: recordEnumeration() refuses
+     * before it calls this, and a second guard that no caller can reach is the
+     * shape this whole review was written about.
+     *
+     * BOTH ANSWERS NAME THE RESOLVED TABLE. An operator on a per-project-table
+     * installation used to be told "the redcap_data keyset walk failed" about a
+     * table their project does not use, which sends the investigation to the
+     * wrong place before it starts.
+     */
     private static function probeKeysetWalk($module, $pid)
     {
-        $pk = self::recordIdField($pid);
+        $tbl = self::dataTableFor($module, $pid);
+        $pk  = self::recordIdField($pid);
         try {
             $q = $module->query(
-                'SELECT record FROM redcap_data WHERE project_id = ? AND field_name = ? '
+                'SELECT record FROM ' . $tbl . ' WHERE project_id = ? AND field_name = ? '
                 . 'ORDER BY record LIMIT 1', [$pid, $pk]);
-            if (!$q) return self::no('the redcap_data keyset walk returned nothing');
+            // ONLY false and null are failures. A framework whose query() hands
+            // back a plain ARRAY answers an empty result set as [], which is
+            // falsy - so `if (!$q)` refused a walk that had just worked, and the
+            // two transports gave opposite answers about the same database.
+            // That is the by-value/by-cursor confusion that produced H17, in the
+            // same file and one function along.
+            if ($q === false || $q === null) {
+                return self::no('the ' . $tbl . ' keyset walk returned nothing');
+            }
             self::fetchRow($q);      // an empty project is legitimate; the QUERY working is the point
-            return self::yes('redcap_data keyset walk (probed)');
+            return self::yes($tbl . ' keyset walk (probed)');
         } catch (\Throwable $e) {
-            return self::no('the redcap_data keyset walk failed: ' . get_class($e));
+            return self::no('the ' . $tbl . ' keyset walk failed: ' . get_class($e));
         }
     }
 }
