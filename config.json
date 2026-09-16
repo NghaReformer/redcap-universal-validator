@@ -207,8 +207,13 @@
         },
         {
           "key": "when",
-          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on this instrument are read live as they are edited. A field on ANOTHER instrument in the same event is resolved on the server: if you are entitled to read that instrument its saved value is baked into the condition so the check stays live as you type, and on a survey or without those rights it is withheld and the rule is not checked here at all (a reason is shown). A reference across two repeating instruments, or to a field in another event, cannot be resolved and the rule reports why instead of guessing. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field.",
+          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on this instrument are read live as they are edited. A field on ANOTHER instrument in the same event is resolved on the server: if you are entitled to read that instrument its saved value is baked into the condition so the check stays live as you type, and on a survey or without those rights it is withheld and the rule is not checked here at all (a reason is shown). A reference across two repeating instruments, or to a field in another event, cannot be resolved and the rule reports why instead of guessing. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field. Text compares without regard to letter case unless 'Compare text case-sensitively' is ticked.",
           "type": "text"
+        },
+        {
+          "key": "case-sensitive",
+          "name": "Compare text case-sensitively (OFF by default). Unticked, text in this rule's conditions ignores letter case, so 'Yes', 'yes' and 'YES' are the same value in both the 'Only validate when' condition and a Constraint condition. Tick it when case carries meaning, e.g. a code where 'a' and 'A' are different answers. Only the letters A-Z are folded; accented letters keep their case. Numbers are unaffected.",
+          "type": "checkbox"
         },
         {
           "key": "assert",

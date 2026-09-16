@@ -53,11 +53,25 @@ foreach ($fx['eval'] as $c) {
         // the defect shipped: the fixture happened to cover the directions that
         // passed. 'expectGate' defaults to 'expect', so a case that does not
         // care says nothing and a case that does cannot forget to.
+        // 'expect' and 'expectGate' are the EXACT verdicts (a rule with
+        // "caseSensitive": true); the Ci twins are the module default, which
+        // folds A-Z first.
         check('eval verdict (assert): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES) === $c['expect']);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, true) === $c['expect']);
         $wantGate = array_key_exists('expectGate', $c) ? $c['expectGate'] : $c['expect'];
         check('eval verdict (gate): ' . $c['name'],
-            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT) === $wantGate);
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, true) === $wantGate);
+        // 'expectCi' defaults to 'expect', so every row whose verdict depends on
+        // letter case has to say so — a row that silently agrees does not care.
+        // 'expectGateCi' defaults to 'expectGate' where the row names one (the
+        // blank-operand rows, where polarity decides), else to 'expectCi'.
+        $wantCi = array_key_exists('expectCi', $c) ? $c['expectCi'] : $c['expect'];
+        check('eval verdict (assert, case-insensitive): ' . $c['name'],
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_PASSES, false) === $wantCi);
+        $wantGateCi = array_key_exists('expectGateCi', $c) ? $c['expectGateCi']
+            : (array_key_exists('expectGate', $c) ? $c['expectGate'] : $wantCi);
+        check('eval verdict (gate, case-insensitive): ' . $c['name'],
+            Logic::evaluate($r['ast'], $values, Logic::BLANK_INERT, false) === $wantGateCi);
     }
 }
 
@@ -76,10 +90,10 @@ foreach ($fx['errors'] as $c) {
 foreach ($fx['astEval'] as $c) {
     $values = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
     check('astEval verdict (assert): ' . $c['name'],
-        Logic::evaluate($c['ast'], $values, Logic::BLANK_PASSES) === $c['expect']);
+        Logic::evaluate($c['ast'], $values, Logic::BLANK_PASSES, true) === $c['expect']);
     $wantGate = array_key_exists('expectGate', $c) ? $c['expectGate'] : $c['expect'];
     check('astEval verdict (gate): ' . $c['name'],
-        Logic::evaluate($c['ast'], $values, Logic::BLANK_INERT) === $wantGate);
+        Logic::evaluate($c['ast'], $values, Logic::BLANK_INERT, true) === $wantGate);
 }
 foreach ($fx['astRefs'] as $c) {
     check('astRefs list: ' . $c['name'],

@@ -576,7 +576,11 @@ Conditions can combine references: `"when":"[consent(1)]='1' and [site]<>'9'"`.
 - **The server audit honors the same condition**, so the browser and the audit
   agree on when a rule applies.
 - Comparisons are numeric when both sides look numeric (`[age]>'9'` with age `10`
-  is true), and exact case-sensitive text when neither does. If the sides are in
+  is true), and text when neither does. Text ignores the case of the letters
+  A-Z, so `'Yes'` equals `'yes'`, in a "when" condition and in a Constraint
+  alike, unless the rule sets `"caseSensitive":true` (the "compare text
+  case-sensitively" checkbox in the Configure dialog). The flag covers every
+  condition of that one rule. Accented letters are not folded. If the sides are in
   different domains — one numeric, one not, both filled in — `=` and `<>` still
   answer, but `<` `>` `<=` `>=` come back false either way round; ordering across
   domains is not defined. An empty side has no answer at all, and what that means
@@ -803,7 +807,9 @@ Fix the named rule and save again.
 Yes — since 1.0.0 that is exactly what a **Constraint** rule (the `@UVASSERT`
 tag, or the Constraint kind in the Configure dialog) does: the field is invalid
 unless a condition such as `[end_date]>=[start_date]` or `[id]=[id_confirm]`
-is true, checked live and enforceable with a real save block. And since 1.1.0
+is true, checked live and enforceable with a real save block. Text comparisons
+ignore letter case unless you set `"caseSensitive":true`, so for IDs where `ab12`
+and `AB12` are different values, set it. And since 1.1.0
 a **Required** rule (`@UVREQUIRED`) demands a value, optionally only while a
 condition is true. See the README sections on both tags.
 

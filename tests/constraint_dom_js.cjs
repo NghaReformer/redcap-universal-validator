@@ -820,5 +820,72 @@ function submitEv() {
   check('HIGH-03: save allowed once every mode is satisfied', ev._prevented === false);
 }
 
+// ---- CASE) text compares case-insensitively unless caseSensitive is true ----
+// The browser twin of the hook_php.php case tests: the same rule, the same
+// typed value, and only the flag differs. Checked on a plain rule and on a
+// branch, because branch configs never inherit rule-level keys on the client.
+{
+  const run = (rule, value) => {
+    const ans = makeEl('input'); ans.name = 'answer'; ans.value = value;
+    const env = boot([ans], { singleFields: [], pooledFields: [], rules: [rule] });
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    return { msg: cMsg(env, 'answer'), ans, ev };
+  };
+  const base = { type: 'constraint', fields: ['answer'], assert: "[answer]='yes'",
+                 message: 'Answer yes', blockSave: 'hard' };
+
+  let r = run(base, 'YES');
+  check('case default: "YES" satisfies [answer]=yes', !/Answer yes/.test(r.msg.innerHTML)
+    && r.ans.getAttribute('aria-invalid') !== 'true' && r.ev._prevented === false);
+  r = run(base, 'no');
+  check('case default: a different word is still a violation', /Answer yes/.test(r.msg.innerHTML)
+    && r.ev._prevented === true);
+  r = run(Object.assign({}, base, { caseSensitive: true }), 'YES');
+  check('caseSensitive:true: "YES" violates [answer]=yes', /Answer yes/.test(r.msg.innerHTML)
+    && r.ans.getAttribute('aria-invalid') === 'true' && r.ev._prevented === true);
+  r = run(Object.assign({}, base, { caseSensitive: true }), 'yes');
+  check('caseSensitive:true: the exact spelling passes', !/Answer yes/.test(r.msg.innerHTML)
+    && r.ev._prevented === false);
+  r = run(Object.assign({}, base, { caseSensitive: 'true' }), 'YES');
+  check('caseSensitive must be strictly true (a string stays case-insensitive)',
+    !/Answer yes/.test(r.msg.innerHTML));
+  // a server-folded AST takes the same flag
+  r = run(Object.assign({}, base, { caseSensitive: true,
+    assertAst: ['cmp', '=', ['ref', 'answer', null], ['lit', 'yes']] }), 'Yes');
+  check('caseSensitive:true applies to a prebuilt assertAst', /Answer yes/.test(r.msg.innerHTML));
+
+  // the "when" gate follows the same flag. Asserted on the message text: the
+  // engine writes style.cssText, which this stub never parses back into
+  // style.display, so display === 'none' cannot tell a shown verdict apart.
+  const gateRun = (extra) => {
+    const gated = makeEl('input'); gated.name = 'site'; gated.value = 'SITE_A';
+    const ans = makeEl('input'); ans.name = 'answer'; ans.value = 'no';
+    const env = boot([ans, gated], { singleFields: [], pooledFields: [],
+      rules: [Object.assign({}, base, { when: "[site]='site_a'" }, extra)] });
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    return { html: cMsg(env, 'answer').innerHTML, ev };
+  };
+  r = gateRun({});
+  check('case default: "SITE_A" satisfies the when [site]=site_a, so the assert runs',
+    /Answer yes/.test(r.html) && r.ev._prevented === true);
+  r = gateRun({ caseSensitive: true });
+  check('caseSensitive:true: the when does not match "SITE_A", so the rule is inert',
+    !/Answer yes/.test(r.html) && r.ev._prevented === false);
+
+  // branches carry their own flag
+  const b1 = makeEl('input'); b1.name = 'answer'; b1.value = 'YES';
+  const bt = makeEl('input'); bt.name = 't'; bt.value = '1';
+  const envB = boot([b1, bt], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'constraint', fields: ['answer'], branches: [
+      { when: "[t]='1'", assert: "[answer]='yes'", caseSensitive: true, message: 'Branch exact', blockSave: 'hard' },
+      { when: null, assert: "[answer]='yes'", message: 'Branch folded', blockSave: 'hard' },
+    ] }] });
+  check('case: an active branch with caseSensitive:true rejects "YES"',
+    /Branch exact/.test(cMsg(envB, 'answer').innerHTML));
+  bt.value = '2'; bt.fire('change');
+  check('case: the fallback branch without the flag accepts "YES"',
+    !/Branch folded/.test(cMsg(envB, 'answer').innerHTML) && b1.getAttribute('aria-invalid') !== 'true');
+}
+
 console.log(`constraint_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

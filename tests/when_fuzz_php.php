@@ -46,7 +46,7 @@ foreach ($fx['cases'] as $c) {
     if (!$phpOk) { $rejBoth++; continue; }
     $okBoth++;
     $vals = isset($c['values']) && is_array($c['values']) ? $c['values'] : [];
-    $php = Logic::evaluate($r['ast'], $vals, Logic::BLANK_PASSES);
+    $php = Logic::evaluate($r['ast'], $vals, Logic::BLANK_PASSES, true);
     // The GATE role too, wherever the corpus carries it (CRIT-01). A blank
     // operand in an ordered comparison is the one input on which the two roles
     // disagree, so checking only the default would leave half the dialect
@@ -54,7 +54,7 @@ foreach ($fx['cases'] as $c) {
     // false verdict must still be checked, and an older corpus without the key
     // degrades to the assert check rather than failing every row.
     if (array_key_exists('jsInert', $c)) {
-        $phpInert = Logic::evaluate($r['ast'], $vals, Logic::BLANK_INERT);
+        $phpInert = Logic::evaluate($r['ast'], $vals, Logic::BLANK_INERT, true);
         if ($phpInert !== $c['jsInert']) {
             $fail++;
             report("EVAL DISAGREES (gate role): " . json_encode($c['expr'])
@@ -64,6 +64,18 @@ foreach ($fx['cases'] as $c) {
   js: " . json_encode($c['jsInert'])
                 . "  php: " . json_encode($phpInert) . "
 ");
+        }
+    }
+    // Both roles case-insensitive (the module default for every rule
+    // condition). Same array_key_exists reasoning as jsInert above.
+    foreach (['jsCi' => Logic::BLANK_PASSES, 'jsInertCi' => Logic::BLANK_INERT] as $key => $pol) {
+        if (!array_key_exists($key, $c)) continue;
+        $phpCi = Logic::evaluate($r['ast'], $vals, $pol, false);
+        if ($phpCi !== $c[$key]) {
+            $fail++;
+            report("EVAL DISAGREES (" . $key . "): " . json_encode($c['expr'])
+                . "\n  values: " . json_encode($vals)
+                . "\n  js: " . json_encode($c[$key]) . "  php: " . json_encode($phpCi) . "\n");
         }
     }
     if ($php !== $c['js']) {

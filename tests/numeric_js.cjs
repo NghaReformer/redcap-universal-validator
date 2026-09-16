@@ -146,7 +146,9 @@ for (const c of fx.cases) {
       const ast = ['cmp', op,
         operandNode(kinds[0], 'a', c.a),
         operandNode(kinds[1], 'b', c.b)];
-      const got = W.evaluate(ast, values);
+      /* EXACT comparator, twin of tests/numeric_php.php — hex_case_sensitive
+         pins byte order; the case-folding default lives in when_fixture.json. */
+      const got = W.evaluate(ast, values, W.BLANK_PASSES, true);
       const want = verdictFor(op, c.cmp, c.path);
       if (got !== want) {
         detail(c.name + ' [' + shape + '] ' + JSON.stringify(c.a) + ' ' + op + ' '

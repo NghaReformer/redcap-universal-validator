@@ -50,8 +50,15 @@
  *     cast merged distinct integers above 2^53) iff BOTH resolved sides match
  *     ^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$ after ASCII trimming — deliberately
  *     no exponents or hex, where PHP and JavaScript number parsing diverge;
- *   - both sides non-numeric: exact, case-sensitive string comparison (strcmp
- *     ordering; identical to JavaScript's relational operators on ASCII);
+ *   - both sides non-numeric: string comparison (strcmp ordering; identical
+ *     to JavaScript's relational operators on ASCII). CASE-INSENSITIVE by
+ *     default: ASCII A-Z are folded to a-z on both sides first, so
+ *     'Yes' = 'yes'. A caller passing $caseSensitive = true gets the exact
+ *     comparison; every rule condition (a "when" gate, a branch selector, an
+ *     @UVASSERT test) passes its rule's "caseSensitive" flag. The fold is
+ *     ASCII-only on purpose: PHP and JavaScript Unicode lowercasing disagree
+ *     on edge cases (U+0130 and friends), and this dialect's contract is that
+ *     both runtimes return the same verdict;
  *   - MIXED (one numeric, one not, both non-empty): = and <> still answer, by
  *     string identity. The ORDERED operators < > <= >= are false whichever way
  *     round they are asked, because a per-pair comparator produced ordering
@@ -96,6 +103,12 @@ class Logic
     // match for a comparison to be numeric. No exponents, no hex, no leading
     // "0x" — PHP and JavaScript disagree about those, printable digits do not.
     const NUM_RE = '/^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/';
+
+    // Case folding for a case-insensitive comparison. An explicit strtr map,
+    // not strtolower(): on the PHP 7.4 floor strtolower follows setlocale(),
+    // and the JavaScript twin folds exactly these 26 letters.
+    const ASCII_UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    const ASCII_LOWER = 'abcdefghijklmnopqrstuvwxyz';
 
     // The verdict an ORDERED comparison (< > <= >=) yields when it has NO
     // ANSWER, i.e. an operand is blank so there is nothing to order. The two
@@ -156,16 +169,16 @@ class Logic
      * field => [code => '0'|'1'] for checkboxes). Missing fields resolve to ''
      * (checkbox refs to '0'), so the caller may pass a sparse map.
      */
-    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES)
+    public static function evaluate(array $ast, array $values, $blank = self::BLANK_PASSES, $caseSensitive = false)
     {
         switch ($ast[0]) {
             case 'const':
                 return !empty($ast[1]);
             case 'or':
-                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank)) return true; }
+                foreach ($ast[1] as $c) { if (self::evaluate($c, $values, $blank, $caseSensitive)) return true; }
                 return false;
             case 'and':
-                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank)) return false; }
+                foreach ($ast[1] as $c) { if (!self::evaluate($c, $values, $blank, $caseSensitive)) return false; }
                 return true;
             case 'not':
                 // THE FLIP. "No answer" has to mean the same thing about the
@@ -174,13 +187,16 @@ class Logic
                 // for it. Without this, not([dose]>[max]) and [dose]<=[max] —
                 // the same question — give opposite verdicts on a blank [max],
                 // which is the original defect wearing a different spelling.
-                return !self::evaluate($ast[1], $values, !$blank);
+                // Case sensitivity does NOT flip: it describes how two strings
+                // are matched, not what "no answer" means.
+                return !self::evaluate($ast[1], $values, !$blank, $caseSensitive);
             case 'cmp':
                 return self::compare(
                     $ast[1],
                     self::operandValue($ast[2], $values),
                     self::operandValue($ast[3], $values),
-                    $blank
+                    $blank,
+                    $caseSensitive
                 );
         }
         return false; // unreachable for parse()-produced ASTs
@@ -242,19 +258,19 @@ class Logic
      * with no live ref at all cannot react anyway, so folding it is both
      * correct and leak-minimal.
      */
-    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES)
+    public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false)
     {
         switch ($ast[0]) {
             case 'or':
             case 'and':
                 $out = [];
-                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank);
+                foreach ($ast[1] as $c) $out[] = self::fold($c, $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, $blank, $caseSensitive);
                 return [$ast[0], $out];
             case 'not':
                 // Flipped exactly as evaluate() flips it, so a comparison
                 // settled into a ['const', b] here sits under the same number
                 // of "not"s as the live one it replaced and agrees with it.
-                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank)];
+                return ['not', self::fold($ast[1], $values, $liveFields, $disclosable, $frozen, $unresolved, $blocked, $snapshot, !$blank, $caseSensitive)];
             case 'cmp':
                 $refs = 0;
                 $live = 0;
@@ -322,7 +338,7 @@ class Logic
                         if ($ast[$slot][0] === 'ref') $snapshot[$ast[$slot][1]] = true;
                     }
                 }
-                return ['const', self::evaluate($ast, $values, $blank)];
+                return ['const', self::evaluate($ast, $values, $blank, $caseSensitive)];
         }
         return $ast;   // 'const' (already folded) and anything unknown
     }
@@ -630,7 +646,7 @@ class Logic
     }
 
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
-    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES)
+    private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false)
     {
         $a = trim((string) $a, " \t\r\n");
         $b = trim((string) $b, " \t\r\n");
@@ -664,6 +680,12 @@ class Logic
         // a blank start by luck while [start]<=[end] invented a violation
         // (CRIT-01). = and <> are untouched: they answer by identity, and
         // [field]<>'' is the documented "is this filled in" idiom.
+        // Numbers have no case, so folding only ever reaches text; A-Z are not
+        // in NUM_RE, so the fold cannot move a value between domains either.
+        if (!$caseSensitive) {
+            $a = strtr($a, self::ASCII_UPPER, self::ASCII_LOWER);
+            $b = strtr($b, self::ASCII_UPPER, self::ASCII_LOWER);
+        }
         $blankSide = ($a === '' || $b === '');
         $mixed = !$blankSide
                && ((bool) preg_match(self::NUM_RE, $a) !== (bool) preg_match(self::NUM_RE, $b));

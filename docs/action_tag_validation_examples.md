@@ -90,6 +90,11 @@ notice but never block a save.
 only while that condition is true. A false `when` skips the rule — it never erases
 the value. See [The `when` condition language](#the-when-condition-language).
 
+**Text in conditions ignores letter case.** `[status]='active'` is true for `Active`
+and `ACTIVE`, in every tag's `when`, in branch selectors and in `@UVASSERT`. Add
+`"caseSensitive":true` to a tag's JSON for exact matching. See
+[Letter case](#letter-case).
+
 **Identical tags group.** Fifty fields carrying byte-identical tags become one rule
 with fifty fields, not fifty rules.
 
@@ -235,7 +240,8 @@ or split into separate fields. This is checked when you save, not discovered on 
 ### Full `@UVALIDATE` JSON keys
 
 `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`, `idLengths`,
-`idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`, `suggestFix`, `note`.
+`idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`, `suggestFix`, `note`,
+`caseSensitive`.
 
 ---
 
@@ -331,9 +337,13 @@ Note the two conditions do different jobs: `assert` is the **test**, `when` is t
   different repeating instrument, a field not collected in this event, and a failed
   read — and what still resolves normally.
 
+Text in the condition ignores letter case (`[answer]='yes'` accepts `YES`); set
+`"caseSensitive":true` for exact matching. See [Letter case](#letter-case).
+
 ### `@UVASSERT` JSON keys
 
-`assert`, `message`, `blockSave`, `when`. Any other key is a configuration error.
+`assert`, `message`, `blockSave`, `when`, `caseSensitive`. Any other key is a
+configuration error.
 
 ---
 
@@ -389,7 +399,7 @@ immediately, including a save block if configured.
 
 ### `@UVREQUIRED` JSON keys
 
-`when`, `message`, `blockSave`. Any other key is a configuration error.
+`when`, `message`, `blockSave`, `caseSensitive`. Any other key is a configuration error.
 
 ---
 
@@ -467,8 +477,9 @@ Respondents always receive a **boolean** — never a record id.
 
 ### `@UVUNIQUE` JSON keys
 
-`with`, `scope`, `when`, `message`, `blockSave`, `surveys`. Any other key is a
-configuration error.
+`with`, `scope`, `when`, `message`, `blockSave`, `surveys`, `caseSensitive`. Any other
+key is a configuration error. `caseSensitive` governs the `when` only; the duplicate
+check itself always compares values exactly.
 
 ---
 
@@ -542,7 +553,7 @@ three-level cascade is this same pattern on two fields: `region` branches on
 ### `@UVCHOICES` JSON keys
 
 `show` **or** `hide` (exactly one, a list of choice codes), `when`, `message`,
-`blockSave`. Any other key is a configuration error.
+`blockSave`, `caseSensitive`. Any other key is a configuration error.
 
 ---
 
@@ -568,6 +579,10 @@ Another common pairing — an ID typed twice, format-checked, and unique:
 @UVASSERT={"assert":"[participant_id]=[participant_id_confirm]","message":"The two ID entries do not match","blockSave":"hard"}
 @UVUNIQUE={"scope":"dag","blockSave":"hard"}
 ```
+
+The confirmation ignores letter case, so `tb-000123` confirms `TB-000123`. If the two
+entries must match character for character, add `"caseSensitive":true` to the
+`@UVASSERT`.
 
 ---
 
@@ -629,8 +644,9 @@ A bare `[field]` with no comparison is an error — write `[field]<>''`.
 Semantics:
 
 - **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with age `10` is
-  true, not a lexicographic accident), and exact case-sensitive text when neither side
-  does.
+  true, not a lexicographic accident), and text when neither side does. A `when`
+  condition and an `@UVASSERT` test both fold A-Z to lower case first unless the rule
+  sets `"caseSensitive":true` (see [Letter case](#letter-case)).
 - **Mixed domains do not order.** One numeric side and one non-numeric side, both filled
   in: `=` and `<>` still answer by string identity, but `<` `>` `<=` `>=` are false
   whichever way round you ask them. Ordering across domains produced cycles — with
@@ -726,6 +742,42 @@ Examples:
 "not ([withdrawn]='1')"
 "([visit]='1' and [weight]>'0') or [visit]<>'1'"
 ```
+
+---
+
+### Letter case
+
+Text in a condition is compared without regard to the case of A-Z. All of these
+match `Yes`, `yes` and `YES`:
+
+```text
+@UVREQUIRED="[consent]='yes'"
+@UVALIDATE={"algorithm":"verhoeff","when":"[specimen_type]='sputum'"}
+@UVASSERT={"assert":"[answer]='yes' or [answer]='no'","message":"Answer yes or no"}
+```
+
+Set `"caseSensitive":true` when case is part of the value:
+
+```text
+@UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","caseSensitive":true,"message":"Lot codes must match exactly"}
+@UVREQUIRED={"when":"[grade]='A'","caseSensitive":true}
+```
+
+- Every tag with a `when` accepts it: `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`,
+  `@UVUNIQUE`, `@UVCHOICES`. In the Configure dialog it is the "compare text
+  case-sensitively" checkbox on the rule.
+- It covers **every condition of that one rule**: its `when`, its `assert`, and, when
+  several tags on a field branch, that branch's selector. Each branch uses its own
+  tag's flag.
+- The value must be an unquoted `true` or `false`; `"true"` or `1` is a configuration
+  error. `false` is the default and changes nothing.
+- Only A-Z are folded. Accented and other non-ASCII letters keep their case, because
+  the browser and the server lowercase those differently and must reach the same verdict.
+- Numbers are unaffected (`'2.50'` still equals `'2.5'`), and so is ordering between
+  numbers and text.
+- Branches that differ only in case, such as `[site]='a'` and `[site]='A'`, are both
+  true at once under the default and are reported as a branch conflict.
+- It does not change what `@UVUNIQUE` counts as a duplicate; that comparison is exact.
 
 ---
 
@@ -1292,6 +1344,7 @@ format pattern as the else branch; the field is required either way.
 | `when` | string | *(none)* | all | Condition; the rule runs only while true |
 | `suggestFix` | boolean | `false` | all | Opt in to the "should end in X" hint |
 | `note` | string | *(none)* | all | Rule label |
+| `caseSensitive` | boolean | `false` | all | Exact-case text in `when` |
 
 ### `@UVASSERT`
 
@@ -1301,6 +1354,7 @@ format pattern as the else branch; the field is required either way.
 | `message` | string | generic line | Your own wording — recommended |
 | `blockSave` | string | `off` | `off`, `confirm`, `hard` |
 | `when` | string | *(none)* | Enforce the constraint only while true |
+| `caseSensitive` | boolean | `false` | Exact-case text in `assert` and `when` |
 
 ### `@UVREQUIRED`
 
@@ -1309,6 +1363,7 @@ format pattern as the else branch; the field is required either way.
 | `when` | string | *(none)* | Required only while true; the bare short form sets this |
 | `message` | string | generic line | Your own wording |
 | `blockSave` | string | `off` | `off`, `confirm`, `hard` |
+| `caseSensitive` | boolean | `false` | Exact-case text in `when` |
 
 ### `@UVUNIQUE`
 
@@ -1320,6 +1375,7 @@ format pattern as the else branch; the field is required either way.
 | `when` | string | *(none)* | Check only while true |
 | `message` | string | generic line | Your own wording |
 | `blockSave` | string | `off` | `off`, `confirm`, `hard` |
+| `caseSensitive` | boolean | `false` | Exact-case text in `when` (not the duplicate check) |
 
 ### Algorithms
 

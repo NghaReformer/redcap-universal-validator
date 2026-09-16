@@ -56,11 +56,20 @@ for (const c of fx.eval) {
        blank-operand polarity (CRIT-01) is the one thing about this dialect that
        differs between an @UVASSERT test and a "when" gate, and pinning only the
        default is how the defect shipped. 'expectGate' defaults to 'expect'. */
+    /* 'expect'/'expectGate' are the EXACT verdicts; the Ci twins are the module
+       default. Defaults resolve exactly as in tests/when_php.php. */
+    const has = (k) => Object.prototype.hasOwnProperty.call(c, k);
     check('eval verdict (assert): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES) === c.expect);
-    const wantGate = Object.prototype.hasOwnProperty.call(c, 'expectGate') ? c.expectGate : c.expect;
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, true) === c.expect);
+    const wantGate = has('expectGate') ? c.expectGate : c.expect;
     check('eval verdict (gate): ' + c.name,
-      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT) === wantGate);
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, true) === wantGate);
+    const wantCi = has('expectCi') ? c.expectCi : c.expect;
+    check('eval verdict (assert, case-insensitive): ' + c.name,
+      W.evaluate(r.ast, c.values || {}, W.BLANK_PASSES, false) === wantCi);
+    const wantGateCi = has('expectGateCi') ? c.expectGateCi : (has('expectGate') ? c.expectGate : wantCi);
+    check('eval verdict (gate, case-insensitive): ' + c.name,
+      W.evaluate(r.ast, c.values || {}, W.BLANK_INERT, false) === wantGateCi);
   }
 }
 
@@ -76,10 +85,10 @@ for (const c of fx.errors) {
 // ---- astEval: prebuilt ASTs, incl. the server-folded ['const',bool] node ----
 for (const c of fx.astEval) {
   check('astEval verdict (assert): ' + c.name,
-    W.evaluate(c.ast, c.values || {}, W.BLANK_PASSES) === c.expect);
+    W.evaluate(c.ast, c.values || {}, W.BLANK_PASSES, true) === c.expect);
   const wantGate = Object.prototype.hasOwnProperty.call(c, 'expectGate') ? c.expectGate : c.expect;
   check('astEval verdict (gate): ' + c.name,
-    W.evaluate(c.ast, c.values || {}, W.BLANK_INERT) === wantGate);
+    W.evaluate(c.ast, c.values || {}, W.BLANK_INERT, true) === wantGate);
 }
 for (const c of fx.astRefs) {
   check('astRefs list: ' + c.name,

@@ -162,6 +162,24 @@ function submitEv() {
   check('when false again: save allowed', ev._prevented === false);
 }
 
+// ---- 3b) text in the "when" ignores letter case unless caseSensitive:true ---
+{
+  const run = (extra) => {
+    const phone = makeEl('input'); phone.name = 'phone'; phone.value = '';
+    const consent = makeEl('input'); consent.name = 'consent'; consent.value = 'YES';
+    const env = boot([phone, consent], { singleFields: [], pooledFields: [],
+      rules: [Object.assign({ type: 'required', fields: ['phone'], when: "[consent]='yes'", blockSave: 'hard' }, extra)] });
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    return { phone, ev };
+  };
+  let r = run({});
+  check('required, case default: "YES" matches when [consent]=yes (blank trapped)',
+    r.phone.getAttribute('aria-invalid') === 'true' && r.ev._prevented === true);
+  r = run({ caseSensitive: true });
+  check('required, caseSensitive:true: "YES" does not match (not required)',
+    r.phone.getAttribute('aria-invalid') !== 'true' && r.ev._prevented === false);
+}
+
 // ---- 4) required on a dropdown (<select> anchor) ----------------------------
 {
   const site = makeEl('select'); site.name = 'site'; site.value = '';

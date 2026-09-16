@@ -274,6 +274,47 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   check('pooled gate flip back: verdict cleared', msg.style.display === 'none' && pool.__qridInvalid === false);
 }
 
+// ---- 6b) text in a "when" ignores letter case unless caseSensitive:true ----
+// Same rule, same values; only the flag differs. Single and pooled are
+// separate factories with their own gate call, so each is driven.
+{
+  const runSingle = (extra) => {
+    const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+    const site = makeEl('input'); site.name = 'site'; site.value = 'TB';
+    const env = boot([sid, site], { singleFields: [], pooledFields: [],
+      rules: [Object.assign({ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36',
+                              blockSave: 'hard', when: "[site]='tb'" }, extra)] });
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    return { sid, ev, site };
+  };
+  let r = runSingle({});
+  check('single, case default: "TB" matches when [site]=tb (validated, blocked)',
+    r.sid.__qridInvalid === true && r.ev._prevented === true);
+  r = runSingle({ caseSensitive: true });
+  check('single, caseSensitive:true: "TB" does not match (inert)',
+    r.sid.__qridInvalid === false && r.ev._prevented === false);
+
+  const runPooled = (extra) => {
+    const pool = makeEl('textarea'); pool.name = 'pool'; pool.value = 'not-an-id!!';
+    const site = makeEl('input'); site.name = 'site'; site.value = 'TB';
+    boot([pool, site], { singleFields: [], pooledFields: [],
+      rules: [Object.assign({ type: 'pooled', fields: ['pool'], algorithm: 'iso7064_mod37_36',
+                              blockSave: 'hard', when: "[site]='tb'" }, extra)] });
+    return pool;
+  };
+  check('pooled, case default: "TB" matches when [site]=tb (verdict rendered)', runPooled({}).__qridInvalid === true);
+  check('pooled, caseSensitive:true: inert', runPooled({ caseSensitive: true }).__qridInvalid === false);
+
+  // a branch selector uses its own branch's flag
+  const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+  const site = makeEl('input'); site.name = 'site'; site.value = 'TB';
+  boot([sid, site], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'single', fields: ['sid'], branches: [
+      { when: "[site]='tb'", caseSensitive: true, algorithm: 'iso7064_mod37_36', blockSave: 'hard' },
+    ] }] });
+  check('branch selector with caseSensitive:true does not select on "TB"', sid.__qridInvalid === false);
+}
+
 // ---- 7) rules WITHOUT when are untouched (regression) ----------------------
 {
   const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;

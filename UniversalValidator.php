@@ -427,7 +427,7 @@ class UniversalValidator extends AbstractExternalModule
                         return $out;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT)) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[] = $bi;
             }
             if (count($active) > 1) {
                 $out['unconfigurable'][] = ['fields' => $rule['fields'],
@@ -491,7 +491,7 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT)) return $out;
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) return $out;
         }
 
         // Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
@@ -629,7 +629,7 @@ class UniversalValidator extends AbstractExternalModule
                 // server logged a violation (M-04).
                 if ($value === null || is_array($value)) continue;
                 if (trim((string) $value, " \t\r\n") === '') continue;
-                if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES)) {
+                if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
                     $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . $rule['assert']];
                 }
             }
@@ -1005,8 +1005,13 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
 
+        // Every condition is folded once per ROLE (gate / assert polarity) and
+        // once per CASE MODE: text => [0 => case-insensitive (the default),
+        // 1 => case-sensitive]. Two rules may share a condition string and
+        // differ only in "caseSensitive", and an off-page comparison settled to
+        // a constant under one mode is not the constant the other would produce.
         $folded = [];
-        $foldedAssert = []; // the same conditions folded with ASSERT polarity
+        $foldedAssert = [];
         $frozen = [];   // condition text => a live side had to be given up
         $blocked = [];  // condition text => field => why it could not be resolved
         $snapshot = []; // condition text => off-page fields baked at render time
@@ -1014,7 +1019,15 @@ class UniversalValidator extends AbstractExternalModule
             $f = false;
             $b = [];
             $sn = [];
-            $folded[$w] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT);
+            $folded[$w] = [];
+            $folded[$w][0] = Logic::fold($ast, $values, $live, $disclosable, $f, $unresolved, $b, $sn, Logic::BLANK_INERT, false);
+            // Freshness diagnostics come from reference resolution and liveness
+            // alone, never from a verdict, so the pass above already recorded
+            // them; this one discards its own.
+            $fCs = false;
+            $bCs = [];
+            $snCs = [];
+            $folded[$w][1] = Logic::fold($ast, $values, $live, $disclosable, $fCs, $unresolved, $bCs, $snCs, Logic::BLANK_INERT, true);
             $frozen[$w] = $f || $unknownForm;
             $blocked[$w] = $b;
             $snapshot[$w] = $sn;
@@ -1029,10 +1042,12 @@ class UniversalValidator extends AbstractExternalModule
             // The freshness diagnostics come from reference resolution and
             // liveness alone — never from a verdict — so this pass discards
             // them rather than overwriting the ones above.
-            $f2 = false;
-            $b2 = [];
-            $sn2 = [];
-            $foldedAssert[$w] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES);
+            foreach ([0, 1] as $cs) {
+                $f2 = false;
+                $b2 = [];
+                $sn2 = [];
+                $foldedAssert[$w][$cs] = Logic::fold($ast, $values, $live, $disclosable, $f2, $unresolved, $b2, $sn2, Logic::BLANK_PASSES, (bool) $cs);
+            }
         }
         // With the form unknown, NOTHING is live — not because these fields are
         // genuinely elsewhere but because we cannot see the page at all. Every
@@ -1064,7 +1079,7 @@ class UniversalValidator extends AbstractExternalModule
             // second condition cannot overwrite the first's fields (H-01).
             $snapFields = [];
             if (isset($r['when']) && isset($folded[$r['when']])) {
-                $rules[$i]['whenAst'] = $folded[$r['when']];
+                $rules[$i]['whenAst'] = $folded[$r['when']][empty($r['caseSensitive']) ? 0 : 1];
                 // An unresolvable "when" gates on a value we never read, so the
                 // rule must not act on it either.
                 if (!empty($blocked[$r['when']])) { $rules[$i]['deferred'] = true; $noteFor($i, $r['when']); }
@@ -1074,7 +1089,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) $snapFields[$sf] = true;
             }
             if (isset($r['assert']) && isset($folded[$r['assert']])) {
-                $rules[$i]['assertAst'] = $foldedAssert[$r['assert']];
+                $rules[$i]['assertAst'] = $foldedAssert[$r['assert']][empty($r['caseSensitive']) ? 0 : 1];
                 // A frozen ASSERT must never block: its verdict is stale the
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
@@ -1105,7 +1120,7 @@ class UniversalValidator extends AbstractExternalModule
                     $bWhy = [];
                     $bSnap = $selectorSnapshot;
                     if (isset($b['when']) && isset($folded[$b['when']])) {
-                        $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']];
+                        $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']][empty($b['caseSensitive']) ? 0 : 1];
                         if (!empty($blocked[$b['when']])) {
                             $rules[$i]['branches'][$bi]['deferred'] = true;
                             $noteFor($i, $b['when']);
@@ -1114,7 +1129,7 @@ class UniversalValidator extends AbstractExternalModule
                         if (!empty($frozen[$b['when']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                     }
                     if (isset($b['assert']) && isset($folded[$b['assert']])) {
-                        $rules[$i]['branches'][$bi]['assertAst'] = $foldedAssert[$b['assert']];
+                        $rules[$i]['branches'][$bi]['assertAst'] = $foldedAssert[$b['assert']][empty($b['caseSensitive']) ? 0 : 1];
                         if (!empty($frozen[$b['assert']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                         if (!empty($blocked[$b['assert']])) {
                             $noteFor($i, $b['assert']);
@@ -1490,12 +1505,23 @@ class UniversalValidator extends AbstractExternalModule
         return $rule;
     }
 
+    /**
+     * The dialog's "compare text case-sensitively" checkbox, shared by every
+     * rule kind: ticked = exact-case text in the rule's "when" and "assert".
+     * Unticked leaves the key unset, i.e. the case-insensitive default. EM
+     * checkbox values arrive as true / 'true' / '1' depending on the read path.
+     */
+    private static function settingCaseSensitive(array $s)
+    {
+        return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
+    }
+
     private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
-        foreach (['rule-type', 'fields-csv', 'when', 'assert', 'message',
+        foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
                   'unique-with', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
                   'suggest-fix', 'pattern', 'alternates-json', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -1609,6 +1635,7 @@ class UniversalValidator extends AbstractExternalModule
 
             if (!empty($s['block-save'])) $rule['blockSave'] = $s['block-save'];
             if (isset($s['when']) && trim((string) $s['when']) !== '') $rule['when'] = trim((string) $s['when']);
+            if (self::settingCaseSensitive($s)) $rule['caseSensitive'] = true;
 
             $errors = $csvErrors;
             foreach (AnnotationRules::checkFragment($rule) as $e) $errors[] = $e;
@@ -1686,6 +1713,7 @@ class UniversalValidator extends AbstractExternalModule
         // A blank box simply never sets the key (in the annotation JSON channel
         // an explicit "when":"" is a config error instead — it hides a typo).
         if (isset($s['when']) && trim((string) $s['when']) !== '')    $rule['when'] = trim((string) $s['when']);
+        if (self::settingCaseSensitive($s)) $rule['caseSensitive'] = true;
         // Opt-in check-character hint. EM checkbox values arrive as true /
         // 'true' / '1' depending on the read path — accept all three; anything
         // else (unchecked, null) leaves the key unset and the default (off).
@@ -1803,7 +1831,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
+        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
                  'unique-with', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -3817,7 +3845,7 @@ class UniversalValidator extends AbstractExternalModule
                         . ' No branch can be chosen, so the value is not checked here.', 'branch-unresolved');
                     return;
                 }
-                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT)) $active[] = $bi;
+                if (Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[] = $bi;
             }
             if (count($active) === 1) {
                 $pick = $active[0];
@@ -3845,7 +3873,7 @@ class UniversalValidator extends AbstractExternalModule
                 $refuse('the unique rule\'s "when" condition ' . self::resolutionProblem($u[0], $u[1]), 'when-unresolved');
                 return;
             }
-            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT)) return;
+            if (!Logic::evaluate($p['ast'], $ctx['values'], Logic::BLANK_INERT, !empty($cfg['caseSensitive']))) return;
         }
         $with  = (isset($cfg['uniqueWith']) && is_array($cfg['uniqueWith'])) ? $cfg['uniqueWith'] : [];
         $scope = isset($cfg['uniqueScope']) ? $cfg['uniqueScope'] : 'project';
@@ -4237,7 +4265,7 @@ class UniversalValidator extends AbstractExternalModule
                 : [];
             $active = [];
             foreach ($asts as $bi => $ast) {
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT)) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($r['branches'][$bi]['caseSensitive']))) $active[] = $bi;
             }
             if (count($active) === 1) $pick = $active[0];
             elseif (!count($active) && $else !== null) $pick = $else;

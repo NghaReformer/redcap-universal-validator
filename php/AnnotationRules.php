@@ -135,7 +135,7 @@ class AnnotationRules
     /** Keys accepted in the JSON form ("pattern" maps to the engine's idPattern). */
     const JSON_KEYS = ['type', 'algorithm', 'source', 'pattern', 'alternates', 'strip', 'keepChars',
                        'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds', 'blockSave', 'when',
-                       'suggestFix', 'note'];
+                       'suggestFix', 'note', 'caseSensitive'];
 
     /** Keys accepted INSIDE one entry of the "alternates" list. */
     const ALT_KEYS = ['pattern', 'algorithm', 'source', 'strip', 'lengths', 'label'];
@@ -348,7 +348,7 @@ class AnnotationRules
             return ['error' => self::TAG_UNIQUE . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys'];
+        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_UNIQUE . ' option(s): ' . implode(', ', $unknown)
@@ -377,6 +377,7 @@ class AnnotationRules
                 $out[$k] = $cfg[$k];
             }
         }
+        self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -406,7 +407,7 @@ class AnnotationRules
             return ['error' => self::TAG_CHOICES . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['when', 'show', 'hide', 'message', 'blockSave'];
+        $allowed = ['when', 'show', 'hide', 'message', 'blockSave', 'caseSensitive'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_CHOICES . ' option(s): ' . implode(', ', $unknown)
@@ -436,6 +437,7 @@ class AnnotationRules
                 $out[$k] = $cfg[$k];
             }
         }
+        self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -468,19 +470,21 @@ class AnnotationRules
             return ['error' => self::TAG_REQUIRED . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['when', 'message', 'blockSave'];
+        $strings = ['when', 'message', 'blockSave'];
+        $allowed = array_merge($strings, ['caseSensitive']);
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_REQUIRED . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', $allowed) . '.'];
         }
         $out = ['type' => 'required'];
-        foreach ($allowed as $k) {
+        foreach ($strings as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
                 $out[$k] = $cfg[$k];
             }
         }
+        self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -488,8 +492,10 @@ class AnnotationRules
     /**
      * Parse one @UVASSERT value into a constraint fragment. The value is EITHER
      * the condition itself (@UVASSERT="[end]>=[start]") or a JSON object
-     * {assert, message, blockSave, when}. The field is invalid whenever the
-     * condition is false; an empty field is inert (that is @UVREQUIRED's job).
+     * {assert, message, blockSave, when, caseSensitive}. The field is invalid
+     * whenever the condition is false; an empty field is inert (that is
+     * @UVREQUIRED's job). Text compares case-insensitively ('Yes' = 'yes')
+     * unless "caseSensitive" is true, in the "assert" and the "when" alike.
      */
     private static function parseAssertValue($val)
     {
@@ -508,19 +514,21 @@ class AnnotationRules
             return ['error' => self::TAG_ASSERT . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['assert', 'message', 'blockSave', 'when'];
+        $strings = ['assert', 'message', 'blockSave', 'when'];
+        $allowed = array_merge($strings, ['caseSensitive']);
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_ASSERT . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', $allowed) . '.'];
         }
         $out = ['type' => 'constraint'];
-        foreach ($allowed as $k) {
+        foreach ($strings as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
                 $out[$k] = $cfg[$k];
             }
         }
+        self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -598,6 +606,7 @@ class AnnotationRules
             }
             $out['suggestFix'] = $cfg['suggestFix'];
         }
+        self::takeCaseSensitive($cfg, $out);
 
         foreach (['strip', 'keepChars', 'when', 'note'] as $k) {
             if (isset($cfg[$k])) {
@@ -646,6 +655,11 @@ class AnnotationRules
         $errors = [];
         $type = isset($frag['type']) && $frag['type'] !== '' ? $frag['type'] : 'single';
 
+        // "caseSensitive" means the same thing in every mode — how text compares
+        // in the rule's conditions — so it is checked once, here, and merged into
+        // whichever mode validator answers below.
+        $caseErrors = self::caseSensitiveErrors($frag);
+
         // "alternates" describes accepted ID FORMATS, which only the check
         // modes read. Left unremarked on the others it validates clean, is
         // carried through Branching::BRANCH_KEYS and shipped to the browser,
@@ -659,14 +673,15 @@ class AnnotationRules
         // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
         // It shares "when"/"blockSave" with check rules but none of the
         // check-character/pattern/pooled machinery, so it validates separately.
-        if ($type === 'constraint') return self::checkConstraint($frag);
+        if ($type === 'constraint') return array_merge(self::checkConstraint($frag), $caseErrors);
         // Required mode (@UVREQUIRED): blank-while-required is the only test.
-        if ($type === 'required') return self::checkRequired($frag);
+        if ($type === 'required') return array_merge(self::checkRequired($frag), $caseErrors);
         // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
-        if ($type === 'unique') return self::checkUnique($frag);
+        if ($type === 'unique') return array_merge(self::checkUnique($frag), $caseErrors);
         // Choices mode (@UVCHOICES): dynamic show/hide of individual options.
-        if ($type === 'choices') return self::checkChoices($frag);
+        if ($type === 'choices') return array_merge(self::checkChoices($frag), $caseErrors);
 
+        $errors = $caseErrors;
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
 
         if (!in_array($type, ['single', 'pooled'], true)) {
@@ -1215,6 +1230,30 @@ class AnnotationRules
             $errors[] = '"message" must be a string.';
         }
         return $errors;
+    }
+
+    /**
+     * Carry a tag's "caseSensitive" option onto its fragment. An explicit false
+     * IS the default, so it is dropped: the rule then groups and branches
+     * exactly like one that never named the key. Any other non-true value is
+     * passed through for checkFragment to refuse, the same refusal the
+     * settings channel gets.
+     */
+    private static function takeCaseSensitive(array $cfg, array &$out)
+    {
+        if (array_key_exists('caseSensitive', $cfg) && $cfg['caseSensitive'] !== false) {
+            $out['caseSensitive'] = $cfg['caseSensitive'];
+        }
+    }
+
+    /**
+     * Strict boolean, like "suggestFix": "true" or 1 would hide a typo, and a
+     * quoted "false" would read as true to a loose check.
+     */
+    private static function caseSensitiveErrors(array $frag)
+    {
+        return (array_key_exists('caseSensitive', $frag) && !is_bool($frag['caseSensitive']))
+            ? ['"caseSensitive" must be true or false (unquoted).'] : [];
     }
 
     /**

@@ -141,7 +141,7 @@ channels; the dialog's "What this rule checks" selector picks the kind:
 
    JSON keys: `type`, `algorithm`, `source`, `pattern`, `alternates`, `strip`,
    `keepChars`, `idLengths`, `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`,
-   `when`, `suggestFix`, `note`. A malformed tag shows a configuration error under
+   `when`, `suggestFix`, `note`, `caseSensitive`. A malformed tag shows a configuration error under
    that field — never a silent no-op. Fields with identical tags are grouped into
    one rule automatically, and one field may carry SEVERAL tags when each has
    a different `when` condition (branched validation — see below).
@@ -198,8 +198,15 @@ logic**:
 Semantics worth knowing before relying on it:
 
 - **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with
-  age `10` is true, not a lexicographic accident), and exact case-sensitive
-  string comparison when neither side does. When the two sides are in
+  age `10` is true, not a lexicographic accident), and string comparison when
+  neither side does. **Text ignores letter case by default** (1.11.0):
+  `[status]='active'` is true for `Active` and `ACTIVE`, in a `when`, in a
+  branch selector and in an `@UVASSERT` test alike. Add `"caseSensitive":true`
+  to any tag's JSON (or tick "compare text case-sensitively" in the Configure
+  dialog) when case carries meaning; the flag covers every condition of that
+  rule. Only the letters A-Z are folded, so accented letters keep their case
+  (`É` still differs from `é`): the browser and the server lowercase other
+  letters differently, and both must reach the same verdict. When the two sides are in
   **different domains** — one numeric, one not, both non-empty — `=` and `<>`
   still answer by string identity, but `<` `>` `<=` `>=` are false whichever way
   round you ask: ordering across domains produced cycles (`'2' <= '10'`,
@@ -326,6 +333,11 @@ enforced with the same message/confirm/block modes as everything else:
   the *test* rather than a gate.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
   constraint's. Confirm-a-value ("type it twice") is just `@UVASSERT="[id]=[id_confirm]"`.
+- **Text is compared without regard to case** (1.11.0), like every condition in
+  the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
+  `"caseSensitive":true` when case carries meaning, such as IDs where `ab12` and
+  `AB12` are different: `@UVASSERT={"assert":"[id]=[id_confirm]","caseSensitive":true}`.
+  The flag covers both the `assert` and the `when` of that tag.
 - `message` is your own wording, shown on failure (a generic line is used if you
   omit it — recommended to set one, since only you can word an arbitrary relationship).
 - Optional `when` enforces the constraint only while a condition is true; several

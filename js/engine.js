@@ -1396,29 +1396,32 @@ function QRID_whenPeekKw(st, kw){
 /* Evaluate against a resolver callback (field, codeOrNull) -> string. The
    runtime gate resolves from the live DOM/snapshot; the map form below is the
    fixture-locked entry point. */
-function QRID_whenEvaluateWith(ast, resolve, blank){
+function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
+  if(caseSensitive === undefined) caseSensitive = false;
   switch(ast[0]){
     case "const":
       return !!ast[1];
     case "or":
-      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve, blank)) return true; }
+      for(var i = 0; i < ast[1].length; i++){ if(QRID_whenEvaluateWith(ast[1][i], resolve, blank, caseSensitive)) return true; }
       return false;
     case "and":
-      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve, blank)) return false; }
+      for(var j = 0; j < ast[1].length; j++){ if(!QRID_whenEvaluateWith(ast[1][j], resolve, blank, caseSensitive)) return false; }
       return true;
     case "not":
       /* THE FLIP — twin of Logic::evaluate. "No answer" must mean the same
          thing about the WHOLE condition however deeply it is negated, so
          descending through a "not" inverts the constant substituted for it.
          Without it, not([dose]>[max]) and [dose]<=[max] disagree on a blank
-         [max], which is the original defect in a different spelling. */
-      return !QRID_whenEvaluateWith(ast[1], resolve, !blank);
+         [max], which is the original defect in a different spelling. Case
+         sensitivity does not flip: it is how strings match, not what "no
+         answer" means. */
+      return !QRID_whenEvaluateWith(ast[1], resolve, !blank, caseSensitive);
     case "cmp":
       return QRID_whenCompare(ast[1],
         QRID_whenOperandVal(ast[2], resolve),
         QRID_whenOperandVal(ast[3], resolve),
-        blank);
+        blank, caseSensitive);
   }
   return false; /* unreachable for QRID_whenParse-produced ASTs */
 }
@@ -1427,7 +1430,7 @@ function QRID_whenOperandVal(op, resolve){
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
-function QRID_whenEvaluate(ast, values, blank){
+function QRID_whenEvaluate(ast, values, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   return QRID_whenEvaluateWith(ast, function(f, code){
     var v = (values && Object.prototype.hasOwnProperty.call(values, f)) ? values[f] : null;
@@ -1439,11 +1442,18 @@ function QRID_whenEvaluate(ast, values, blank){
     }
     if(v === null || v === undefined || typeof v === "object") return "";
     return String(v);
-  }, blank);
+  }, blank, caseSensitive);
 }
 function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
-/* Numeric compare (floats) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
-   else exact case-sensitive string compare (ASCII-identical to PHP strcmp). */
+/* Numeric compare (exact decimal) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
+   else string compare (ASCII-identical to PHP strcmp): A-Z folded to a-z first
+   by default, exact when caseSensitive is true (see Logic::compare). */
+/* ASCII-only case fold, twin of the strtr map in Logic::compare. Not
+   toLowerCase() on the whole string: its Unicode mappings differ from PHP's
+   (U+0130 lowercases to two code units here), and the two runtimes must agree. */
+function QRID_whenFoldCase(v){
+  return v.replace(/[A-Z]+/g, function(m){ return m.toLowerCase(); });
+}
 /* Code-point string comparison, matching PHP strcmp's byte order (UTF-8 byte order
    preserves code-point order for valid text). JS "<"/">" compare UTF-16 code UNITS,
    which rank an astral (>U+FFFF) character before U+E000..U+FFFF where its code
@@ -1495,8 +1505,9 @@ function QRID_whenDecCmp(a, b){
   }
   return sa > 0 ? mag : -mag;
 }
-function QRID_whenCompare(op, a, b, blank){
+function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
+  if(caseSensitive === undefined) caseSensitive = false;
   a = QRID_whenTrim(a); b = QRID_whenTrim(b);
   if(QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b)){
     var c = QRID_whenDecCmp(a, b);
@@ -1522,6 +1533,7 @@ function QRID_whenCompare(op, a, b, blank){
      [start]<=[end] invented a violation (CRIT-01). = and <> are untouched:
      they answer by identity, and [field]<>'' is the "is this filled in" idiom.
      See Logic::compare, the normative twin. */
+  if(!caseSensitive){ a = QRID_whenFoldCase(a); b = QRID_whenFoldCase(b); }
   var blankSide = (a === "" || b === "");
   var mixed = !blankSide &&
               (QRID_WHEN_NUM_RE.test(a) !== QRID_WHEN_NUM_RE.test(b));
@@ -1725,9 +1737,12 @@ var QRID_WHEN = (function(){
      factory: an unanswerable threshold cannot say the rule applies, so it does
      not fire. The one caller that is NOT a gate — the @UVASSERT test — passes
      QRID_BLANK_PASSES explicitly, so no gate site can acquire assert polarity
-     by forgetting an argument. */
-  function gateFor(exprRaw, astRaw, blank){
+     by forgetting an argument. `caseSensitive` is the rule's own flag: every
+     rule site passes cfg.caseSensitive === true, and a missing argument gets
+     the module default (A-Z compare without regard to case). */
+  function gateFor(exprRaw, astRaw, blank, caseSensitive){
     if(blank === undefined) blank = QRID_BLANK_INERT;
+    if(caseSensitive === undefined) caseSensitive = false;
     var ast;
     if(astRaw && typeof astRaw === "object" && astRaw.length){
       ast = astRaw;
@@ -1747,7 +1762,7 @@ var QRID_WHEN = (function(){
     var refs = QRID_whenRefs(ast);
     return {
       active: function(){
-        try { return QRID_whenEvaluateWith(ast, readRef, blank); }
+        try { return QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); }
         catch(e){ return false; } /* fail open: never trap a save on a gate bug */
       },
       onChange: function(cb){
@@ -2318,7 +2333,7 @@ function QRIDSingleInit(QRID_CONFIG){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
   /* optional "when" condition: null when absent (no behavior change) */
-  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
   return { configError: configError, verdict: verdict, gate: GATE, blockSave: BLOCK,
            when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
            mode: { check: CHECK_MODE, regexOnly: REGEX_ONLY, guidance: ANY_ATOMS,
@@ -2467,7 +2482,11 @@ function QRIDConstraintInit(QRID_CONFIG){
        constraint, so an unanswerable ordered comparison passes rather than
        inventing a violation (CRIT-01) — the opposite of a "when" gate four
        lines below, which stays on the inert default. */
-    var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst, QRID_BLANK_PASSES);
+    /* Text matches case-insensitively ('Yes' = 'yes') unless the rule sets
+       "caseSensitive": true — strictly true, as the server stores it. The same
+       flag governs this rule's "when" gate below. */
+    var assertGate = configError ? null : QRID_WHEN.gateFor(cfg.assert, cfg.assertAst, QRID_BLANK_PASSES,
+                                                            cfg.caseSensitive === true);
     if(!configError && !assertGate){
       configError = "@UVASSERT has no condition to check — set an \"assert\" such as [end_date]>=[start_date].";
     }
@@ -2507,7 +2526,7 @@ function QRIDConstraintInit(QRID_CONFIG){
        wrong hard block is a dead end with no explanation (M-02). */
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length)
                    ? cfg.snapshotFields : null;
-    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* applicability */
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);   /* applicability */
     return { configError: configError, assertGate: assertGate, gate: GATE, blockSave: BLOCK,
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
@@ -2669,7 +2688,7 @@ function QRIDRequiredInit(QRID_CONFIG){
     if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
       configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
     }
-    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);   /* requirement gate */
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);   /* requirement gate */
     /* A rule the server could not resolve must not enforce here either. Branch
        machinery is shared by every mode, so an unresolved SELECTOR would
        otherwise hand control to the fallback branch and make its requiredness
@@ -2848,7 +2867,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         configError = 'the choices rule carries neither a "show" nor a "hide" list.';
       }
     }
-    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     return { configError: configError, gate: GATE, blockSave: BLOCK,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
@@ -3111,7 +3130,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
       configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
     }
-    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     return { configError: configError, gate: GATE, blockSave: BLOCK,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              uniqueWith: (cfg.uniqueWith && cfg.uniqueWith.length) ? cfg.uniqueWith.slice() : [],
@@ -3648,7 +3667,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     configError = configError || 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
   }
   /* optional "when" condition: null when absent (no behavior change) */
-  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst);
+  var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
   return { configError: configError, clean: clean, parse: parse, scanCap: SCAN_CAP,
            alts: ALTS,
            expectedIds: (cfg.expectedIds == null ? null : cfg.expectedIds),
@@ -3869,7 +3888,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                          the server had to freeze (an off-page ref this viewer may
                          not read): the verdict is stale the moment the user types,
                          so the client shows it as advisory and never blocks. */
-                      "assert", "assertAst", "message", "deferred", "deferredWhy", "snapshotFields",
+                      "assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                       /* unique mode (@UVUNIQUE) */
                       "uniqueWith", "uniqueScope", "uniqueSurveys",
                       /* choices mode (@UVCHOICES) */

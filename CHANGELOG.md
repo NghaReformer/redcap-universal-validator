@@ -3,7 +3,34 @@
 ## 1.11.0 - blank operands, composed field state, and the scan's group identity
 
 Five defects confirmed by a code audit of 1.10.0, each reproduced before it was
-fixed and each pinned by a test that fails on the previous tree.
+fixed and each pinned by a test that fails on the previous tree, plus one
+behavior change to how conditions compare text.
+
+- **Conditions compare text without regard to letter case by default.**
+  `[status]='active'` used to be false for `Active`, and there was no way to
+  turn that off. Every rule condition now folds A-Z to a-z on both sides
+  before comparing text, in `=`, `<>` and ordering alike: the `when` of all
+  five tags, the selector of a branched rule, and the `@UVASSERT` test.
+  `"caseSensitive":true` in any tag's JSON, or the new "compare text
+  case-sensitively" checkbox on a rule in the Configure dialog, restores the
+  exact comparison for every condition of that rule. The value must be an
+  unquoted boolean. What `@UVUNIQUE` counts as a duplicate is unchanged.
+
+  **This changes existing rules.** A condition that relied on case now
+  matches more values. An assert such as `[id]=[id_confirm]` for IDs where
+  `ab12` and `AB12` differ now accepts the mismatch, and a gate such as
+  `when:"[grade]='A'"` now also fires on `a`. Two branches that differ only in
+  case now both apply and are reported as a branch conflict. Add
+  `"caseSensitive":true` to those rules before upgrading.
+
+  Only A-Z fold. PHP and JavaScript lowercase non-ASCII letters differently
+  (U+0130 becomes two code units in JavaScript), so folding them would let the
+  browser and the server disagree; `É` and `é` stay different. Numbers are
+  untouched. A condition settled on the server for an off-page field is
+  folded once per case mode, so two rules sharing a condition string but not
+  the flag each receive their own verdict. Both runtimes agree on 2,000 new
+  case-focused fuzz cases alongside the existing 4,048, in both the gate and
+  the assert role.
 
 - **An ordered comparison against a blank operand no longer invents a
   violation.** `<` `>` `<=` `>=` fell through to byte order when either side was

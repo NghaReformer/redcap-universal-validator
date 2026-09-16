@@ -28,6 +28,19 @@ other rule.</p>
 
 <pre><code>@UVASSERT="[participant_id]=[participant_id_confirm]"</code></pre>
 
+<h2>Letter case</h2>
+
+<p>Text is compared without regard to the case of A-Z, so
+<code>@UVASSERT="[answer]='yes'"</code> accepts <code>Yes</code> and <code>YES</code>.
+When case is part of the value, set <code>caseSensitive</code>:</p>
+
+<pre><code>@UVASSERT={"assert":"[participant_id]=[participant_id_confirm]",
+           "caseSensitive":true}</code></pre>
+
+<p>Only A-Z are folded; accented letters keep their case. The flag covers both the
+<code>assert</code> and the <code>when</code> of the tag, and every other tag's
+<code>when</code> follows the same rule.</p>
+
 <h2>Things worth knowing before you rely on it</h2>
 
 <ul>

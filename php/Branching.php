@@ -52,7 +52,7 @@ class Branching
                          'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
                          'blockSave', 'suggestFix', 'note',
                          // constraint mode (@UVASSERT)
-                         'assert', 'message',
+                         'assert', 'caseSensitive', 'message',
                          // unique mode (@UVUNIQUE)
                          'uniqueWith', 'uniqueScope', 'uniqueSurveys',
                          // choices mode (@UVCHOICES) — choicesAll travels on

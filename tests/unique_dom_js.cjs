@@ -279,6 +279,24 @@ const JSMO = 'EMStub.UV';
   check('when flips true: checked and flagged', /already recorded/.test(uMsg(env, 'pid').innerHTML) && stub.calls.length === 1);
 }
 
+// ---- 7b) text in the "when" ignores letter case unless caseSensitive:true ---
+{
+  const run = (extra) => {
+    const stub = makeTransportStub();
+    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
+    const t = makeEl('input'); t.name = 't'; t.value = 'ACTIVE';
+    stub.next = { used: true, record: null };
+    const env = boot([pid, t], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+      rules: [Object.assign({ type: 'unique', fields: ['pid'], when: "[t]='active'", blockSave: 'hard' }, extra)] }, stub);
+    return { env, stub };
+  };
+  let r = run({});
+  check('unique, case default: "ACTIVE" matches when [t]=active (checked)',
+    r.stub.calls.length === 1 && /already recorded/.test(uMsg(r.env, 'pid').innerHTML));
+  r = run({ caseSensitive: true });
+  check('unique, caseSensitive:true: "ACTIVE" does not match (no request)', r.stub.calls.length === 0);
+}
+
 // ---- 8) MODE COMPOSITION: unique + check rule on the same field --------------
 {
   const stub = makeTransportStub();

@@ -134,7 +134,10 @@ foreach ($fx['cases'] as $c) {
             $ast = ['cmp', $op,
                 operandNode($lk, 'a', $c['a']),
                 operandNode($rk, 'b', $c['b'])];
-            $got = Logic::evaluate($ast, $values);
+            // The fixture's 'cmp' is the EXACT comparator (hex_case_sensitive
+            // pins byte order), so the case flag is passed explicitly; the
+            // case-folding default is locked by tests/when_fixture.json.
+            $got = Logic::evaluate($ast, $values, Logic::BLANK_PASSES, true);
             $want = verdictFor($op, $cmp, $c['path']);
             if ($got !== $want) {
                 detail("{$c['name']} [$shape] " . json_encode($c['a']) . " $op "

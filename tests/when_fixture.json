@@ -28,7 +28,162 @@
       "values": {
         "t": "A"
       },
-      "expect": false
+      "expect": false,
+      "expectCi": true
+    },
+    {
+      "_comment": "Case folding. expect is the exact comparison every gate uses (and an @UVASSERT with \"caseSensitive\": true); expectCi is the @UVASSERT default, which folds ASCII A-Z to a-z on both sides before comparing. Only those 26 letters fold, identically in both runtimes, so accented letters keep their case."
+    },
+    {
+      "name": "ci_eq_literal",
+      "expr": "[t]='yes'",
+      "values": {
+        "t": "Yes"
+      },
+      "expect": false,
+      "expectCi": true
+    },
+    {
+      "name": "ci_eq_field_to_field",
+      "expr": "[a]=[b]",
+      "values": {
+        "a": "NEG",
+        "b": "neg"
+      },
+      "expect": false,
+      "expectCi": true
+    },
+    {
+      "name": "ci_neq_same_word",
+      "expr": "[t]<>'YES'",
+      "values": {
+        "t": "yes"
+      },
+      "expect": true,
+      "expectCi": false
+    },
+    {
+      "name": "ci_neq_different_word",
+      "expr": "[t]<>'no'",
+      "values": {
+        "t": "Yes"
+      },
+      "expect": true,
+      "expectCi": true
+    },
+    {
+      "name": "ci_trim_then_fold",
+      "expr": "[t]='yes'",
+      "values": {
+        "t": "  YES "
+      },
+      "expect": false,
+      "expectCi": true
+    },
+    {
+      "name": "ci_order_folds_before_bytes",
+      "expr": "[t]<'banana'",
+      "values": {
+        "t": "Apple"
+      },
+      "expect": true,
+      "expectCi": true
+    },
+    {
+      "name": "ci_order_uppercase_sorts_first_only_when_exact",
+      "expr": "[t]>'Banana'",
+      "values": {
+        "t": "apple"
+      },
+      "expect": true,
+      "expectCi": false
+    },
+    {
+      "name": "ci_order_equal_after_fold",
+      "expr": "[t]>='ABC'",
+      "values": {
+        "t": "abc"
+      },
+      "expect": true,
+      "expectCi": true
+    },
+    {
+      "name": "ci_order_equal_after_fold_strict",
+      "expr": "[t]>'abc'",
+      "values": {
+        "t": "ABC"
+      },
+      "expect": false,
+      "expectCi": false
+    },
+    {
+      "name": "ci_non_ascii_keeps_case",
+      "expr": "[a]=[b]",
+      "values": {
+        "a": "École",
+        "b": "école"
+      },
+      "expect": false,
+      "expectCi": false
+    },
+    {
+      "name": "ci_non_ascii_rest_folds",
+      "expr": "[a]=[b]",
+      "values": {
+        "a": "CAFé",
+        "b": "café"
+      },
+      "expect": false,
+      "expectCi": true
+    },
+    {
+      "name": "ci_numbers_unaffected",
+      "expr": "[n]='2.50'",
+      "values": {
+        "n": "2.5"
+      },
+      "expect": true,
+      "expectCi": true
+    },
+    {
+      "name": "ci_mixed_domain_still_unordered",
+      "expr": "[t]>'9'",
+      "values": {
+        "t": "X"
+      },
+      "expect": false,
+      "expectCi": false
+    },
+    {
+      "name": "ci_under_not",
+      "expr": "not([t]='NO')",
+      "values": {
+        "t": "no"
+      },
+      "expect": true,
+      "expectCi": false
+    },
+    {
+      "name": "ci_blank_ordered_still_passes",
+      "expr": "[t]<='ABC'",
+      "values": {
+        "t": ""
+      },
+      "expect": true,
+      "expectGate": false,
+      "expectCi": true
+    },
+    {
+      "name": "ci_checkbox_ref_unaffected",
+      "expr": "[cb(2)]='1' and [t]='Y'",
+      "values": {
+        "cb": {
+          "2": "1"
+        },
+        "t": "y"
+      },
+      "expect": false,
+      "expectCi": true
     },
     {
       "name": "neq_angle",

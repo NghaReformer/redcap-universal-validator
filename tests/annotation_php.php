@@ -315,6 +315,46 @@ $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","frob":1}');
 check('assert unknown key -> error', isset($f[0]['error']) && strpos($f[0]['error'], 'frob') !== false);
 $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"datediff([a],[b],\'d\')>3"}');
 check('assert function -> rejected (dialect subset)', isset($f[0]['error']));
+// "caseSensitive": the assert matches text case-insensitively unless it is true
+$f = AnnotationRules::parseAllTags("@UVASSERT=\"[a]='yes'\"");
+check('assert bare -> no caseSensitive key (case-insensitive default)',
+    !isset($f[0]['error']) && !array_key_exists('caseSensitive', $f[0]));
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":true}');
+check('assert caseSensitive:true carried', !isset($f[0]['error']) && $f[0]['caseSensitive'] === true);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":false}');
+check('assert caseSensitive:false dropped (it is the default)',
+    !isset($f[0]['error']) && !array_key_exists('caseSensitive', $f[0]));
+check('assert caseSensitive:false groups with the bare form',
+    count(AnnotationRules::groupMulti(['x' => AnnotationRules::parseAllTags('@UVASSERT="[a]=[b]"'),
+        'y' => $f])) === 1);
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":"true"}');
+check('assert caseSensitive quoted -> error', isset($f[0]['error'])
+    && strpos($f[0]['error'], 'caseSensitive') !== false && $f[0]['_tag'] === '@UVASSERT');
+$f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":1}');
+check('assert caseSensitive:1 -> error', isset($f[0]['error']));
+// Every tag with a "when" takes the flag; each refuses a non-boolean.
+$tagForms = [
+    '@UVALIDATE' => '@UVALIDATE={"algorithm":"luhn","when":"[a]=\'x\'",%s}',
+    '@UVREQUIRED' => '@UVREQUIRED={"when":"[a]=\'x\'",%s}',
+    '@UVUNIQUE' => '@UVUNIQUE={"when":"[a]=\'x\'",%s}',
+    '@UVCHOICES' => '@UVCHOICES={"when":"[a]=\'x\'","hide":["9"],%s}',
+    '@UVASSERT' => '@UVASSERT={"assert":"[a]=[b]","when":"[a]=\'x\'",%s}',
+];
+foreach ($tagForms as $tag => $form) {
+    $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":true'));
+    check($tag . ' caseSensitive:true carried', !isset($f[0]['error']) && $f[0]['caseSensitive'] === true);
+    $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":false'));
+    check($tag . ' caseSensitive:false dropped', !isset($f[0]['error']) && !array_key_exists('caseSensitive', $f[0]));
+    $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":"yes"'));
+    check($tag . ' caseSensitive non-boolean -> error', isset($f[0]['error'])
+        && strpos($f[0]['error'], 'caseSensitive') !== false);
+}
+foreach (['single', 'pooled', 'constraint', 'required', 'unique', 'choices'] as $t) {
+    $frag = ['type' => $t, 'caseSensitive' => 'yes', 'assert' => '[a]=[b]', 'choicesHide' => ['9']];
+    $errs = AnnotationRules::checkFragment($frag);
+    check('checkFragment (' . $t . ', settings channel) refuses a non-boolean caseSensitive',
+        (bool) array_filter($errs, function ($e) { return strpos($e, 'caseSensitive') !== false; }));
+}
 
 // mode composition: @UVALIDATE + @UVASSERT on one field are two frags, distinct modes
 $f = AnnotationRules::parseAllTags('@UVALIDATE=verhoeff @UVASSERT="[x]=[y]"');

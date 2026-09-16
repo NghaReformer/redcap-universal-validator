@@ -216,6 +216,37 @@ namespace {
         && strpos($enc8, '["ref","start_date",null]') !== false);
     check('same instrument: not deferred', empty(ruleFor($p8, 'end_date')['deferred']));
 
+    // ---- 6b) a comparison settled on the server honours "caseSensitive" -----
+    // [staff_code] is on enroll_form, so on visit_form this comparison has no
+    // live side and is folded to a constant. Two rules share the assert TEXT
+    // and differ only in the flag; foldRuleConditions keys its cache by text,
+    // so each must still receive the constant its own case mode produces.
+    $caseText = "[staff_code]='" . strtolower(SECRET) . "'";
+    $caseDict = $DICT;
+    $caseDict['ci_field'] = ['field_type' => 'text', 'form_name' => 'visit_form',
+        'field_annotation' => '@UVASSERT=' . json_encode(['assert' => $caseText])];
+    $caseDict['cs_field'] = ['field_type' => 'text', 'form_name' => 'visit_form',
+        'field_annotation' => '@UVASSERT=' . json_encode(['assert' => $caseText, 'caseSensitive' => true])];
+    $pc = page(mod($caseDict, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('folded assert, default: lowercase literal matches the stored value',
+        json_encode(ruleFor($pc, 'ci_field')['assertAst']) === '["const",true]');
+    check('folded assert, caseSensitive:true: the same text does not match',
+        json_encode(ruleFor($pc, 'cs_field')['assertAst']) === '["const",false]');
+    check('folded assert: the flag reaches the page for the browser twin',
+        !empty(ruleFor($pc, 'cs_field')['caseSensitive']) && empty(ruleFor($pc, 'ci_field')['caseSensitive']));
+
+    // ---- 6c) a folded "when" honours "caseSensitive" too --------------------
+    $wDict = $DICT;
+    $wDict['wci'] = ['field_type' => 'text', 'form_name' => 'visit_form',
+        'field_annotation' => '@UVREQUIRED=' . json_encode(['when' => $caseText])];
+    $wDict['wcs'] = ['field_type' => 'text', 'form_name' => 'visit_form',
+        'field_annotation' => '@UVREQUIRED=' . json_encode(['when' => $caseText, 'caseSensitive' => true])];
+    $pw = page(mod($wDict, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('folded when, default: lowercase literal matches the stored value',
+        json_encode(ruleFor($pw, 'wci')['whenAst']) === '["const",true]');
+    check('folded when, caseSensitive:true: the same text does not match',
+        json_encode(ruleFor($pw, 'wcs')['whenAst']) === '["const",false]');
+
     // ---- 7) read-only rights (level 2) still count as "may read" -----------
     $ro = ['nurse' => ['forms' => ['enroll_form' => '2', 'visit_form' => '1']]];
     $p9 = page(mod($DICT, $DATA, $ro, 'nurse'), 'form', '2', 'visit_form');

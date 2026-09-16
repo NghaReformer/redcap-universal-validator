@@ -180,6 +180,22 @@ function r17chk(field, code) {
   check('repick: save allowed', ev._prevented === false);
 }
 
+// ---- 1b) text in the "when" ignores letter case unless caseSensitive:true ---
+{
+  const run = (extra) => {
+    const method = makeEl('select'); method.name = 'method';
+    ['', '1', '2', '9'].forEach((v) => method.appendChild(option(v)));
+    method.value = '';
+    const legacy = makeEl('input'); legacy.name = 'legacy'; legacy.value = 'NO';
+    boot([method, legacy], { singleFields: [], pooledFields: [],
+      rules: [Object.assign({ type: 'choices', fields: ['method'], choicesHide: ['9'],
+                              choicesAll: ['1', '2', '9'], when: "[legacy]='no'", blockSave: 'hard' }, extra)] });
+    return selectValues(method).join(',');
+  };
+  check('choices, case default: "NO" matches when [legacy]=no (option hidden)', run({}) === ',1,2');
+  check('choices, caseSensitive:true: "NO" does not match (all options kept)', run({ caseSensitive: true }) === ',1,2,9');
+}
+
 // ---- 2) radio cascade: branches switch the visible set live -----------------
 {
   const country = makeEl('select'); country.name = 'country'; country.value = '';

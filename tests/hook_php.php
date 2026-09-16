@@ -1039,6 +1039,57 @@ namespace {
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('empty constrained field -> inert (no audit)', count(invalidLogs($m)) === 0);
 
+    // Text case: an assert matches case-insensitively by default, and
+    // "caseSensitive": true restores the exact comparison. The same saved value
+    // is audited under both, so the flag is the only difference.
+    $caseDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'answer'    => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => "@UVASSERT=\"[answer]='yes' or [answer]='no'\""],
+        'answer_cs' => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVASSERT={"assert":"[answer_cs]=\'yes\' or [answer_cs]=\'no\'","caseSensitive":true}'],
+    ];
+    $m = newModule([], $caseDict, [2 => [351 => ['record_id' => '2', 'answer' => 'YES', 'answer_cs' => 'YES']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $cf = loggedFields($m);
+    check('assert default: "YES" satisfies [answer]=yes (no audit)', !in_array('answer', $cf, true));
+    check('assert caseSensitive:true: "YES" violates [answer_cs]=yes (audited)', in_array('answer_cs', $cf, true));
+    $m = newModule([], $caseDict, [2 => [351 => ['record_id' => '2', 'answer' => 'maybe', 'answer_cs' => 'yes']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $cf = loggedFields($m);
+    check('assert default still enforces a different word', in_array('answer', $cf, true));
+    check('assert caseSensitive:true passes the exact spelling', !in_array('answer_cs', $cf, true));
+
+    // The "when" gate follows the same flag, on a plain rule and on a branch
+    // selector. Every rule fails its test whenever it applies, so "audited"
+    // means exactly "the when matched".
+    $whenDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'status'    => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'cf'],
+        'w_ci'      => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVASSERT={"assert":"[w_ci]=\'never\'","when":"[status]=\'active\'"}'],
+        'w_cs'      => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVASSERT={"assert":"[w_cs]=\'never\'","when":"[status]=\'active\'","caseSensitive":true}'],
+        'w_br'      => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVREQUIRED={"when":"[status]=\'active\'","caseSensitive":true} '
+                                            . '@UVREQUIRED={"when":"[status]=\'closed\'"}'],
+        'w_chk'     => ['field_type' => 'text', 'form_name' => 'cf',
+                        'field_annotation' => '@UVALIDATE={"algorithm":"luhn","when":"[status]=\'active\'"}'],
+    ];
+    $m = newModule([], $whenDict, [2 => [351 => ['record_id' => '2', 'status' => 'ACTIVE',
+        'w_ci' => 'x', 'w_cs' => 'x', 'w_br' => '', 'w_chk' => '1234']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    $cf = loggedFields($m);
+    check('when default: "ACTIVE" matches [status]=active (rule applies, audited)', in_array('w_ci', $cf, true));
+    check('when caseSensitive:true: "ACTIVE" does not match (rule inert)', !in_array('w_cs', $cf, true));
+    check('branch selector caseSensitive:true: "ACTIVE" selects no branch (not required)', !in_array('w_br', $cf, true));
+    check('@UVALIDATE when default: "ACTIVE" matches (check runs, audited)', in_array('w_chk', $cf, true));
+    $m = newModule([], $whenDict, [2 => [351 => ['record_id' => '2', 'status' => 'CLOSED',
+        'w_ci' => 'x', 'w_cs' => 'x', 'w_br' => '', 'w_chk' => '1234']]], 149);
+    $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
+    check('branch selector default: "CLOSED" selects the case-insensitive branch (required, audited)',
+        in_array('w_br', loggedFields($m), true));
+
     // CRIT-01: a blank REFERENCED field must not be audited as a violation.
     // The browser and the audit have to agree here or the module contradicts
     // itself: the field saves cleanly and then the module logs a violation
@@ -1344,6 +1395,28 @@ namespace {
     $m = newModule($dlgRules, $dlgDict, [2 => [351 => ['record_id' => '2', 'grade' => '2']]], 149);
     $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
     check('dialog constraint satisfied -> no audit', count(invalidLogs($m)) === 0);
+    // dialog constraint: the case-sensitive checkbox, unticked and ticked
+    $caseRow = ['rule-type' => 'constraint', 'fields' => ['end'], 'assert' => "[end]='done'"];
+    $m = newModule([dlgRow($caseRow)], $dlgDict, [2 => [351 => ['record_id' => '2', 'end' => 'DONE']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog constraint unticked: "DONE" matches done (no audit)', count(invalidLogs($m)) === 0);
+    // the same checkbox governs the "when" of a check rule
+    $whenRow = ['rule-type' => 'single', 'fields' => ['start'], 'algorithm' => 'luhn', 'when' => "[end]='done'"];
+    $m = newModule([dlgRow($whenRow)], $dlgDict, [2 => [351 => ['record_id' => '2', 'start' => '1234', 'end' => 'DONE']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog check rule unticked: "DONE" matches when [end]=done (audited)', count(invalidLogs($m)) === 1);
+    $m = newModule([dlgRow($whenRow + ['case-sensitive' => '1'])], $dlgDict,
+        [2 => [351 => ['record_id' => '2', 'start' => '1234', 'end' => 'DONE']]], 149);
+    $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+    check('dialog check rule ticked: "DONE" does not match (inert)', count(invalidLogs($m)) === 0
+        && count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+    foreach ([true, 'true', '1'] as $tick) {
+        $m = newModule([dlgRow($caseRow + ['case-sensitive' => $tick])], $dlgDict,
+            [2 => [351 => ['record_id' => '2', 'end' => 'DONE']]], 149);
+        $m->redcap_save_record(149, '2', 'df', 351, null, null, null, 1);
+        check('dialog constraint ticked (' . var_export($tick, true) . '): "DONE" violates done',
+            count(invalidLogs($m)) === 1 && count(logsOf($m, 'uvalidate-unconfigurable')) === 0);
+    }
     // dialog constraint: irrelevant algorithm/pattern boxes are IGNORED, not leaked
     $dlgRules2 = [dlgRow(['rule-type' => 'constraint', 'fields' => ['end'],
                           'assert' => '[end]>=[start]', 'algorithm' => 'verhoeff',
@@ -1480,6 +1553,42 @@ namespace {
     check('ajax: overlong value refused', isset(ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => str_repeat('x', 1200)]])['error']));
     check('ajax: bad field name refused', isset(ajaxCall($m, ['field' => 'pid; DROP', 'values' => []])['error']));
     check('ajax: unknown action refused', isset($m->redcap_module_ajax('other', [], 149, '3', 'uf', 351, 1, null, null, null, '', '', 'u', null)['error']));
+
+    // Branch selectors on the live endpoint and in the scan's unique collector
+    // follow each branch's own "caseSensitive". The saved record says "NORTH".
+    foreach ([false => 'default', true => 'caseSensitive:true'] as $cs => $label) {
+        $flag = $cs ? ',"caseSensitive":true' : '';
+        $bd = $uqDict;
+        $bd['bpid'] = ['field_type' => 'text', 'form_name' => 'uf',
+            'field_annotation' => '@UVUNIQUE={"when":"[region]=\'north\'"' . $flag . '} @UVUNIQUE={"when":"[region]=\'south\'"}'];
+        $bd['region'] = ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'uf'];
+        $bdata = $uqData;
+        $bdata['1'][351]['bpid'] = 'BP-1';
+        $bdata['3'] = [351 => ['record_id' => '3', 'region' => 'NORTH']];
+        $m = newModule([], $bd, $bdata, 149);
+        $r = ajaxCall($m, ['field' => 'bpid', 'values' => ['bpid' => 'BP-1']], '3');
+        if ($cs) {
+            check('ajax branch selector ' . $label . ': "NORTH" selects no branch (refused)', isset($r['error']));
+        } else {
+            check('ajax branch selector ' . $label . ': "NORTH" selects the north branch (checked)',
+                !isset($r['error']) && $r['used'] === true);
+        }
+        $collect = new \ReflectionMethod($m, 'collectUniqueCandidates');
+        $collect->setAccessible(true);
+        $ctx = ['values' => ['bpid' => 'BP-9', 'region' => 'NORTH'], 'event_id' => 351, 'instance' => 1];
+        foreach ([
+            'branch' => ['type' => 'unique', 'fields' => ['bpid'], 'branches' => [
+                ['when' => "[region]='north'"] + ($cs ? ['caseSensitive' => true] : [])]],
+            'plain'  => ['type' => 'unique', 'fields' => ['bpid'], 'when' => "[region]='north'"]
+                        + ($cs ? ['caseSensitive' => true] : []),
+        ] as $shape => $rule) {
+            $seen = []; $unconf = [];
+            $args = [&$seen, &$unconf, $rule, 0, $ctx, '3', null, []];
+            $collect->invokeArgs(null, $args);
+            check('scan unique ' . $shape . ' when ' . $label . ': candidate '
+                . ($cs ? 'NOT collected' : 'collected') . ' for "NORTH"', ($cs ? 0 : 1) === count($seen));
+        }
+    }
 
     // scope=event: same value on ANOTHER event is free
     $uqDictE = $uqDict;
