@@ -1,0 +1,125 @@
+{
+    "browser": {
+        "type": "constraint",
+        "assert": "[a_val]<[baseline_arm_1][b_open][2]",
+        "fields": [
+            "a_val"
+        ],
+        "assertAst": [
+            "temporal",
+            [
+                "cmp",
+                "<",
+                [
+                    "ref",
+                    "a_val",
+                    null
+                ],
+                [
+                    "lit",
+                    "11"
+                ]
+            ]
+        ],
+        "snapshotFields": [
+            "saved event/instance values"
+        ],
+        "blockSave": "off"
+    },
+    "audit": [
+        [
+            "invalid-id-saved",
+            {
+                "field": "a_val",
+                "type": "constraint",
+                "algorithm": "constraint",
+                "reason": "assert:[a_val]<[baseline_arm_1][b_open][2]",
+                "instrument": "fa",
+                "event_id": "1",
+                "instance": "3",
+                "record": "1",
+                "value_hmac": "a6d802c9841188098e38441c0d8f6e355570e59e8583ce41b48c3738b7245309"
+            }
+        ]
+    ],
+    "scan": [
+        {
+            "record": "1",
+            "event_id": 1,
+            "instance": 3,
+            "field": "a_val",
+            "type": "constraint",
+            "reason": "assert:[a_val]<[baseline_arm_1][b_open][2]",
+            "rule": 1,
+            "value": null,
+            "valueWithheld": true,
+            "locus": "",
+            "instrument": "fa",
+            "dag": null
+        }
+    ],
+    "reads": [
+        {
+            "project_id": 700,
+            "return_format": "array",
+            "records": [
+                "1"
+            ],
+            "fields": [
+                "a_val",
+                "fa_complete",
+                "b_open",
+                "fb_complete",
+                "record_id"
+            ],
+            "events": [
+                1
+            ]
+        },
+        {
+            "project_id": 700,
+            "return_format": "array",
+            "records": [
+                "1"
+            ],
+            "fields": [
+                "a_val",
+                "fa_complete",
+                "b_open",
+                "fb_complete",
+                "record_id"
+            ]
+        },
+        {
+            "project_id": 700,
+            "return_format": "array",
+            "fields": [
+                "record_id"
+            ],
+            "exportDataAccessGroups": true
+        },
+        {
+            "project_id": 700,
+            "return_format": "array",
+            "records": [
+                1
+            ],
+            "fields": [
+                "a_val",
+                "fa_complete",
+                "b_open",
+                "fb_complete",
+                "record_id"
+            ],
+            "exportDataAccessGroups": true
+        }
+    ],
+    "identities": [
+        {
+            "source_id": "ann:b89e48291e2033616462f3270cf0078d:constraint:0",
+            "revision": "91a4f5feb6dd48b68c2669e27ed72cc5e2c6c2719baffd9b615722fe8675f23b",
+            "origin": "annotation",
+            "stem": "ann:b89e48291e2033616462f3270cf0078d:constraint"
+        }
+    ]
+}

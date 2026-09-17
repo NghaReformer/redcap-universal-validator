@@ -158,3 +158,11 @@ parameters have been diffed against the authoritative Python values; the pooled
 splitter mirrors `js/engine.js`. Because a local PHP runtime is not required to
 develop the module, `parity_php.php` and `pooled_php.php` are the authoritative
 end-to-end checks for the server engine and run in CI on every push.
+
+## Event and instance validation
+
+Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, Boolean unknowns and live members. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
+
+Run the existing complete CI matrix and `tests/mysql/run.php` against its disposable private schemas. Local mocks do not establish REDCap metadata shapes or import/deletion hook behavior; follow the deployment acceptance section in `docs/EVENT-INSTANCE-REFERENCES.md` for the real-project pilot.
+
+`PHP_BIN=php python3 tests/temporal_mutations.py` runs four defects against disposable copies, verifies they remain syntactically valid, and requires each to fail its regression suite. It never mutates the checkout. `tests/temporal_golden.json` fixes synthetic read parameters, payloads, audit/scan results and rule identities; update deliberately with `php tests/temporal_integration_php.php --update-golden` and review the diff. The mock HMAC key is fixed synthetic test data.

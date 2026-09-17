@@ -1,0 +1,1219 @@
+[
+  {
+    "name": "unknown negation",
+    "ast": [
+      "temporal",
+      [
+        "not",
+        [
+          "unknown"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "andFalse",
+    "ast": [
+      "temporal",
+      [
+        "and",
+        [
+          [
+            "unknown"
+          ],
+          [
+            "const",
+            false
+          ]
+        ]
+      ]
+    ],
+    "expected": false,
+    "values": {}
+  },
+  {
+    "name": "andTrue",
+    "ast": [
+      "temporal",
+      [
+        "and",
+        [
+          [
+            "unknown"
+          ],
+          [
+            "const",
+            true
+          ]
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "orFalse",
+    "ast": [
+      "temporal",
+      [
+        "or",
+        [
+          [
+            "unknown"
+          ],
+          [
+            "const",
+            false
+          ]
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "orTrue",
+    "ast": [
+      "temporal",
+      [
+        "or",
+        [
+          [
+            "unknown"
+          ],
+          [
+            "const",
+            true
+          ]
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "count empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "count",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "populated-count empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "populated-count",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "distinct-count empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "distinct-count",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "minimum empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "minimum",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "maximum empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "maximum",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "average empty",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "average",
+          []
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "sum decimal precision",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "9007199254740993.1"
+            ],
+            [
+              "lit",
+              ".2"
+            ],
+            [
+              "lit",
+              "-.3"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "9007199254740993"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "rational exact recurring",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        ">",
+        [
+          "aggregate",
+          "average",
+          [
+            [
+              "lit",
+              "1"
+            ],
+            [
+              "lit",
+              "0"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "0.333333333333333333333333333333333333"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "rational exact boundary",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "<",
+        [
+          "aggregate",
+          "average",
+          [
+            [
+              "lit",
+              "1"
+            ],
+            [
+              "lit",
+              "0"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "0.333333333333333333333333333333333334"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "average saved blanks",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "average",
+          [
+            [
+              "lit",
+              "2"
+            ],
+            [
+              "lit",
+              ""
+            ],
+            [
+              "lit",
+              "4"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "3"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "nonnumeric populated aggregate",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "2"
+            ],
+            [
+              "lit",
+              "bad"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "any decisive",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        ">",
+        [
+          "set",
+          "any",
+          [
+            [
+              "lit",
+              "1"
+            ],
+            [
+              "lit",
+              "3"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "all decisive",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        ">",
+        [
+          "set",
+          "all",
+          [
+            [
+              "lit",
+              "1"
+            ],
+            [
+              "lit",
+              "3"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": false,
+    "values": {}
+  },
+  {
+    "name": "empty all unresolved",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        ">",
+        [
+          "set",
+          "all",
+          []
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "key changed",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "guard",
+          [
+            [
+              "key",
+              "A"
+            ]
+          ],
+          [
+            "lit",
+            "10"
+          ]
+        ],
+        [
+          "lit",
+          "10"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {
+      "key": "B"
+    }
+  },
+  {
+    "name": "key unchanged",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "guard",
+          [
+            [
+              "key",
+              "A"
+            ]
+          ],
+          [
+            "lit",
+            "10"
+          ]
+        ],
+        [
+          "lit",
+          "10"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {
+      "key": "A"
+    }
+  },
+  {
+    "name": "live aggregate",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "ref",
+              "value",
+              null
+            ],
+            [
+              "lit",
+              "5"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "12"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {
+      "value": "7"
+    }
+  },
+  {
+    "name": "unique strings",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "identical",
+        [
+          "lit",
+          "001"
+        ],
+        [
+          "lit",
+          "1"
+        ]
+      ]
+    ],
+    "expected": false,
+    "values": {}
+  },
+  {
+    "name": "unique ascii trim",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "identical",
+        [
+          "lit",
+          "  A\t"
+        ],
+        [
+          "lit",
+          "A"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "date same",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2024-02-29"
+          ]
+        ],
+        [
+          "date",
+          "date",
+          "dmy",
+          [
+            "lit",
+            "29/02/2024"
+          ]
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "date invalid",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2023-02-29"
+          ]
+        ],
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2023-02-28"
+          ]
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "date newline invalid",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2024-02-29\n"
+          ]
+        ],
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2024-02-29"
+          ]
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "date mixed type invalid",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "<",
+        [
+          "date",
+          "date",
+          "ymd",
+          [
+            "lit",
+            "2024-02-29"
+          ]
+        ],
+        [
+          "date",
+          "datetime",
+          "ymd",
+          [
+            "lit",
+            "2024-03-01 00:00"
+          ]
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
+  },
+  {
+    "name": "elapsed leap",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "elapsed",
+          "days",
+          [
+            "date",
+            "date",
+            "ymd",
+            [
+              "lit",
+              "2024-02-28"
+            ]
+          ],
+          [
+            "date",
+            "date",
+            "ymd",
+            [
+              "lit",
+              "2024-03-01"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "2"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "elapsed negative",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "elapsed",
+          "days",
+          [
+            "date",
+            "date",
+            "ymd",
+            [
+              "lit",
+              "2024-03-01"
+            ]
+          ],
+          [
+            "date",
+            "date",
+            "ymd",
+            [
+              "lit",
+              "2024-02-28"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-2"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "elapsed midnight",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "elapsed",
+          "seconds",
+          [
+            "date",
+            "datetime_seconds",
+            "ymd",
+            [
+              "lit",
+              "2024-02-29 23:59:59"
+            ]
+          ],
+          [
+            "date",
+            "datetime_seconds",
+            "ymd",
+            [
+              "lit",
+              "2024-03-01 00:00:00"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 0 0",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "0"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "0"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 0 -2",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "0"
+            ],
+            [
+              "lit",
+              "-2"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-2"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 0 0.1",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "0"
+            ],
+            [
+              "lit",
+              "0.1"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "0.1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum -1 0",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "-1"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum -1 -2",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "-1"
+            ],
+            [
+              "lit",
+              "-2"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-3"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum -1 0.1",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "-1"
+            ],
+            [
+              "lit",
+              "0.1"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-0.9"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 1.00000000000000000001 0",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "1.00000000000000000001"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "1.00000000000000000001"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 1.00000000000000000001 -2",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "1.00000000000000000001"
+            ],
+            [
+              "lit",
+              "-2"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "-0.99999999999999999999"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 1.00000000000000000001 0.1",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "1.00000000000000000001"
+            ],
+            [
+              "lit",
+              "0.1"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "1.10000000000000000001"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 99999999999999999999999999999.999 0",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "99999999999999999999999999999.999"
+            ],
+            [
+              "lit",
+              "0"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "99999999999999999999999999999.999"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 99999999999999999999999999999.999 -2",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "99999999999999999999999999999.999"
+            ],
+            [
+              "lit",
+              "-2"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "99999999999999999999999999997.999"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "sum 99999999999999999999999999999.999 0.1",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "=",
+        [
+          "aggregate",
+          "sum",
+          [
+            [
+              "lit",
+              "99999999999999999999999999999.999"
+            ],
+            [
+              "lit",
+              "0.1"
+            ]
+          ]
+        ],
+        [
+          "lit",
+          "100000000000000000000000000000.099"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  }
+]

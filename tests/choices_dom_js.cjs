@@ -480,5 +480,21 @@ function r17chk(field, code) {
   check('uncheck stale code: save allowed', ev._prevented === false);
 }
 
+// Extended unresolved selectors restore choices and never activate the fallback.
+{
+  const sel=makeEl('select');sel.name='pick';sel.value='';
+  ['', '1', '9'].forEach(v=>sel.appendChild(option(v)));
+  const key=makeEl('input');key.name='key';key.value='A';
+  const tree=['temporal',['cmp','=', ['guard',[['key','A']],['lit','1']],['lit','1']]];
+  const env=boot([sel,key],{rules:[{type:'choices',fields:['pick'],branches:[
+    {when:"[key]='A'",whenAst:tree,choicesHide:['9'],choicesAll:['1','9'],blockSave:'hard'},
+    {when:null,choicesHide:['1'],choicesAll:['1','9'],blockSave:'hard'}]}]});
+  check('extended known gate really filters',selectValues(sel).join(',')===',1');
+  key.value='B';key.fire('change');
+  check('extended unknown gate restores all choices',selectValues(sel).join(',')===',1,9');
+  const ev=submitEv();env.doc.fire('submit',ev);
+  check('extended unknown choices never block',!ev._prevented);
+}
+
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail === 0 ? 0 : 1);

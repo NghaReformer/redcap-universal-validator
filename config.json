@@ -59,7 +59,7 @@
     },
     {
       "tag": "@UVUNIQUE",
-      "description": "No-duplicates across records — a validation REDCap has no native field-level equivalent for. As the value is typed, the module asks the server (a CSRF-protected module AJAX call) whether it is already recorded in another record, and shows used/free live; enforcement modes are the usual message/confirm/block. Forms: <code>@UVUNIQUE</code> (unique across the project), <code>@UVUNIQUE=event</code> (scope shorthand: project, dag or event), or JSON <code>@UVUNIQUE={\"with\":[\"site\"],\"scope\":\"event\",\"message\":\"This specimen ID is already registered\",\"blockSave\":\"hard\",\"when\":\"...\",\"surveys\":true}</code>. <code>with</code> makes the key COMPOSITE (the value plus those fields together must be unique, e.g. specimen ID within site). Scopes: <code>project</code> (default), <code>dag</code> (unique within each Data Access Group), <code>event</code> (unique within the same event). <code>surveys</code> is an explicit OPT-IN and should stay off unless you have thought about it: survey respondents are not logged in, so an \"already used\" answer tells anyone holding the survey link that a specific value is in this study, one value at a time. The module <b>refuses</b> the opt-in on fields REDCap flags as Identifiers (there, it would let a stranger test whether a named person is enrolled); elsewhere surveys get a yes/no only, never a record id, and the unauthenticated path is rate-limited. Staff see the colliding record id only when it is in their own DAG. Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields. Two near-simultaneous saves can both pass the live check — the post-save audit logs such a collision (type 'unique'), so review the module log for races. A malformed tag shows a configuration error under the field."
+      "description": "No-duplicates across records — a validation REDCap has no native field-level equivalent for. As the value is typed, the module asks the server (a CSRF-protected module AJAX call) whether it is already recorded in another record, and shows used/free live; enforcement modes are the usual message/confirm/block. Forms: <code>@UVUNIQUE</code> (unique across the project), <code>@UVUNIQUE=event</code> (scope shorthand: project, dag or event), or JSON <code>@UVUNIQUE={\"with\":[\"site\"],\"scope\":\"event\",\"message\":\"This specimen ID is already registered\",\"blockSave\":\"hard\",\"when\":\"...\",\"surveys\":true}</code>. <code>with</code> makes the key COMPOSITE (the value plus those fields together must be unique, e.g. specimen ID within site). With event and instance references enabled, <code>scope: record</code> compares entries across events/repeats within one record, using advisory feedback. Other scopes: <code>project</code> (default), <code>dag</code> (unique within each Data Access Group), <code>event</code> (unique within the same event). <code>surveys</code> is an explicit OPT-IN and should stay off unless you have thought about it: survey respondents are not logged in, so an \"already used\" answer tells anyone holding the survey link that a specific value is in this study, one value at a time. The module <b>refuses</b> the opt-in on fields REDCap flags as Identifiers (there, it would let a stranger test whether a named person is enrolled); elsewhere surveys get a yes/no only, never a record id, and the unauthenticated path is rate-limited. Staff see the colliding record id only when it is in their own DAG. Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields. Two near-simultaneous saves can both pass the live check — the post-save audit logs such a collision (type 'unique'), so review the module log for races. A malformed tag shows a configuration error under the field."
     },
     {
       "tag": "@UVCHOICES",
@@ -115,6 +115,16 @@
   ],
 
   "project-settings": [
+    {
+      "key": "enable-event-instance-refs",
+      "name": "Enable event and instance references (opt-in). Extended rules are advisory in the browser; audits and scans use saved data. Disable to leave stored extended rules inactive with configuration notices.",
+      "type": "checkbox"
+    },
+    {
+      "key": "qualified-audit-max-contexts",
+      "name": "Maximum extended audit contexts per save (default 500). Larger audits require a validation scan.",
+      "type": "text"
+    },
     {
       "key": "intro",
       "name": "<b>Universal Regex & Check-Character Validator</b><br>Add ONE rule per kind of validation — a rule can cover any number of fields. Four kinds of rule: <b>Single value</b> / <b>Pooled</b> (check-character or regex ID validation), <b>Constraint</b> (cross-field: invalid unless a condition is true) and <b>Required</b> (must not be blank, optionally only while a condition is true). Three ways to attach fields to a rule: the field picker (click its <b>+</b> to add more fields), the fast-entry box (type field names separated by commas), or skip this dialog entirely and tag fields with <b>@UVALIDATE</b>, <b>@UVASSERT</b>, <b>@UVREQUIRED</b>, <b>@UVUNIQUE</b> or <b>@UVCHOICES</b> in the Online Designer's Action Tags box / the data dictionary CSV (bulk setup — see the documentation). Dynamic choice filtering (<b>@UVCHOICES</b> — cascading radio/dropdown/checkbox options) is annotation-only in this version. Different rule kinds may cover the SAME field (they compose — all must pass). Leave a rule's advanced boxes blank to use the defaults.",
@@ -212,8 +222,13 @@
           "type": "text"
         },
         {
+          "key": "references-json",
+          "name": "Extended reference bindings (optional JSON object). Requires event and instance references to be enabled. See the event/instance guide for matching, aggregate and date examples.",
+          "type": "textarea"
+        },
+        {
           "key": "when",
-          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; functions, [event][field] prefixes and smart variables are not supported. Fields on this instrument are read live as they are edited. A field on ANOTHER instrument in the same event is resolved on the server: if you are entitled to read that instrument its saved value is baked into the condition so the check stays live as you type, and on a survey or without those rights it is withheld and the rule is not checked here at all (a reason is shown). A reference across two repeating instruments, or to a field in another event, cannot be resolved and the rule reports why instead of guessing. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field. Text compares without regard to letter case unless 'Compare text case-sensitively' is ticked.",
+          "name": "Only validate when (optional): a REDCap-style condition such as [specimen_type]='2' or [consent(1)]='1' and [site]<>'9'. Supports [field] and [checkbox(code)] references, = <> != > < >= <=, and/or/not, and parentheses; arbitrary functions are not supported. With event and instance references enabled, use [event][field][instance], supported relative selectors, and {alias} bindings (see docs/EVENT-INSTANCE-REFERENCES.md). Fields on this instrument are read live as they are edited. A field on ANOTHER instrument in the same event is resolved on the server: if you are entitled to read that instrument its saved value is baked into the condition so the check stays live as you type, and on a survey or without those rights it is withheld and the rule is not checked here at all (a reason is shown). Without extended references, cross-event and independent repeating-instrument references remain unresolved. With the feature enabled, select the event and instance explicitly or use shared-key bindings. Extended rules remain advisory. While the condition is false the rule is skipped entirely — the value is NOT erased (unlike field branching). Several rules may cover the SAME field when each has a different condition (plus at most one without, as the fallback) — the rule whose condition is true validates the field. Text compares without regard to letter case unless 'Compare text case-sensitively' is ticked.",
           "type": "text"
         },
         {
@@ -241,9 +256,22 @@
           "name": "Unique rules only: where the value must be unique.",
           "type": "dropdown",
           "choices": [
-            { "value": "project", "name": "Whole project (default)" },
-            { "value": "dag", "name": "Within each Data Access Group" },
-            { "value": "event", "name": "Within the same event (longitudinal)" }
+            {
+              "value": "project",
+              "name": "Whole project (default)"
+            },
+            {
+              "value": "dag",
+              "name": "Within each Data Access Group"
+            },
+            {
+              "value": "event",
+              "name": "Within the same event (longitudinal)"
+            },
+            {
+              "value": "record",
+              "name": "Within this record across events and instances (requires extended references)"
+            }
           ]
         },
         {

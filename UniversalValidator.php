@@ -23,6 +23,7 @@ use ExternalModules\AbstractExternalModule;
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/Logic.php';
+require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
 require_once __DIR__ . '/php/FindingSink.php';
@@ -60,6 +61,7 @@ require_once __DIR__ . '/php/Scan/ScanService.php';
 
 class UniversalValidator extends AbstractExternalModule
 {
+    use TemporalIntegration;
     /**
      * Per-request data dictionary cache, keyed BY PROJECT ID.
      *
@@ -136,6 +138,15 @@ class UniversalValidator extends AbstractExternalModule
             // is NOT (it can be null on import/API), so thread it explicitly into
             // EVERY settings/dictionary read (SEC-002).
             $rules = $this->getRules($project_id);
+            if (!$rules) return;
+            try {
+                $this->auditTemporalRules($rules, $project_id, $record, $instrument, $event_id, $repeat_instance, $logMode);
+            } catch (\Throwable $e) {
+                foreach ($rules as $i=>$rule) if (TemporalRules::extended($rule)) {
+                    $this->logUnconfigurable($i,$rule['fields'],'Extended audit incomplete: evaluation unavailable; run the validation scan.',$instrument,$event_id,$repeat_instance);
+                }
+            }
+            $rules = array_filter($rules, function ($rule) { return !TemporalRules::extended($rule); });
             if (!$rules) return;
 
             // A field claimed by more than one live rule has no well-defined
@@ -510,6 +521,14 @@ class UniversalValidator extends AbstractExternalModule
                 if ($onForm !== null && !isset($onForm[$field])) continue;
                 $value = isset($values[$field]) ? $values[$field] : null;
                 if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+                if (isset($rule['uniqueRecordResults'])) {
+                    if (!array_key_exists($field,$rule['uniqueRecordResults']) || $rule['uniqueRecordResults'][$field] === null) {
+                        $out['unconfigurable'][]=['fields'=>[$field],'why'=>'Record uniqueness could not be resolved.'];
+                    } elseif ($rule['uniqueRecordResults'][$field] === false) {
+                        $out['invalid'][]=['field'=>$field,'value'=>$value,'algo'=>'unique','type'=>'unique','reason'=>'duplicate-value'];
+                    }
+                    continue;
+                }
                 $cand = [$field => trim((string) $value)];
                 foreach ($with as $w) {
                     $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
@@ -639,7 +658,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($value === null || is_array($value)) continue;
                 if (trim((string) $value, " \t\r\n") === '') continue;
                 if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
-                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . $rule['assert']];
+                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
                 }
             }
             return $out;
@@ -932,7 +951,7 @@ class UniversalValidator extends AbstractExternalModule
             'rules'        => $rules,
         ]);
 
-        $config['rules'] = $this->foldRuleConditions($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
+        $config['rules'] = $this->foldTemporalRules($rules, $pid, $record, $instrument, $event_id, $repeat_instance, $context);
         // _origin is ours, and it stops here. Not a disclosure - 'settings' or
         // 'annotation' tells a reader nothing - but this payload is built per
         // page and per rule, and an unexplained key in the engine's input is
@@ -1362,6 +1381,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function ruleRefFields(array $r)
     {
+        if (TemporalRules::extended($r)) return TemporalRules::fields($r);
         $out = [];
         foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
             $out[(string) $f] = true;
@@ -1458,7 +1478,7 @@ class UniversalValidator extends AbstractExternalModule
         // and assertion in the report attached to the wrong rule with nothing to
         // detect it. Stable rule identity is Tasks 5-6; this closes the window
         // in the meantime.
-        $key = (string) ($pid === null ? '' : $pid);
+        $key = (string) ($pid === null ? '' : $pid) . '|qualified=' . ($this->temporalOptions($pid)['qualified'] ? '1' : '0');
         if (array_key_exists($key, $this->rulesMemo)) return $this->rulesMemo[$key];
 
         // WHERE A RULE CAME FROM TRAVELS ON THE RULE.
@@ -1489,6 +1509,21 @@ class UniversalValidator extends AbstractExternalModule
         // which is round 4's A4 defect one layer up: keying the dictionary cache
         // by pid did NOT let a later scan recover, because the poisoned answer
         // had already been stored here. Found by the probe written for A4.
+        foreach ($out as &$candidate) {
+            if (empty($candidate['configError']) && TemporalRules::extended($candidate)) {
+                $dd = $this->dataDictionary($pid) ?: [];
+                $errors = TemporalRules::validate($candidate);
+                if (!isset($extendedShape)) $extendedShape = TemporalMetadata::load($pid, $dd);
+                $errors = array_merge($errors, TemporalRules::validateProject($candidate, $extendedShape));
+                foreach (TemporalRules::fields($candidate) as $f) {
+                    if ($dd && !isset($dd[$f])) $errors[] = 'Unknown referenced field: ' . $f . '.';
+                    elseif (in_array($dd[$f]['field_type'] ?? '', ['file', 'descriptive'], true)) $errors[] = 'Referenced field has no comparable value: ' . $f . '.';
+                }
+                if (!$this->temporalOptions($pid)['qualified']) $errors[] = 'Enable event and instance references in project settings first.';
+                if ($errors) $candidate['configError'] = implode(' ', $errors);
+            }
+        }
+        unset($candidate);
         $resolved = Branching::resolve($out);
         if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
         return $resolved;
@@ -1506,7 +1541,7 @@ class UniversalValidator extends AbstractExternalModule
         $identifiers = $this->projectIdentifierFields($pid);
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid));
             if ($rule === null) continue;
             // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
             //
@@ -1571,7 +1606,7 @@ class UniversalValidator extends AbstractExternalModule
         return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
     }
 
-    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null)
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [])
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
@@ -1693,11 +1728,15 @@ class UniversalValidator extends AbstractExternalModule
             if (self::settingCaseSensitive($s)) $rule['caseSensitive'] = true;
 
             $errors = $csvErrors;
-            foreach (AnnotationRules::checkFragment($rule) as $e) $errors[] = $e;
+            if (isset($s['references-json']) && trim((string)$s['references-json']) !== '') {
+                $rule['references'] = json_decode($s['references-json'], true);
+                if (!is_array($rule['references'])) $errors[] = 'Reference bindings must be a JSON object.';
+            }
+            foreach (AnnotationRules::checkFragment($rule, $opts) as $e) $errors[] = $e;
             // Dictionary-dependent reference checks for BOTH conditions.
             foreach (['when', 'assert'] as $condKey) {
                 if (isset($rule[$condKey]) && $types !== null) {
-                    $w = Logic::parse($rule[$condKey]);
+                    $w = Logic::parse($rule[$condKey], $opts);
                     if (!empty($w['ok'])) {
                         foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
                             $errors[] = $e;
@@ -1810,13 +1849,17 @@ class UniversalValidator extends AbstractExternalModule
         // algorithm/source/blockSave whitelists, pattern safety (ReDoS gate,
         // ASCII subset, compilability), none-needs-pattern, "when" syntax, and
         // the hard caps that bound the pooled parser's work (COR-002/PER-002).
-        foreach (AnnotationRules::checkFragment($rule) as $e) $errors[] = $e;
+        if (isset($s['references-json']) && trim((string)$s['references-json']) !== '') {
+                $rule['references'] = json_decode($s['references-json'], true);
+                if (!is_array($rule['references'])) $errors[] = 'Reference bindings must be a JSON object.';
+            }
+            foreach (AnnotationRules::checkFragment($rule, $opts) as $e) $errors[] = $e;
 
         // Dictionary-dependent "when" reference checks (field exists, checkbox
         // needs a real (code), no file/descriptive refs) — only when the
         // dictionary is available, like the field-name checks above.
         if (isset($rule['when']) && $types !== null) {
-            $w = Logic::parse($rule['when']);
+            $w = Logic::parse($rule['when'], $opts);
             if (!empty($w['ok'])) {
                 foreach (Logic::checkRefs($w['ast'], $types, is_array($choices) ? $choices : []) as $e) {
                     $errors[] = $e;
@@ -1841,18 +1884,23 @@ class UniversalValidator extends AbstractExternalModule
     public function validateSettings($settings)
     {
         try {
-            if (!is_array($settings) || empty($settings['rules']) || !is_array($settings['rules'])) return null;
+            if (!is_array($settings)) return null;
+            if (!isset($settings['rules']) || !is_array($settings['rules'])) $settings['rules'] = [];
             $pid = null;
             try { $pid = $this->getProjectId(); } catch (\Throwable $e) {}
             $known = $pid ? $this->projectFieldNames($pid) : null;
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
             $identifiers = $pid ? $this->projectIdentifierFields($pid) : null;
-            $errors = [];
+            $wasEnabled = $this->temporalOptions($pid)['qualified'];
+            $enabled = in_array($settings['enable-event-instance-refs'] ?? $wasEnabled, [true,1,'1','true'],true);
+            // Turning the dialect off preserves its authored rules for reactivation.
+            $parseExtended = $enabled || $wasEnabled;
+            $errors = ($enabled && !$wasEnabled) ? $this->temporalActivationProblems($pid) : [];
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended]);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -1886,7 +1934,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function rowsFromFlatSettings(array $settings)
     {
-        $keys = ['rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
+        $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
                  'unique-with', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
@@ -1922,7 +1970,7 @@ class UniversalValidator extends AbstractExternalModule
             // Cheap pre-filter: every module tag starts with "@UV" (@UVALIDATE,
             // @UVASSERT, …). parseAllTags then finds the real, boundary-checked ones.
             if ($ann === '' || stripos($ann, '@UV') === false) continue;
-            $frags = AnnotationRules::parseAllTags($ann);
+            $frags = AnnotationRules::parseAllTags($ann, $this->temporalOptions($pid));
             if ($frags === null) continue; // no module tag (e.g. @UVALIDATED)
             // Field-type eligibility is per MODE: check-character/regex still
             // needs a Text/Notes input; a constraint (@UVASSERT) reads any
@@ -1995,7 +2043,7 @@ class UniversalValidator extends AbstractExternalModule
                 if (isset($frag['error'])) continue;
                 foreach (['when', 'assert'] as $condKey) {
                     if (!isset($frag[$condKey])) continue;
-                    $w = Logic::parse($frag[$condKey]);
+                    $w = Logic::parse($frag[$condKey], $this->temporalOptions($pid));
                     if (empty($w['ok'])) continue; // syntax error already surfaced
                     if ($types === null) {
                         $types = $this->projectFieldTypes($pid);
@@ -3332,6 +3380,7 @@ class UniversalValidator extends AbstractExternalModule
         // not data anything downstream should depend on.
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
+                'verifyFingerprint' => true, 'structure' => $this->temporalScanStructure($pid, $plan['live']),
                 'problems' => array_values($plan['unconf'])];
     }
 
@@ -3783,6 +3832,9 @@ class UniversalValidator extends AbstractExternalModule
         // refs + composite unique keys.
         $readSet = [];
         foreach ($live as $r) {
+            if (TemporalRules::extended($r)) {
+                foreach ($this->temporalReadFields([$r], $pid) as $f) $readSet[$f] = true;
+            }
             foreach ($r['fields'] as $f) $readSet[$f] = true;
             foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
                 $p = Logic::parse($cond);
@@ -3873,6 +3925,7 @@ class UniversalValidator extends AbstractExternalModule
         $ddOwn = $this->dataDictionary($pid);
         $ownership = [];
         foreach (array_keys($readSet) as $f) {
+            if (!isset($ddOwn[$f]) && substr($f, -9) === '_complete') { $ownership[(string)$f] = substr($f, 0, -9); continue; }
             $ownership[(string) $f] =
                 (is_array($ddOwn) && isset($ddOwn[$f]['form_name']) && $ddOwn[$f]['form_name'] !== '')
                     ? (string) $ddOwn[$f]['form_name'] : null;
@@ -3895,6 +3948,7 @@ class UniversalValidator extends AbstractExternalModule
     private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
                                 array &$uniqueSeen, array &$unconf)
     {
+        $this->temporalBudget = new ReferenceBudget();
         $ctxAll = self::recordContexts($node);
         if (!$ctxAll) {
             // REDCap returned the record with no event row at all. There is
@@ -3922,11 +3976,29 @@ class UniversalValidator extends AbstractExternalModule
                     if (!isset($resCache[$ck])) {
                         $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
                     }
-                    if ($mode === 'unique') {
-                        self::collectUniqueCandidates($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
+                    $evaluatedRule = $r;
+                    $evaluatedMode = $mode;
+                    if (TemporalRules::extended($r)) {
+                        if ($this->temporalBudget->exhausted()) {
+                            $unconf[$i.'|temporal-budget']=['rule'=>$i+1,'fields'=>$ownFields,'why'=>'Extended record evaluation budget exhausted; this record was not fully checked.'];
+                            break;
+                        }
+                        $this->temporalPid = $pid;
+                        if (!isset($temporalShape)) $temporalShape = TemporalMetadata::load($pid, $this->dataDictionary($pid) ?: []);
+                        $prepared = $this->temporalPrepared($r, $temporalShape, $node, $this->temporalContext($ctx, $hostForm));
+                        if ($prepared['problems']) {
+                            $unconf[$i . '|temporal|' . $ck] = ['rule'=>$i+1, 'fields'=>$ownFields,
+                                'why'=>'Extended validation unavailable at event ' . $ctx['event_id'] . ', instance ' . $ctx['instance'] . ': ' . implode(', ', $prepared['problems'])];
+                            continue;
+                        }
+                        $evaluatedRule = $prepared['rule'];
+                        $evaluatedMode = Branching::modeOfType($evaluatedRule['type'] ?? '');
+                    }
+                    if ($evaluatedMode === 'unique' && !isset($evaluatedRule['uniqueRecordResults'])) {
+                        self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
                         continue;
                     }
-                    $f = $this->ruleFindings($r, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
+                    $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
                     foreach ($f['invalid'] as $v) {
                         // Computed ONCE, and compared with === false. A truthiness
                         // test here would turn a legitimate value of '0' into null.
@@ -4504,7 +4576,7 @@ class UniversalValidator extends AbstractExternalModule
                 $values[strtolower($k)] = $v;
             }
 
-            $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance);
+            $rule = $this->uniqueRuleFor($this->getRules($project_id), $field, $project_id, $record, $event_id, $instrument, $repeat_instance, $isAuthenticated && !$isSurvey);
             if ($rule === null) return ['error' => 'not a checkable field'];
             if (!$isAuthenticated) {
                 // An unauthenticated caller gets an answer ONLY for a rule whose
@@ -4803,12 +4875,27 @@ class UniversalValidator extends AbstractExternalModule
      * branch situation is unresolvable (conflict / unparseable) — the client
      * then fails open and the audit logs the config problem on save.
      */
-    private function uniqueRuleFor(array $rules, $field, $pid, $record, $event_id, $instrument, $repeat_instance)
+    private function uniqueRuleFor(array $rules, $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead = false)
     {
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
             if (empty($r['fields']) || !is_array($r['fields']) || !in_array($field, $r['fields'], true)) continue;
+            // Record-local rules are rendered as advisory assertions. The legacy
+            // no-auth uniqueness endpoint must never reinterpret them as project scope.
+            if (($r['uniqueScope'] ?? null) === 'record') return null;
+            if (TemporalRules::extended($r) && !empty($r['branches'])) {
+                if (!$allowTemporalRead || $record === null || $record === '') return null;
+                $dd=$this->dataDictionary($pid) ?: [];$rights=$this->userFormRights($pid);
+                foreach (TemporalRules::fields($r) as $source) {
+                    if (!isset($dd[$source]['form_name']) || !self::mayReadForm($rights,$dd[$source]['form_name'])) return null;
+                }
+                $shape=TemporalMetadata::load($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
+                $this->temporalPid=$pid;$this->temporalBudget=new ReferenceBudget();
+                $p=$this->temporalPrepared($r,$shape,$node,['event'=>$event_id,'instrument'=>$instrument,'instance'=>$repeat_instance,'values'=>[]]);
+                if ($p['problems'] || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
+                return $p['rule'];
+            }
             if (!isset($r['branches']) || !is_array($r['branches'])) return $r;
 
             $asts = [];

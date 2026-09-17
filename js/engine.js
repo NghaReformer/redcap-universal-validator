@@ -1226,13 +1226,148 @@ function QRID_whenErr(msg){ return { ok: false, error: msg }; }
 
 /* Parse one condition -> {ok:true, ast} | {ok:false, error}. Error strings are
    subject-less predicates so callers can prefix 'the "when" condition '. */
-function QRID_whenParse(expr){
+/* Extended operands are emitted only by the permission-aware server compiler. */
+function QRID_temporalMultiply(a,b){
+  if(!QRID_WHEN_NUM_RE.test(a)||!QRID_WHEN_NUM_RE.test(b)) return null;
+  var negative=(a.charAt(0)==='-')!==(b.charAt(0)==='-'),scale=0;
+  var parts=[a,b].map(function(v){v=v.replace(/^[+-]/,'');var p=v.split('.');scale+=(p[1]||'').length;return v.replace('.','').replace(/^0+/,'');});
+  a=parts[0];b=parts[1];if(a.length+b.length>4096)return null;if(!a||!b)return '0';
+  var out=new Array(a.length+b.length).fill(0);
+  for(var i=a.length-1;i>=0;i--)for(var j=b.length-1;j>=0;j--){var n=out[i+j+1]+Number(a[i])*Number(b[j]);out[i+j+1]=n%10;out[i+j]+=Math.floor(n/10);}
+  var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=v.replace(/0+$/,'').replace(/\.$/,'');}
+  return (negative?'-':'')+v;
+}
+function QRID_temporalSum(values){
+  function add(a,b){
+    var sa=a[0]==='-'?-1:1,sb=b[0]==='-'?-1:1;a=a.replace(/^-/,'').replace(/^0+/,'')||'0';b=b.replace(/^-/,'').replace(/^0+/,'')||'0';
+    var out='',carry=0,i=a.length-1,j=b.length-1,v;
+    if(sa===sb){while(i>=0||j>=0||carry){v=(i>=0?Number(a[i--]):0)+(j>=0?Number(b[j--]):0)+carry;out=String(v%10)+out;carry=Math.floor(v/10);}return (sa<0&&out!=='0'?'-':'')+out;}
+    var cmp=a.length===b.length?(a===b?0:(a<b?-1:1)):(a.length<b.length?-1:1);if(!cmp)return '0';if(cmp<0){v=a;a=b;b=v;sa=sb;}
+    j=b.length-1;for(i=a.length-1;i>=0;i--){v=Number(a[i])-carry-(j>=0?Number(b[j--]):0);carry=v<0?1:0;if(v<0)v+=10;out=String(v)+out;}
+    out=out.replace(/^0+/,'')||'0';return (sa<0&&out!=='0'?'-':'')+out;
+  }
+  var sum='0',scale=0;
+  for(var i=0;i<values.length;i++){
+    if(typeof values[i]==='object')return null;var v=String(values[i]).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,'');if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return null;
+    var neg=v[0]==='-';v=v.replace(/^[+-]/,'');var p=v.split('.'),f=p[1]||'',d=(p[0]+f).replace(/^0+/,'')||'0';if(neg&&d!=='0')d='-'+d;
+    var target=Math.max(scale,f.length);sum=add(sum+'0'.repeat(target-scale),d+'0'.repeat(target-f.length));if(sum.length>4096)return null;scale=target;
+  }
+  var negative=sum[0]==='-';sum=sum.replace(/^-/,'');if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=sum.replace(/0+$/,'').replace(/\.$/,'');}
+  sum=sum.replace(/^0+/,'');if(!sum||sum[0]==='.')sum='0'+sum;return (negative&&sum!=='0'?'-':'')+sum;
+}
+function QRID_temporalDate(value,type,format){
+  if(typeof value!=='string'||!['date','datetime','datetime_seconds'].includes(type)||!['ymd','dmy','mdy'].includes(format))return null;
+  var pattern=format==='ymd'?'(\\d{4})[-/](\\d{2})[-/](\\d{2})':'(\\d{2})[-/](\\d{2})[-/](\\d{4})';
+  if(type!=='date')pattern+=' (\\d{2}):(\\d{2})'+(type==='datetime_seconds'?':(\\d{2})':'');
+  var m=new RegExp('^'+pattern+'$').exec(value);if(!m||m[0].length!==value.length)return null;
+  var y=Number(format==='ymd'?m[1]:m[3]),mo=Number(format==='dmy'?m[2]:(format==='mdy'?m[1]:m[2])),d=Number(format==='ymd'?m[3]:(format==='dmy'?m[1]:m[2]));
+  var h=type==='date'?0:Number(m[4]),mi=type==='date'?0:Number(m[5]),se=type==='datetime_seconds'?Number(m[6]):0;
+  if(y<1||mo<1||mo>12||d<1||h>23||mi>59||se>59)return null;
+  var date=new Date(0);date.setUTCFullYear(y,mo-1,d);date.setUTCHours(h,mi,se,0);if(date.getUTCMonth()!==mo-1||date.getUTCDate()!==d)return null;
+  var canonical=date.toISOString().slice(0,19).replace('T',' ');
+  return {date:type==='date'?'date':'datetime',value:type==='date'?canonical.slice(0,10):canonical,seconds:date.getTime()/1000};
+}
+function QRID_temporalValue(op,read){
+  if(op[0]==='lit')return op[1];if(op[0]==='unknown')return null;if(op[0]==='ref')return read(op[1],op[2]);
+  if(op[0]==='guard'){for(var g=0;g<op[1].length;g++)if(String(read(op[1][g][0],null))!==op[1][g][1])return null;return QRID_temporalValue(op[2],read);}
+  if(op[0]==='date')return QRID_temporalDate(QRID_temporalValue(op[3],read),op[1],op[2]);
+  if(op[0]==='elapsed'){
+    var a=QRID_temporalValue(op[2],read),b=QRID_temporalValue(op[3],read),units={days:86400,hours:3600,minutes:60,seconds:1};
+    if(!a||!b||!a.date||a.date!==b.date||!units[op[1]]||(a.date==='date'&&op[1]!=='days'))return null;
+    return {numerator:String(b.seconds-a.seconds),denominator:String(units[op[1]])};
+  }
+  if(op[0]==='set'||op[0]==='aggregate'){
+    var values=op[2].map(function(x){return QRID_temporalValue(x,read);});if(values.includes(null))return null;
+    if(op[0]==='set')return {set:op[1],values:values};var k=op[1];if(k==='count')return String(values.length);if(k==='exists')return values.length?'1':'0';
+    values=values.filter(function(v){return v!=='';});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
+    if(!values.length)return null;var sum=QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
+    var best=values[0];values.forEach(function(v){if(QRID_whenCompare(k==='minimum'?'<':'>',v,best,true,false))best=v;});return best;
+  }
+  return null;
+}
+function QRID_temporalCompare(op,a,b,blank,cs){
+  if(a===null||b===null)return null;
+  if(op==='identical')return typeof a!=='object'&&typeof b!=='object'?String(a).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,'')===String(b).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,''):null;
+  if((a&&a.set)||(b&&b.set)){
+    if(a.set&&b.set)return null;var left=!!a.set,set=left?a:b;if(!set.values.length)return null;var and=set.set==='all',unknown=false;
+    for(var i=0;i<set.values.length;i++){var r=QRID_temporalCompare(op,left?set.values[i]:a,left?b:set.values[i],blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
+  }
+  if((a&&a.date)||(b&&b.date)){if(!a.date||a.date!==b.date)return null;return QRID_whenCompare(op,a.value,b.value,blank,cs);}
+  if(typeof a==='object'||typeof b==='object'){
+    a=typeof a==='object'?a:{numerator:String(a),denominator:'1'};b=typeof b==='object'?b:{numerator:String(b),denominator:'1'};
+    if(a.numerator===undefined||b.numerator===undefined)return null;
+    var x=QRID_temporalMultiply(a.numerator,b.denominator),y=QRID_temporalMultiply(b.numerator,a.denominator);if(x===null||y===null)return null;a=x;b=y;
+  }
+  return QRID_whenCompare(op,String(a),String(b),blank,cs);
+}
+function QRID_temporalEvaluate(ast,read,blank,cs){
+  if(ast[0]==='temporal')return QRID_temporalEvaluate(ast[1],read,blank,cs);
+  if(ast[0]==='const')return !!ast[1];if(ast[0]==='unknown')return null;
+  if(ast[0]==='not'){var n=QRID_temporalEvaluate(ast[1],read,!blank,cs);return n===null?null:!n;}
+  if(ast[0]==='and'||ast[0]==='or'){
+    var and=ast[0]==='and',unknown=false;for(var i=0;i<ast[1].length;i++){var r=QRID_temporalEvaluate(ast[1][i],read,blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
+  }
+  if(ast[0]==='cmp')return QRID_temporalCompare(ast[1],QRID_temporalValue(ast[2],read),QRID_temporalValue(ast[3],read),blank,cs);
+  return null;
+}
+
+/* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
+function QRID_whenRefKey(ref){
+  if(ref[0] === "binding") return "{" + ref[1] + "}";
+  if(ref[0] !== "qref") throw new Error("Expected an extended reference.");
+  return (ref[3] === null ? "" : "[" + ref[3] + "]") + "[" + ref[1] +
+    (ref[2] === null ? "" : "(" + ref[2] + ")") + "]" + (ref[4] === null ? "" : "[" + ref[4] + "]");
+}
+function QRID_whenQualifiedToken(text){
+  var error = {error: "has an invalid event, instance, field, or binding reference."};
+  var m, g = [], pattern, part;
+  if(text.charAt(0) === "{"){
+    m = /^\{([A-Za-z][A-Za-z0-9_]*)\}/.exec(text);
+    return m ? {node: ["binding", m[1].toLowerCase()], length: m[0].length} : error;
+  }
+  m = /^(?:\[[^\[\]]*\])+/.exec(text);
+  if(!m) return error;
+  pattern = /\[([^\[\]]*)\]/g;
+  while((part = pattern.exec(m[0])) !== null) g.push(part[1]);
+  if(g.length > 3) return error;
+  function isInstance(v){
+    return /^[1-9][0-9]*$/.test(v) || ["current-instance","previous-instance","next-instance","first-instance","last-instance","any-instance","all-instances"].indexOf(v.toLowerCase()) !== -1;
+  }
+  var event = null, instance = null, field = g[0];
+  if(g.length === 2){
+    if(isInstance(g[1])) instance = g[1].toLowerCase();
+    else {event = g[0].toLowerCase(); field = g[1];}
+  } else if(g.length === 3){
+    event = g[0].toLowerCase(); field = g[1]; instance = g[2].toLowerCase();
+    if(!isInstance(instance)) return error;
+  }
+  if(event !== null && !/^[a-z0-9_]+$/.test(event) && ["event-name","previous-event-name","next-event-name","first-event-name","last-event-name"].indexOf(event) === -1) return error;
+  var f = /^([A-Za-z][A-Za-z0-9_]*)(?:\(([A-Za-z0-9._-]+)\))?$/.exec(field);
+  if(!f) return error;
+  var node = ["ref", f[1].toLowerCase(), f[2] === undefined ? null : f[2]];
+  if(g.length > 1) node = ["qref", node[1], node[2], event, instance];
+  return {node: node, length: m[0].length};
+}
+function QRID_whenQualifiedRefs(ast){
+  var out = [], seen = Object.create(null);
+  function walk(n){
+    if(n[0] === "qref" || n[0] === "binding"){
+      var key = QRID_whenRefKey(n); if(!seen[key]){ seen[key] = true; out.push(n); } return;
+    }
+    if(n[0] === "cmp"){walk(n[2]); walk(n[3]);}
+    else if(n[0] === "not") walk(n[1]);
+    else if(n[0] === "and" || n[0] === "or") n[1].forEach(walk);
+  }
+  walk(ast); return out;
+}
+
+function QRID_whenParse(expr, opts){
   if(typeof expr !== "string") return QRID_whenErr("must be a non-empty condition string.");
   var s = expr.replace(/[\t\r\n]/g, " ").replace(/^ +| +$/g, "");
   if(s === "") return QRID_whenErr("must be a non-empty condition string.");
   if(/[^\x20-\x7E]/.test(s)) return QRID_whenErr("must contain printable ASCII only.");
   if(s.length > QRID_WHEN_MAX_LEN) return QRID_whenErr("is limited to " + QRID_WHEN_MAX_LEN + " characters.");
-  var lex = QRID_whenLex(s);
+  var lex = QRID_whenLex(s, opts || {});
   if(lex.error) return QRID_whenErr(lex.error);
   var st = { t: lex.tokens, p: 0 };
   var r = QRID_whenOr(st, 0);
@@ -1242,7 +1377,7 @@ function QRID_whenParse(expr){
   }
   return { ok: true, ast: r.node };
 }
-function QRID_whenLex(s){
+function QRID_whenLex(s, opts){
   var tokens = [];
   var n = s.length;
   var refs = 0;
@@ -1250,6 +1385,13 @@ function QRID_whenLex(s){
   while(i < n){
     var ch = s.charAt(i);
     if(ch === " "){ i++; continue; }
+    if(opts && opts.qualified && (ch === "[" || ch === "{")){
+      var q = QRID_whenQualifiedToken(s.slice(i));
+      if(q.error) return q;
+      tokens.push(q.node); i += q.length;
+      if(++refs > QRID_WHEN_MAX_REFS) return {error: "uses more than " + QRID_WHEN_MAX_REFS + " field references."};
+      continue;
+    }
     if(ch === "["){
       var m = /^\[([A-Za-z][A-Za-z0-9_]*)(\(([A-Za-z0-9._-]+)\))?\]/.exec(s.slice(i));
       if(!m){
@@ -1373,6 +1515,10 @@ function QRID_whenCmp(st){
   st.p++;
   var rhs = QRID_whenOperandTok(st);
   if(rhs.error) return rhs;
+  var sets = [lhs.node, rhs.node].filter(function(n){
+    return n[0] === "qref" && (n[4] === "any-instance" || n[4] === "all-instances");
+  }).length;
+  if(sets > 1) return {error: "allows at most one collection operand per comparison."};
   return { node: ["cmp", op, lhs.node, rhs.node] };
 }
 /* operand := ref | string | number */
@@ -1381,6 +1527,7 @@ function QRID_whenOperandTok(st){
   if(t === null){
     return { error: "ends where a [field] or quoted value was expected." };
   }
+  if(t[0] === "qref" || t[0] === "binding"){ st.p++; return {node: t}; }
   if(t[0] === "ref"){ st.p++; return { node: ["ref", t[1], t[2]] }; }
   if(t[0] === "lit"){ st.p++; return { node: ["lit", t[1]] }; }
   var label = (t[0] === "op" || t[0] === "kw") ? t[1] : t[0];
@@ -1400,6 +1547,7 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
   switch(ast[0]){
+    case "temporal": return QRID_temporalEvaluate(ast, resolve, blank, caseSensitive);
     case "const":
       return !!ast[1];
     case "or":
@@ -1426,13 +1574,18 @@ function QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive){
   return false; /* unreachable for QRID_whenParse-produced ASTs */
 }
 function QRID_whenOperandVal(op, resolve){
+  if(op[0] === "qref" || op[0] === "binding"){
+    if(!resolve.extendedValues) throw new Error("Resolve extended references before browser evaluation.");
+    return resolve(QRID_whenRefKey(op), null, true);
+  }
   return op[0] === "lit" ? op[1] : resolve(op[1], op[2]);
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
 function QRID_whenEvaluate(ast, values, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
-  return QRID_whenEvaluateWith(ast, function(f, code){
+  var resolve = function(f, code, extended){
+    if(extended && (!values || !Object.prototype.hasOwnProperty.call(values, f) || values[f] === null || typeof values[f] === "object")) throw new Error("Unresolved extended reference.");
     var v = (values && Object.prototype.hasOwnProperty.call(values, f)) ? values[f] : null;
     if(code !== null){
       if(v !== null && typeof v === "object"){
@@ -1442,7 +1595,9 @@ function QRID_whenEvaluate(ast, values, blank, caseSensitive){
     }
     if(v === null || v === undefined || typeof v === "object") return "";
     return String(v);
-  }, blank, caseSensitive);
+  };
+  resolve.extendedValues = true;
+  return QRID_whenEvaluateWith(ast, resolve, blank, caseSensitive);
 }
 function QRID_whenTrim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
 /* Numeric compare (exact decimal) iff BOTH trimmed sides match QRID_WHEN_NUM_RE,
@@ -1556,6 +1711,15 @@ function QRID_whenRefs(ast){
   return out;
 }
 function QRID_whenCollectRefs(ast, out, seen){
+  if(ast[0] === "temporal"){
+    function walk(n){
+      if(!Array.isArray(n)) return;
+      if(n[0] === "ref") {var k=n[1]+"|"+(n[2]===null?"":"("+n[2]+")");if(!seen[k]){seen[k]=true;out.push([n[1],n[2]]);}return;}
+      if(n[0] === "guard") n[1].forEach(function(g){walk(["ref",g[0],null]);});
+      n.forEach(function(c){if(Array.isArray(c))walk(c);});
+    }
+    walk(ast[1]); return;
+  }
   switch(ast[0]){
     case "const":
       return;                    /* folded server-side: no field to watch */
@@ -1760,10 +1924,12 @@ var QRID_WHEN = (function(){
       ast = r.ast;
     }
     var refs = QRID_whenRefs(ast);
+    var unknown = false;
     return {
+      unresolved: function(){ return unknown; },
       active: function(){
-        try { return QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); }
-        catch(e){ return false; } /* fail open: never trap a save on a gate bug */
+        try { var verdict = QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); unknown = verdict === null; return verdict === true; }
+        catch(e){ unknown = true; return false; } /* fail open: never trap a save on a gate bug */
       },
       onChange: function(cb){
         for(var i = 0; i < refs.length; i++){
@@ -1976,14 +2142,22 @@ function QRID_configErrorNotice(message){
    tests/branching_php.php and tests/hook_php.php lock server-side. */
 function QRID_buildVariants(cfg, makeVariant){
   var variants = [], elseVariant = null;
+  var unresolved = !!cfg.deferred;
+  function build(input){
+    var v = makeVariant(input);
+    v.unavailable = !!input.deferred && v.deferred === undefined;
+    if(input.deferred || (input.snapshotFields && input.snapshotFields.length)
+        || (cfg.snapshotFields && cfg.snapshotFields.length)) v.blockSave = "off";
+    return v;
+  }
   if(cfg.branches && cfg.branches.length){
     for(var i = 0; i < cfg.branches.length; i++){
-      var v = makeVariant(cfg.branches[i]);
+      var v = build(cfg.branches[i]);
       if(v.when === null) elseVariant = v;
       else variants.push(v);
     }
   } else {
-    variants = [makeVariant(cfg)];
+    variants = [build(cfg)];
   }
   var all = elseVariant ? variants.concat([elseVariant]) : variants;
   var configError = "";
@@ -1995,18 +2169,22 @@ function QRID_buildVariants(cfg, makeVariant){
     if(all[b].blockSave !== "off"){ firstBlock = all[b].blockSave; break; }
   }
   return { variants: variants, elseVariant: elseVariant, all: all,
-           configError: configError, firstBlock: firstBlock };
+           configError: configError, firstBlock: firstBlock, unresolved: unresolved, config: cfg };
 }
 /* The variants whose gate is true right now; the else variant only when no
    conditional one is active. A gate-less variant (legacy rule without "when")
    is always active. */
 function QRID_activeVariants(vs){
+  vs.config.dynamicDeferred = false;
+  if(vs.unresolved && !vs.configError) return [];
   var act = [];
   for(var i = 0; i < vs.variants.length; i++){
     var g = vs.variants[i].gate;
     if(!g || g.active()) act.push(vs.variants[i]);
+    if(g && g.unresolved && g.unresolved()){ vs.config.dynamicDeferred = true; return []; }
   }
   if(!act.length && vs.elseVariant) act = [vs.elseVariant];
+  for(var a = 0; a < act.length; a++) if(act[a].unavailable) return [];
   return act;
 }
 /* More than one branch condition is true at once: a configuration problem,
@@ -2034,8 +2212,8 @@ function QRID_renderConflict(msg, input, act, mode){
    anyway. Returns true when it rendered the notice; false leaves the caller's
    own inert path untouched, so an ordinary inapplicable rule is unchanged. */
 function QRID_renderRuleDeferral(msg, input, cfg, mode){
-  if(QRID_IS_SURVEY || !cfg || !cfg.deferred) return false;
-  var why = cfg.deferredWhy;
+  if(QRID_IS_SURVEY || !cfg || (!cfg.deferred && !cfg.dynamicDeferred)) return false;
+  var why = cfg.dynamicDeferred ? ["Current values cannot resolve this comparison. Save and reload to refresh matched data."] : cfg.deferredWhy;
   if(!why || !why.length) return false;
   QRID_renderDeferralNotice(msg, input, why, mode);
   return true;
@@ -2610,7 +2788,12 @@ function QRIDConstraintInit(QRID_CONFIG){
          server compared it untrimmed and logged a violation (M-04). */
       if(val === null || QRID_whenTrim(val) === ""){ inert(); return; }
       var ok = true;
-      try { ok = V.assertGate.active(); } catch(e){ ok = true; }          /* fail open: a gate bug never traps a save */
+      try { ok = V.assertGate.active(); } catch(e){ ok = true; }
+      if(V.assertGate.unresolved && V.assertGate.unresolved()){
+        inert();
+        if(!QRID_IS_SURVEY) QRID_renderDeferralNotice(msg, input, ["Current values cannot resolve this comparison. Save and reload to refresh matched data."], "c");
+        return;
+      }          /* fail open: a gate bug never traps a save */
       styleMsg(msg, ok);
       QRID_setModeState(input, "c", ok ? "ok" : "bad");
       setGuard(!ok, V.blockSave);
@@ -3133,6 +3316,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     return { configError: configError, gate: GATE, blockSave: BLOCK,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             localAsts: cfg.uniqueRecordAsts || {},
              uniqueWith: (cfg.uniqueWith && cfg.uniqueWith.length) ? cfg.uniqueWith.slice() : [],
              surveys: !!cfg.uniqueSurveys,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
@@ -3149,6 +3333,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(input.getAttribute && input.getAttribute("data-qrid-bound-q")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "q");
+    var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -3182,8 +3367,11 @@ function QRIDUniqueInit(QRID_CONFIG){
         msg.innerHTML = "&#10003; Not used before.";
       }
     }
+    var activeVariant = null;
     function check(){
       var act = QRID_activeVariants(VS);
+      var nextVariant = act.length === 1 ? act[0] : null;
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; lastResp = null; activeVariant = nextVariant; }
       if(!act.length){
         /* inert — unless no branch could be CHOSEN at all (M-01). */
         if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "q")){ setGuard(false); QRID_setModeState(input, "q", null); return; }
@@ -3204,6 +3392,18 @@ function QRIDUniqueInit(QRID_CONFIG){
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
       if(val === ""){ inert(); return; }
+      var localGate = localGates[VS.all.indexOf(V)];
+      if(localGate){
+        var valid = localGate.active();
+        if(localGate.unresolved()){
+          inert();
+          if(!QRID_IS_SURVEY) QRID_renderDeferralNotice(msg,input,["Current values cannot resolve record uniqueness. Save and reload to refresh other entries."],"q");
+        } else {
+          renderResp({used:!valid},V);
+          if(valid) msg.innerHTML = "&#10003; No duplicate among the other saved entries in this record.";
+        }
+        return;
+      }
       var payload = { field: fieldName, values: {} };
       payload.values[fieldName] = val;
       for(var wi = 0; wi < V.uniqueWith.length; wi++){
@@ -3257,6 +3457,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(selfWatch) selfWatch.onChange(function(){ check(); });
     for(var vi = 0; vi < VS.all.length; vi++){
       if(VS.all[vi].gate) VS.all[vi].gate.onChange(function(){ check(); });
+      if(localGates[vi]) localGates[vi].onChange(function(){ check(); });
       for(var wj = 0; wj < VS.all[vi].uniqueWith.length; wj++){
         var ww = QRID_WHEN.gateFor("[" + VS.all[vi].uniqueWith[wj] + "]<>''", null);
         if(ww) ww.onChange(function(){ check(); });
@@ -3890,7 +4091,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                          so the client shows it as advisory and never blocks. */
                       "assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                       /* unique mode (@UVUNIQUE) */
-                      "uniqueWith", "uniqueScope", "uniqueSurveys",
+                      "uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts",
                       /* choices mode (@UVCHOICES) */
                       "choicesShow", "choicesHide", "choicesAll"];
   /* The validation MODE a rule's type belongs to — twin of
@@ -3917,6 +4118,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
        UNDEFINED key falls back to the top-level config. */
     if(rule.branches && rule.branches.length){
       cfg.branches = [];
+      cfg.deferred = !!rule.deferred;
+      cfg.deferredWhy = rule.deferredWhy;
+      cfg.snapshotFields = rule.snapshotFields;
       for(i = 0; i < rule.branches.length; i++){
         var b = rule.branches[i], bc = {};
         for(var j = 0; j < DEFAULT_KEYS.length; j++){
@@ -4020,6 +4224,7 @@ window.INSPIREUniversalValidator = {
   configErrorNotice: QRID_configErrorNotice, /* exercised by tests/config_notice_js.cjs */
   whenLogic: {                               /* "when" twins, locked by tests/when_js.cjs */
     parse: QRID_whenParse,
+    refKey: QRID_whenRefKey, qualifiedRefs: QRID_whenQualifiedRefs,
     evaluate: QRID_whenEvaluate,
     referencedFields: QRID_whenRefs,
     /* The blank-operand polarity (CRIT-01), so the fixture can drive BOTH

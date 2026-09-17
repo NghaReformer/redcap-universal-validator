@@ -141,7 +141,7 @@ class Logic
      *   operand: ['ref', field, codeOrNull] | ['lit', string]
      * parse() never produces a 'const' node — fold() does (see there).
      */
-    public static function parse($expr)
+    public static function parse($expr, array $opts = [])
     {
         if (!is_string($expr)) return self::err('must be a non-empty condition string.');
         $s = strtr($expr, "\t\r\n", '   ');
@@ -153,7 +153,7 @@ class Logic
         if (strlen($s) > self::MAX_EXPR_LEN) {
             return self::err('is limited to ' . self::MAX_EXPR_LEN . ' characters.');
         }
-        $lex = self::lex($s);
+        $lex = self::lex($s, $opts);
         if (isset($lex['error'])) return self::err($lex['error']);
         $st = ['t' => $lex['tokens'], 'p' => 0];
         $r = self::parseOr($st, 0);
@@ -260,6 +260,7 @@ class Logic
      */
     public static function fold(array $ast, array $values, array $liveFields, array $disclosable = [], &$frozen = false, array $unresolved = [], array &$blocked = [], array &$snapshot = [], $blank = self::BLANK_PASSES, $caseSensitive = false)
     {
+        if (self::qualifiedRefs($ast)) throw new \LogicException('Resolve extended references before folding.');
         switch ($ast[0]) {
             case 'or':
             case 'and':
@@ -353,7 +354,9 @@ class Logic
     public static function checkRefs(array $ast, array $types, array $choicesByField)
     {
         $errors = [];
-        foreach (self::referencedFields($ast) as $ref) {
+        $refs = self::referencedFields($ast);
+        foreach (self::qualifiedRefs($ast) as $q) if ($q[0] === 'qref') $refs[] = [$q[1], $q[2]];
+        foreach ($refs as $ref) {
             $f = $ref[0];
             $code = $ref[1];
             if (!array_key_exists($f, $types)) {
@@ -401,6 +404,61 @@ class Logic
         return $codes;
     }
 
+    /** Stable, collision-free key. Qualified checkbox values are scalar at this seam. */
+    public static function refKey(array $ref)
+    {
+        if ($ref[0] === 'binding') return '{' . $ref[1] . '}';
+        if ($ref[0] !== 'qref') throw new \InvalidArgumentException('Expected an extended reference.');
+        return ($ref[3] === null ? '' : '[' . $ref[3] . ']') . '[' . $ref[1]
+            . ($ref[2] === null ? '' : '(' . $ref[2] . ')') . ']'
+            . ($ref[4] === null ? '' : '[' . $ref[4] . ']');
+    }
+
+    /** Extended operands only; plain reference collection remains unchanged. */
+    public static function qualifiedRefs(array $ast)
+    {
+        $out = [];
+        if ($ast[0] === 'qref' || $ast[0] === 'binding') return [$ast];
+        if ($ast[0] === 'cmp') $children = [$ast[2], $ast[3]];
+        elseif ($ast[0] === 'not') $children = [$ast[1]];
+        elseif ($ast[0] === 'and' || $ast[0] === 'or') $children = $ast[1];
+        else return [];
+        foreach ($children as $child) foreach (self::qualifiedRefs($child) as $ref) $out[self::refKey($ref)] = $ref;
+        return array_values($out);
+    }
+
+    /** Parse a complete reference token, not a substring substitution in quoted text. */
+    private static function qualifiedToken($text)
+    {
+        $error = ['error' => 'has an invalid event, instance, field, or binding reference.'];
+        if ($text[0] === '{') {
+            if (!preg_match('/^\{([A-Za-z][A-Za-z0-9_]*)\}/', $text, $m)) return $error;
+            return ['node' => ['binding', strtolower($m[1])], 'length' => strlen($m[0])];
+        }
+        if (!preg_match('/^(?:\[[^\[\]]*\])+/', $text, $m)) return $error;
+        preg_match_all('/\[([^\[\]]*)\]/', $m[0], $groups);
+        $g = $groups[1]; $n = count($g);
+        if ($n > 3) return $error;
+        $isInstance = function ($v) {
+            return preg_match('/^[1-9][0-9]*$/', $v) || in_array(strtolower($v),
+                ['current-instance','previous-instance','next-instance','first-instance','last-instance','any-instance','all-instances'], true);
+        };
+        $event = null; $instance = null; $field = $g[0];
+        if ($n === 2) {
+            if ($isInstance($g[1])) $instance = strtolower($g[1]);
+            else { $event = strtolower($g[0]); $field = $g[1]; }
+        } elseif ($n === 3) {
+            $event = strtolower($g[0]); $field = $g[1]; $instance = strtolower($g[2]);
+            if (!$isInstance($instance)) return $error;
+        }
+        if ($event !== null && !preg_match('/^[a-z0-9_]+$/', $event)
+            && !in_array($event, ['event-name','previous-event-name','next-event-name','first-event-name','last-event-name'], true)) return $error;
+        if (!preg_match('/^([A-Za-z][A-Za-z0-9_]*)(?:\(([A-Za-z0-9._-]+)\))?$/', $field, $f)) return $error;
+        $node = ['ref', strtolower($f[1]), isset($f[2]) ? $f[2] : null];
+        if ($n > 1) $node = ['qref', $node[1], $node[2], $event, $instance];
+        return ['node' => $node, 'length' => strlen($m[0])];
+    }
+
     // -- internals ------------------------------------------------------------
 
     private static function err($msg)
@@ -413,7 +471,7 @@ class Logic
      * ['error'=>string]. Tokens: ['ref', field, codeOrNull] | ['lit', string]
      * | ['op', op] | ['kw', and|or|not] | ['('] | [')'].
      */
-    private static function lex($s)
+    private static function lex($s, array $opts = [])
     {
         $tokens = [];
         $n = strlen($s);
@@ -422,6 +480,14 @@ class Logic
         while ($i < $n) {
             $ch = $s[$i];
             if ($ch === ' ') { $i++; continue; }
+            if (!empty($opts['qualified']) && ($ch === '[' || $ch === '{')) {
+                $q = self::qualifiedToken(substr($s, $i));
+                if (isset($q['error'])) return $q;
+                $tokens[] = $q['node'];
+                $i += $q['length'];
+                if (++$refs > self::MAX_REFS) return ['error' => 'uses more than ' . self::MAX_REFS . ' field references.'];
+                continue;
+            }
             if ($ch === '[') {
                 if (!preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)(\(([A-Za-z0-9._-]+)\))?\]/', substr($s, $i), $m)) {
                     return ['error' => 'may only use plain [field] or [field(code)] references — '
@@ -556,6 +622,11 @@ class Logic
         $st['p']++;
         $rhs = self::parseOperand($st);
         if (isset($rhs['error'])) return $rhs;
+        $sets = 0;
+        foreach ([$lhs['node'], $rhs['node']] as $operand) {
+            if ($operand[0] === 'qref' && in_array($operand[4], ['any-instance','all-instances'], true)) $sets++;
+        }
+        if ($sets > 1) return ['error' => 'allows at most one collection operand per comparison.'];
         return ['node' => ['cmp', $op, $lhs['node'], $rhs['node']]];
     }
 
@@ -566,6 +637,7 @@ class Logic
         if ($t === null) {
             return ['error' => 'ends where a [field] or quoted value was expected.'];
         }
+        if ($t[0] === 'qref' || $t[0] === 'binding') { $st['p']++; return ['node' => $t]; }
         if ($t[0] === 'ref') { $st['p']++; return ['node' => ['ref', $t[1], $t[2]]]; }
         if ($t[0] === 'lit') { $st['p']++; return ['node' => ['lit', $t[1]]]; }
         $label = ($t[0] === 'op' || $t[0] === 'kw') ? $t[1] : $t[0];
@@ -587,6 +659,13 @@ class Logic
     private static function operandValue(array $op, array $values)
     {
         if ($op[0] === 'lit') return $op[1];
+        if ($op[0] === 'qref' || $op[0] === 'binding') {
+            $key = self::refKey($op);
+            if (!array_key_exists($key, $values) || !is_scalar($values[$key])) {
+                throw new \UnexpectedValueException('Unresolved extended reference.');
+            }
+            return (string) $values[$key];
+        }
         $f = $op[1];
         $code = $op[2];
         $v = isset($values[$f]) ? $values[$f] : null;

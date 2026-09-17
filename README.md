@@ -1,5 +1,7 @@
 # Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
+**Opt-in event and repeat validation:** see [Event and instance references](docs/EVENT-INSTANCE-REFERENCES.md) for qualified references, matching, collections, dates, record-local uniqueness, activation and rollback.
+
 Live, as-you-type validation for any REDCap field with a structure. A mistyped
 participant ID costs hours of reconciliation later; this module catches it while
 the person who typed it is still looking at the field.

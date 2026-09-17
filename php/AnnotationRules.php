@@ -276,12 +276,12 @@ class AnnotationRules
      * untagged field, otherwise a list of fragments (each [] | ['error'=>...]
      * | engine-key config), one per tag, in annotation order.
      */
-    public static function parseFieldAll($annotation)
+    public static function parseFieldAll($annotation, array $opts = [])
     {
         $tags = self::extractTags($annotation);
         if (!$tags) return null;
         $out = [];
-        foreach ($tags as $val) $out[] = self::parseValue($val);
+        foreach ($tags as $val) $out[] = self::parseValue($val, $opts);
         return $out;
     }
 
@@ -294,18 +294,18 @@ class AnnotationRules
      * is the multi-mode superset of parseFieldAll (which stays @UVALIDATE-only
      * for back-compat).
      */
-    public static function parseAllTags($annotation)
+    public static function parseAllTags($annotation, array $opts = [])
     {
         $any = false;
         $out = [];
         foreach (self::TAGS as $tag => $mode) {
             foreach (self::extractTagsFor($annotation, $tag) as $val) {
                 $any = true;
-                if ($mode === 'constraint')    $frag = self::parseAssertValue($val);
-                elseif ($mode === 'required')  $frag = self::parseRequiredValue($val);
-                elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val);
-                elseif ($mode === 'choices')   $frag = self::parseChoicesValue($val);
-                else                           $frag = self::parseValue($val);
+                if ($mode === 'constraint')    $frag = self::parseAssertValue($val, $opts);
+                elseif ($mode === 'required')  $frag = self::parseRequiredValue($val, $opts);
+                elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val, $opts);
+                elseif ($mode === 'choices')   $frag = self::parseChoicesValue($val, $opts);
+                else                           $frag = self::parseValue($val, $opts);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
@@ -325,22 +325,22 @@ class AnnotationRules
      * when the designer decides the trade-off is acceptable (the server
      * answers surveys with a boolean only, never a record id).
      */
-    private static function parseUniqueValue($val)
+    private static function parseUniqueValue($val, array $opts = [])
     {
         $val = trim($val);
         if ($val === '') {
             $out = ['type' => 'unique'];
-            $errs = self::checkFragment($out);
+            $errs = self::checkFragment($out, $opts);
             return $errs ? ['error' => implode(' ', $errs)] : $out;
         }
         if ($val[0] !== '{') {
             $scope = strtolower($val);
-            if (!in_array($scope, self::UNIQUE_SCOPES, true)) {
+            if (!in_array($scope, !empty($opts['qualified']) ? array_merge(self::UNIQUE_SCOPES, ['record']) : self::UNIQUE_SCOPES, true)) {
                 return ['error' => self::TAG_UNIQUE . '=' . $val . ' is not a scope — use '
                     . implode(', ', self::UNIQUE_SCOPES) . ', or the JSON form for other options.'];
             }
             $out = ['type' => 'unique', 'uniqueScope' => $scope];
-            $errs = self::checkFragment($out);
+            $errs = self::checkFragment($out, $opts);
             return $errs ? ['error' => implode(' ', $errs)] : $out;
         }
         $cfg = json_decode($val, true);
@@ -348,7 +348,7 @@ class AnnotationRules
             return ['error' => self::TAG_UNIQUE . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
+        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'references'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_UNIQUE . ' option(s): ' . implode(', ', $unknown)
@@ -378,7 +378,7 @@ class AnnotationRules
             }
         }
         self::takeCaseSensitive($cfg, $out);
-        $errs = self::checkFragment($out);
+        $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
@@ -395,7 +395,7 @@ class AnnotationRules
      * choice that becomes hidden is NEVER cleared — it stays visible, flagged
      * invalid, and blockSave decides whether the save is challenged.
      */
-    private static function parseChoicesValue($val)
+    private static function parseChoicesValue($val, array $opts = [])
     {
         $val = trim($val);
         if ($val === '' || $val[0] !== '{') {
@@ -407,7 +407,7 @@ class AnnotationRules
             return ['error' => self::TAG_CHOICES . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['when', 'show', 'hide', 'message', 'blockSave', 'caseSensitive'];
+        $allowed = ['when', 'show', 'hide', 'message', 'blockSave', 'caseSensitive', 'references'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_CHOICES . ' option(s): ' . implode(', ', $unknown)
@@ -438,7 +438,7 @@ class AnnotationRules
             }
         }
         self::takeCaseSensitive($cfg, $out);
-        $errs = self::checkFragment($out);
+        $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
@@ -452,17 +452,17 @@ class AnnotationRules
      * notice (required mode never judges the VALUE — pair with @UVALIDATE or
      * @UVASSERT for that; the modes compose).
      */
-    private static function parseRequiredValue($val)
+    private static function parseRequiredValue($val, array $opts = [])
     {
         $val = trim($val);
         if ($val === '') {
             $out = ['type' => 'required'];
-            $errs = self::checkFragment($out);
+            $errs = self::checkFragment($out, $opts);
             return $errs ? ['error' => implode(' ', $errs)] : $out;
         }
         if ($val[0] !== '{') {
             $out = ['type' => 'required', 'when' => $val];
-            $errs = self::checkFragment($out);
+            $errs = self::checkFragment($out, $opts);
             return $errs ? ['error' => implode(' ', $errs)] : $out;
         }
         $cfg = json_decode($val, true);
@@ -471,7 +471,7 @@ class AnnotationRules
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
         $strings = ['when', 'message', 'blockSave'];
-        $allowed = array_merge($strings, ['caseSensitive']);
+        $allowed = array_merge($strings, ['caseSensitive', 'references']);
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_REQUIRED . ' option(s): ' . implode(', ', $unknown)
@@ -485,7 +485,7 @@ class AnnotationRules
             }
         }
         self::takeCaseSensitive($cfg, $out);
-        $errs = self::checkFragment($out);
+        $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
@@ -497,7 +497,7 @@ class AnnotationRules
      * @UVREQUIRED's job). Text compares case-insensitively ('Yes' = 'yes')
      * unless "caseSensitive" is true, in the "assert" and the "when" alike.
      */
-    private static function parseAssertValue($val)
+    private static function parseAssertValue($val, array $opts = [])
     {
         $val = trim($val);
         if ($val === '') {
@@ -506,7 +506,7 @@ class AnnotationRules
         }
         if ($val[0] !== '{') {
             $out = ['type' => 'constraint', 'assert' => $val];
-            $errs = self::checkFragment($out);
+            $errs = self::checkFragment($out, $opts);
             return $errs ? ['error' => implode(' ', $errs)] : $out;
         }
         $cfg = json_decode($val, true);
@@ -515,7 +515,7 @@ class AnnotationRules
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
         $strings = ['assert', 'message', 'blockSave', 'when'];
-        $allowed = array_merge($strings, ['caseSensitive']);
+        $allowed = array_merge($strings, ['caseSensitive', 'references']);
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_ASSERT . ' option(s): ' . implode(', ', $unknown)
@@ -529,12 +529,12 @@ class AnnotationRules
             }
         }
         self::takeCaseSensitive($cfg, $out);
-        $errs = self::checkFragment($out);
+        $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
     /** Parse one raw tag value into a fragment (see parseField). */
-    private static function parseValue($val)
+    private static function parseValue($val, array $opts = [])
     {
         $val = trim($val);
         if ($val === '') return [];
@@ -561,7 +561,7 @@ class AnnotationRules
             return ['error' => 'unknown ' . self::TAG . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', self::JSON_KEYS) . '.'];
         }
-        return self::validateConfig($cfg);
+        return self::validateConfig($cfg, $opts);
     }
 
     /**
@@ -570,7 +570,7 @@ class AnnotationRules
      * known key) live here; ALL semantic rule validation is delegated to
      * checkFragment(), the one validator shared with the settings dialog.
      */
-    private static function validateConfig(array $cfg)
+    private static function validateConfig(array $cfg, array $opts = [])
     {
         $out = [];
 
@@ -638,7 +638,7 @@ class AnnotationRules
                 $out[$k] = (int) $cfg[$k];
             }
         }
-        $errors = self::checkFragment($out);
+        $errors = self::checkFragment($out, $opts);
         if ($errors) return ['error' => implode(' ', $errors)];
         return $out;
     }
@@ -650,8 +650,16 @@ class AnnotationRules
      * one channel accepts can never be one another channel (or the runtime
      * pooled parser) rejects. Returns a list of error strings, [] when sound.
      */
-    public static function checkFragment(array $frag)
+    public static function checkFragment(array $frag, array $opts = [])
     {
+        if (isset($frag['references']) || ($frag['uniqueScope'] ?? null) === 'record') {
+            if (empty($opts['qualified'])) return ['Enable event and instance references in project settings first.'];
+        }
+        if (!empty($opts['qualified'])) {
+            require_once __DIR__ . '/TemporalRules.php';
+            $bindingErrors = TemporalRules::validate($frag);
+            if ($bindingErrors) return $bindingErrors;
+        }
         $errors = [];
         $type = isset($frag['type']) && $frag['type'] !== '' ? $frag['type'] : 'single';
 
@@ -673,13 +681,13 @@ class AnnotationRules
         // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
         // It shares "when"/"blockSave" with check rules but none of the
         // check-character/pattern/pooled machinery, so it validates separately.
-        if ($type === 'constraint') return array_merge(self::checkConstraint($frag), $caseErrors);
+        if ($type === 'constraint') return array_merge(self::checkConstraint($frag, $opts), $caseErrors);
         // Required mode (@UVREQUIRED): blank-while-required is the only test.
-        if ($type === 'required') return array_merge(self::checkRequired($frag), $caseErrors);
+        if ($type === 'required') return array_merge(self::checkRequired($frag, $opts), $caseErrors);
         // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
-        if ($type === 'unique') return array_merge(self::checkUnique($frag), $caseErrors);
+        if ($type === 'unique') return array_merge(self::checkUnique($frag, $opts), $caseErrors);
         // Choices mode (@UVCHOICES): dynamic show/hide of individual options.
-        if ($type === 'choices') return array_merge(self::checkChoices($frag), $caseErrors);
+        if ($type === 'choices') return array_merge(self::checkChoices($frag, $opts), $caseErrors);
 
         $errors = $caseErrors;
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
@@ -707,7 +715,7 @@ class AnnotationRules
             if (!is_string($frag['when'])) {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
-                $w = Logic::parse($frag['when']);
+                $w = Logic::parse($frag['when'], $opts);
                 if (empty($w['ok'])) {
                     $errors[] = 'the "when" condition ' . $w['error'];
                 }
@@ -1203,7 +1211,7 @@ class AnnotationRules
      * a message is strongly recommended (only the designer can word what an
      * arbitrary relationship means).
      */
-    public static function checkConstraint(array $frag)
+    public static function checkConstraint(array $frag, array $opts = [])
     {
         $errors = [];
         $assert = isset($frag['assert']) ? $frag['assert'] : null;
@@ -1211,14 +1219,14 @@ class AnnotationRules
             $errors[] = self::TAG_ASSERT . ' needs a non-empty "assert" condition, '
                 . 'e.g. "[end_date]>=[start_date]".';
         } else {
-            $a = Logic::parse($assert);
+            $a = Logic::parse($assert, $opts);
             if (empty($a['ok'])) $errors[] = 'the "assert" condition ' . $a['error'];
         }
         if (isset($frag['when'])) {
             if (!is_string($frag['when'])) {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
-                $w = Logic::parse($frag['when']);
+                $w = Logic::parse($frag['when'], $opts);
                 if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
             }
         }
@@ -1241,6 +1249,7 @@ class AnnotationRules
      */
     private static function takeCaseSensitive(array $cfg, array &$out)
     {
+        if (array_key_exists('references', $cfg)) $out['references'] = $cfg['references'];
         if (array_key_exists('caseSensitive', $cfg) && $cfg['caseSensitive'] !== false) {
             $out['caseSensitive'] = $cfg['caseSensitive'];
         }
@@ -1262,14 +1271,14 @@ class AnnotationRules
      * wording, optional blockSave. There is no condition to require — the
      * bare tag is complete.
      */
-    public static function checkRequired(array $frag)
+    public static function checkRequired(array $frag, array $opts = [])
     {
         $errors = [];
         if (isset($frag['when'])) {
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
-                $w = Logic::parse($frag['when']);
+                $w = Logic::parse($frag['when'], $opts);
                 if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
             }
         }
@@ -1290,11 +1299,11 @@ class AnnotationRules
      * exist (and are scalar) is checked in the channel glue with the data
      * dictionary in hand.
      */
-    public static function checkUnique(array $frag)
+    public static function checkUnique(array $frag, array $opts = [])
     {
         $errors = [];
         if (isset($frag['uniqueScope'])
-            && !in_array($frag['uniqueScope'], self::UNIQUE_SCOPES, true)) {
+            && !in_array($frag['uniqueScope'], !empty($opts['qualified']) ? array_merge(self::UNIQUE_SCOPES, ['record']) : self::UNIQUE_SCOPES, true)) {
             $errors[] = '"scope" must be ' . implode(', ', self::UNIQUE_SCOPES) . '.';
         }
         if (isset($frag['uniqueWith'])) {
@@ -1323,7 +1332,7 @@ class AnnotationRules
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
-                $w = Logic::parse($frag['when']);
+                $w = Logic::parse($frag['when'], $opts);
                 if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
             }
         }
@@ -1344,7 +1353,7 @@ class AnnotationRules
      * field's own choice list is checked in the channel glue with the data
      * dictionary in hand (getAnnotationRules), which also attaches choicesAll.
      */
-    public static function checkChoices(array $frag)
+    public static function checkChoices(array $frag, array $opts = [])
     {
         $errors = [];
         $hasShow = isset($frag['choicesShow']);
@@ -1379,7 +1388,7 @@ class AnnotationRules
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
                 $errors[] = 'the "when" condition must be a non-empty condition string.';
             } else {
-                $w = Logic::parse($frag['when']);
+                $w = Logic::parse($frag['when'], $opts);
                 if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
             }
         }

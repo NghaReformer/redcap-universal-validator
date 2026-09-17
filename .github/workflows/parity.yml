@@ -29,6 +29,11 @@ jobs:
         run: node tests/pooled_dom_js.cjs
       - name: JS risky-pattern heuristic
         run: node tests/risky_js.cjs
+      - name: Qualified reference parser and deferral contracts
+        run: |
+          node tests/qualified_js.cjs
+          node tests/temporal_logic_js.cjs
+          node tests/deferral_dom_js.cjs
       - name: JS "when" condition evaluator vs fixture
         run: node tests/when_js.cjs
       - name: JS exact-decimal comparator vs fixture (2^53, 400-digit, long fractions)
@@ -84,11 +89,28 @@ jobs:
         with:
           php-version: '${{ matrix.php }}'
           extensions: mbstring, ctype
+      - name: Qualified resolution, matching, exact aggregates and typed dates
+        run: |
+          php tests/qualified_php.php
+          php tests/binding_php.php
+          php tests/temporal_value_php.php
+          php tests/temporal_logic_php.php
+          php tests/temporal_integration_php.php
+          python3 tests/temporal_mutations.py
       - name: PHP syntax check
         run: |
           php -l php/CheckCharacter.php
           php -l php/AnnotationRules.php
           php -l php/Logic.php
+          php -l php/ReferenceBudget.php
+          php -l php/ProjectShape.php
+          php -l php/AddressResolver.php
+          php -l php/ExactDecimal.php
+          php -l php/TemporalValue.php
+          php -l php/TemporalLogic.php
+          php -l php/TemporalRules.php
+          php -l php/TemporalMetadata.php
+          php -l php/TemporalIntegration.php
           php -l php/Branching.php
           php -l php/ScanPageView.php
           php -l php/FindingSink.php
@@ -200,7 +222,7 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
           for d in .github reports tools; do

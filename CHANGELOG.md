@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — event and repeating-instance validation
+
+- Add a default-off project dialect for explicit/relative events and instances, shared-key bindings, collections, exact aggregates, typed dates/elapsed time, and within-record uniqueness.
+- Integrate all rule modes and branches with advisory browser feedback, dependent post-save auditing, direct scans, and durable scans. Preserve live current members, protected source withholding, and unresolved branch deferral.
+- Fingerprint event/repeat metadata and dialect changes before continuing a durable scan; report audit limits and unavailable sources explicitly.
+- Fix browser deferral across validator factories and discard uniqueness responses when their active branch changes.
+- Add shared PHP/JavaScript fixtures, permission and integration regressions, and an [activation/rollback guide](docs/EVENT-INSTANCE-REFERENCES.md). Real-REDCap deployment acceptance remains required.
+
 ## 2.0.0 - the tests that said it could
 
 2.0.0 is the scan-remediation line merged with 1.10.0 and 1.11.0, which were

@@ -1,0 +1,74 @@
+{
+  "valid": [
+    {
+      "expr": "[baseline_arm_1][age]>=[age]",
+      "values": {
+        "[baseline_arm_1][age]": "21",
+        "age": "20"
+      },
+      "expect": true
+    },
+    {
+      "expr": "[visit_arm_2][cb(01)][2]='1'",
+      "values": {
+        "[visit_arm_2][cb(01)][2]": "1"
+      },
+      "expect": true
+    },
+    {
+      "expr": "[weight][previous-instance]<[weight]",
+      "values": {
+        "[weight][previous-instance]": "50",
+        "weight": "51"
+      },
+      "expect": true
+    },
+    {
+      "expr": "[previous-event-name][weight]='2'",
+      "values": {
+        "[previous-event-name][weight]": "2"
+      },
+      "expect": true
+    },
+    {
+      "expr": "[1_visit_arm_1][weight]='2'",
+      "values": {
+        "[1_visit_arm_1][weight]": "2"
+      },
+      "expect": true
+    },
+    {
+      "expr": "{matched_date}=[date]",
+      "values": {
+        "{matched_date}": "2026-09-16",
+        "date": "2026-09-16"
+      },
+      "expect": true
+    },
+    {
+      "expr": "'[event][field]'='[event][field]'",
+      "values": {},
+      "expect": true
+    },
+    {
+      "expr": "[w][last-instance]<>[w][first-instance]",
+      "values": {
+        "[w][last-instance]": "9007199254740993",
+        "[w][first-instance]": "9007199254740992"
+      },
+      "expect": true
+    }
+  ],
+  "invalid": [
+    "[f][0]='x'",
+    "[f][-1]='x'",
+    "[f][new-instance]='x'",
+    "[event-name]='x'",
+    "[e][f][2][3]='x'",
+    "[e(1)][f]='x'",
+    "{a-b}='x'",
+    "[f] [2]='x'",
+    "[][f]='x'",
+    "[a][any-instance]=[b][all-instances]"
+  ]
+}

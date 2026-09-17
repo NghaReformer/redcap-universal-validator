@@ -323,5 +323,21 @@ const JSMO = 'EMStub.UV';
   check('compose: same-value recheck hits the cache (no duplicate request)', stub.calls.length === before);
 }
 
+// A response from a branch that is no longer active must never restore its guard.
+{
+  let resolve;
+  const stub={calls:[]};
+  stub.obj={ajax(action,payload){stub.calls.push({action,payload});return {then(fn){resolve=fn;}};}};
+  const pid=makeEl('input');pid.name='pid';pid.value='ABC';
+  const key=makeEl('input');key.name='key';key.value='A';
+  const tree=['temporal',['cmp','=', ['guard',[['key','A']],['lit','1']],['lit','1']]];
+  const env=boot([pid,key],{jsmoName:JSMO,rules:[{type:'unique',fields:['pid'],when:"[key]='A'",whenAst:tree,blockSave:'hard'}]},stub);
+  check('known extended uniqueness sends request',stub.calls.length===1);
+  key.value='B';key.fire('change');
+  resolve({used:true,record:'7'});
+  const ev=submitEv();env.doc.fire('submit',ev);
+  check('unknown uniqueness discards late response',!ev._prevented&&pid.getAttribute('aria-invalid')!=='true');
+}
+
 console.log(`unique_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

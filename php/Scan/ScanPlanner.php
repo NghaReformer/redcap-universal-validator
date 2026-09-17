@@ -140,40 +140,9 @@ final class ScanPlanner
             return self::no('this project has no validation rules, so there is nothing to scan for');
         }
 
-        // Names and revisions first: the fingerprint is computed OVER them, so a
-        // rule that cannot be named is a rule the fingerprint cannot cover.
         $ids = self::identifyAll($rules, isset($req['settingsCount']) ? $req['settingsCount'] : null);
-        $ruleSpec = [];
-        foreach ($ids as $id) {
-            $ruleSpec[] = ['id' => $id['source_id'], 'rev' => $id['revision'],
-                           'origin' => $id['origin']];
-        }
-        // A SET, NOT A SEQUENCE, and the ordinal is gone from it entirely.
-        //
-        // canonical() preserves list order, so folding the position in meant
-        // that merely REORDERING the rules - nothing added, removed or edited -
-        // changed the fingerprint, and fingerprintMatches() then declared the
-        // configuration had moved underneath the run. Annotation rule order
-        // follows data-dictionary field order, so moving a field in the Online
-        // Designer invalidated every resumable run on the project. identify()'s
-        // own docblock says moving a field must not rename the rule written on
-        // it; the run-level guard was contradicting the identity layer.
-        usort($ruleSpec, function ($a, $b) {
-            $c = strcmp($a['id'], $b['id']);
-            return $c !== 0 ? $c : strcmp($a['rev'], $b['rev']);
-        });
         try {
-            $fp = self::fingerprint([
-                'engine'    => isset($req['engine']) ? $req['engine'] : '',
-                'rules'     => $ruleSpec,
-                'ownership' => isset($req['ownership']) ? $req['ownership'] : [],
-                'structure' => isset($req['structure']) ? $req['structure'] : [],
-                'choices'   => isset($req['choices']) ? $req['choices'] : [],
-                'gapPolicy' => isset($req['policy']['collectionGaps'])
-                               ? $req['policy']['collectionGaps'] : 'separate',
-                'valueMode' => isset($req['policy']['valueMode'])
-                               ? $req['policy']['valueMode'] : 'locations',
-            ]);
+            $fp = self::requestFingerprint($req);
         } catch (\InvalidArgumentException $e) {
             // A fingerprint that could not be built is not a fingerprint that
             // can be skipped: without one, a resumed run cannot tell whether the
@@ -595,6 +564,26 @@ final class ScanPlanner
             $out[$k] = self::identify($r, $origin, $n);
         }
         return $out;
+    }
+
+    /** Recompute precisely the semantic inputs used when the run was planned. */
+    public static function requestFingerprint(array $req)
+    {
+        $ids = self::identifyAll($req['rules'] ?? [], $req['settingsCount'] ?? null);
+        $ruleSpec = [];
+        foreach ($ids as $id) $ruleSpec[] = ['id'=>$id['source_id'], 'rev'=>$id['revision'], 'origin'=>$id['origin']];
+        usort($ruleSpec, function ($a,$b) { $c=strcmp($a['id'],$b['id']); return $c!==0?$c:strcmp($a['rev'],$b['rev']); });
+        return self::fingerprint([
+            'engine'    => isset($req['engine']) ? $req['engine'] : '',
+            'rules'     => $ruleSpec,
+            'ownership' => isset($req['ownership']) ? $req['ownership'] : [],
+            'structure' => isset($req['structure']) ? $req['structure'] : [],
+            'choices'   => isset($req['choices']) ? $req['choices'] : [],
+            'gapPolicy' => isset($req['policy']['collectionGaps'])
+                           ? $req['policy']['collectionGaps'] : 'separate',
+            'valueMode' => isset($req['policy']['valueMode'])
+                           ? $req['policy']['valueMode'] : 'locations',
+        ]);
     }
 
     // -- fingerprint ---------------------------------------------------------

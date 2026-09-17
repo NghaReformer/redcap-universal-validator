@@ -195,6 +195,7 @@ final class ScanService
             'dagFilter' => $dag,
             'rules'     => $ctx['rules'],
             'ownership' => $ctx['ownership'],
+            'structure' => $ctx['structure'] ?? [],
             'policy'    => $policy,
             'createdBy' => (string) $this->username(),
             'engine'    => $this->engineVersion(),
@@ -252,6 +253,13 @@ final class ScanService
 
         $policy = $ent['policy'];
         $ctx = $ent['ctx'];
+        if (!empty($ctx['verifyFingerprint'])) {
+            $current = ScanPlanner::requestFingerprint(['rules'=>$ctx['rules'], 'ownership'=>$ctx['ownership'],
+                'structure'=>$ctx['structure'] ?? [], 'policy'=>$policy, 'engine'=>$this->engineVersion()]);
+            if (!ScanPlanner::fingerprintMatches($run['fingerprint'], $current)) {
+                return ['ok'=>false, 'why'=>'Validation configuration or project structure changed. Stop this scan and start a new scan.'];
+            }
+        }
         $worker = new ScanWorker($store, [
             'slots'     => new WorkerSlots($this->db),
             'slotTtl'   => self::SLOT_TTL,
