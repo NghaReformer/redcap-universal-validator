@@ -4,6 +4,8 @@ Enable **Enable event and instance references** in the project's module settings
 
 Extended browser checks are advisory. Exact current-page operands remain live; other entries are snapshots taken when the page opens. Save and reload after changing a matching key or another entry. The module never changes saved data.
 
+For worked action tags across all five modes, see the [event/repeat examples](action_tag_validation_examples.md#validation-across-events-and-repeating-instruments). The same examples guide includes [mixed ID formats](action_tag_validation_examples.md#several-formats-on-one-field-alternates) and [dropdown/autocomplete choice filters](action_tag_validation_examples.md#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices).
+
 ## Scalar references
 
 ```text

@@ -166,3 +166,5 @@ Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/tempo
 Run the existing complete CI matrix and `tests/mysql/run.php` against its disposable private schemas. Local mocks do not establish REDCap metadata shapes or import/deletion hook behavior; follow the deployment acceptance section in `docs/EVENT-INSTANCE-REFERENCES.md` for the real-project pilot.
 
 `PHP_BIN=php python3 tests/temporal_mutations.py` runs four defects against disposable copies, verifies they remain syntactically valid, and requires each to fail its regression suite. It never mutates the checkout. `tests/temporal_golden.json` fixes synthetic read parameters, payloads, audit/scan results and rule identities; update deliberately with `php tests/temporal_integration_php.php --update-golden` and review the diff. The mock HMAC key is fixed synthetic test data.
+
+`choices_dom_js.cjs` also consumes `choices_region_fixture.json`, covering the six-region alphanumeric site lists, grouped native options, hidden mirrors, jQuery-only changes and cached autocomplete responses. Real-browser verification uses a local jQuery UI fixture; it does not certify a live REDCap deployment.

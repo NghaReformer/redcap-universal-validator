@@ -148,6 +148,23 @@ check('choices + required on one field compose (no branch, no conflict)',
     count($resolved) === 2 && !isset($resolved[0]['configError']) && !isset($resolved[1]['configError'])
     && !isset($resolved[0]['branches']) && !isset($resolved[1]['branches']));
 
+// The published six-region dropdown annotation is the same fixture as the browser.
+$regionFixture = json_decode(file_get_contents(__DIR__ . '/choices_region_fixture.json'), true);
+$published = file_get_contents(__DIR__ . '/../docs/region-site-choices-example.txt');
+$parsed = AnnotationRules::parseAllTags($published);
+check('region/site example has exactly six valid branches', count($parsed) === 6);
+$regionRules = [];
+foreach ($regionFixture['branches'] as $i => $authored) {
+    $f = $parsed[$i];
+    check('region ' . ($i + 1) . ' preserves exact alphanumeric codes', !isset($f['error'])
+        && $f['when'] === $authored['when'] && $f['choicesShow'] === $authored['show']);
+    $f['fields'] = ['site'];
+    $regionRules[] = $f;
+}
+$regionResolved = Branching::resolve($regionRules);
+check('six-region annotation compiles to one choice rule', count($regionResolved) === 1
+    && !isset($regionResolved[0]['configError']) && count($regionResolved[0]['branches']) === 6);
+
 // ---- summary ----
 echo ($fail === 0 ? "OK" : "FAILED") . " — $n checks, $fail failures\n";
 exit($fail === 0 ? 0 : 1);

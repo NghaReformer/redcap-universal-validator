@@ -436,10 +436,10 @@ namespace {
         if (isset($opts['proj'])) { $GLOBALS['Proj'] = (object) $opts['proj']; }
         else { unset($GLOBALS['Proj']); }
         $scope = \INSPIRE\UniversalValidator\ScanPageView::scanScope($m, PID);
-        // scanProject() is the LEGACY path and compares the exported
-        // redcap_data_access_group NAME (see its docblock), so it takes
-        // 'dagName'. The durable planner takes 'dag', the numeric group id.
-        $res = $m->scanProject(PID, $scope['dagName'], 200, null,
+        // Both paths take 'dag', the numeric group id. scanProject() compares
+        // the exported redcap_data_access_group NAME, and resolves the id to
+        // that name itself through ScanPageView::dagNameOf().
+        $res = $m->scanProject(PID, $scope['dag'], 200, null,
             ['valueCeiling' => $scope['valueCeiling'], 'enforceFormRights' => true]);
         return [$m, $res, $scope];
     }

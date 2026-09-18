@@ -94,14 +94,13 @@ namespace {
 
         // -- wave 10, the safeguards. Each is dangerous before its dependency
         //    lands, which is why they are last and not first.
-        'ScanRetention::expireValues'    => 'wave 10 (B6/H8) wires the cron; wave 8 must page it first, or the purge becomes the outage; and it is installation-wide while preview() is per-project, so wiring them together without deciding shows an administrator a number the module will not act on',
+        //    expireAbandoned and expireValues graduated when this line of work
+        //    was merged with 1.11.0, whose uvScanReapCron and
+        //    uvScanExpireValuesCron call them. expireValues is still the
+        //    unpaged UPDATE that wave 8 pages.
         'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
-        'ScanRetention::expireAbandoned' => 'wave 10 (B6) wires it: one closed browser tab holds a project\'s only slot forever',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
-        'ScanStore::expireValues'        => 'wave 10, through ScanRetention',
-        'ArrayScanStore::expireValues'   => 'wave 10, through ScanRetention',
-        'SqlScanStore::expireValues'     => 'wave 10, through ScanRetention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
         'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
         'ScanPolicy::floor'              => 'wave 10, transitively: tightened() is its only intended caller',

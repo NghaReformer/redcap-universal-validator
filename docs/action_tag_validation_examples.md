@@ -1,7 +1,7 @@
 # Action Tag Validation Examples
 
 A worked, parameter-by-parameter guide to the five action tags of the **Universal
-Regex & Check-Character Validator** module (v1.4.0). Every tag is shown from its
+Field Validator** module (current implementation). Every tag is shown from its
 simplest form to its most complete, with the meaning of each option and what the
 person entering data will see.
 
@@ -21,6 +21,9 @@ different doors, and they mix freely.
 - [`@UVASSERT` — cross-field constraints](#uvassert--cross-field-constraints)
 - [`@UVREQUIRED` — conditional required](#uvrequired--conditional-required)
 - [`@UVUNIQUE` — no duplicates across records](#uvunique--no-duplicates-across-records)
+- [`@UVCHOICES` — dropdowns and autocomplete](#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices)
+- [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
+- [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
 - [Branching — several tags of the same kind](#branching--several-tags-of-the-same-kind)
 - [The `when` condition language](#the-when-condition-language)
@@ -237,11 +240,60 @@ or split into separate fields. This is checked when you save, not discovered on 
   `true`/`false`.
 - `note` is a label for the rule, for your own bookkeeping.
 
+### Several formats on one field (`alternates`)
+
+Use one `alternates` list when the **entered ID itself** determines its format.
+Each entry has its own regex and check-character algorithm; a value is valid when
+one complete alternate passes. This differs from repeated tags with `when`, where
+another answer chooses the rule. Do not create several unconditional `@UVALIDATE`
+tags to express alternatives: those tags conflict.
+
+One ID per field:
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"},
+  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736"},
+  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736"}
+]}
+```
+
+Several IDs in a Text or Notes field, including a mixture of studies:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+]}
+```
+
+`GHIT` checks format only; the other three also verify ISO 7064 MOD 37,36.
+A matching regex alone does not make their final character valid.
+
+| Alternate key | Meaning |
+| --- | --- |
+| `label` | Human-readable format name in validation feedback. |
+| `pattern` | Required whole-ID regex, checked before separator stripping. |
+| `algorithm` | This format's algorithm; inherits the rule's algorithm when omitted. Use `none` explicitly for format-only IDs. |
+| `source`, `strip` | Optional per-format overrides of the rule's normalization settings. |
+| `lengths` | Required for each pooled alternate: candidate lengths including characters retained by its pattern, such as the hyphen in these examples. Omit for a single-ID field. |
+
+The lengths above are **8, 9, 10 and 10**, including the hyphen. `strip:"-"`
+removes that hyphen for the check-character calculation, not for the regex or pooled
+candidate length. Keep lengths inside the alternates; do not also set rule-level
+`idLengths`, `idMinLen`, `idMaxLen`, or `pattern`. An optional rule-level
+`expectedIds` requires that many valid members. Use a Notes field for longer lists.
+Put the most specific formats first if patterns overlap; each accepted member must
+pass one complete format. The existing pooled work limits and ambiguity checks apply.
+
 ### Full `@UVALIDATE` JSON keys
 
 `type`, `algorithm`, `source`, `pattern`, `strip`, `keepChars`, `idLengths`,
 `idMinLen`, `idMaxLen`, `expectedIds`, `blockSave`, `when`, `suggestFix`, `note`,
-`caseSensitive`.
+`caseSensitive`, `alternates`, `references`.
 
 ---
 
@@ -557,6 +609,54 @@ three-level cascade is this same pattern on two fields: `region` branches on
 
 ---
 
+## `@UVCHOICES` — dropdowns, autocomplete, radio and checkbox choices
+
+Attach the rules to the field being filtered (`site` below), not the controlling
+field (`region`). Use stored **codes**, not labels; uppercase codes such as `1BAM`
+are significant. The codes must already exist in the target field's choice list.
+The same annotation applies to radio buttons and single-answer dropdowns, with or
+without **Enable auto-complete for this drop-down**. Matrix fields are unsupported.
+
+```text
+@UVCHOICES={"when":"[region]='1'","show":["1BAM","1CME"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='2'","show":["2ADI","2ARI"],"blockSave":"hard"}
+```
+
+For each active branch, `show` keeps its listed codes; `hide` hides listed codes.
+Use exactly one of these keys. With no matching branch and no fallback, all original
+choices remain available. To require a region first, use REDCap field branching
+`[region]<>''` on `site`, and add `@UVREQUIRED` if a site answer is mandatory.
+`@UVCHOICES` alone does not require an answer.
+
+Changing region never deletes a site already entered. A site excluded by the new
+branch stays visible and is marked invalid; `blockSave:"hard"` challenges the browser
+save until it is corrected. Dropdowns keep that stale option disabled; autocomplete
+keeps the entered text but excludes it from new suggestions. Clearing or correcting
+the answer releases the choice-filter block. Off-page/extended conditions remain
+advisory even if `hard` was authored. Audits and scans detect saved hidden choices.
+
+### Complete region/site example
+
+These are the six region lists from the worked example. Region 3 deliberately uses
+`8...` site codes, region 4 uses `6BAR`, region 5 uses `4...`, and region 6 uses `7...`:
+the rule follows explicit codes, not a prefix inferred from the region number.
+Paste this clean block once into `site`'s Field Annotation:
+
+```text
+@UVCHOICES={"when":"[region]='1'","show":["1BAM","1CME","1COT","1CPS","1CYA","1DAR","1DOG","1KGA","1KRG","1MAA","1MOO","1MRA","1NMG","1SBL","1TKB","1ZIL","1DJI","1FDR","1KAT","1DOU","1CMK","1SAL","1CML","1DJN","1DOM","1EJM","1GUI","1HDT"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='2'","show":["2ADI","2ARI","2BOA","2FOB","2GAL","2GOU","2JOL","2JSG","2KOE","2KOT","2LND","2NGU","2PRE","2RDE","2TRE","2LIB","2CHI","2TAK","2ORD"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='3'","show":["8BMD","8CBG","8LMA","8NDE","8SBG","8DAG","8SON","8BNK","8MBE","8CGT"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='4'","show":["6BAR"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='5'","show":["4BDA","4FUN"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='6'","show":["7SAB","7HBO","7KET","7KTZ","7NGA","7HML"],"blockSave":"hard"}
+```
+
+Keep one complete JSON object per tag. A duplicated `@UVCHOICES` pasted inside a
+quoted site code is invalid JSON; repeating the same region condition as a separate
+tag can also create a branch configuration error. Save the dictionary change and
+reload the data-entry/survey page before testing. The Online Designer defines the
+rule; test its live filtering on the actual data-entry form or survey.
+
 ## Combining tags on one field
 
 Different kinds of tag on one field **compose**: all must pass, and each keeps an
@@ -633,11 +733,13 @@ The same dialect powers `when` on all five tags and `assert` on `@UVASSERT`. It 
 **REDCap-style subset — not byte-for-byte REDCap logic**.
 
 | Supported | Rejected when the rule is saved |
-|---|---|
-| `[field]` and `[checkbox(code)]` references | functions (`datediff(...)`, …) |
-| `'text'` / `"text"` / number literals | smart variables (`[record-name]`, …) |
-| `=` `<>` `!=` `>` `<` `>=` `<=` | `[event][field]` prefixes (cross-event) |
-| `and` / `or` / `not` (case-insensitive), parentheses | arithmetic and piping |
+| --- | --- |
+| `[field]` and `[checkbox(code)]` references | Arbitrary functions (`datediff(...)`, etc.) |
+| Text/number literals, comparisons and `and` / `or` / `not` | Arithmetic and piping |
+| With extended references enabled: `[event][field]`, instance selectors and `{alias}` bindings | Unsupported smart variables such as `[record-name]` |
+
+The semantics below describe **plain legacy references**. For opt-in qualified
+references and bindings, use [the event/repeat examples](#validation-across-events-and-repeating-instruments).
 
 A bare `[field]` with no comparison is an error — write `[field]<>''`.
 
@@ -699,8 +801,9 @@ Semantics:
 
   - The field is on a **different repeating instrument**. Instance 3 of form A has no
     defined pairing with any instance of form B — REDCap itself needs
-    `[instrument][instance]` smart variables to cross that boundary — so the module
-    refuses rather than picking an instance for you.
+    an explicit address or pairing to cross that boundary — a plain reference
+    refuses rather than picking an instance for you. Enable extended references
+    and use a selector or shared-key binding to express the pairing.
   - The field is **not collected in this event**, and the project's instrument-event
     mapping says so. Where that mapping cannot be read (a classic project, or a REDCap
     build that does not expose it) the reference still reads as empty, so keep both
@@ -780,6 +883,133 @@ Set `"caseSensitive":true` when case is part of the value:
 - It does not change what `@UVUNIQUE` counts as a duplicate; that comparison is exact.
 
 ---
+
+## Validation across events and repeating instruments
+
+Enable **Enable event and instance references** in module settings before using these
+examples. Replace the sample event names with your project's **unique event names**,
+and designate each source instrument for the target event. Extended syntax is
+inactive/unconfigured when the feature is off; existing plain-field rules retain
+legacy behavior. See [the reference guide](EVENT-INSTANCE-REFERENCES.md) for selectors,
+permissions, exact arithmetic, limits, audit/scan behavior and rollback.
+
+All extended browser checks are **advisory**. Current-page values can stay live;
+other events/instances are snapshots. A missing row, unavailable metadata or an
+ambiguous match is unresolved, not a saved blank. An unresolved branch does not
+activate its fallback. Save/reload to refresh snapshots, and run a scan to reconcile
+imports, deleted instances or writes that do not invoke a save hook.
+
+### Named events and relative events
+
+```text
+# On follow-up weight; baseline weight is on a non-repeating instrument.
+@UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]","message":"Weight is below baseline; review the measurement"}
+
+# Require a comment when the previous designated event reported an adverse event.
+@UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'","message":"Document follow-up of the prior adverse event"}
+
+# Format rule gated by consent recorded at baseline.
+@UVALIDATE={"algorithm":"none","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","when":"[baseline_arm_1][consent]='1'"}
+
+# A choices branch can also use a saved region in another event.
+@UVCHOICES={"when":"[baseline_arm_1][region]='1'","show":["1BAM","1CME"]}
+```
+
+Relative events use the nearest designated event for the referenced instrument in
+the current arm. An explicit unique event name may address another arm in the same
+record. A repeating target also needs an instance selector or a matching binding.
+
+### A particular, previous or last repeating instance
+
+```text
+# On a repeating measurements instrument: compare to its first saved instance.
+@UVASSERT={"assert":"[weight]>=[weight][first-instance]"}
+
+# Compare to instance number 2 at a named follow-up event.
+@UVASSERT={"assert":"[weight]>=[followup_arm_1][weight][2]"}
+
+# Require an explanation after a positive result in the preceding numbered instance.
+@UVREQUIRED={"when":"[result][previous-instance]='1'","message":"Explain the follow-up of the preceding result"}
+
+# Read the last existing instance of an independent repeating lab instrument.
+@UVASSERT={"assert":"[dose]<=[followup_arm_1][maximum_dose][last-instance]"}
+```
+
+`previous-instance` means current number minus one. From instance 3 it means 2,
+not 1 when 2 was deleted. Instance 1 has no previous instance, so that reference is
+unresolved. `first-instance`/`last-instance` use existing minimum/maximum numbers.
+Instance selectors are invalid on non-repeating targets. Do not assume instance 2
+on two independent repeating instruments refers to the same specimen.
+
+### Match independent repeats by a shared specimen key
+
+Here `result_specimen_id` belongs to the current results instrument; `specimen_id`
+and `threshold` belong to the repeating collection instrument.
+
+```text
+@UVASSERT={"assert":"[result]>={matched_threshold}","references":{"matched_threshold":{"field":"threshold","event":"collection_arm_1","match":{"specimen_id":"[result_specimen_id]"}}},"message":"Result is below the matched specimen threshold"}
+```
+
+Matching preserves case and leading zeros. Zero matches, multiple matches and blank
+keys are unresolved for a scalar lookup. Add further key fields inside `match` for
+a composite key. Changing the current key defers the binding until save/reload.
+Use a matching binding with `aggregate:"count"` or `aggregate:"exists"` when the
+rule intentionally tests for absence instead of reading one matched value.
+
+### Collections, totals and existence
+
+```text
+# At least one repeat has a positive result.
+@UVASSERT={"assert":"[result][any-instance]='1'"}
+
+# Every existing repeat is negative (an empty collection is unresolved).
+@UVASSERT={"assert":"[result][all-instances]='0'"}
+
+# Sum doses across explicitly selected events; compare against the current limit.
+@UVASSERT={"assert":"{total_dose}<=[dose_limit]","references":{"total_dose":{"field":"dose","events":["baseline_arm_1","followup_arm_1"],"aggregate":"sum"}}}
+
+# Require a note when no collection row matches this specimen.
+@UVREQUIRED={"when":"{matching_rows}=0","references":{"matching_rows":{"field":"specimen_id","event":"collection_arm_1","match":{"specimen_id":"[result_specimen_id]"},"aggregate":"count"}}}
+
+# Compare against the average of other measurements in this repeat bucket.
+@UVASSERT={"assert":"[weight]<={other_mean}","references":{"other_mean":{"field":"weight","aggregate":"average","excludeCurrent":true}}}
+```
+
+Only one collection operand is allowed per comparison. Counts on an empty
+collection are zero; other empty aggregates are unresolved. Numeric aggregates
+ignore saved blanks and reject populated nonnumbers. Current members are included
+once unless `excludeCurrent:true`; average comparisons do not round decimals.
+
+### Typed dates and elapsed time
+
+Use typed bindings for alternate display formats and calendar checks. Plain legacy
+date strings do not acquire date semantics just because this feature is enabled.
+
+```text
+# Both fields use REDCap date validation; baseline consent is non-repeating.
+@UVASSERT={"assert":"{visit}>={consent}","references":{"visit":{"field":"visit_date","type":"date"},"consent":{"field":"consent_date","event":"baseline_arm_1","type":"date"}}}
+
+# The result must occur between 0 and 48 hours after the first collection.
+@UVASSERT={"assert":"{hours}>=0 and {hours}<=48","references":{"hours":{"field":"result_time","type":"datetime","elapsedFrom":"[collection_arm_1][collection_time][first-instance]","unit":"hours"}}}
+```
+
+Elapsed time is signed. Date-only elapsed checks use calendar days; datetime checks
+use timezone-less wall-clock values. Invalid/missing dates are unresolved. Match
+date with date and datetime with datetime; no generic `datediff()` is implemented.
+
+### Uniqueness within one record
+
+```text
+# On specimen_id: no duplicate on this instrument across its events and instances.
+@UVUNIQUE=record
+
+# Alternative: specimen_id may recur for a different specimen_type.
+@UVUNIQUE={"scope":"record","with":["specimen_type"]}
+```
+
+Choose one of these alternatives. Record scope excludes only the exact current
+entry. It differs from `scope:"event"`, which checks other records within the event;
+project/DAG/event scopes retain their existing cross-record behavior.
 
 ## Examples cookbook
 
@@ -1046,8 +1276,8 @@ it looks: the tag validates the field it sits on, and that is where the message 
 
 #### Referencing a field on another instrument
 
-There are two shapes, and they behave differently. Both need the referenced field to be
-in the **same event**.
+The plain-reference examples below use the **same event**. For other events or
+independent repeats, use the opt-in [qualified references and matching bindings](#validation-across-events-and-repeating-instruments).
 
 **1. Off-instrument field compared against a literal** — no live side, so the server
 settles it and sends a `true`/`false`:
@@ -1073,8 +1303,8 @@ since 1.6.0:
 ```
 
 - The screening date is resolved on the server and baked into the condition, so the check
-  re-runs on every keystroke and blocks exactly like a same-instrument rule. Before 1.6.0
-  this was frozen at page load, which rejected correct entries outright.
+  re-runs as the current value changes. It remains advisory because the other form
+  is a page-load snapshot; even an authored `blockSave:"hard"` does not block here.
 - A failure says which field it was compared against and that the value was read when the
   page opened, so you can tell a stale snapshot from a real violation and reload.
 - This requires you to be entitled to read the screening form: authenticated data entry,
@@ -1088,7 +1318,8 @@ since 1.6.0:
 - If the screening form **repeats independently** of the diagnosis form, this rule is
   refused as a configuration problem (there is no defined pairing between their
   instances) — see [the condition language](#the-when-condition-language). Put the two
-  fields on the same instrument, or reference a field that does not repeat.
+  fields on the same instrument, or enable extended references and provide an
+  explicit instance selector or shared-key binding.
 
 `and` / `or` / `not` combine as many of these as you like — a single rule may span several
 instruments:

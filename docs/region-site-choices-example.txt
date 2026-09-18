@@ -1,0 +1,6 @@
+@UVCHOICES={"when":"[region]='1'","show":["1BAM","1CME","1COT","1CPS","1CYA","1DAR","1DOG","1KGA","1KRG","1MAA","1MOO","1MRA","1NMG","1SBL","1TKB","1ZIL","1DJI","1FDR","1KAT","1DOU","1CMK","1SAL","1CML","1DJN","1DOM","1EJM","1GUI","1HDT"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='2'","show":["2ADI","2ARI","2BOA","2FOB","2GAL","2GOU","2JOL","2JSG","2KOE","2KOT","2LND","2NGU","2PRE","2RDE","2TRE","2LIB","2CHI","2TAK","2ORD"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='3'","show":["8BMD","8CBG","8LMA","8NDE","8SBG","8DAG","8SON","8BNK","8MBE","8CGT"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='4'","show":["6BAR"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='5'","show":["4BDA","4FUN"],"blockSave":"hard"}
+@UVCHOICES={"when":"[region]='6'","show":["7SAB","7HBO","7KET","7KTZ","7NGA","7HML"],"blockSave":"hard"}

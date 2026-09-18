@@ -63,7 +63,7 @@ function makeEl(tag) {
   };
 }
 
-function boot(els, config) {
+function boot(els, config, setup) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const allEls = [];
@@ -102,6 +102,7 @@ function boot(els, config) {
     INSPIRE_VALIDATOR_CONFIG: config,
   };
   global.document = doc; global.window = win;
+  if(setup) setup(win, doc);
   // Everything is in the DOM at boot in these tests — the 500ms late-render
   // retry loops only wait on elements that will never appear. Neuter the
   // intervals so the test finishes instantly (setTimeout/debounce untouched).
@@ -494,6 +495,83 @@ function r17chk(field, code) {
   check('extended unknown gate restores all choices',selectValues(sel).join(',')===',1,9');
   const ev=submitEv();env.doc.fire('submit',ev);
   check('extended unknown choices never block',!ev._prevented);
+}
+
+// Dropdown mirrors, optgroups and autocomplete must use the same coded answer.
+{
+  const mirror = makeEl('input'); mirror.type = 'hidden'; mirror.name = 'site'; mirror.value = '';
+  const site = makeEl('select'); site.name = 'site'; site.value = '1BAM';
+  site.appendChild(option(''));
+  const group = makeEl('optgroup'); site.appendChild(group);
+  ['1BAM', '2ADI', '7KET'].forEach(code => group.appendChild(option(code)));
+  group.children[2].disabled = true; // another REDCap feature owns this restriction
+  const region = makeEl('select'); region.name = 'region'; region.value = '1';
+  const env = boot([mirror, site, region], { rules: [{type:'choices', fields:['site'], branches:[
+    {when:"[region]='1'", choicesShow:['1BAM'], choicesAll:['1BAM','2ADI','7KET'], blockSave:'hard'},
+    {when:"[region]='2'", choicesShow:['2ADI'], choicesAll:['1BAM','2ADI','7KET'], blockSave:'hard'}
+  ]}] });
+  check('dropdown: prefer select over preceding hidden mirror', site.getAttribute('data-qrid-bound-cf') === '1' && !mirror.getAttribute('data-qrid-bound-cf'));
+  check('dropdown: grouped options are filtered', selectValues(group).join(',') === '1BAM');
+  region.value='2'; region.fire('change');
+  check('dropdown: stale grouped selection is retained', site.value === '1BAM' && selectValues(group).join(',') === '1BAM,2ADI');
+  check('dropdown: stale answer read from select, not blank mirror', site.getAttribute('aria-invalid') === 'true');
+  let ev=submitEv(); env.doc.fire('submit',ev);
+  check('dropdown: stale grouped choice blocks save',ev._prevented);
+  site.value='2ADI'; site.fire('change');
+  check('dropdown: repick removes stale grouped option',selectValues(group).join(',')==='2ADI');
+  region.value=''; region.fire('change');
+  check('dropdown: original optgroup order restored',selectValues(group).join(',')==='1BAM,2ADI,7KET');
+  check('dropdown: preexisting disabled option stays disabled',group.children[2].disabled);
+}
+{
+  const site=makeEl('select'); site.name='site'; site.value='1BAM';
+  ['', '1BAM','2ADI','7KET'].forEach(code=>{ const o=option(code);o.text=code+' Site';site.appendChild(o); });
+  const ac=makeEl('input');ac.id='rc-ac-input_site';ac.value='1BAM Site';
+  const region=makeEl('select');region.name='region';region.value='1';
+  let closeCount=0;
+  function jq(el){ return {
+    on(events, fn){ events.split(' ').forEach(event=>{const name=event.split('.')[0];(el._jqHandlers||(el._jqHandlers={}))[name]=(el._jqHandlers[name]||[]).concat(fn);});return this; },
+    autocomplete(method){if(method==='close')closeCount++;return this;}
+  }; }
+  jq.fn={on:true,autocomplete:true};
+  function trigger(el,name,ui){(el._jqHandlers && el._jqHandlers[name] || []).forEach(fn=>fn({},ui));}
+  const env=boot([site,ac,region],{rules:[{type:'choices',fields:['site'],branches:[
+    {when:"[region]='1'",choicesShow:['1BAM'],choicesAll:['1BAM','2ADI','7KET'],blockSave:'hard'},
+    {when:"[region]='2'",choicesShow:['2ADI'],choicesAll:['1BAM','2ADI','7KET'],blockSave:'hard'}
+  ]}]},win=>{win.jQuery=jq;});
+  const response={content:[{value:'1BAM',label:'First'},{value:'2ADI',label:'Second'},{value:'7KET Site',label:'7KET Site'}]};
+  trigger(ac,'autocompleteresponse',response);
+  check('autocomplete: cached suggestions filtered by codes and labels',response.content.length===1 && response.content[0].value==='1BAM');
+  region.value='2';trigger(region,'change'); // deliberately no native event
+  check('autocomplete: jQuery-only region changes switch branch',selectValues(site).join(',')===',1BAM,2ADI');
+  check('autocomplete: old open menu closes after filter change',closeCount>=2);
+  const stale={content:[{option:{value:'1BAM'},label:'First'},{option:{value:'2ADI'},label:'Second'}]};
+  trigger(ac,'autocompleteresponse',stale);
+  check('autocomplete: stale current option is not offered as a fresh suggestion',stale.content.length===1 && stale.content[0].option.value==='2ADI');
+  check('autocomplete: invalid state is exposed on the visible textbox',ac.getAttribute('aria-invalid')==='true');
+  check('autocomplete: textbox has status relationship',/uvalidate-msg-site-ch/.test(ac.getAttribute('aria-describedby')));
+  check('autocomplete: filtering does not overwrite typed/saved text',ac.value==='1BAM Site' && site.value==='1BAM');
+  site.value='2ADI';trigger(site,'change');
+  check('autocomplete: valid selection clears visible invalid state',ac.getAttribute('aria-invalid')===null);
+  let ev=submitEv();env.doc.fire('submit',ev);
+  check('autocomplete: valid selection releases the save',!ev._prevented);
+}
+
+// Full region/site configuration supplied by the user, on a dropdown.
+{
+  const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'choices_region_fixture.json'),'utf8'));
+  const all=fixture.regions.flat();
+  const site=makeEl('select');site.name='site';site.value='';
+  ['',...all].forEach(c=>site.appendChild(option(c)));
+  const region=makeEl('select');region.name='region';region.value='';
+  const branches=fixture.branches.map(b=>({when:b.when,choicesShow:b.show,choicesAll:all,blockSave:b.blockSave}));
+  boot([site,region],{rules:[{type:'choices',fields:['site'],branches}]});
+  fixture.regions.forEach((codes,i)=>{
+    region.value=String(i+1);region.fire('change');
+    check('site dropdown region '+(i+1)+' exactly matches authored codes',selectValues(site).join(',')===['',...codes].join(','));
+  });
+  region.value='';region.fire('change');
+  check('site dropdown no active region restores original code order',selectValues(site).join(',')===['',...all].join(','));
 }
 
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

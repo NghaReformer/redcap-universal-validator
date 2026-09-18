@@ -1188,6 +1188,10 @@ function QRID_findField(name){
 function QRID_findAnchor(name){
   var els = document.getElementsByName ? document.getElementsByName(name) : [];
   var fallback = null;
+  /* A REDCap field may have a hidden mirror before its visible select. */
+  for(var si = 0; si < els.length; si++){
+    if((els[si].tagName || "").toLowerCase() === "select") return els[si];
+  }
   for(var i = 0; i < els.length; i++){
     var tag = (els[i].tagName || "").toLowerCase();
     if(tag === "select" || tag === "textarea") return els[i];
@@ -1794,6 +1798,9 @@ var QRID_WHEN = (function(){
      read through the hidden input / __chk__ elements instead. */
   function findValueEl(name){
     var els = document.getElementsByName ? document.getElementsByName(name) : [];
+    for(var si = 0; si < els.length; si++){
+      if((els[si].tagName || "").toLowerCase() === "select") return els[si];
+    }
     for(var i = 0; i < els.length; i++){
       var tag = (els[i].tagName || "").toLowerCase();
       if(tag === "select" || tag === "textarea") return els[i];
@@ -1825,16 +1832,24 @@ var QRID_WHEN = (function(){
   /* Bind the recheck trigger to every element carrying this target name.
      Returns true once at least one element is hooked (or was already). */
   function tryBind(t){
-    var els = document.getElementsByName ? document.getElementsByName(t.name) : [];
+    var els = t.id ? [document.getElementById(t.id)] : (document.getElementsByName ? document.getElementsByName(t.name) : []);
     var bound = false;
     for(var i = 0; i < els.length; i++){
       var el = els[i];
+      if(!el) continue;
       if(el.__qridWhenBound){ bound = true; continue; }
       if(!el.addEventListener) continue;
       el.__qridWhenBound = true;
       bound = true;
-      var handler = function(){ fire(t.field); };
-      for(var k = 0; k < t.events.length; k++) el.addEventListener(t.events[k], handler);
+      var handler = function(){
+        if(t.id) setTimeout(function(){ fire(t.field); }, 0);
+        else fire(t.field);
+      };
+      /* REDCap's autocomplete can trigger jQuery change without a native
+         event. jQuery handles both, so use one listener path, never both. */
+      var jq = typeof window !== "undefined" && window.jQuery;
+      if(jq && jq.fn && jq.fn.on) jq(el).on(t.events.join(".uvWhen ") + ".uvWhen", handler);
+      else for(var k = 0; k < t.events.length; k++) el.addEventListener(t.events[k], handler);
     }
     return bound;
   }
@@ -1859,10 +1874,11 @@ var QRID_WHEN = (function(){
     if(!targets.length) stopSweep();
     return !targets.length;
   }
-  function queueTarget(name, field, events){
-    if(queued[name]) return;
-    queued[name] = true;
-    targets.push({ name: name, field: field, events: events, tries: 0 });
+  function queueTarget(name, field, events, byId){
+    var key = (byId ? "id:" : "name:") + name;
+    if(queued[key]) return;
+    queued[key] = true;
+    targets.push({ name: name, id: byId ? name : null, field: field, events: events, tries: 0 });
   }
   function requestField(f, code){
     if(code !== null){
@@ -1875,6 +1891,7 @@ var QRID_WHEN = (function(){
     } else {
       queueTarget(f, f, ["input", "change"]);
       queueTarget(f + "___radio", f, ["change", "click"]);
+      queueTarget("rc-ac-input_" + f, f, ["autocompleteselect", "autocompletechange", "change"], true);
     }
     if(typeof document === "undefined" || !document.getElementsByName) return;
     if(sweep()) return;
@@ -3090,49 +3107,119 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     if(!input) return false;
     if(input.getAttribute && input.getAttribute("data-qrid-bound-cf")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-cf", "1");
-    var msg = QRID_attachMsgRegion(input, fieldName, "ch");
+    var acAnchor = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
+    var msg = QRID_attachMsgRegion(acAnchor || input, fieldName, "ch");
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
                 readOnly: false, disabled: false,
-                focus: function(){ try { input.focus(); } catch(e){} } };
+                focus: function(){ try { (autocompleteInput || input).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
 
     /* ---- the three renderers (kind detected per call — late DOM tolerant) */
     var select = (input.tagName || "").toLowerCase() === "select" ? input : null;
-    var selectOrig = null;   /* original <option> order, snapshotted once */
+    var selectOrig = [];   /* options retain their original parent and order */
+    var activeHidden = Object.create(null), autocompleteInput = null;
     function snapshotOptions(){
-      if(selectOrig !== null) return;
-      selectOrig = [];
-      for(var i = 0; i < select.children.length; i++){
-        var o = select.children[i];
-        if((o.tagName || "").toLowerCase() === "option") selectOrig.push(o);
+      function visit(parent){
+        for(var i = 0; i < parent.children.length; i++){
+          var o = parent.children[i], tag = (o.tagName || "").toLowerCase();
+          if(tag === "optgroup"){ visit(o); continue; }
+          if(tag !== "option") continue;
+          var known = false;
+          for(var j = 0; j < selectOrig.length; j++) if(selectOrig[j].node === o){ known = true; break; }
+          if(!known) selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled });
+        }
+      }
+      visit(select); // also discover options populated after page initialization
+    }
+    function autocompleteCode(item){
+      if(item && item.option && item.option.value != null) return String(item.option.value);
+      /* REDCap versions/widgets differ: some return codes, others option
+         labels. Resolve labels against this field only, never another menu. */
+      var value = item && item.value != null ? String(item.value) : String(item);
+      var label = item && item.label != null ? String(item.label) : value;
+      var found = null;
+      for(var i = 0; i < selectOrig.length; i++){
+        var o = selectOrig[i].node, code = String(o.value), text = String(o.text || o.textContent || "");
+        if(value === code) return code;
+        if(label === text || value === text){
+          if(found !== null && found !== code) return null; // ambiguous labels cannot authorize an option
+          found = code;
+        }
+      }
+      return found;
+    }
+    function syncAutocomplete(changed){
+      if(!select || !document.getElementById) return;
+      var ac = document.getElementById("rc-ac-input_" + fieldName);
+      if(!ac) return;
+      var jq = typeof window !== "undefined" && window.jQuery;
+      if(ac !== autocompleteInput){
+        autocompleteInput = ac;
+        /* Keep REDCap's select + companion adjacency intact; its widget
+           initialization uses the companion next to the underlying select. */
+        if(ac.parentNode && ac.parentNode.parentNode){
+          ac.parentNode.parentNode.insertBefore(msg, ac.parentNode.nextSibling);
+        }
+        var desc = ac.getAttribute("aria-describedby") || "";
+        if((" " + desc + " ").indexOf(" " + msg.id + " ") < 0)
+          ac.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+        if(jq && jq.fn && jq.fn.on){
+          jq(ac).on("autocompleteresponse.uvChoices", function(event, ui){
+            if(!ui || !ui.content) return;
+            var filtering = false;
+            for(var hiddenCode in activeHidden){ filtering = true; break; }
+            if(!filtering) return;
+            for(var i = ui.content.length - 1; i >= 0; i--){
+              var code = autocompleteCode(ui.content[i]);
+              if(code === null || activeHidden[code]) ui.content.splice(i, 1);
+            }
+          });
+          /* Some widgets update the select after their selection callback. */
+          jq(ac).on("autocompleteselect.uvChoices autocompletechange.uvChoices", function(){
+            setTimeout(check, 0);
+          });
+        }
+      }
+      QRID_setModeState(ac, "ch", input.__qridModeState && input.__qridModeState.ch || null);
+      if(changed && jq && jq.fn && jq.fn.autocomplete){
+        try { jq(ac).autocomplete("close"); } catch(e){} // late widget initialization is legitimate
       }
     }
     function renderSelect(hiddenSet){
       snapshotOptions();
+      var changed = false;
+      for(var k in activeHidden) if(!hiddenSet[k]) changed = true;
+      for(var k2 in hiddenSet) if(!activeHidden[k2]) changed = true;
+      activeHidden = hiddenSet;
       var cur = select.value == null ? "" : String(select.value);
       for(var i = 0; i < selectOrig.length; i++){
-        var o = selectOrig[i];
+        var entry = selectOrig[i], o = entry.node, parent = entry.parent;
         var val = o.value == null ? "" : String(o.value);
         var isCur = (val !== "" && val === cur);
-        /* the blank placeholder and the CURRENT selection are never removed */
         var show = (val === "") || isCur || !hiddenSet[val];
-        if(show && o.parentNode !== select){
-          var ref = null;   /* next original option still attached keeps order */
+        if(show && o.parentNode !== parent){
+          var ref = null;
           for(var j = i + 1; j < selectOrig.length && !ref; j++){
-            if(selectOrig[j].parentNode === select) ref = selectOrig[j];
+            if(selectOrig[j].parent === parent && selectOrig[j].node.parentNode === parent) ref = selectOrig[j].node;
           }
-          select.insertBefore(o, ref);
-        } else if(!show && o.parentNode === select){
-          select.removeChild(o);
+          parent.insertBefore(o, ref);
+          changed = true;
+        } else if(!show && o.parentNode === parent){
+          parent.removeChild(o);
+          changed = true;
         }
-        /* a kept-but-hidden current selection is visibly dead-ended */
-        o.disabled = !!(isCur && hiddenSet[val]);
+        var disabled = entry.disabled || !!(isCur && hiddenSet[val]);
+        if(o.disabled !== disabled){ o.disabled = disabled; changed = true; }
       }
+      /* Option insertion/removal can change native selection. Restore the
+         exact answer without dispatching change or altering saved data. */
+      if(String(select.value) !== cur) select.value = cur;
+      syncAutocomplete(changed);
     }
     function optionWrappers(code){
       var out = [];
@@ -3187,6 +3274,9 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     var NONE = Object.create(null);
     function clear(){ msg.style.display = "none"; QRID_setModeState(input, "ch", null); setGuard(false); QRID_setModeState(input, "ch", null); }
     function check(){
+      try { checkValue(); } finally { syncAutocomplete(false); }
+    }
+    function checkValue(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
         /* no filter in force — everything shown. Unless no branch could be
@@ -3238,6 +3328,18 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
     }
     check();
+    if(select && typeof MutationObserver !== "undefined"){
+      var optionObserver = new MutationObserver(function(){ check(); });
+      optionObserver.observe(select, { childList: true, subtree: true });
+      /* The widget may be installed after this module's DOMContentLoaded. */
+      if(select.parentNode && (autocompleteInput || /(^|\s)rc-autocomplete(\s|$)/.test(select.className || ""))){
+        var widgetObserver = new MutationObserver(function(){
+          syncAutocomplete(false);
+          if(autocompleteInput) widgetObserver.disconnect();
+        });
+        widgetObserver.observe(select.parentNode, { childList: true, subtree: true });
+      }
+    }
     return true;
   }
   /* per-field registry (namespace .validators — testing / power users):

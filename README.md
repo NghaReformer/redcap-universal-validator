@@ -724,3 +724,5 @@ call. The module works fully on its own without any of that.
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+For complete, copyable region/site dropdown rules, see [the region/site annotation](docs/region-site-choices-example.txt). The [action-tag examples](docs/action_tag_validation_examples.md) cover single/pooled `alternates`, autocomplete choice filtering, cross-event references, and repeating-instrument matching.

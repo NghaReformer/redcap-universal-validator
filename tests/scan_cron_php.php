@@ -39,7 +39,10 @@ namespace ExternalModules {
                 $want = isset($params[0]) ? (string) $params[0] : '';
                 return [[in_array($want, $this->tables, true) ? 1 : 0]];
             }
-            if (strpos($sql, 'MAX(version)') !== false) return [[1]];
+            // The version this build expects, so health() reports a current schema.
+            if (strpos($sql, 'MAX(version)') !== false) {
+                return [[\INSPIRE\UniversalValidator\Scan\Schema::VERSION]];
+            }
             if (stripos($sql, 'ROW_COUNT()') !== false) return [[3]];
             return [];
         }

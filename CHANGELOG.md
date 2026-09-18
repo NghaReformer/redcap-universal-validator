@@ -2,6 +2,9 @@
 
 ## Unreleased — event and repeating-instance validation
 
+- Fix `@UVCHOICES` dropdown handling: prefer the actual select over a hidden mirror, filter options inside groups, preserve existing disabled states and the current answer, and receive jQuery-triggered changes. Synchronize REDCap autocomplete suggestions, visible invalid state and late widget initialization.
+- Expand the action-tag examples with single/pooled `alternates`, cross-event/repeating-instrument rules, and a clean six-region site dropdown annotation.
+
 - Add a default-off project dialect for explicit/relative events and instances, shared-key bindings, collections, exact aggregates, typed dates/elapsed time, and within-record uniqueness.
 - Integrate all rule modes and branches with advisory browser feedback, dependent post-save auditing, direct scans, and durable scans. Preserve live current members, protected source withholding, and unresolved branch deferral.
 - Fingerprint event/repeat metadata and dialect changes before continuing a durable scan; report audit limits and unavailable sources explicitly.
