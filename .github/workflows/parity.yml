@@ -214,8 +214,11 @@ jobs:
       - name: Build and verify the release-shaped archive
         run: |
           set -e
-          VERSION=$(sed -n 's/^## \([0-9][0-9.]*\).*/\1/p' CHANGELOG.md | head -1)
+          VERSION=$(sed -nE 's/^## ([0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?)([[:space:]].*)?$/\1/p' CHANGELOG.md | head -1)
           test -n "$VERSION" || { echo "could not read the version from CHANGELOG.md"; exit 1; }
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            test "${GITHUB_REF_NAME}" = "v${VERSION}" || { echo "tag and changelog version differ"; exit 1; }
+          fi
           DIR="universal_validator_v${VERSION}"
           git archive --prefix="${DIR}/" -o "${DIR}.zip" HEAD
           unzip -q "${DIR}.zip" -d /tmp/pkg

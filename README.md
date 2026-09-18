@@ -1,5 +1,7 @@
 # Universal Field Validator — check-character & regex IDs, cross-field rules, uniqueness & dynamic choices (REDCap external module)
 
+**Current release candidate: `v2.1.0-rc.1`.** See the [changelog](CHANGELOG.md) for features, case-comparison migration guidance, scan-storage changes, and verification limits.
+
 **Opt-in event and repeat validation:** see [Event and instance references](docs/EVENT-INSTANCE-REFERENCES.md) for qualified references, matching, collections, dates, record-local uniqueness, activation and rollback.
 
 Live, as-you-type validation for any REDCap field with a structure. A mistyped
@@ -201,7 +203,7 @@ Semantics worth knowing before relying on it:
 
 - **Comparisons are numeric when both sides look numeric** (`[age]>'9'` with
   age `10` is true, not a lexicographic accident), and string comparison when
-  neither side does. **Text ignores letter case by default** (1.11.0):
+  neither side does. **Text ignores letter case by default** (2.1.0-rc.1):
   `[status]='active'` is true for `Active` and `ACTIVE`, in a `when`, in a
   branch selector and in an `@UVASSERT` test alike. Add `"caseSensitive":true`
   to any tag's JSON (or tick "compare text case-sensitively" in the Configure
@@ -335,7 +337,7 @@ enforced with the same message/confirm/block modes as everything else:
   the *test* rather than a gate.
 - **An empty field is inert** — requiring a value is `@UVREQUIRED`'s job, not a
   constraint's. Confirm-a-value ("type it twice") is just `@UVASSERT="[id]=[id_confirm]"`.
-- **Text is compared without regard to case** (1.11.0), like every condition in
+- **Text is compared without regard to case** (2.1.0-rc.1), like every condition in
   the module: `@UVASSERT="[answer]='yes'"` accepts `Yes` and `YES`. Add
   `"caseSensitive":true` when case carries meaning, such as IDs where `ab12` and
   `AB12` are different: `@UVASSERT={"assert":"[id]=[id_confirm]","caseSensitive":true}`.
