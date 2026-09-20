@@ -57,7 +57,8 @@ final class TemporalRules
             if(isset($b['unit'])&&!isset($b['elapsedFrom']))$errors[]='Binding '.$alias.' unit needs elapsedFrom.';
             if(isset($b['elapsedFrom'])&&is_string($b['elapsedFrom'])){
                 $parsed=Logic::parse($b['elapsedFrom']."=''",['qualified'=>true]);
-                if(empty($parsed['ok'])||$parsed['ast'][0]!=='cmp'||!in_array($parsed['ast'][2][0],['ref','qref'],true))$errors[]='Binding '.$alias.' elapsedFrom must be one scalar reference.';
+                if(empty($parsed['ok'])||$parsed['ast'][0]!=='cmp'||!in_array($parsed['ast'][2][0],['ref','qref'],true)
+                    ||($parsed['ast'][2][0]==='qref'&&in_array($parsed['ast'][2][4],['any-instance','all-instances'],true)))$errors[]='Binding '.$alias.' elapsedFrom must be one scalar reference.';
             }
 
         }
@@ -135,6 +136,12 @@ final class TemporalRules
                 $key=$shape->field($target);
                 if(!$key||!$meta||$key['form']!==$meta['form']||($key['type']??null)==='checkbox')$errors[]='Binding '.$alias.' needs scalar matching keys on the target instrument.';
             }
+            if(($binding['events']??null)==='arm'&&$meta&&$shape->events()){
+                // A misspelt arm matched no event and answered a confident count of 0.
+                $collected=false;
+                foreach($shape->events() as $event)if((string)($event['arm']??'')===(string)($binding['arm']??'')&&in_array($meta['form'],is_array($event['forms']??null)?$event['forms']:[],true))$collected=true;
+                if(!$collected)$errors[]='Binding '.$alias.' names arm '.(is_scalar($binding['arm']??null)?$binding['arm']:'?').', where no event collects this instrument.';
+            }
             $events=is_array($binding['events']??null)?$binding['events']:[$binding['event']??null];
             foreach($events as $event)$references[]=[$field,$event,$binding['instance']??null];
         }
@@ -170,7 +177,12 @@ final class TemporalRules
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
                 $type=$b['type']??null;$from=$b['elapsedFrom']??null;$unit=$b['unit']??null;unset($b['type'],$b['elapsedFrom'],$b['unit']);
                 $r=$resolver->resolveBinding($b,$context);if($r['state']!=='ok'){$problems[]=$r['state'];return ['unknown'];}
-                if(isset($b['aggregate'])){$members=[];foreach($r['members']??[] as $m)$members[]=$member($m);$kind=$b['aggregate'];$node=[in_array($kind,['any','all'],true)?'set':'aggregate',$kind,$members];}
+                if(isset($b['aggregate'])&&!$browser&&!in_array($b['aggregate'],['any','all'],true)){
+                    // Saved data has no live member, so the resolver's exact answer is final;
+                    // rebuilding it from the member list repeated the whole sum per host context.
+                    $node=isset($r['numerator'])?['value',['numerator'=>$r['numerator'],'denominator'=>$r['denominator']]]:['lit',$r['value']];
+                }
+                elseif(isset($b['aggregate'])){$members=[];foreach($r['members']??[] as $m)$members[]=$member($m);$kind=$b['aggregate'];$node=[in_array($kind,['any','all'],true)?'set':'aggregate',$kind,$members];}
                 elseif(isset($r['members'])){$members=[];foreach($r['members'] as $m)$members[]=$member($m);$node=['set',$r['quantifier'],$members];}
                 else $node=$member($r,$type);
                 if($from!==null){$p=Logic::parse($from."=''",['qualified'=>true]);if(empty($p['ok'])||!in_array($p['ast'][2][0],['ref','qref'],true)){$problems[]='invalid';return ['unknown'];}$node=['elapsed',$unit,$member($resolver->resolve($p['ast'][2],$context),$type),$node];}
@@ -190,7 +202,9 @@ final class TemporalRules
         foreach(['when','assert'] as $key)if(isset($rule[$key])){
             if(!$browser && $key==='assert' && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
-            $tree=$walk($p['ast']);$value=TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']));
+            $tree=$walk($p['ast']);
+            // The browser evaluates its own tree; only saved-data callers need the verdict here.
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']));
             if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]='unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
         }

@@ -1401,8 +1401,13 @@ namespace {
     }
     check('site rule ships as a choices branch rule', $siteRule && isset($siteRule['branches'])
         && count($siteRule['branches']) === 2);
-    check('branches carry choicesAll from the dictionary',
-        $siteRule && $siteRule['branches'][0]['choicesAll'] === ['101', '102', '201']);
+    // The field's code list is the same on every branch, so the PAGE carries it
+    // once, on the rule (it was repeated per branch: 767 KB for a 2,000-option
+    // field under 50 tags). The engine hands it to each branch.
+    check('the rule carries choicesAll from the dictionary, once',
+        $siteRule && ($siteRule['choicesAll'] ?? null) === ['101', '102', '201']);
+    check('no branch repeats the code list',
+        $siteRule && !isset($siteRule['branches'][0]['choicesAll']) && !isset($siteRule['branches'][1]['choicesAll']));
 
     // fixture: the hidden-set contract shared with tests/choices_dom_js.cjs —
     // for every case, a saved value is flagged IFF the fixture says it hides

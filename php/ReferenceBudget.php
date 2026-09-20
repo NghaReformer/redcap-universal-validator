@@ -5,6 +5,7 @@ namespace INSPIRE\UniversalValidator;
 final class ReferenceBudget
 {
     private $remaining;
+    private $refused = false;
 
     public function __construct($units = 100000)
     {
@@ -16,14 +17,16 @@ final class ReferenceBudget
         $units = max(1, (int) $units);
         if ($units > $this->remaining) {
             $this->remaining = 0;
+            $this->refused = true;
             return false;
         }
         $this->remaining -= $units;
         return true;
     }
 
+    /** True once a request has been REFUSED. Spending the last unit exactly left nothing unchecked. */
     public function exhausted()
     {
-        return $this->remaining === 0;
+        return $this->refused;
     }
 }

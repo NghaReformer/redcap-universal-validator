@@ -1241,6 +1241,11 @@ function QRID_temporalMultiply(a,b){
   var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=v.replace(/0+$/,'').replace(/\.$/,'');}
   return (negative?'-':'')+v;
 }
+/* x/1 against y/n needs one multiplication, not two. Twin of TemporalLogic::scaled. */
+function QRID_temporalScaled(numerator,denominator){
+  if(denominator!=='1')return QRID_temporalMultiply(numerator,denominator);
+  return typeof numerator==='string'&&QRID_WHEN_NUM_RE.test(numerator)&&numerator.length<=4096?numerator:null;
+}
 function QRID_temporalSum(values){
   function add(a,b){
     var sa=a[0]==='-'?-1:1,sb=b[0]==='-'?-1:1;a=a.replace(/^-/,'').replace(/^0+/,'')||'0';b=b.replace(/^-/,'').replace(/^0+/,'')||'0';
@@ -1252,7 +1257,9 @@ function QRID_temporalSum(values){
   }
   var sum='0',scale=0;
   for(var i=0;i<values.length;i++){
-    if(typeof values[i]==='object')return null;var v=String(values[i]).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,'');if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return null;
+    /* QRID_whenCompare's trim set (twin of ExactDecimal::sum): the wider PHP default
+       summed "9\v" as 9 and then lost every min/max comparison as text. */
+    if(typeof values[i]==='object')return null;var v=QRID_whenTrim(values[i]);if(!QRID_WHEN_NUM_RE.test(v)||v.length>4096)return null;
     var neg=v[0]==='-';v=v.replace(/^[+-]/,'');var p=v.split('.'),f=p[1]||'',d=(p[0]+f).replace(/^0+/,'')||'0';if(neg&&d!=='0')d='-'+d;
     var target=Math.max(scale,f.length);sum=add(sum+'0'.repeat(target-scale),d+'0'.repeat(target-f.length));if(sum.length>4096)return null;scale=target;
   }
@@ -1271,12 +1278,24 @@ function QRID_temporalDate(value,type,format){
   var canonical=date.toISOString().slice(0,19).replace('T',' ');
   return {date:type==='date'?'date':'datetime',value:type==='date'?canonical.slice(0,10):canonical,seconds:date.getTime()/1000};
 }
+/* Blank exactly as QRID_whenCompare sees it: empty after trimming space, tab, CR, LF. */
+function QRID_temporalBlank(v){ return v!==null&&typeof v!=='object'&&QRID_whenTrim(v)===''; }
 function QRID_temporalValue(op,read){
   if(op[0]==='lit')return op[1];if(op[0]==='unknown')return null;if(op[0]==='ref')return read(op[1],op[2]);
   if(op[0]==='guard'){for(var g=0;g<op[1].length;g++)if(String(read(op[1][g][0],null))!==op[1][g][1])return null;return QRID_temporalValue(op[2],read);}
-  if(op[0]==='date')return QRID_temporalDate(QRID_temporalValue(op[3],read),op[1],op[2]);
+  if(op[0]==='date'){
+    var dv=QRID_temporalValue(op[3],read);if(dv===null||typeof dv==='object')return null;
+    /* A saved blank is a RESOLVED answer ("not entered yet"), not an unknown: it
+       takes the caller's blank polarity, as a legacy comparison does. Twin of
+       TemporalLogic::value. */
+    if(QRID_temporalBlank(dv))return '';
+    return QRID_temporalDate(dv,op[1],op[2]);
+  }
   if(op[0]==='elapsed'){
-    var a=QRID_temporalValue(op[2],read),b=QRID_temporalValue(op[3],read),units={days:86400,hours:3600,minutes:60,seconds:1};
+    var a=QRID_temporalValue(op[2],read),b=QRID_temporalValue(op[3],read),units=Object.create(null);
+    units.days=86400;units.hours=3600;units.minutes=60;units.seconds=1;   /* no inherited keys: "constructor" is not a unit */
+    if(a===null||b===null)return null;
+    if(a===''||b==='')return '';   /* elapsed from/to a date not entered yet is itself blank */
     if(!a||!b||!a.date||a.date!==b.date||!units[op[1]]||(a.date==='date'&&op[1]!=='days'))return null;
     return {numerator:String(b.seconds-a.seconds),denominator:String(units[op[1]])};
   }
@@ -1296,11 +1315,17 @@ function QRID_temporalCompare(op,a,b,blank,cs){
     if(a.set&&b.set)return null;var left=!!a.set,set=left?a:b;if(!set.values.length)return null;var and=set.set==='all',unknown=false;
     for(var i=0;i<set.values.length;i++){var r=QRID_temporalCompare(op,left?set.values[i]:a,left?b:set.values[i],blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
   }
-  if((a&&a.date)||(b&&b.date)){if(!a.date||a.date!==b.date)return null;return QRID_whenCompare(op,a.value,b.value,blank,cs);}
+  if((a&&a.date)||(b&&b.date)){
+    if(QRID_temporalBlank(a)||QRID_temporalBlank(b))return QRID_whenCompare(op,typeof a==='object'?a.value:'',typeof b==='object'?b.value:'',blank,cs);
+    if(!a.date||a.date!==b.date)return null;return QRID_whenCompare(op,a.value,b.value,blank,cs);
+  }
   if(typeof a==='object'||typeof b==='object'){
+    if(typeof a!=='object')a=QRID_whenTrim(a);if(typeof b!=='object')b=QRID_whenTrim(b);
+    /* Blank against an average or elapsed time: absence, not an unknown. */
+    if(a===''||b==='')return QRID_whenCompare(op,typeof a==='object'&&a.numerator!==undefined?a.numerator:'',typeof b==='object'&&b.numerator!==undefined?b.numerator:'',blank,cs);
     a=typeof a==='object'?a:{numerator:String(a),denominator:'1'};b=typeof b==='object'?b:{numerator:String(b),denominator:'1'};
     if(a.numerator===undefined||b.numerator===undefined)return null;
-    var x=QRID_temporalMultiply(a.numerator,b.denominator),y=QRID_temporalMultiply(b.numerator,a.denominator);if(x===null||y===null)return null;a=x;b=y;
+    var x=QRID_temporalScaled(a.numerator,b.denominator),y=QRID_temporalScaled(b.numerator,a.denominator);if(x===null||y===null)return null;a=x;b=y;
   }
   return QRID_whenCompare(op,String(a),String(b),blank,cs);
 }
@@ -1862,13 +1887,17 @@ var QRID_WHEN = (function(){
      a 500ms interval (max 20 tries) plus a MutationObserver. A target that
      never appears is an off-page ref — the snapshot covers it, so giving up
      quietly is correct. */
-  function sweep(){
+  /* Only a TIMER tick counts as a try. requestField() sweeps once per
+     requested ref, so a rule watching 84 codes used to spend every pending
+     target's 20 tries in one synchronous burst, and a late-rendered
+     autocomplete input then never bound at all. */
+  function sweep(tick){
     var remaining = [];
     for(var i = 0; i < targets.length; i++){
       var t = targets[i];
       if(tryBind(t)) continue;
-      t.tries = (t.tries || 0) + 1;
-      if(t.tries < 20) remaining.push(t);
+      if(tick) t.tries = (t.tries || 0) + 1;
+      if((t.tries || 0) < 20) remaining.push(t);
     }
     targets = remaining;
     if(!targets.length) stopSweep();
@@ -1896,7 +1925,7 @@ var QRID_WHEN = (function(){
     if(typeof document === "undefined" || !document.getElementsByName) return;
     if(sweep()) return;
     if(timer === null && typeof setInterval === "function"){
-      timer = setInterval(function(){ sweep(); }, 500);
+      timer = setInterval(function(){ sweep(true); }, 500);
     }
     if(!mo && typeof MutationObserver !== "undefined" && document.body){
       mo = new MutationObserver(function(){ sweep(); });
@@ -1952,7 +1981,10 @@ var QRID_WHEN = (function(){
         for(var i = 0; i < refs.length; i++){
           var f = refs[i][0];
           if(!hooks[f]) hooks[f] = [];
-          hooks[f].push(cb);
+          /* One callback is registered once per field however many gates hand
+             it over. A factory watching N codes of one field used to be called
+             N times for every single change of that field. */
+          if(hooks[f].indexOf(cb) < 0) hooks[f].push(cb);
           requestField(f, refs[i][1]);
         }
       }
@@ -1986,6 +2018,15 @@ function QRID_registerBlocker(input, fieldName, blockMode){
        branch's mode, which may be "off" — such a field never holds the save.
        (Pre-0.9.0 configs never register "off" items, so this filter is a
        no-op for them.) */
+    /* A verdict is only as fresh as the last DOM event. A controlling field
+       changed without one (a calc, REDCap's radio "reset" link, a script) left a
+       stale flag behind: a save blocked on a field that was already fine, or let
+       through on one that no longer was. Items that can re-judge themselves do
+       so before the guard reads them. */
+    for(var ri = 0; ri < UV_guard.items.length; ri++){
+      var item = UV_guard.items[ri];
+      if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
+    }
     var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
     if(!bad.length) return;
     var names = bad.map(function(el){ return el.__qridFieldLabel || el.__qridFieldName; }).join(", ");
@@ -3109,11 +3150,38 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
     if(input.setAttribute) input.setAttribute("data-qrid-bound-cf", "1");
     var acAnchor = document.getElementById ? document.getElementById("rc-ac-input_" + fieldName) : null;
     var msg = QRID_attachMsgRegion(acAnchor || input, fieldName, "ch");
+    /* A checkbox anchor is the FIRST option's input, so the region landed inside
+       that option's row and vanished with it whenever the filter hid the row:
+       the save was blocked with no message on screen. It belongs to the option
+       container, after the last row. */
+    if(isCheckbox && msg.parentNode && msg.parentNode === input.parentNode && input.parentNode.parentNode){
+      var optionRow = input.parentNode, optionBox = optionRow.parentNode;
+      optionRow.removeChild(msg);
+      optionBox.appendChild(msg);
+    }
+    /* The anchor of a radio or checkbox field is a hidden mirror input, which
+       @READONLY leaves enabled while it disables the options the person would
+       have to click. Such a field can never be corrected here, so it must never
+       hold the save (UX-003 applied to the inputs that actually matter). */
+    function optionsLocked(){
+      var seen = 0, locked = 0, els, i, k;
+      if(!document.getElementsByName) return false;
+      els = document.getElementsByName(fieldName + "___radio");
+      for(i = 0; i < els.length; i++){ seen++; if(els[i].disabled || els[i].readOnly) locked++; }
+      els = document.getElementsByName("__chkn__" + fieldName);
+      for(i = 0; i < els.length; i++){ seen++; if(els[i].disabled || els[i].readOnly) locked++; }
+      for(k = 0; isCheckbox && document.getElementById && k < MANAGED.length; k++){
+        var vis = document.getElementById("id-__chk__" + fieldName + "_RC_" + MANAGED[k]);
+        if(vis){ seen++; if(vis.disabled || vis.readOnly) locked++; }
+      }
+      return seen > 0 && locked === seen;
+    }
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled && !optionsLocked()){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
                 readOnly: false, disabled: false,
+                __qridRecheck: function(){ check(); },
                 focus: function(){ try { (autocompleteInput || input).focus(); } catch(e){} } };
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
@@ -3129,15 +3197,22 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
           var o = parent.children[i], tag = (o.tagName || "").toLowerCase();
           if(tag === "optgroup"){ visit(o); continue; }
           if(tag !== "option") continue;
-          var known = false;
-          for(var j = 0; j < selectOrig.length; j++) if(selectOrig[j].node === o){ known = true; break; }
-          if(!known) selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled });
+          /* An expando, not a scan of selectOrig: the scan made every check()
+             quadratic in the option count (a 3,000-option dropdown blocked the
+             main thread for seconds per selection). */
+          if(o.__qridSnap === selectOrig) continue;
+          o.__qridSnap = selectOrig;
+          selectOrig.push({ node: o, parent: parent, disabled: !!o.disabled });
         }
       }
       visit(select); // also discover options populated after page initialization
     }
     function autocompleteCode(item){
       if(item && item.option && item.option.value != null) return String(item.option.value);
+      /* REDCap's dropdown autocomplete carries the choice code on the item.
+         Matching by label alone refused a permitted option whenever another
+         choice of the same field shared its label. */
+      if(item && item.code != null && String(item.code) !== "") return String(item.code);
       /* REDCap versions/widgets differ: some return codes, others option
          labels. Resolve labels against this field only, never another menu. */
       var value = item && item.value != null ? String(item.value) : String(item);
@@ -3197,24 +3272,43 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       for(var k2 in hiddenSet) if(!activeHidden[k2]) changed = true;
       activeHidden = hiddenSet;
       var cur = select.value == null ? "" : String(select.value);
-      for(var i = 0; i < selectOrig.length; i++){
+      /* Walked BACKWARDS so each parent carries its own insertion reference:
+         the nearest following option that is in place. Searching forward for it
+         per restored option was quadratic when a whole list came back. */
+      for(var p = 0; p < selectOrig.length; p++) selectOrig[p].parent.__qridNext = null;
+      for(var i = selectOrig.length - 1; i >= 0; i--){
         var entry = selectOrig[i], o = entry.node, parent = entry.parent;
         var val = o.value == null ? "" : String(o.value);
         var isCur = (val !== "" && val === cur);
         var show = (val === "") || isCur || !hiddenSet[val];
         if(show && o.parentNode !== parent){
-          var ref = null;
-          for(var j = i + 1; j < selectOrig.length && !ref; j++){
-            if(selectOrig[j].parent === parent && selectOrig[j].node.parentNode === parent) ref = selectOrig[j].node;
-          }
-          parent.insertBefore(o, ref);
+          parent.insertBefore(o, parent.__qridNext || null);
           changed = true;
         } else if(!show && o.parentNode === parent){
           parent.removeChild(o);
           changed = true;
         }
-        var disabled = entry.disabled || !!(isCur && hiddenSet[val]);
-        if(o.disabled !== disabled){ o.disabled = disabled; changed = true; }
+        /* The kept stale answer is MARKED, never disabled. A browser leaves a
+           disabled selected <option> out of the form submission, so under
+           blockSave "off" or "Save anyway" the answer on screen was not the
+           answer REDCap received: an edit was silently discarded and the audit
+           never saw it. Disabling bought nothing anyway — the stale option is
+           already a dead end, removed the moment another choice is picked.
+           `disabled` is only ever restored to what REDCap itself set. */
+        if(o.parentNode === parent) parent.__qridNext = o;
+        var stale = !!(isCur && hiddenSet[val]);
+        if(o.disabled !== entry.disabled){ o.disabled = entry.disabled; changed = true; }
+        if(!!o.__qridStale !== stale){
+          o.__qridStale = stale;
+          if(o.setAttribute && o.removeAttribute){
+            if(stale) o.setAttribute("data-uv-stale", "1"); else o.removeAttribute("data-uv-stale");
+          }
+          if(o.style){
+            if(stale){ entry.color = o.style.color || ""; o.style.color = "#8a8a8a"; }
+            else o.style.color = entry.color || "";
+          }
+          changed = true;
+        }
       }
       /* Option insertion/removal can change native selection. Restore the
          exact answer without dispatching change or altering saved data. */
@@ -3272,7 +3366,35 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
       return out;
     }
     var NONE = Object.create(null);
-    function clear(){ msg.style.display = "none"; QRID_setModeState(input, "ch", null); setGuard(false); QRID_setModeState(input, "ch", null); }
+    /* A radio or checkbox anchor is a type=hidden mirror, which assistive
+       technology never reaches: the verdict is reflected onto the inputs a
+       person can actually focus, and the message region is tied to them. */
+    function reachable(){
+      var out = [], els, i, k;
+      if(select || !document.getElementsByName) return out;
+      els = document.getElementsByName(fieldName + "___radio");
+      for(i = 0; i < els.length; i++) out.push(els[i]);
+      els = document.getElementsByName("__chkn__" + fieldName);
+      for(i = 0; i < els.length; i++) out.push(els[i]);
+      for(k = 0; isCheckbox && document.getElementById && k < MANAGED.length; k++){
+        var vis = document.getElementById("id-__chk__" + fieldName + "_RC_" + MANAGED[k]);
+        if(vis && out.indexOf(vis) < 0) out.push(vis);
+      }
+      return out;
+    }
+    function setState(kind){
+      QRID_setModeState(input, "ch", kind);
+      var els = reachable();
+      for(var i = 0; i < els.length; i++){
+        var el = els[i];
+        if(!el.setAttribute || !el.getAttribute) continue;
+        if(kind === "bad") el.setAttribute("aria-invalid", "true");
+        else if(el.removeAttribute) el.removeAttribute("aria-invalid");
+        var desc = el.getAttribute("aria-describedby") || "";
+        if((" " + desc + " ").indexOf(" " + msg.id + " ") < 0) el.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+      }
+    }
+    function clear(){ msg.style.display = "none"; setGuard(false); setState(null); }
     function check(){
       try { checkValue(); } finally { syncAutocomplete(false); }
     }
@@ -3282,7 +3404,7 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
         /* no filter in force — everything shown. Unless no branch could be
            CHOSEN at all, which is a rule problem, not an empty filter (M-01). */
         render(NONE);
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "ch")){ setGuard(false); QRID_setModeState(input, "ch", null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "ch")){ setGuard(false); setState(null); return; }
         clear(); return;
       }
       if(act.length > 1){                                  /* branch conflict: show, never filter, never block */
@@ -3293,16 +3415,15 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
           : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
             QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
             '". The choice filter was <b>NOT</b> applied; make the conditions mutually exclusive.';
-        QRID_setModeState(input, "ch", null); setGuard(false); QRID_setModeState(input, "ch", null); return;
+        setGuard(false); setState(null); return;
       }
       var V = act[0];
       render(V.hiddenSet);
       var stale = staleCodes(V);
       if(!stale.length){ clear(); return; }
       styleMsg(msg);
-      QRID_setModeState(input, "ch", "bad");
       setGuard(true, V.blockSave);
-      QRID_setModeState(input, "ch", "bad");
+      setState("bad");
       msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
         : "The selected choice is no longer available" +
           (V.when && !QRID_IS_SURVEY ? " while: " + QRID_escapeHtml(V.when) : "") +
@@ -3318,14 +3439,20 @@ function QRIDChoiceFilterInit(QRID_CONFIG){
        QRIDRequiredInit): synthetic gates are never evaluated for the verdict,
        they exist so requestField wires the select / ___radio / __chk__
        listeners this factory would otherwise duplicate. */
+    /* ONE callback object for every watcher below, so the registry keeps a
+       single entry per watched field: a change runs check() once, not once per
+       managed code plus once per branch. */
+    var recheck = function(){ check(); };
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
-    if(selfWatch) selfWatch.onChange(function(){ check(); });
-    for(var mc = 0; mc < MANAGED.length; mc++){
+    if(selfWatch) selfWatch.onChange(recheck);
+    /* Per-code elements exist only for checkbox fields; a dropdown or radio is
+       fully covered by the field watcher above. */
+    for(var mc = 0; isCheckbox && mc < MANAGED.length; mc++){
       var codeWatch = QRID_WHEN.gateFor("[" + fieldName + "(" + MANAGED[mc] + ")]='1'", null);
-      if(codeWatch) codeWatch.onChange(function(){ check(); });
+      if(codeWatch) codeWatch.onChange(recheck);
     }
     for(var gi = 0; gi < VS.all.length; gi++){
-      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(recheck);
     }
     check();
     if(select && typeof MutationObserver !== "undefined"){
@@ -4233,6 +4360,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                 : (OWN_KEYS[k] && b.alternates != null && b.alternates !== "") ? undefined
                 : C[k];
         }
+        /* The field's full code list is the same on every branch, so the
+           server sends it once on the rule. */
+        if(bc.choicesAll === undefined && rule.choicesAll !== undefined) bc.choicesAll = rule.choicesAll;
         cfg.branches.push(bc);
       }
       cfg.fields = rule.fields || [];

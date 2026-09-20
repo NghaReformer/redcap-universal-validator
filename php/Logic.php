@@ -102,7 +102,7 @@ class Logic
     // Numeric-ness of a RESOLVED value (not a lexer rule): both sides must
     // match for a comparison to be numeric. No exponents, no hex, no leading
     // "0x" — PHP and JavaScript disagree about those, printable digits do not.
-    const NUM_RE = '/^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/';
+    const NUM_RE = '/^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/D';
 
     // Case folding for a case-insensitive comparison. An explicit strtr map,
     // not strtolower(): on the PHP 7.4 floor strtolower follows setlocale(),
@@ -144,6 +144,23 @@ class Logic
     public static function parse($expr, array $opts = [])
     {
         if (!is_string($expr)) return self::err('must be a non-empty condition string.');
+        // parse() is pure, and one request asks for the same few rule texts over
+        // and over: a scan parsed every condition several times per host context
+        // per record. Bounded, and never keyed on oversized garbage.
+        if (strlen($expr) > 2 * self::MAX_EXPR_LEN) return self::parseText($expr, $opts);
+        $key = (empty($opts['qualified']) ? 'p' : 'q') . $expr;
+        if (!isset(self::$parsed[$key])) {
+            if (count(self::$parsed) >= self::PARSE_MEMO) self::$parsed = [];
+            self::$parsed[$key] = self::parseText($expr, $opts);
+        }
+        return self::$parsed[$key];
+    }
+
+    private static $parsed = [];
+    const PARSE_MEMO = 512;   // distinct condition texts remembered per request
+
+    private static function parseText($expr, array $opts)
+    {
         $s = strtr($expr, "\t\r\n", '   ');
         $s = trim($s, ' ');
         if ($s === '') return self::err('must be a non-empty condition string.');
@@ -433,33 +450,44 @@ class Logic
         $error = ['error' => 'has an invalid event, instance, field, or binding reference.'];
         if ($text[0] === '{') {
             if (!preg_match('/^\{([A-Za-z][A-Za-z0-9_]*)\}/', $text, $m)) return $error;
-            return ['node' => ['binding', strtolower($m[1])], 'length' => strlen($m[0])];
+            return ['node' => ['binding', self::lower($m[1])], 'length' => strlen($m[0])];
         }
         if (!preg_match('/^(?:\[[^\[\]]*\])+/', $text, $m)) return $error;
         preg_match_all('/\[([^\[\]]*)\]/', $m[0], $groups);
         $g = $groups[1]; $n = count($g);
         if ($n > 3) return $error;
         $isInstance = function ($v) {
-            return preg_match('/^[1-9][0-9]*$/', $v) || in_array(strtolower($v),
+            return preg_match('/^[1-9][0-9]*$/D', $v) || in_array(self::lower($v),
                 ['current-instance','previous-instance','next-instance','first-instance','last-instance','any-instance','all-instances'], true);
         };
         $event = null; $instance = null; $field = $g[0];
         if ($n === 2) {
-            if ($isInstance($g[1])) $instance = strtolower($g[1]);
-            else { $event = strtolower($g[0]); $field = $g[1]; }
+            if ($isInstance($g[1])) $instance = self::lower($g[1]);
+            else { $event = self::lower($g[0]); $field = $g[1]; }
         } elseif ($n === 3) {
-            $event = strtolower($g[0]); $field = $g[1]; $instance = strtolower($g[2]);
+            $event = self::lower($g[0]); $field = $g[1]; $instance = self::lower($g[2]);
             if (!$isInstance($instance)) return $error;
         }
-        if ($event !== null && !preg_match('/^[a-z0-9_]+$/', $event)
+        if ($event !== null && !preg_match('/^[a-z0-9_]+$/D', $event)
             && !in_array($event, ['event-name','previous-event-name','next-event-name','first-event-name','last-event-name'], true)) return $error;
-        if (!preg_match('/^([A-Za-z][A-Za-z0-9_]*)(?:\(([A-Za-z0-9._-]+)\))?$/', $field, $f)) return $error;
-        $node = ['ref', strtolower($f[1]), isset($f[2]) ? $f[2] : null];
+        if (!preg_match('/^([A-Za-z][A-Za-z0-9_]*)(?:\(([A-Za-z0-9._-]+)\))?$/D', $field, $f)) return $error;
+        $node = ['ref', self::lower($f[1]), isset($f[2]) ? $f[2] : null];
         if ($n > 1) $node = ['qref', $node[1], $node[2], $event, $instance];
         return ['node' => $node, 'length' => strlen($m[0])];
     }
 
     // -- internals ------------------------------------------------------------
+
+    /**
+     * ASCII lowercasing for names and keywords. strtolower() follows
+     * setlocale() before PHP 8.2: under a Turkish LC_CTYPE it turns "I" into a
+     * dotless i, so [ID] named a field that does not exist. The browser twin
+     * only ever sees ASCII here (the expression is printable ASCII by rule).
+     */
+    private static function lower($text)
+    {
+        return strtr($text, self::ASCII_UPPER, self::ASCII_LOWER);
+    }
 
     private static function err($msg)
     {
@@ -502,7 +530,7 @@ class Logic
                 if ($refs > self::MAX_REFS) {
                     return ['error' => 'uses more than ' . self::MAX_REFS . ' field references.'];
                 }
-                $tokens[] = ['ref', strtolower($m[1]), (isset($m[3]) && $m[3] !== '') ? $m[3] : null];
+                $tokens[] = ['ref', self::lower($m[1]), (isset($m[3]) && $m[3] !== '') ? $m[3] : null];
                 continue;
             }
             if ($ch === "'" || $ch === '"') {
@@ -528,7 +556,7 @@ class Logic
             if ($ch === '(') { $tokens[] = ['(']; $i++; continue; }
             if ($ch === ')') { $tokens[] = [')']; $i++; continue; }
             if (preg_match('/^[A-Za-z_][A-Za-z0-9_]*/', substr($s, $i), $m)) {
-                $w = strtolower($m[0]);
+                $w = self::lower($m[0]);
                 $i += strlen($m[0]);
                 if ($w === 'and' || $w === 'or' || $w === 'not') { $tokens[] = ['kw', $w]; continue; }
                 $j = $i;

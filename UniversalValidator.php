@@ -921,14 +921,69 @@ class UniversalValidator extends AbstractExternalModule
         // kept (JSON_UNESCAPED_SLASHES is deliberately NOT used), so no project
         // setting — pattern, strip, keepChars — can close the <script> element
         // or inject markup. Fixes the stored-XSS breakout (UV-001).
-        $json = json_encode(
-            $config,
-            JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE
-        );
+        $flags = JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE;
+        $json = json_encode($config, $flags);
+        if ($json === false) {
+            // The payload carries SAVED VALUES since cross-form literals (1.6.0)
+            // and event/instance snapshots, so one stored value that is not
+            // valid UTF-8 (legacy imports) made json_encode fail and the early
+            // return below then removed EVERY rule from the page in silence.
+            // Only the rule that cannot be encoded is given up, and visibly.
+            $config['rules'] = self::encodableRules($config['rules'], $flags);
+            $json = json_encode($config, $flags);
+        }
         if ($json === false) return; // never inject malformed config
         echo '<script type="application/json" id="inspire-validator-config">'
             . $json . '</script>' . "\n";
         echo '<script src="' . htmlspecialchars($engineUrl, ENT_QUOTES) . '"></script>' . "\n";
+    }
+
+    /**
+     * choicesAll is the FIELD's full code list, so every branch of one choices
+     * rule carries the same copy: a 2,000-option field with 50 @UVCHOICES tags
+     * put 767 KB of repeated codes on every page load. It travels once on the
+     * rule and the engine hands it to each branch. Only when EVERY branch
+     * agrees, so a branch that lacks the list still fails visibly in the engine
+     * instead of inheriting one it was never given.
+     */
+    private static function hoistChoicesAll(array $rules)
+    {
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || empty($r['branches']) || !is_array($r['branches']) || count($r['branches']) < 2) continue;
+            $all = null;
+            foreach ($r['branches'] as $b) {
+                if (!is_array($b) || !isset($b['choicesAll']) || !is_array($b['choicesAll'])
+                    || ($all !== null && $b['choicesAll'] !== $all)) continue 2;
+                $all = $b['choicesAll'];
+            }
+            $rules[$i]['choicesAll'] = $all;
+            foreach ($r['branches'] as $bi => $b) unset($rules[$i]['branches'][$bi]['choicesAll']);
+        }
+        return $rules;
+    }
+
+    /**
+     * Replace each rule json_encode() refuses with the deferred stub the engine
+     * already renders for an unreadable source, leaving every other rule live.
+     * The stub keeps only the rule's type and field names, which are designer
+     * configuration and ASCII by validation.
+     */
+    private static function encodableRules(array $rules, $flags)
+    {
+        foreach ($rules as $i => $rule) {
+            if (!is_array($rule) || json_encode($rule, $flags) !== false) continue;
+            $rules[$i] = [
+                'type' => isset($rule['type']) && is_string($rule['type']) ? $rule['type'] : 'single',
+                'fields' => array_values(array_filter(
+                    isset($rule['fields']) && is_array($rule['fields']) ? $rule['fields'] : [],
+                    function ($f) { return is_string($f) && preg_match('/^[a-z][a-z0-9_]*$/D', $f); }
+                )),
+                'deferred' => true,
+                'deferredWhy' => ['A saved value this rule reads is not valid UTF-8 text, so the rule cannot run in the browser.'],
+                'blockSave' => 'off',
+            ];
+        }
+        return $rules;
     }
 
     /** Build the engine's config object from module settings. */
@@ -959,6 +1014,7 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($config['rules'] as $i => $r) {
             if (is_array($r) && array_key_exists('_origin', $r)) unset($config['rules'][$i]['_origin']);
         }
+        $config['rules'] = self::hoistChoicesAll($config['rules']);
         return $config;
     }
 
@@ -3948,7 +4004,7 @@ class UniversalValidator extends AbstractExternalModule
     private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
                                 array &$uniqueSeen, array &$unconf)
     {
-        $this->temporalBudget = new ReferenceBudget();
+        $this->temporalBegin($pid);
         $ctxAll = self::recordContexts($node);
         if (!$ctxAll) {
             // REDCap returned the record with no event row at all. There is
@@ -3983,8 +4039,7 @@ class UniversalValidator extends AbstractExternalModule
                             $unconf[$i.'|temporal-budget']=['rule'=>$i+1,'fields'=>$ownFields,'why'=>'Extended record evaluation budget exhausted; this record was not fully checked.'];
                             break;
                         }
-                        $this->temporalPid = $pid;
-                        if (!isset($temporalShape)) $temporalShape = TemporalMetadata::load($pid, $this->dataDictionary($pid) ?: []);
+                        if (!isset($temporalShape)) $temporalShape = $this->temporalShape($pid);
                         $prepared = $this->temporalPrepared($r, $temporalShape, $node, $this->temporalContext($ctx, $hostForm));
                         if ($prepared['problems']) {
                             $unconf[$i . '|temporal|' . $ck] = ['rule'=>$i+1, 'fields'=>$ownFields,
@@ -4890,8 +4945,8 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (TemporalRules::fields($r) as $source) {
                     if (!isset($dd[$source]['form_name']) || !self::mayReadForm($rights,$dd[$source]['form_name'])) return null;
                 }
-                $shape=TemporalMetadata::load($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
-                $this->temporalPid=$pid;$this->temporalBudget=new ReferenceBudget();
+                $shape=$this->temporalShape($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
+                $this->temporalBegin($pid);
                 $p=$this->temporalPrepared($r,$shape,$node,['event'=>$event_id,'instrument'=>$instrument,'instance'=>$repeat_instance,'values'=>[]]);
                 if ($p['problems'] || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
                 return $p['rule'];

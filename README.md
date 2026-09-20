@@ -481,7 +481,8 @@ field instead of one near-duplicate field per country:
   (nothing off-page leaks into the browser).
 - **A hidden selection is never cleared.** If the stored/selected choice
   becomes hidden (the user changes the country after picking a site), the
-  module keeps it visible — dropdowns keep the option in place but disabled —
+  module keeps it visible — dropdowns keep the option in place, greyed and
+  marked `data-uv-stale`, but still enabled so the browser submits it —
   flags the field invalid with your `message`, and applies `blockSave`
   (off/confirm/hard). Silently erasing an entered value is the one thing this
   mode refuses to do; fix it by picking one of the shown choices.

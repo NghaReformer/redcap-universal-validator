@@ -28,7 +28,13 @@ final class ProjectShape
     public function eventId($token, $current, $form)
     {
         if ($token === null || $token === 'event-name') {
-            return $this->event($current) === null ? ['state'=>'unreadable'] : ['state'=>'ok','event'=>$current];
+            if ($this->event($current) === null) return ['state'=>'unreadable'];
+            // The hook may hand the id over as '41' while every named or relative
+            // token answers with the array key 41. Two spellings of one event made
+            // a collection over ["event-name","baseline_arm_1"] count each member
+            // twice on the page, and only there.
+            foreach ($this->events as $id=>$event) if ((string)$id === (string)$current) return ['state'=>'ok','event'=>$id];
+            return ['state'=>'unreadable'];
         }
         if (!in_array($token, ['previous-event-name','next-event-name','first-event-name','last-event-name'], true)) {
             foreach ($this->events as $id=>$event) {

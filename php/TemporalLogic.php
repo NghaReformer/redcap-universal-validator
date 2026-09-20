@@ -26,6 +26,7 @@ final class TemporalLogic
     {
         if($op[0]==='lit')return $op[1];
         if($op[0]==='unknown')return null;
+        if($op[0]==='value')return $op[1];   // server-only: an aggregate the resolver already settled
         if($op[0]==='ref')return $read($op[1],$op[2]);
         if($op[0]==='guard'){
             foreach($op[1] as $g)if((string)$read($g[0],null)!==$g[1])return null;
@@ -33,10 +34,15 @@ final class TemporalLogic
         }
         if($op[0]==='date'){
             $v=self::value($op[3],$read);if($v===null||is_array($v))return null;
+            // A saved blank is a RESOLVED answer ("not entered yet"), not an unknown:
+            // it takes the caller's blank polarity exactly as a legacy comparison does.
+            if(self::blank($v))return '';
             $r=TemporalValue::parse((string)$v,$op[1],$op[2]);return $r['state']==='ok'?['date'=>$r['type'],'value'=>$r['value'],'seconds'=>$r['seconds']]:null;
         }
         if($op[0]==='elapsed'){
             $a=self::value($op[2],$read);$b=self::value($op[3],$read);
+            if($a===null||$b===null)return null;
+            if($a===''||$b==='')return '';   // elapsed from/to a date not entered yet is itself blank
             if(!is_array($a)||!is_array($b)||!isset($a['date'],$b['date'])||$a['date']!==$b['date'])return null;
             $r=TemporalValue::elapsed(['state'=>'ok','type'=>$a['date'],'seconds'=>$a['seconds']],['state'=>'ok','type'=>$b['date'],'seconds'=>$b['seconds']],$op[1]);
             return $r['state']==='ok'?['numerator'=>$r['numerator'],'denominator'=>$r['denominator']]:null;
@@ -72,15 +78,32 @@ final class TemporalLogic
             return $unknown?null:$and;
         }
         if(is_array($a)&&isset($a['date']) || is_array($b)&&isset($b['date'])){
+            if(self::blank($a)||self::blank($b))return Logic::evaluate(['cmp',$op,['lit',is_array($a)?$a['value']:''],['lit',is_array($b)?$b['value']:'']],[],$blank,$case);
             if(!is_array($a)||!is_array($b)||!isset($a['date'],$b['date'])||$a['date']!==$b['date'])return null;
             return Logic::evaluate(['cmp',$op,['lit',$a['value']],['lit',$b['value']]],[],$blank,$case);
         }
         if(is_array($a)||is_array($b)){
+            foreach(['a','b'] as $k)if(!is_array($$k))$$k=trim((string)$$k," \t\r\n");
+            // Blank against an average or elapsed time: absence, not an unknown.
+            if($a===''||$b==='')return Logic::evaluate(['cmp',$op,['lit',is_array($a)?($a['numerator']??''):''],['lit',is_array($b)?($b['numerator']??''):'']],[],$blank,$case);
             $a=is_array($a)?$a:['numerator'=>(string)$a,'denominator'=>'1'];$b=is_array($b)?$b:['numerator'=>(string)$b,'denominator'=>'1'];
             if(!isset($a['numerator'],$a['denominator'],$b['numerator'],$b['denominator']))return null;
-            $x=ExactDecimal::multiply($a['numerator'],$b['denominator']);$y=ExactDecimal::multiply($b['numerator'],$a['denominator']);
+            // x/1 against y/n needs one multiplication, not two: the long-hand product
+            // of a 4,000-digit numerator by "1", once per set member, cost seconds
+            // per comparison and was charged to no budget.
+            $x=self::scaled($a['numerator'],$b['denominator']);$y=self::scaled($b['numerator'],$a['denominator']);
             if($x===null||$y===null)return null;$a=$x;$b=$y;
         }
         return Logic::evaluate(['cmp',$op,['lit',(string)$a],['lit',(string)$b]],[],$blank,$case);
+    }
+    private static function scaled($numerator,$denominator)
+    {
+        if($denominator!=='1')return ExactDecimal::multiply($numerator,$denominator);
+        return is_string($numerator)&&preg_match('/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/D',$numerator)&&strlen($numerator)<=ExactDecimal::MAX_DIGITS?$numerator:null;
+    }
+    /** Blank exactly as Logic::compare sees it: empty after trimming space, tab, CR and LF. */
+    private static function blank($v)
+    {
+        return is_scalar($v)&&trim((string)$v," \t\r\n")==='';
     }
 }

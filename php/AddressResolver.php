@@ -13,6 +13,8 @@ final class AddressResolver
     private $record;
     private $limit;
     private $budget;
+    private $shared = false;
+    private $memo = [];
 
     public function __construct(ProjectShape $shape, array $record, $limit = 10000, ?ReferenceBudget $budget = null)
     {
@@ -20,6 +22,20 @@ final class AddressResolver
         $this->record = $record;
         $this->limit = max(1, (int)$limit);
         $this->budget = $budget ?? new ReferenceBudget();
+    }
+
+    /**
+     * Saved-data evaluation (audit, scan): every host context of one record reads
+     * the same saved rows, so a collection is read once per record instead of once
+     * per host context. That work was quadratic in the number of instances and
+     * spent the shared budget at about 220 of them. Results are identical to the
+     * unshared path, which tests/temporal_adversarial_php.php proves differentially.
+     * A browser payload never shares: its one context is unsaved and live.
+     */
+    public function shareAcrossContexts()
+    {
+        $this->shared = true;
+        return $this;
     }
 
     /** context={event,instrument,instance,unsaved?:bool,values?:array}. */
@@ -61,12 +77,8 @@ final class AddressResolver
                 $ids = $index['instances'];
                 if (in_array($selector, ['any-instance','all-instances'], true)) {
                     if (!$ids) return self::problem('absent');
-                    $members = [];
-                    foreach ($ids as $id) {
-                        $member = $this->value($ref, $eventId, $target, $id, $form, $context, $sameBucket);
-                        if ($member['state'] !== 'ok') return $member;
-                        $members[] = $member;
-                    }
+                    $members = $this->members($ref, $eventId, $target, $ids, $form, $context, $sameBucket);
+                    if (isset($members['state'])) return $members;
                     return ['state'=>'ok','quantifier'=>$selector === 'any-instance' ? 'any' : 'all','members'=>$members];
                 }
                 if (!in_array($selector, ['first-instance','last-instance'], true)) return self::problem('invalid');
@@ -82,6 +94,34 @@ final class AddressResolver
     public function resolveBinding(array $binding, array $context)
     {
         if (!$this->budget->take()) return self::problem('limit');
+        // An aggregate with no matching key, no excluded entry and no relative
+        // instance asks the same question from every host context of one event.
+        $memoKey=null;
+        if ($this->shared && empty($context['unsaved']) && isset($binding['aggregate']) && empty($binding['match'])
+            && empty($binding['excludeCurrent'])
+            && !in_array($binding['instance']??null,['current-instance','previous-instance','next-instance'],true)
+            && !$this->overlays($binding['field']??null,$context)) {
+            $memoKey='b|'.serialize([$binding,(string)$context['event'],(string)$context['instrument']]);
+            if (isset($this->memo[$memoKey])) {
+                $hit=$this->memo[$memoKey];
+                // A settled number costs its caller nothing more; any/all hands over every member.
+                $walked=isset($hit['quantifier']) ? count($hit['members']??[]) : 0;
+                return $this->budget->take(1+intdiv($walked,32)) ? $hit : self::problem('limit');
+            }
+        }
+        $result=$this->bindingResult($binding,$context);
+        if ($memoKey!==null && $result['state']==='ok') {
+            // `self` names the first asker's own entry, which means nothing to the
+            // next one. Saved-data callers never read it; removing it makes any
+            // future reader fail loudly instead of trusting a stale flag.
+            if (isset($result['members'])) foreach ($result['members'] as $k=>$m) unset($result['members'][$k]['self']);
+            $this->memo[$memoKey]=$result;
+        }
+        return $result;
+    }
+
+    private function bindingResult(array $binding, array $context)
+    {
         $allowed=['field','event','events','arm','instance','match','aggregate','excludeCurrent'];
         if (array_diff(array_keys($binding),$allowed) || !isset($binding['field']) || !is_string($binding['field'])) return self::problem('invalid');
         $field=$this->shape->field($binding['field']);
@@ -95,6 +135,7 @@ final class AddressResolver
                 if (!isset($event['arm'],$event['forms'],$event['name']) || !is_array($event['forms'])) return self::problem('unreadable');
                 if ((string)$event['arm']===(string)$binding['arm'] && in_array($field['form'],$event['forms'],true)) $eventTokens[]=$event['name'];
             }
+            if (!$eventTokens) return self::problem('invalid');   // no such arm, or it never collects this instrument
         }
         if (!is_array($eventTokens) || count($eventTokens)>$this->limit) return self::problem('invalid');
         if (isset($binding['excludeCurrent']) && !is_bool($binding['excludeCurrent'])) return self::problem('invalid');
@@ -136,8 +177,16 @@ final class AddressResolver
             } else {
                 $index=$this->instances($eventId,$bucket['bucket'],$same?$context:null);
                 if ($index['state']!=='ok') return $index;
-                $candidates=[];
-                foreach ($index['instances'] as $id) $candidates[]=$this->value(['ref',$binding['field'],null],$eventId,$bucket['bucket'],$id,$field['form'],$context,$same);
+                $candidates=$this->members(['ref',$binding['field'],null],$eventId,$bucket['bucket'],$index['instances'],$field['form'],$context,$same);
+                if (isset($candidates['state'])) return $candidates;
+            }
+            $keyed=[];
+            if ($this->shared && empty($context['unsaved']) && $keys && $bucket['bucket']!==null && !isset($binding['instance'])) {
+                foreach ($keys as $key=>$wanted) {
+                    $column=$this->members(['ref',$key,null],$eventId,$bucket['bucket'],$index['instances'],$field['form'],$context,$same);
+                    if (isset($column['state'])) return $column;
+                    foreach ($column as $m) $keyed[$key][$m['location']['instance']]=$m['value'];
+                }
             }
             foreach ($candidates as $member) {
                 if ($member['state']!=='ok') return $member;
@@ -149,9 +198,13 @@ final class AddressResolver
                 if (!empty($binding['excludeCurrent']) && $member['self']) continue;
                 $match=true;
                 foreach ($keys as $key=>$wanted) {
-                    $v=$this->value(['ref',$key,null],$eventId,$bucket['bucket'],$loc['instance'],$field['form'],$context,$same);
-                    if ($v['state']!=='ok') return $v;
-                    if ($v['value']!==$wanted) {$match=false;break;}
+                    if (isset($keyed[$key]) && array_key_exists($loc['instance'],$keyed[$key])) $found=$keyed[$key][$loc['instance']];
+                    else {
+                        $v=$this->value(['ref',$key,null],$eventId,$bucket['bucket'],$loc['instance'],$field['form'],$context,$same);
+                        if ($v['state']!=='ok') return $v;
+                        $found=$v['value'];
+                    }
+                    if ($found!==$wanted) {$match=false;break;}
                 }
                 if ($match) $members[]=$member;
             }
@@ -180,7 +233,75 @@ final class AddressResolver
         return ['state'=>'ok','value'=>$best,'members'=>$members];
     }
 
+    /**
+     * One field's value in every listed instance of one (event, bucket), in id
+     * order, or a problem. Shared mode reads the saved column once per record and
+     * re-reads only the caller's own entry, which is the one member whose `self`
+     * flag and live overlay depend on who is asking.
+     */
+    private function members($ref, $event, $bucket, array $ids, $form, $context, $sameBucket)
+    {
+        if (!$this->shared || !empty($context['unsaved'])) {
+            $out = [];
+            foreach ($ids as $id) {
+                $member = $this->value($ref, $event, $bucket, $id, $form, $context, $sameBucket);
+                if ($member['state'] !== 'ok') return $member;
+                $out[] = $member;
+            }
+            return $out;
+        }
+        $key = 'm|' . $event . '|' . $bucket . '|' . $ref[1] . '|' . ($ref[2] === null ? '' : '(' . $ref[2] . ')');
+        if (!isset($this->memo[$key])) {
+            $column = [];
+            foreach ($ids as $id) {
+                // No context: a saved view, never anybody's own entry.
+                $member = $this->value($ref, $event, $bucket, $id, $form, ['instance'=>0,'instrument'=>null], false);
+                if ($member['state'] !== 'ok') return $member;
+                $column[$id] = $member;
+            }
+            $this->memo[$key] = $column;
+        } elseif (!$this->budget->take(1 + intdiv(count($ids), 32))) return self::problem('limit');
+        $column = $this->memo[$key];
+        $own = (int)($context['instance'] ?? 1);
+        if ($sameBucket && isset($column[$own])) {
+            $member = $this->value($ref, $event, $bucket, $own, $form, $context, true);
+            if ($member['state'] !== 'ok') return $member;
+            $column[$own] = $member;
+        }
+        return array_values($column);
+    }
+
+    /** Whether the caller's live values would change what is saved for $field. */
+    private function overlays($field, array $context)
+    {
+        if (!is_string($field) || !isset($context['values']) || !is_array($context['values'])
+            || !array_key_exists($field, $context['values'])) return false;
+        $meta = $this->shape->field($field);
+        if (!$meta || ($meta['form'] ?? null) !== ($context['instrument'] ?? null)) return false;
+        $bucket = $this->shape->bucket($context['event'], $meta['form']);
+        if ($bucket['state'] !== 'ok') return true;
+        if ($bucket['bucket'] === null) $row = $this->record[$context['event']] ?? [];
+        else {
+            $rows = $this->rows($context['event'], $bucket['bucket']);
+            $row = is_array($rows) ? ($rows[(int)($context['instance'] ?? 1)] ?? []) : [];
+        }
+        $saved = is_array($row) && array_key_exists($field, $row) ? $row[$field] : '';
+        return $context['values'][$field] !== $saved;
+    }
+
     private function instances($event, $bucket, $context)
+    {
+        $indexKey = 'i|' . $event . '|' . $bucket;
+        if ($this->shared && ($context === null || empty($context['unsaved'])) && isset($this->memo[$indexKey])) {
+            return $this->budget->take(1 + intdiv(count($this->memo[$indexKey]['instances']), 32))
+                ? $this->memo[$indexKey] : self::problem('limit');
+        }
+        $index = $this->instanceIndex($event, $bucket, $context);
+        if ($this->shared && $index['state'] === 'ok' && ($context === null || empty($context['unsaved']))) $this->memo[$indexKey] = $index;
+        return $index;
+    }
+
+    private function instanceIndex($event, $bucket, $context)
     {
         $rows = $this->rows($event, $bucket);
         if ($rows === null) return self::problem('unreadable');

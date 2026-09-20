@@ -166,7 +166,10 @@ function r17chk(field, code) {
   legacy.value = '0'; legacy.fire('change');
   check('selected option is KEPT while hidden', selectValues(method).join(',') === ',1,2,9');
   const kept = method.children.find((o) => o.value === '9');
-  check('kept option is disabled (dead end, not removable choice)', kept.disabled === true);
+  // A disabled selected <option> is left OUT of the form submission, so the kept
+  // answer must stay enabled: marked stale, still posted.
+  check('kept option stays ENABLED so the browser still submits it', kept.disabled === false);
+  check('kept option is marked stale', kept.getAttribute('data-uv-stale') === '1');
   check('stale selection flags aria-invalid', method.getAttribute('aria-invalid') === 'true');
   const msg = rMsg(env, 'method');
   check('stale message shown and names the condition', /no longer available/.test(msg.innerHTML) && /legacy/.test(msg.innerHTML));
@@ -177,6 +180,7 @@ function r17chk(field, code) {
   check('repick: cleared', msg.style.display === 'none' && method.getAttribute('aria-invalid') === null);
   check('repick: the formerly kept option is now removed', selectValues(method).join(',') === ',1,2');
   check('repick: no orphaned disabled flag', method.children.every((o) => !o.disabled));
+  check('repick: no orphaned stale mark', kept.getAttribute('data-uv-stale') === null);
   ev = submitEv(); env.doc.fire('submit', ev);
   check('repick: save allowed', ev._prevented === false);
 }
@@ -388,8 +392,9 @@ function r17chk(field, code) {
               choicesAll: ['1', '2', '9'], blockSave: 'hard' }],
   });
   check('multi-field: field 1 filtered', selectValues(s1).join(',') === ',1,2');
-  check('multi-field: field 2 filtered (own stale 9 kept, disabled)',
-    selectValues(s2).join(',') === ',1,2,9' && s2.children.find((o) => o.value === '9').disabled === true);
+  check('multi-field: field 2 filtered (own stale 9 kept, marked, still submittable)',
+    selectValues(s2).join(',') === ',1,2,9' && s2.children.find((o) => o.value === '9').disabled === false
+    && s2.children.find((o) => o.value === '9').getAttribute('data-uv-stale') === '1');
   check('multi-field: only the stale field flags', s1.getAttribute('aria-invalid') === null
     && s2.getAttribute('aria-invalid') === 'true');
   const ev = submitEv(); env.doc.fire('submit', ev);
@@ -572,6 +577,101 @@ function r17chk(field, code) {
   });
   region.value='';region.fire('change');
   check('site dropdown no active region restores original code order',selectValues(site).join(',')===['',...all].join(','));
+}
+
+// ---- 15) adversarial review 2026-09-20 --------------------------------------
+// (a) REDCap 17 checkbox: the message must not live inside an option row the
+//     filter can hide, and the verdict must reach the VISIBLE boxes.
+{
+  const pilot = makeEl('input'); pilot.name = 'pilot'; pilot.value = '0';
+  const opts = ['1', '2', '9'].map((code) => r17chk('reach', code));
+  const env = boot([pilot, ...opts.flatMap((o) => [o.hidden, o.visible])], {
+    singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['reach'], choicesHide: ['1'], choicesAll: ['1', '2', '9'],
+              when: "[pilot]='1'", blockSave: 'hard', message: 'Channel one is closed.' }],
+  });
+  opts[2].set(true);                       // an allowed code, so the field has an answer
+  pilot.value = '1'; pilot.fire('change'); // code 1 (the FIRST row, the anchor's row) is now hidden
+  check('first option row is hidden by the filter', opts[0].rowShown() === false);
+  const msg = env.allEls.find((e) => e.id && /^uvalidate-msg-/.test(e.id) && /-ch$/.test(e.id));
+  check('checkbox message region is not inside the hidden option row', !!msg && msg.parentNode !== opts[0].hidden.parentNode);
+  pilot.value = '0'; pilot.fire('change');
+  opts[0].set(true);
+  pilot.value = '1'; pilot.fire('change'); // code 1 is checked AND hidden: stale
+  check('stale checkbox message is on screen', /Channel one is closed/.test(msg.innerHTML) && msg.style.cssText.indexOf('display:block') >= 0
+    && msg.parentNode.style.display !== 'none');
+  check('stale verdict reaches the visible boxes', opts[0].visible.getAttribute('aria-invalid') === 'true');
+  check('visible boxes are tied to the message region', (opts[0].visible.getAttribute('aria-describedby') || '').indexOf(msg.id) >= 0);
+  opts[0].set(false);
+  check('released verdict leaves the visible boxes', opts[0].visible.getAttribute('aria-invalid') === null);
+}
+// (b) the save guard asks for a fresh verdict: a controlling field changed with
+//     NO DOM event must neither leave a stale block nor let a stale answer pass.
+{
+  const legacy = makeEl('input'); legacy.name = 'legacy'; legacy.value = '1';
+  const method = makeEl('select'); method.name = 'method'; method.value = '9';
+  ['', '1', '2', '9'].forEach((v) => method.appendChild(option(v)));
+  const env = boot([legacy, method], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['method'], choicesHide: ['9'], choicesAll: ['1', '2', '9'],
+              when: "[legacy]<>'1'", blockSave: 'hard' }] });
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('guard: nothing stale, save allowed', ev._prevented === false);
+  legacy.value = '0';                      // no event fired
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('guard: event-less controller change is judged at submit', ev._prevented === true);
+  legacy.value = '1';                      // and back, again silently
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('guard: event-less release is honoured at submit', ev._prevented === false);
+}
+// (c) @READONLY radios: the mirror input stays enabled, the options do not.
+{
+  const country = makeEl('input'); country.name = 'country'; country.value = '1';
+  const mirror = makeEl('input'); mirror.name = 'site'; mirror.type = 'hidden'; mirror.value = '201';
+  const radios = ['101', '201'].map((v) => { const r = makeEl('input'); r.name = 'site___radio'; r.type = 'radio'; r.value = v; r.disabled = true; return r; });
+  const env = boot([country, mirror, ...radios], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], choicesShow: ['101'], choicesAll: ['101', '201'],
+              when: "[country]='1'", blockSave: 'hard' }] });
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('read-only radio options never trap the save', ev._prevented === false);
+  check('read-only radio still shows its stale message', env.allEls.some((e) => /no longer available/.test(e.innerHTML || '')));
+}
+// (d) one change, one check: N managed codes must not mean N re-evaluations.
+{
+  const region = makeEl('select'); region.name = 'region'; region.value = '1';
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  const all = []; for (let i = 0; i < 400; i++) all.push('c' + i);
+  [''].concat(all).forEach((v) => site.appendChild(option(v)));
+  let inserts = 0, removes = 0;
+  const ins = site.insertBefore, rem = site.removeChild;
+  site.insertBefore = function (a, b) { inserts++; return ins.call(this, a, b); };
+  site.removeChild = function (a) { removes++; return rem.call(this, a); };
+  const branches = [1, 2, 3, 4].map((k) => ({ when: "[region]='" + k + "'", choicesShow: all.filter((c, i) => i % 4 === k - 1), blockSave: 'hard' }));
+  boot([region, site], { singleFields: [], pooledFields: [],
+    rules: [{ type: 'choices', fields: ['site'], choicesAll: all, branches }] });
+  check('rule-level choicesAll reaches every branch', selectValues(site).length === 101);
+  inserts = 0; removes = 0;
+  region.value = '2'; region.fire('change');
+  check('one controller change moves each option at most once', inserts === 100 && removes === 100);
+  check('cascade result is exact and ordered', selectValues(site).join(',') === [''].concat(all.filter((c, i) => i % 4 === 1)).join(','));
+  region.value = ''; region.fire('change');
+  check('whole list restored in original order', selectValues(site).join(',') === [''].concat(all).join(','));
+}
+// (e) autocomplete: the widget's own code beats an ambiguous label.
+{
+  const site = makeEl('select'); site.name = 'site'; site.value = '';
+  [['', ''], ['1GH', 'General Hospital'], ['2GH', 'General Hospital']].forEach(([code, text]) => { const o = option(code); o.text = text; site.appendChild(o); });
+  const ac = makeEl('input'); ac.id = 'rc-ac-input_site'; ac.value = '';
+  const region = makeEl('select'); region.name = 'region'; region.value = '1';
+  function jq(el) { return {
+    on(events, fn) { events.split(' ').forEach((event) => { const name = event.split('.')[0]; (el._jqHandlers || (el._jqHandlers = {}))[name] = (el._jqHandlers[name] || []).concat(fn); }); return this; },
+    autocomplete() { return this; } }; }
+  jq.fn = { on: true, autocomplete: true };
+  boot([site, ac, region], { rules: [{ type: 'choices', fields: ['site'], choicesAll: ['1GH', '2GH'], branches: [
+    { when: "[region]='1'", choicesShow: ['1GH'], blockSave: 'hard' },
+    { when: "[region]='2'", choicesShow: ['2GH'], blockSave: 'hard' }] }] }, (win) => { win.jQuery = jq; });
+  const ui = { content: [{ label: 'General Hospital', value: 'General Hospital', code: '1GH' }, { label: 'General Hospital', value: 'General Hospital', code: '2GH' }] };
+  (ac._jqHandlers.autocompleteresponse || []).forEach((fn) => fn({}, ui));
+  check('autocomplete keeps the permitted same-label option by its code', ui.content.length === 1 && ui.content[0].code === '1GH');
 }
 
 console.log((fail === 0 ? 'OK' : 'FAILED') + ' — choices_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

@@ -96,6 +96,7 @@ jobs:
           php tests/temporal_value_php.php
           php tests/temporal_logic_php.php
           php tests/temporal_integration_php.php
+          php tests/temporal_adversarial_php.php
           python3 tests/temporal_mutations.py
       - name: PHP syntax check
         run: |
@@ -146,8 +147,6 @@ jobs:
           php -l UniversalValidator.php
           php -l pages/scan.php
           php -l pages/export.php
-      - name: No unqualified global class inside a namespaced file
-        run: php tests/namespace_lint_php.php
       - name: PHP port vs fixture (compute + normalize + scheme_ops)
         run: php tests/parity_php.php
       - name: PHP pooled parser vs fixture

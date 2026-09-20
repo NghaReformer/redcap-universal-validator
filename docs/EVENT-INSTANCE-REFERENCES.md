@@ -45,7 +45,9 @@ Bindings accept `aggregate`: `count`, `exists`, `populated-count`, `distinct-cou
 
 Current-page members remain live and appear once. Set `excludeCurrent: true` to omit the exact current entry. Select several events with `events: ["baseline_arm_1", "followup_arm_1"]`, or use `events: "arm", arm: 1` for all designated events in that arm. A binding accepts `event` or `events`, not both.
 
-Empty counts return zero; empty `exists` returns zero. Other empty operations are unresolved. Each collection is bounded at 10,000 members; decimal arithmetic is bounded at 4,096 digits. A shared 100,000-unit evaluation budget also bounds work across host contexts in one record/page/audit, charging row lookups and value size. Exceeding a limit produces an unresolved result, never a partial aggregate. Reduce exceptionally large rule/collection workloads before rescanning a budget-exhausted record.
+Empty counts return zero; empty `exists` returns zero. Other empty operations are unresolved. `events: "arm"` must name an arm in which some event collects the instrument; an arm that selects nothing is a configuration error, not a count of zero. Each collection is bounded at 10,000 members; decimal arithmetic is bounded at 4,096 digits. A shared 100,000-unit evaluation budget also bounds work across host contexts in one record/page/audit, charging row lookups and value size. Exceeding a limit produces an unresolved result, never a partial aggregate.
+
+Audits and scans read each saved collection once per record and reuse it for every host context, so the cost of a record grows with its number of entries, not with the square of it. A record with 1,500 repeat entries under an aggregate or a within-record uniqueness rule is checked completely inside the default budget. Collections that depend on the asking entry (`excludeCurrent`, matching keys, `previous-instance`) are still resolved per host context and reach the budget sooner. Reduce exceptionally large rule/collection workloads before rescanning a budget-exhausted record.
 
 ## Typed dates and elapsed time
 
@@ -57,11 +59,13 @@ Legacy expressions keep their existing comparison semantics. Use typed bindings 
 
 Supported types: `date`, `datetime`, `datetime_seconds`. Saved values use canonical year-month-day formats; live values use the dictionary's configured display order. Invalid calendar values and mixed date/datetime comparisons are unresolved.
 
+A date that has not been entered yet is a saved blank, not an unknown. It behaves as a blank does in every other comparison: an ordered test (`>=`, `<`) against it is not a violation in an `@UVASSERT` and does not activate a `when`, `=` against it is false, and `<>` is true. The same holds for an elapsed time built from a blank date, and for a blank field compared with an average. A missing row, by contrast, stays unresolved.
+
 ```text
 @UVASSERT={"assert":"{elapsed}<=48","references":{"elapsed":{"field":"result_time","type":"datetime","elapsedFrom":"[collection_arm_1][collection_time][first-instance]","unit":"hours"}}}
 ```
 
-Elapsed values are signed (`target - elapsedFrom`). Units are days, hours, minutes, or seconds. Date-only bindings allow calendar days. Datetimes use timezone-less wall-clock arithmetic, with no browser-local timezone or daylight-saving conversion. This is not a general REDCap `datediff()` evaluator.
+Elapsed values are signed (`target - elapsedFrom`). `elapsedFrom` is one scalar reference; `any-instance` and `all-instances` are rejected there. Units are days, hours, minutes, or seconds. Date-only bindings allow calendar days. Datetimes use timezone-less wall-clock arithmetic, with no browser-local timezone or daylight-saving conversion. This is not a general REDCap `datediff()` evaluator.
 
 ## Within-record uniqueness
 
@@ -78,7 +82,9 @@ Project/DAG/event uniqueness keeps its existing cross-record behavior. Record-lo
 
 Raw off-page values are included only when the current user may read their source instruments. Survey payloads do not include protected source values or collections. A wholly server-resolved Boolean may be sent; comparisons needing both protected data and live input are deferred. Deferred selectors never activate an `else` branch. Advisory feedback cannot prevent API/import writes or race conditions.
 
-Relevant saves re-evaluate dependent host contexts, including another event on the same instrument. Unrelated instrument saves do not cause extended data reads. The default synchronous audit limit is 500 host contexts; configure **Maximum extended audit host contexts** to change it. Read failures or truncation emit an incomplete-audit notice directing the user to a scan.
+Relevant saves re-evaluate dependent host contexts, including another event on the same instrument. Unrelated instrument saves do not cause extended data reads. The default synchronous audit limit is 500 host contexts; configure **Maximum extended audit host contexts** to change it. Read failures or truncation emit an incomplete-audit notice directing the user to a scan, one notice for every rule the audit did not reach.
+
+A saved value that is not valid UTF-8 text (legacy imports) cannot be placed in a page. The rule that reads it is shown as not checked in the browser, every other rule on the page keeps working, and the audit and scans still judge the saved bytes.
 
 Run scans after deletions and write paths that do not invoke the save hook. Hook coverage, repeating-event metadata representations, and rights behavior must be verified in the site's REDCap development project. No universal deletion-hook guarantee is made. Scans report unresolved rules separately and retain existing DAG/export restrictions.
 

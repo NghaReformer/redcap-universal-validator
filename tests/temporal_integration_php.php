@@ -282,6 +282,81 @@ namespace {
     $rule=['type'=>'unique','fields'=>['a_val','key_a'],'uniqueScope'=>'record'];
     $pr=$prep->invoke($m,$rule,$shape,REDCap::$data[1],['event'=>1,'instrument'=>'fa','instance'=>3,'values'=>REDCap::$data[1]['repeat_instances'][1]['fa'][3]]);
     check('multi-field uniqueness isolates results',$pr['rule']['uniqueRecordResults']===['a_val'=>false,'key_a'=>true]);
+    // ---- adversarial review 2026-09-20 ----------------------------------------
+    // One saved value that is not valid UTF-8 used to make json_encode() fail and
+    // the page then carried NO rule at all, in silence.
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
+    REDCap::$dictionary['key_a']['field_annotation']='@UVREQUIRED';
+    REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']="caf\xe9";
+    $p=render($m,'fa');
+    check('invalid UTF-8 snapshot: the page still carries its configuration',is_array($p['cfg'])&&count($p['cfg']['rules'])===2);
+    check('invalid UTF-8 snapshot: only the affected rule is given up, visibly',!empty(ruleOf($p,'a_val')['deferred'])&&(ruleOf($p,'a_val')['blockSave']??null)==='off');
+    check('invalid UTF-8 snapshot: the unrelated rule stays live',empty(ruleOf($p,'key_a')['deferred'])&&ruleOf($p,'key_a')['type']==='required');
+    check('invalid UTF-8 snapshot: the bad bytes never reach the page',strpos($p['raw'],"caf")===false);
+
+    // The rule's own caseSensitive flag governs its "when"; record scope must not force it on.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVUNIQUE={"scope":"record","when":"[key_a]=\'a\'"}';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['key_a']='A';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('record uniqueness leaves the gate case-insensitive on the page',empty($r['caseSensitive'])&&($r['whenAst'][0]??null)==='temporal');
+    $res=$m->scanProject(PID);
+    check('and the server agrees: both duplicate entries reported',count($res['violations'])===2);
+
+    // Scale: the per-context rescan spent the whole budget at about 220 entries.
+    $m=temporal('',null,'UVUNIQUE');
+    $rows=[];for($i=1;$i<=1500;$i++)$rows[$i]=['a_val'=>'v'.($i%750),'key_a'=>'k','fa_complete'=>'2'];
+    REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;unset(REDCap::$data[1]['repeat_instances'][2]);
+    $res=$m->scanProject(PID);
+    check('1,500 repeat entries: every duplicate found',count($res['violations'])===1500);
+    check('1,500 repeat entries: nothing left unchecked',!$res['unconfigurable']);
+    $p=render($m,'fa','1',1,7);$ast=ruleOf($p,'a_val')['uniqueRecordAsts']['a_val'][1]??null;
+    check('the page carries one clause per distinct tuple, not per entry',is_array($ast)&&$ast[0]==='and'&&count($ast[1])===750);
+    $m=temporal('[a_val]<={mean}',['mean'=>['field'=>'a_val','aggregate'=>'average']]);
+    $rows=[];for($i=1;$i<=1500;$i++)$rows[$i]=['a_val'=>(string)($i%7),'key_a'=>'k','fa_complete'=>'2'];
+    REDCap::$data[1]['repeat_instances'][1]['fa']=$rows;unset(REDCap::$data[1]['repeat_instances'][2]);
+    $res=$m->scanProject(PID);
+    // mean of (i mod 7) over 1..1500 is 4497/1500 = 2.998: values 3..6 exceed it.
+    $over=0;for($i=1;$i<=1500;$i++)if($i%7>=3)$over++;
+    check('1,500 host contexts of one aggregate: exact and complete',count($res['violations'])===$over&&!$res['unconfigurable']);
+
+    // A date not entered yet is a saved blank: inert, never an "unresolved" finding per record.
+    $m=temporal('{end}>={start}',['end'=>['field'=>'a_val','type'=>'date'],'start'=>['field'=>'b_open','event'=>'baseline_arm_1','instance'=>2,'type'=>'date']]);
+    foreach(['a_val','b_open'] as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_ymd';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-01-01';REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
+    $res=$m->scanProject(PID);
+    check('blank typed dates are inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);
+    REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-01-03';
+    $res=$m->scanProject(PID);
+    check('entered typed dates are judged',count($res['violations'])===1&&!$res['unconfigurable']);
+    REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-02-30';
+    $res=$m->scanProject(PID);
+    check('an impossible date is still unresolved, never a verdict',!$res['violations']&&count($res['unconfigurable'])>=1);
+
+    // A truncated audit names EVERY rule it did not reach.
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
+    REDCap::$dictionary['key_a']['field_annotation']='@UVASSERT={"assert":"[key_a]<>[baseline_arm_1][key_b][2]"}';
+    $m->projectSettings['qualified-audit-max-contexts']=1;$m->redcap_save_record(PID,'1','fb',1,null);
+    $named=[];foreach(unconf($m) as $c)if(strpos($c[1]['why']??'','context limit')!==false)$named[$c[1]['fields']??'']=true;
+    check('audit truncation names both rules',count($named)===2);
+
+    // The hook may deliver the event id as a string; one event must stay one event.
+    $m=temporal('{n}>0',['n'=>['field'=>'a_val','events'=>['event-name','baseline_arm_1'],'aggregate'=>'count']]);
+    $r=ruleOf(render($m,'fa','1','1',1),'a_val');
+    check('a string event id does not double a collection',($r['assertAst'][1][2][0]??null)==='aggregate'&&count($r['assertAst'][1][2][2])===2);
+
+    // Configuration gaps that used to validate clean.
+    $bad=\INSPIRE\UniversalValidator\TemporalRules::validate(['assert'=>'{e}<5','references'=>['e'=>['field'=>'a_val','type'=>'date','elapsedFrom'=>'[a_val][any-instance]','unit'=>'days']]]);
+    check('elapsedFrom rejects a collection selector',(bool)array_filter($bad,function($e){return strpos($e,'one scalar reference')!==false;}));
+    $m=temporal('{n}>=0',['n'=>['field'=>'a_val','events'=>'arm','arm'=>7,'aggregate'=>'count']]);
+    $shape=\INSPIRE\UniversalValidator\TemporalMetadata::load(PID,REDCap::$dictionary);
+    $bad=\INSPIRE\UniversalValidator\TemporalRules::validateProject(['assert'=>'{n}>=0','references'=>['n'=>['field'=>'a_val','events'=>'arm','arm'=>7,'aggregate'=>'count']]],$shape);
+    check('an arm that collects nothing is a configuration error',(bool)array_filter($bad,function($e){return strpos($e,'arm 7')!==false;}));
+    $res=$m->scanProject(PID);
+    check('and never a confident count of zero',!$res['violations']&&count($res['unconfigurable'])>=1);
+
     $goldenPath=__DIR__.'/temporal_golden.json';
     if(in_array('--update-golden',$argv,true))file_put_contents($goldenPath,json_encode($golden,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");
     check('deterministic payload audit reads findings and identities',$golden===json_decode(file_get_contents($goldenPath),true));

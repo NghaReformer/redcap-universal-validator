@@ -40,13 +40,13 @@ different doors, and they mix freely.
 
 ## The five tags at a glance
 
-| Tag | What it checks | Field types it may sit on |
-|---|---|---|
-| `@UVALIDATE` | The value's **check character and/or format** (an ID is well-formed) | Text, Notes |
-| `@UVASSERT` | A **condition across fields** holds (end ≥ start, dose ≤ max) | Text, Notes, dropdown, radio, yes/no, true/false, calc, slider |
-| `@UVREQUIRED` | The field is **not blank**, optionally only while a condition is true | Same as above, **minus calc** |
-| `@UVUNIQUE` | The value is **not used by another record** | Same as above, **minus calc** |
-| `@UVCHOICES` | Which **options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix) |
+| Tag             | What it checks                                                                  | Field types it may sit on                                      |
+| --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `@UVALIDATE`  | The value's**check character and/or format** (an ID is well-formed)       | Text, Notes                                                    |
+| `@UVASSERT`   | A**condition across fields** holds (end ≥ start, dose ≤ max)            | Text, Notes, dropdown, radio, yes/no, true/false, calc, slider |
+| `@UVREQUIRED` | The field is**not blank**, optionally only while a condition is true      | Same as above,**minus calc**                             |
+| `@UVUNIQUE`   | The value is**not used by another record**                                | Same as above,**minus calc**                             |
+| `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -78,11 +78,11 @@ the problem. The module never fails silently.
 
 **`blockSave` is how strongly you enforce.** Available on all five tags:
 
-| Value | Behavior | Dialog label |
-|---|---|---|
-| `off` *(default)* | Shows the message; the save proceeds | Informational |
-| `confirm` | Asks "save anyway?" — the user may override | Advisory |
-| `hard` | Blocks the browser save until the value is fixed | Compulsory |
+| Value                 | Behavior                                         | Dialog label  |
+| --------------------- | ------------------------------------------------ | ------------- |
+| `off` *(default)* | Shows the message; the save proceeds             | Informational |
+| `confirm`           | Asks "save anyway?" — the user may override     | Advisory      |
+| `hard`              | Blocks the browser save until the value is fixed | Compulsory    |
 
 Enforcement is a **browser behavior**. It does not block API or Data Import Tool
 writes; those are covered by the post-save audit (coverage is REDCap-version
@@ -182,11 +182,11 @@ learns which kind of mistake they made.
 @UVALIDATE={"algorithm":"mod11_10","source":"digits_only"}
 ```
 
-| `source` | The algorithm sees |
-|---|---|
-| `normalized_id` *(default)* | The whole normalized value |
-| `digits_only` | Only the digits — for a mixed ID whose check covers the numbers |
-| `sequence_only` | Only the sequence portion |
+| `source`                      | The algorithm sees                                               |
+| ------------------------------- | ---------------------------------------------------------------- |
+| `normalized_id` *(default)* | The whole normalized value                                       |
+| `digits_only`                 | Only the digits — for a mixed ID whose check covers the numbers |
+| `sequence_only`               | Only the sequence portion                                        |
 
 If a value you know is correct is flagged, `source` (or `algorithm`) is usually the
 mismatch. Confirm the minting method with whoever generates the IDs.
@@ -215,12 +215,12 @@ A pooled rule reads several IDs from one field.
 @UVALIDATE={"type":"pooled","idMinLen":9,"idMaxLen":12,"blockSave":"confirm"}
 ```
 
-| Option | Default | Meaning |
-|---|---|---|
-| `idLengths` | *(none)* | Exact length(s): `[9]`, `[10,12]`, or the string `"10, 12"` |
-| `idMinLen` | `8` | Minimum length when no exact lengths are given |
-| `idMaxLen` | `14` | Maximum length; must be **less than 2× the minimum** |
-| `expectedIds` | *(none)* | How many IDs the field should contain; a mismatch is reported |
+| Option          | Default    | Meaning                                                          |
+| --------------- | ---------- | ---------------------------------------------------------------- |
+| `idLengths`   | *(none)* | Exact length(s):`[9]`, `[10,12]`, or the string `"10, 12"` |
+| `idMinLen`    | `8`      | Minimum length when no exact lengths are given                   |
+| `idMaxLen`    | `14`     | Maximum length; must be**less than 2× the minimum**       |
+| `expectedIds` | *(none)* | How many IDs the field should contain; a mismatch is reported    |
 
 **The 2× rule.** If the maximum is 2× the minimum or more, one "member" could swallow
 two real IDs, and the parser could not tell the difference. The same applies to exact
@@ -273,13 +273,13 @@ Several IDs in a Text or Notes field, including a mixture of studies:
 `GHIT` checks format only; the other three also verify ISO 7064 MOD 37,36.
 A matching regex alone does not make their final character valid.
 
-| Alternate key | Meaning |
-| --- | --- |
-| `label` | Human-readable format name in validation feedback. |
-| `pattern` | Required whole-ID regex, checked before separator stripping. |
-| `algorithm` | This format's algorithm; inherits the rule's algorithm when omitted. Use `none` explicitly for format-only IDs. |
-| `source`, `strip` | Optional per-format overrides of the rule's normalization settings. |
-| `lengths` | Required for each pooled alternate: candidate lengths including characters retained by its pattern, such as the hyphen in these examples. Omit for a single-ID field. |
+| Alternate key         | Meaning                                                                                                                                                               |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`             | Human-readable format name in validation feedback.                                                                                                                    |
+| `pattern`           | Required whole-ID regex, checked before separator stripping.                                                                                                          |
+| `algorithm`         | This format's algorithm; inherits the rule's algorithm when omitted. Use`none` explicitly for format-only IDs.                                                      |
+| `source`, `strip` | Optional per-format overrides of the rule's normalization settings.                                                                                                   |
+| `lengths`           | Required for each pooled alternate: candidate lengths including characters retained by its pattern, such as the hyphen in these examples. Omit for a single-ID field. |
 
 The lengths above are **8, 9, 10 and 10**, including the hyphen. `strip:"-"`
 removes that hyphen for the check-character calculation, not for the regex or pooled
@@ -589,8 +589,9 @@ three-level cascade is this same pattern on two fields: `region` branches on
 ### Semantics worth knowing
 
 - **A hidden selection is never cleared.** Change the country after picking a
-  site and the stale site stays visible (a dropdown keeps it in place,
-  disabled), the field is flagged with your message, and `blockSave` decides
+  site and the stale site stays visible (a dropdown keeps it in place, greyed
+  but still enabled, because a browser does not submit a disabled selected
+  option), the field is flagged with your message, and `blockSave` decides
   whether the save is challenged. The module never erases an entered value.
 - A value outside the field's choice list entirely (a missing-data code such
   as `-99`) is out of the filter's scope and never flagged.
@@ -630,8 +631,12 @@ choices remain available. To require a region first, use REDCap field branching
 
 Changing region never deletes a site already entered. A site excluded by the new
 branch stays visible and is marked invalid; `blockSave:"hard"` challenges the browser
-save until it is corrected. Dropdowns keep that stale option disabled; autocomplete
-keeps the entered text but excludes it from new suggestions. Clearing or correcting
+save until it is corrected. Dropdowns keep that stale option greyed and marked
+`data-uv-stale`, never disabled, so the answer on screen is the answer REDCap
+receives; autocomplete keeps the entered text but excludes it from new suggestions.
+On a multi-page survey, put the controlling field on the same page as the filtered
+field: a field answered on an earlier page is not in the page's form, so the filter
+cannot read it there and only the post-save audit checks that answer. Clearing or correcting
 the answer releases the choice-filter block. Off-page/extended conditions remain
 advisory even if `hard` was authored. Audits and scans detect saved hidden choices.
 
@@ -732,11 +737,11 @@ A three-way branch:
 The same dialect powers `when` on all five tags and `assert` on `@UVASSERT`. It is a
 **REDCap-style subset — not byte-for-byte REDCap logic**.
 
-| Supported | Rejected when the rule is saved |
-| --- | --- |
-| `[field]` and `[checkbox(code)]` references | Arbitrary functions (`datediff(...)`, etc.) |
-| Text/number literals, comparisons and `and` / `or` / `not` | Arithmetic and piping |
-| With extended references enabled: `[event][field]`, instance selectors and `{alias}` bindings | Unsupported smart variables such as `[record-name]` |
+| Supported                                                                                        | Rejected when the rule is saved                      |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| `[field]` and `[checkbox(code)]` references                                                  | Arbitrary functions (`datediff(...)`, etc.)        |
+| Text/number literals, comparisons and`and` / `or` / `not`                                  | Arithmetic and piping                                |
+| With extended references enabled:`[event][field]`, instance selectors and `{alias}` bindings | Unsupported smart variables such as`[record-name]` |
 
 The semantics below describe **plain legacy references**. For opt-in qualified
 references and bindings, use [the event/repeat examples](#validation-across-events-and-repeating-instruments).
@@ -773,6 +778,7 @@ Semantics:
 - **Fields on other instruments.** Such a field cannot change while this page is open, so
   the server resolves it against the record's saved values. What happens next depends on
   the shape of the comparison:
+
   - Compared against a **literal** (`[baseline_eligible]='1'`) there is no live side at
     all, so the whole comparison is settled on the server and sent as a `true`/`false`.
     Correct as of page load, and nothing on this page can change it — which is exactly
@@ -1544,14 +1550,14 @@ format pattern as the else branch; the field is required either way.
 
 #### What you cannot combine
 
-| Attempt | Result |
-|---|---|
-| Two `@UVALIDATE` tags, neither with a `when` | Configuration error — two when-less rules of one kind |
-| Two `@UVASSERT` tags with byte-identical `when` | Configuration error — they could never be told apart |
-| A `single` and a `pooled` `@UVALIDATE` on one field | Configuration error — mixed types in one kind |
-| Two `@UVREQUIRED` tags whose conditions are true at once | Runtime conflict — a notice, validates nothing, never blocks |
-| `@UVREQUIRED` or `@UVUNIQUE` on a **calc** field | Configuration error — a data enterer cannot fix a calc |
-| `@UVALIDATE` on a dropdown/radio/slider | Configuration error — check/format rules are Text and Notes only |
+| Attempt                                                    | Result                                                            |
+| ---------------------------------------------------------- | ----------------------------------------------------------------- |
+| Two`@UVALIDATE` tags, neither with a `when`            | Configuration error — two when-less rules of one kind            |
+| Two`@UVASSERT` tags with byte-identical `when`         | Configuration error — they could never be told apart             |
+| A`single` and a `pooled` `@UVALIDATE` on one field   | Configuration error — mixed types in one kind                    |
+| Two`@UVREQUIRED` tags whose conditions are true at once  | Runtime conflict — a notice, validates nothing, never blocks     |
+| `@UVREQUIRED` or `@UVUNIQUE` on a **calc** field | Configuration error — a data enterer cannot fix a calc           |
+| `@UVALIDATE` on a dropdown/radio/slider                  | Configuration error — check/format rules are Text and Notes only |
 
 ---
 
@@ -1559,91 +1565,91 @@ format pattern as the else branch; the field is required either way.
 
 ### `@UVALIDATE`
 
-| Key | Type | Default | Scope | Notes |
-|---|---|---|---|---|
-| `type` | string | `single` | all | `single` or `pooled` |
-| `algorithm` | string | `iso7064_mod37_36` | all | See the algorithm list; shorthands accepted |
-| `source` | string | `normalized_id` | all | `normalized_id`, `digits_only`, `sequence_only` |
-| `pattern` | string | *(none)* | all | JS regex, auto-anchored, uppercase, printable ASCII |
-| `strip` | string | `-/ _\|\` | all | Separator characters ignored before checking |
-| `keepChars` | string | *(none)* | pooled | Extra characters kept when splitting; length-capped |
-| `idLengths` | list or string | *(none)* | pooled | `[9]`, `[10,12]`, `"10, 12"` |
-| `idMinLen` | integer | `8` | pooled | Positive whole number |
-| `idMaxLen` | integer | `14` | pooled | Must be **< 2× `idMinLen`** |
-| `expectedIds` | integer | *(none)* | pooled | Expected number of IDs in the field |
-| `blockSave` | string | `off` | all | `off`, `confirm`, `hard` |
-| `when` | string | *(none)* | all | Condition; the rule runs only while true |
-| `suggestFix` | boolean | `false` | all | Opt in to the "should end in X" hint |
-| `note` | string | *(none)* | all | Rule label |
-| `caseSensitive` | boolean | `false` | all | Exact-case text in `when` |
+| Key               | Type           | Default              | Scope  | Notes                                                 |
+| ----------------- | -------------- | -------------------- | ------ | ----------------------------------------------------- |
+| `type`          | string         | `single`           | all    | `single` or `pooled`                              |
+| `algorithm`     | string         | `iso7064_mod37_36` | all    | See the algorithm list; shorthands accepted           |
+| `source`        | string         | `normalized_id`    | all    | `normalized_id`, `digits_only`, `sequence_only` |
+| `pattern`       | string         | *(none)*           | all    | JS regex, auto-anchored, uppercase, printable ASCII   |
+| `strip`         | string         | `-/ _\|\`           | all    | Separator characters ignored before checking          |
+| `keepChars`     | string         | *(none)*           | pooled | Extra characters kept when splitting; length-capped   |
+| `idLengths`     | list or string | *(none)*           | pooled | `[9]`, `[10,12]`, `"10, 12"`                    |
+| `idMinLen`      | integer        | `8`                | pooled | Positive whole number                                 |
+| `idMaxLen`      | integer        | `14`               | pooled | Must be**< 2×`idMinLen`**                          |
+| `expectedIds`   | integer        | *(none)*           | pooled | Expected number of IDs in the field                   |
+| `blockSave`     | string         | `off`              | all    | `off`, `confirm`, `hard`                        |
+| `when`          | string         | *(none)*           | all    | Condition; the rule runs only while true              |
+| `suggestFix`    | boolean        | `false`            | all    | Opt in to the "should end in X" hint                  |
+| `note`          | string         | *(none)*           | all    | Rule label                                            |
+| `caseSensitive` | boolean        | `false`            | all    | Exact-case text in`when`                            |
 
 ### `@UVASSERT`
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `assert` | string | *(required)* | The condition that must hold; a missing one is an error |
-| `message` | string | generic line | Your own wording — recommended |
-| `blockSave` | string | `off` | `off`, `confirm`, `hard` |
-| `when` | string | *(none)* | Enforce the constraint only while true |
-| `caseSensitive` | boolean | `false` | Exact-case text in `assert` and `when` |
+| Key               | Type    | Default        | Notes                                                   |
+| ----------------- | ------- | -------------- | ------------------------------------------------------- |
+| `assert`        | string  | *(required)* | The condition that must hold; a missing one is an error |
+| `message`       | string  | generic line   | Your own wording — recommended                         |
+| `blockSave`     | string  | `off`        | `off`, `confirm`, `hard`                          |
+| `when`          | string  | *(none)*     | Enforce the constraint only while true                  |
+| `caseSensitive` | boolean | `false`      | Exact-case text in`assert` and `when`               |
 
 ### `@UVREQUIRED`
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `when` | string | *(none)* | Required only while true; the bare short form sets this |
-| `message` | string | generic line | Your own wording |
-| `blockSave` | string | `off` | `off`, `confirm`, `hard` |
-| `caseSensitive` | boolean | `false` | Exact-case text in `when` |
+| Key               | Type    | Default      | Notes                                                   |
+| ----------------- | ------- | ------------ | ------------------------------------------------------- |
+| `when`          | string  | *(none)*   | Required only while true; the bare short form sets this |
+| `message`       | string  | generic line | Your own wording                                        |
+| `blockSave`     | string  | `off`      | `off`, `confirm`, `hard`                          |
+| `caseSensitive` | boolean | `false`    | Exact-case text in`when`                              |
 
 ### `@UVUNIQUE`
 
-| Key | Type | Default | Notes |
-|---|---|---|---|
-| `with` | list of strings | *(none)* | Composite key fields; max 5, no duplicates, must exist |
-| `scope` | string | `project` | `project`, `dag`, `event`; the bare short form sets this |
-| `surveys` | boolean | `false` | Opt in to the check on surveys; boolean answer only |
-| `when` | string | *(none)* | Check only while true |
-| `message` | string | generic line | Your own wording |
-| `blockSave` | string | `off` | `off`, `confirm`, `hard` |
-| `caseSensitive` | boolean | `false` | Exact-case text in `when` (not the duplicate check) |
+| Key               | Type            | Default      | Notes                                                          |
+| ----------------- | --------------- | ------------ | -------------------------------------------------------------- |
+| `with`          | list of strings | *(none)*   | Composite key fields; max 5, no duplicates, must exist         |
+| `scope`         | string          | `project`  | `project`, `dag`, `event`; the bare short form sets this |
+| `surveys`       | boolean         | `false`    | Opt in to the check on surveys; boolean answer only            |
+| `when`          | string          | *(none)*   | Check only while true                                          |
+| `message`       | string          | generic line | Your own wording                                               |
+| `blockSave`     | string          | `off`      | `off`, `confirm`, `hard`                                 |
+| `caseSensitive` | boolean         | `false`    | Exact-case text in`when` (not the duplicate check)           |
 
 ### Algorithms
 
-| Algorithm | Payload / output | Example (payload → check) | Typical use |
-|---|---|---|---|
-| `iso7064_mod37_36` **(default)** | letters+digits, 1 char | `0ABCD12345` → `K` | Participant/specimen IDs |
-| `iso7064_mod11_10` | digits, 1 char | `079` → `2` | Strong digit-only check |
-| `iso7064_mod97_10` | digits, 2 chars | `1` → `95` | Longer digit IDs (IBAN scheme) |
-| `iso7064_mod11_2` | digits, 1 char (may be `X`) | `079` → `X` | Digit IDs where `X` is acceptable |
-| `iso7064_mod37_2` | letters+digits, 1 char (may be `*`) | `1` → `*` | Alphanumeric, pure Mod 37,2 |
-| `iso7064_letters1` | 1 letter | `0ABCD12345` → `N` | Letter-only check |
-| `iso7064_letters2` | 2 letters (A–F) | `0ABCD12345` → `DC` | Letter-only check, two chars |
-| `damm` | digits, 1 char | `572` → `4` | Catches single-digit and adjacent-swap errors |
-| `verhoeff` | digits, 1 char | `123456` → `8` | Strong single-error + transposition coverage |
-| `luhn` | digits, 1 char | `7992739871` → `3` | Compatibility only (weakest) |
-| `gs1_mod10` | digits, 1 char | `978030640615` → `7` | GS1 / GTIN / EAN / UPC barcodes |
-| `aba_mod10` | digits, 1 char | `01100001` → `5` | US bank routing numbers |
-| `mrz_mod10` | digits, 1 char | `740812` → `2` | ICAO 9303 passport MRZ fields |
-| `weighted_mod11` | digits, 1 char (may be `X`) | `080442957` → `X` | ISBN-10 style, ≤ 9-digit payloads |
-| `none` | *(format only)* | — | Codes with a fixed shape and no check character |
+| Algorithm                                | Payload / output                     | Example (payload → check) | Typical use                                     |
+| ---------------------------------------- | ------------------------------------ | -------------------------- | ----------------------------------------------- |
+| `iso7064_mod37_36` **(default)** | letters+digits, 1 char               | `0ABCD12345` → `K`    | Participant/specimen IDs                        |
+| `iso7064_mod11_10`                     | digits, 1 char                       | `079` → `2`           | Strong digit-only check                         |
+| `iso7064_mod97_10`                     | digits, 2 chars                      | `1` → `95`            | Longer digit IDs (IBAN scheme)                  |
+| `iso7064_mod11_2`                      | digits, 1 char (may be`X`)         | `079` → `X`           | Digit IDs where`X` is acceptable              |
+| `iso7064_mod37_2`                      | letters+digits, 1 char (may be`*`) | `1` → `*`             | Alphanumeric, pure Mod 37,2                     |
+| `iso7064_letters1`                     | 1 letter                             | `0ABCD12345` → `N`    | Letter-only check                               |
+| `iso7064_letters2`                     | 2 letters (A–F)                     | `0ABCD12345` → `DC`   | Letter-only check, two chars                    |
+| `damm`                                 | digits, 1 char                       | `572` → `4`           | Catches single-digit and adjacent-swap errors   |
+| `verhoeff`                             | digits, 1 char                       | `123456` → `8`        | Strong single-error + transposition coverage    |
+| `luhn`                                 | digits, 1 char                       | `7992739871` → `3`    | Compatibility only (weakest)                    |
+| `gs1_mod10`                            | digits, 1 char                       | `978030640615` → `7`  | GS1 / GTIN / EAN / UPC barcodes                 |
+| `aba_mod10`                            | digits, 1 char                       | `01100001` → `5`      | US bank routing numbers                         |
+| `mrz_mod10`                            | digits, 1 char                       | `740812` → `2`        | ICAO 9303 passport MRZ fields                   |
+| `weighted_mod11`                       | digits, 1 char (may be`X`)         | `080442957` → `X`     | ISBN-10 style, ≤ 9-digit payloads              |
+| `none`                                 | *(format only)*                    | —                         | Codes with a fixed shape and no check character |
 
 ### Algorithm shorthands
 
-| Shorthands | Resolves to |
-|---|---|
-| `3736`, `37,36`, `37_36`, `mod37_36`, `mod3736` | `iso7064_mod37_36` |
-| `1110`, `11,10`, `11_10`, `mod11_10`, `mod1110` | `iso7064_mod11_10` |
-| `9710`, `97,10`, `97_10`, `mod97_10`, `mod9710` | `iso7064_mod97_10` |
-| `112`, `11,2`, `11_2`, `mod11_2`, `mod112` | `iso7064_mod11_2` |
-| `372`, `37,2`, `37_2`, `mod37_2`, `mod372` | `iso7064_mod37_2` |
-| `letters1`, `letter1` / `letters2`, `letter2` | `iso7064_letters1` / `iso7064_letters2` |
-| `mod10` | `luhn` |
-| `gs1`, `gtin`, `ean`, `upc` | `gs1_mod10` |
-| `aba`, `routing` | `aba_mod10` |
-| `mrz`, `icao` | `mrz_mod10` |
-| `isbn`, `mod11w`, `weighted11` | `weighted_mod11` |
-| `regex`, `format` | `none` (pair with a `pattern`) |
+| Shorthands                                                | Resolves to                                 |
+| --------------------------------------------------------- | ------------------------------------------- |
+| `3736`, `37,36`, `37_36`, `mod37_36`, `mod3736` | `iso7064_mod37_36`                        |
+| `1110`, `11,10`, `11_10`, `mod11_10`, `mod1110` | `iso7064_mod11_10`                        |
+| `9710`, `97,10`, `97_10`, `mod97_10`, `mod9710` | `iso7064_mod97_10`                        |
+| `112`, `11,2`, `11_2`, `mod11_2`, `mod112`      | `iso7064_mod11_2`                         |
+| `372`, `37,2`, `37_2`, `mod37_2`, `mod372`      | `iso7064_mod37_2`                         |
+| `letters1`, `letter1` / `letters2`, `letter2`     | `iso7064_letters1` / `iso7064_letters2` |
+| `mod10`                                                 | `luhn`                                    |
+| `gs1`, `gtin`, `ean`, `upc`                       | `gs1_mod10`                               |
+| `aba`, `routing`                                      | `aba_mod10`                               |
+| `mrz`, `icao`                                         | `mrz_mod10`                               |
+| `isbn`, `mod11w`, `weighted11`                      | `weighted_mod11`                          |
+| `regex`, `format`                                     | `none` (pair with a `pattern`)          |
 
 The separators `,` `_` `-` are interchangeable, and each numeric shorthand also accepts a
 `mod…` prefix. `damm` and `verhoeff` have no shorthand.

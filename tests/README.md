@@ -161,7 +161,7 @@ end-to-end checks for the server engine and run in CI on every push.
 
 ## Event and instance validation
 
-Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, Boolean unknowns and live members. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
+Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, blank typed dates, Boolean unknowns and live members. `php tests/temporal_adversarial_php.php` is differential: it resolves every reference and binding shape from every host context of 60 seeded random records through both the shared (once-per-record) and the unshared resolver and requires identical results, then checks exact-decimal addition against the digit-string path on 20,000 pairs. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
 
 Run the existing complete CI matrix and `tests/mysql/run.php` against its disposable private schemas. Local mocks do not establish REDCap metadata shapes or import/deletion hook behavior; follow the deployment acceptance section in `docs/EVENT-INSTANCE-REFERENCES.md` for the real-project pilot.
 

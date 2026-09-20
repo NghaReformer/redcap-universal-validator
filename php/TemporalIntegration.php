@@ -64,7 +64,7 @@ trait TemporalIntegration
     }
     private function temporalPrepared(array $rule,ProjectShape $shape,array $node,array $ctx,$browser=false,$mayRead=null)
     {
-        $resolver=new AddressResolver($shape,$node,10000,$this->temporalBudget);
+        $resolver=$this->temporalResolverFor($shape,$node,$browser);
         if(isset($rule['branches'])){
             $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;
             foreach($rule['branches'] as $i=>$branch){
@@ -105,21 +105,26 @@ trait TemporalIntegration
                 $owner = $shape->field($requiredField)['form'] ?? null;
                 if (!$owner || !$mayRead($owner)) return ['rule'=>$rule,'problems'=>['unauthorized']];
             }
+            $results=[];
             foreach($rule['fields'] as $field){
                 $meta=$shape->field($field);if(!$meta||$meta['form']!==$ctx['instrument'])continue;
-                $parts=array_merge([$field],$rule['uniqueWith']??[]);$current=[];
+                $parts=array_merge([$field],$rule['uniqueWith']??[]);$current=[];$currentOps=[];
                 foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$ctx);if($v['state']!=='ok')return ['rule'=>$rule,'problems'=>[$v['state']]];$current[$f]=$v['value'];$currentOps[$f]=($browser&&!empty($v['self']))?['ref',$f,null]:['lit',$v['value']];}
-                $tuples=[];
-                $all=self::recordContexts($node);$count=0;
-                foreach($this->hostContextsFor($all,$meta['form'],$this->temporalPid) as $other){
-                    if(++$count>10000)return ['rule'=>$rule,'problems'=>['limit']];
-                    if((string)$other['event_id']===(string)$ctx['event']&&(string)$other['instance']===(string)$ctx['instance'])continue;
-                    $oc=$this->temporalContext($other,$meta['form']);$tuple=[];
-                    foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$oc);if($v['state']!=='ok')return ['rule'=>$rule,'problems'=>[$v['state']]];$tuple[$f]=$v['value'];}
-                    if($tuple[$field]==='')continue;$tuples[]=$tuple;
+                $index=$this->temporalUniqueTuples($resolver,$node,$meta['form'],$field,$parts);
+                if($index['problem']!==null)return ['rule'=>$rule,'problems'=>[$index['problem']]];
+                $own=$ctx['event'].'|'.$ctx['instance'];
+                if(!$browser){
+                    // Saved data: is this entry's tuple held by any OTHER entry? One lookup.
+                    $holders=$index['holders'][self::temporalTupleKey($current,$parts)]??[];
+                    unset($holders[$own]);$results[$field]=!$holders;continue;
                 }
-                $clauses=[];
-                foreach($tuples as $tuple){$eq=[];foreach($parts as $f)$eq[]=['cmp','identical', $browser?$currentOps[$f]:['lit',$current[$f]],['lit',$tuple[$f]]];$clauses[]=['not',['and',$eq]];}
+                $clauses=[];$sent=[];
+                foreach($index['tuples'] as $id=>$tuple){
+                    if((string)$id===$own)continue;
+                    // Entries holding the same tuple are one clause: the page asks "is my value taken", not "by how many".
+                    $key=self::temporalTupleKey($tuple,$parts);if(isset($sent[$key]))continue;$sent[$key]=true;
+                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',$tuple[$f]]];$clauses[]=['not',['and',$eq]];
+                }
                 $tests[$field]=['and',$clauses];
             }
             $prepared['rule']['message']=$rule['message']??'This value duplicates another event or repeat in this record.';
@@ -128,15 +133,88 @@ trait TemporalIntegration
                 foreach($tests as $field=>$tree)$prepared['rule']['uniqueRecordAsts'][$field]=['temporal',$tree];
                 $prepared['rule']['snapshotFields']=['other entries in this record'];
             }else{
-                $prepared['rule']['uniqueRecordResults']=[];
-                foreach($tests as $field=>$tree)$prepared['rule']['uniqueRecordResults'][$field]=TemporalLogic::evaluate($tree,function(){return '';},true,true);
+                $prepared['rule']['uniqueRecordResults']=$results;
             }
-            $prepared['rule']['caseSensitive']=true;
+            // The tuple comparison is exact by its own operator ("identical"), in both
+            // engines. The rule's caseSensitive flag belongs to its "when" gate and is left
+            // as authored: forcing it on made the page read [site]='a' exactly while the
+            // audit folded case, so a rule the server enforced never ran in the browser.
         }
         return $prepared;
     }
     private $temporalPid=null;
     private $temporalBudget=null;
+    private $temporalResolver=null;
+    private $temporalUniqueIndex=[];
+    private $temporalShapes=[];
+
+    /** One record (or page) evaluation: a fresh budget, and nothing remembered from the last record. */
+    private function temporalBegin($pid)
+    {
+        $this->temporalPid=$pid;$this->temporalBudget=new ReferenceBudget();
+        $this->temporalResolver=null;$this->temporalUniqueIndex=[];
+    }
+
+    /**
+     * Project metadata, once per request. A durable scan used to rebuild it for
+     * EVERY record. Only a complete answer is kept, as dataDictionary() does, so
+     * a transient metadata failure stays retryable.
+     */
+    private function temporalShape($pid,?array $dd=null)
+    {
+        $key=(string)$pid;
+        if(isset($this->temporalShapes[$key]))return $this->temporalShapes[$key];
+        $shape=TemporalMetadata::load($pid,$dd??($this->dataDictionary($pid)?:[]));
+        $complete=$shape->fieldsKnown()&&$shape->events();
+        foreach($shape->events() as $event)if(!is_array($event['forms']??null)||!is_bool($event['eventRepeats']??null)||!isset($event['arm'],$event['order']))$complete=false;
+        if($complete)$this->temporalShapes[$key]=$shape;
+        return $shape;
+    }
+
+    /** One resolver per record, so saved collections are read once rather than once per host context. */
+    private function temporalResolverFor(ProjectShape $shape,array $node,$browser)
+    {
+        $held=$this->temporalResolver;
+        if($held===null||$held['shape']!==$shape||$held['budget']!==$this->temporalBudget||$held['browser']!==(bool)$browser||$held['node']!==$node){
+            $resolver=new AddressResolver($shape,$node,10000,$this->temporalBudget);
+            if(!$browser)$resolver->shareAcrossContexts();
+            $this->temporalUniqueIndex=[];
+            $held=$this->temporalResolver=['shape'=>$shape,'budget'=>$this->temporalBudget,'browser'=>(bool)$browser,'node'=>$node,'resolver'=>$resolver];
+        }
+        return $held['resolver'];
+    }
+
+    /** Components compare as TemporalLogic's "identical" does: exact strings after PHP's default trim. */
+    private static function temporalTupleKey(array $tuple,array $parts)
+    {
+        $key=[];foreach($parts as $f)$key[]=trim((string)($tuple[$f]??''));
+        return serialize($key);   // binary-safe, unlike json_encode on a value that is not UTF-8
+    }
+
+    /**
+     * Every saved entry's uniqueness tuple on one instrument, read ONCE per
+     * record. Each host context used to re-read every other entry, which is
+     * quadratic: a record stopped being checkable at about 220 repeat instances
+     * because the rescans alone spent the evaluation budget.
+     * tuples: "event|instance" => [field => value] (entries whose own value is
+     * blank are left out: blank is never a duplicate). holders: tuple key =>
+     * the entries holding it.
+     */
+    private function temporalUniqueTuples(AddressResolver $resolver,array $node,$form,$field,array $parts)
+    {
+        $cacheKey=$form.'|'.implode(',',$parts);
+        if(isset($this->temporalUniqueIndex[$cacheKey]))return $this->temporalUniqueIndex[$cacheKey];
+        $index=['problem'=>null,'tuples'=>[],'holders'=>[]];$count=0;
+        foreach($this->hostContextsFor(self::recordContexts($node),$form,$this->temporalPid) as $other){
+            if(++$count>10000){$index['problem']='limit';break;}
+            $oc=$this->temporalContext($other,$form);$tuple=[];
+            foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$oc);if($v['state']!=='ok'){$index['problem']=$v['state'];break 2;}$tuple[$f]=$v['value'];}
+            if($tuple[$field]==='')continue;
+            $id=$other['event_id'].'|'.$other['instance'];
+            $index['tuples'][$id]=$tuple;$index['holders'][self::temporalTupleKey($tuple,$parts)][$id]=true;
+        }
+        return $this->temporalUniqueIndex[$cacheKey]=$index;
+    }
 
     private function foldTemporalRules(array $rules,$pid,$record,$instrument,$event,$instance,$context)
     {
@@ -144,9 +222,9 @@ trait TemporalIntegration
         foreach($rules as $i=>$r){if(empty($r['configError'])&&TemporalRules::extended($r))$extended[$i]=$r;else $legacy[$i]=$r;}
         $out=$this->foldRuleConditions($legacy,$pid,$record,$instrument,$event,$instance,$context);
         if(!$extended)return $out;
-        $this->temporalBudget=new ReferenceBudget();
+        $this->temporalBegin($pid);
         try{
-            $dd=$this->dataDictionary($pid)?:[];$shape=TemporalMetadata::load($pid,$dd);$node=$this->temporalReadRecord($pid,$record,$extended,$shape,$event);
+            $dd=$this->dataDictionary($pid)?:[];$shape=$this->temporalShape($pid,$dd);$node=$this->temporalReadRecord($pid,$record,$extended,$shape,$event);
             $rights=$context==='survey'?null:$this->userFormRights($pid);
             $mayRead=function($form)use($rights){return self::mayReadForm($rights,$form);};
             $ctx=['event'=>$event,'instrument'=>$instrument,'instance'=>$instance,'unsaved'=>true,'values'=>[]];
@@ -170,9 +248,8 @@ trait TemporalIntegration
         foreach($rules as $i=>$r){if(!empty($r['configError'])||!TemporalRules::extended($r))continue;
             foreach(TemporalRules::fields($r) as $f)if($instrument===null||($dd[$f]['form_name']??null)===$instrument){$extended[$i]=$r;break;}}
         if(!$extended)return;
-        $this->temporalBudget=new ReferenceBudget();
-        $this->temporalPid=$pid;
-        try {$node=$this->temporalReadRecord($pid,$record,$extended);$shape=TemporalMetadata::load($pid,$dd);$all=self::recordContexts($node);
+        $this->temporalBegin($pid);
+        try {$node=$this->temporalReadRecord($pid,$record,$extended);$shape=$this->temporalShape($pid,$dd);$all=self::recordContexts($node);
             if (!$all) throw new \RuntimeException('No readable host contexts.');
         } catch (\Throwable $e) {
             foreach ($extended as $i=>$rule) $this->logUnconfigurable($i,$rule['fields'],'Extended audit incomplete: source data unavailable; run the validation scan.',$instrument,$event,$instance);
@@ -180,9 +257,13 @@ trait TemporalIntegration
         }
         $limit=(int)$this->getProjectSetting('qualified-audit-max-contexts',$pid);if($limit<1)$limit=500;$count=0;
         $dupes=array_fill_keys(self::duplicateFields($rules),true);
+        $stopped=false;
         foreach($extended as $i=>$rule)foreach($this->ruleHostForms($rule,$pid)['forms'] as $form=>$fields){
+            // Once the audit stops, every rule it did not reach is named. Returning
+            // after the first notice left the later rules unchecked AND unmentioned.
+            if($stopped){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$event,$instance);continue;}
             foreach($this->hostContextsFor($all,$form,$pid) as $ctx){
-                if(++$count>$limit || $this->temporalBudget->exhausted()){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);return;}
+                if(++$count>$limit || $this->temporalBudget->exhausted()){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;break;}
                 $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
                 if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
                 $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance']);

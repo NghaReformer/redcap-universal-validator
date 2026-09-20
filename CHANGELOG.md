@@ -42,6 +42,25 @@ This release includes behavior changes from `v1.10.0`; it is not a patch-only up
 - Scan migration, lease fencing, worker recovery, retry handling, maintenance scheduling, and database diagnostics have been strengthened. No-progress browser polling uses backoff, and duplicate-group writes are batched.
 - Scan regression fixtures now reflect the current schema version, DAG interface, and maintenance wiring.
 
+### Fixed after the 2026-09-20 adversarial review
+
+Found by red-team review with reproducers; each has a regression test.
+
+- **`@UVCHOICES` dropdowns no longer drop the on-screen answer from the save.** The kept stale option was set `disabled`, and a browser leaves a disabled selected option out of the form submission. Under `blockSave` "off", or after "Save anyway", REDCap did not receive the value shown. The option is now greyed and marked `data-uv-stale`, and stays enabled.
+- **One saved value that is not valid UTF-8 no longer removes every rule from the page.** `json_encode` failed on the snapshot and the page was emitted with no validator at all. Only the rule that reads the value is shown as not checked.
+- **Within-record uniqueness and aggregates scale with the record, not its square.** Each host context re-read every other entry, so one record stopped being checkable at about 220 repeat entries (budget exhausted) and a 400-entry record took 8 seconds to scan. Saved collections are now read once per record: 1,500 entries are checked completely in well under a second.
+- **`@UVCHOICES` no longer re-evaluates once per choice code.** One selection in a 2,000-option dropdown ran the filter 2,002 times (2.5 s of blocked main thread; 10.8 s at 3,000 options in Chromium). It now runs once. Restoring a 20,000-option list under 50 branches fell from 42 s to about 1 s. The field's code list is sent once per rule, not once per branch (767 KB saved for 2,000 options under 50 tags).
+- **Record-scope `@UVUNIQUE` no longer forces `caseSensitive` onto its `when` gate in the browser.** The server folded case and enforced the rule while the page compared exactly and never ran it.
+- **A date not entered yet is a saved blank, not "unresolved".** Typed date and elapsed-time bindings, and a blank field compared with an average, reported an unresolved finding for every record still in progress. They now follow the same blank rules as every other comparison. Impossible dates stay unresolved.
+- The checkbox message region no longer sits inside an option row the filter can hide; the save guard asks each choice filter for a fresh verdict at submit time; `@READONLY` radio and checkbox options never hold a save; visible radio and checkbox inputs receive `aria-invalid` and `aria-describedby`.
+- A collection over `["event-name","baseline_arm_1"]` no longer counts each member twice when the hook delivers the event id as a string.
+- A truncated post-save audit names every rule it did not reach. `events:"arm"` with an arm that collects nothing, and `elapsedFrom` with a collection selector, are configuration errors.
+- A 4,000-digit value can no longer make one comparison cost seconds: exact addition is linear in the digit count, and a rational is no longer multiplied by one per set member.
+- Condition text is parsed once per request, and project metadata is loaded once per request; a durable scan rebuilt both for every record. The parser lowercases names with an ASCII map, so a Turkish `LC_CTYPE` on PHP 7.4 cannot turn `[ID]` into another field.
+- Late-rendered fields keep their documented 10-second binding window: only timer ticks count as retries.
+
+Known limitation: on a multi-page survey, a `@UVCHOICES` (or any `when`) condition whose controlling field was answered on an earlier page cannot be read in the browser on the later page. Keep both fields on one page; the post-save audit and scans still check the saved answer.
+
 ### Documentation
 
 - Expanded [action-tag examples](docs/action_tag_validation_examples.md) for single and pooled `alternates`, events, repeat selectors, key matching, aggregates, dates, and record-local uniqueness.

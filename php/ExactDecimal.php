@@ -11,7 +11,9 @@ final class ExactDecimal
         $sum='0'; $scale=0;
         foreach ($values as $value) {
             if (!is_scalar($value)) return ['state'=>'invalid'];
-            $value=trim((string)$value);
+            // Logic::compare's trim set. PHP's default also strips NUL and VT, so
+            // "9\x0B" summed as 9 and then lost every min/max comparison as text.
+            $value=trim((string)$value," \t\r\n");
             if (!preg_match('/^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/D',$value)) return ['state'=>'invalid'];
             if (strlen($value)>self::MAX_DIGITS) return ['state'=>'limit'];
             $negative=$value[0]==='-'; $value=ltrim($value,'+-');
@@ -51,26 +53,46 @@ final class ExactDecimal
 
     private static function add($a,$b)
     {
+        // Both operands fit a machine integer with room for the carry. That is
+        // nearly every real value, and it is exact: no float is involved.
+        if(PHP_INT_SIZE>=8&&strlen($a)<=18&&strlen($b)<=18)return (string)((int)$a+(int)$b);
+        return self::addDigits($a,$b);
+    }
+
+    /**
+     * Signed addition of canonical digit strings, in limbs of machine-integer
+     * width. The earlier digit-at-a-time loop prepended to its result string,
+     * which copies the whole string per digit: quadratic in the length, and a
+     * column of 4,096-digit values is something a data-entry user can create.
+     */
+    private static function addDigits($a,$b)
+    {
         $sa=$a[0]==='-'?-1:1; $sb=$b[0]==='-'?-1:1;
         $a=ltrim(ltrim($a,'-'),'0'); $b=ltrim(ltrim($b,'-'),'0');
         if($a==='')$a='0'; if($b==='')$b='0';
-        if($sa===$sb){
-            $out='';$carry=0;$i=strlen($a)-1;$j=strlen($b)-1;
-            while($i>=0||$j>=0||$carry){
-                $v=($i>=0?(int)$a[$i--]:0)+($j>=0?(int)$b[$j--]:0)+$carry;
-                $out=(string)($v%10).$out;$carry=intdiv($v,10);
-            }
-            return ($sa<0&&$out!=='0'?'-':'').$out;
-        }
+        if($sa===$sb){$out=self::limbs($a,$b,1);return ($sa<0&&$out!=='0'?'-':'').$out;}
         $cmp=strlen($a)===strlen($b)?strcmp($a,$b):(strlen($a)<strlen($b)?-1:1);
         if($cmp===0)return '0';
         if($cmp<0){$tmp=$a;$a=$b;$b=$tmp;$sa=$sb;}
-        $out='';$borrow=0;$j=strlen($b)-1;
-        for($i=strlen($a)-1;$i>=0;$i--){
-            $v=(int)$a[$i]-$borrow-($j>=0?(int)$b[$j--]:0);$borrow=$v<0?1:0;
-            if($v<0)$v+=10;$out=(string)$v.$out;
-        }
-        $out=ltrim($out,'0');if($out==='')$out='0';
+        $out=self::limbs($a,$b,-1);
         return ($sa<0&&$out!=='0'?'-':'').$out;
+    }
+
+    /** |a| + |b|, or |a| - |b| with |a| >= |b|, over non-negative digit strings. */
+    private static function limbs($a,$b,$sign)
+    {
+        $width=PHP_INT_SIZE>=8?15:8;$base=(int)('1'.str_repeat('0',$width));
+        $out=[];$carry=0;$i=strlen($a);$j=strlen($b);
+        while($i>0||$j>0){
+            $x=$i>0?(int)substr($a,max(0,$i-$width),min($width,$i)):0;
+            $y=$j>0?(int)substr($b,max(0,$j-$width),min($width,$j)):0;
+            $i-=$width;$j-=$width;
+            $v=$x+$sign*$y+$carry;$carry=0;
+            if($v>=$base){$v-=$base;$carry=1;}elseif($v<0){$v+=$base;$carry=-1;}
+            $out[]=str_pad((string)$v,$width,'0',STR_PAD_LEFT);
+        }
+        if($carry>0)$out[]='1';
+        $digits=ltrim(implode('',array_reverse($out)),'0');
+        return $digits===''?'0':$digits;
     }
 }
