@@ -101,6 +101,7 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     /** Enough of a result for ModuleDb, which reads through fetch_row(). */
     class UvRes {
@@ -465,14 +466,11 @@ namespace {
         $cm->userReturn = new \ExternalModules\RightsUser(
             ['design' => true, 'data_export_tool' => '1', 'group_id' => null,
              'forms' => ['fa' => '1', 'fb' => '0']]);
-        // run_id, project_id, scope_dag, phase, terminal, coverage, detail,
-        // values_state, policy_revision, fingerprint, manifest_total,
-        // manifest_done, cursor_ordinal, lease_epoch, generation_id, run_seq,
-        // created_by, detail_rows, detail_bytes, fence_open, fence_target,
-        // cancel_requested_at
-        $cm->runRow = ['77', '149', null, 'scanning', null, 'partial', 'complete', 'none',
-                       '1', 'fp', '10', '3', '3', '1', '1', '1', 'tester', '2', '400',
-                       '9', '9', null];
+        $cm->runRow = uv_run_row(['run_id' => '77', 'project_id' => '149',
+            'phase' => 'scanning', 'fingerprint' => 'fp', 'manifest_total' => '10',
+            'manifest_done' => '3', 'cursor_ordinal' => '3', 'lease_epoch' => '1',
+            'detail_rows' => '2', 'detail_bytes' => '400', 'fence_open' => '9',
+            'fence_target' => '9']);
         \REDCap::$dictionary = ['record_id' => fld('fa'),
                                 'a_val' => fld('fa', ASSERT_ANNOT),
                                 'b_secret' => fld('fb')];

@@ -26,6 +26,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/Schema.php';
+    require_once __DIR__ . '/../php/Scan/ScanStore.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -194,6 +195,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('ddl: version 2 is ALTERs plus its own three new tables',
             substr_count($v2, 'CREATE TABLE IF NOT EXISTS') === 3
             && substr_count($v2, 'ALTER TABLE ') === count(Schema::statements(2)) - 3);
+        // ScanStore::RUN_COLUMNS is what SqlScanStore::run() selects. A name in
+        // it that no version declares is "Unknown column" on every read of a
+        // run, and no suite without a database would see it.
+        $runTable = Schema::table('scan_run');
+        $runDdl = '';
+        foreach (Schema::statements(1) as $sql) {
+            if (strpos($sql, 'CREATE TABLE IF NOT EXISTS ' . $runTable . ' ') === 0) $runDdl .= $sql;
+        }
+        $created = $runDdl !== '';
+        foreach ($v2sql as $sql) {
+            if (strpos($sql, 'ALTER TABLE ' . $runTable . ' ') === 0) $runDdl .= ' ;; ' . $sql;
+        }
+        $undeclared = [];
+        foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $c) {
+            $q = preg_quote($c, '/');
+            if (!preg_match('/(^|[\s(,])' . $q . '\s+[A-Z]+/m', $runDdl)) $undeclared[] = $c;
+        }
+        check('ddl: every column the run row is read by is declared by some version'
+            . ($undeclared ? ' - not declared: ' . implode(', ', $undeclared) : ''),
+            $created && $undeclared === []);
+        check('ddl: and that check can fail - a column no version declares is caught',
+            !preg_match('/(^|[\s(,])no_such_column\s+[A-Z]+/m', $runDdl));
+
         // Re-issuing a changed CREATE TABLE IF NOT EXISTS against a populated
         // table succeeds, warns, and changes nothing. That is why v2 is ALTERs
         // and why v1 may never be edited again.

@@ -36,6 +36,8 @@ final class ScanOutcome
     const CANCELLED = 'cancelled';
     const FAILED    = 'failed';
     const EXPIRED   = 'expired';
+    /** Terminals that ended before "was it clean" could be asked at all. */
+    const NO_VERDICT = [self::FAILED, self::CANCELLED, self::EXPIRED];
 
     // Coverage.
     const FENCED   = 'complete-through-fence';
@@ -239,6 +241,24 @@ final class ScanOutcome
     public static function mayClaimClean(array $outcome)
     {
         return $outcome['terminal'] === self::COMPLETE && $outcome['clean'] === true;
+    }
+
+    /**
+     * What scan_run.clean holds for this outcome: 1, 0, or NULL.
+     *
+     * THREE values, because "was it clean" has three answers. A run that failed,
+     * was cancelled or expired never reached the question, and a 0 there would
+     * read as "checked, and found something" in every report built on the
+     * column. NULL is also what Schema::upgradeDataV2 and the reaper write for
+     * those runs, and what every run finished before this column was written
+     * carries, so a reader has one meaning for it: NOT CERTIFIED.
+     *
+     * @return int|null
+     */
+    public static function cleanColumn(array $outcome)
+    {
+        if (in_array($outcome['terminal'], self::NO_VERDICT, true)) return null;
+        return self::mayClaimClean($outcome) ? 1 : 0;
     }
 
     private static function out($terminal, $coverage, $detail, $clean, $gaps, $why)

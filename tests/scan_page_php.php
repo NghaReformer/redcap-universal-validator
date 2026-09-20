@@ -326,6 +326,7 @@ namespace {
         public static function isRepeatingForm($e = null, $f = null) { return null; }
     }
     require_once __DIR__ . '/../UniversalValidator.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     const PID  = 700;
     const PAGE = __DIR__ . '/../pages/scan.php';
@@ -1459,20 +1460,16 @@ namespace {
         check('PANEL: with no run the page says so, and says it plainly',
             strpos($html, 'Nothing has been run') !== false);
 
-        // POSITIONAL, against SqlScanStore::run()'s projection. Twenty-two
-        // values in that column order - a row of any other length makes
-        // array_combine() refuse it, run() answer false, and every check below
-        // fail at once with nothing saying why. It has drifted once already:
-        // run_seq was added to the projection and not to this row.
-        //
-        // run_id, project_id, scope_dag, phase, terminal, coverage, detail,
-        // values_state, policy_revision, fingerprint, manifest_total,
-        // manifest_done, cursor_ordinal, lease_epoch, generation_id, run_seq,
-        // created_by, detail_rows, detail_bytes, fence_open, fence_target,
-        // cancel_requested_at
-        $ROW = ['55', (string) PID, null, 'scanning', null, 'partial', 'complete', 'none',
-                '1', 'fp', '10', '3', '3', '1', '1', '1', 'tester', '2', '400',
-                '918273', '918273', null];
+        // BY NAME, through uv_run_row(). This row used to be a bare list in
+        // the projection's column order, and it drifted: run_seq went into
+        // SqlScanStore::run() and not into here, and every check below failed
+        // at once with nothing saying why.
+        $LIVE = ['run_id' => '55', 'project_id' => (string) PID, 'phase' => 'scanning',
+                 'fingerprint' => 'fp', 'manifest_total' => '10', 'manifest_done' => '3',
+                 'cursor_ordinal' => '3', 'lease_epoch' => '1', 'detail_rows' => '2',
+                 'detail_bytes' => '400', 'fence_open' => '918273', 'fence_target' => '918273',
+                 'progress_at' => gmdate('Y-m-d H:i:s')];
+        $ROW = uv_run_row($LIVE);
         list($live, ) = render($U(), $D, $data, [], $on([
             'activeRun' => 55, 'runRow' => $ROW, 'recordStates' => [['100', '3'], ['0', '7']]]));
         check('PANEL: a run in progress is NOT described as nothing having been run',
@@ -1495,8 +1492,7 @@ namespace {
 
         // A run whose total is not known yet is INDETERMINATE server-side too:
         // no aria-valuenow at all, rather than a zero that announces a stall.
-        $PLANNING = $ROW;
-        $PLANNING[3] = 'planning'; $PLANNING[10] = '0';
+        $PLANNING = uv_run_row(['phase' => 'planning', 'manifest_total' => '0'] + $LIVE);
         list($planning, ) = render($U(), $D, $data, [], $on([
             'activeRun' => 55, 'runRow' => $PLANNING, 'recordStates' => []]));
         check('PANEL: a run with no total yet reports no position at all',

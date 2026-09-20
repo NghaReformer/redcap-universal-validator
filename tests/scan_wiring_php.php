@@ -90,7 +90,6 @@ namespace {
         'ScanPageView::verdict'        => 'wave 7 deletes it: a second clean predicate with no caller that does not agree with ScanOutcome::mayClaimClean(), which is the drift ScanOutcome\'s docblock exists to prevent',
 
         // -- wave 7, the honest outcome.
-        'ScanOutcome::mayClaimClean' => 'wave 7 (B4/H15) asks it: nothing currently asks whether "clean" may be said, so it is said',
 
         // -- wave 10, the safeguards. Each is dangerous before its dependency
         //    lands, which is why they are last and not first.

@@ -37,6 +37,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
     require_once __DIR__ . '/scan_fault_support.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -265,15 +266,12 @@ namespace INSPIRE\UniversalValidator\Scan {
     // THE PROBE COSTS NOTHING ON THE HAPPY PATH. It is on the failure branch
     // only, so an ordinary start is still one insert and one read.
     $db = new ScriptedDb();
-    // TWENTY-TWO VALUES, and they are positional. run() projects a fixed column
-    // list and array_combine() refuses a row of the wrong length, so a stub row
-    // that has drifted from the projection makes startRun answer with a `run`
-    // of false while still reporting ok - which is what this check caught: the
-    // run_seq column was added to the projection and never added here.
+    // BY NAME. run() selects ScanStore::RUN_COLUMNS and refuses a row of any
+    // other length; this stub was once a bare positional list, and it drifted
+    // when run_seq joined the projection.
     $db->rows = ['SELECT run_id FROM' => [[42]],
-                 'SELECT run_id, project_id' => [[42, 700, null, 'planning', null, 'partial',
-                    'complete', 'none', 1, str_repeat('0', 64), 0, 0, 0, 0, 1, 1, 'alice', 0, 0,
-                    null, null, null]]];
+                 'SELECT run_id, project_id' => [uv_run_row(['run_id' => 42,
+                    'project_id' => 700, 'created_by' => 'alice'])]];
     $r = outcomeOf(function () use ($db) {
         return (new SqlScanStore($db))->startRun(700, []);
     });
@@ -293,6 +291,43 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('start: and asks the contention question zero times when nothing failed',
         $probes === 0);
+
+    // =====================================================================
+    // THE RUN ROW HAS ONE COLUMN LIST, AND A ROW THAT DISAGREES IS REFUSED
+    // =====================================================================
+    //
+    // array_combine() used to answer FALSE for a row of the wrong length (it
+    // throws from PHP 8), so on the 7.4 floor a drifted projection read as "no
+    // such run" and said nothing. run() now names both lengths.
+    $short = uv_run_row(['run_id' => 42, 'project_id' => 700]);
+    array_pop($short);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT run_id, project_id' => [$short]];
+    $r = outcomeOf(function () use ($db) { return (new SqlScanStore($db))->run(700, 42); });
+    check('run: a row one column short is refused, not read as a run',
+        $r['kind'] === 'other' && $r['class'] === 'LogicException');
+    check('run: and the refusal names both lengths',
+        $r['kind'] === 'other'
+        && strpos($r['e']->getMessage(), (string) count($short)) !== false
+        && strpos($r['e']->getMessage(), (string) count(ScanStore::RUN_COLUMNS)) !== false);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT run_id, project_id' => [uv_run_row(['run_id' => 42, 'project_id' => 700])]];
+    $r = outcomeOf(function () use ($db) { return (new SqlScanStore($db))->run(700, 42); });
+    check('run: a full row comes back keyed by RUN_COLUMNS, in that order',
+        $r['kind'] === 'returned' && array_keys($r['value']) === ScanStore::RUN_COLUMNS);
+    $sent = '';
+    foreach ($db->log as $sql) {
+        if (strpos($sql, 'SELECT run_id, project_id') !== false) $sent = $sql;
+    }
+    $named = true;
+    foreach (ScanStore::RUN_COLUMNS as $c) {
+        if (!preg_match('/\b' . preg_quote($c, '/') . '\b/', $sent)) $named = false;
+    }
+    check('run: and the statement selects every one of them', $sent !== '' && $named);
+    $db = new ScriptedDb();
+    $r = outcomeOf(function () use ($db) { return (new SqlScanStore($db))->run(700, 42); });
+    check('run: no row is still "no such run"',
+        $r['kind'] === 'returned' && $r['value'] === null);
 
     // =====================================================================
     // P11 - "is the manifest complete" fails CLOSED

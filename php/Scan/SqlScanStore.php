@@ -306,28 +306,23 @@ final class SqlScanStore implements ScanStore
      */
     public function run($pid, $runId)
     {
-        // fence_open/fence_target and cancel_requested_at are here because
-        // ScanPromotion reads the run row to decide what it may claim: a fence
-        // it cannot see is a fence it treats as absent, which silently
-        // downgrades every fenced run to manifest-complete. The in-memory store
-        // disagreed with this one about exactly these three columns and the
-        // promotion test is what said so.
-        $r = $this->db->select('SELECT run_id, project_id, scope_dag, phase, terminal, coverage,
-            detail, values_state, policy_revision, fingerprint, manifest_total, manifest_done,
-            cursor_ordinal, lease_epoch, generation_id, run_seq, created_by, detail_rows, detail_bytes,
-            fence_open, fence_target, cancel_requested_at
+        // THE COLUMNS AND THE KEYS ARE ONE LIST - ScanStore::RUN_COLUMNS, which
+        // says why. Every name in it is a column of scan_run, so it can be
+        // imploded straight into the statement; nothing here comes from a caller.
+        $r = $this->db->select('SELECT ' . implode(', ', self::RUN_COLUMNS) . '
             FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ?',
             [$runId, $pid]);
         if (!isset($r[0])) return null;
-        $k = ['run_id', 'project_id', 'scope_dag', 'phase', 'terminal', 'coverage', 'detail',
-              'values_state', 'policy_revision', 'fingerprint', 'manifest_total', 'manifest_done',
-              // run_seq is the interval a finding written by this run OPENS,
-              // so a caller building a batch needs it as much as it needs the
-              // generation. Leaving it out made every such caller reach past
-              // this method for it, or quietly write a zero.
-              'cursor_ordinal', 'lease_epoch', 'generation_id', 'run_seq', 'created_by', 'detail_rows',
-              'detail_bytes', 'fence_open', 'fence_target', 'cancel_requested_at'];
-        return array_combine($k, $r[0]);
+        $row = array_values((array) $r[0]);
+        if (count($row) !== count(self::RUN_COLUMNS)) {
+            // array_combine() would answer FALSE here, and a false run row reads
+            // as "no such key" to everything downstream. This is not a storage
+            // fault and must not be dressed as one: the row and the list disagree
+            // because somebody changed one of them.
+            throw new \LogicException('the run row has ' . count($row) . ' columns and '
+                . 'ScanStore::RUN_COLUMNS names ' . count(self::RUN_COLUMNS));
+        }
+        return array_combine(self::RUN_COLUMNS, $row);
     }
 
     /**
@@ -1332,15 +1327,31 @@ final class SqlScanStore implements ScanStore
         }
     }
 
+    /**
+     * THE DECISION IS WRITTEN WITH THE TERMINAL, in the one statement. `clean`
+     * and the three counts used to live only in the array promote() returned,
+     * so the run row said "complete" and nothing anywhere said whether that
+     * meant "and nothing was found" - every later reader had to re-derive it
+     * from tables retention is allowed to empty.
+     *
+     * The counts arrive IN $outcome. They are not computed here by subquery:
+     * that would read scan_record and scan_aggregate under the run-row lock,
+     * the reverse of the order commitBatch() takes them in.
+     */
     public function finish($runId, array $outcome)
     {
+        $n = function ($k) use ($outcome) {
+            return isset($outcome[$k]) ? max(0, (int) $outcome[$k]) : 0;
+        };
         $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
             SET phase = ?, terminal = ?, coverage = ?, detail = ?, active_slot = NULL,
-                terminal_reason = ?, updated_at = ?
+                terminal_reason = ?, clean = ?, gap_count = ?, rule_problem_count = ?,
+                not_examined = ?, updated_at = ?
             WHERE run_id = ? AND active_slot = 1',
             ['terminal', $outcome['terminal'], $outcome['coverage'], $outcome['detail'],
              isset($outcome['why']) ? substr((string) $outcome['why'], 0, 255) : null,
-             self::now(), $runId]);
+             ScanOutcome::cleanColumn($outcome), $n('gaps'), $n('ruleProblems'),
+             $n('notExamined'), self::now(), $runId]);
         return $this->db->affected() === 1;
     }
 

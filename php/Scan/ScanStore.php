@@ -107,6 +107,47 @@ interface ScanStore
     const REC_UNSTORED   = 104;
 
     /**
+     * Terminal WITHOUT having been examined. One list, because two places ask:
+     * promotion, where any of these caps coverage at partial, and the progress
+     * figure, which must not call them done. A tombstone is not here - a record
+     * deleted from the project was not skipped, it stopped existing.
+     */
+    const NOT_EXAMINED = [self::REC_UNREADABLE, self::REC_UNSTABLE, self::REC_UNSTORED];
+
+    /**
+     * What run() returns: these keys, in this order, from both stores.
+     *
+     * ONE LIST, ON THE INTERFACE. SqlScanStore used to carry a SELECT list and,
+     * a few lines below it, a hand-kept list of keys to zip the row against.
+     * Add a column to one and not the other and array_combine() returns false -
+     * not an error, a false - so run() answered false, promote() asked
+     * isset($run['phase']) of a boolean, and three test fixtures built as
+     * positional arrays drifted the same way, twice. The SELECT list is now
+     * imploded from this constant and a row of the wrong length throws.
+     *
+     * The first 22 are in their original order. Anything new is APPENDED, so a
+     * fixture keyed by position stays valid for the columns it knew about.
+     */
+    const RUN_COLUMNS = [
+        'run_id', 'project_id', 'scope_dag', 'phase', 'terminal', 'coverage', 'detail',
+        'values_state', 'policy_revision', 'fingerprint', 'manifest_total', 'manifest_done',
+        // run_seq is the interval a finding written by this run OPENS, so a
+        // caller building a batch needs it as much as it needs the generation.
+        'cursor_ordinal', 'lease_epoch', 'generation_id', 'run_seq', 'created_by', 'detail_rows',
+        // fence_open, fence_target and cancel_requested_at because promotion
+        // reads the run row to decide what it may claim: a fence it cannot see
+        // is a fence it treats as absent, which silently downgrades every
+        // fenced run to manifest-complete.
+        'detail_bytes', 'fence_open', 'fence_target', 'cancel_requested_at',
+        // Why it ended, the three clocks, and what promotion decided. `clean`
+        // is NULL until a run finishes as complete or partial, and stays NULL
+        // for one that failed, was cancelled or expired: those make no claim
+        // about the project at all.
+        'terminal_reason', 'created_at', 'updated_at', 'progress_at',
+        'clean', 'gap_count', 'rule_problem_count', 'not_examined',
+    ];
+
+    /**
      * Create a run and take the project's active slot, or report busy.
      *
      * MUST fail rather than wait when the slot is held (I1). Returns the run on

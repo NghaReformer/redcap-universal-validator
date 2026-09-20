@@ -714,6 +714,57 @@ $ASKED = 782;
         $s->manifestComplete(999999999) === true);
 }
 
+// THE DECISION IS ON THE ROW (H15), read back RAW.
+//
+// The contract below reads these through run(), and run() goes through a
+// driver that hands every value back as a string or null. "NULL, not 0" is a
+// statement about the column, so it is asked of the column: `clean IS NULL` is
+// a question only the server can answer, and a store that bound 0 where it
+// meant NULL would pass any check written against PHP's loose reading of it.
+$DECIDED = 783;
+{
+    $s = new SqlScanStore($dbA);
+    $raw = function ($rid) use ($A) {
+        $q = $A->query('SELECT clean IS NULL, clean, gap_count, rule_problem_count, not_examined,
+            terminal_reason, active_slot IS NULL FROM ' . Schema::table('scan_run')
+            . ' WHERE run_id = ' . (int) $rid);
+        return $q->fetch_row();
+    };
+    $rid = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+    $row = $raw($rid);
+    check('decided: a live run has no verdict yet', (int) $row[0] === 1);
+    $o = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'blocked' => true, 'gaps' => 7]);
+    $o['ruleProblems'] = 2;
+    $o['notExamined'] = 5;
+    check('decided: finishing takes', $s->finish($rid, $o) === true);
+    $row = $raw($rid);
+    check('decided: a partial run is a stored 0, not an absent value',
+        (int) $row[0] === 0 && (int) $row[1] === 0);
+    check('decided: with its three counts beside it',
+        (int) $row[2] === 7 && (int) $row[3] === 2 && (int) $row[4] === 5);
+    check('decided: the reason it ended, and the slot given back',
+        $row[5] === $o['why'] && (int) $row[6] === 1);
+    $clean = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]);
+    check('decided: a second finaliser with a better story is refused',
+        $s->finish($rid, $clean) === false);
+    $again = $raw($rid);
+    check('decided: and rewrote nothing', $again === $row);
+
+    $rid2 = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+    $s->finish($rid2, $clean);
+    $row = $raw($rid2);
+    check('decided: a complete run that found nothing is a stored 1',
+        (int) $row[0] === 0 && (int) $row[1] === 1);
+
+    foreach (['cancelled', 'failed', 'expired'] as $how) {
+        $rid3 = (int) $s->startRun($DECIDED, ['created_by' => 'alice'])['run']['run_id'];
+        $s->finish($rid3, ScanOutcome::derive([$how => true, 'fenced' => true, 'manifestDone' => true]));
+        $row = $raw($rid3);
+        check("decided: a $how run stores NULL, which is not the same as not clean",
+            (int) $row[0] === 1 && $row[1] === null);
+    }
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

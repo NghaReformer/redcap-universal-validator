@@ -1578,6 +1578,19 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('promote: and does not block its coverage either',
         ScanOutcome::derive($tomb['facts'])['coverage'] === ScanOutcome::FENCED);
 
+    // WHAT THE ROW WILL SAY WAS NOT EXAMINED is the same sum that blocks
+    // `clean`, over the same list - ScanStore::NOT_EXAMINED - so the two cannot
+    // come to disagree about a state one of them forgot.
+    $mixed = ScanPromotion::facts($run, [ScanStore::REC_DONE => 6,
+        ScanStore::REC_UNREADABLE => 1, ScanStore::REC_UNSTABLE => 1,
+        ScanStore::REC_UNSTORED => 1, ScanStore::REC_TOMBSTONE => 1], $ok);
+    check('promote: every not-examined state is counted for the row, once each',
+        $mixed['notExamined'] === 3);
+    check('promote: a deleted record is not one of them', $tomb['notExamined'] === 0);
+    check('promote: and the count and the block are one question',
+        ($mixed['notExamined'] > 0) === $mixed['facts']['blocked']
+        && ($tomb['notExamined'] > 0) === $tomb['facts']['blocked']);
+
     $ug = ScanPromotion::facts($run, $all, array_merge($ok, ['uniqueBlocking' => 1]));
     check('promote: a duplicate group nobody could decide caps coverage',
         ScanOutcome::derive($ug['facts'])['coverage'] === ScanOutcome::COV_PARTIAL);
@@ -1634,6 +1647,17 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('promote: the run finishes', $p['promoted'] === true);
     check('promote: with a terminal state stored',
         $store->run(800, $runId)['terminal'] === ScanOutcome::COMPLETE);
+    // H15. The decision used to exist only in $p; the row said how the run
+    // ended and nothing said what it had concluded.
+    $after = $store->run(800, $runId);
+    check('promote: and the decision is on the row, not only in the answer',
+        $after['clean'] !== null && (int) $after['clean'] === 1
+        && ScanOutcome::mayClaimClean($p['outcome']) === true);
+    check('promote: beside the sentence that explains it',
+        $after['terminal_reason'] === $p['outcome']['why']);
+    check('promote: and the counts it was decided on',
+        (int) $after['not_examined'] === 0 && (int) $after['rule_problem_count'] === 0
+        && (int) $after['gap_count'] === 0);
     check('promote: and the project slot released for the next scan',
         $store->startRun(800, ['created_by' => 'bob'])['ok'] === true);
     $again = ScanPromotion::promote($store, 800, $runId, $ok);
@@ -1644,6 +1668,37 @@ namespace INSPIRE\UniversalValidator\Scan {
     $p = ScanPromotion::promote($store, 801, $runId, $ok);
     check('promote: a cross-project run id is refused with the "no such run" wording',
         $p['promoted'] === false && strpos($p['why'], 'no scan with that reference') !== false);
+
+    // THE SAME, WITH A HOLE IN IT. One of three records could not be read, so
+    // the row has to say 0 and say how many - through promote(), because that
+    // is the only producer of the count and a row of zeroes looks plausible.
+    {
+        $store = new ArrayScanStore();
+        $hid = (int) $store->startRun(802, ['created_by' => 'alice', 'fence_open' => '1'])['run']['run_id'];
+        $recs = [];
+        foreach (['A', 'B', 'C'] as $id) $recs[] = ['id_bin' => $id, 'hash' => $hash($id), 'dag' => null];
+        $store->writeManifest($hid, $recs);
+        $hep = (int) $store->run(802, $hid)['lease_epoch'];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($store->claim($hid, 'w1', $hep, 3) as $c) {
+            $batch['records'][] = ['ordinal' => $c['ordinal'], 'claim' => $c['claim'], 'version' => '100',
+                'state' => $c['ordinal'] === 2 ? ScanStore::REC_UNREADABLE : ScanStore::REC_DONE];
+        }
+        $store->commitBatch($hid, 'w1', $hep, $batch);
+        foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP] as $ph) {
+            $store->advancePhase($hid, $hep, $ph);
+        }
+        $store->setProgressState($hid, $hep, ['fenceTarget' => '500']);
+        $p = ScanPromotion::promote($store, 802, $hid, array_merge($ok, ['gapCount' => 4]));
+        $after = $store->run(802, $hid);
+        check('promote: a run with an unread record finishes partial',
+            $p['promoted'] === true && $after['terminal'] === ScanOutcome::PARTIAL);
+        check('promote: recorded as NOT clean, which is a 0 and not an absence',
+            $after['clean'] !== null && (int) $after['clean'] === 0);
+        check('promote: with the one record it never examined counted on the row',
+            (int) $after['not_examined'] === 1);
+        check('promote: and the gaps it saw', (int) $after['gap_count'] === 4);
+    }
 
     /* =====================================================================
      * NEVER WALK PAST RECORDS NOBODY EXAMINED.

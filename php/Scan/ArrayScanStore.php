@@ -81,11 +81,16 @@ final class ArrayScanStore implements ScanStore
             // Written in exactly two places, both real progress - see
             // SqlScanStore::commitBatch. NULL until one of them happens.
             'progress_at' => null,
+            // The rest of ScanStore::RUN_COLUMNS, with the defaults the schema
+            // gives them. `clean` is NULL, not 0: nothing has been decided.
+            'terminal_reason' => null,
+            'created_at' => gmdate('Y-m-d H:i:s'), 'updated_at' => gmdate('Y-m-d H:i:s'),
+            'clean' => null, 'gap_count' => 0, 'rule_problem_count' => 0, 'not_examined' => 0,
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
              'fence_open'])));
         $this->records[$id] = [];
-        return ['ok' => true, 'busy' => false, 'run' => $this->runs[$id], 'why' => null];
+        return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }
 
     public function run($pid, $runId)
@@ -94,7 +99,15 @@ final class ArrayScanStore implements ScanStore
         // Bound to the project: a locator that resolves across projects is an
         // authorisation bug wearing a lookup's clothes.
         if ($r === null || (int) $r['project_id'] !== (int) $pid) return null;
-        return $r;
+        // EXACTLY THE PROJECTION THE SQL STORE RETURNS, in its order. This used
+        // to hand back the whole internal row, so a caller could come to depend
+        // on a key - active_slot, a catch-up cursor - that the real store never
+        // returns, and only a live server would say so.
+        $out = [];
+        foreach (self::RUN_COLUMNS as $k) {
+            $out[$k] = array_key_exists($k, $r) ? $r[$k] : null;
+        }
+        return $out;
     }
 
     public function writeManifest($runId, array $records)
@@ -569,13 +582,28 @@ final class ArrayScanStore implements ScanStore
         $this->runs[$runId]['coverage'] = $outcome['coverage'];
         $this->runs[$runId]['detail'] = $outcome['detail'];
         $this->runs[$runId]['active_slot'] = null;
+        // The decision, in the same write as the terminal - see the SQL store.
+        $n = function ($k) use ($outcome) {
+            return isset($outcome[$k]) ? max(0, (int) $outcome[$k]) : 0;
+        };
+        $this->runs[$runId]['terminal_reason'] = isset($outcome['why'])
+            ? substr((string) $outcome['why'], 0, 255) : null;
+        $this->runs[$runId]['clean'] = ScanOutcome::cleanColumn($outcome);
+        $this->runs[$runId]['gap_count'] = $n('gaps');
+        $this->runs[$runId]['rule_problem_count'] = $n('ruleProblems');
+        $this->runs[$runId]['not_examined'] = $n('notExamined');
+        $this->runs[$runId]['updated_at'] = gmdate('Y-m-d H:i:s');
         return true;
     }
 
     public function cancel($pid, $runId, $actor)
     {
-        $r = $this->run($pid, $runId);
-        if ($r === null || $r['active_slot'] !== 1) return false;
+        // The INTERNAL row, not run(): active_slot is no part of the projection
+        // a caller sees, and asking run() for it reads null and refuses every
+        // cancel.
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['project_id'] !== (int) $pid
+            || $r['active_slot'] !== 1) return false;
         $this->runs[$runId]['cancel_requested_at'] = gmdate('Y-m-d H:i:s');
         $this->runs[$runId]['phase'] = 'cancelling';
         $this->runs[$runId]['lease_epoch']++;

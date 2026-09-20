@@ -129,7 +129,7 @@ final class ScanPromotion
      *   maxFindings:        ?int
      *   maxBytes:           ?int
      * }
-     * @return array{ready:bool, facts:array, why:?string}
+     * @return array{ready:bool, facts:array, why:?string, notExamined:int}
      */
     public static function facts(array $run, array $states, array $in = [])
     {
@@ -146,8 +146,12 @@ final class ScanPromotion
         // newest of the three and the easiest to forget: it is written by the
         // give-back path rather than by a commit, so nothing else in this file
         // would ever have mentioned it.
-        $unread  = $n(ScanStore::REC_UNREADABLE) + $n(ScanStore::REC_UNSTABLE)
-                 + $n(ScanStore::REC_UNSTORED);
+        //
+        // The list is ScanStore::NOT_EXAMINED so that the number promote()
+        // persists as `not_examined` and the number that blocks `clean` here are
+        // one sum over one list.
+        $unread = 0;
+        foreach (ScanStore::NOT_EXAMINED as $state) $unread += $n($state);
 
         $cancelled = !empty($run['cancel_requested_at'])
                      || (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING);
@@ -234,7 +238,8 @@ final class ScanPromotion
             $why = null;
         }
 
-        return ['ready' => $ready, 'facts' => $facts, 'why' => $why];
+        return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
+                'notExamined' => $unread];
     }
 
     /**
@@ -268,6 +273,9 @@ final class ScanPromotion
 
         $outcome = ScanOutcome::derive($f['facts']);
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        // What finish() persists beside the terminal. `gaps` is already there.
+        $outcome['ruleProblems'] = (int) $f['facts']['ruleProblems'];
+        $outcome['notExamined'] = (int) $f['notExamined'];
         $ok = $store->finish($runId, $outcome);
         return ['promoted' => $ok, 'outcome' => $outcome,
                 'why' => $ok ? null : 'another worker finished this scan first'];

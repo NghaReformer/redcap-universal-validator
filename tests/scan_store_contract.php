@@ -45,6 +45,18 @@ function storeContract(callable $newStore, $label)
     // -- the run id is a locator, never an authorisation -------------------
     $C('a run id does not resolve under another project', $s->run(701, $runId) === null);
     $C('but does under its own', $s->run(700, $runId) !== null);
+    // ONE column list, on the interface. Both stores answer in exactly these
+    // keys, in this order, so nothing a caller reads exists in only one store.
+    $C('a run row is ScanStore::RUN_COLUMNS, no more, no fewer, in that order',
+        array_keys($s->run(700, $runId)) === ScanStore::RUN_COLUMNS);
+    $C('and startRun hands back the same shape',
+        array_keys($r1['run']) === ScanStore::RUN_COLUMNS);
+    $fresh = $s->run(700, $runId);
+    $C('a run that has not ended has made no decision yet',
+        $fresh['clean'] === null && $fresh['terminal_reason'] === null
+        && (int) $fresh['gap_count'] === 0 && (int) $fresh['rule_problem_count'] === 0
+        && (int) $fresh['not_examined'] === 0);
+    $C('and it knows when it was created', (string) $fresh['created_at'] !== '');
 
     // -- manifest ----------------------------------------------------------
     // BEFORE ANY RECORD IS LISTED the predicate is vacuous, and both stores
@@ -208,12 +220,56 @@ function storeContract(callable $newStore, $label)
         (int) $s->run(700, $runId)['manifest_done'] === 2);
 
     // -- finishing ----------------------------------------------------------
-    $outcome = ScanOutcome::derive(['fenced' => true, 'manifestDone' => false, 'blocked' => true]);
+    $outcome = ScanOutcome::derive(['fenced' => true, 'manifestDone' => false, 'blocked' => true,
+                                    'gaps' => 4]);
+    $outcome['ruleProblems'] = 2;
+    $outcome['notExamined'] = 3;
     $C('finishing succeeds once', $s->finish($runId, $outcome) === true);
-    $C('and a retried finaliser changes nothing', $s->finish($runId, $outcome) === false);
+    // THE RETRY CARRIES A DIFFERENT ANSWER, so "changes nothing" is a statement
+    // about the row and not only about the return value. A second finaliser
+    // that arrives with a cleaner outcome must not be able to launder the run.
+    $rewrite = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]);
+    $C('and a retried finaliser is refused', $s->finish($runId, $rewrite) === false);
     $done = $s->run(700, $runId);
     $C('the terminal state is recorded', $done['terminal'] === ScanOutcome::PARTIAL);
     $C('with the coverage it earned', $done['coverage'] === ScanOutcome::COV_PARTIAL);
+
+    // -- the decision is ON THE ROW (H15) ------------------------------------
+    // It used to live only in the array promote() returned. The run row said
+    // how the run ended and nothing anywhere said what it had concluded.
+    $C('a partial run is recorded as NOT clean, which is a 0 and not an absence',
+        $done['clean'] !== null && (int) $done['clean'] === 0);
+    $C('with the records it never examined', (int) $done['not_examined'] === 3);
+    $C('the rule problems it met', (int) $done['rule_problem_count'] === 2);
+    $C('the collection gaps it saw', (int) $done['gap_count'] === 4);
+    $C('and why it ended as it did', $done['terminal_reason'] === $outcome['why']);
+    $C('the refused retry rewrote none of it',
+        $done['terminal'] !== ScanOutcome::COMPLETE && (int) $done['not_examined'] === 3);
+
+    $sc = $newStore();
+    $cid = (int) $sc->startRun(760, ['created_by' => 'alice'])['run']['run_id'];
+    $C('a complete run with nothing found is recorded clean',
+        $sc->finish($cid, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true])) === true
+        && (int) $sc->run(760, $cid)['clean'] === 1
+        && $sc->run(760, $cid)['clean'] !== null);
+    $did = (int) $sc->startRun(761, ['created_by' => 'alice'])['run']['run_id'];
+    $C('a complete run that found something is recorded not clean',
+        $sc->finish($did, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+            'violations' => 1])) === true
+        && $sc->run(761, $did)['clean'] !== null && (int) $sc->run(761, $did)['clean'] === 0);
+    // NULL, not 0. A cancelled run never reached the question, and a 0 would
+    // read as "checked, and found something" to every report on the column.
+    foreach ([762 => 'cancelled', 763 => 'failed', 764 => 'expired'] as $p => $how) {
+        $xid = (int) $sc->startRun($p, ['created_by' => 'alice'])['run']['run_id'];
+        $sc->finish($xid, ScanOutcome::derive([$how => true, 'fenced' => true,
+            'manifestDone' => true]));
+        $C("a $how run carries NO verdict rather than a negative one",
+            $sc->run($p, $xid)['terminal'] === $how && $sc->run($p, $xid)['clean'] === null);
+    }
+    $eid = (int) $sc->startRun(765, ['created_by' => 'alice'])['run']['run_id'];
+    $sc->finish($eid, ScanOutcome::derive(['emptyScope' => true]));
+    $C('a run over an empty scope is not clean either',
+        $sc->run(765, $eid)['clean'] !== null && (int) $sc->run(765, $eid)['clean'] === 0);
     $C('and the project slot is released, so the next scan may start',
         $s->startRun(700, ['created_by' => 'carol'])['ok'] === true);
 
