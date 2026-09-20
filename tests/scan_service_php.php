@@ -484,6 +484,88 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B3 GATE 2: and the user who started it may work it',
         ScanAuthorization::mayWork($scope['rights'], ['fa'], $r['run']['scope_dag'])['ok'] === true);
 }
+
+/* =====================================================================
+ * WHERE A RUN HAS GOT TO, AND WHETHER IT IS GETTING ANYWHERE (L4, L5)
+ *
+ * status() is reachable only through a module, a user and an entitlement,
+ * which is why it had no test. What it SAYS about progress is progressOf(),
+ * which takes a row, a census and a clock.
+ * ===================================================================== */
+{
+    $NOW = strtotime('2026-09-20 12:00:00 UTC');
+    $ago = function ($seconds) use ($NOW) { return gmdate('Y-m-d H:i:s', $NOW - $seconds); };
+    $row = function (array $over) use ($ago) {
+        return array_merge(['phase' => ScanPhase::SCANNING, 'terminal' => null,
+            'created_at' => $ago(3600), 'updated_at' => $ago(1), 'progress_at' => $ago(10)], $over);
+    };
+    $census = [ScanStore::REC_PENDING => 4, ScanStore::REC_CLAIMED => 1, ScanStore::REC_DONE => 8,
+               ScanStore::REC_UNREADABLE => 1, ScanStore::REC_UNSTABLE => 2,
+               ScanStore::REC_TOMBSTONE => 3, ScanStore::REC_UNSTORED => 5];
+    $p = ScanService::progressOf($row([]), $census, $NOW);
+    check('progress: done is records EXAMINED and nothing else', $p['done'] === 8);
+    check('progress: every not-examined state is an exclusion, once each', $p['excluded'] === 8);
+    check('progress: a deleted record is neither', $p['removed'] === 3);
+    check('progress: settled is the three together, and leaves out what is still waiting',
+        $p['settled'] === 19);
+    // The bug, in one line: twelve records, none examined, and the old sum.
+    $none = ScanService::progressOf($row([]), [ScanStore::REC_UNSTORED => 12], $NOW);
+    check('progress: a run where every record failed to store examined NOTHING',
+        $none['done'] === 0 && $none['excluded'] === 12 && $none['settled'] === 12);
+    check('progress: an empty census is all zeroes rather than an error',
+        ScanService::progressOf($row([]), [], $NOW)['settled'] === 0);
+
+    check('stall: a run that finished a record ten seconds ago is not stalled',
+        $p['stalled'] === false && $p['idleSeconds'] === 10);
+    $s = ScanService::progressOf($row(['progress_at' => $ago(500)]), $census, $NOW);
+    check('stall: one that has finished nothing for longer than the threshold is',
+        $s['stalled'] === true && $s['idleSeconds'] === 500);
+    // THE WEDGE. claim() refreshes updated_at on a run whose every batch is
+    // being refused, which is exactly the run a watcher needs to be told about.
+    check('stall: in scanning, a fresh updated_at does NOT hide it',
+        ScanService::progressOf($row(['progress_at' => $ago(500), 'updated_at' => $ago(1)]),
+            $census, $NOW)['stalled'] === true);
+    // The other three phases never move progress_at, so their cursor writes are
+    // the only clock there is.
+    foreach (ScanService::PHASES_ON_THE_UPDATE_CLOCK as $ph) {
+        $busy = ScanService::progressOf($row(['phase' => $ph, 'progress_at' => $ago(5000),
+            'updated_at' => $ago(3)]), $census, $NOW);
+        check("stall: in $ph a moving cursor is progress", $busy['stalled'] === false
+            && $busy['idleSeconds'] === 3);
+        $stuck = ScanService::progressOf($row(['phase' => $ph, 'progress_at' => $ago(5000),
+            'updated_at' => $ago(4000)]), $census, $NOW);
+        check("stall: and in $ph a cursor that has stopped is a stall",
+            $stuck['stalled'] === true && $stuck['idleSeconds'] === 4000);
+    }
+    check('stall: the list of those phases is the three finishing ones, and not scanning',
+        count(ScanService::PHASES_ON_THE_UPDATE_CLOCK) === 3
+        && !in_array(ScanPhase::SCANNING, ScanService::PHASES_ON_THE_UPDATE_CLOCK, true));
+    check('stall: a run that has never finished a record is timed from when it was created',
+        ScanService::progressOf($row(['progress_at' => null, 'created_at' => $ago(900)]),
+            [], $NOW)['idleSeconds'] === 900);
+    check('stall: a FINISHED run is never stalled, however long ago it ended',
+        ScanService::progressOf($row(['phase' => ScanPhase::TERMINAL, 'terminal' => 'complete',
+            'progress_at' => $ago(999999)]), $census, $NOW)['stalled'] === false);
+    check('stall: a row with no readable clock is not reported as the alarming reading of it',
+        ScanService::progressOf(['phase' => ScanPhase::SCANNING, 'terminal' => null,
+            'created_at' => 'not a date'], $census, $NOW) ['stalled'] === false);
+    check('stall: the threshold is the caller\'s to tighten',
+        ScanService::progressOf($row([]), $census, $NOW, 5)['stalled'] === true
+        && ScanService::progressOf($row([]), $census, $NOW, 11)['stalled'] === false);
+    // UTC IN, UTC OUT. The store stamps gmdate(); read back in a server zone
+    // east of Greenwich, every run would look hours idle.
+    $tz = date_default_timezone_get();
+    date_default_timezone_set('Africa/Douala');
+    $east = ScanService::progressOf($row([]), $census, $NOW);
+    date_default_timezone_set('America/Los_Angeles');
+    $west = ScanService::progressOf($row([]), $census, $NOW);
+    date_default_timezone_set($tz);
+    check('stall: the idle time does not depend on the server\'s time zone',
+        $east['idleSeconds'] === 10 && $west['idleSeconds'] === 10);
+    check('stall: the threshold is a sentence on a page, so it is in neither the policy nor the fingerprint',
+        !array_key_exists('stallSeconds', ScanPolicy::resolve([], []))
+        && ScanService::STALL_SECONDS === 120);
+}
 }
 
 namespace {

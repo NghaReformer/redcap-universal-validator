@@ -272,6 +272,27 @@ class ScanPageView
         return $s;
     }
 
+    /**
+     * Shown to somebody WATCHING a run that has stopped getting anywhere.
+     *
+     * No apostrophe anywhere in it: labels() is printed into a script block
+     * with JSON_HEX_APOS, and a sentence that survives that as \u0027 is a
+     * sentence somebody will one day paste into a place that does not decode it.
+     */
+    const STALLED = 'No progress has been recorded on this scan for {minutes} minutes. If it does '
+                  . 'not move soon, stop it and start a new one, or ask your REDCap administrator '
+                  . 'to check the External Modules log.';
+
+    /**
+     * The progress line, in the three parts it can have. The first stands alone
+     * whenever nothing was excluded or removed, which is nearly always - and the
+     * line is then exactly what it was before these existed.
+     */
+    const COUNT_PLAIN    = '{done} of {total} records';
+    const COUNT_CHECKED  = '{done} of {total} records checked';
+    const COUNT_EXCLUDED = '{n} could not be checked';
+    const COUNT_REMOVED  = '{n} deleted during the scan';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -280,7 +301,63 @@ class ScanPageView
             'coverage'        => self::coverageSentences(),
             'coverageUnknown' => self::COVERAGE_UNKNOWN,
             'truncated'       => self::DETAIL_TRUNCATED,
+            'stalled'         => self::STALLED,
+            'plain'           => self::COUNT_PLAIN,
+            'checked'         => self::COUNT_CHECKED,
+            'excluded'        => self::COUNT_EXCLUDED,
+            'removed'         => self::COUNT_REMOVED,
         ];
+    }
+
+    /**
+     * "8 of 10 records checked; 2 could not be checked  (100%)".
+     *
+     * THE NUMBER BEFORE "of" IS RECORDS EXAMINED. It was every record that had
+     * reached a terminal state, so a run in which no result could be stored
+     * read "12 of 12 records (100%)" - true of the manifest, and read by every
+     * person who saw it as true of the checking. The percentage is still the
+     * share of the manifest that is SETTLED, because that is what a progress
+     * bar measures and a bar that stopped short of the end would say the run
+     * had not finished.
+     *
+     * js/scan.js builds the same string from the same templates (labels()).
+     */
+    public static function countsText($status)
+    {
+        $i = function ($k, $d = 0) use ($status) {
+            return (is_array($status) && isset($status[$k])) ? (int) $status[$k] : $d;
+        };
+        $total = $i('total');
+        if ($total <= 0) return 'Preparing';
+        $done = $i('done');
+        $excluded = $i('excluded');
+        $removed = $i('removed');
+        $pct = self::pct($i('settled', $done), $total);
+
+        $fill = function ($tpl, array $with) {
+            foreach ($with as $k => $v) $tpl = str_replace('{' . $k . '}', (string) $v, $tpl);
+            return $tpl;
+        };
+        if ($excluded <= 0 && $removed <= 0) {
+            $line = $fill(self::COUNT_PLAIN, ['done' => $done, 'total' => $total]);
+        } else {
+            $parts = [$fill(self::COUNT_CHECKED, ['done' => $done, 'total' => $total])];
+            if ($excluded > 0) $parts[] = $fill(self::COUNT_EXCLUDED, ['n' => $excluded]);
+            if ($removed > 0)  $parts[] = $fill(self::COUNT_REMOVED, ['n' => $removed]);
+            $line = implode('; ', $parts);
+        }
+        return $line . ($pct === null ? '' : '  (' . $pct . '%)');
+    }
+
+    /** The stalled sentence for this status, or null when it should not be shown. */
+    public static function stalledText($status)
+    {
+        if (!is_array($status) || empty($status['ok']) || empty($status['stalled'])
+                || empty($status['active']) || !empty($status['terminal'])) {
+            return null;
+        }
+        $idle = isset($status['idleSeconds']) ? (int) $status['idleSeconds'] : 0;
+        return str_replace('{minutes}', (string) max(1, (int) floor($idle / 60)), self::STALLED);
     }
 
     /**
@@ -313,25 +390,29 @@ class ScanPageView
      *
      * @param  ?array $status a ScanService::status() array, or null when there is
      *                no run or its status could not be read
-     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string, active:bool}
+     * @return array{phase:string, counts:string, found:string, pct:?int, done:?string,
+     *               active:bool, stalled:?string}
      */
     public static function panelPrefill($status)
     {
         if (!is_array($status) || empty($status['ok'])) {
             return ['phase' => '', 'counts' => '', 'found' => '', 'pct' => null,
-                    'done' => null, 'active' => false];
+                    'done' => null, 'active' => false, 'stalled' => null];
         }
 
         $total = isset($status['total']) ? (int) $status['total'] : 0;
         $done  = isset($status['done']) ? (int) $status['done'] : 0;
-        $pct   = self::pct($done, $total);
+        // The BAR follows what is settled, so it reaches the end when the run
+        // does; the TEXT says how much of that was actually examined.
+        $pct   = self::pct(isset($status['settled']) ? (int) $status['settled'] : $done, $total);
         $found = isset($status['findings']) ? (int) $status['findings'] : 0;
 
         return [
             'phase'  => self::phaseLabel(isset($status['phase']) ? $status['phase'] : ''),
-            'counts' => $total > 0
-                ? ($done . ' of ' . $total . ' records' . ($pct === null ? '' : '  (' . $pct . '%)'))
-                : 'Preparing',
+            'counts' => self::countsText($status),
+            // Whoever loads this page is WATCHING, by definition: nothing on it
+            // is driving a scan until a button is pressed.
+            'stalled' => self::stalledText($status),
             'found'  => $found === 0 ? 'Nothing found yet'
                 : ($found . ' finding' . ($found === 1 ? '' : 's') . ' so far'),
             'pct'    => $pct,

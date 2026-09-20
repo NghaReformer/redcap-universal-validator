@@ -53,6 +53,27 @@ final class ScanService
     /** How long a worker's installation slot lease lasts without renewal. */
     const SLOT_TTL = 300;
 
+    /**
+     * How long a run may go without progress before the page says so.
+     *
+     * A THRESHOLD FOR A SENTENCE ON A PAGE, and nothing else: it stops no run
+     * and retires none - that is staleHours and the reaper. It is deliberately
+     * not in the policy and not in the fingerprint, because it decides nothing
+     * about what a scan finds, and a value that did sit there would fail every
+     * run in flight whenever somebody tuned a message.
+     */
+    const STALL_SECONDS = 120;
+
+    /**
+     * Phases whose work does not move `progress_at`. That column is written by
+     * commitBatch() and freezeManifest() only - records finishing, the manifest
+     * freezing - so through these three it stands still while the run is busy,
+     * and `updated_at` (which their cursor writes do move) is the better clock.
+     * In scanning it is the WORSE one: claim() refreshes it on a run whose every
+     * batch is being refused, which is the wedge `progress_at` exists to show.
+     */
+    const PHASES_ON_THE_UPDATE_CLOCK = [ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP];
+
     /** @var object the module */
     private $module;
     /** @var ?ScanDb */
@@ -340,10 +361,7 @@ final class ScanService
                                            $ent['unknown']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
-        $done = 0;
-        foreach ($store->recordStates($runId) as $st => $n) {
-            if ((int) $st >= ScanStore::REC_DONE) $done += (int) $n;
-        }
+        $progress = self::progressOf($run, $store->recordStates($runId), time());
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
         $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
@@ -357,13 +375,77 @@ final class ScanService
             'detail'    => $run['detail'],
             'values'    => $run['values_state'],
             'total'     => (int) $run['manifest_total'],
-            'done'      => $done,
+            // EXAMINED, and only examined. This was every terminal state summed,
+            // so a run in which every record failed to store read "12 of 12
+            // records (100%)" above a report with nothing in it. What was not
+            // examined is said separately, and `settled` - the sum - is what
+            // moves the bar, so the bar still reaches the end.
+            'done'      => $progress['done'],
+            'excluded'  => $progress['excluded'],
+            'removed'   => $progress['removed'],
+            'settled'   => $progress['settled'],
+            'stalled'   => $progress['stalled'],
+            'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run),
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
         ];
+    }
+
+    /**
+     * Where a run has got to, and whether it is still getting anywhere.
+     *
+     * Static and free of the store, the module and the clock, so it can be asked
+     * of a row and a census directly - status() is otherwise reachable only
+     * through an entitlement, which is why it had no test at all.
+     *
+     * STALLED IS FOR SOMEBODY WATCHING, NOT DRIVING. A tab that is driving the
+     * scan already knows when a pass makes no progress and already says so; the
+     * tab that cannot know is the second one, or the one opened an hour later,
+     * looking at a bar that does not move and a phase that says "Checking
+     * records". Only an active run can be stalled: a finished one is not going
+     * anywhere on purpose.
+     *
+     * @param array $run    a ScanStore::run() row
+     * @param array $states ScanStore::recordStates(): state => count
+     * @param int   $now    unix time
+     * @return array{done:int, excluded:int, removed:int, settled:int, stalled:bool, idleSeconds:int}
+     */
+    public static function progressOf(array $run, array $states, $now, $stallSeconds = self::STALL_SECONDS)
+    {
+        $n = function ($state) use ($states) {
+            return isset($states[$state]) ? max(0, (int) $states[$state]) : 0;
+        };
+        $done = $n(ScanStore::REC_DONE);
+        $excluded = 0;
+        foreach (ScanStore::NOT_EXAMINED as $state) $excluded += $n($state);
+        $removed = $n(ScanStore::REC_TOMBSTONE);
+
+        $phase = isset($run['phase']) ? (string) $run['phase'] : '';
+        $at = function ($k) use ($run) {
+            if (!isset($run[$k]) || $run[$k] === null || $run[$k] === '') return null;
+            // The store writes UTC (gmdate); read it back as UTC whatever the
+            // server's own zone is, or every run looks hours idle or hours ahead.
+            $t = strtotime((string) $run[$k] . ' UTC');
+            return $t === false ? null : $t;
+        };
+        $clock = $at('progress_at');
+        if ($clock === null) $clock = $at('created_at');
+        if (in_array($phase, self::PHASES_ON_THE_UPDATE_CLOCK, true)) {
+            $updated = $at('updated_at');
+            if ($updated !== null && ($clock === null || $updated > $clock)) $clock = $updated;
+        }
+        // No readable clock is NOT a stall: an unknown is never reported as the
+        // alarming reading of it.
+        $idle = $clock === null ? 0 : max(0, (int) $now - $clock);
+        $active = ScanPhase::isActive($phase) && empty($run['terminal']);
+
+        return ['done' => $done, 'excluded' => $excluded, 'removed' => $removed,
+                'settled' => $done + $excluded + $removed,
+                'stalled' => $active && $clock !== null && $idle >= max(1, (int) $stallSeconds),
+                'idleSeconds' => $idle];
     }
 
     /** Ask a run to stop. The epoch bump is what makes it beat a working worker. */

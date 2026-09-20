@@ -57,7 +57,7 @@ function makeEl(id) {
 const els = {};
 ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume', 'uv-scan-phase',
  'uv-scan-bar-track', 'uv-scan-bar', 'uv-scan-counts', 'uv-scan-found', 'uv-scan-done',
- 'uv-scan-note', 'uv-scan-announce'].forEach((id) => {
+ 'uv-scan-note', 'uv-scan-announce', 'uv-scan-stalled'].forEach((id) => {
   els[id] = makeEl(id);
 });
 
@@ -120,6 +120,13 @@ UV.labels = {
   coverageUnknown: 'This scan finished, but this page does not recognise the result it recorded '
                  + '({value}). Treat it as incomplete and run it again.',
   truncated: 'Some findings were not kept, because the scan reached the limit this project allows.',
+  stalled: 'No progress has been recorded on this scan for {minutes} minutes. If it does not move '
+         + 'soon, stop it and start a new one, or ask your REDCap administrator to check the '
+         + 'External Modules log.',
+  plain: '{done} of {total} records',
+  checked: '{done} of {total} records checked',
+  excluded: '{n} could not be checked',
+  removed: '{n} deleted during the scan',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -604,6 +611,81 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: attaching asks for status', sent[0].action === 'scan-status');
   check('client: on the run the page named', sent[0].payload.run_id === 42);
   check('client: and does not start working on it uninvited', UV.state.running === false);
+
+  // -- what was examined, and what only LOOKS like progress (L4) -------------
+  //
+  // `done` was every record in a terminal state, so a run in which no result
+  // could be stored read "10 of 10 records (100%)" above an empty report. The
+  // server now reports what was examined and what was not, separately, and the
+  // bar follows `settled` so it still reaches the end.
+  const counted = (over) => Object.assign(running(8, 10), over);
+  // scan-status answers with the status ITSELF, not wrapped in a work reply.
+  const show = async (st) => {
+    reset([st]);
+    UV.attach({ runId: 42, autoResume: false });
+    await ticks(4);
+  };
+  await show(counted({ done: 3, settled: 3, excluded: 0, removed: 0 }));
+  check('counts: with nothing excluded the line is exactly what it always was',
+    els['uv-scan-counts'].textContent === '3 of 10 records  (30%)');
+  await show(counted({ done: 8, settled: 10, excluded: 2, removed: 0 }));
+  check('counts: records that could not be checked are SAID, not folded into the total',
+    els['uv-scan-counts'].textContent === '8 of 10 records checked; 2 could not be checked  (100%)');
+  check('counts: and the bar still reaches the end, because the run did',
+    els['uv-scan-bar'].style.width === '100%'
+    && els['uv-scan-bar-track']._attrs['aria-valuenow'] === '100');
+  check('counts: a screen reader is told the same thing the eye is',
+    els['uv-scan-bar-track']._attrs['aria-valuetext']
+      === '8 of 10 records checked; 2 could not be checked');
+  await show(counted({ done: 7, settled: 10, excluded: 2, removed: 1 }));
+  check('counts: a record deleted during the scan is its own clause',
+    els['uv-scan-counts'].textContent
+      === '7 of 10 records checked; 2 could not be checked; 1 deleted during the scan  (100%)');
+  await show(counted({ done: 0, settled: 10, excluded: 10, removed: 0 }));
+  check('counts: a run that examined NOTHING does not read as one that examined everything',
+    els['uv-scan-counts'].textContent.indexOf('0 of 10 records checked') === 0
+    && els['uv-scan-counts'].textContent.indexOf('10 of 10') === -1);
+  // A server that has not been upgraded sends no `settled`. The old `done` had
+  // that meaning, so the bar reads it and nothing is excluded.
+  await show(running(5, 10));
+  check('counts: a status with no breakdown renders as it used to',
+    els['uv-scan-counts'].textContent === '5 of 10 records  (50%)'
+    && els['uv-scan-bar'].style.width === '50%');
+
+  // -- a stall the WATCHING tab can see (L5) --------------------------------
+  //
+  // The tab driving a scan already knows when a pass made no progress and says
+  // so. The tab that cannot know is the one opened beside it, or an hour later.
+  await show(counted({ stalled: true, idleSeconds: 330 }));
+  check('stalled: a watching tab is told, in the page\'s own sentence',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('for 5 minutes') !== -1
+    && els['uv-scan-stalled'].textContent.indexOf('{') === -1);
+  await show(counted({ stalled: false, idleSeconds: 4 }));
+  check('stalled: a run that is moving shows nothing, and leaves no sentence behind',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === '');
+  await show(Object.assign(finished('partial'), { stalled: true, idleSeconds: 9000 }));
+  check('stalled: a finished run is never stalled, whatever it is sent',
+    els['uv-scan-stalled'].style.display === 'none');
+  // DRIVING. Same status, but this tab is the one doing the work.
+  reset([{ ok: true, run_id: 7 }, worked(counted({ stalled: true, idleSeconds: 330 }))]);
+  UV.start();
+  await ticks(6);
+  check('stalled: the tab DRIVING the scan does not show it - it has its own note for that',
+    UV.state.running === true && els['uv-scan-stalled'].style.display === 'none');
+
+  // SETTLED IS PROGRESS. A pass that excluded a record moved the run on as much
+  // as one that examined it; read from `done` alone, a run working through a
+  // stretch of unreadable records would look idle and be backed off.
+  reset([{ ok: true, run_id: 7 },
+         idle(null, null, counted({ done: 3, settled: 3 })),
+         idle(null, null, counted({ done: 3, settled: 6, excluded: 3 }))]);
+  UV.start();
+  await ticks(6);
+  const idleBefore = UV.state.idle;
+  await drive(1);
+  check('progress: a pass that only excluded records still counts as the run moving',
+    idleBefore > 0 && UV.state.idle === 0);
 
   process.stdout.write('scan_client_js: ' + n + ' checks, ' + fail + ' failure(s)\n');
   process.exit(fail ? 1 : 0);

@@ -1490,6 +1490,25 @@ namespace {
         check('PANEL: and the panel says it is busy',
             strpos($live, 'aria-busy="true"') !== false);
 
+        // L5, through the real page and the real status(): the run row's own
+        // progress clock decides whether the watcher is told anything.
+        check('PANEL: a run that is moving carries the stalled node hidden and empty',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="display:none;[^"]*"><\/p>/', $live) === 1);
+        $STALE = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900)] + $LIVE);
+        list($stale, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $STALE, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a run that has finished nothing for fifteen minutes says so before any script runs',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="margin-top[^"]*">No progress has been '
+                     . 'recorded on this scan for 1[45] minutes\./', $stale) === 1);
+        // And what it examined is not what merely settled: three done, two that
+        // could not be stored, five still waiting.
+        list($mixed, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $ROW,
+            'recordStates' => [['100', '3'], ['104', '2'], ['0', '5']]]));
+        check('PANEL: records that could not be checked are said on the page, not counted as checked',
+            strpos($mixed, '3 of 10 records checked; 2 could not be checked') !== false
+            && strpos($mixed, 'aria-valuenow="50"') !== false);
+
         // A run whose total is not known yet is INDETERMINATE server-side too:
         // no aria-valuenow at all, rather than a zero that announces a stall.
         $PLANNING = uv_run_row(['phase' => 'planning', 'manifest_total' => '0'] + $LIVE);
@@ -1710,6 +1729,64 @@ namespace {
         check('PREFILL: a finished run carries the sentence its coverage earns',
             strpos($end['done'], 'cannot prove') !== false);
 
+        // L4. `done` was every record in a terminal state, so a run in which no
+        // result could be stored read "12 of 12 records (100%)" over an empty
+        // report. The number before "of" is records EXAMINED; the bar follows
+        // what is settled, so it still reaches the end.
+        $status = function (array $over) {
+            return array_merge(['ok' => true, 'phase' => 'scanning', 'terminal' => null,
+                'coverage' => 'partial', 'detail' => 'complete', 'total' => 10, 'done' => 3,
+                'findings' => 0, 'active' => true], $over);
+        };
+        check('PREFILL: with nothing excluded the line is byte for byte what it always was',
+            $V::panelPrefill($status(['settled' => 3, 'excluded' => 0, 'removed' => 0]))['counts']
+                === '3 of 10 records  (30%)'
+            && $V::panelPrefill($status([]))['counts'] === '3 of 10 records  (30%)');
+        $ex = $V::panelPrefill($status(['done' => 8, 'settled' => 10, 'excluded' => 2, 'removed' => 0]));
+        check('PREFILL: records that could not be checked are said, not folded into the total',
+            $ex['counts'] === '8 of 10 records checked; 2 could not be checked  (100%)');
+        check('PREFILL: and the bar still reaches the end, because the run did', $ex['pct'] === 100);
+        check('PREFILL: a record deleted during the scan is its own clause',
+            $V::panelPrefill($status(['done' => 7, 'settled' => 10, 'excluded' => 2, 'removed' => 1]))
+                ['counts'] === '7 of 10 records checked; 2 could not be checked; '
+                             . '1 deleted during the scan  (100%)');
+        $nothing = $V::panelPrefill($status(['done' => 0, 'settled' => 10, 'excluded' => 10]));
+        check('PREFILL: a run that examined NOTHING does not read as one that examined everything',
+            strpos($nothing['counts'], '0 of 10 records checked') === 0
+            && strpos($nothing['counts'], '10 of 10') === false);
+
+        // L5. Whoever LOADS the page is watching; nothing on it drives a scan
+        // until a button is pressed.
+        $st = $V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 330]));
+        check('PREFILL: a run that has stopped getting anywhere says so before any script runs',
+            is_string($st['stalled']) && strpos($st['stalled'], 'for 5 minutes') !== false
+            && strpos($st['stalled'], '{') === false);
+        check('PREFILL: a run that is moving says nothing of the kind',
+            $V::panelPrefill($status(['stalled' => false, 'idleSeconds' => 3]))['stalled'] === null
+            && $V::panelPrefill($status([]))['stalled'] === null);
+        check('PREFILL: and a finished run is never stalled, whatever the status says',
+            $V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 9000, 'active' => false,
+                'phase' => 'terminal', 'terminal' => 'partial']))['stalled'] === null);
+        check('PREFILL: under two minutes still reads as a minute, never as zero',
+            strpos($V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 5]))['stalled'],
+                   'for 1 minutes') !== false);
+
+        // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
+        // the two: js/scan.js holds a fallback for each and no other copy.
+        $L = $V::labels();
+        foreach (['stalled', 'plain', 'checked', 'excluded', 'removed'] as $k) {
+            check("LABELS: the client is handed the '$k' sentence",
+                isset($L[$k]) && is_string($L[$k]) && $L[$k] !== '');
+        }
+        check('LABELS: none of them carries an apostrophe into the script block',
+            strpos($L['stalled'] . $L['plain'] . $L['checked'] . $L['excluded'] . $L['removed'], "'")
+                === false);
+        $js = file_get_contents(__DIR__ . '/../js/scan.js');
+        foreach (['plain', 'checked', 'excluded', 'removed'] as $k) {
+            check("LABELS: and the client's fallback for '$k' is the page's own wording",
+                strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
+        }
+
         // Nothing to describe must produce nothing, never a claim. A refused or
         // unreadable status is exactly the case where inventing a reassuring
         // default is how a page ends up certifying a scan it never saw.
@@ -1717,7 +1794,8 @@ namespace {
             $none = $V::panelPrefill($bad);
             check('PREFILL: an unreadable status describes nothing rather than something',
                 $none['phase'] === '' && $none['counts'] === '' && $none['found'] === ''
-                && $none['pct'] === null && $none['done'] === null && $none['active'] === false);
+                && $none['pct'] === null && $none['done'] === null && $none['active'] === false
+                && $none['stalled'] === null);
         }
 
         // L2. The transport name crosses into a <script> block, so it is proved

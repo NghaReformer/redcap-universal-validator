@@ -92,6 +92,47 @@
 
     function labels() { return UV.labels || {}; }
 
+    /** A page template with its {holes} filled. The templates are the page's. */
+    function fill(tpl, withValues) {
+        var out = String(tpl), k;
+        for (k in withValues) {
+            if (Object.prototype.hasOwnProperty.call(withValues, k)) {
+                out = out.split('{' + k + '}').join(String(withValues[k]));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * How much of the manifest is SETTLED - examined, excluded or removed. It is
+     * what the bar measures, so the bar reaches the end when the run does. A
+     * server that does not report it yet reports `done` with the old meaning,
+     * which was this.
+     */
+    function settled(st) {
+        return (typeof st.settled === 'number') ? st.settled : st.done;
+    }
+
+    /**
+     * The progress line. ScanPageView::countsText() builds the same string from
+     * the same templates, so the first paint and the first poll agree. The
+     * number before "of" is records EXAMINED; what was not is said beside it.
+     */
+    function countsText(st, p) {
+        if (!st.total) return 'Preparing';
+        var L = labels(), excluded = st.excluded | 0, removed = st.removed | 0, line;
+        if (excluded <= 0 && removed <= 0) {
+            line = fill(L.plain || '{done} of {total} records', { done: st.done, total: st.total });
+        } else {
+            var parts = [fill(L.checked || '{done} of {total} records checked',
+                              { done: st.done, total: st.total })];
+            if (excluded > 0) parts.push(fill(L.excluded || '{n} could not be checked', { n: excluded }));
+            if (removed > 0) parts.push(fill(L.removed || '{n} deleted during the scan', { n: removed }));
+            line = parts.join('; ');
+        }
+        return line + (p === null ? '' : '  (' + p + '%)');
+    }
+
     /**
      * How a phase reads to somebody who did not design this.
      *
@@ -190,7 +231,8 @@
         var phase = phaseLabel(st.phase);
         text(el('uv-scan-phase'), phase);
 
-        var p = pct(st.done, st.total);
+        var p = pct(settled(st), st.total);
+        var counts = countsText(st, p);
         var track = el('uv-scan-bar-track'), bar = el('uv-scan-bar');
         // A bar with no total is INDETERMINATE, never zero and never full: a bar
         // sitting at 0% for the length of a planning phase reads as a scan that
@@ -203,17 +245,13 @@
         // cannot diverge.
         if (track) {
             attr(track, 'aria-valuenow', p === null ? null : p);
-            attr(track, 'aria-valuetext', p === null
-                ? 'not known yet' : (st.done + ' of ' + st.total + ' records'));
+            attr(track, 'aria-valuetext', p === null ? 'not known yet' : countsText(st, null));
         }
         if (bar) {
             bar.style.width = (p === null ? '' : p + '%');
             bar.className = (p === null ? 'uv-bar uv-bar-indeterminate' : 'uv-bar');
         }
 
-        var counts = st.total
-            ? (st.done + ' of ' + st.total + ' records' + (p === null ? '' : '  (' + p + '%)'))
-            : 'Preparing';
         var found = st.findings === 0 ? 'Nothing found yet'
             : (st.findings + ' finding' + (st.findings === 1 ? '' : 's') + ' so far');
         text(el('uv-scan-counts'), counts);
@@ -248,6 +286,22 @@
         }
         UV.state.lastPct = p;
         UV.state.lastFindings = st.findings;
+
+        // STALLED IS FOR A TAB THAT IS WATCHING. The one driving the scan learns
+        // that a pass made no progress from the pass itself and says so in the
+        // note; showing both would be two sentences about one fact. Revealed
+        // before it is written, for the reason the completion sentence is.
+        var stalledNode = el('uv-scan-stalled');
+        if (stalledNode) {
+            if (!st.terminal && st.active && st.stalled && !UV.state.running) {
+                var mins = Math.max(1, Math.floor((st.idleSeconds | 0) / 60));
+                stalledNode.style.display = '';
+                text(stalledNode, fill(labels().stalled || '', { minutes: mins }));
+            } else {
+                stalledNode.style.display = 'none';
+                text(stalledNode, '');
+            }
+        }
 
         var panel = el('uv-scan-panel');
         attr(panel, 'aria-busy', st.active ? 'true' : 'false');
@@ -301,11 +355,13 @@
                     + (r.blocked | 0) + (r.findings | 0)) > 0);
         if (st) {
             if (!moved && UV.state.seen) {
-                if (typeof st.done === 'number' && st.done > UV.state.lastDone) moved = true;
+                // SETTLED, not examined: a pass that excluded a record moved the
+                // run on exactly as much as one that examined it.
+                if (typeof settled(st) === 'number' && settled(st) > UV.state.lastDone) moved = true;
                 if (st.phase && st.phase !== UV.state.lastPhase) moved = true;
             }
             UV.state.seen = true;
-            if (typeof st.done === 'number') UV.state.lastDone = st.done;
+            if (typeof settled(st) === 'number') UV.state.lastDone = settled(st);
             if (st.phase) UV.state.lastPhase = st.phase;
         }
         return moved;
