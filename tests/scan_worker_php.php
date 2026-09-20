@@ -611,6 +611,98 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('budget: an unknown time limit still leaves the mode target in force',
         $unknown->target() === 20.0 && $unknown->mustStop(1021.0, 0) === 'time');
 
+    // -- what is measured, and against what (P5) ------------------------------
+    //
+    // Every check above hands next() its numbers, so none of them can see WHERE
+    // the numbers come from - and that was the defect. The worker measured a
+    // batch's cost as the change in the ARENA, which moves in 2 MiB steps: a
+    // batch that needed 20 MiB inside chunks already held measured zero, and the
+    // budget then predicted nothing. These drive the seam itself, mark() and
+    // observe(), through a probe that answers with stated figures.
+    $MB = 1024 * 1024;
+    /** A probe that answers from a script and remembers how it was asked. */
+    $scripted = function (array $answers) use ($MB) {
+        $o = new \stdClass();
+        $o->calls = [];
+        $o->answers = $answers;
+        $o->fn = function ($reset) use ($o, $MB) {
+            $o->calls[] = (bool) $reset;
+            $a = count($o->answers) > 1 ? array_shift($o->answers) : $o->answers[0];
+            return ['used' => (int) ($a[0] * $MB), 'peak' => (int) ($a[1] * $MB),
+                    'arena' => (int) ($a[2] * $MB)];
+        };
+        return $o;
+    };
+    $measured = function ($limitMb, $probe) use ($MB) {
+        return new WorkBudget(['mode' => 'cron', 'memoryLimit' => $limitMb * $MB,
+            'timeLimit' => null, 'min' => 1, 'max' => 500, 'first' => 10,
+            'startedAt' => microtime(true), 'probe' => $probe->fn]);
+    };
+    $t = microtime(true);
+
+    // THE ARENA DID NOT MOVE AND THE BATCH STILL NEEDED 20 MiB. 42 MiB of arena
+    // before and after; real usage rose to a 60 MiB peak and fell back.
+    $p1 = $scripted([[40, 40, 42], [40.5, 60, 42]]);
+    $b1m = $measured(100, $p1);
+    $o1 = $b1m->observe($b1m->mark('records', $t), 10, $t + 1.0);
+    check('measure: a batch that peaked 20 MiB inside chunks already held is capped by memory',
+        $o1['claim'] === 9 && strpos((string) $o1['why'], 'rather than the clock') !== false);
+    $arenaOnly = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'min' => 1, 'max' => 500, 'first' => 10, 'startedAt' => microtime(true)]);
+    $o1a = $arenaOnly->next(['records' => 10, 'seconds' => 1.0, 'memoryDelta' => 0,
+                             'usage' => 42 * $MB]);
+    check('measure: where the arena delta it used to be given saw nothing and doubled the batch',
+        $o1a['claim'] === 20 && $o1a['why'] === null);
+
+    // A STALE PEAK IS NOT A MEASUREMENT. Below PHP 8.2 the peak cannot be reset,
+    // so it is whatever the request reached before the scan started - here 70
+    // MiB, from bootstrap. The batch did not move it and retained 0.2 MiB.
+    // Charging the batch the 30 MiB gap would cap it at 16, the next at fewer,
+    // and so on down to one record at a time with a message blaming the project.
+    $p2 = $scripted([[40, 70, 72], [40.2, 70, 72],      // batch 1: peak unmoved
+                     [40, 70, 72], [40, 92, 94],        // batch 2: peak moved to 92
+                     [40, 92, 94], [40, 92, 94],        // batch 3: unmoved again
+                     [40, 92, 94], [40, 92, 94]]);      // batch 4: another kind of unit
+    $b2m = $measured(200, $p2);
+    $o2 = $b2m->observe($b2m->mark('records', $t), 10, $t + 1.0);
+    check('measure: a peak the batch did not move is not charged to the batch',
+        $o2['claim'] === 20 && $o2['why'] === null);
+    // 52 MiB over 20 records is 2.6 MiB each; 120 - 94 leaves room for 10.
+    $o3 = $b2m->observe($b2m->mark('records', $t), 20, $t + 2.0);
+    check('measure: a peak the batch DID move is, exactly', $o3['claim'] === 10);
+    // The next batch stays under that high-water mark, so it measures nothing
+    // new. Forgetting the last exact figure would let it double straight back.
+    $o4 = $b2m->observe($b2m->mark('records', $t), 10, $t + 1.0);
+    check('measure: and the last exact figure holds when a later batch measures nothing',
+        $o4['claim'] === 10);
+    // A cost per record says nothing about a cost per duplicate group.
+    $o5 = $b2m->observe($b2m->mark('groups', $t), 10, $t + 1.0);
+    check('measure: but it is not carried over to a different kind of unit',
+        $o5['claim'] === 20);
+
+    // HEADROOM IS STILL THE ARENA, because that is what memory_limit caps.
+    $p3 = $scripted([[30, 30, 61]]);
+    $b3m = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'startedAt' => 1000.0, 'probe' => $p3->fn]);
+    check('measure: 30 MiB in use inside a 61 MiB arena is past the reserve',
+        $b3m->mustStop(1000.0) === 'memory');
+    $p3b = $scripted([[30, 30, 59]]);
+    $b3n = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'startedAt' => 1000.0, 'probe' => $p3b->fn]);
+    check('measure: and inside a 59 MiB arena is not', $b3n->mustStop(1000.0) === null);
+    check('measure: asking how much room is left never restarts the peak',
+        $p3->calls === [false]);
+
+    // THE REAL PROBE, on whatever PHP this is. 7.4 has no way to restart the
+    // peak and must not be asked to.
+    $real = new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+        'startedAt' => microtime(true)]);
+    $rm = $real->mark('records');
+    $ro = $real->observe($rm, 5);
+    check('measure: the default probe reads real usage, and the peak is never below it',
+        $rm['used'] > 0 && $rm['peak'] >= $rm['used']
+        && array_keys($ro) === ['claim', 'stop', 'why'] && $ro['claim'] >= 1);
+
     // ======================================================================
     // ScanWorker: claim, prove it held still, look, commit - or commit nothing
     // ======================================================================
@@ -1040,6 +1132,64 @@ namespace INSPIRE\UniversalValidator\Scan {
         $res['done'] === false && $store->run(800, $runId)['phase'] === 'scanning');
     check('worker: and says the scan continues rather than that it failed',
         strpos($res['why'], 'continues in the next one') !== false);
+
+    // -- the worker measures through the budget, not around it (P5) ----------
+    //
+    // The worker used to read memory_get_usage(true) itself, eight times, and
+    // hand the budget the difference. It now marks and observes, so the budget
+    // owns what is measured. Proved from the outside: the probe sees a mark
+    // (which restarts the peak) answered by an observe (which does not), once
+    // per batch.
+    list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E', 'F']);
+    $seam = $scripted([[10, 10, 12]]);
+    $two = new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+        'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true),
+        'probe' => $seam->fn]);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $two, 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $res = $w->work(800, $runId);
+    $marks = 0; $paired = true;
+    foreach ($seam->calls as $i => $reset) {
+        if (!$reset) continue;
+        $marks++;
+        // every mark is followed by a read that does NOT restart the peak
+        if (!isset($seam->calls[$i + 1]) || $seam->calls[$i + 1] !== false) $paired = false;
+    }
+    check('seam: six records two at a time are three measured batches, at least',
+        $res['worked'] === 6 && $marks >= 3);
+    check('seam: and each mark is answered by an observe', $paired === true);
+
+    // AND THE BUDGET'S ANSWER IS OBEYED. The arena is over the reserve by the
+    // time the first batch is observed, so the request stops there - with that
+    // batch committed and the run left to be carried on.
+    list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E', 'F']);
+    $tight = $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 95]]);
+    $capped = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true),
+        'probe' => $tight->fn]);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $capped, 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin()]);
+    $res = $w->work(800, $runId);
+    check('seam: an arena past the reserve stops the request after the batch in hand',
+        $res['stop'] === 'memory' && $res['worked'] === 2);
+    check('seam: leaving the run workable', $res['done'] === false
+        && $store->run(800, $runId)['phase'] === 'scanning');
+
+    // NOTHING IN THE WORKER READS MEMORY ANY MORE. Comments and strings are
+    // stripped first, so this is about calls and not about prose.
+    $workerCode = '';
+    foreach (token_get_all(file_get_contents(__DIR__ . '/../php/Scan/ScanWorker.php')) as $tok) {
+        if (is_array($tok) && in_array($tok[0], [T_COMMENT, T_DOC_COMMENT,
+            T_CONSTANT_ENCAPSED_STRING, T_ENCAPSED_AND_WHITESPACE], true)) continue;
+        $workerCode .= is_array($tok) ? $tok[1] : $tok;
+    }
+    check('seam: the worker no longer measures memory for itself',
+        strpos($workerCode, 'memory_get') === false);
+    check('seam: and every batch it marks, it observes',
+        preg_match_all('/->\s*mark\s*\(/', $workerCode) === 4
+        && preg_match_all('/->\s*observe\s*\(/', $workerCode) === 4);
 
     // -- the duplicate phase is entered, not skipped -------------------------
     //

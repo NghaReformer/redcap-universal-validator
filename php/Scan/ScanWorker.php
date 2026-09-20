@@ -325,8 +325,7 @@ final class ScanWorker
                             'why' => 'this scan has no way to decide duplicate values, so it '
                                    . 'stopped rather than reporting that it found none'];
                 }
-                $t0 = microtime(true);
-                $m0 = memory_get_usage(true);
+                $mark = $budget->mark('groups');
                 $r = $fin->step($generationId, $budget->claim());
                 $found += $r['emitted'];
                 $blocked += $r['collisions'];
@@ -339,12 +338,8 @@ final class ScanWorker
                     $done = true;
                     break;
                 }
-                $adj = $budget->next([
-                    'records' => max(1, $r['verified'] + $r['emitted'] + $r['groups']),
-                    'seconds' => microtime(true) - $t0,
-                    'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                    'usage' => memory_get_usage(true),
-                ]);
+                $adj = $budget->observe($mark,
+                    max(1, $r['verified'] + $r['emitted'] + $r['groups']));
                 if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                 continue;
             }
@@ -356,8 +351,7 @@ final class ScanWorker
             if ($phase === ScanPhase::ROLLUP) {
                 $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
                 if ($roll instanceof RollupBuilder) {
-                    $t0 = microtime(true);
-                    $m0 = memory_get_usage(true);
+                    $mark = $budget->mark('rows');
                     $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim());
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
@@ -368,11 +362,7 @@ final class ScanWorker
                                     'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
                                     'done' => false, 'stop' => 'fenced', 'why' => $r['why']];
                         }
-                        $adj = $budget->next([
-                            'records' => max(1, $r['rows']), 'seconds' => microtime(true) - $t0,
-                            'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                            'usage' => memory_get_usage(true),
-                        ]);
+                        $adj = $budget->observe($mark, max(1, $r['rows']));
                         if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                         continue;
                     }
@@ -405,16 +395,10 @@ final class ScanWorker
                     }
                     $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
                     if ($cu instanceof CatchUp) {
-                        $t0 = microtime(true);
-                        $m0 = memory_get_usage(true);
+                        $mark = $budget->mark('changes');
                         $r = $cu->step($pid, $runId, $epoch, $budget->claim());
                         if (!$r['done']) {
-                            $adj = $budget->next([
-                                'records' => max(1, $r['scanned']),
-                                'seconds' => microtime(true) - $t0,
-                                'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                                'usage' => memory_get_usage(true),
-                            ]);
+                            $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                             continue;
                         }
@@ -461,8 +445,7 @@ final class ScanWorker
                 break;
             }
 
-            $t0 = microtime(true);
-            $m0 = memory_get_usage(true);
+            $mark = $budget->mark('records');
             $r = $this->batch($pid, $runId, $epoch, $claimed);
             if (!$r['ok']) {
                 // A refused commit means this worker was overtaken, cancelled,
@@ -492,11 +475,7 @@ final class ScanWorker
             $blocked  += $r['blocked'];
             $found    += $r['findings'];
 
-            $adj = $budget->next([
-                'records' => count($claimed), 'seconds' => microtime(true) - $t0,
-                'memoryDelta' => max(0, memory_get_usage(true) - $m0),
-                'usage' => memory_get_usage(true),
-            ]);
+            $adj = $budget->observe($mark, count($claimed));
             if ($adj['stop'] !== null) {
                 $stop = $adj['stop'];
                 $why = $adj['why'];

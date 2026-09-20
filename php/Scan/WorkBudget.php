@@ -31,6 +31,32 @@ namespace INSPIRE\UniversalValidator\Scan;
  * seconds amortises the per-batch fixed cost - re-reading the dictionary,
  * rebuilding the rules - over more records.
  *
+ * TWO MEMORY FIGURES, AND THEY ANSWER DIFFERENT QUESTIONS. PHP takes memory
+ * from the system in 2 MiB chunks - the ARENA, memory_get_usage(true) - and
+ * memory_limit is enforced against THAT: a request using 10 MB inside a 22 MB
+ * arena is refused an allocation that would grow the arena past the limit, and
+ * is not refused one that fits in chunks it already holds. So how much room is
+ * left is an arena question, and mustStop() and the headroom in next() ask it
+ * of the arena, the larger and therefore the safe figure.
+ *
+ * What one record COSTS is not an arena question, and asking it of the arena is
+ * what this class used to do. The arena moves in 2 MiB steps, so a batch that
+ * allocated 300 KB measured a cost of zero and one that happened to cross a
+ * chunk boundary measured 2 MiB, whatever it actually did. A budget fed those
+ * numbers predicts nothing. The per-unit cost is measured on REAL usage,
+ * memory_get_usage(false), by mark() and observe().
+ *
+ * AND THE COST THAT MATTERS IS THE PEAK, NOT WHAT WAS LEFT BEHIND. A batch that
+ * builds 40 MB of rows and frees them retains nothing and still needed 40 MB.
+ * On PHP 8.2+ the peak is reset before each batch and read after it, which is
+ * exact. Below 8.2 it cannot be reset, so it is a request-wide high-water mark:
+ * it is believed only when the batch MOVED it, and the last figure measured
+ * that way is kept as a floor for the rest of the request. Subtracting a stale
+ * peak every time looks conservative and is not - the gap is a constant, so a
+ * smaller batch divides it into a LARGER cost per record, which asks for a
+ * smaller batch again, down to one record at a time and a false message saying
+ * the records in the project are large.
+ *
  * A SHUTDOWN HANDLER IS NOT A MEMORY GUARD. PHP can run one after an OOM, and it
  * can improve the diagnostic, but the allocation has already failed and the
  * batch is already lost. It is worth having and it is not what keeps this
@@ -69,11 +95,17 @@ final class WorkBudget
     private $timeLimit;     // seconds, or null for "no limit"
     private $startedAt;
     private $claim;         // the size the next batch should ask for
+    private $probe;         // ?callable(bool $resetPeak): {used, peak, arena}
+    private $perUnit = 0.0; // the last EXACT per-unit peak cost, in bytes
+    private $perUnitKind = null;
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
      *                     memoryLimit: string|int|null, timeLimit: string|int|null,
-     *                     startedAt: ?float, first: ?int}
+     *                     startedAt: ?float, first: ?int,
+     *                     probe: ?callable(bool $resetPeak): array{used:int, peak:int, arena:int}}
+     *        `probe` replaces the three PHP memory functions, so the measurement
+     *        seam can be driven with known numbers instead of real allocations.
      */
     public function __construct(array $opts = [])
     {
@@ -91,6 +123,83 @@ final class WorkBudget
         $this->claim = isset($opts['first'])
             ? max($this->min, min($this->max, (int) $opts['first']))
             : max($this->min, min($this->max, 25));
+        $this->probe = (isset($opts['probe']) && is_callable($opts['probe'])) ? $opts['probe'] : null;
+    }
+
+    /**
+     * The three memory figures, from the injected probe or from PHP.
+     *
+     * $resetPeak asks for the peak to be restarted first, which PHP can do from
+     * 8.2. Where it cannot, the figure returned is the request-wide high-water
+     * mark and observe() treats it accordingly.
+     *
+     * @return array{used:int, peak:int, arena:int}
+     */
+    private function read($resetPeak)
+    {
+        if ($this->probe !== null) {
+            $r = call_user_func($this->probe, (bool) $resetPeak);
+            $used = isset($r['used']) ? (int) $r['used'] : 0;
+            return ['used' => $used,
+                    'peak' => isset($r['peak']) ? max($used, (int) $r['peak']) : $used,
+                    'arena' => isset($r['arena']) ? max($used, (int) $r['arena']) : $used];
+        }
+        if ($resetPeak && function_exists('memory_reset_peak_usage')) {
+            call_user_func('memory_reset_peak_usage');
+        }
+        return ['used' => memory_get_usage(false), 'peak' => memory_get_peak_usage(false),
+                'arena' => memory_get_usage(true)];
+    }
+
+    /**
+     * Note where a batch starts, for observe() to measure from.
+     *
+     * $kind names what the batch is a batch OF - records, groups, rows. A cost
+     * per record says nothing about the cost per duplicate group, so the floor
+     * observe() keeps is dropped when the kind changes.
+     *
+     * @return array{at:float, used:int, peak:int, kind:string}
+     */
+    public function mark($kind = '', $now = null)
+    {
+        $m = $this->read(true);
+        return ['at' => $now === null ? microtime(true) : (float) $now,
+                'used' => $m['used'], 'peak' => $m['peak'], 'kind' => (string) $kind];
+    }
+
+    /**
+     * The batch that started at $mark has finished: size the next one.
+     *
+     * See the class docblock for why the peak is believed only when it moved.
+     *
+     * @return array{claim:int, stop:?string, why:?string} as next() returns
+     */
+    public function observe(array $mark, $units, $now = null)
+    {
+        $m = $this->read(false);
+        $units = max(0, (int) $units);
+        $now = $now === null ? microtime(true) : (float) $now;
+        $used0 = isset($mark['used']) ? (int) $mark['used'] : $m['used'];
+        $peak0 = isset($mark['peak']) ? (int) $mark['peak'] : $m['peak'];
+        $kind  = isset($mark['kind']) ? (string) $mark['kind'] : '';
+        if ($kind !== $this->perUnitKind) {
+            $this->perUnit = 0.0;
+            $this->perUnitKind = $kind;
+        }
+        $delta = 0;
+        if ($units > 0) {
+            if ($m['peak'] > $peak0) {
+                $this->perUnit = max(0, $m['peak'] - $used0) / $units;
+            }
+            $per = max(max(0, $m['used'] - $used0) / $units, $this->perUnit);
+            $delta = (int) ceil($per * $units);
+        }
+        return $this->next([
+            'records' => $units,
+            'seconds' => max(0.0, $now - (isset($mark['at']) ? (float) $mark['at'] : $now)),
+            'memoryDelta' => $delta,
+            'usage' => $m['arena'],
+        ]);
     }
 
     /** Seconds of work this kind of request aims at. */
@@ -136,7 +245,8 @@ final class WorkBudget
     public function mustStop($now = null, $usage = null)
     {
         $now = $now === null ? microtime(true) : (float) $now;
-        $usage = $usage === null ? memory_get_usage(true) : (int) $usage;
+        // THE ARENA, which is what memory_limit is enforced against.
+        $usage = $usage === null ? $this->read(false)['arena'] : (int) $usage;
         if ($now >= $this->deadline()) return 'time';
         if ($this->memLimit !== null && $usage >= (int) ($this->memLimit * (1.0 - self::RESERVE))) {
             return 'memory';
@@ -147,7 +257,12 @@ final class WorkBudget
     /**
      * Learn from the batch that just finished, and size the next one.
      *
-     * @param array $obs {records:int, seconds:float, memoryDelta:int, usage:int}
+     * Callers inside the scan go through mark()/observe(), which measure; this
+     * is the arithmetic, kept public so it can be driven with stated numbers.
+     *
+     * @param array $obs {records:int, seconds:float,
+     *                    memoryDelta:int  what the batch cost, in bytes of REAL usage,
+     *                    usage:int        the ARENA now, which is what the limit caps}
      * @return array{claim:int, stop:?string, why:?string}
      */
     public function next(array $obs)
@@ -158,7 +273,7 @@ final class WorkBudget
         if ($done > 0 && isset($obs['memoryDelta'])) {
             $memPer = max(0, (int) $obs['memoryDelta']) / $done;
         }
-        $usage = isset($obs['usage']) ? (int) $obs['usage'] : memory_get_usage(true);
+        $usage = isset($obs['usage']) ? (int) $obs['usage'] : $this->read(false)['arena'];
 
         $want = $this->claim;
         if ($done > 0 && $seconds > 0.0) {
