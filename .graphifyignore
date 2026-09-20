@@ -1,0 +1,38 @@
+# graphify: paths kept out of the knowledge graph.
+# graphify reads this file, not .gitignore, so generated and local-only files
+# are listed here as well. Folders whose names start with a dot (.claude/ and
+# its worktrees, .github/, .git/) are always skipped.
+
+# graphify's own output. graphify-out/memory/ stays in on purpose: answers
+# saved with `graphify save-result` are fed back into the graph.
+graphify-out/GRAPH_REPORT.md
+graphify-out/graph.html
+graphify-out/wiki/
+graphify-out/obsidian/
+
+# Claude instructions: loaded into every Claude session already, and today it
+# holds only the graphify rules
+CLAUDE.md
+
+# Version history and dated review reports. Most findings in reports/ are
+# already fixed, and IDs such as H-01 repeat across reports, so extracting them
+# would put stale claims in the graph with no reliable link to code.
+# Delete these two lines to include them (about 110k words of LLM extraction).
+CHANGELOG.md
+reports/
+
+# Documentation website: its own build, with pages that restate README sections
+site/
+
+# Throwaway probes. Under the D:\SCRIPTS_PATH convention a script named
+# *temporal* is temporary; these reproduced the scan pilot failures.
+# tests/temporal_* are the real tests for php/Temporal*.php and stay in.
+tools/temporal_*
+fixh4_temporal.js
+
+# Slide deck and field-training exports: large HTML, not module documentation
+docs/user-guide-deck.html
+docs/Participant_Identification_and_REDCAP_Data_Validation*.html
+
+# Flier and stray local PDFs
+*.pdf

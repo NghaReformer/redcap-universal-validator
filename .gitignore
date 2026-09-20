@@ -21,3 +21,7 @@ __pycache__/
 # stray local files (not part of the module)
 /Dr Aminu Business Card.pdf
 *auto_query_tracker.db
+
+# graphify knowledge graph (built locally; scope is set in .graphifyignore)
+/graphify-out/
+/.graphify_*
