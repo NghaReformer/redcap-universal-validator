@@ -566,6 +566,25 @@ final class ScanWorker
 
         $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'marks' => []];
         $worked = 0; $requeued = 0; $blocked = 0;
+
+        $moved = function ($id) use ($fence, $before, $after) {
+            return ($fence instanceof RecordVersions)
+                && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
+                    || $before[$id] !== $after[$id]);
+        };
+        // WHICH OF THE RECORDS THE READ LEFT OUT ARE REALLY GONE. Asked once for
+        // the whole batch, and only about records on their LAST attempt: below
+        // the cap the answer changes nothing, because the record is tried again
+        // either way.
+        $lastChance = [];
+        foreach ($claimed as $c) {
+            $id = $c['id_bin'];
+            if ($moved($id)) continue;
+            if (array_key_exists($id, $data) && is_array($data[$id])) continue;
+            $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
+            if ($tries + 1 >= $maxAttempts) $lastChance[] = $id;
+        }
+        $gone = $this->confirmedGone($lastChance);
         // Rule problems this batch met and this worker has not yet recorded,
         // keyed so one broken rule met by every record in the batch is one mark.
         $marks = [];
@@ -579,10 +598,7 @@ final class ScanWorker
             // record from killing the batch it travelled in.
             $claim = isset($c['claim']) ? (int) $c['claim'] : 0;
 
-            $moved = ($fence instanceof RecordVersions)
-                && (!array_key_exists($id, $before) || !array_key_exists($id, $after)
-                    || $before[$id] !== $after[$id]);
-            if ($moved) {
+            if ($moved($id)) {
                 // One more attempt, unless it has already had them all. A record
                 // that is edited every time we look at it is a real fact about
                 // the project, and reporting it is better than either retrying
@@ -603,13 +619,22 @@ final class ScanWorker
 
             if (!array_key_exists($id, $data) || !is_array($data[$id])) {
                 // Asked for and not returned. Either it was deleted during the
-                // run - which is a tombstone, a real terminal state, so the run
-                // is not stuck waiting for it - or the read is wrong about it,
-                // which is worth another attempt first.
+                // run, or the read is wrong about it - and the read being wrong
+                // is worth another attempt first.
+                //
+                // OUT OF ATTEMPTS, THE TWO ARE NOT THE SAME STATE. This wrote a
+                // TOMBSTONE for both, on the strength of an absence: an export
+                // that dropped a record three times running - a rights filter, a
+                // truncated response, an id the export normalises differently -
+                // recorded it as deleted. A tombstone does not block coverage,
+                // so the run went on to certify a project with a record in it
+                // that nobody examined. A tombstone is now a CONFIRMED deletion;
+                // anything less is a record that could not be read, which blocks.
                 if ($tries + 1 >= $maxAttempts) {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
-                                           'state' => ScanStore::REC_TOMBSTONE, 'version' => null,
-                                           'claim' => $claim];
+                                           'state' => isset($gone[(string) $id])
+                                               ? ScanStore::REC_TOMBSTONE : ScanStore::REC_UNREADABLE,
+                                           'version' => null, 'claim' => $claim];
                     $blocked++;
                 } else {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
@@ -701,6 +726,38 @@ final class ScanWorker
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => count($batch['findings']),
                 'candidates' => count($batch['candidates']), 'why' => null];
+    }
+
+    /**
+     * Of these record ids, the ones the project confirms it no longer holds.
+     *
+     * ONLY AN EXPLICIT `false` CONFIRMS. No resolver, a resolver that throws, an
+     * answer that is not an array, an id the answer leaves out, a truthy value,
+     * a null: every one of those is "cannot tell", and cannot tell is NOT GONE.
+     * The cost of that direction is a record reported as unreadable when it was
+     * in fact deleted, which caps one run's coverage; the other direction drops
+     * a live record out of a report that then says it covered the project.
+     *
+     * @param string[] $ids
+     * @return array<string,bool> id => true, for the confirmed ones only
+     */
+    private function confirmedGone(array $ids)
+    {
+        if (!$ids) return [];
+        $probe = isset($this->deps['exists']) ? $this->deps['exists'] : null;
+        if (!is_callable($probe)) return [];
+        try {
+            $answer = $probe($ids);
+        } catch (\Throwable $e) {
+            return [];
+        }
+        if (!is_array($answer)) return [];
+        $gone = [];
+        foreach ($ids as $id) {
+            $k = (string) $id;
+            if (array_key_exists($k, $answer) && $answer[$k] === false) $gone[$k] = true;
+        }
+        return $gone;
     }
 
     /**

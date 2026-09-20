@@ -189,6 +189,64 @@ $NEIGHBOUR = uv_neighbour($PID);
         . " SET active_slot = NULL, phase = 'terminal', terminal = 'cancelled'
             WHERE run_id = " . $wrid3);
 
+    // A TOMBSTONE IS A CONFIRMED DELETION (H18), and the confirmation is a query.
+    //
+    // The read leaves two records out. One is still in the project - the export
+    // was wrong about it - and one was deleted after the manifest was written.
+    // The worker used to call both deleted. The resolver here is the production
+    // one, RecordManifestSource::exist(), against the table it reads in REDCap:
+    // what is being shown is that the question it asks tells the two apart.
+    $A->query('DELETE FROM redcap_record_list WHERE project_id = ' . $PID);
+    foreach (array('H-OK', 'H-HIDDEN', 'H-DELETED') as $id) {
+        $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
+            . $PID . ", '" . $id . "', NULL)");
+    }
+    // The neighbour holds a record of the SAME NAME. "Does H-DELETED exist" has
+    // to be a question about this project.
+    $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES ("
+        . $NEIGHBOUR . ", 'H-DELETED', NULL)");
+    $srcH = \INSPIRE\UniversalValidator\Scan\RecordManifestSource::open($dbA, $PID, array('pk' => 'record_id'));
+    $plannedH = $planner->plan($PID, array_merge($baseReq, array(
+        'source' => $srcH['source'], 'fence' => null, 'pageSize' => 5)));
+    check('absent: the run lists all three records',
+        $plannedH['ok'] === true && (int) $plannedH['run']['manifest_total'] === 3);
+    $hrid = (int) $plannedH['run']['run_id'];
+    $A->query("DELETE FROM redcap_record_list WHERE project_id = " . $PID . " AND record = 'H-DELETED'");
+
+    $readSome = function ($ids) {
+        $out = array();
+        foreach ($ids as $id) {
+            if ($id === 'H-OK') $out[$id] = array('1' => array('x' => ''));
+        }
+        return array('ok' => true, 'data' => $out, 'why' => null);
+    };
+    $quiet = function ($id, $node) {
+        return array('bytes' => 0, 'contexts' => 1, 'why' => null, 'findings' => array());
+    };
+    $source = $srcH['source'];
+    $workerH = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+        'slots' => $slots, 'fence' => null, 'read' => $readSome, 'evaluate' => $quiet,
+        'owner' => 'browser-4', 'attempts' => 1,
+        'exists' => function (array $ids) use ($source) { return $source->exist($ids); },
+        'budget' => new \INSPIRE\UniversalValidator\Scan\WorkBudget(array('mode' => 'cron', 'memoryLimit' => null,
+            'timeLimit' => null, 'min' => 1, 'max' => 20, 'first' => 20,
+            'startedAt' => microtime(true)))));
+    $workerH->work($PID, $hrid);
+    $stateOf = function ($id) use ($dbA, $hrid) {
+        $r = $dbA->select('SELECT state FROM ' . Schema::table('scan_record')
+            . ' WHERE run_id = ? AND record_id_bin = ?', array($hrid, $id));
+        return isset($r[0][0]) ? (int) $r[0][0] : null;
+    };
+    check('absent: the record that was read is examined',
+        $stateOf('H-OK') === \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE);
+    check('absent: the record the export hid, and the project still holds, was NOT READ',
+        $stateOf('H-HIDDEN') === \INSPIRE\UniversalValidator\Scan\ScanStore::REC_UNREADABLE);
+    check('absent: the record deleted here is a tombstone, though a neighbour has one of that name',
+        $stateOf('H-DELETED') === \INSPIRE\UniversalValidator\Scan\ScanStore::REC_TOMBSTONE);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET active_slot = NULL, phase = 'terminal', terminal = 'cancelled'
+            WHERE run_id = " . $hrid);
+
     foreach (array('redcap_log_event', 'redcap_record_list', 'redcap_data',
                    'redcap_projects') as $t) {
         $A->query('DROP TABLE IF EXISTS ' . $t);

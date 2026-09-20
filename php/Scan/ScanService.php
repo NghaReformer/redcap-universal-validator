@@ -57,6 +57,8 @@ final class ScanService
     private $module;
     /** @var ?ScanDb */
     private $db;
+    /** @var array project id => RecordManifestSource|null, opened at most once per request */
+    private $sources = [];
 
     public function __construct($module)
     {
@@ -271,6 +273,10 @@ final class ScanService
             'attempts'  => $policy['recordAttempts'],
             'finalizer' => $this->finalizer($pid, $ctx),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
+            // The SAME question catch-up asks, of the same opened source: is
+            // this record still in the project. The worker asks it before it
+            // will call a record it could not read a deleted one.
+            'exists'    => $this->existsProbe($pid),
             'rollup'    => new RollupBuilder($this->db, $store),
             'note'      => function ($event, array $context) {
                 $this->note($event, $context);
@@ -651,19 +657,50 @@ final class ScanService
         return empty($f['ok']) ? null : $f['fence'];
     }
 
+    /**
+     * The project's record source, opened at most once per request.
+     *
+     * Opening it resolves the data table and the record-id field, which is two
+     * reads; catch-up and the worker both need it in the same request.
+     *
+     * @return RecordManifestSource|null null when it cannot be opened
+     */
+    private function openSource($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->sources)) {
+            $src = RecordManifestSource::open($this->db, $pid, ['pk' => $this->recordIdField($pid)]);
+            $this->sources[$k] = empty($src['ok']) ? null : $src['source'];
+        }
+        return $this->sources[$k];
+    }
+
+    /**
+     * "Are these records still in the project", as a callable.
+     *
+     * WITH NO SOURCE EVERYTHING IS STILL THERE, which is exist()'s own failure
+     * direction: a record is never called deleted because a table could not be
+     * opened.
+     */
+    private function existsProbe($pid)
+    {
+        $source = $this->openSource($pid);
+        return function (array $ids) use ($source) {
+            return $source === null
+                ? array_fill_keys(array_map('strval', $ids), true) : $source->exist($ids);
+        };
+    }
+
     private function catchUp($pid, ScanStore $store, $dag)
     {
-        $src = RecordManifestSource::open($this->db, $pid, ['pk' => $this->recordIdField($pid)]);
-        $source = empty($src['ok']) ? null : $src['source'];
+        $source = $this->openSource($pid);
         $key = $this->key();
         return new CatchUp($store, [
             'fence'  => $this->fence($pid),
             'hash'   => function ($id) use ($pid, $key) {
                 return Hmac::raw(Hmac::P_RECORD, $pid, (string) $id, $key);
             },
-            'exists' => function (array $ids) use ($source) {
-                return $source === null ? array_fill_keys($ids, true) : $source->exist($ids);
-            },
+            'exists' => $this->existsProbe($pid),
             'scope'  => function (array $ids) use ($source, $dag) {
                 // No source means no way to establish a group. For a scoped run
                 // that is a refusal to admit; for an unscoped one it is

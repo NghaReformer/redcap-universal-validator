@@ -892,7 +892,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $partial = function ($ids) {
         $data = [];
         foreach ($ids as $id) {
-            if ($id === 'GONE') continue;
+            if (strpos((string) $id, 'GONE') === 0) continue;
             $data[$id] = ['1' => ['x' => 'v']];
         }
         return ['ok' => true, 'data' => $data, 'why' => null];
@@ -904,6 +904,75 @@ namespace INSPIRE\UniversalValidator\Scan {
         $store->manifestComplete($runId) === true);
     check('worker: counted as blocking rather than as examined',
         $res['blocked'] === 1 && $res['worked'] === 1);
+
+    // WHICH TERMINAL STATE, which the two checks above never asked (H18). They
+    // passed for as long as this block has existed while the worker wrote a
+    // TOMBSTONE on the strength of an absence: an export that left a record out
+    // three times running recorded it as deleted, a tombstone does not block
+    // coverage, and the run certified a project holding a record nobody
+    // examined. A tombstone is a CONFIRMED deletion now, and nothing less is.
+    $absent = function (array $deps, array $ids = ['A', 'GONE']) use ($fixture, $partial, $finder, $wide, $fin) {
+        list($store, $runId) = $fixture($ids);
+        $w = new ScanWorker($store, array_merge(['fence' => new Versions(), 'read' => $partial,
+            'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 2,
+            'finalizer' => $fin()], $deps));
+        $w->work(800, $runId);
+        $states = $store->recordStates($runId);
+        ksort($states);
+        $facts = ScanPromotion::facts(array_merge($store->run(800, $runId), ['fence_target' => '500']),
+            $states, ['uniqueDone' => true, 'rollupDone' => true]);
+        return [$states, ScanOutcome::derive($facts['facts'])];
+    };
+
+    list($states, $o) = $absent([]);
+    check('absent: with nobody to ask, a record the read left out was NOT READ',
+        $states === [ScanStore::REC_DONE => 1, ScanStore::REC_UNREADABLE => 1]);
+    check('absent: so the run may not say it covered the project',
+        $o['coverage'] === ScanOutcome::COV_PARTIAL && ScanOutcome::mayClaimClean($o) === false);
+
+    $asked = [];
+    list($states, $o) = $absent(['exists' => function (array $ids) use (&$asked) {
+        $asked[] = $ids;
+        return array_fill_keys($ids, false);
+    }]);
+    check('absent: a record the project confirms it no longer holds is a tombstone',
+        $states === [ScanStore::REC_DONE => 1, ScanStore::REC_TOMBSTONE => 1]);
+    check('absent: and a confirmed deletion does not cap coverage',
+        $o['coverage'] === ScanOutcome::FENCED);
+    // attempts = 2, so the first absence is a requeue and the answer would
+    // change nothing. The question is asked on the LAST attempt only.
+    check('absent: the project is asked once, on the last attempt, about that record alone',
+        $asked === [['GONE']]);
+
+    list($states, ) = $absent(['exists' => function (array $ids) { return array_fill_keys($ids, true); }]);
+    check('absent: a record the project still holds is unreadable, never deleted',
+        $states === [ScanStore::REC_DONE => 1, ScanStore::REC_UNREADABLE => 1]);
+
+    // EVERY WAY OF NOT KNOWING IS "NOT GONE".
+    foreach ([
+        'throws'              => function (array $ids) { throw new \RuntimeException('the table is locked'); },
+        'answers with a bool' => function (array $ids) { return false; },
+        'answers with null'   => function (array $ids) { return null; },
+        'leaves the id out'   => function (array $ids) { return []; },
+        'answers 0, not false' => function (array $ids) { return array_fill_keys($ids, 0); },
+        'answers null per id' => function (array $ids) { return array_fill_keys($ids, null); },
+    ] as $how => $probe) {
+        list($states, ) = $absent(['exists' => $probe]);
+        check("absent: a resolver that $how confirms nothing",
+            $states === [ScanStore::REC_DONE => 1, ScanStore::REC_UNREADABLE => 1]);
+    }
+
+    // ONE QUESTION PER BATCH, however many records are missing from it.
+    $asked = [];
+    list($states, ) = $absent(['exists' => function (array $ids) use (&$asked) {
+        $asked[] = $ids;
+        return ['GONE' => false, 'GONE2' => true, 'GONE3' => false];
+    }], ['A', 'GONE', 'GONE2', 'GONE3']);
+    check('absent: three missing records are one question',
+        count($asked) === 1 && count($asked[0]) === 3);
+    check('absent: and each is judged on its own answer',
+        $states === [ScanStore::REC_DONE => 1, ScanStore::REC_UNREADABLE => 1,
+                     ScanStore::REC_TOMBSTONE => 2]);
 
     // -- a read that fails outright ------------------------------------------
     //
