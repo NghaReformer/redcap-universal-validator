@@ -1001,3 +1001,59 @@ probes. The work also touched `php/Scan/UniqueFinalizer.php`, `tests/scan_module
 `tests/scan_sqlstore_fault_php.php`. `ArrayScanStore.php` and `DbError.php` were listed and needed no
 code change. The unique key the plan calls `uq_active_identity` is `uq_active_identity_v2` since the
 version-2 migration.
+
+### W7-N1 — the decision table's order was wrong for one cell
+
+The item fixes the order as `blocked > !fenced > !manifestDone`, and that is the order the code already had. In the cell where both are false it answers from the fence row: a run that had neither finished its list nor proved a window was stored as `manifest-complete`, with the sentence "every record on the opening list was examined". `manifest-complete` is a claim about the manifest, so `ScanOutcome::derive()` now asks `!manifestDone` first. Both pinned tables (`tests/scan_worker_php.php`, `tests/scan_security_php.php`) gained the row. No production path reaches the cell today, because promotion is not ready while records are pending; it was reachable by any caller that forgot both facts, including `derive([])`.
+
+### W7-N2 — the item's file list, against what was touched
+
+Touched and not listed: `php/Scan/RollupBuilder.php` (`KINDS`), `php/Scan/ScanPlanner.php` (`GAP_POLICY_WIRE`), `pages/scan.php` (the stalled node), `tests/scan_run_row.php` (new), `tests/scan_entitlement_php.php`, `tests/scan_sqlstore_fault_php.php`, `tests/scan_schema_php.php`, `tests/scan_fault_support.php`, `tests/scan_wiring_php.php`, `tests/mysql/cases/store.php`, `tests/mysql/cases/worker.php`.
+
+Listed and not touched: `php/Scan/UniqueFinalizer.php` (B4a is fixed by reading the summary, which already counts what the finalizer writes) and `php/Scan/RecordManifestSource.php` (its `exist()` is used as it stands). `UniversalValidator.php` is listed and is one hunk, held to the end of the branch; see W7-N7.
+
+### W7-N3 — the `'separate'` literal was a fingerprint input
+
+`ScanPlanner::requestFingerprint()` read `policy.collectionGaps`. Changing the policy word alone would have changed every fingerprint, and every run in flight across the upgrade would have been failed as "the configuration moved". `ScanPlanner::GAP_POLICY_WIRE = 'separate'` is emitted unconditionally and no longer read from the policy. A test builds the old fingerprint by hand and holds today's to it.
+
+### W7-N4 — the H18 pin asserted nothing, and catch-up still tombstones on one answer
+
+`tests/scan_worker_php.php` had a block named for a record deleted mid-run. It checked that the manifest completed and that one record was counted as blocking. It never read the record's state, so it passed while the worker wrote `REC_TOMBSTONE` for an absence and it passed unchanged after the fix. It now asserts the state under nine resolver behaviours.
+
+`CatchUp` has the weaker rule still: a record is `gone` when `empty($exists[$id])`, so an id the resolver leaves out of its answer is tombstoned. The production resolver always answers for every id and fails toward "still there", so this is not reachable today. **Schedule:** wave 8, with store parity, by giving catch-up the worker's rule (`=== false` only).
+
+### W7-N5 — a defect only the database matrix could show
+
+`SqlScanStore::commitBatch()` already had a local named `$marks`: the placeholder string for the supersede. The new list of presence marks took the same name, so any batch that closed a record's previous findings overwrote the list with `"?,?"` and wrote no mark. `ArrayScanStore` builds no placeholders and passed every check; MySQL 5.7, MySQL 8.0, MariaDB 10.5 and MariaDB 10.11 all failed the same two. The list is `$presence` in both stores, and `tests/scan_sqlstore_fault_php.php` now asserts, without a server, that a superseding batch sends the aggregate statement. The mutation that restores the collision turns three checks red.
+
+### W7-N6 — `temporal-budget` is a coverage hole reported as a rule problem (decided: no change)
+
+When the extended-evaluation budget runs out, `UniversalValidator` records the problem `temporal-budget` with the sentence "this record was not fully checked". With B4b that reaches the run as a rule problem, which forbids `clean` and does not cap coverage. The record was in fact only partly examined, so the accurate state would be a blocking one. The decision for this wave was to leave behaviour alone and record it: the run cannot claim clean, which is the safe half. **Schedule:** wave 10, with the rest of the evaluation-budget work; the change is a `blocks = 1` mark for that code, or a record state.
+
+### W7-N7 — rule problems are keyed by a hashed sentence until `UniversalValidator` hands over the code
+
+`UniversalValidator` keys its problem list `"<rule index>|<code>"` and returns `array_values()` of it, so the code is lost. `ScanPromotion::problemKey()` uses `code` when present and otherwise `'w:' . substr(sha1(why), 0, 16)`. Two sentences for one fault would be two rows, which overstates; that is the direction that cannot certify. The `UniversalValidator::problemList()` hunk that attaches `code` is the last commit of this branch, after the other session's work on that file is rebased in.
+
+### W7-N8 — `violations` has two sources, and the counter still decides `truncated`
+
+`promote()` takes violations from the summary once the rollup has finished. When it has not (a cancelled or failed run ends whatever is outstanding), the value is `max(summary, detail_rows)`, because half a summary undercounts. `truncated` still compares `detail_rows` with the policy maximum. That is right for what it measures (rows stored against a storage budget) and it does not count finalizer-written duplicates against the budget. **Schedule:** wave 10.
+
+### W7-N9 — the finalizer phases have no progress clock of their own
+
+`progress_at` is written by `commitBatch()` and `freezeManifest()` only. `ScanService::progressOf()` therefore reads `updated_at` in catch-up, unique-finalize and rollup-finalize. `UniqueFinalizer::step()` writes nothing to the run row, so during a long unique-finalize both clocks stand still and a watcher is told the run has stalled after two minutes while it is working. The reaper reads the same columns and has the same blind spot. **Schedule:** wave 8 or 10, whichever first gives the finalizer a fenced write to the run row.
+
+### W7-N10 — runs finished by the reaper, and runs finished before this release, carry no counts
+
+`ScanRetention::expireAbandoned()` and `Schema::upgradeDataV2()` write `clean = NULL` and leave `gap_count`, `rule_problem_count` and `not_examined` at 0. For an expired run NULL is the right answer to "was it clean". The zero counts are not measurements. A reader must treat the three counts as meaningful only where `clean IS NOT NULL`. Runs that finished before this release have `clean = NULL` for the same reason: the decision was made and not stored. **Owed by wave 11:** the findings page reads `clean IS NULL` as "not certified", never as "not clean".
+
+### W7-N11 — two inputs of the outcome have no production supplier
+
+`fingerprintNow` and `policyRevisionNow` make `facts()` answer `failed`. `ScanService::work()` compares the fingerprint itself before it builds a worker and refuses the request; it does not pass either value to `promote()`. So a run whose configuration moved is refused work and then sits until the reaper expires it, and the `failed` terminal is unreachable from production. `labelDegraded` is in the same position after B9: it is read from the caller, and no caller supplies it. **Schedule:** wave 9 for the first two (with resumable planning, which re-reads the fingerprint anyway); wave 11 for `labelDegraded`, which belongs to the report's dimension labels.
+
+### W7-N12 — `status().findings` reads the summary on every poll of a finished run
+
+`ScanPromotion::findingsOf()` reads `aggregates()` for a run that reached a verdict. The row count is bounded by the number of instruments, reasons, groups and check types, and a finished run is polled once or twice. It is still a read that `rule_problem_count`-style persistence would remove. **Schedule:** wave 8, if store parity adds a finding count to the run row; otherwise leave.
+
+### W7-N13 — two timestamps are written in the server's zone
+
+`Schema::upgradeDataV2()` and the schema-version insert use `date()`; every store write uses `gmdate()`. `progressOf()` reads all run timestamps as UTC. On a server east or west of Greenwich, a run retired by the version-2 migration has an `updated_at` that is hours off. Those runs are terminal, so `stalled` never reads them. **Schedule:** wave 12 (documentation and tidy-up), as a one-word change with a test.

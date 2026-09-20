@@ -10,9 +10,24 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - **Validation scan, storage cost (remediation wave 6).** Findings are written in batches of up to 500 per statement instead of one statement each, which shortens the time a scan holds its run lock during a commit. Writes whose row count is never read no longer make a second database round trip to fetch it. The "is every record finished" check stops at the first unfinished record instead of counting all of them, and is pinned to the index that answers it.
 - The scan's memory budget now sizes each batch from the memory the previous batch needed at its peak, measured on real usage. Remaining headroom is still measured on PHP's allocated arena, which is what `memory_limit` applies to.
 
+- The scan page tells someone watching a scan, as opposed to the tab that is driving it, when no progress has been recorded for two minutes.
+- The `collectionGaps` policy value reads `unimplemented`, because no collection-gap detector exists. Stored scan fingerprints are unaffected.
+
+### Fixed
+
+- **Validation scan, what a finished scan reports (remediation wave 7).**
+  - A project whose only problem was duplicated values could finish as clean. The clean decision now counts active findings from the scan summary, which includes duplicates, instead of a counter that only per-record checks advance.
+  - A record that the data export left out on every attempt was recorded as deleted, and a deleted record does not reduce coverage. It is now recorded as deleted only when the project confirms it no longer holds the record. Otherwise it is reported as unreadable, and the scan cannot report full coverage.
+  - Rule problems met while records are examined, and not only those known when the scan is planned, now prevent a clean result. Each is recorded once per scan, however many records or workers meet it.
+  - A scan that had neither finished its record list nor proved the project stood still was stored as "every record on the opening list was checked". It is stored as partial.
+  - The progress line counted records that could not be read or stored as checked, so a scan that stored nothing could read "12 of 12 records (100%)". It now counts examined records and states the rest: "8 of 10 records checked; 2 could not be checked". The progress bar still reaches 100% when the scan finishes. The line is unchanged when nothing was excluded.
+- The scan run now stores its clean decision, the reason it ended, and its counts of collection gaps, rule problems and records not examined. Failed, cancelled and expired scans store no clean decision. Scans finished before this release have none either, which means "not certified".
+- `ScanPageView::verdict()`, an unused second implementation of the clean decision that disagreed with the one in use, is removed.
+
 ### Verification
 
 - The database matrix (MySQL 5.7 and 8.0, MariaDB 10.5 and 10.11, default isolation and `READ COMMITTED`) asserts the statement count of a findings batch, that a duplicate finding in a later chunk still refuses the whole batch, and the query plan of the completeness check. Without the index hint, three of the four engines chose a plan that walks the whole manifest.
+- For wave 7 the matrix asserts the stored clean decision as `clean IS NULL` on the server, a duplicates-only project finishing complete and not clean, a rule problem marked from two connections landing as one row, and the production record-existence query telling a hidden record from a deleted one. It also found a defect the in-memory store could not: a variable name shared with the supersede statement dropped every rule-problem mark in a batch that closed earlier findings.
 
 ## 2.1.0-rc.1 — 2026-09-18
 
