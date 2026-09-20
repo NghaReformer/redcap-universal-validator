@@ -239,9 +239,9 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // INSERT per discovered group, and the cost is not theoretical: measured
         // against MySQL 8.0.46, 100,000 groups took 811 seconds through this
         // method - the review that found it estimated 262. Through the External
-        // Modules wrapper, which runs a second statement per write to read
-        // ROW_COUNT(), it is worse again. Batched, the same work is 200
-        // statements.
+        // Modules wrapper, which then ran a second statement per write to read
+        // ROW_COUNT(), it was worse again. Batched, the same work is 200
+        // statements - and sent uncounted, because nothing here reads a count.
         //
         // FIVE PLACEHOLDERS PER ROW, and the chunk is sized from that. MySQL's
         // limit is 65,535 placeholders per statement, so 500 rows is 2,500 -
@@ -269,7 +269,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $flat[] = $phase;
                 $flat[] = $records;
             }
-            $this->db->exec('INSERT INTO ' . Schema::table('unique_group') . '
+            $this->db->execNoCount('INSERT INTO ' . Schema::table('unique_group') . '
                 (project_id, generation_id, group_hmac, candidate_epoch, verify_cursor,
                  emit_cursor, phase, distinct_records, collision_state)
                 VALUES ' . implode(',', $marks) . '
@@ -362,7 +362,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         if (!$rows) {
             // Every candidate matched the representative. The group is real and
             // may now be emitted.
-            $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+            $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
                 SET phase = ?, emit_cursor = 0
                 WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
                 [self::G_EMITTING, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -432,7 +432,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
             $tuple = self::canonicalTuple($values[$key]);
             if ($rep === null) {
                 $rep = $tuple;
-                $this->db->exec('UPDATE ' . Schema::table('unique_group')
+                $this->db->execNoCount('UPDATE ' . Schema::table('unique_group')
                     . ' SET representative = ?
                        WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
                     [$rep, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -448,7 +448,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
             $checked++;
         }
 
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, verify_cursor = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_VERIFYING, $cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -514,7 +514,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // no active slot, and every NULL in a unique index counts as distinct,
         // so a retried page would insert a second copy of every row it had
         // already written.
-        $this->db->exec('INSERT INTO ' . Schema::table('finding') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('finding') . '
             (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
              record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
@@ -522,7 +522,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
             VALUES ' . implode(',', $marks) . '
             ON DUPLICATE KEY UPDATE stage_epoch = VALUES(stage_epoch)', $flat);
         $emitted = count($marks);
-        $this->db->exec('UPDATE ' . Schema::table('unique_group')
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group')
             . ' SET emit_cursor = ?
                WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
@@ -547,16 +547,16 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // project_id leading ix_group_stage_v2 is what makes them read one
         // project's rows instead of the generation's.
         $t = Schema::table('finding');
-        $this->db->exec('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
               AND stage_epoch <> ?',
             [$g['candidate_epoch'], $this->pid, $generationId, $g['group_hmac'],
              $g['candidate_epoch']]);
-        $this->db->exec('UPDATE ' . $t . ' SET active_slot = 1
+        $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?
               AND active_slot IS NULL',
             [$this->pid, $generationId, $g['group_hmac'], $g['candidate_epoch']]);
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, published_epoch = ?, staged_epoch = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_PUBLISHED, $g['candidate_epoch'], $g['candidate_epoch'],
@@ -567,7 +567,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
     /** The group could not be decided. Terminal, and it blocks the run's coverage. */
     private function block(array $g, $why)
     {
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET phase = ?, collision_state = ? WHERE project_id = ? AND group_id = ?',
             [self::G_COLLISION, self::COLLISION_BLOCKING, $this->pid, $g['group_id']]);
         return $why;
@@ -583,7 +583,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
      */
     private function restart(array $g)
     {
-        $this->db->exec('UPDATE ' . Schema::table('unique_group') . '
+        $this->db->execNoCount('UPDATE ' . Schema::table('unique_group') . '
             SET candidate_epoch = candidate_epoch + 1, verify_cursor = 0, emit_cursor = 0,
                 representative = NULL, phase = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
@@ -624,7 +624,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         // belt and braces - and it is the cheap kind: this is a DELETE, and a
         // DELETE that trusts an id list is one refactor away from deleting
         // another project's evidence.
-        $this->db->exec('DELETE FROM ' . Schema::table('finding')
+        $this->db->execNoCount('DELETE FROM ' . Schema::table('finding')
             . ' WHERE project_id = ? AND finding_id IN (' . $marks . ')',
             array_merge([$this->pid], $ids));
         return count($ids);
