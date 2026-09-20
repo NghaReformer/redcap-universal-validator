@@ -22,6 +22,15 @@ namespace INSPIRE\UniversalValidator;
  *     is shown instead (event_id rather than a name), and the failure is
  *     recorded in degraded[] so the report can say a column is unreliable.
  *     Degradation nobody can see is the failure this module exists to prevent.
+ *
+ * THE STATE IS PUBLIC AND build() IS ONLY ONE WAY TO FILL IT. build() reads the
+ * project as it is NOW. A report on a stored run has to be labelled as the
+ * project was WHEN THE RUN WAS PLANNED - a rule renamed since must not rename
+ * the findings it produced - and that comes from the uv_scan_dim snapshot,
+ * which has no producer and no reader yet. Wave 11 writes both and fills these
+ * properties from the snapshot; there is deliberately no fromSnapshot() here
+ * until there is a snapshot to read, because a reader written against an
+ * imagined format is a second format.
  */
 final class ScanDimensions
 {
@@ -35,6 +44,22 @@ final class ScanDimensions
     public $fieldForms = [];
     /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>] */
     public $rules = [];
+    /**
+     * @var array rule source id => rule ordinal. A STORED finding names its rule
+     * by source id, which survives a rule being added above it; the ordinal it
+     * also carries does not. Empty until something that knows the source ids
+     * fills it (wave 11, from the run's snapshot) - ruleOf() then falls back to
+     * the ordinal.
+     */
+    public $rulesBySource = [];
+    /**
+     * @var array|null field name => true for every field REDCap flags as an
+     * Identifier. NULL means the flags could not be read, which is NOT the same
+     * as "no field is an identifier" - Scan\FindingRowMapper withholds on null.
+     */
+    public $identifiers = null;
+    /** What REDCap's dictionary may hold in `identifier` for a flagged field. */
+    const IDENTIFIER_FLAGS = ['y', 'yes', '1', 'true'];
     /** @var bool whether this project uses Data Access Groups at all */
     public $hasDags = false;
     /** @var bool whether this project is longitudinal (more than one event) */
@@ -57,10 +82,20 @@ final class ScanDimensions
     {
         $d = new self();
 
+        // Identifier flags come from the same dictionary read, by the SAME RULE
+        // UniversalValidator::projectIdentifierFields() applies when the scan
+        // decides what to store: the same accepted words, and null only when
+        // there is no dictionary. Two readings of one flag that disagree would
+        // have the report show a value the scan was careful to redact, or
+        // withhold one it kept. tests/scan_report_php.php holds them together.
+        $flags = [];
         foreach ($dd as $name => $meta) {
             if (isset($meta['field_label'])) $d->fieldLabels[$name] = (string) $meta['field_label'];
             if (!empty($meta['form_name']))  $d->fieldForms[$name]  = (string) $meta['form_name'];
+            $flag = isset($meta['identifier']) ? strtolower(trim((string) $meta['identifier'])) : '';
+            if (in_array($flag, self::IDENTIFIER_FLAGS, true)) $flags[$name] = true;
         }
+        $d->identifiers = $dd ? $flags : null;
 
         // Events. The whole map in ONE call, not one call per finding. Unique
         // names embed the arm (event_1_arm_2), which matters because two arms
@@ -248,6 +283,36 @@ final class ScanDimensions
         return isset($this->rules[$ordinal])
             ? $this->rules[$ordinal]
             : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+    }
+
+    /**
+     * The rule a finding belongs to: its snapshot, and the ordinal to show.
+     *
+     * BY SOURCE ID FIRST, where the finding has one and this object knows it. A
+     * source id names the rule itself; an ordinal names a position, and the
+     * position moves when a rule is added above it. Then by the ordinal the
+     * finding carries. An ordinal below 1 is NOT a rule - the duplicate findings
+     * Scan\UniqueFinalizer writes carry 0 - and answers with the empty shape and
+     * ordinal 0, which the Rule column renders as an empty cell.
+     *
+     * @return array the rule() shape, plus `ordinal` (int, 0 when there is none)
+     */
+    public function ruleOf(array $finding)
+    {
+        $ord = 0;
+        $source = isset($finding['ruleSource']) ? (string) $finding['ruleSource'] : '';
+        if ($source !== '' && isset($this->rulesBySource[$source])) {
+            $ord = (int) $this->rulesBySource[$source];
+        } elseif (isset($finding['rule']) && is_numeric($finding['rule'])) {
+            $ord = (int) $finding['rule'];
+        }
+        if ($ord < 1) $ord = 0;
+        $rule = $this->rule($ord);
+        // A rule this object does not know keeps the ordinal the finding gave:
+        // "Rule 12" with no name is a worse cell than a named one and a far
+        // better one than nothing.
+        $rule['ordinal'] = $ord;
+        return $rule;
     }
 
     /** True when any label source could not be read. */

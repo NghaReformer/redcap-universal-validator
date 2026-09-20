@@ -101,7 +101,6 @@ namespace {
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
         'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
-        'ScanPolicy::floor'              => 'wave 10, transitively: tightened() is its only intended caller',
         'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
 
         // -- wave 11, the report. It could not have been built earlier:
@@ -111,12 +110,11 @@ namespace {
         'ArrayScanStore::findings'               => 'wave 11 (B5), with the contract',
         'SqlScanStore::findings'                 => 'wave 11 (B5), with the contract',
         'ScanAuthorization::projectionStillValid' => 'wave 11 (H10 part 2): a report is never invalidated on DAG drift, and the read path is where it belongs',
-        'ScanColumns::row'                       => 'wave 11 (B5): the findings table and CSV',
-        'ScanColumns::headers'                   => 'wave 11 (B5): the findings table and CSV',
-        'ScanColumns::keyLegend'                 => 'wave 11 (B5): the findings table and CSV',
-        'ScanPageView::csvRow'                   => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
-        'ScanDimensions::isDegraded'             => 'wave 11 (M5): uv_scan_dim has no producer, so nothing can be degraded yet',
-        'ScanDimensions::degradedSummary'        => 'wave 11 (M5), with isDegraded',
+        'ScanReport::present'                    => 'wave 11 (B5): the findings table; the stores have no findings read until wave 8',
+        'ScanReport::csvHeaderLine'              => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
+        'ScanReport::csvLine'                    => 'wave 11 (B5): pages/export.php is a permanent 503 until then',
+        'ScanReport::csvMetaLine'                => 'wave 11 (B5): the export file header, with csvHeaderLine',
+        'ScanReport::runFacts'                   => 'wave 11 (B5): the heading of the findings page and of the export',
 
         // -- WorkerSlots::renew was deleted from this list the same way. It
         //    stood under "nothing is scheduled", saying that a long batch's
@@ -141,7 +139,6 @@ namespace {
         'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
         'Hmac::hex'                     => 'no scheduled caller: a hex rendering nothing renders',
-        'ReasonCode::pooledNames'       => 'no scheduled caller: a diagnostic nothing asks for',
         'RecordManifestSource::via'     => 'no scheduled caller: the run never records which source it walked, so a report cannot say',
     ];
 

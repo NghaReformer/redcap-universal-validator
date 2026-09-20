@@ -142,16 +142,56 @@ final class MessageCatalog
         return $out;
     }
 
-    /** The second sentence, when the rule carries detail worth showing. Staff only. */
+    /**
+     * The second sentence, when the rule carries detail worth showing. Staff only.
+     *
+     * TWO REASONS CARRY MORE THAN ONE SENTENCE CAN SAY.
+     *
+     * An assertion. The engine emits `assert:<expression>`; a STORED finding
+     * holds the code `assert` alone, because the expression belongs to the rule
+     * and Scan\ReasonCode strips it before it becomes a column. Both forms get
+     * the expression from the rule snapshot. The bare form used to get nothing,
+     * so a stored finding said "does not satisfy this rule's condition" and
+     * never said what the condition was.
+     *
+     * A pooled field with several problems. The engine joins them with `;`
+     * (`check-character;junk`) - there is no `pooled:` prefix, whatever the
+     * comment on ReasonCode once said - so no single catalogue key matches and
+     * explain() answers with the `pooled/*` line: "one or more IDs are not
+     * valid". That is true and tells nobody what to fix. Each part has wording
+     * of its own, and they are given here, one sentence per part. A part with
+     * no wording is NAMED rather than dropped: an unknown problem is still a
+     * problem.
+     */
     public static function detail(array $finding, array $rule)
     {
         $reason = isset($finding['reason']) ? (string) $finding['reason'] : '';
-        if (strpos($reason, 'assert:') === 0) {
-            $expr = isset($rule['assert']) && $rule['assert'] !== ''
-                  ? $rule['assert'] : substr($reason, 7);
-            return 'The rule requires: ' . $expr;
+        if ($reason === 'assert' || strpos($reason, 'assert:') === 0) {
+            $expr = (isset($rule['assert']) && $rule['assert'] !== '')
+                  ? (string) $rule['assert'] : (string) substr($reason, 7);
+            return $expr === '' ? '' : 'The rule requires: ' . $expr;
         }
-        return '';
+        if (strpos($reason, ';') === false) return '';
+
+        $type = isset($finding['type']) ? (string) $finding['type'] : '';
+        $cat = self::catalog();
+        $said = [];
+        $unnamed = [];
+        foreach (explode(';', $reason) as $part) {
+            $part = trim($part);
+            if ($part === '') continue;
+            $k = $type . '/' . $part;
+            if (isset($cat[$k]['staff']) && is_string($cat[$k]['staff']) && $cat[$k]['staff'] !== '') {
+                $said[$k] = self::fill($cat[$k]['staff'], $finding);
+            } else {
+                $unnamed[$part] = $part;
+            }
+        }
+        $out = implode(' ', $said);
+        if ($unnamed) {
+            $out .= ($out === '' ? '' : ' ') . 'Also reported: ' . implode(', ', $unnamed) . '.';
+        }
+        return $out;
     }
 
     /** Substitute {placeholders}; anything with no value becomes empty, never raw. */
