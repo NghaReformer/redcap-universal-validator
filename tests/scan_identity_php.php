@@ -537,6 +537,55 @@ namespace {
         }
     }
 
+    /* =====================================================================
+     * B4b  A RULE PROBLEM LEAVES WITH ITS CODE
+     *
+     * The durable scan records each rule problem once per run, keyed by rule and
+     * code. The list left UniversalValidator as array_values() of a map keyed
+     * "<rule index>|<code>", so the code was discarded and the run fell back to
+     * hashing the sentence - one row per distinct sentence, and a sentence that
+     * names an event or instance is distinct on every record.
+     * ===================================================================== */
+    {
+        $ref = new \ReflectionMethod('\INSPIRE\UniversalValidator\UniversalValidator', 'problemList');
+        $ref->setAccessible(true);
+        $list = $ref->invoke(null, [
+            '0|configError'          => ['rule' => 1, 'fields' => ['a'], 'why' => 'broken'],
+            '1|temporal|40:2'        => ['rule' => 2, 'fields' => ['b'], 'why' => 'at event 40, instance 2'],
+            '1|temporal|41:1'        => ['rule' => 2, 'fields' => ['b'], 'why' => 'at event 41, instance 1'],
+            '2|The pattern is not a valid expression | at all' => ['rule' => 3, 'fields' => [], 'why' => 'The pattern is not a valid expression | at all'],
+            '3|'                     => ['rule' => 4, 'fields' => [], 'why' => 'nothing after the bar'],
+        ]);
+        check('B4b: the list is a list, in order, and loses nothing',
+            array_keys($list) === [0, 1, 2, 3, 4] && $list[0]['why'] === 'broken' && $list[0]['fields'] === ['a']);
+        check('B4b: a coded problem carries its code', isset($list[0]['code']) && $list[0]['code'] === 'configError');
+        check('B4b: a context is not part of the code, so one fault is one problem kind',
+            isset($list[1]['code'], $list[2]['code']) && $list[1]['code'] === 'temporal' && $list[2]['code'] === 'temporal');
+        check('B4b: a key that is a sentence is not a code', !isset($list[3]['code']) && !isset($list[4]['code']));
+
+        $k = '\INSPIRE\UniversalValidator\Scan\ScanPromotion';
+        check('B4b: two contexts of one fault are ONE mark for the run',
+            count($k::marksFor([$list[1], $list[2]])) === 1);
+        $bare = [$list[1], $list[2]];
+        unset($bare[0]['code'], $bare[1]['code']);
+        check('B4b (control): without the code they were two',
+            count($k::marksFor($bare)) === 2);
+
+        // Through the real seam: a plan-time problem reaches the durable context
+        // with the code it was filed under.
+        $m = mkMod(dict(['record_id' => ['fa'],
+                         'a_val' => ['fa', '@UVASSERT={"assert":"[a_val]=\'OK\'","message":"m1","blockSave":"hard"}'],
+                         'ghost' => ['', '@UVREQUIRED']]),
+                   [1 => [1 => ['record_id' => '1', 'a_val' => 'NO']]]);
+        $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'locations', 'generation' => 7, 'runSeq' => 7]);
+        $codes = [];
+        foreach ((isset($ctx['problems']) ? $ctx['problems'] : []) as $p) {
+            $codes[] = isset($p['code']) ? $p['code'] : null;
+        }
+        check('B4b: a field with no instrument is reported, by code, through durableScanContext ('
+            . json_encode($codes) . ')', in_array('unlocatable', $codes, true));
+    }
+
     echo "scan_identity_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

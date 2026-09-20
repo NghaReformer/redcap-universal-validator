@@ -45,6 +45,8 @@ require_once __DIR__ . '/php/Scan/ScanPolicy.php';
 require_once __DIR__ . '/php/Scan/ScanAuthorization.php';
 require_once __DIR__ . '/php/Scan/Hmac.php';
 require_once __DIR__ . '/php/Scan/ReasonCode.php';
+require_once __DIR__ . '/php/Scan/FindingRowMapper.php';
+require_once __DIR__ . '/php/Scan/ScanReport.php';
 require_once __DIR__ . '/php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/php/Scan/ScanRetention.php';
@@ -3303,6 +3305,38 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * The rule problems of a plan or a record, each with the CODE it was filed
+     * under.
+     *
+     * The list is keyed "<rule index>|<code>" while it is built, which is what
+     * keeps one problem from being listed twice, and it used to leave as
+     * array_values() of itself - so the code was thrown away at the door and the
+     * durable scan, which records each problem ONCE PER RUN, had nothing to
+     * recognise one by but its sentence. A sentence that names an event or an
+     * instance is a different sentence on every record, and one fault became a
+     * row per record.
+     *
+     * THE CODE IS THE SECOND SEGMENT, WHEN IT IS A CODE. Two kinds of key carry
+     * more: "<i>|temporal|<context>", where the third segment is the context and
+     * the problem is still `temporal`; and "<i>|<sentence>", filed by the
+     * sentence itself because the rule kind that raised it had no code to give.
+     * A sentence is not a code, and is left for Scan\ScanPromotion::problemKey()
+     * to hash, as it always has been.
+     */
+    private static function problemList(array $unconf)
+    {
+        $out = [];
+        foreach ($unconf as $key => $problem) {
+            $parts = explode('|', (string) $key, 3);
+            if (isset($parts[1]) && preg_match('/^[A-Za-z][A-Za-z0-9-]{0,63}$/', $parts[1])) {
+                $problem['code'] = $parts[1];
+            }
+            $out[] = $problem;
+        }
+        return $out;
+    }
+
+    /**
      * The one seam between this framework adapter and the durable scan.
      *
      * WHY A SINGLE METHOD RATHER THAN PUBLIC ACCESSORS. Everything under
@@ -3330,7 +3364,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($plan['fatal'] !== null) {
             return ['ok' => false, 'why' => $plan['fatal'], 'plan' => null,
                     'evaluate' => null, 'read' => null, 'rules' => [], 'ownership' => [],
-                    'problems' => array_values($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf'])];
         }
         if (!empty($plan['nothingToScan'])) {
             // The rule problems survive the refusal even though no run can carry
@@ -3342,7 +3376,7 @@ class UniversalValidator extends AbstractExternalModule
             return ['ok' => false, 'why' => 'this project has no rules this scan can evaluate',
                     'plan' => null, 'evaluate' => null, 'read' => null,
                     'rules' => [], 'ownership' => [],
-                    'problems' => array_values($plan['unconf'])];
+                    'problems' => self::problemList($plan['unconf'])];
         }
 
         $key = $this->hmacKey();
@@ -3437,7 +3471,7 @@ class UniversalValidator extends AbstractExternalModule
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
                 'verifyFingerprint' => true, 'structure' => $this->temporalScanStructure($pid, $plan['live']),
-                'problems' => array_values($plan['unconf'])];
+                'problems' => self::problemList($plan['unconf'])];
     }
 
     /**
@@ -3592,10 +3626,11 @@ class UniversalValidator extends AbstractExternalModule
         // travels as a rule problem rather than as a plausible name nobody
         // questions. It is reported per record, which is where it was noticed;
         // the aggregate that counts rule problems dedupes on the text.
-        $problems = array_values($unconf);
+        $problems = self::problemList($unconf);
         foreach (array_keys($missed) as $ord) {
             $problems[] = [
                 'rule'   => (int) $ord,
+                'code'   => 'no-identity',
                 'fields' => [],
                 'why'    => 'internal: this scan holds no identity for rule ' . (int) $ord
                     . ', so any finding it produced is recorded under a placeholder name',
@@ -4850,7 +4885,11 @@ class UniversalValidator extends AbstractExternalModule
             // the existing-bucket UPDATE both answer with the number they wrote.
             // The table has no AUTO_INCREMENT, so without it the insert path
             // would report whatever the session last happened to set.
-            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+            //
+            // execNoCount(): what this write answers with is LAST_INSERT_ID(),
+            // read below, and never its row count. exec() fetched ROW_COUNT()
+            // after it on every live uniqueness check of every survey page.
+            $db->execNoCount('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
                 (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
                 [(int) $pid, $bucket]);
@@ -4872,7 +4911,7 @@ class UniversalValidator extends AbstractExternalModule
             // across a boundary - and four slots, not two, because the doubled
             // bucket number interleaves the two tiers.
             if ($hits === 1) {
-                $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
+                $db->execNoCount('DELETE FROM ' . Scan\Schema::table('rate_bucket')
                     . ' WHERE project_id = ? AND bucket < ?', [(int) $pid, $bucket - 4]);
             }
             return $hits > $pmax;

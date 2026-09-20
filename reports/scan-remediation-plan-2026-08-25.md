@@ -981,7 +981,7 @@ Left for their owners:
 |---|---|---|
 | 8 statements in `ScanRetention.php` | paging them needs the count to know whether more remains | wave 8 (P6) |
 | `WorkerSlots.php` provisioning INSERT | its `$added++` counts attempts, not rows; the fix reads the count | wave 8 |
-| 2 statements in `UniversalValidator::surveyRateLimited` | the file was under edit by another session during this wave | follow-up commit on this branch |
+| 2 statements in `UniversalValidator::surveyRateLimited` | the file was under edit by another session during this wave | done on this branch after the rebase; `tests/hook_php.php` asserts no `ROW_COUNT()` is fetched |
 
 After `execNoCount()` the three real `ScanDb` implementations throw `\LogicException` from
 `affected()` instead of returning -1, because a `=== 1` fence would fail quietly on -1 and a `+=`
@@ -1010,7 +1010,7 @@ The item fixes the order as `blocked > !fenced > !manifestDone`, and that is the
 
 Touched and not listed: `php/Scan/RollupBuilder.php` (`KINDS`), `php/Scan/ScanPlanner.php` (`GAP_POLICY_WIRE`), `pages/scan.php` (the stalled node), `tests/scan_run_row.php` (new), `tests/scan_entitlement_php.php`, `tests/scan_sqlstore_fault_php.php`, `tests/scan_schema_php.php`, `tests/scan_fault_support.php`, `tests/scan_wiring_php.php`, `tests/mysql/cases/store.php`, `tests/mysql/cases/worker.php`.
 
-Listed and not touched: `php/Scan/UniqueFinalizer.php` (B4a is fixed by reading the summary, which already counts what the finalizer writes) and `php/Scan/RecordManifestSource.php` (its `exist()` is used as it stands). `UniversalValidator.php` is listed and is one hunk, held to the end of the branch; see W7-N7.
+Listed and not touched: `php/Scan/UniqueFinalizer.php` (B4a is fixed by reading the summary, which already counts what the finalizer writes) and `php/Scan/RecordManifestSource.php` (its `exist()` is used as it stands). `UniversalValidator.php` is listed and is one hunk, landed after the rebase; see W7-N7.
 
 ### W7-N3 — the `'separate'` literal was a fingerprint input
 
@@ -1032,7 +1032,7 @@ When the extended-evaluation budget runs out, `UniversalValidator` records the p
 
 ### W7-N7 — rule problems are keyed by a hashed sentence until `UniversalValidator` hands over the code
 
-`UniversalValidator` keys its problem list `"<rule index>|<code>"` and returns `array_values()` of it, so the code is lost. `ScanPromotion::problemKey()` uses `code` when present and otherwise `'w:' . substr(sha1(why), 0, 16)`. Two sentences for one fault would be two rows, which overstates; that is the direction that cannot certify. The `UniversalValidator::problemList()` hunk that attaches `code` is the last commit of this branch, after the other session's work on that file is rebased in.
+`UniversalValidator` keys its problem list `"<rule index>|<code>"` and returns `array_values()` of it, so the code is lost. `ScanPromotion::problemKey()` uses `code` when present and otherwise `'w:' . substr(sha1(why), 0, 16)`. Two sentences for one fault would be two rows, which overstates; that is the direction that cannot certify. `UniversalValidator::problemList()` now attaches `code`, taken from the second segment of the key when that segment is a code. Two key shapes carry more: `"<i>|temporal|<context>"`, where the context is dropped so one fault is one row for the run instead of one per event and instance, and `"<i>|<sentence>"`, filed by its sentence because the rule kind had no code, which still falls back to the hash.
 
 ### W7-N8 — `violations` has two sources, and the counter still decides `truncated`
 
@@ -1057,3 +1057,53 @@ When the extended-evaluation budget runs out, `UniversalValidator` records the p
 ### W7-N13 — two timestamps are written in the server's zone
 
 `Schema::upgradeDataV2()` and the schema-version insert use `date()`; every store write uses `gmdate()`. `progressOf()` reads all run timestamps as UTC. On a server east or west of Greenwich, a run retired by the version-2 migration has an `updated_at` that is hours off. Those runs are terminal, so `stalled` never reads them. **Schedule:** wave 12 (documentation and tidy-up), as a one-word change with a test.
+
+### W7-R1 — the `pooled:` prefix never existed, so `reason_bits` has always been 0
+
+`ReasonCode::split()` turns `pooled:a;b;c` into the code `pooled` and a bitmask. `CheckCharacter::validatePooledField()` emits `no-id`, `check-character`, `junk`, `duplicate` and `count`, joined with `;`, with no prefix. So the mask branch has never run, every stored row has `reason_bits = 0`, and `reason_code` holds the joined names (cut at 64 bytes). Four of the five names in the mask's closed set were never emitted by anything. The engine's names are appended to the set, because bit positions are the wire format and an append cannot change a stored row. `FindingRowMapper` reads `bits = 0` as "not recorded" and a non-zero mask under the code `pooled` as its joined names. `MessageCatalog::detail()` gives each joined part its catalogue sentence, and names a part it has no sentence for. **Owed by wave 11:** a producer for the mask from the joined form, so `GROUP BY reason_code` stops producing one bucket per combination.
+
+### W7-R2 — the report's record hash must be the audit log's, and that formula is private
+
+Under `log-values = none` the legacy report shows `hash_hmac('sha256', $id, $key . '|' . $pid)`, from the private `UniversalValidator::hashedIdentifier()`. The durable scan's own `record_hash` is `Hmac::raw(Hmac::P_RECORD, ...)`, a different formula; a report hashed with it would name every record something the module log has never contained. `FindingRowMapper` therefore takes the hasher as a constructor option and refuses to build in hashed mode without one. The test takes the legacy report's own cell as the expected value. **Owed by wave 11:** a public seam on `UniversalValidator` that hands the page this closure, and the `hashRecordIds` posture read from the same place the legacy report reads it.
+
+### W7-R3 — under `locations`, an empty field and a withheld value are the same row
+
+`durableEvaluateRecord()` stores `value_len = NULL` both when the field was blank and when the value was withheld, and under `locations` every value is withheld. The mapper says `blank` only on a run that kept values, and `not-kept` on a locations run, where "blank" would be a claim about data nobody recorded. A required-field finding on a locations run therefore shows "[not kept by this scan]" in its Value cell; the Issue column still says "Missing value". Distinguishing the two needs a stored length for withheld values, which is a store change. **Schedule:** wave 8, if store parity touches the finding row; otherwise leave.
+
+### W7-R4 — the finalizer's duplicate findings carry rule ordinal 0, no group and the reason `duplicate`
+
+`UniqueFinalizer` writes `rule_ord = 0`, `dag_key = NULL` and `reason_code = 'duplicate'`. The legacy path writes the real ordinal, the record's group and `duplicate-value`. The renderer printed "0" in the Rule column and found no name. `ScanDimensions::ruleOf()` resolves a finding by `rule_source_id` first and treats an ordinal below 1 as no rule, which renders an empty cell. The catalogue gained `unique/duplicate`. The group cell shows a dash for these rows. **Owed by wave 8 or 10:** the finalizer knows the rule's source id and could look up the ordinal and the record's group when it writes the finding.
+
+### W7-R5 — `value_bin` is cut at the byte, and `mb_strcut()` does not repair it
+
+The store keeps the first 255 bytes of the value, which can end inside a multi-byte character. The design called for `mb_strcut()` to back off to a whole character. Measured on PHP 8.3, `mb_strcut($s, 0, strlen($s))` returns the whole string, half character included: it moves a cut point that falls inside the string and does nothing for a string that already ends mid-character. The mapper reads the tail directly instead (at most three continuation bytes back to the lead byte). A second consequence of the two limits: the scan shortens a value to 120 characters and appends "… (truncated)" before storing it, so a value of 120 multi-byte characters is shortened twice and its cell carries both markers.
+
+### W7-R6 — `ScanPolicy::valueExpiry()` writes local time, and a kept value with no expiry is shown
+
+`valueExpiry()` uses `date()`; the purge compares against `ScanRetention::now()`. The mapper takes `now` as a string from its caller and compares as the purge does, so it inherits whatever the caller's clock is. A row with `value_bin` set and `value_expires_at` NULL is shown: nothing writes that combination since the expiry was wired at write time, and calling it expired would be false. **Schedule:** wave 12, with W7-N13, as one change to `gmdate()` across both.
+
+### W7-R7 — four `uv_finding` columns have no producer and no owner
+
+`arm_id`, `value_binary`, `severity` and `status_key` are in the table and nothing writes them. They are left out of `FindingRowMapper::INPUT_KEYS` on purpose, so the report does not branch on a column default. No wave claims them. **Decision needed at wave 8:** give each a producer or record that it is reserved.
+
+### W7-R8 — nothing holds the browser's wording to the catalogue
+
+`php/messages/catalog.json` said in its header that `tests/messages_fixture.json` froze the rendering across the two runtimes. The fixture was never written and `js/engine.js` does not read the catalogue. The header now says so. `tests/scan_report_php.php` holds the PHP side. **Owed by wave 11:** a parity fixture, when the report first shows these sentences next to the ones the form shows.
+
+### W7-R9 — the Identifier flag is parsed in two places
+
+`UniversalValidator::projectIdentifierFields()` decides what the scan redacts when it stores; `ScanDimensions::build()` now reads the same flag for the report. Both accept `y`, `yes`, `1` and `true`, and both answer null only when there is no dictionary. A test calls the private method by reflection and compares the two results over one dictionary. One parser used by both would be better, and it belongs with the snapshot work: wave 11 stores the flags in `uv_scan_dim`, at which point the report stops reading the live dictionary at all.
+
+### W7-R10 — the wiring test cannot see through an inert caller
+
+`tests/scan_wiring_php.php` accepts a public method when its name appears in a call anywhere in the shipped tree. `FindingRowMapper::toFinding()` and `ScanDimensions::ruleOf()` pass because `ScanReport` and `ScanColumns` call them, yet `ScanReport` itself is inert until wave 11. The allow-list names the five `ScanReport` methods, which is where the inertness starts. Eight older allow-list lines were deleted because those methods now have a caller (`ScanColumns::row/headers/keyLegend`, `ScanPageView::csvRow`, `ScanDimensions::isDegraded/degradedSummary`, `ReasonCode::pooledNames`, `ScanPolicy::floor`); they are reachable only through `ScanReport`, so they are wired in name and live in wave 11.
+
+### W7-R11 — what `uv_scan_dim` has to hold for a report to be labelled as the run saw the project
+
+`ScanDimensions::build()` reads the project as it is now. A report on a stored run has to use the labels of the day the run was planned. The public state a snapshot must fill: `rules` by ordinal, `rulesBySource` (source id to ordinal), `fieldLabels`, `fieldForms`, the form and event name maps, `hasDags`, `singleEventProved`, `identifiers`, and `degraded`. There is no `fromSnapshot()` reader yet, because there is no snapshot format to read; a test fills the object by hand and holds its rendering to `build()`'s.
+
+### Owed to later waves by the report layer
+
+- **Wave 8:** a findings read on both stores that returns `array_combine(FindingRowMapper::INPUT_KEYS, ...)`. Until then the test suite projects the evaluator's output onto those keys itself.
+- **Wave 8:** the `manifestComplete` answer for an unknown run differs between the two stores (W6-N1).
+- **Wave 11:** the `reason_bits` producer (R1), the record-hash seam (R2), the `uv_scan_dim` producer and reader with rules keyed by `rule_source_id` (R11), the message parity fixture (R8), and reading `clean IS NULL` as "not certified" (W7-N10). `ScanReport::runFacts()` already does the last of these.
