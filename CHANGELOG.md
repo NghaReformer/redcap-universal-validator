@@ -65,6 +65,7 @@ Known limitation: on a multi-page survey, a `@UVCHOICES` (or any `when`) conditi
 
 - Expanded [action-tag examples](docs/action_tag_validation_examples.md) for single and pooled `alternates`, events, repeat selectors, key matching, aggregates, dates, and record-local uniqueness.
 - Added a [complete six-region site annotation](docs/region-site-choices-example.txt) for dropdown and autocomplete filtering.
+- The action-tag examples now show every configurable key, value, selector, aggregate, date type and unit, the Configure dialog setting by setting, and the tags the module refuses. `tests/docs_examples_php.php` parses all 346 documented tags in CI.
 - Added the [event and instance reference guide](docs/EVENT-INSTANCE-REFERENCES.md), including activation, permissions, unresolved results, limits, and rollback.
 
 ### Upgrade guidance

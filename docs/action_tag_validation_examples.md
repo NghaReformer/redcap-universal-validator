@@ -33,6 +33,8 @@ different doors, and they mix freely.
   - [`@UVREQUIRED` recipes](#uvrequired-recipes)
   - [`@UVUNIQUE` recipes](#uvunique-recipes)
   - [Combination recipes](#combination-recipes)
+- [Tags the module refuses](#tags-the-module-refuses)
+- [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
 - [Parameter reference tables](#parameter-reference-tables)
 - [Copy-paste cheat sheet](#copy-paste-cheat-sheet)
 
@@ -132,15 +134,58 @@ or the audit ever see them. `damm` and `verhoeff` have no shorthand — type the
 full. `@UVALIDATE=none` (or `regex`/`format`) is rejected on its own, because
 format-only validation needs a pattern — use the JSON form for that.
 
+Every algorithm, once by canonical name and once by each accepted shorthand. Pick the
+line that matches how your IDs were minted; the lines on one row are equivalent.
+
+```text
+@UVALIDATE=iso7064_mod37_36     same as: 3736  37,36  37_36  37-36  mod37_36  mod3736
+@UVALIDATE=iso7064_mod11_10     same as: 1110  11,10  11_10  11-10  mod11_10  mod1110
+@UVALIDATE=iso7064_mod97_10     same as: 9710  97,10  97_10  97-10  mod97_10  mod9710
+@UVALIDATE=iso7064_mod11_2      same as: 112   11,2   11_2   11-2   mod11_2   mod112
+@UVALIDATE=iso7064_mod37_2      same as: 372   37,2   37_2   37-2   mod37_2   mod372
+@UVALIDATE=iso7064_letters1     same as: letters1  letter1
+@UVALIDATE=iso7064_letters2     same as: letters2  letter2
+@UVALIDATE=damm                 no shorthand
+@UVALIDATE=verhoeff             no shorthand
+@UVALIDATE=luhn                 same as: mod10
+@UVALIDATE=gs1_mod10            same as: gs1  gtin  ean  upc
+@UVALIDATE=aba_mod10            same as: aba  routing
+@UVALIDATE=mrz_mod10            same as: mrz  icao
+@UVALIDATE=weighted_mod11       same as: isbn  mod11w  weighted11
+```
+
+The shorthands work in the short form and as the JSON `algorithm` value:
+
+```text
+@UVALIDATE=37,36
+@UVALIDATE=mod1110
+@UVALIDATE=97-10
+@UVALIDATE=11_2
+@UVALIDATE=mod372
+@UVALIDATE=letters1
+@UVALIDATE=letter2
+@UVALIDATE=mod10
+@UVALIDATE=gtin
+@UVALIDATE=upc
+@UVALIDATE=routing
+@UVALIDATE=icao
+@UVALIDATE=mod11w
+@UVALIDATE={"algorithm":"weighted11","blockSave":"confirm"}
+```
+
 See [Algorithms](#algorithms) and [Algorithm shorthands](#algorithm-shorthands) below
-for the full lists.
+for what each one accepts and a worked payload.
 
 ### Level 3 — enforcement
 
 ```text
-@UVALIDATE={"blockSave":"confirm"}
-@UVALIDATE={"algorithm":"damm","blockSave":"hard"}
+@UVALIDATE={"blockSave":"off"}                        message only (the default, written out)
+@UVALIDATE={"blockSave":"confirm"}                    "save anyway?" prompt
+@UVALIDATE={"algorithm":"damm","blockSave":"hard"}    no browser save until fixed
 ```
+
+Writing `"off"` explicitly is useful in a branch set, where one branch blocks and
+another only informs.
 
 ### Level 4 — a format pattern
 
@@ -179,7 +224,9 @@ learns which kind of mistake they made.
 ### Level 6 — what the check runs over (`source`)
 
 ```text
-@UVALIDATE={"algorithm":"mod11_10","source":"digits_only"}
+@UVALIDATE={"algorithm":"3736","source":"normalized_id"}      TBABC-00239K   -> the algorithm sees TBABC00239K
+@UVALIDATE={"algorithm":"mod11_10","source":"digits_only"}    KL2-0792       -> sees 20792 (every digit, letters dropped)
+@UVALIDATE={"algorithm":"verhoeff","source":"sequence_only"}  KL2A-1234568   -> sees 1234568 (the last run of digits only)
 ```
 
 | `source`                      | The algorithm sees                                               |
@@ -202,8 +249,25 @@ slash, space, underscore, pipe and backslash — so `TBABC-00239` checks as `TBA
 without configuration. Unicode dashes in *values* are unified automatically; `strip`
 itself must be printable ASCII.
 
-`keepChars` (pooled rules only) lists extra characters to keep while splitting a pooled
-field, capped in length.
+`keepChars` (pooled rules only) lists extra characters to keep while a pooled field is
+cleaned. Before splitting, a pooled value keeps only `A-Z`, `0-9`, the characters the
+pattern itself spells out (such as `-`), and the check algorithm's own special
+characters. Everything else, including spaces, commas and new lines, is removed.
+Name a character in `keepChars` when it is part of an ID and nothing else protects it:
+
+```text
+# IDs printed as KLA.0792 — the dot is part of the ID, written as "." in the pattern class
+@UVALIDATE={"type":"pooled","algorithm":"none","pattern":"[A-Z]{3}[.#][0-9]{4}","idLengths":[8],"keepChars":".#"}
+
+# Pooled alternates where one format can end in "*" (Mod 37,2) and another cannot:
+# declare the union so both formats are cleaned the same way
+@UVALIDATE={"type":"pooled","keepChars":"*","alternates":[
+  {"label":"OLD","pattern":"OL[0-9]{5}[0-9A-Z*]","algorithm":"372","lengths":[8]},
+  {"label":"NEW","pattern":"NW[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[8]}
+]}
+```
+
+`keepChars` takes up to 64 printable ASCII characters.
 
 ### Level 8 — pooled fields (many IDs in one box)
 
@@ -921,6 +985,24 @@ imports, deleted instances or writes that do not invoke a save hook.
 @UVCHOICES={"when":"[baseline_arm_1][region]='1'","show":["1BAM","1CME"]}
 ```
 
+All five event selectors, one line each:
+
+```text
+# event-name: the event the form is open in (same as writing the plain [field])
+@UVASSERT={"assert":"[event-name][weight]>0"}
+
+# previous-event-name / next-event-name: the neighbouring designated event in this arm
+@UVASSERT={"assert":"[visit_date]>=[previous-event-name][visit_date]","message":"Visit is dated before the previous visit"}
+@UVASSERT={"assert":"[visit_date]<=[next-event-name][visit_date]","message":"Visit is dated after the next visit"}
+
+# first-event-name / last-event-name: the first and last designated event in this arm
+@UVASSERT={"assert":"[weight]>=[first-event-name][weight]"}
+@UVREQUIRED={"when":"[last-event-name][study_complete]='1'","message":"Close-out comment needed once the final visit is complete"}
+
+# a checkbox option in another event
+@UVREQUIRED={"when":"[baseline_arm_1][symptoms(3)]='1'","message":"Follow up the fever reported at baseline"}
+```
+
 Relative events use the nearest designated event for the referenced instrument in
 the current arm. An explicit unique event name may address another arm in the same
 record. A repeating target also needs an instance selector or a matching binding.
@@ -939,6 +1021,24 @@ record. A repeating target also needs an instance selector or a matching binding
 
 # Read the last existing instance of an independent repeating lab instrument.
 @UVASSERT={"assert":"[dose]<=[followup_arm_1][maximum_dose][last-instance]"}
+```
+
+The remaining instance selectors, and the same selectors written as a binding's
+`instance` key (use a binding when the expression would otherwise be hard to read, or
+when the value also needs a `type`):
+
+```text
+# current-instance: this entry, stated explicitly
+@UVASSERT={"assert":"[weight][current-instance]>0"}
+
+# next-instance: the current number plus one
+@UVASSERT={"assert":"[visit_date]<=[visit_date][next-instance]","message":"This entry is dated after the following one"}
+
+# instance as a binding key: a number, or any relative selector
+@UVASSERT={"assert":"[weight]>={first_weight}","references":{"first_weight":{"field":"weight","instance":"first-instance"}}}
+@UVASSERT={"assert":"[weight]>={second}","references":{"second":{"field":"weight","event":"followup_arm_1","instance":2}}}
+@UVASSERT={"assert":"[dose]<={latest_max}","references":{"latest_max":{"field":"maximum_dose","event":"followup_arm_1","instance":"last-instance"}}}
+@UVREQUIRED={"when":"{prior}='1'","references":{"prior":{"field":"result","instance":"previous-instance"}},"message":"Explain the follow-up of the preceding result"}
 ```
 
 `previous-instance` means current number minus one. From instance 3 it means 2,
@@ -981,6 +1081,59 @@ rule intentionally tests for absence instead of reading one matched value.
 @UVASSERT={"assert":"[weight]<={other_mean}","references":{"other_mean":{"field":"weight","aggregate":"average","excludeCurrent":true}}}
 ```
 
+Every `aggregate` value, one example each. The collection is the bound field across
+the repeat entries (and events) the binding selects.
+
+```text
+# count: rows that exist, saved blanks included
+@UVASSERT={"assert":"{visits}<=12","references":{"visits":{"field":"visit_date","aggregate":"count"}},"message":"More than 12 visit entries"}
+
+# exists: 1 when at least one row exists, otherwise 0
+@UVREQUIRED={"when":"{any_lab}=1","references":{"any_lab":{"field":"lab_date","event":"followup_arm_1","aggregate":"exists"}},"message":"Summarise the lab results"}
+
+# populated-count: rows where the field is not blank
+@UVASSERT={"assert":"{answered}>=2","references":{"answered":{"field":"bp_systolic","aggregate":"populated-count"}},"message":"Two blood pressure readings are needed"}
+
+# distinct-count: different exact values (case and leading zeros count)
+@UVASSERT={"assert":"{drugs}<=4","references":{"drugs":{"field":"drug_code","aggregate":"distinct-count"}},"message":"More than four different drugs recorded"}
+
+# sum
+@UVASSERT={"assert":"{total}<=[dose_limit]","references":{"total":{"field":"dose","aggregate":"sum"}}}
+
+# minimum and maximum
+@UVASSERT={"assert":"[weight]>={lowest}","references":{"lowest":{"field":"weight","aggregate":"minimum","excludeCurrent":true}}}
+@UVASSERT={"assert":"[weight]<={highest}","references":{"highest":{"field":"weight","aggregate":"maximum","excludeCurrent":true}}}
+
+# average (compared exactly, never rounded)
+@UVASSERT={"assert":"[weight]<={mean}","references":{"mean":{"field":"weight","aggregate":"average"}}}
+
+# any / all as a binding: the same test as [field][any-instance] and [field][all-instances],
+# with room for events, arm and excludeCurrent
+@UVASSERT={"assert":"{some_positive}='1'","references":{"some_positive":{"field":"result","events":["baseline_arm_1","followup_arm_1"],"aggregate":"any"}}}
+@UVASSERT={"assert":"{others}='0'","references":{"others":{"field":"result","aggregate":"all","excludeCurrent":true}},"message":"Another entry is not negative"}
+```
+
+Choosing where the collection comes from:
+
+```text
+# event: one named event
+@UVASSERT={"assert":"{n}>=1","references":{"n":{"field":"specimen_id","event":"collection_arm_1","aggregate":"count"}}}
+
+# events: a list of named events
+@UVASSERT={"assert":"{n}>=1","references":{"n":{"field":"specimen_id","events":["baseline_arm_1","followup_arm_1"],"aggregate":"count"}}}
+
+# events "arm" + arm: every event of that arm that collects the instrument
+@UVASSERT={"assert":"{total}<=[dose_limit]","references":{"total":{"field":"dose","events":"arm","arm":1,"aggregate":"sum"}}}
+
+# instance "any-instance" / "all-instances" as a binding key
+@UVASSERT={"assert":"{r}='1'","references":{"r":{"field":"result","event":"followup_arm_1","instance":"any-instance"}}}
+@UVASSERT={"assert":"{r}='0'","references":{"r":{"field":"result","event":"followup_arm_1","instance":"all-instances"}}}
+```
+
+A binding takes `event` or `events`, never both. `events:"arm"` needs `arm`, and the
+arm must contain an event that collects the instrument. Up to 20 bindings per rule;
+alias names are lowercase letters, digits and `_`, starting with a letter.
+
 Only one collection operand is allowed per comparison. Counts on an empty
 collection are zero; other empty aggregates are unresolved. Numeric aggregates
 ignore saved blanks and reject populated nonnumbers. Current members are included
@@ -999,6 +1152,28 @@ date strings do not acquire date semantics just because this feature is enabled.
 @UVASSERT={"assert":"{hours}>=0 and {hours}<=48","references":{"hours":{"field":"result_time","type":"datetime","elapsedFrom":"[collection_arm_1][collection_time][first-instance]","unit":"hours"}}}
 ```
 
+Each `type`, and each `unit`:
+
+```text
+# type "date" with unit "days": at most 30 calendar days after consent
+@UVASSERT={"assert":"{d}>=0 and {d}<=30","references":{"d":{"field":"visit_date","type":"date","elapsedFrom":"[baseline_arm_1][consent_date]","unit":"days"}},"message":"Visit is outside the 30-day window"}
+
+# type "datetime" (Y-M-D H:M) with unit "minutes"
+@UVASSERT={"assert":"{m}<=90","references":{"m":{"field":"processed_at","type":"datetime","elapsedFrom":"[collected_at]","unit":"minutes"}},"message":"Processed more than 90 minutes after collection"}
+
+# type "datetime_seconds" (Y-M-D H:M:S) with unit "seconds"
+@UVASSERT={"assert":"{s}>=0","references":{"s":{"field":"stop_time","type":"datetime_seconds","elapsedFrom":"[start_time]","unit":"seconds"}},"message":"Stop time is before start time"}
+
+# two typed scalars compared directly, no elapsed time
+@UVASSERT={"assert":"{stop}>={start}","references":{"stop":{"field":"stop_time","type":"datetime_seconds"},"start":{"field":"start_time","type":"datetime_seconds"}}}
+```
+
+`unit` needs `elapsedFrom`, and `elapsedFrom` needs both `type` and `unit`.
+`elapsedFrom` is one scalar reference: `any-instance` and `all-instances` are refused
+there, and a typed binding cannot carry an `aggregate`. A date not entered yet is a
+saved blank: an ordered test against it is not a violation and does not activate a
+`when`. An impossible date, or a missing row, is unresolved.
+
 Elapsed time is signed. Date-only elapsed checks use calendar days; datetime checks
 use timezone-less wall-clock values. Invalid/missing dates are unresolved. Match
 date with date and datetime with datetime; no generic `datediff()` is implemented.
@@ -1012,6 +1187,15 @@ date with date and datetime with datetime; no generic `datediff()` is implemente
 # Alternative: specimen_id may recur for a different specimen_type.
 @UVUNIQUE={"scope":"record","with":["specimen_type"]}
 ```
+
+With every option a record-scope rule accepts:
+
+```text
+@UVUNIQUE={"scope":"record","with":["specimen_type"],"when":"[specimen_collected]='1'","message":"This specimen is already entered for this participant","blockSave":"hard","caseSensitive":true}
+```
+
+`caseSensitive` here governs the `when` text only. The duplicate comparison itself
+always distinguishes case and leading zeros.
 
 Choose one of these alternatives. Record scope excludes only the exact current
 entry. It differs from `scope:"event"`, which checks other records within the event;
@@ -1561,6 +1745,135 @@ format pattern as the else branch; the field is required either way.
 
 ---
 
+## Tags the module refuses
+
+Each line below produces a visible configuration error on the field. They are here so
+you can recognise the mistake; the fix is on the right.
+
+```text invalid
+@UVALIDATE=none                                                  format-only needs the JSON form with a pattern
+@UVALIDATE={"algorithm":"sha256"}                                unknown algorithm
+@UVALIDATE={"algoritm":"damm"}                                   unknown key (typo)
+@UVALIDATE={"source":"letters_only"}                             source is normalized_id, digits_only or sequence_only
+@UVALIDATE={"blockSave":"block"}                                 blockSave is off, confirm or hard
+@UVALIDATE={"algorithm":"none","pattern":"(A+)+"}                pattern can backtrack catastrophically
+@UVALIDATE={"type":"pooled","idMinLen":5,"idMaxLen":10}          idMaxLen must be less than 2x idMinLen
+@UVALIDATE={"type":"pooled","idLengths":[4,5,9]}                 9 = 4 + 5, so one member could be two
+@UVALIDATE={"suggestFix":"true"}                                 true/false must not be quoted
+@UVASSERT={"message":"no condition"}                             assert is required
+@UVASSERT="[a]>=[b"                                              unbalanced bracket
+@UVASSERT="weight > 0"                                           field references are written [weight]
+@UVUNIQUE=site                                                   scope is project, dag, event or record
+@UVUNIQUE={"with":["a","b","c","d","e","f"]}                     at most 5 composite fields
+@UVCHOICES={"show":["1"],"hide":["2"]}                           show or hide, not both
+@UVCHOICES={"when":"[x]='1'"}                                    one of show/hide is required
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","aggregate":"median"}}}                                unknown aggregate
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","event":"a_arm_1","events":["b_arm_1"],"aggregate":"sum"}}}    event and events together
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","events":"arm","aggregate":"sum"}}}                   events "arm" needs arm
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0]"}}}                    elapsedFrom needs unit
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0][any-instance]","unit":"days"}}}   elapsedFrom is one scalar reference
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","aggregate":"minimum"}}}                   typed dates cannot be aggregated
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"x","instance":2,"match":{"k":"[k]"}}}}                      match and instance together
+@UVASSERT={"assert":"{missing}>0","references":{"t":{"field":"x"}}}                                                  {missing} is not defined
+@UVASSERT={"assert":"[a][any-instance]=[b][any-instance]"}                                                           one collection operand per comparison
+```
+
+---
+
+## The Configure dialog, setting by setting
+
+Everything a tag can say, the module's **Configure** dialog can say too. Use the
+dialog when one rule covers many fields, when you want a rule that is not tied to the
+data dictionary, or when a designer should not edit annotations. `@UVCHOICES` is the
+one mode that exists only as a tag.
+
+**Step 1 — open it.** Control Center or the project's *External Modules* page →
+**Universal Field Validator** → **Configure**.
+
+**Step 2 — project-wide settings** (top of the dialog):
+
+| Setting | What to choose |
+| --- | --- |
+| Enable event and instance references | Tick to allow `[event][field][instance]`, `references` and `@UVUNIQUE=record`. Off by default; while off, such rules show as unconfigured and nothing else changes. |
+| Maximum extended audit contexts per save | How many host entries one save may re-check (default 500). Beyond it the audit logs a notice and a Validation scan finishes the work. |
+| How to log invalid values | `hashed` (keyed hash of value and record id), `none` (location only), `raw` (the value itself), `off` (no audit log). |
+| Validation scan — use the durable scan | Tick for the resumable, batch scan. Needs the installation-wide switch as well. |
+| Scan report: value beside each finding | `locations` (default), `identifier-redacted`, or `raw`. |
+| Days to keep a stored value preview / a finished scan | Blank uses the server default; you may choose fewer days, never more. |
+| Most findings / most bytes a scan retains | Blank uses the server default. A run that reaches the limit keeps counting and labels itself truncated. |
+| Debug: include exception messages | Leave off in production; exception text can quote data. |
+
+**Step 3 — add a rule.** Press **+** beside *Validation rule*, then fill the rule from
+top to bottom. The right-hand column is the tag key that means the same thing.
+
+| Dialog setting | Applies to | Tag equivalent |
+| --- | --- | --- |
+| Rule label | all | `note` |
+| What this rule checks: Single value / Pooled / Constraint / Required / Unique | all | `type` `single` or `pooled`; or the tag `@UVASSERT`, `@UVREQUIRED`, `@UVUNIQUE` |
+| Field(s) this rule validates (+ adds another) | all | the fields carrying the tag |
+| Fast entry: more field names, comma or space separated | all | the same, typed |
+| Extended reference bindings (JSON object) | all | `references` |
+| Only validate when | all | `when` |
+| Compare text case-sensitively | all | `caseSensitive` |
+| Constraint condition | Constraint | `assert` |
+| Message | Constraint, Required, Unique | `message` |
+| Composite-key fields | Unique | `with` |
+| Where the value must be unique | Unique | `scope`: `project`, `dag`, `event`, `record` |
+| Also check live on survey pages | Unique | `surveys` |
+| Check-character method | Single, Pooled | `algorithm` |
+| What the check runs over | Single, Pooled | `source` |
+| Suggest the correct final check character | Single, Pooled | `suggestFix` |
+| Format pattern | Single, Pooled | `pattern` |
+| Several ID formats in one field (JSON list) | Single, Pooled | `alternates` |
+| Separators to ignore | Single, Pooled | `strip` |
+| Extra characters to keep | Pooled | `keepChars` |
+| Exact ID length(s) | Pooled | `idLengths` |
+| Minimum / maximum ID length | Pooled | `idMinLen`, `idMaxLen` |
+| Expected number of IDs | Pooled | `expectedIds` |
+| On an invalid value: Informational / Advisory / Compulsory | all | `blockSave` `off`, `confirm`, `hard` |
+
+The internal rule id is assigned by the module. Never edit it: scan findings and the
+audit log use it to follow a rule when rules are reordered.
+
+**Step 4 — worked example.** The tag
+
+```text
+@UVASSERT={"assert":"[weight]<={mean}","references":{"mean":{"field":"weight","aggregate":"average","excludeCurrent":true}},"when":"[visit_type]='routine'","message":"Weight is above this participant's average","blockSave":"confirm"}
+```
+
+is entered in the dialog as:
+
+| Setting | Value |
+| --- | --- |
+| What this rule checks | Constraint |
+| Field(s) | `weight` |
+| Extended reference bindings | `{"mean":{"field":"weight","aggregate":"average","excludeCurrent":true}}` |
+| Only validate when | `[visit_type]='routine'` |
+| Constraint condition | `[weight]<={mean}` |
+| Message | `Weight is above this participant's average` |
+| On an invalid value | Advisory |
+
+Note that the bindings box takes the inner object only, without the `"references":` key.
+
+**Step 5 — save and check.** Save the dialog, open a record, and look under the
+field. A configuration problem is reported there in words. Dialog rules and tags can
+target the same field: different kinds compose, and the same kind branches by `when`.
+
+**Installation-wide settings** (Control Center only; they cap what a project may choose):
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| Enable the durable scan on this installation | off | Master switch; the scan creates its own tables when turned on. |
+| Maximum days a stored value preview may be kept | 30 | Projects may choose fewer. |
+| Maximum days a finished scan is kept | 90 | Projects may choose fewer. |
+| Most findings any one run may retain | 100000 | Beyond it a run counts without storing detail and labels itself truncated. |
+| Most bytes of finding detail per run | 536870912 (512 MiB) | Either limit truncates the run. |
+| Projects scanned at the same time | 2 | Rations the server; a project cannot raise it. |
+| Hours before a stalled run is treated as abandoned | 24 | Its lease can then be taken over. |
+| Retries for a record that cannot be read | 3 | After that the run records it as unread and reports itself incomplete. |
+
+---
+
 ## Parameter reference tables
 
 ### `@UVALIDATE`
@@ -1607,12 +1920,78 @@ format pattern as the else branch; the field is required either way.
 | Key               | Type            | Default      | Notes                                                          |
 | ----------------- | --------------- | ------------ | -------------------------------------------------------------- |
 | `with`          | list of strings | *(none)*   | Composite key fields; max 5, no duplicates, must exist         |
-| `scope`         | string          | `project`  | `project`, `dag`, `event`; the bare short form sets this |
+| `scope`         | string          | `project`  | `project`, `dag`, `event`, `record` (record needs event and instance references enabled); the bare short form sets this |
 | `surveys`       | boolean         | `false`    | Opt in to the check on surveys; boolean answer only            |
 | `when`          | string          | *(none)*   | Check only while true                                          |
 | `message`       | string          | generic line | Your own wording                                               |
 | `blockSave`     | string          | `off`      | `off`, `confirm`, `hard`                                 |
 | `caseSensitive` | boolean         | `false`    | Exact-case text in`when` (not the duplicate check)           |
+
+### `@UVCHOICES`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `show`          | list of strings | *(one of)*   | Offer only these choice codes; up to 200 codes                         |
+| `hide`          | list of strings | *(one of)*   | Offer every code except these. Exactly one of `show`/`hide`        |
+| `when`          | string          | *(none)*     | The branch applies while true; a tag without `when` is the fallback  |
+| `message`       | string          | generic line   | Shown when a saved or selected code is not offered                     |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`                                         |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
+### Keys every tag also accepts
+
+| Key            | Type   | Notes                                                                                  |
+| -------------- | ------ | -------------------------------------------------------------------------------------- |
+| `references` | object | Named bindings used as `{alias}` in `when`/`assert`; at most 20; feature must be enabled |
+| `alternates` | list   | `@UVALIDATE` only: `label`, `pattern`, `algorithm`, `source`, `strip`, `lengths` per entry |
+
+### `references` binding keys
+
+| Key                | Type              | Notes                                                                                         |
+| ------------------ | ----------------- | --------------------------------------------------------------------------------------------- |
+| `field`          | string            | Required. The field to read                                                                   |
+| `event`          | string            | One unique event name. Not with `events`                                                    |
+| `events`         | list or `"arm"` | Several unique event names, or `"arm"` together with `arm`                                |
+| `arm`            | integer           | Arm number for `events:"arm"`; must contain an event that collects the instrument           |
+| `instance`       | integer or string | A number, or `current-`, `previous-`, `next-`, `first-`, `last-instance`, `any-instance`, `all-instances`. Not with `match` |
+| `match`          | object            | `{"target_key_field":"[source_field]"}`; several keys mean all must match                   |
+| `aggregate`      | string            | `count`, `exists`, `populated-count`, `distinct-count`, `sum`, `minimum`, `maximum`, `average`, `any`, `all` |
+| `excludeCurrent` | boolean           | Leave the exact current entry out of the collection                                           |
+| `type`           | string            | `date`, `datetime`, `datetime_seconds`. Not with `aggregate`                              |
+| `elapsedFrom`    | string            | One scalar reference; needs `type` and `unit`                                             |
+| `unit`           | string            | `days`, `hours`, `minutes`, `seconds`; needs `elapsedFrom`                              |
+
+### Reference selectors inside a condition
+
+| Form                              | Meaning                                                        |
+| --------------------------------- | -------------------------------------------------------------- |
+| `[field]`                       | This entry                                                     |
+| `[checkbox(code)]`              | One checkbox option, `'1'` when ticked                       |
+| `[event_name][field]`           | A named event (any arm of the same record)                     |
+| `[event-name][field]`           | The current event                                              |
+| `[previous-event-name][field]`, `[next-event-name][field]` | Neighbouring designated event in the arm |
+| `[first-event-name][field]`, `[last-event-name][field]`    | First / last designated event in the arm |
+| `[field][3]`                    | Instance number 3                                              |
+| `[field][current-instance]`, `[previous-instance]`, `[next-instance]` | Relative to this entry's number  |
+| `[field][first-instance]`, `[last-instance]`               | Lowest / highest existing instance       |
+| `[field][any-instance]`, `[all-instances]`                 | Collection tests; one per comparison     |
+| `[event_name][field][last-instance]`                         | Event and instance together              |
+| `{alias}`                       | A binding from `references`                                  |
+
+### Limits
+
+| Limit | Value |
+| --- | --- |
+| Condition length | 500 characters |
+| Field references in one condition | 20 |
+| Nesting depth (parentheses and `not`) | 10 |
+| Bindings per rule | 20 |
+| Members in one collection | 10,000 |
+| Digits in exact decimal arithmetic | 4,096 |
+| Evaluation budget per record | 100,000 units |
+| Codes in one `show`/`hide` list | 200 |
+| Composite `with` fields | 5 |
+| `keepChars` length | 64 |
 
 ### Algorithms
 
@@ -1698,6 +2077,19 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVCHOICES={"when":"[country]='1' and [region]='101'","show":["s01","s02"]}
 @UVCHOICES={"when":"[pilot(1)]='1'","show":["s01"],"message":"Pilot sites only","blockSave":"hard"}
 
+# ── Events, repeating instruments, bindings (feature must be enabled) ────────
+@UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}
+@UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'"}
+@UVASSERT={"assert":"[weight]>=[weight][first-instance]"}
+@UVASSERT={"assert":"[result][any-instance]='1'"}
+@UVASSERT={"assert":"{total}<=[dose_limit]","references":{"total":{"field":"dose","events":"arm","arm":1,"aggregate":"sum"}}}
+@UVASSERT={"assert":"[result]>={t}","references":{"t":{"field":"threshold","event":"collection_arm_1","match":{"specimen_id":"[result_specimen_id]"}}}}
+@UVASSERT={"assert":"{h}>=0 and {h}<=48","references":{"h":{"field":"result_time","type":"datetime","elapsedFrom":"[collected_at]","unit":"hours"}}}
+@UVUNIQUE=record                                      no duplicate inside one record
+
+# ── Letter case ──────────────────────────────────────────────────────────────
+@UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}
+
 # ── Composing several kinds on ONE field ─────────────────────────────────────
 @UVREQUIRED="[consent]='1'"
 @UVALIDATE={"algorithm":"3736","blockSave":"hard"}
@@ -1710,7 +2102,8 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 ---
 
-*Documents Universal Field Validator v1.6.0. For the full training
+*Documents Universal Field Validator v2.1.0-rc.1. Every tag on this page is parsed by
+`tests/docs_examples_php.php`, so an example that stops matching the module fails the build. For the full training
 guide see [`USER_GUIDE.md`](USER_GUIDE.md); for installation see
 [`INSTALL.md`](INSTALL.md); for the manual REDCap test checklist see
 [`TESTING.md`](TESTING.md); for the product overview see the [README](../README.md).*

@@ -97,6 +97,7 @@ jobs:
           php tests/temporal_logic_php.php
           php tests/temporal_integration_php.php
           php tests/temporal_adversarial_php.php
+          php tests/docs_examples_php.php
           python3 tests/temporal_mutations.py
       - name: PHP syntax check
         run: |
