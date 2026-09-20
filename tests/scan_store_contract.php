@@ -428,6 +428,47 @@ function storeContract(callable $newStore, $label)
     $C('nor one detail row counted for the good finding it also carried',
         (int) $s8->run(750, $rid8)['detail_rows'] === 0);
 
+    // THE SAME REFUSAL ACROSS A CHUNK BOUNDARY. The SQL store sends findings
+    // 500 to a statement, so a batch of 600 is two INSERTs - and by the time the
+    // second one collides, the first has already succeeded. "Refused entire"
+    // then depends on the transaction, not on the statement, and that is the
+    // half a chunked writer can get wrong: keep the first chunk, report the
+    // refusal, and leave 500 findings behind for a record that was never marked
+    // examined.
+    $s8b = $newStore();
+    $r8b = $s8b->startRun(751, []);
+    $rid8b = (int) $r8b['run']['run_id'];
+    $s8b->writeManifest($rid8b, [$mk5('V')]);
+    $ep8b = (int) $s8b->run(751, $rid8b)['lease_epoch'];
+    $gen8b = (int) $s8b->run(751, $rid8b)['generation_id'];
+    $c8b = $s8b->claim($rid8b, 'w1', $ep8b, 1);
+    $wide = ['bytes' => 1, 'findings' => [], 'records' => [[
+        'ordinal' => $c8b[0]['ordinal'], 'record_hash' => $c8b[0]['hash'],
+        'state' => ScanStore::REC_DONE, 'claim' => $c8b[0]['claim']]]];
+    for ($i = 0; $i < 600; $i++) {
+        // First and LAST share an identity; the 598 between them are distinct.
+        $ident = hash('sha256', 'wide-' . ($i === 599 ? 0 : $i), true);
+        $wide['findings'][] = ['ordinal' => $c8b[0]['ordinal'], 'project_id' => 751,
+            'generation_id' => $gen8b, 'host_form' => 'fa', 'field' => 'x' . $i,
+            'check_type' => 'required', 'reason_code' => 'required-blank',
+            'record_id_bin' => 'V', 'identity' => $ident,
+            'record_hash' => hash('sha256', 'V', true),
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    }
+    $no = $s8b->commitBatch($rid8b, 'w1', $ep8b, $wide);
+    $C('a repeat 599 findings apart is refused like one side by side',
+        is_string($no) && strpos($no, 'database refused') !== false);
+    $C('and none of the 599 good findings ahead of it was kept',
+        $s8b->findings(751, $gen8b, [], 0, 100) === []
+        && (int) $s8b->run(751, $rid8b)['detail_rows'] === 0);
+    $C('nor the record marked examined', $s8b->manifestComplete($rid8b) === false);
+    // THE CONTROL. Without it the three lines above pass for a store that
+    // refuses every large batch.
+    $wide['findings'][599]['identity'] = hash('sha256', 'wide-599', true);
+    $C('while the same 600 with nothing repeated commit',
+        $s8b->commitBatch($rid8b, 'w1', $ep8b, $wide) === true
+        && (int) $s8b->run(751, $rid8b)['detail_rows'] === 600);
+
     // -- THE ATTEMPT IS COUNTED FOR WORK ATTEMPTED ---------------------------
     //
     // B8 in four assertions. The counter must move in a transaction the failed

@@ -97,7 +97,7 @@ $NEIGHBOUR = uv_neighbour($PID);
         strpos($refused, str_repeat('z', 20)) === false);
     // AND THE ANSWER IS BOUNDED WHATEVER ARRIVES. The framework puts the failing
     // statement in the message, and a findings batch is one multi-row INSERT
-    // with tens of thousands of placeholders - so the input here can be
+    // with up to 14,500 placeholders - so the input here can be
     // megabytes. Running a backtracking pattern over that is how 1.9.9 turned a
     // reported error into an empty 200 with no body: PCRE gives up, preg_replace
     // returns null, and the null travels on inside a catch already handling a

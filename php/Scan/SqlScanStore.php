@@ -53,6 +53,13 @@ final class SqlScanStore implements ScanStore
      */
     const MANIFEST_CHUNK = 500;
 
+    /**
+     * Findings per INSERT. 29 placeholders a row, so 14,500 a statement; about
+     * 1.3 KB a row at worst, so a chunk stays well under the 4 MB default
+     * max_allowed_packet of the oldest server in the matrix.
+     */
+    const FINDING_CHUNK = 500;
+
     /** @var ScanDb */
     private $db;
 
@@ -638,7 +645,8 @@ final class SqlScanStore implements ScanStore
      *   1. the run fence, a locking read, held for the whole transaction
      *   2. record states, fenced per row on the claim token -> $held
      *   3. supersede the previous evidence of the HELD records only
-     *   4. insert the findings and candidates of HELD records only
+     *   4. insert the findings and candidates of HELD records only - the
+     *      findings as plain multi-row INSERTs, see insertFindings()
      *   5. counters
      *
      * WHY 4 IS FILTERED. A record taken over by another worker while this one
@@ -834,12 +842,12 @@ final class SqlScanStore implements ScanStore
                     array_merge([$runSeq, $projectId, $generationId], $closing));
             }
 
-            $stored = 0;
+            $keep = [];
             foreach ($findings as $f) {
                 if (empty($held[(int) $f['ordinal']])) continue;
-                $this->insertFinding($f);
-                $stored++;
+                $keep[] = $f;
             }
+            $stored = $this->insertFindings($keep);
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
             // scan that depends on records other than the one being examined, so
@@ -1142,46 +1150,111 @@ final class SqlScanStore implements ScanStore
         ]);
     }
 
-    private function insertFinding(array $f)
+    /**
+     * One finding as column => value, in column order.
+     *
+     * THE ONLY COLUMN LIST. insertFindings() takes its column names and its
+     * placeholder marks from the keys of this array, so the names, the marks and
+     * the values cannot drift apart - which with 29 of them, written by hand in
+     * three places, they eventually would.
+     *
+     * UniqueFinalizer::emit() writes the same table with its own statement and
+     * deliberately shares nothing with this one: it stages rows under the other
+     * unique key and uses ON DUPLICATE KEY UPDATE, the opposite conflict policy.
+     */
+    private static function findingRow(array $f)
     {
         // A STAGED row is written with active_slot NULL and is invisible to every
         // report query until the finalizer publishes its group. Ordinary
         // findings are active from the moment they are written.
         $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
-        $this->db->exec('INSERT INTO ' . Schema::table('finding') . '
-            (project_id, generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
-             record_id_bin, event_id, arm_id, instance, host_form, field, rule_source_id,
-             rule_revision, rule_ord, check_type, reason_code, reason_bits, severity, dag_key,
-             status_key, value_bin, value_len, value_fingerprint, value_truncated, value_binary,
-             value_expires_at, group_hmac, stage_epoch)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
-            self::mustProject($f),
-            $f['generation_id'], $f['identity'],
+        return [
+            'project_id'        => self::mustProject($f),
+            'generation_id'     => $f['generation_id'],
+            'finding_identity'  => $f['identity'],
             // The RUN's sequence number. It used to be a per-record
             // ordinal, which put valid_from_seq and valid_to_seq in
             // different number spaces and made the interval meaningless.
-            isset($f['valid_from_seq']) ? (int) $f['valid_from_seq'] : 0,
-            $staged ? null : 1,
-            $f['record_hash'], $f['record_id_bin'],
-            isset($f['event_id']) ? $f['event_id'] : null,
-            isset($f['arm_id']) ? $f['arm_id'] : null,
-            isset($f['instance']) ? $f['instance'] : 1,
-            $f['host_form'], $f['field'], $f['rule_source_id'], $f['rule_revision'],
-            isset($f['rule_ord']) ? $f['rule_ord'] : 0,
-            $f['check_type'], $f['reason_code'],
-            isset($f['reason_bits']) ? $f['reason_bits'] : 0,
-            isset($f['severity']) ? $f['severity'] : 0,
-            isset($f['dag_key']) ? $f['dag_key'] : null,
-            isset($f['status_key']) ? $f['status_key'] : null,
-            isset($f['value_bin']) ? $f['value_bin'] : null,
-            isset($f['value_len']) ? $f['value_len'] : null,
-            isset($f['value_fingerprint']) ? $f['value_fingerprint'] : null,
-            isset($f['value_truncated']) ? $f['value_truncated'] : 0,
-            isset($f['value_binary']) ? $f['value_binary'] : 0,
-            isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
-            isset($f['group_hmac']) ? $f['group_hmac'] : null,
-            $staged ? $f['stage_epoch'] : null,
-        ]);
+            'valid_from_seq'    => isset($f['valid_from_seq']) ? (int) $f['valid_from_seq'] : 0,
+            'active_slot'       => $staged ? null : 1,
+            'record_hash'       => $f['record_hash'],
+            'record_id_bin'     => $f['record_id_bin'],
+            'event_id'          => isset($f['event_id']) ? $f['event_id'] : null,
+            'arm_id'            => isset($f['arm_id']) ? $f['arm_id'] : null,
+            'instance'          => isset($f['instance']) ? $f['instance'] : 1,
+            'host_form'         => $f['host_form'],
+            'field'             => $f['field'],
+            'rule_source_id'    => $f['rule_source_id'],
+            'rule_revision'     => $f['rule_revision'],
+            'rule_ord'          => isset($f['rule_ord']) ? $f['rule_ord'] : 0,
+            'check_type'        => $f['check_type'],
+            'reason_code'       => $f['reason_code'],
+            'reason_bits'       => isset($f['reason_bits']) ? $f['reason_bits'] : 0,
+            'severity'          => isset($f['severity']) ? $f['severity'] : 0,
+            'dag_key'           => isset($f['dag_key']) ? $f['dag_key'] : null,
+            'status_key'        => isset($f['status_key']) ? $f['status_key'] : null,
+            'value_bin'         => isset($f['value_bin']) ? $f['value_bin'] : null,
+            'value_len'         => isset($f['value_len']) ? $f['value_len'] : null,
+            'value_fingerprint' => isset($f['value_fingerprint']) ? $f['value_fingerprint'] : null,
+            'value_truncated'   => isset($f['value_truncated']) ? $f['value_truncated'] : 0,
+            'value_binary'      => isset($f['value_binary']) ? $f['value_binary'] : 0,
+            'value_expires_at'  => isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
+            'group_hmac'        => isset($f['group_hmac']) ? $f['group_hmac'] : null,
+            'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
+        ];
+    }
+
+    /**
+     * Every finding of a batch, in as few statements as the server allows.
+     *
+     * ONE STATEMENT PER CHUNK, NOT ONE PER FINDING. This was a loop, and inside
+     * commitBatch the run row is held FOR UPDATE for as long as the loop runs:
+     * measured on 8.0.46, a record with 4,000 findings held it for 15.9 seconds
+     * where the batched form holds it for 0.85 - and over the framework each of
+     * those inserts paid a second round trip for a count nobody read.
+     *
+     * A PLAIN INSERT. Never ON DUPLICATE KEY UPDATE, never INSERT IGNORE. The
+     * same identity twice in one batch, or an identity that is already active,
+     * is a defect upstream, and uq_active_identity_v2 refusing the WHOLE batch
+     * is how it surfaces. Either softer form would store one of the two and
+     * report success. One duplicate anywhere in a multi-row statement fails the
+     * statement, and commitBatch rolls back every chunk before it.
+     *
+     * COUNTED, unlike the writes around it. This is the one insert whose silent
+     * shortfall reads as a cleaner project than the one that was scanned, so it
+     * keeps its ROW_COUNT() read - one extra round trip per FINDING_CHUNK rows -
+     * and refuses the batch if the server stored fewer rows than it was sent.
+     *
+     * @return int rows stored
+     */
+    private function insertFindings(array $findings)
+    {
+        if (!$findings) return 0;
+        $rows = [];
+        foreach ($findings as $f) $rows[] = self::findingRow($f);
+        $cols = array_keys($rows[0]);
+        $mark = '(' . implode(',', array_fill(0, count($cols), '?')) . ')';
+        // MySQL allows 65,535 placeholders a statement. The division keeps a
+        // chunk legal if this table ever gains enough columns to matter.
+        $size = max(1, min(self::FINDING_CHUNK, intdiv(65535, count($cols))));
+        $head = 'INSERT INTO ' . Schema::table('finding') . '
+            (' . implode(', ', $cols) . ')
+            VALUES ';
+        $stored = 0;
+        foreach (array_chunk($rows, $size) as $chunk) {
+            $flat = [];
+            foreach ($chunk as $row) {
+                foreach ($row as $v) $flat[] = $v;
+            }
+            $this->db->exec($head . implode(',', array_fill(0, count($chunk), $mark)), $flat);
+            $n = $this->db->affected();
+            if ($n !== count($chunk)) {
+                throw new \RuntimeException('the database stored ' . (int) $n . ' of '
+                    . count($chunk) . ' findings it was sent');
+            }
+            $stored += $n;
+        }
+        return $stored;
     }
 
     /**

@@ -293,6 +293,95 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
     check('start: and asks the contention question zero times when nothing failed',
         $probes === 0);
+
+    // =====================================================================
+    // M9 - findings go to the server a chunk at a time, not one by one
+    // =====================================================================
+    //
+    // commitBatch holds the run row FOR UPDATE while it writes. One INSERT per
+    // finding held that lock for 15.9 s on a record with 4,000 findings; one per
+    // chunk holds it for 0.85. This is the statement count, without a server.
+
+    /** Answers the row count a real server would give for a multi-row INSERT. */
+    $countingDb = new class extends ScriptedDb {
+        /** @var int|null when set, the finding INSERT reports this instead */
+        public $findingRows = null;
+        public function affected()
+        {
+            if (strpos($this->lastWrite, 'INSERT INTO ' . Schema::table('finding')) !== false) {
+                if ($this->findingRows !== null) return $this->findingRows;
+                return substr_count($this->lastWrite, '),(') + 1;
+            }
+            return parent::affected();
+        }
+    };
+    $mkFinding = function ($i) {
+        return ['ordinal' => 1, 'project_id' => 700, 'generation_id' => 5,
+            'identity' => str_pad((string) $i, 32, 'i'), 'record_hash' => str_repeat('h', 32),
+            'record_id_bin' => 'R1', 'host_form' => 'f', 'field' => 'x' . $i,
+            'rule_source_id' => 's', 'rule_revision' => str_repeat('0', 64),
+            'check_type' => 'assert', 'reason_code' => 'assert'];
+    };
+    $mkBatch = function ($n) use ($mkFinding) {
+        $fs = [];
+        for ($i = 0; $i < $n; $i++) $fs[] = $mkFinding($i);
+        return ['records' => [['ordinal' => 1, 'state' => ScanStore::REC_DONE, 'claim' => 9,
+                               'record_hash' => str_repeat('h', 32)]],
+                'findings' => $fs, 'candidates' => []];
+    };
+    $fenceRow = [[0, null, 700, 5, 5, null]];
+
+    $cdb = clone $countingDb;
+    $cdb->rows = ['FOR UPDATE' => $fenceRow];
+    $N = SqlScanStore::FINDING_CHUNK + 1;
+    $got = (new SqlScanStore($cdb))->commitBatch(1, 'w1', 0, $mkBatch($N));
+    $inserts = [];
+    foreach ($cdb->log as $stmt) {
+        if (strpos($stmt, 'INSERT INTO ' . Schema::table('finding')) !== false) $inserts[] = $stmt;
+    }
+    check('batched: one finding more than a chunk commits', $got === true);
+    check('batched: in two statements, not in ' . $N, count($inserts) === 2);
+    check('batched: the first carries a full chunk and the second the one left over',
+        count($inserts) === 2
+        && substr_count($inserts[0], '),(') + 1 === SqlScanStore::FINDING_CHUNK
+        && substr_count($inserts[1], '),(') === 0);
+    // A PLAIN INSERT. Either softer form stores one of two colliding findings
+    // and reports success, which is the defect the unique key exists to refuse.
+    $soft = false;
+    foreach ($inserts as $stmt) {
+        if (stripos($stmt, 'DUPLICATE') !== false || stripos($stmt, 'IGNORE') !== false) $soft = true;
+    }
+    check('batched: and neither statement softens a collision into a success', $soft === false);
+    // The column list and the placeholders come from one array. If they ever
+    // disagreed the server would refuse; here the arithmetic is checked instead.
+    $lastInsert = $inserts ? $inserts[count($inserts) - 1] : '';
+    $colCount = preg_match('/\(([a-z_, \r\n]+)\)\s*VALUES/', $lastInsert, $m)
+        ? count(explode(',', $m[1])) : 0;
+    check('batched: every named column has exactly one placeholder',
+        $colCount === 29 && substr_count($lastInsert, '?') === $colCount);
+    check('batched: a chunk stays inside the server placeholder limit',
+        SqlScanStore::FINDING_CHUNK * 29 <= 65535);
+
+    // A SERVER THAT STORED FEWER ROWS THAN IT WAS SENT. Nothing in MySQL does
+    // this for a plain INSERT that succeeded - which is the point of asking: if
+    // it ever happens the project would read cleaner than it is.
+    $short = clone $countingDb;
+    $short->rows = ['FOR UPDATE' => $fenceRow];
+    $short->findingRows = 2;
+    $got = (new SqlScanStore($short))->commitBatch(1, 'w1', 0, $mkBatch(3));
+    check('batched: a short count refuses the batch rather than keeping part of it',
+        is_string($got) && strpos($got, 'database refused') !== false && $short->rollbacks === 1);
+
+    $none = clone $countingDb;
+    $none->rows = ['FOR UPDATE' => $fenceRow];
+    $got = (new SqlScanStore($none))->commitBatch(1, 'w1', 0, $mkBatch(0));
+    $sent = 0;
+    foreach ($none->log as $stmt) {
+        if (strpos($stmt, 'INSERT INTO ' . Schema::table('finding')) !== false) $sent++;
+    }
+    check('batched: a batch with no findings sends no findings statement at all',
+        $got === true && $sent === 0);
+
 }
 
 namespace {

@@ -545,6 +545,129 @@ $UNOWNED = 770;
 
 // -- the SHARED contract, against SqlScanStore --------------------------------
 //
+// WHAT A BATCH OF FINDINGS COSTS (M9).
+//
+// commitBatch holds the run row FOR UPDATE while it writes, and it used to
+// write one INSERT per finding: measured here, a record with 4,000 findings held
+// that lock for 15.9 seconds. The number that matters is the statement count,
+// and it is read off the statements the store actually sent.
+$COST = 780;
+{
+    $rec = new UvRecordingDb($dbA);
+    $s = new SqlScanStore($rec);
+    $r = $s->startRun($COST, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $recs = [];
+    for ($i = 1; $i <= 2; $i++) {
+        $recs[] = ['id_bin' => 'M-' . $i, 'hash' => hash('sha256', 'M-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    $ep = (int) $s->run($COST, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w', $ep, 2);
+    $N = SqlScanStore::FINDING_CHUNK + 1;
+    $fs = [];
+    for ($i = 0; $i < $N; $i++) {
+        $which = $i % 2;
+        $f = ['ordinal' => $c[$which]['ordinal'],
+              'project_id' => $COST, 'generation_id' => $gen,
+              'identity' => hash('sha256', 'cost-' . $i, true),
+              'valid_from_seq' => $seq, 'record_hash' => $recs[$which]['hash'],
+              'record_id_bin' => $recs[$which]['id_bin'], 'instance' => 1, 'host_form' => 'fa',
+              'field' => 'x' . $i, 'rule_source_id' => 'r1',
+              'rule_revision' => str_repeat('c', 64),
+              'check_type' => 'required', 'reason_code' => 'required-blank'];
+        // ONE STAGED ROW among the ordinary ones. active_slot and stage_epoch
+        // are per-row values in a multi-row statement, and a writer that
+        // hoisted either into the statement would publish this row early.
+        if ($i === 7) { $f['stage_epoch'] = 3; $f['group_hmac'] = hash('sha256', 'g', true); }
+        $fs[] = $f;
+    }
+    $rec->log = [];
+    $ok = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs,
+        'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
+                      ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]]]);
+    check('cost: a batch one finding larger than a chunk commits', $ok === true);
+    $ins = $rec->matching('exec', ['INSERT INTO ' . Schema::table('finding')]);
+    check('cost: written in one statement per chunk, not one per finding',
+        count($ins) === (int) ceil($N / SqlScanStore::FINDING_CHUNK) && count($ins) < $N / 100);
+    $soft = false; $most = 0; $counted = true;
+    foreach ($ins as $row) {
+        if (stripos($row[1], 'DUPLICATE') !== false || stripos($row[1], 'IGNORE') !== false) $soft = true;
+        $most = max($most, count($row[2]));
+        if ($row[3] !== true) $counted = false;
+    }
+    check('cost: as plain INSERTs, so a collision is still refused rather than absorbed',
+        $soft === false);
+    check('cost: inside the placeholder limit', $most > 0 && $most <= 65535);
+    check('cost: and counted, because a short write here reads as a cleaner project',
+        $counted === true);
+    $stored = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', [$COST]);
+    check('cost: every finding is there', (int) $stored[0][0] === $N
+        && (int) $s->run($COST, $rid)['detail_rows'] === $N);
+    $staged = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot IS NULL AND stage_epoch = 3', [$COST]);
+    $active = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1 AND stage_epoch IS NULL', [$COST]);
+    check('cost: the one staged row stayed staged and its neighbours went active',
+        (int) $staged[0][0] === 1 && (int) $active[0][0] === $N - 1);
+    // THE LOCK COMES FIRST AND THE INSERTS LAST. Moving the FOR UPDATE after
+    // the inserts would shorten the lock and reopen the race the class docblock
+    // describes; this is the order, read from the wire.
+    $pos = ['lock' => null, 'close' => null, 'insert' => null];
+    foreach ($rec->log as $i => $row) {
+        if ($pos['lock'] === null && strpos($row[1], 'FOR UPDATE') !== false) $pos['lock'] = $i;
+        if ($pos['close'] === null && strpos($row[1], 'SET active_slot = NULL') !== false) $pos['close'] = $i;
+        if ($pos['insert'] === null && strpos($row[1], 'INSERT INTO ' . Schema::table('finding')) !== false) $pos['insert'] = $i;
+    }
+    check('cost: the run is locked, then old evidence closed, then new evidence written',
+        $pos['lock'] !== null && $pos['close'] !== null && $pos['insert'] !== null
+        && $pos['lock'] < $pos['close'] && $pos['close'] < $pos['insert']);
+}
+
+// AND THE REFUSAL SURVIVES THE CHUNKING. Two statements now, so by the time the
+// second collides the first has succeeded - "refused entire" is held by the
+// transaction, and this is where that is proved against a real one.
+$WIDE = 781;
+{
+    $s = new SqlScanStore($dbA);
+    $r = $s->startRun($WIDE, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $one = ['id_bin' => 'W-1', 'hash' => hash('sha256', 'W-1', true), 'dag' => null];
+    $s->writeManifest($rid, [$one]);
+    $ep = (int) $s->run($WIDE, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w', $ep, 1);
+    $N = SqlScanStore::FINDING_CHUNK + 1;
+    $fs = [];
+    for ($i = 0; $i < $N; $i++) {
+        $fs[] = ['ordinal' => $c[0]['ordinal'], 'project_id' => $WIDE, 'generation_id' => $gen,
+                 // the LAST repeats the FIRST, a whole chunk later
+                 'identity' => hash('sha256', 'wide-' . ($i === $N - 1 ? 0 : $i), true),
+                 'valid_from_seq' => $seq, 'record_hash' => $one['hash'],
+                 'record_id_bin' => 'W-1', 'instance' => 1, 'host_form' => 'fa',
+                 'field' => 'x' . $i, 'rule_source_id' => 'r1',
+                 'rule_revision' => str_repeat('c', 64),
+                 'check_type' => 'required', 'reason_code' => 'required-blank'];
+    }
+    $refused = $s->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs,
+        'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                       'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]]]);
+    check('cost: a repeat in the SECOND chunk refuses the batch',
+        is_string($refused) && strpos($refused, 'database refused') !== false);
+    $left = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ?', [$WIDE]);
+    $done = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
+        . ' WHERE run_id = ? AND state >= ?', [$rid, ScanStore::REC_DONE]);
+    check('cost: and takes the first chunk back out with it',
+        (int) $left[0][0] === 0 && (int) $done[0][0] === 0);
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug
