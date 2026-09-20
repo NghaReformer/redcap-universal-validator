@@ -36,6 +36,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/../php/Scan/UniqueFinalizer.php';
     require_once __DIR__ . '/../php/Scan/CatchUp.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';   // tally() reads its KINDS
     require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
@@ -1689,7 +1690,9 @@ namespace INSPIRE\UniversalValidator\Scan {
             $store->advancePhase($hid, $hep, $ph);
         }
         $store->setProgressState($hid, $hep, ['fenceTarget' => '500']);
-        $p = ScanPromotion::promote($store, 802, $hid, array_merge($ok, ['gapCount' => 4]));
+        // IN THE STORE, not in the array: promote() counts gaps itself now.
+        $store->addAggregate($hid, ScanPromotion::GAP_KINDS, 'fa', '', 4);
+        $p = ScanPromotion::promote($store, 802, $hid, $ok);
         $after = $store->run(802, $hid);
         check('promote: a run with an unread record finishes partial',
             $p['promoted'] === true && $after['terminal'] === ScanOutcome::PARTIAL);
@@ -1698,6 +1701,133 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('promote: with the one record it never examined counted on the row',
             (int) $after['not_examined'] === 1);
         check('promote: and the gaps it saw', (int) $after['gap_count'] === 4);
+    }
+
+    /* =====================================================================
+     * VIOLATIONS ARE ACTIVE FINDINGS (B4a).
+     *
+     * The verdict's `violations` term was the run row's detail_rows, which
+     * counts what commitBatch() stored. UniqueFinalizer writes its duplicate
+     * findings straight into the findings table, so a project whose only
+     * problem was duplicated values had detail_rows = 0 and was certified
+     * clean. The summary counts active findings whoever wrote them.
+     * ===================================================================== */
+    {
+        $K = RollupBuilder::KINDS;
+        $t = ScanPromotion::tally([
+            ['kind' => $K[0], 'axis1' => 'fa', 'cnt' => 3], ['kind' => $K[0], 'axis1' => 'fb', 'cnt' => 2],
+            ['kind' => $K[1], 'axis1' => 'duplicate', 'cnt' => 5],
+            ['kind' => ScanPromotion::RULE_KINDS, 'cnt' => 2], ['kind' => ScanPromotion::RULE_KINDS, 'cnt' => 1],
+            ['kind' => ScanPromotion::GAP_KINDS, 'cnt' => 9],
+            ['kind' => 'reconciled-added', 'cnt' => 400], ['cnt' => 7]]);
+        check('tally: active findings are the sum over ONE axis, not over all of them',
+            $t['violations'] === 5);
+        check('tally: rule problems and gaps are summed by their own kinds',
+            $t['ruleProblems'] === 3 && $t['gaps'] === 9);
+        $skew = ScanPromotion::tally([['kind' => $K[0], 'cnt' => 1], ['kind' => $K[3], 'cnt' => 6]]);
+        check('tally: axes that disagree answer with the LARGER, which cannot certify',
+            $skew['violations'] === 6);
+        check('tally: every rollup axis is read, so a new one cannot be forgotten here',
+            count($K) === 4 && ScanPromotion::tally([['kind' => $K[2], 'cnt' => 2]])['violations'] === 2);
+        check('tally: nothing found is three zeroes',
+            ScanPromotion::tally([]) === ['violations' => 0, 'ruleProblems' => 0, 'gaps' => 0]);
+
+        // The term, in facts(). A finished summary is believed over the counter
+        // in BOTH directions; an unfinished one only ever raises it.
+        $vf = function (array $runOver, array $in) use ($run, $all, $ok) {
+            return ScanPromotion::facts(array_merge($run, $runOver), $all,
+                array_merge($ok, $in))['facts']['violations'];
+        };
+        check('facts: with no count supplied the stored-row counter still stands',
+            $vf(['detail_rows' => 12], []) === 12);
+        check('facts: a finished summary that found some is believed over a counter of zero',
+            $vf(['detail_rows' => 0], ['violations' => 4]) === 4);
+        check('facts: and over a counter still holding findings that were superseded',
+            $vf(['detail_rows' => 12], ['violations' => 0]) === 0);
+        check('facts: an UNFINISHED summary can raise the count',
+            $vf(['detail_rows' => 2], ['violations' => 9, 'rollupDone' => false]) === 9);
+        check('facts: but never lower it, because half a summary undercounts',
+            $vf(['detail_rows' => 12], ['violations' => 1, 'rollupDone' => false]) === 12);
+
+        // END TO END. The duplicates-only project: nothing a worker stored,
+        // findings the finalizer wrote, a summary that counted them.
+        $promoted = function ($pid, callable $seed, array $in = []) use ($inCatchUp, $ok) {
+            $store = new ArrayScanStore();
+            $rid = (int) $store->startRun($pid, ['created_by' => 'alice', 'fence_open' => '1'])['run']['run_id'];
+            $store->writeManifest($rid, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true), 'dag' => null]]);
+            $ep = (int) $store->run($pid, $rid)['lease_epoch'];
+            $c = $store->claim($rid, 'w1', $ep, 1);
+            $store->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [], 'records' => [[
+                'ordinal' => $c[0]['ordinal'], 'claim' => $c[0]['claim'], 'version' => '100',
+                'state' => ScanStore::REC_DONE]]]);
+            foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP] as $ph) {
+                $store->advancePhase($rid, $ep, $ph);
+            }
+            $store->setProgressState($rid, $ep, ['fenceTarget' => '500']);
+            $seed($store, $rid);
+            $p = ScanPromotion::promote($store, $pid, $rid, array_merge($ok, $in));
+            return [$p, $store->run($pid, $rid), $store];
+        };
+        list($p, $row, $store810) = $promoted(810, function ($store, $rid) use ($K) {
+            foreach ($K as $kind) $store->addAggregate($rid, $kind, 'x', null, 1);
+        });
+        check('duplicates only: the worker stored nothing', (int) $row['detail_rows'] === 0);
+        check('duplicates only: the run still finishes complete',
+            $p['promoted'] === true && $row['terminal'] === ScanOutcome::COMPLETE);
+        check('duplicates only: and the page is told ONE finding, not the counter\'s zero',
+            ScanPromotion::findingsOf($store810, $row) === 1);
+        check('duplicates only: and is NOT clean, because the summary found what the counter missed',
+            $row['clean'] !== null && (int) $row['clean'] === 0
+            && ScanOutcome::mayClaimClean($p['outcome']) === false);
+        list($p, $row) = $promoted(811, function () {});
+        check('duplicates only: the control - the same run with no summary rows - is clean',
+            $p['promoted'] === true && (int) $row['clean'] === 1);
+
+        // WHAT THE PAGE IS TOLD WHILE THE RUN IS STILL WORKING is the counter,
+        // because there is no summary yet - and the summary is not read for it.
+        $live = new ArrayScanStore();
+        $lid = (int) $live->startRun(815, ['created_by' => 'alice'])['run']['run_id'];
+        $live->addAggregate($lid, $K[0], 'x', null, 40);
+        check('findings: a run still working reports what it has stored so far',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['detail_rows' => 7])) === 7);
+        check('findings: so does one that ended before it could build a summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
+                ['detail_rows' => 7, 'terminal' => ScanOutcome::CANCELLED])) === 7);
+        check('findings: and one that reached a verdict answers from the summary',
+            ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
+                ['detail_rows' => 7, 'terminal' => ScanOutcome::PARTIAL])) === 40);
+
+        // A CALLER CANNOT TALK THE VERDICT ROUND. These three used to arrive in
+        // the array, and the production caller fed one of them from the wrong place.
+        list($p, $row) = $promoted(812, function ($store, $rid) {
+            ScanPromotion::noteRuleProblems($store, $rid, [['rule' => 1, 'fields' => ['a'], 'why' => 'x']]);
+        }, ['ruleProblems' => 0, 'violations' => 0, 'gapCount' => 0]);
+        check('promote: a caller saying "no rule problems" does not outvote the store',
+            (int) $row['clean'] === 0 && (int) $row['rule_problem_count'] === 1);
+        list($p, $row) = $promoted(813, function () {}, ['ruleProblems' => 5, 'violations' => 5]);
+        check('promote: nor does one inventing some', (int) $row['clean'] === 1
+            && (int) $row['rule_problem_count'] === 0);
+
+        // NOT READY COSTS NO READ. Promotion is attempted on every pass.
+        // Shown with a store whose aggregates() THROWS: had promote() asked, the
+        // refusal below would have been an exception instead.
+        require_once __DIR__ . '/scan_fault_support.php';
+        $spy = (new FaultyStore(new ArrayScanStore()))->failFrom('aggregates');
+        $sid = (int) $spy->startRun(814, ['created_by' => 'alice'])['run']['run_id'];
+        $spy->writeManifest($sid, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true), 'dag' => null]]);
+        $asked = false;
+        try {
+            $p = ScanPromotion::promote($spy, 814, $sid, $ok);
+        } catch (ScanStoreUnavailable $e) {
+            $asked = true;
+            $p = ['promoted' => null];
+        }
+        check('promote: a run with work left is refused without reading a single aggregate',
+            $asked === false && $p['promoted'] === false);
+        $threw = false;
+        try { $spy->aggregates($sid); } catch (ScanStoreUnavailable $e) { $threw = true; }
+        check('promote: and that store really does refuse the read, so the check above can fail',
+            $threw === true);
     }
 
     /* =====================================================================

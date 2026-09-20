@@ -37,6 +37,12 @@ final class RollupBuilder
     const K_REASON = 'rollup-reason';
     const K_DAG    = 'rollup-group';
     const K_TYPE   = 'rollup-check';
+    /**
+     * Every axis, as a list. Each active finding is counted ONCE ON EACH, so
+     * the sum over any one kind is the number of active findings - which is
+     * what ScanPromotion::tally() reads. A new axis goes here and in axes().
+     */
+    const KINDS = [self::K_FORM, self::K_REASON, self::K_DAG, self::K_TYPE];
 
     /** @var ScanDb */
     private $db;

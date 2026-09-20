@@ -84,3 +84,89 @@ $NEIGHBOUR = uv_neighbour($PID);
             . ' WHERE project_id = ' . $NEIGHBOUR . ' AND active_slot = 1')[0][0] === 1);
 
 }
+
+// VIOLATIONS ARE ACTIVE FINDINGS (B4a), on a real server and through the real
+// summary.
+//
+// The duplicates-only project. UniqueFinalizer writes its findings straight
+// into the findings table, so the run row's detail_rows - which only
+// commitBatch() moves - stays at 0 however many it writes. The verdict used to
+// read that counter, and a project whose one problem was duplicated values was
+// certified clean. The row below is written the way the finalizer writes one:
+// no batch, no counter, active. What has to find it is RollupBuilder, and what
+// has to believe RollupBuilder is promote().
+{
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $finish = function ($pid, $dupes, $unstored) use ($store, $dbA, $A) {
+        $r = $store->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $recs = array();
+        foreach (array('D1', 'D2') as $id) {
+            $recs[] = array('id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null);
+        }
+        $store->writeManifest($rid, $recs);
+        $epoch = (int) $store->run($pid, $rid)['lease_epoch'];
+        $claimed = $store->claim($rid, 'w', $epoch, 5);
+        $rows = array();
+        foreach ($claimed as $i => $c) {
+            $rows[] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'], 'version' => '500',
+                'record_hash' => $c['hash'],
+                'state' => ($unstored && $i === 1)
+                    ? \INSPIRE\UniversalValidator\Scan\ScanStore::REC_UNSTORED
+                    : \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE);
+        }
+        $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(), 'records' => $rows));
+        for ($i = 0; $i < $dupes; $i++) {
+            $st = $A->prepare('INSERT INTO ' . Schema::table('finding') . '
+                (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
+                 record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
+                 rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
+                 group_hmac, stage_epoch)
+                VALUES (?, ?, ?, 1, 1, ?, ?, 1, 1, \'fa\', \'mrn\', \'r-unique\', ?, 0, \'unique\',
+                        \'duplicate\', 0, 1, ?, 1)');
+            $ident = hash('sha256', 'dupe-' . $pid . '-' . $i, true);
+            $rh = hash('sha256', 'D' . ($i + 1), true);
+            $rid_bin = 'D' . ($i + 1);
+            $rev = str_repeat('d', 64);
+            $grp = hash('sha256', 'group-' . $pid, true);
+            $st->bind_param('iisssss', $pid, $gen, $ident, $rh, $rid_bin, $rev, $grp);
+            $st->execute();
+        }
+        foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
+            $store->advancePhase($rid, $epoch, $ph);
+        }
+        $store->setProgressState($rid, $epoch, array('fenceTarget' => '500', 'rollupCursor' => 0));
+        $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbA, $store);
+        while ($roll->step($pid, $rid, $epoch, $gen, 100)['done'] === false) { }
+        // The caller CLAIMS nothing was found. It is not the caller's to say.
+        $p = \INSPIRE\UniversalValidator\Scan\ScanPromotion::promote($store, $pid, $rid,
+            array('uniqueDone' => true, 'rollupDone' => true, 'violations' => 0, 'ruleProblems' => 0));
+        $raw = $A->query('SELECT terminal, coverage, clean IS NULL, clean, not_examined, detail_rows
+            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . $rid)->fetch_row();
+        return array($p, $raw, $store->run($pid, $rid));
+    };
+
+    list($p, $raw, $row) = $finish(955, 2, false);
+    check('duplicates only: no worker stored a finding, so the counter reads zero',
+        (int) $raw[5] === 0);
+    check('duplicates only: the run is complete over a proved window',
+        $p['promoted'] === true && $raw[0] === 'complete' && $raw[1] === 'complete-through-fence');
+    check('duplicates only: and it is NOT clean - a stored 0, from a summary that counted two',
+        (int) $raw[2] === 0 && (int) $raw[3] === 0
+        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $row) === 2);
+
+    list($p, $raw, $row) = $finish(956, 0, false);
+    check('duplicates only: the control - the same run with none - is a stored 1',
+        $p['promoted'] === true && $raw[0] === 'complete' && (int) $raw[2] === 0 && (int) $raw[3] === 1);
+
+    // ONE RECORD WHOSE RESULT COULD NOT BE STORED. It was not examined, so the
+    // run cannot say complete, and the row says how many.
+    list($p, $raw, $row) = $finish(957, 0, true);
+    check('unstored: a record whose result was never stored makes the run partial',
+        $p['promoted'] === true && $raw[0] === 'partial' && $raw[1] === 'partial');
+    check('unstored: not clean, and counted on the row as the one record not examined',
+        (int) $raw[2] === 0 && (int) $raw[3] === 0 && (int) $raw[4] === 1);
+}

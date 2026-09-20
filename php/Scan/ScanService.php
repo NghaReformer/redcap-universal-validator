@@ -300,14 +300,12 @@ final class ScanService
         $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
         ScanPromotion::promote($store, $pid, $runId, [
             'blockingAggregates' => $store->blockingAggregates($runId),
-            // PERMANENTLY ZERO, AND KNOWN TO BE. Nothing in the shipped tree
-            // writes a 'collection-gap' aggregate, because no gap detector
-            // exists. It is left wired rather than deleted because it is
-            // harmless - gaps never block clean, and the only thing a zero
-            // reaches is mustShowGaps, which no production caller reads. Do not
-            // infer from a green suite that gaps are being counted.
-            'gapCount'       => $this->aggregateTotal($store, $runId, 'collection-gap'),
-            'ruleProblems'   => $this->aggregateTotal($store, $runId, 'rule-problem'),
+            // WHAT WAS FOUND IS NOT PASSED. Violations, rule problems and gaps
+            // are read from the store by promote() itself - ScanPromotion::tally()
+            // - so no caller can feed the verdict a number from the wrong place.
+            // The gap count is still permanently zero: nothing in the shipped
+            // tree writes a 'collection-gap' aggregate, because no gap detector
+            // exists. Do not infer from a green suite that gaps are being counted.
             'uniqueDone'     => $u['done'],
             'uniqueBlocking' => $u['blocking'],
             'rollupDone'     => ($r['phase'] === ScanPhase::ROLLUP && !empty($r['done'])),
@@ -354,7 +352,7 @@ final class ScanService
             'values'    => $run['values_state'],
             'total'     => (int) $run['manifest_total'],
             'done'      => $done,
-            'findings'  => (int) $run['detail_rows'],
+            'findings'  => ScanPromotion::findingsOf($store, $run),
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
@@ -734,15 +732,6 @@ final class ScanService
         $node = isset($rec[$ev]) ? $rec[$ev] : null;
         if (is_array($node) && array_key_exists($loc['field'], $node)) return $node[$loc['field']];
         return null;
-    }
-
-    private function aggregateTotal(ScanStore $store, $runId, $kind)
-    {
-        $n = 0;
-        foreach ($store->aggregates($runId) as $a) {
-            if (isset($a['kind']) && $a['kind'] === $kind) $n += (int) $a['cnt'];
-        }
-        return $n;
     }
 
     /** The effective policy: the system maximum, then whatever the project asked for. */

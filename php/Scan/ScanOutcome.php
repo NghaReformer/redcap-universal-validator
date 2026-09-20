@@ -181,8 +181,8 @@ final class ScanOutcome
         // report, not a worse scan, and refusing to certify over it would make
         // the tick unreachable on any installation with a metadata gap.
         // BOTH TERMS MUST HAVE A PRODUCER, and for the whole of this file's life
-        // one of them did not. `ruleProblems` reaches here from
-        // ScanService::aggregateTotal(..., 'rule-problem'), and nothing in the
+        // one of them did not. `ruleProblems` reaches here as the sum of the
+        // 'rule-problem' aggregates (ScanPromotion::tally()), and nothing in the
         // shipped tree ever wrote an aggregate of that kind: every addAggregate
         // call site wrote a reconciled-*, reconcile-unsettled, fence-unprovable
         // or rollup-* kind instead. So `clean` reduced to `violations === 0`,

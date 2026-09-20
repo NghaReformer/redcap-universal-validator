@@ -58,9 +58,9 @@ final class ScanPromotion
     /**
      * Record that this run knows of rules it cannot evaluate.
      *
-     * THE CONSTANT ABOVE HAD NO WRITER. It was declared, it was read by
-     * ScanService::aggregateTotal() into ScanOutcome::derive()'s `ruleProblems`
-     * term, and nothing in the shipped tree ever produced an aggregate of that
+     * THE CONSTANT ABOVE HAD NO WRITER. It was declared, it was summed into
+     * ScanOutcome::derive()'s `ruleProblems` term (by tally(), today), and
+     * nothing in the shipped tree ever produced an aggregate of that
      * kind - every addAggregate() call site wrote a reconciled-*,
      * reconcile-unsettled, fence-unprovable or rollup-* kind instead. So `clean`
      * was really `violations === 0`, and a project whose rules enforce nothing
@@ -102,6 +102,65 @@ final class ScanPromotion
         $store->addAggregate($runId, self::RULE_KINDS, '', '', count($problems), 0,
                              substr(implode(' | ', $why), 0, 500));
         return count($problems);
+    }
+
+    /**
+     * What a run's aggregates say was found: active findings, rule problems, gaps.
+     *
+     * VIOLATIONS ARE ACTIVE FINDINGS, and the rollup is the only count of those.
+     * The term used to be the run row's `detail_rows`, which counts what
+     * commitBatch() stored and nothing else. UniqueFinalizer writes its
+     * duplicate findings straight into the findings table, so a project whose
+     * ONLY problem was duplicated values had `detail_rows = 0`, and a run that
+     * had found thousands of duplicates was certified clean. It errs the other
+     * way too: a finding superseded during catch-up stays in `detail_rows`
+     * after the record was corrected.
+     *
+     * THE LARGEST AXIS, not the first. Every active finding is counted once on
+     * each of RollupBuilder::KINDS, so the four sums are equal on a healthy run.
+     * If they ever disagree - an axis added later, a page lost on one - the
+     * larger number is the one that cannot certify a project it should not.
+     *
+     * @param array $aggregates rows of {kind, cnt, ...} as ScanStore::aggregates() returns them
+     * @return array{violations:int, ruleProblems:int, gaps:int}
+     */
+    public static function tally(array $aggregates)
+    {
+        $byKind = [];
+        foreach ($aggregates as $a) {
+            if (!isset($a['kind'])) continue;
+            $k = (string) $a['kind'];
+            $byKind[$k] = (isset($byKind[$k]) ? $byKind[$k] : 0)
+                        + (isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0);
+        }
+        $of = function ($kind) use ($byKind) { return isset($byKind[$kind]) ? $byKind[$kind] : 0; };
+        $violations = 0;
+        foreach (RollupBuilder::KINDS as $kind) $violations = max($violations, $of($kind));
+        return ['violations' => $violations, 'ruleProblems' => $of(self::RULE_KINDS),
+                'gaps' => $of(self::GAP_KINDS)];
+    }
+
+    /**
+     * How many findings this run has to show.
+     *
+     * A RUN THAT REACHED A VERDICT ANSWERS FROM ITS SUMMARY, because that is
+     * what the verdict was decided on: `detail_rows` misses every duplicate the
+     * finalizer wrote and keeps every finding catch-up superseded, so a page
+     * reading it could say "0 findings" beside a run refused `clean` for having
+     * some. A run still working has no summary yet and the counter is the only
+     * number there is; so has one that ended before building it, which is
+     * exactly the set ScanOutcome::NO_VERDICT names.
+     *
+     * Here rather than in ScanService so it can be asked of a store without a
+     * module, a user and an entitlement around it.
+     */
+    public static function findingsOf(ScanStore $store, array $run)
+    {
+        $terminal = isset($run['terminal']) ? $run['terminal'] : null;
+        if ($terminal === null || in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
+            return isset($run['detail_rows']) ? (int) $run['detail_rows'] : 0;
+        }
+        return self::tally($store->aggregates((int) $run['run_id']))['violations'];
     }
 
     /**
@@ -209,7 +268,14 @@ final class ScanPromotion
             'truncated' => $truncated,
             'cancelled' => $cancelled,
             'failed' => ($fpBad || $polBad),
-            'violations' => $rows,
+            // Active findings when the caller counted them - see tally(). With no
+            // count, or with a summary that never finished (a cancelled or failed
+            // run ends whatever is outstanding), the stored-row counter is the
+            // floor: a partial summary undercounts, and an undercount is the
+            // direction that certifies.
+            'violations' => ($g('violations') !== null && $g('rollupDone', false))
+                ? max(0, (int) $g('violations'))
+                : max($rows, (int) $g('violations', 0)),
             'ruleProblems' => (int) $g('ruleProblems', 0),
             'gaps' => (int) $g('gapCount', 0),
             'labelDegraded' => !empty($run['labelDegraded']),
@@ -266,10 +332,24 @@ final class ScanPromotion
                     'why' => 'this scan has already finished'];
         }
 
-        $f = self::facts($run, $store->recordStates($runId), $in);
+        $states = $store->recordStates($runId);
+        $f = self::facts($run, $states, $in);
         if (!$f['ready']) {
             return ['promoted' => false, 'outcome' => null, 'why' => $f['why']];
         }
+
+        // THE STORE IS ASKED HERE, NOT BY THE CALLER. What was found used to
+        // arrive in $in, so the verdict was as good as whichever caller built
+        // the array, and the one production caller fed `violations` from a
+        // counter the finalizer never touches. A number a caller supplies for
+        // any of these three is overridden.
+        //
+        // AFTER `ready`, because promotion is attempted on every pass and
+        // readiness needs none of it: a run with work left costs no read here.
+        $t = self::tally($store->aggregates($runId));
+        $f = self::facts($run, $states, array_merge($in, [
+            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
+            'gapCount' => $t['gaps']]));
 
         $outcome = ScanOutcome::derive($f['facts']);
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
