@@ -566,6 +566,22 @@ final class ScanPlanner
         return $out;
     }
 
+    /**
+     * What the fingerprint says about collection gaps: this, always.
+     *
+     * The fingerprint used to read policy.collectionGaps, which was the literal
+     * 'separate' on every installation - so it contributed a constant, and every
+     * stored fingerprint was computed over that constant. The policy now says
+     * 'unimplemented', because that is true; had the fingerprint followed it,
+     * every run in flight at the moment of the upgrade would have been judged
+     * "the configuration moved" and failed, over a word that decides nothing
+     * about which findings a scan produces. So the wire value stays what it
+     * always was and stops being read from anywhere. If gap handling ever does
+     * change what a scan finds, that is a NEW fingerprint input with its own
+     * key, not a new value for this one.
+     */
+    const GAP_POLICY_WIRE = 'separate';
+
     /** Recompute precisely the semantic inputs used when the run was planned. */
     public static function requestFingerprint(array $req)
     {
@@ -579,8 +595,7 @@ final class ScanPlanner
             'ownership' => isset($req['ownership']) ? $req['ownership'] : [],
             'structure' => isset($req['structure']) ? $req['structure'] : [],
             'choices'   => isset($req['choices']) ? $req['choices'] : [],
-            'gapPolicy' => isset($req['policy']['collectionGaps'])
-                           ? $req['policy']['collectionGaps'] : 'separate',
+            'gapPolicy' => self::GAP_POLICY_WIRE,
             'valueMode' => isset($req['policy']['valueMode'])
                            ? $req['policy']['valueMode'] : 'locations',
         ]);

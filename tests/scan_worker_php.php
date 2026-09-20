@@ -456,6 +456,30 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('fingerprint: an input this build did not expect still counts',
         ScanPlanner::fingerprint(array_merge($spec, ['futureThing' => 1])) !== $fp);
 
+    // THE GAP POLICY CHANGED ITS WORD AND THE FINGERPRINT MUST NOT NOTICE (B4c).
+    // policy.collectionGaps said 'separate' while nothing detected a gap, and
+    // says 'unimplemented' now. The fingerprint used to read it; had it kept
+    // doing so, every run in flight across the upgrade would have been failed
+    // as "the configuration moved". What is pinned is the OLD hash: a request
+    // fingerprinted today equals one built by hand with the old wire value.
+    $req = ['engine' => '1.8.19', 'rules' => [], 'ownership' => ['dob' => 'demographics'],
+            'structure' => ['longitudinal' => false], 'choices' => []];
+    $asStored = ScanPlanner::fingerprint(['engine' => '1.8.19', 'rules' => [],
+        'ownership' => ['dob' => 'demographics'], 'structure' => ['longitudinal' => false],
+        'choices' => [], 'gapPolicy' => 'separate', 'valueMode' => 'locations']);
+    $with = function ($policy) use ($req) {
+        return ScanPlanner::requestFingerprint(array_merge($req, ['policy' => $policy]));
+    };
+    check('fingerprint: a run planned before the gap policy was renamed still matches',
+        $with(['collectionGaps' => 'separate', 'valueMode' => 'locations']) === $asStored);
+    check('fingerprint: and so does one planned after it',
+        $with(['collectionGaps' => 'unimplemented', 'valueMode' => 'locations']) === $asStored);
+    check('fingerprint: whatever the policy says about gaps, because it is no longer asked',
+        $with(['collectionGaps' => 'anything at all', 'valueMode' => 'locations']) === $asStored
+        && ScanPlanner::requestFingerprint($req) === $asStored);
+    check('fingerprint: while the value mode, which does decide what is stored, still counts',
+        $with(['valueMode' => 'raw']) !== $asStored);
+
     check('fingerprint: matching is exact',
         ScanPlanner::fingerprintMatches($fp, $fp) === true
         && ScanPlanner::fingerprintMatches($fp, str_repeat('0', 64)) === false);

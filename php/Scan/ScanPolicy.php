@@ -30,6 +30,8 @@ final class ScanPolicy
     const D_VALUE_MODE      = 'locations';
     const D_VALUE_DAYS      = 30;
     const D_RUN_DAYS        = 90;
+    /** collectionGaps, while no gap detector exists. */
+    const GAPS_UNIMPLEMENTED = 'unimplemented';
     const D_MAX_FINDINGS    = 1000000;
     const D_MAX_BYTES       = 536870912;      // 512 MiB
     const D_MAX_PROJECTS    = 2;
@@ -70,11 +72,18 @@ final class ScanPolicy
                                 ? $system['scan-system-stale-run-hours'] : null, self::D_STALE_HOURS),
             'recordAttempts' => self::posInt(isset($system['scan-system-record-attempts'])
                                 ? $system['scan-system-record-attempts'] : null, self::D_RECORD_ATTEMPTS),
-            // Fixed for this release. The plan states it as policy rather than a
-            // setting precisely so it cannot be switched off: a project that
-            // turns collection gaps back into violations re-creates the 95%-noise
-            // report the rebuild exists to remove.
-            'collectionGaps' => 'separate',
+            // WHAT IS TRUE, which is that nothing detects a collection gap. This
+            // said 'separate' - gaps reported apart from violations - for as long
+            // as the file has existed, and no gap detector has ever shipped: the
+            // aggregate kind they would be counted under has no writer. A policy
+            // that names a behaviour is read as a promise of it, by a reader and
+            // by the next person to touch the report, so it names the absence
+            // until there is something to name. When a detector lands, 'separate'
+            // is still the only value it may take: a project that turns gaps back
+            // into violations re-creates the 95%-noise report the rebuild removed.
+            //
+            // NOT A FINGERPRINT INPUT. See ScanPlanner::GAP_POLICY_WIRE.
+            'collectionGaps' => self::GAPS_UNIMPLEMENTED,
         ];
     }
 

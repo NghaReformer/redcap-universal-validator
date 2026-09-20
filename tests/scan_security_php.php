@@ -522,8 +522,15 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('policy: and the documented defaults apply',
             $p['valueDays'] === 30 && $p['runDays'] === 90 && $p['maxProjects'] === 2
             && $p['recordAttempts'] === 3);
-        check('policy: collection gaps are separate, with no off switch',
-            $p['collectionGaps'] === 'separate');
+        // It said 'separate' while nothing detected a gap. A policy that names a
+        // behaviour promises it.
+        check('policy: collection gaps are reported as what they are - not implemented',
+            $p['collectionGaps'] === ScanPolicy::GAPS_UNIMPLEMENTED
+            && $p['collectionGaps'] !== 'separate');
+        check('policy: and no setting, system or project, can say otherwise',
+            ScanPolicy::resolve(['collectionGaps' => 'separate', 'scan-collection-gaps' => 'separate'],
+                                ['collectionGaps' => 'separate', 'scan-collection-gaps' => 'separate'])
+                ['collectionGaps'] === ScanPolicy::GAPS_UNIMPLEMENTED);
 
         check('policy: a project may shorten retention',
             ScanPolicy::resolve([], ['scan-value-retention-days' => '7'])['valueDays'] === 7);
