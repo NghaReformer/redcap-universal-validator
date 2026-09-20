@@ -259,6 +259,25 @@ function uv_explain_key($conn, $sql, array $params) {
     return ($row && isset($row['key']) && $row['key'] !== null) ? (string) $row['key'] : '';
 }
 
+/**
+ * EVERY index the server chose for a captured statement, one per EXPLAIN row.
+ *
+ * uv_explain_key() reads the FIRST row, which is right for a plain SELECT and
+ * wrong for a statement wrapped in EXISTS(...): there the first row is the outer
+ * query, "No tables used", with no key at all, and the table that matters is on
+ * a later row. Read by name, for the reason given above.
+ */
+function uv_explain_keys($conn, $sql, array $params) {
+    $r = $conn->query('EXPLAIN ' . uv_inline_params($conn, $sql, $params));
+    if ($r === false) return [];
+    $keys = [];
+    while ($row = $r->fetch_assoc()) {
+        if (isset($row['key']) && $row['key'] !== null) $keys[] = (string) $row['key'];
+    }
+    $r->free();
+    return $keys;
+}
+
 /** Two INDEPENDENT connections. One cannot see the other's uncommitted work. */
 function uv_connect($host, $user, $pass, $name, $port) {
     $c = new mysqli($host, $user, $pass, $name, $port);

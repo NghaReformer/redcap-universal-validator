@@ -1262,11 +1262,34 @@ final class SqlScanStore implements ScanStore
      *
      * A counter can be incremented twice by a retry; this cannot be wrong in
      * that direction, because a record is terminal or it is not.
+     *
+     * AN EXISTENCE TEST, NOT A COUNT. The question is "is any row unfinished",
+     * and COUNT(*) answers it by walking every unfinished row first - the whole
+     * pending manifest, on a run cancelled early. EXISTS stops at the first.
+     *
+     * EXISTS(...) RATHER THAN `SELECT 1 ... LIMIT 1`, and the difference is the
+     * direction it fails in. EXISTS always returns exactly one row, holding 0 or
+     * 1, so "no row came back" still means "the read did not work" and answers
+     * NOT complete. The bare form answers complete with an EMPTY result - which
+     * is also what ModuleDb::rows() hands back for any result shape it does not
+     * recognise, so a broken read would certify an unfinished run.
+     *
+     * FORCE INDEX, for the reason UniqueFinalizer::nextUnfinished() gives at
+     * length. PRIMARY (run_id, ordinal) can serve this too, and when every row
+     * is terminal - the state this is asked in most - it walks the whole
+     * manifest to discover that none qualifies, where ix_run_state (run_id,
+     * state) seeks to `state < 100` and finds nothing at once. Not a guess:
+     * with the hint removed and 1,200 terminal rows, MySQL 5.7, MySQL 8.0 and
+     * MariaDB 10.11 all chose PRIMARY, and only MariaDB 10.5 chose the state
+     * index. tests/mysql/cases/store.php asserts the plan. Safe to force:
+     * ix_run_state is part of the version-1 CREATE TABLE, so there is no schema
+     * carrying this table without it.
      */
     public function manifestComplete($runId)
     {
-        $r = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
-            . ' WHERE run_id = ? AND state < ?', [$runId, self::REC_DONE]);
+        $r = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . Schema::table('scan_record')
+            . ' FORCE INDEX (ix_run_state) WHERE run_id = ? AND state < ?)',
+            [$runId, self::REC_DONE]);
         return isset($r[0][0]) && (int) $r[0][0] === 0;
     }
 

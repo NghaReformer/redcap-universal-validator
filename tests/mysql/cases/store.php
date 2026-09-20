@@ -668,6 +668,52 @@ $WIDE = 781;
         (int) $left[0][0] === 0 && (int) $done[0][0] === 0);
 }
 
+// "IS THE MANIFEST COMPLETE", AND WHAT IT COSTS TO ASK (P11).
+//
+// The state it is asked in most is the one where the answer is yes - that is
+// how a worker learns it has finished - and there a COUNT(*) has nothing to
+// count while the wrong index still walks every row to find that out. The plan
+// is asserted on the statement the store sent, with every row terminal, which
+// is exactly where PRIMARY and ix_run_state part company.
+$ASKED = 782;
+{
+    $rec = new UvRecordingDb($dbA);
+    $s = new SqlScanStore($rec);
+    $r = $s->startRun($ASKED, ['created_by' => 'alice']);
+    $rid = (int) $r['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 1200; $i++) {
+        $recs[] = ['id_bin' => 'Q-' . $i, 'hash' => hash('sha256', 'Q-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    check('asked: a manifest nobody has started is not complete', $s->manifestComplete($rid) === false);
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid);
+    $rec->log = [];
+    check('asked: with every row terminal it is', $s->manifestComplete($rid) === true);
+    $q = $rec->matching('select', [Schema::table('scan_record'), 'state <']);
+    check('asked: and that cost one statement', count($q) === 1);
+    if ($q) {
+        $keys = uv_explain_keys($A, $q[0][1], $q[0][2]);
+        check('asked: answered from the state index rather than by walking the manifest',
+            in_array('ix_run_state', $keys, true));
+        if (!in_array('ix_run_state', $keys, true)) {
+            fwrite(STDERR, '  the optimiser chose: ' . ($keys ? implode(', ', $keys) : '(no index)') . "\n");
+        }
+    }
+    $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . (int) ScanStore::REC_PENDING
+        . ' WHERE run_id = ' . $rid . ' AND ordinal = 600');
+    check('asked: one row put back makes it incomplete again', $s->manifestComplete($rid) === false);
+    // A KNOWN DIVERGENCE, PINNED SO IT IS NOT "FIXED" BY ACCIDENT. The SQL
+    // store answers true for a run id that does not exist - nothing is
+    // unfinished - where ArrayScanStore answers false. No production caller can
+    // reach it, because work() reads the run row first. Store parity (M13,
+    // wave 8) owns choosing one answer; until then a rewrite of this method
+    // must not move it silently.
+    check('asked: a run that does not exist still answers as it always has',
+        $s->manifestComplete(999999999) === true);
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

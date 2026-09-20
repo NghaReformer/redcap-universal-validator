@@ -305,6 +305,11 @@ interface ScanStore
     /**
      * Is every manifest row terminal? A PREDICATE over states (I4), never a
      * comparison of counters.
+     *
+     * An existence test, and it must FAIL CLOSED: an answer that could not be
+     * read is "not complete". A run with an EMPTY manifest answers true - the
+     * predicate is vacuous there, and it is ScanPromotion's emptyScope fact, not
+     * this method, that stops an empty run being certified.
      */
     public function manifestComplete($runId);
 

@@ -295,6 +295,39 @@ namespace INSPIRE\UniversalValidator\Scan {
         $probes === 0);
 
     // =====================================================================
+    // P11 - "is the manifest complete" fails CLOSED
+    // =====================================================================
+    //
+    // The cheap way to ask is `SELECT 1 ... LIMIT 1` and call no row "complete".
+    // No row is also what an unreadable answer looks like: ModuleDb::rows()
+    // returns [] for any result shape it does not recognise. So the statement
+    // is an EXISTS, which always answers with one row, and an empty result
+    // keeps meaning "I could not tell".
+
+    $db = new ScriptedDb();       // answers every SELECT with no rows at all
+    check('complete: an answer that never arrived is NOT complete',
+        (new SqlScanStore($db))->manifestComplete(1) === false);
+    $asked = '';
+    foreach ($db->log as $stmt) {
+        if (strpos($stmt, Schema::table('scan_record')) !== false) $asked = $stmt;
+    }
+    check('complete: the question is an existence test over the state index',
+        strpos($asked, 'SELECT EXISTS(') === 0 && strpos($asked, 'FORCE INDEX (ix_run_state)') !== false
+        && stripos($asked, 'COUNT(') === false);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT EXISTS(' => [[0]]];
+    check('complete: no unfinished row is complete',
+        (new SqlScanStore($db))->manifestComplete(1) === true);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT EXISTS(' => [['1']]];
+    check('complete: one unfinished row is not, whatever type the driver gave it',
+        (new SqlScanStore($db))->manifestComplete(1) === false);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT EXISTS(' => [[null]]];
+    check('complete: and a NULL answer is not complete either',
+        (new SqlScanStore($db))->manifestComplete(1) === false);
+
+    // =====================================================================
     // M9 - findings go to the server a chunk at a time, not one by one
     // =====================================================================
     //

@@ -47,6 +47,13 @@ function storeContract(callable $newStore, $label)
     $C('but does under its own', $s->run(700, $runId) !== null);
 
     // -- manifest ----------------------------------------------------------
+    // BEFORE ANY RECORD IS LISTED the predicate is vacuous, and both stores
+    // answer true. Pinned because the SQL form changed from a count to an
+    // existence test, and "no unfinished row" and "no row at all" are one
+    // answer under either. What stops an empty run being certified is
+    // ScanPromotion's emptyScope fact, not this method.
+    $C('a manifest with nothing on it has nothing unfinished',
+        $s->manifestComplete($runId) === true);
     $recs = [];
     for ($i = 1; $i <= 5; $i++) {
         $recs[] = ['id_bin' => 'REC-' . $i, 'hash' => hash('sha256', 'REC-' . $i, true),
