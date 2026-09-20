@@ -138,34 +138,14 @@ class ScanPageView
         . 'record exactly what it covered; until that lands, this page will not start a scan. '
         . 'Live form validation and the post-save audit are unaffected and continue to run.';
 
-    /**
-     * What a scan result may CLAIM, decided once.
-     *
-     * Three axes that are routinely confused: STATUS says whether the sweep
-     * finished, COVERAGE says what finishing is worth on this installation, and
-     * CLEAN is the only one that is a statement about the PROJECT. A run that
-     * finished, found nothing, and could not prove the project stayed still is
-     * complete and not clean.
-     *
-     * It lived inside pages/scan.php as three local variables, so the only way
-     * to test it was to render a page and grep the HTML - and when the page
-     * stopped rendering, the predicate lost its coverage with it. The durable
-     * report (plan Task 7) needs the same answer, so it belongs here.
-     */
-    public static function verdict($result)
-    {
-        $complete = is_array($result) && isset($result['status']) && $result['status'] === 'complete';
-        $coverage = (is_array($result) && isset($result['coverage'])) ? $result['coverage'] : 'partial';
-        $fenced   = ($coverage === 'complete-through-fence');
-        // A clean bill of health needs all four: the sweep finished, the server
-        // could prove the project did not move under it, nothing was found, and
-        // no rule was left unevaluated. A project whose every rule is broken has
-        // zero violations and is not clean (M-02).
-        $clean = $complete && $fenced
-              && empty($result['violations']) && empty($result['unconfigurable']);
-        return ['complete' => $complete, 'coverage' => $coverage,
-                'fenced' => $fenced, 'clean' => $clean];
-    }
+    // WHETHER A RESULT MAY BE CALLED CLEAN IS NOT DECIDED HERE ANY MORE. This
+    // class held verdict(), a second implementation of that question written
+    // for the withdrawn synchronous page. It had no caller in the shipped tree,
+    // and it did not agree with the one that has: it knew nothing of an empty
+    // scope, of a truncated report, of a cancelled or expired run. Two
+    // predicates for one claim is how the claim drifts, and the one with no
+    // caller is the one nobody notices drifting. Scan\ScanOutcome::derive() and
+    // mayClaimClean() are the answer, for every surface.
 
     /**
      * How a phase reads to somebody who did not design this.

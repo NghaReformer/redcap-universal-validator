@@ -232,6 +232,7 @@ final class ScanPromotion
  *   (emptyScope is NOT an input. It is derived below from the run row and the
  *    census, because a caller that can be asked for it is a caller that can
  *    forget it, and forgetting it is what this cost the first time.)
+     *   labelDegraded:      bool  some report labels could not be read; wording only
      *   uniqueDone:         bool
      *   uniqueBlocking:     int
      *   rollupDone:         bool
@@ -330,7 +331,12 @@ final class ScanPromotion
                 : max($rows, (int) $g('violations', 0)),
             'ruleProblems' => (int) $g('ruleProblems', 0),
             'gaps' => (int) $g('gapCount', 0),
-            'labelDegraded' => !empty($run['labelDegraded']),
+            // FROM THE CALLER, because no run row carries it: this read
+            // $run['labelDegraded'], a key ScanStore::RUN_COLUMNS does not have
+            // and never had, so it was false on every run and the sentence it
+            // selects could not be reached. It changes wording only - label
+            // degradation never blocks clean.
+            'labelDegraded' => !empty($g('labelDegraded', false)),
         ];
 
         // READY is a different question from WHAT IT MAY CLAIM. A run with work

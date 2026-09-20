@@ -211,6 +211,14 @@ namespace INSPIRE\UniversalValidator\Scan {
          ['truncated' => true], 'partial', 'complete-through-fence', 'truncated', false, '_TRUNCATED'],
         ['frozen manifest processed without a reliable fence',
          ['fenced' => false], 'partial', 'manifest-complete', 'complete', false, '_MANIFEST_ONLY'],
+        // THE CELL WHERE BOTH ARE FALSE. It answered from the fence row, so a
+        // run that had neither finished its list nor proved a window was stored
+        // as manifest-complete: "every record on the opening list was examined".
+        ['neither a finished manifest nor a proved window',
+         ['fenced' => false, 'manifestDone' => false], 'partial', 'partial', 'complete', false,
+         '_INCOMPLETE'],
+        ['a proved window over a manifest nobody finished',
+         ['manifestDone' => false], 'partial', 'partial', 'complete', false, '_INCOMPLETE'],
         ['manifest-only AND truncated says both',
          ['fenced' => false, 'truncated' => true], 'partial', 'manifest-complete', 'truncated', false,
          '_MANIFEST_ONLY_TRUNCATED'],
@@ -1772,6 +1780,19 @@ namespace INSPIRE\UniversalValidator\Scan {
     // Gaps are reported, never violations, and never blocking.
     $gp = ScanPromotion::facts($run, $all, array_merge($ok, ['gapCount' => 3860]));
     $o = ScanOutcome::derive($gp['facts']);
+    // LABEL DEGRADATION COMES FROM THE CALLER. facts() read it from the run row,
+    // which has no such column, so it was false on every run and the sentence
+    // it selects was unreachable.
+    $ld = ScanPromotion::facts($run, $all, array_merge($ok, ['labelDegraded' => true]));
+    check('promote: label degradation reaches the outcome when the caller reports it',
+        $ld['facts']['labelDegraded'] === true
+        && strpos(ScanOutcome::derive($ld['facts'])['why'], 'labels could not be read') !== false);
+    check('promote: and still does not stop a clean result',
+        ScanOutcome::mayClaimClean(ScanOutcome::derive($ld['facts'])) === true);
+    check('promote: a key of that name on the run row is not what is read',
+        ScanPromotion::facts(array_merge($run, ['labelDegraded' => true]), $all, $ok)
+            ['facts']['labelDegraded'] === false);
+
     check('promote: collection gaps do not stop a clean result',
         ScanOutcome::mayClaimClean($o) === true);
     check('promote: but a caller may not render it without mentioning them',

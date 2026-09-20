@@ -87,7 +87,6 @@ namespace {
         // moved: wave 2 deleted the methods. This check is what noticed - an
         // allow-list that outlives its subject is how a list of known-inert
         // code turns back into a list nobody reads.
-        'ScanPageView::verdict'        => 'wave 7 deletes it: a second clean predicate with no caller that does not agree with ScanOutcome::mayClaimClean(), which is the drift ScanOutcome\'s docblock exists to prevent',
 
         // -- wave 7, the honest outcome.
 

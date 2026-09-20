@@ -404,6 +404,13 @@ namespace INSPIRE\UniversalValidator\Scan {
             $m['terminal'] === 'partial' && $m['coverage'] === 'manifest-complete'
             && $m['clean'] === false);
         check('outcome: and says _MANIFEST_ONLY', ScanOutcome::suffix($m) === '_MANIFEST_ONLY');
+        // `manifest-complete` is a claim about the manifest, so an unfinished
+        // manifest cannot earn it - with or without a fence.
+        $nn = ScanOutcome::derive(array_merge($base, ['fenced' => false, 'manifestDone' => false]));
+        check('outcome: neither a finished manifest nor a fence is PARTIAL, not manifest-complete',
+            $nn['coverage'] === 'partial' && $nn['coverage'] !== 'manifest-complete'
+            && strpos($nn['why'], 'was examined') === false
+            && ScanOutcome::suffix($nn) === '_INCOMPLETE');
         $mt = ScanOutcome::derive(array_merge($base, ['fenced' => false, 'truncated' => true]));
         check('outcome: suffixes COMPOSE, because one alone misleads',
             ScanOutcome::suffix($mt) === '_MANIFEST_ONLY_TRUNCATED');
@@ -462,6 +469,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         $empty = ScanOutcome::derive([]);
         check('outcome: an empty fact set is never clean and never complete',
             $empty['clean'] === false && $empty['terminal'] !== 'complete');
+        check('outcome: and claims the WEAKEST coverage, not that a manifest was finished',
+            $empty['coverage'] === 'partial');
     }
 
     /* =====================================================================

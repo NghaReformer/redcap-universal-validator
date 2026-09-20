@@ -691,7 +691,24 @@ namespace {
 
     /* =====================================================================
      * the four verdict branches
+     *
+     * ONE PREDICATE, the production one. These called ScanPageView::verdict(),
+     * a second implementation of "may this be called clean" that nothing in the
+     * shipped tree used and that did not agree with Scan\ScanOutcome. It is
+     * gone; what is asked here is what a legacy scanProject() result earns from
+     * the predicate every other surface uses.
      * ===================================================================== */
+    /** A scanProject() result, as the facts ScanOutcome::derive() decides on. */
+    $cleanOf = function ($res) {
+        $has = function ($k) use ($res) { return is_array($res) && isset($res[$k]); };
+        $O = '\\INSPIRE\\UniversalValidator\\Scan\\ScanOutcome';
+        return $O::mayClaimClean($O::derive([
+            'fenced'       => $has('coverage') && $res['coverage'] === $O::FENCED,
+            'manifestDone' => $has('status') && $res['status'] === 'complete',
+            'violations'   => $has('violations') ? count($res['violations']) : 0,
+            'ruleProblems' => $has('unconfigurable') ? count($res['unconfigurable']) : 0,
+        ]));
+    };
     {
         $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
@@ -700,27 +717,29 @@ namespace {
 
         // Clean: a populated required field, no rule problems.
         list(, $rC) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => 'X']]]);
-        check('verdict: a clean project is clean', $V::verdict($rC)['clean'] === true);
+        check('verdict: a clean project is clean', $cleanOf($rC) === true);
         check('verdict: with nothing to list', !$rC['violations']);
 
         // A violation: not clean, and the finding is carried.
         list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '']]]);
         check('verdict: a violation is listed', count($rV['violations']) === 1);
-        check('verdict: and the project is not clean', $V::verdict($rV)['clean'] === false);
+        check('verdict: and the project is not clean', $cleanOf($rV) === false);
 
         // A rule that cannot be evaluated: zero violations, still not clean.
         $DB = dict(['record_id' => ['fa'], 'orphan' => ['fz', '@UVREQUIRED']]);
         list(, $rU) = scanOf($U(), $DB, [1 => [1 => ['record_id' => '1']]],
             ['mappings' => [['event_id' => 1, 'form' => 'fa']]]);
         check('verdict: a project can be violation-free and still not clean',
-            !$rU['violations'] ? $V::verdict($rU)['clean'] === false : true);
+            !$rU['violations'] ? $cleanOf($rU) === false : true);
 
         // An incomplete sweep: never clean, whatever it found.
         list(, $rI) = scanOf($U(), $D, [
             1 => [1 => ['record_id' => '1', 'val' => 'X']],
             2 => [1 => ['record_id' => '2', 'val' => 'X']],
         ], ['dropFromChunk' => 2]);
-        check('verdict: an incomplete sweep is never clean', $V::verdict($rI)['clean'] === false);
+        check('verdict: an incomplete sweep is never clean', $cleanOf($rI) === false);
+        check('verdict: and the page class no longer carries a predicate of its own',
+            !method_exists($V, 'verdict'));
     }
 
     /* =====================================================================
@@ -812,8 +831,8 @@ namespace {
     /* =====================================================================
      * M-02  an incomplete scan may not read as a clean one
      *
-     * The predicate moved from three local variables inside pages/scan.php to
-     * ScanPageView::verdict(), so it survives the page being withdrawn and the
+     * The predicate began as three local variables inside pages/scan.php, moved
+     * to ScanPageView::verdict(), and is now Scan\ScanOutcome alone - so the
      * durable report gets the same answer rather than a second implementation.
      * ===================================================================== */
     {
@@ -829,27 +848,24 @@ namespace {
 
         list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data,
             ['dropFromChunk' => 2]);
-        $v = $V::verdict($res);
-        check('M-02: an unreadable record makes the scan incomplete', !$v['complete']);
+        check('M-02: an unreadable record makes the scan incomplete', $res['status'] !== 'complete');
         check('M-02: a scan with zero violations but incomplete coverage is NOT clean',
-            !$res['violations'] && !$v['clean']);
+            !$res['violations'] && $cleanOf($res) === false);
         check('M-02: and the reason is recorded, not merely the verdict',
             (bool) $res['incomplete']);
 
         // CONTRAST: the same project, nothing dropped, IS clean. Without this the
         // three checks above pass on a predicate that never certifies anything.
         list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $data);
-        check('M-02 contrast: a complete clean scan is clean',
-            $V::verdict($res2)['clean'] === true);
+        check('M-02 contrast: a complete clean scan is clean', $cleanOf($res2) === true);
 
-        // A project whose every rule is broken has zero violations and is not
-        // clean: the green tick belonged to the violation count alone, which is
-        // the narrower claim.
-        $broken = array_merge($res2, ['unconfigurable' => [['rule' => 1, 'fields' => [], 'why' => 'x']]]);
-        check('M-02: rule problems block clean even with no violations',
-            $V::verdict($broken)['clean'] === false);
-        check('M-02: a missing coverage key is read as partial, not as proof',
-            $V::verdict(['status' => 'complete', 'violations' => [], 'unconfigurable' => []])['clean'] === false);
+        // Two checks used to follow, on hand-built results: that rule problems
+        // block clean with no violations, and that a missing coverage key reads
+        // as the weaker claim. Both are properties of ScanOutcome::derive() and
+        // are asserted on it directly in tests/scan_security_php.php ("a rule
+        // problem forbids clean", "a caller that forgets a field gets the WEAKER
+        // claim"). Asking them again here, through this file's own adapter,
+        // would test the adapter.
     }
 
     /* =====================================================================
@@ -1067,16 +1083,15 @@ namespace {
         // A server that CAN prove a fence: clean is reachable.
         list(, $res) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData);
         check('fence: with a proved change fence a clean project is clean',
-            $V::verdict($res)['clean'] === true);
+            $cleanOf($res) === true);
         check('fence: and the coverage says so in its own words',
             $res['coverage'] === 'complete-through-fence');
 
         // The same clean project on a server that cannot prove one.
         list(, $res2) = scanOf(new \ExternalModules\PlainUser(true, null), $D, $cleanData,
             ['unfenced' => true]);
-        $v2 = $V::verdict($res2);
-        check('fence: without one, the SAME clean project is NOT clean', $v2['clean'] === false);
-        check('fence: while the sweep itself still reports complete', $v2['complete'] === true);
+        check('fence: without one, the SAME clean project is NOT clean', $cleanOf($res2) === false);
+        check('fence: while the sweep itself still reports complete', $res2['status'] === 'complete');
         // Named, not pinned to one literal: the vocabulary of weaker coverages
         // grows as capability probes are added, and a test that pins today's
         // spelling fails on a MORE honest answer.

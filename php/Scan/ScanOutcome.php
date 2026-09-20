@@ -154,17 +154,24 @@ final class ScanOutcome
                 . 'was not covered');
         }
 
+        // THE MANIFEST BEFORE THE FENCE. These two were the other way round, and
+        // the cell where BOTH are false answered from the fence row: a run that
+        // had neither finished its list nor proved a window was stored as
+        // `manifest-complete`, with the sentence "every record on the opening
+        // list was examined". `manifest-complete` is a claim about the manifest,
+        // so whether the manifest was finished is asked first; the fence can
+        // only weaken a claim the manifest has already earned.
+        if (!$b('manifestDone')) {
+            return self::out(self::PARTIAL, self::COV_PARTIAL, $detail, false, $gaps,
+                'the run did not reach every record on its manifest');
+        }
+
         // Every manifest row terminal, but no proved fence: the run covered the
         // list it opened with and cannot know the project did not move.
         if (!$b('fenced')) {
             return self::out(self::PARTIAL, self::MANIFEST, $detail, false, $gaps,
                 'every record on the opening list was examined, but this server cannot prove the '
                 . 'project did not change during the run');
-        }
-
-        if (!$b('manifestDone')) {
-            return self::out(self::PARTIAL, self::COV_PARTIAL, $detail, false, $gaps,
-                'the run did not reach every record on its manifest');
         }
 
         // Fenced and whole. Detail truncation does not reduce COVERAGE - every
@@ -187,7 +194,7 @@ final class ScanOutcome
         // call site wrote a reconciled-*, reconcile-unsettled, fence-unprovable
         // or rollup-* kind instead. So `clean` reduced to `violations === 0`,
         // and a project whose rules enforce nothing was certified clean - the
-        // case ScanPageView::verdict names as M-02 and the legacy path already
+        // case the audit names M-02 and the legacy path already
         // refuses to imply. ScanPromotion::noteRuleProblems() is the producer
         // now; do not remove either term without checking it still has one.
         $clean = ($i('violations') === 0 && $i('ruleProblems') === 0);
