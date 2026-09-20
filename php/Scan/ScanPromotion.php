@@ -71,15 +71,18 @@ final class ScanPromotion
      * unwires this the suite says so, instead of the term quietly returning to
      * zero the way it has been for the whole of this file's life.
      *
-     * PLAN-TIME PROBLEMS ONLY, which is the whole of what it can honestly carry
-     * today. scanPlan() knows before the first record is read which rules have a
-     * configuration error, cannot be located on an instrument, sit on an
-     * instrument designated to no event, or cannot be evaluated under a group
-     * scope. That set is deduped by construction and bounded by the RULE list
-     * rather than by the data, so one row per run is exact, and it is known even
-     * on a run whose scope turns out to be empty. The per-record problems
-     * durableEvaluateRecord() returns need a dedupe and a presence-not-count
-     * store verb, and they stay in the wave that owns those.
+     * ONE ROW PER PROBLEM, AND EACH ROW IS A PRESENCE. This used to be a single
+     * addAggregate() row whose count was the number of problems, which made the
+     * planner the only caller that could use it: addAggregate ADDS, so a plan
+     * that ran twice (a retried request today, resumable planning tomorrow)
+     * reported twice the problems, and the per-record problems
+     * durableEvaluateRecord() returns could not come here at all - the same
+     * broken rule is met by every record, and its count would have measured the
+     * size of the project. markAggregate() is the verb that was missing; the
+     * worker now sends its problems through marksFor() and commitBatch().
+     *
+     * Plan-time problems are still noted here, before the first record is read,
+     * so they are known even on a run whose scope turns out to be empty.
      *
      * BLOCKS IS 0, and that is correctness rather than a default. A rule problem
      * FORBIDS CLEAN BUT DOES NOT CAP COVERAGE. Passing 1 would put it into
@@ -92,16 +95,65 @@ final class ScanPromotion
      */
     public static function noteRuleProblems(ScanStore $store, $runId, array $problems)
     {
-        if (!$problems) return 0;
-        $why = [];
-        foreach ($problems as $p) {
-            if (isset($p['why']) && is_string($p['why'])) $why[] = $p['why'];
+        $marks = self::marksFor($problems);
+        foreach ($marks as $m) {
+            $store->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
+                                  $m['blocks'], $m['samples']);
         }
-        // Bounded exactly as CatchUp::unfenced() bounds its sample, for the same
-        // reason: `samples` is a TEXT column and a rule list is unbounded.
-        $store->addAggregate($runId, self::RULE_KINDS, '', '', count($problems), 0,
-                             substr(implode(' | ', $why), 0, 500));
-        return count($problems);
+        return count($marks);
+    }
+
+    /** Longest explanation kept beside a mark. `samples` is TEXT and a sentence is unbounded. */
+    const SAMPLE_BYTES = 500;
+
+    /**
+     * What makes two reports of a rule problem THE SAME problem.
+     *
+     * The rule, and what is wrong with it. UniversalValidator keys its own list
+     * "<rule index>|<code>" and then hands over array_values() of it, so the
+     * code does not survive the trip; until it does (`code` on each problem),
+     * the sentence stands in for it, hashed because an axis is 255 characters
+     * and a sentence is not. Two sentences for one fault would then be two rows,
+     * which overstates - the direction that cannot certify.
+     *
+     * @return array{0:string, 1:string} axis1 (the rule's ordinal), axis2 (the code)
+     */
+    public static function problemKey(array $problem)
+    {
+        $rule = isset($problem['rule']) ? (string) (int) $problem['rule'] : '0';
+        if (isset($problem['code']) && is_string($problem['code']) && $problem['code'] !== '') {
+            return [$rule, substr($problem['code'], 0, 255)];
+        }
+        $why = (isset($problem['why']) && is_string($problem['why'])) ? $problem['why'] : '';
+        return [$rule, 'w:' . substr(sha1($why), 0, 16)];
+    }
+
+    /**
+     * Rule problems as presence marks, one per DISTINCT problem.
+     *
+     * The shape commitBatch() takes in `marks` and noteRuleProblems() writes
+     * directly - one function, so the planner and the worker cannot come to key
+     * the same problem differently and record it twice.
+     *
+     * BLOCKS IS 0, for the reason on noteRuleProblems(): a rule problem forbids
+     * clean and does not cap coverage.
+     *
+     * @param array $problems each {rule:int, fields:array, why:string, code?:string}
+     * @return array<int, array{kind:string, axis1:string, axis2:string, blocks:int, samples:?string}>
+     */
+    public static function marksFor(array $problems)
+    {
+        $out = [];
+        foreach ($problems as $p) {
+            if (!is_array($p)) continue;
+            list($a1, $a2) = self::problemKey($p);
+            $k = $a1 . "\0" . $a2;
+            if (isset($out[$k])) continue;
+            $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2, 'blocks' => 0,
+                        'samples' => (isset($p['why']) && is_string($p['why']))
+                            ? substr($p['why'], 0, self::SAMPLE_BYTES) : null];
+        }
+        return array_values($out);
     }
 
     /**

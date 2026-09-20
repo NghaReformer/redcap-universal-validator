@@ -292,6 +292,9 @@ class FaultyStore implements ScanStore
     public function setProgressState($runId, $epoch, array $state)
     { $this->gate('setProgressState'); return $this->inner->setProgressState($runId, $epoch, $state); }
 
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
+    { $this->gate('markAggregate'); return $this->inner->markAggregate($runId, $kind, $axis1, $axis2, $blocks, $samples); }
+
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
         $this->gate('addAggregate');

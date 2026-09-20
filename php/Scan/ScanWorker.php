@@ -58,6 +58,8 @@ final class ScanWorker
     private $store;
     /** @var array */
     private $deps;
+    /** @var array run id => mark key => true: rule problems this worker has already committed */
+    private $marked = [];
 
     /**
      * @param array $deps {
@@ -562,8 +564,11 @@ final class ScanWorker
 
         $after = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
-        $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => []];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'marks' => []];
         $worked = 0; $requeued = 0; $blocked = 0;
+        // Rule problems this batch met and this worker has not yet recorded,
+        // keyed so one broken rule met by every record in the batch is one mark.
+        $marks = [];
 
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
@@ -653,6 +658,20 @@ final class ScanWorker
                     $batch['candidates'][] = $cand;
                 }
             }
+            // WHAT THE EVALUATION COULD NOT EVALUATE. This was returned by every
+            // call and read by nobody: a rule that fails at run time - a
+            // reference that resolves on no event, a budget exhausted - left the
+            // records it met looking examined and the run able to say clean.
+            // Deduped three times over, because the same rule is met by every
+            // record: within the batch here, within this worker by $this->marked,
+            // and across workers by the store, where a mark is a presence.
+            if (isset($ev['problems']) && is_array($ev['problems']) && $ev['problems']) {
+                foreach (ScanPromotion::marksFor($ev['problems']) as $m) {
+                    $k = $m['axis1'] . "\0" . $m['axis2'];
+                    if (isset($this->marked[$runId][$k])) continue;
+                    $marks[$k] = $m;
+                }
+            }
             $batch['bytes'] += isset($ev['bytes']) ? (int) $ev['bytes'] : 0;
             $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                    'state' => ScanStore::REC_DONE,
@@ -661,6 +680,7 @@ final class ScanWorker
             $worked++;
         }
 
+        $batch['marks'] = array_values($marks);
         $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch);
         if ($ok !== true) {
             $why = is_string($ok) ? $ok
@@ -675,6 +695,9 @@ final class ScanWorker
             return $this->giveBack($runId, $epoch, $claims, $maxAttempts,
                 ScanStore::REC_UNSTORED, 'fenced', $why);
         }
+        // Remembered only once COMMITTED. A refused batch wrote nothing, so the
+        // next one must offer these again.
+        foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => count($batch['findings']),
                 'candidates' => count($batch['candidates']), 'why' => null];

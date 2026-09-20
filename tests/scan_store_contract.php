@@ -273,6 +273,86 @@ function storeContract(callable $newStore, $label)
     $C('and the project slot is released, so the next scan may start',
         $s->startRun(700, ['created_by' => 'carol'])['ok'] === true);
 
+    // -- a presence is recorded once (B4b) ------------------------------------
+    // addAggregate ADDS, which is right for a count built from pages and wrong
+    // for a fact. markAggregate is the other verb: the row exists with a count
+    // of one, however many times and from however many workers it is said.
+    $sm = $newStore();
+    $mr = $sm->startRun(770, ['created_by' => 'alice']);
+    $mid = (int) $mr['run']['run_id'];
+    $of = function ($store, $id, $kind) {
+        $rows = [];
+        foreach ($store->aggregates($id) as $a) if ($a['kind'] === $kind) $rows[] = $a;
+        return $rows;
+    };
+    $sm->markAggregate($mid, 'rule-problem', '4', 'unlocatable', 0, 'first said');
+    $sm->markAggregate($mid, 'rule-problem', '4', 'unlocatable', 0, 'said again');
+    $sm->markAggregate($mid, 'rule-problem', '4', 'unlocatable');
+    $rows = $of($sm, $mid, 'rule-problem');
+    $C('a fact marked three times is one row with a count of one',
+        count($rows) === 1 && (int) $rows[0]['cnt'] === 1);
+    $C('keeping the first explanation it was given', $rows[0]['samples'] === 'first said');
+    $sm->markAggregate($mid, 'rule-problem', '4', 'config-error');
+    $sm->markAggregate($mid, 'rule-problem', '5', 'unlocatable');
+    $C('a different axis is a different fact', count($of($sm, $mid, 'rule-problem')) === 3);
+    $C('a mark does not block coverage unless it says so', (int) $sm->blockingAggregates($mid) === 0);
+    $sm->markAggregate($mid, 'rule-problem', '4', 'unlocatable', 1);
+    $sm->markAggregate($mid, 'rule-problem', '4', 'unlocatable', 0);
+    $C('blocking only ever rises, and counts the row once',
+        (int) $sm->blockingAggregates($mid) === 1);
+    // A row an earlier build counted up is brought BACK to a presence.
+    $sm->addAggregate($mid, 'rule-problem', '9', 'legacy', 5);
+    $sm->markAggregate($mid, 'rule-problem', '9', 'legacy');
+    $legacy = array_values(array_filter($of($sm, $mid, 'rule-problem'),
+        function ($a) { return $a['axis1'] === '9'; }));
+    $C('marking a row that had been counted up resets it to one',
+        count($legacy) === 1 && (int) $legacy[0]['cnt'] === 1);
+
+    // IN A BATCH, BEHIND THE BATCH'S FENCES. A worker that was cancelled or
+    // taken over adds nothing to a run that is no longer its own.
+    $sm->writeManifest($mid, [['id_bin' => 'M-1', 'hash' => hash('sha256', 'M-1', true), 'dag' => null],
+                              ['id_bin' => 'M-2', 'hash' => hash('sha256', 'M-2', true), 'dag' => null]]);
+    $mep = (int) $sm->run(770, $mid)['lease_epoch'];
+    $mc = $sm->claim($mid, 'w1', $mep, 1);
+    $mark = ['kind' => 'rule-problem', 'axis1' => '12', 'axis2' => 'in-batch', 'blocks' => 0,
+             'samples' => 'met while examining'];
+    $rowOf = function ($c, $claim = null) {
+        return ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'state' => ScanStore::REC_DONE,
+                'claim' => $claim === null ? $c['claim'] : $claim];
+    };
+    $C('a stale epoch refuses the batch',
+        $sm->commitBatch($mid, 'w1', $mep - 1, ['bytes' => 0, 'findings' => [],
+            'records' => [$rowOf($mc[0])], 'marks' => [$mark]]) !== true);
+    $has = function () use ($sm, $mid, $of) {
+        foreach ($of($sm, $mid, 'rule-problem') as $a) if ($a['axis1'] === '12') return true;
+        return false;
+    };
+    $C('and its mark with it', $has() === false);
+    // A batch that holds NONE of its rows commits - there is nothing to refuse -
+    // and still has no standing to say anything about the run.
+    $C('a batch whose every row was taken over commits nothing of its own',
+        $sm->commitBatch($mid, 'w1', $mep, ['bytes' => 0, 'findings' => [],
+            'records' => [$rowOf($mc[0], (int) $mc[0]['claim'] + 999)], 'marks' => [$mark]]) === true);
+    $C('not even a mark', $has() === false);
+    $C('a batch that holds its row commits',
+        $sm->commitBatch($mid, 'w1', $mep, ['bytes' => 0, 'findings' => [],
+            'records' => [$rowOf($mc[0])], 'marks' => [$mark, $mark]]) === true);
+    $inBatch = array_values(array_filter($of($sm, $mid, 'rule-problem'),
+        function ($a) { return $a['axis1'] === '12'; }));
+    $C('and its mark lands once, with its explanation',
+        count($inBatch) === 1 && (int) $inBatch[0]['cnt'] === 1
+        && $inBatch[0]['samples'] === 'met while examining');
+    $mc2 = $sm->claim($mid, 'w1', $mep, 1);
+    $threw = false;
+    try {
+        $sm->commitBatch($mid, 'w1', $mep, ['bytes' => 0, 'findings' => [],
+            'records' => [$rowOf($mc2[0])], 'marks' => [['kind' => 'rule-problem']]]);
+    } catch (\RuntimeException $e) {
+        $threw = strpos($e->getMessage(), 'presence mark') !== false;
+    }
+    $C('a mark with no axis is a programming error, said before anything is written',
+        $threw === true && $sm->recordStates($mid) !== [ScanStore::REC_DONE => 2]);
+
     // -- streaming a manifest, and the records the cursor leaves behind ------
     //
     // A million-record manifest cannot arrive as one PHP array, so planning

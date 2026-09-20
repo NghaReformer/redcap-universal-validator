@@ -1550,6 +1550,51 @@ namespace INSPIRE\UniversalValidator\Scan {
         $rpTotal === 2);
     check('rule problems: and it does not block coverage, only clean',
         (int) $rp->blockingAggregates($rpId) === 0);
+
+    // A RULE PROBLEM IS RECORDED ONCE (B4b). The producer wrote one row whose
+    // count was the number of problems, through a verb that ADDS - so a plan
+    // that ran twice reported twice as many, and the same verb could never have
+    // taken the per-record problems, which every record repeats.
+    $rpSum = function ($store, $id) {
+        return ScanPromotion::tally($store->aggregates($id))['ruleProblems'];
+    };
+    ScanPromotion::noteRuleProblems($rp, $rpId, [
+        ['rule' => 1, 'fields' => ['dob'], 'why' => 'configuration error - this rule validates nothing'],
+        ['rule' => 4, 'fields' => ['nid'], 'why' => 'instrument xray is not designated to any event'],
+    ]);
+    check('rule problems: noted a second time, the same two are still two', $rpSum($rp, $rpId) === 2);
+    check('rule problems: and the producer answers with how many DISTINCT ones it was given',
+        ScanPromotion::noteRuleProblems($rp, $rpId, [
+            ['rule' => 7, 'why' => 'x'], ['rule' => 7, 'why' => 'x'], ['rule' => 7, 'why' => 'y']]) === 2
+        && $rpSum($rp, $rpId) === 4);
+    check('rule problems: each keeps the sentence that explains it',
+        count(array_filter($rp->aggregates($rpId), function ($a) {
+            return $a['kind'] === ScanPromotion::RULE_KINDS && is_string($a['samples'])
+                && $a['samples'] !== '';
+        })) === 4);
+
+    // THE KEY. The rule and what is wrong with it; the sentence only until the
+    // code survives the trip from UniversalValidator.
+    check('problem key: a code is used as it is',
+        ScanPromotion::problemKey(['rule' => 3, 'code' => 'unlocatable', 'why' => 'a'])
+            === ['3', 'unlocatable']);
+    check('problem key: the sentence does not matter once there is a code',
+        ScanPromotion::problemKey(['rule' => 3, 'code' => 'unlocatable', 'why' => 'a'])
+            === ScanPromotion::problemKey(['rule' => 3, 'code' => 'unlocatable', 'why' => 'b']));
+    $kw = ScanPromotion::problemKey(['rule' => 3, 'why' => 'the same sentence']);
+    check('problem key: with no code the sentence stands in, hashed to fit an axis',
+        $kw[0] === '3' && strpos($kw[1], 'w:') === 0 && strlen($kw[1]) === 18
+        && $kw === ScanPromotion::problemKey(['rule' => 3, 'why' => 'the same sentence'])
+        && $kw !== ScanPromotion::problemKey(['rule' => 3, 'why' => 'another sentence'])
+        && $kw !== ScanPromotion::problemKey(['rule' => 4, 'why' => 'the same sentence']));
+    check('problem key: a problem with nothing in it still has a key, and fits the column',
+        ScanPromotion::problemKey([])[0] === '0'
+        && strlen(ScanPromotion::problemKey(['rule' => 1, 'code' => str_repeat('c', 900)])[1]) === 255);
+    check('marks: a rule problem forbids clean and never caps coverage',
+        ScanPromotion::marksFor([['rule' => 1, 'why' => 'x']])[0]['blocks'] === 0);
+    check('marks: and a long explanation is bounded before it reaches a TEXT column',
+        strlen(ScanPromotion::marksFor([['rule' => 1, 'why' => str_repeat('w', 5000)]])[0]['samples'])
+            === ScanPromotion::SAMPLE_BYTES);
     check('rule problems: a fenced, finished, finding-free run with one is NOT clean',
         ScanOutcome::mayClaimClean(ScanOutcome::derive(ScanPromotion::facts(
             $run, $all, array_merge($ok, ['ruleProblems' => $rpTotal]))['facts'])) === false);
@@ -1701,6 +1746,109 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('promote: with the one record it never examined counted on the row',
             (int) $after['not_examined'] === 1);
         check('promote: and the gaps it saw', (int) $after['gap_count'] === 4);
+    }
+
+    /* =====================================================================
+     * WHAT THE EVALUATION COULD NOT EVALUATE REACHES THE RUN (B4b).
+     *
+     * durableEvaluateRecord() has always returned `problems` and the worker has
+     * never read them. A rule that only fails at run time left every record it
+     * met looking examined, and the run free to say clean.
+     * ===================================================================== */
+    {
+        $problemFor = function (array $byRecord) {
+            return function ($id, $node) use ($byRecord) {
+                return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'why' => null,
+                        'problems' => isset($byRecord[$id]) ? $byRecord[$id] : []];
+            };
+        };
+        $P1 = ['rule' => 2, 'fields' => ['a'], 'why' => 'rule 2 refers to a field on no event'];
+        $P2 = ['rule' => 5, 'fields' => ['b'], 'why' => 'rule 5 ran out of its evaluation budget'];
+        $ids = ['A', 'B', 'C', 'D', 'E', 'F'];
+        $every = [];
+        foreach ($ids as $id) $every[$id] = [$P1];
+        $every['E'][] = $P2;
+
+        // Two records at a time, so one worker meets the same rule in three batches.
+        $twoAt = function () {
+            return new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true)]);
+        };
+        // The same, stopped by its budget after the first batch - see the seam tests.
+        $oneBatch = function () use ($scripted, $MB) {
+            return new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+                'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true),
+                'probe' => $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 95]])->fn]);
+        };
+        list($store, $runId) = $fixture($ids);
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor($every), 'budget' => $twoAt(), 'owner' => 'w1',
+            'attempts' => 3, 'finalizer' => $fin()]);
+        $res = $w->work(800, $runId);
+        check('problems: the fixture is three batches of one worker', $res['worked'] === 6);
+        $rows = array_values(array_filter($store->aggregates($runId), function ($a) {
+            return $a['kind'] === ScanPromotion::RULE_KINDS;
+        }));
+        check('problems: six records meeting one broken rule is ONE rule problem, plus the other',
+            ScanPromotion::tally($store->aggregates($runId))['ruleProblems'] === 2);
+        check('problems: each is a presence - a row whose count is 1',
+            count($rows) === 2 && (int) $rows[0]['cnt'] === 1 && (int) $rows[1]['cnt'] === 1);
+        check('problems: keyed by the rule that has it',
+            in_array('2', array_column($rows, 'axis1'), true)
+            && in_array('5', array_column($rows, 'axis1'), true));
+        check('problems: and they cap nothing - every record was still examined',
+            (int) $store->blockingAggregates($runId) === 0
+            && $store->recordStates($runId) === [ScanStore::REC_DONE => 6]);
+
+        // A SECOND WORKER, which has no memory of the first, says it all again.
+        list($store2, $run2) = $fixture($ids, 816);
+        $did = 0;
+        foreach (['w1', 'w2'] as $owner) {
+            $one = new ScanWorker($store2, ['fence' => new Versions(), 'read' => $reader,
+                'evaluate' => $problemFor($every), 'budget' => $oneBatch(), 'owner' => $owner,
+                'attempts' => 3, 'finalizer' => $fin()]);
+            $did += $one->work(816, $run2)['worked'];
+        }
+        check('problems: two workers, one batch each, both meeting rule 2', $did === 4);
+        check('problems: and it is recorded once between them',
+            ScanPromotion::tally($store2->aggregates($run2))['ruleProblems'] === 1);
+
+        // NOTHING WRITTEN, NOTHING REMEMBERED. A refused batch kept no mark, so
+        // the worker must offer it again with the next one that commits.
+        list($inner, $run3) = $fixture(['A', 'B', 'C', 'D'], 817);
+        require_once __DIR__ . '/scan_fault_support.php';
+        $spy = new class($inner) extends FaultyStore {
+            public $offered = [];
+            public $refuse = 1;
+            public function commitBatch($runId, $owner, $epoch, array $batch) {
+                $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
+                if ($this->refuse-- > 0) return 'refused for the test, and said so at some length';
+                return parent::commitBatch($runId, $owner, $epoch, $batch);
+            }
+        };
+        $w3 = new ScanWorker($spy, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor(['A' => [$P1], 'B' => [$P1], 'C' => [$P1], 'D' => [$P1]]),
+            'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 5, 'finalizer' => $fin()]);
+        $w3->work(817, $run3);
+        $w3->work(817, $run3);
+        check('problems: a mark in a refused batch is offered again, not assumed written',
+            count($spy->offered) >= 2 && $spy->offered[0] === 1 && $spy->offered[1] === 1);
+        // ONCE PER WORKER is an economy, not the guarantee - the store is the
+        // guarantee - but it is one statement per batch for the life of a run.
+        check('problems: and once it HAS been written this worker stops offering it',
+            count($spy->offered) === 3 && $spy->offered[2] === 0);
+        check('problems: it landed once',
+            ScanPromotion::tally($inner->aggregates($run3))['ruleProblems'] === 1
+            && $inner->recordStates($run3) === [ScanStore::REC_DONE => 4]);
+
+        // A batch with nothing to say carries an empty list, not a missing key.
+        list($store4, $run4) = $fixture(['A'], 818);
+        $w4 = new ScanWorker($store4, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor([]), 'budget' => $twoAt(), 'owner' => 'w1',
+            'attempts' => 3, 'finalizer' => $fin()]);
+        $w4->work(818, $run4);
+        check('problems: records with none leave no rule-problem row behind',
+            ScanPromotion::tally($store4->aggregates($run4))['ruleProblems'] === 0);
     }
 
     /* =====================================================================

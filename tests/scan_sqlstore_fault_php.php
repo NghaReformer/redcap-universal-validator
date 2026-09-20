@@ -450,6 +450,67 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('batched: a batch with no findings sends no findings statement at all',
         $got === true && $sent === 0);
 
+    // =====================================================================
+    // B4b - a mark carried in a batch REACHES THE SERVER
+    // =====================================================================
+    //
+    // It did not, the first time. commitBatch already held a local called
+    // $marks - the placeholder string for the supersede - and the list of
+    // presence marks shared the name, so any batch that closed a record's old
+    // findings overwrote the list with "?,?" and wrote no mark at all. The
+    // in-memory store has no placeholders and passed; four real servers said
+    // so. This is that finding without a server: the batch below finishes a
+    // record WITH a record hash, which is what builds the supersede.
+    $aggregateWrites = function ($db) {
+        $at = [];
+        foreach ($db->log as $i => $stmt) {
+            if (strpos($stmt, 'INSERT INTO ' . Schema::table('scan_aggregate')) !== false) $at[] = $i;
+        }
+        return $at;
+    };
+    $firstAt = function ($db, $needle) {
+        foreach ($db->log as $i => $stmt) if (strpos($stmt, $needle) !== false) return $i;
+        return -1;
+    };
+    $mark = ['kind' => 'rule-problem', 'axis1' => '4', 'axis2' => 'unlocatable', 'samples' => 'why'];
+
+    $mk = clone $countingDb;
+    $mk->rows = ['FOR UPDATE' => $fenceRow];
+    $withMark = $mkBatch(1);
+    $withMark['marks'] = [$mark];
+    $got = (new SqlScanStore($mk))->commitBatch(1, 'w1', 0, $withMark);
+    $at = $aggregateWrites($mk);
+    check('marks: a batch that supersedes a record still writes its mark',
+        $got === true && count($at) === 1
+        && $firstAt($mk, 'SET active_slot = NULL, valid_to_seq') >= 0);
+    check('marks: as a presence - the duplicate arm SETS the count, it does not add to it',
+        count($at) === 1 && strpos($mk->log[$at[0]], 'cnt = 1') !== false
+        && strpos($mk->log[$at[0]], 'cnt = cnt') === false);
+    check('marks: after the findings and before the counters, inside the one transaction',
+        count($at) === 1
+        && $at[0] > $firstAt($mk, 'INSERT INTO ' . Schema::table('finding'))
+        && $at[0] < $firstAt($mk, 'SET manifest_done = manifest_done'));
+
+    // NO RECORD HELD, NO STANDING. The row UPDATE matches nothing, so this
+    // worker lost every record it offered; the batch still commits - there is
+    // nothing to refuse - and says nothing about the run.
+    $lost = clone $countingDb;
+    $lost->rows = ['FOR UPDATE' => $fenceRow];
+    $lost->affectedNext = 0;
+    $got = (new SqlScanStore($lost))->commitBatch(1, 'w1', 0, $withMark);
+    check('marks: a batch that held none of its records writes none of its marks',
+        $got === true && $aggregateWrites($lost) === []);
+
+    $bad = clone $countingDb;
+    $bad->rows = ['FOR UPDATE' => $fenceRow];
+    $withBad = $mkBatch(1);
+    $withBad['marks'] = [['kind' => 'rule-problem', 'axis1' => '4']];
+    $r = outcomeOf(function () use ($bad, $withBad) {
+        return (new SqlScanStore($bad))->commitBatch(1, 'w1', 0, $withBad);
+    });
+    check('marks: one with no axis is refused before the transaction is opened',
+        $r['kind'] === 'other' && $r['class'] === 'RuntimeException' && $bad->log === []);
+
 }
 
 namespace {

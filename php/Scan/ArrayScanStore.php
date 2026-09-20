@@ -249,6 +249,19 @@ final class ArrayScanStore implements ScanStore
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
+        // $presence, NOT $marks: the SQL store's supersede already builds a string
+        // of placeholders under that name, and a list sharing it was silently
+        // overwritten - which only a real server showed.
+        $presence   = isset($batch['marks'])      && is_array($batch['marks'])      ? $batch['marks']      : [];
+        // A mark with no kind or no axis is a programming error, refused in the
+        // same words by both stores and before anything is written.
+        foreach ($presence as $m) {
+            if (!is_array($m) || !isset($m['kind'], $m['axis1'], $m['axis2'])
+                    || (string) $m['kind'] === '') {
+                throw new \RuntimeException('a presence mark reached the store with no kind or no '
+                    . 'axis; refusing to write a fact that cannot be read back');
+            }
+        }
 
         // Shape first, and with the same words the SQL store uses: a missing
         // claim token is a programming error, and a store that quietly accepted
@@ -435,6 +448,15 @@ final class ArrayScanStore implements ScanStore
                . (isset($c['event_id']) ? $c['event_id'] : '') . '|'
                . (isset($c['instance']) ? $c['instance'] : 1);
             $this->candidates[$k] = $c;
+        }
+        // Behind the same fences as everything else in the batch, and only when
+        // a record was held - see SqlScanStore::commitBatch().
+        if ($held) {
+            foreach ($presence as $m) {
+                $this->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
+                                     empty($m['blocks']) ? 0 : 1,
+                                         isset($m['samples']) ? $m['samples'] : null);
+            }
         }
         $this->runs[$runId]['manifest_done'] += $applied;
         $this->runs[$runId]['detail_rows'] += count($keep);
@@ -816,6 +838,25 @@ final class ArrayScanStore implements ScanStore
         $this->aggregates[$runId][$k]['cnt'] += (int) $cnt;
         $this->aggregates[$runId][$k]['blocks'] = max($this->aggregates[$runId][$k]['blocks'],
                                                       $blocks ? 1 : 0);
+        return true;
+    }
+
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
+    {
+        $axis1 = (string) $axis1;
+        $axis2 = (string) $axis2;
+        $k = $kind . '|' . $axis1 . '|' . $axis2;
+        if (!isset($this->aggregates[$runId][$k])) {
+            $this->aggregates[$runId][$k] = ['kind' => $kind, 'axis1' => $axis1, 'axis2' => $axis2,
+                                             'cnt' => 0, 'blocks' => 0, 'samples' => $samples];
+        }
+        // SET, not added - and set even on a row addAggregate() had counted up.
+        $this->aggregates[$runId][$k]['cnt'] = 1;
+        $this->aggregates[$runId][$k]['blocks'] = max($this->aggregates[$runId][$k]['blocks'],
+                                                      $blocks ? 1 : 0);
+        if ($this->aggregates[$runId][$k]['samples'] === null) {
+            $this->aggregates[$runId][$k]['samples'] = $samples;
+        }
         return true;
     }
 

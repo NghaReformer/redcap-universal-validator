@@ -656,6 +656,19 @@ final class SqlScanStore implements ScanStore
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
+        // $presence, NOT $marks: the SQL store's supersede already builds a string
+        // of placeholders under that name, and a list sharing it was silently
+        // overwritten - which only a real server showed.
+        $presence   = isset($batch['marks'])      && is_array($batch['marks'])      ? $batch['marks']      : [];
+        // A mark with no kind or no axis is a programming error, refused in the
+        // same words by both stores and before anything is written.
+        foreach ($presence as $m) {
+            if (!is_array($m) || !isset($m['kind'], $m['axis1'], $m['axis2'])
+                    || (string) $m['kind'] === '') {
+                throw new \RuntimeException('a presence mark reached the store with no kind or no '
+                    . 'axis; refusing to write a fact that cannot be read back');
+            }
+        }
 
         // SHAPE FIRST, AND OUTSIDE THE TRANSACTION. A missing claim token or an
         // unattributable finding is a programming error, not a database
@@ -852,6 +865,20 @@ final class SqlScanStore implements ScanStore
             foreach ($candidates as $c) {
                 if (empty($held[(int) $c['ordinal']])) continue;
                 $this->insertCandidate($c);
+            }
+
+            // WHAT THE BATCH LEARNED ABOUT THE RULES, in the same transaction and
+            // behind the same four fences - so a worker that was cancelled or
+            // taken over mid-batch adds nothing to a run that is no longer its
+            // own. ONLY WHEN A RECORD WAS HELD: a batch that lost every row has
+            // no standing to say anything about the run, and its evaluation may
+            // be of records a newer worker is reading differently.
+            if ($held) {
+                foreach ($presence as $m) {
+                    $this->markAggregate($runId, $m['kind'], $m['axis1'], $m['axis2'],
+                                         empty($m['blocks']) ? 0 : 1,
+                                         isset($m['samples']) ? $m['samples'] : null);
+                }
             }
 
             // Counters last, and NOT gated on affected(): a batch that finished
@@ -1650,6 +1677,25 @@ final class SqlScanStore implements ScanStore
                                     samples = COALESCE(samples, VALUES(samples))',
             [$runId, $kind, (string) $axis1, (string) $axis2, (int) $cnt, $samples,
              $blocks ? 1 : 0]);
+        return true;
+    }
+
+    /**
+     * `cnt = 1` on the duplicate arm, NOT `cnt = cnt`: a row an earlier build
+     * counted up through addAggregate() is brought back to a presence the first
+     * time it is marked, instead of keeping a number that meant something else.
+     * Uncounted - nothing reads how many rows this changed, and the answer
+     * (1 inserted, 2 updated, 0 unchanged) would mean nothing to a caller.
+     */
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null)
+    {
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_aggregate') . '
+            (run_id, kind, axis1, axis2, cnt, samples, blocks_coverage)
+            VALUES (?,?,?,?,1,?,?)
+            ON DUPLICATE KEY UPDATE cnt = 1,
+                                    blocks_coverage = GREATEST(blocks_coverage, VALUES(blocks_coverage)),
+                                    samples = COALESCE(samples, VALUES(samples))',
+            [$runId, $kind, (string) $axis1, (string) $axis2, $samples, $blocks ? 1 : 0]);
         return true;
     }
 

@@ -475,6 +475,28 @@ interface ScanStore
      */
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null);
 
+    /**
+     * Record that something is PRESENT in this run. Once, however often it is said.
+     *
+     * The other verb ADDS, which is right for a count built from pages and wrong
+     * for a fact. "Rule 4 cannot be evaluated" is true once per run whether one
+     * record met it or a million did, whether one worker saw it or six, and
+     * whether the planner that first noted it ran once or was resumed. Through
+     * addAggregate() each of those is another +1, and the number the run ends
+     * with measures how often the question was asked.
+     *
+     * So: the row (run, kind, axis1, axis2) exists with cnt = 1, and saying it
+     * again changes nothing a reader can see. SUM(cnt) over a kind is then the
+     * number of DISTINCT things marked, which is what ScanPromotion::tally()
+     * reports. `blocks` only ever rises and the first `samples` is kept, as
+     * addAggregate() does.
+     *
+     * Safe to retry and safe from two workers at once. A mark carried in
+     * commitBatch()'s `marks` is written under that batch's fences; one written
+     * directly is unfenced, which suits the planner - it holds the only lease.
+     */
+    public function markAggregate($runId, $kind, $axis1, $axis2, $blocks = 0, $samples = null);
+
     /** How many aggregate kinds block coverage. Zero is the only value that permits complete. */
     public function blockingAggregates($runId);
 }

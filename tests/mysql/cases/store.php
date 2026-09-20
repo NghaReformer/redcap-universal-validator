@@ -765,6 +765,68 @@ $DECIDED = 783;
     }
 }
 
+// A PRESENCE IS RECORDED ONCE (B4b), and what makes that true is a unique key
+// on a real server - so it is asked of one, from two connections, with one of
+// them inside an open transaction when the other speaks.
+$MARKED = 784;
+{
+    $sa = new SqlScanStore($dbA);
+    $sb = new SqlScanStore($dbB);
+    $rid = (int) $sa->startRun($MARKED, ['created_by' => 'alice'])['run']['run_id'];
+    $agg = function () use ($A, $rid) {
+        $q = $A->query('SELECT axis1, axis2, cnt, blocks_coverage, samples FROM '
+            . Schema::table('scan_aggregate') . ' WHERE run_id = ' . (int) $rid
+            . " AND kind = 'rule-problem' ORDER BY axis1, axis2");
+        $out = [];
+        while ($row = $q->fetch_row()) $out[] = $row;
+        return $out;
+    };
+    $sa->markAggregate($rid, 'rule-problem', '4', 'unlocatable', 0, 'first said');
+    $sb->markAggregate($rid, 'rule-problem', '4', 'unlocatable', 0, 'said again');
+    $sa->markAggregate($rid, 'rule-problem', '4', 'unlocatable');
+    $rows = $agg();
+    check('marked: one fact from two connections is one row with a count of one',
+        count($rows) === 1 && (int) $rows[0][2] === 1);
+    check('marked: keeping the explanation it was first given', $rows[0][4] === 'first said');
+    // A row counted up by the ADDING verb - which is what every installation
+    // that ran the previous build holds - comes back to a presence.
+    $sa->addAggregate($rid, 'rule-problem', '9', 'legacy', 5);
+    $sb->markAggregate($rid, 'rule-problem', '9', 'legacy');
+    $rows = $agg();
+    check('marked: a row an earlier build counted up is reset to one',
+        count($rows) === 2 && (int) $rows[1][2] === 1);
+    check('marked: and the statement was uncounted - nothing reads what it changed',
+        (function () use ($dbA, $rid) {
+            $rec = new UvRecordingDb($dbA);
+            (new SqlScanStore($rec))->markAggregate($rid, 'rule-problem', '4', 'unlocatable');
+            $w = $rec->matching('exec', [Schema::table('scan_aggregate')]);
+            return count($w) === 1 && $w[0][3] === false;
+        })());
+
+    // IN A BATCH, BEHIND THE BATCH'S FENCES.
+    $sa->writeManifest($rid, [['id_bin' => 'MK-1', 'hash' => hash('sha256', 'MK-1', true), 'dag' => null],
+                              ['id_bin' => 'MK-2', 'hash' => hash('sha256', 'MK-2', true), 'dag' => null]]);
+    $ep = (int) $sa->run($MARKED, $rid)['lease_epoch'];
+    $c = $sa->claim($rid, 'w1', $ep, 1);
+    $mark = ['kind' => 'rule-problem', 'axis1' => '12', 'axis2' => 'in-batch', 'samples' => 'met while examining'];
+    $one = ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+            'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']];
+    $has12 = function () use ($agg) {
+        foreach ($agg() as $r) if ($r[0] === '12') return true;
+        return false;
+    };
+    check('marked: a batch at a stale epoch is refused',
+        $sa->commitBatch($rid, 'w1', $ep - 1, ['bytes' => 0, 'findings' => [], 'records' => [$one],
+            'marks' => [$mark]]) !== true);
+    check('marked: and its mark was rolled back with it', $has12() === false);
+    check('marked: a batch that holds its row commits',
+        $sa->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [], 'records' => [$one],
+            'marks' => [$mark, $mark]]) === true);
+    $rows = array_values(array_filter($agg(), function ($r) { return $r[0] === '12'; }));
+    check('marked: and its mark is there, once',
+        count($rows) === 1 && (int) $rows[0][2] === 1 && $rows[0][4] === 'met while examining');
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug
