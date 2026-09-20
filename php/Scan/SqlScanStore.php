@@ -31,6 +31,14 @@ namespace INSPIRE\UniversalValidator\Scan;
  * The rule to carry into any new method: if success does not change a value,
  * affected() cannot tell you whether it happened.
  *
+ * COUNTED AND UNCOUNTED WRITES. A write whose count decides something goes
+ * through exec() and reads affected() in the SAME function, straight after. A
+ * write nobody counts goes through execNoCount(), which over the framework
+ * saves the ROW_COUNT() round trip - half the traffic of a busy batch. After
+ * an uncounted write affected() throws, and the order lint in
+ * tests/scan_moduledb_php.php fails the build on any read that does not follow
+ * an exec() in its own function body.
+ *
  * All of this is exercised against MySQL 5.7/8.0 and MariaDB 10.5/10.11, under
  * the server default isolation and under READ COMMITTED, by tests/mysql/run.php.
  * The same class runs there as runs in REDCap; only ScanDb differs.
@@ -39,6 +47,12 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 final class SqlScanStore implements ScanStore
 {
+    /**
+     * Manifest rows per INSERT. Seven placeholders a row, so 3,500 a statement
+     * against MySQL's 65,535 - and small enough that a chunk is a short write.
+     */
+    const MANIFEST_CHUNK = 500;
+
     /** @var ScanDb */
     private $db;
 
@@ -112,7 +126,7 @@ final class SqlScanStore implements ScanStore
      */
     private function allocateSeq($pid)
     {
-        $this->db->exec('INSERT INTO ' . Schema::table('project_seq') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('project_seq') . '
             (project_id, next_seq) VALUES (?, LAST_INSERT_ID(1) + 1)
             ON DUPLICATE KEY UPDATE next_seq = LAST_INSERT_ID(next_seq) + 1', [(int) $pid]);
         $r = $this->db->select('SELECT LAST_INSERT_ID()', []);
@@ -222,7 +236,7 @@ final class SqlScanStore implements ScanStore
             $now, $now,
         ];
         try {
-            $this->db->exec($sql, $params);
+            $this->db->execNoCount($sql, $params);
         } catch (\Throwable $e) {
             // WHICH FAULT WAS IT? CONTENTION IS A FACT ABOUT THE TABLE, NOT
             // ABOUT THE ERROR.
@@ -363,15 +377,13 @@ final class SqlScanStore implements ScanStore
                 $ord++;
                 $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
                             isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
-                if (count($chunk) >= 500) {
-                    $this->insertRecords($t, $chunk);
-                    $added += $this->db->affected();
+                if (count($chunk) >= self::MANIFEST_CHUNK) {
+                    $added += $this->insertRecords($t, $chunk);
                     $chunk = [];
                 }
             }
             if ($chunk) {
-                $this->insertRecords($t, $chunk);
-                $added += $this->db->affected();
+                $added += $this->insertRecords($t, $chunk);
             }
             $this->db->commit();
             return $added;
@@ -408,7 +420,7 @@ final class SqlScanStore implements ScanStore
             // large project and then wedged before its first batch would carry
             // a NULL progress_at forever and be indistinguishable from one that
             // had never started.
-            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
                 SET manifest_total = ?, phase = ?, updated_at = ?, progress_at = ?
                 WHERE run_id = ?',
                 [$total, ScanPhase::SCANNING, self::now(), self::now(), $runId]);
@@ -420,6 +432,7 @@ final class SqlScanStore implements ScanStore
         }
     }
 
+    /** @return int how many of $rows were new to the manifest */
     private function insertRecords($table, array $rows)
     {
         $ph = implode(',', array_fill(0, count($rows), '(?,?,?,?,?,?,?)'));
@@ -440,6 +453,10 @@ final class SqlScanStore implements ScanStore
         $this->db->exec('INSERT INTO ' . $table . '
             (run_id, ordinal, record_id_bin, record_hash, dag_at_fence, state, updated_at)
             VALUES ' . $ph . ' ON DUPLICATE KEY UPDATE run_id = run_id', $flat);
+        // RETURNED HERE, not left for the caller to ask. The count belongs to the
+        // statement above, and a caller reading affected() a line later is one
+        // inserted write away from reading somebody else's number.
+        return $this->db->affected();
     }
 
     /**
@@ -523,12 +540,12 @@ final class SqlScanStore implements ScanStore
             // written and the state is not.
             if ($ords) {
                 $marks = implode(',', array_fill(0, count($ords), '?'));
-                $this->db->exec('UPDATE ' . Schema::table('scan_record') . '
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_record') . '
                     SET claim_owner = ?, claim_seq = ?, updated_at = ?
                     WHERE run_id = ? AND ordinal IN (' . $marks . ')',
                     array_merge([$owner, $token, self::now(), $runId], $ords));
             }
-            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
                 SET cursor_ordinal = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ?
                 WHERE run_id = ?',
                 [$to, $owner, self::inSeconds(300), self::now(), $runId]);
@@ -592,7 +609,7 @@ final class SqlScanStore implements ScanStore
                 // TAKING A STRAGGLER REPLACES ITS TOKEN. That single assignment
                 // is the takeover fence: whoever held the row before now
                 // matches nothing, and no other worker of this run is affected.
-                $this->db->exec('UPDATE ' . $t . '
+                $this->db->execNoCount('UPDATE ' . $t . '
                     SET state = ?, claim_owner = ?, claim_seq = ?, updated_at = ?
                     WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
                     array_merge([self::REC_CLAIMED, $owner, $token, self::now(), $runId],
@@ -809,7 +826,7 @@ final class SqlScanStore implements ScanStore
                 // generation_id, record_hash, active_slot) - and the reason
                 // three separate specifications were overruled about dropping
                 // it. Without the index it is 333 ms per batch instead of 1.7.
-                $this->db->exec('UPDATE ' . Schema::table('finding') . '
+                $this->db->execNoCount('UPDATE ' . Schema::table('finding') . '
                     SET active_slot = NULL, valid_to_seq = ?
                     WHERE project_id = ? AND generation_id = ? AND active_slot = 1
                       AND stage_epoch IS NULL
@@ -864,7 +881,7 @@ final class SqlScanStore implements ScanStore
             }
             $sql .= ' WHERE run_id = ?';
             $args[] = $runId;
-            $this->db->exec($sql, $args);
+            $this->db->execNoCount($sql, $args);
 
             $this->db->commit();
             return true;
@@ -958,7 +975,7 @@ final class SqlScanStore implements ScanStore
             if ($released) {
                 $low = min($released) - 1;
                 if ($low < (int) $r[0][1]) {
-                    $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                    $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
                         . ' SET cursor_ordinal = ?, updated_at = ?'
                         . ' WHERE run_id = ? AND lease_epoch = ?',
                         [$low, self::now(), $runId, $epoch]);
@@ -1105,7 +1122,7 @@ final class SqlScanStore implements ScanStore
 
     private function insertCandidate(array $c)
     {
-        $this->db->exec('INSERT INTO ' . Schema::table('unique_candidate') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('unique_candidate') . '
             (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
              record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -1202,7 +1219,7 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return false;
             }
-            $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
                 SET phase = ?, cursor_ordinal = ?, updated_at = ? WHERE run_id = ?',
                 // The cursor belongs to the phase that used it. Carrying it into
                 // catch-up would make the straggler sweep start part way through
@@ -1366,18 +1383,16 @@ final class SqlScanStore implements ScanStore
                 $ord++;
                 $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
                             isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
-                if (count($chunk) >= 500) {
-                    $this->insertRecords($t, $chunk);
-                    $added += $this->db->affected();
+                if (count($chunk) >= self::MANIFEST_CHUNK) {
+                    $added += $this->insertRecords($t, $chunk);
                     $chunk = [];
                 }
             }
             if ($chunk) {
-                $this->insertRecords($t, $chunk);
-                $added += $this->db->affected();
+                $added += $this->insertRecords($t, $chunk);
             }
             $c = $this->db->select('SELECT COUNT(*) FROM ' . $t . ' WHERE run_id = ?', [$runId]);
-            $this->db->exec('UPDATE ' . Schema::table('scan_run')
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
                 . ' SET manifest_total = ?, updated_at = ? WHERE run_id = ?',
                 [isset($c[0][0]) ? (int) $c[0][0] : 0, $now, $runId]);
             $this->db->commit();
@@ -1443,7 +1458,7 @@ final class SqlScanStore implements ScanStore
             // terminal state, so it is recounted rather than adjusted.
             $d = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
                 . ' WHERE run_id = ? AND state >= ?', [$runId, self::REC_DONE]);
-            $this->db->exec('UPDATE ' . Schema::table('scan_run')
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
                 . ' SET manifest_done = ?, updated_at = ? WHERE run_id = ?',
                 [isset($d[0][0]) ? (int) $d[0][0] : 0, self::now(), $runId]);
             $this->db->commit();
@@ -1520,7 +1535,7 @@ final class SqlScanStore implements ScanStore
 
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
-        $this->db->exec('INSERT INTO ' . Schema::table('scan_aggregate') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_aggregate') . '
             (run_id, kind, axis1, axis2, cnt, samples, blocks_coverage)
             VALUES (?,?,?,?,?,?,?)
             ON DUPLICATE KEY UPDATE cnt = cnt + VALUES(cnt),
@@ -1540,7 +1555,7 @@ final class SqlScanStore implements ScanStore
 
     public function audit($pid, $runId, $event, $actor, $detail)
     {
-        $this->db->exec('INSERT INTO ' . Schema::table('scan_audit') . '
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_audit') . '
             (project_id, run_id, event, actor, detail, created_at) VALUES (?,?,?,?,?,?)',
             [$pid, $runId, $event, $actor, $detail, self::now()]);
     }

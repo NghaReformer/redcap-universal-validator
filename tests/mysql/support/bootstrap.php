@@ -113,7 +113,8 @@ class Conn {
 
 /** ScanDb over the raw mysqli connection. */
 class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
-    private $c; private $aff = 0;
+    // -1 and not 0: nothing has been counted, and zero is an answer here.
+    private $c; private $aff = -1; private $uncounted = false;
     public function __construct($c) { $this->c = $c; }
     public function select($sql, array $params = []) {
         if (!$params) {
@@ -129,6 +130,7 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
         return $out;
     }
     public function exec($sql, array $params = []) {
+        $this->uncounted = false;
         if (!$params) { $this->c->query($sql); $this->aff = $this->c->affected_rows; return; }
         $st = $this->c->prepare($sql);
         bindAll($st, array_values($params));
@@ -136,7 +138,24 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
         $this->aff = $st->affected_rows;
         $st->close();
     }
-    public function affected() { return $this->aff; }
+    // The same statement, and the count deliberately NOT read - so a store
+    // method that asks affected() after one fails here as it would in REDCap,
+    // rather than passing on a real server because mysqli happened to know.
+    public function execNoCount($sql, array $params = []) {
+        $this->aff = -1;
+        $this->uncounted = true;
+        if (!$params) { $this->c->query($sql); return; }
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $st->close();
+    }
+    public function affected() {
+        if ($this->uncounted) {
+            throw new \LogicException('affected() was asked about a write sent with execNoCount()');
+        }
+        return $this->aff;
+    }
     public function begin()    { $this->c->query('START TRANSACTION'); }
     public function commit()   { $this->c->query('COMMIT'); }
     public function rollback() { $this->c->query('ROLLBACK'); }
@@ -163,17 +182,25 @@ class MysqliDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
  * EXPLAIN of the captured statement proves the production one does.
  */
 class UvRecordingDb implements INSPIRE\UniversalValidator\Scan\ScanDb {
-    /** @var array list of [kind, sql, params] */
+    /**
+     * @var array list of [kind, sql, params, counted]. Both write verbs log as
+     *      'exec' so a statement-count assertion does not care which one the
+     *      store chose; `counted` is false for execNoCount(), true otherwise.
+     */
     public $log = [];
     private $inner;
     public function __construct(INSPIRE\UniversalValidator\Scan\ScanDb $inner) { $this->inner = $inner; }
     public function select($sql, array $params = []) {
-        $this->log[] = ['select', $sql, $params];
+        $this->log[] = ['select', $sql, $params, true];
         return $this->inner->select($sql, $params);
     }
     public function exec($sql, array $params = []) {
-        $this->log[] = ['exec', $sql, $params];
+        $this->log[] = ['exec', $sql, $params, true];
         $this->inner->exec($sql, $params);
+    }
+    public function execNoCount($sql, array $params = []) {
+        $this->log[] = ['exec', $sql, $params, false];
+        $this->inner->execNoCount($sql, $params);
     }
     public function affected() { return $this->inner->affected(); }
     public function begin()    { $this->inner->begin(); }

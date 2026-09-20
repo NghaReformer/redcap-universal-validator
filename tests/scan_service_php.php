@@ -199,6 +199,7 @@ namespace {
         }
 
         public function exec($sql, array $params = []) { return 0; }
+        public function execNoCount($sql, array $params = []) {}
         public function affected() { return 0; }
         public function begin() {}
         public function commit() {}

@@ -3,7 +3,7 @@
 namespace INSPIRE\UniversalValidator\Scan;
 
 /**
- * The four things SqlScanStore needs from a database, and nothing else.
+ * What SqlScanStore needs from a database, and nothing else.
  *
  * WHY NOT USE $module->query() DIRECTLY. Two reasons, and the second is the real
  * one. The framework's query() returns whatever mysqli handed it and exposes no
@@ -36,12 +36,35 @@ interface ScanDb
     public function exec($sql, array $params = []);
 
     /**
+     * Run a statement whose row count NOBODY READS.
+     *
+     * Most writes in this store are decided by whether they threw, not by how
+     * many rows they changed: an audit line, a counter bump, a supersede. Over
+     * the External Modules framework every counted write costs a second round
+     * trip to read ROW_COUNT(), so a write that discards the answer pays for a
+     * question it never asked. This is that write without the question.
+     *
+     * THE CONTRACT IS ABOUT WHAT affected() SAYS AFTERWARDS. It must throw, or
+     * answer -1. It must never answer 0, and never the count of an earlier
+     * exec(): zero means "you were fenced out" everywhere in this design, and a
+     * stale 1 means "you hold it". tests/scan_moduledb_php.php carries a lint
+     * that fails on any affected() read whose nearest preceding write in the
+     * same function is not an exec().
+     *
+     * @throws ScanStoreUnavailable when the statement failed.
+     */
+    public function execNoCount($sql, array $params = []);
+
+    /**
      * Rows changed by the last exec().
      *
      * THE LOAD-BEARING METHOD. Every fenced update in this design is written so
      * that zero here means "someone moved past me, discard everything". An
      * implementation that returns -1, or the matched-rather-than-changed count,
      * silently converts a rollback into a commit.
+     *
+     * After execNoCount() there is no count to give. Implementations throw
+     * \LogicException rather than hand back a number somebody might compare.
      */
     public function affected();
 
@@ -86,11 +109,21 @@ interface ScanDb
  * held has done nothing, and treating it as success would let two workers both
  * believe they advanced the cursor. The store's predicates are written so the
  * new value always differs from the old.
+ *
+ * WHAT execNoCount() SKIPS. The ROW_COUNT() read did a second job besides
+ * counting: it is -1 after a statement that failed, so it also caught a
+ * framework build that reports failure by neither throwing nor returning false.
+ * An uncounted write gives that up. It is used only where the framework's own
+ * throw-or-false is the whole answer the caller wanted, and never for the
+ * findings INSERT, whose silent shortfall would read as a clean project.
  */
 final class ModuleDb implements ScanDb
 {
     private $module;
-    private $affected = 0;
+    // -1, not 0. Nothing has been counted yet, and zero is an ANSWER in this
+    // design ("you were fenced out"). A fresh connection has no answer to give.
+    private $affected = -1;
+    private $uncounted = false;
 
     public function __construct($module)
     {
@@ -108,6 +141,7 @@ final class ModuleDb implements ScanDb
         // No statement of ours has been counted yet. If anything below throws,
         // affected() must not still be answering for the PREVIOUS write.
         $this->affected = -1;
+        $this->uncounted = false;
 
         $q = $this->module->query($sql, $params);
         if ($q === false) {
@@ -132,8 +166,29 @@ final class ModuleDb implements ScanDb
         $this->affected = $n;
     }
 
+    public function execNoCount($sql, array $params = [])
+    {
+        // Poisoned BEFORE the statement runs, for the same reason exec() does
+        // it: whatever happens next, affected() must not answer for an earlier
+        // write.
+        $this->affected = -1;
+        $this->uncounted = true;
+
+        $q = $this->module->query($sql, $params);
+        if ($q === false) {
+            throw new ScanStoreUnavailable('the database refused the statement');
+        }
+    }
+
     public function affected()
     {
+        if ($this->uncounted) {
+            // A caller comparing this to 1 would fail quietly and one adding it
+            // to a total would corrupt the total. Neither is a storage fault, so
+            // neither gets the operator sentence: this is a programming error.
+            throw new \LogicException('affected() was asked about a write sent with '
+                . 'execNoCount(); send it with exec() if the count matters');
+        }
         return $this->affected;
     }
 

@@ -72,6 +72,10 @@ class ScriptedDb implements ScanDb
 
     private $faults = [];      // list of [substring, occurrence, throwable]
     private $seen = [];        // substring => how many statements have matched it
+    /** @var bool the last write was sent with execNoCount() */
+    private $uncounted = false;
+    /** @var string the last write, for a subclass whose count depends on it */
+    protected $lastWrite = '';
 
     /**
      * Break the $nth statement containing $needle.
@@ -107,11 +111,28 @@ class ScriptedDb implements ScanDb
 
     public function exec($sql, array $params = [])
     {
+        $this->uncounted = false;
+        $this->lastWrite = $sql;
+        $this->fire($sql);
+    }
+
+    /**
+     * Through fire(), like exec(): a fault armed on a statement must still go
+     * off when the store stops counting that statement, or converting a call
+     * site would quietly disarm the test written for it.
+     */
+    public function execNoCount($sql, array $params = [])
+    {
+        $this->uncounted = true;
+        $this->lastWrite = $sql;
         $this->fire($sql);
     }
 
     public function affected()
     {
+        if ($this->uncounted) {
+            throw new \LogicException('affected() was asked about a write sent with execNoCount()');
+        }
         return $this->affectedNext;
     }
 
