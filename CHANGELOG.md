@@ -3,6 +3,17 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
+## Unreleased
+
+### Changed
+
+- **Validation scan, storage cost (remediation wave 6).** Findings are written in batches of up to 500 per statement instead of one statement each, which shortens the time a scan holds its run lock during a commit. Writes whose row count is never read no longer make a second database round trip to fetch it. The "is every record finished" check stops at the first unfinished record instead of counting all of them, and is pinned to the index that answers it.
+- The scan's memory budget now sizes each batch from the memory the previous batch needed at its peak, measured on real usage. Remaining headroom is still measured on PHP's allocated arena, which is what `memory_limit` applies to.
+
+### Verification
+
+- The database matrix (MySQL 5.7 and 8.0, MariaDB 10.5 and 10.11, default isolation and `READ COMMITTED`) asserts the statement count of a findings batch, that a duplicate finding in a later chunk still refuses the whole batch, and the query plan of the completeness check. Without the index hint, three of the four engines chose a plan that walks the whole manifest.
+
 ## 2.1.0-rc.1 — 2026-09-18
 
 **Release candidate: expanded validation and scan reliability.** This release combines case-insensitive conditions, validation across events and repeating instruments, dropdown/autocomplete choice filtering, and the merged scan-remediation work.

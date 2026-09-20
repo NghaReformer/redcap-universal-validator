@@ -927,3 +927,77 @@ What is NOT verified for this wave, and must be before the wave is called done:
 
 The uniqueness case's new block is written against the real harness and has never executed; treat it
 as unproven until it has.
+
+### W6-N1 — P11 as specified fails open, and "three calls per loop turn" is at most one
+
+The plan asked for `SELECT 1 ... LIMIT 1` with "no row" read as complete. No row is also what an
+unreadable answer looks like: `ModuleDb::rows()` returns `[]` for any result shape it does not
+recognise, so a broken read would have certified an unfinished run. The statement is
+`SELECT EXISTS(...)` instead, which always returns one row, and the existing guard
+`isset($r[0][0]) && (int) $r[0][0] === 0` keeps "no row" meaning "not complete".
+`tests/scan_sqlstore_fault_php.php` holds the fail-closed check.
+
+The hint is measured. With `FORCE INDEX (ix_run_state)` removed and 1,200 terminal rows, MySQL 5.7,
+MySQL 8.0 and MariaDB 10.11 chose `PRIMARY` and walked the manifest; only MariaDB 10.5 chose the
+state index. `tests/mysql/cases/store.php` asserts the plan on the statement the store sent, through
+the new `uv_explain_keys()` (an `EXISTS` puts the table on the second EXPLAIN row, so the existing
+first-row helper reads "No tables used").
+
+`ScanWorker::loop` reaches `manifestComplete()` at most once per turn, not three times: the
+catch-up call always leaves the turn, and the other two sit in a block only the scanning phase
+reaches, where the first is short-circuited. Call frequency was left alone. The saving is at the two
+cancel paths, where a count walked every pending row of an early-cancelled run.
+
+One divergence is pinned and deliberately not fixed: for a run id that does not exist the SQL store
+answers true and `ArrayScanStore` answers false. No production caller reaches it. **Schedule:** wave
+8, with the rest of store parity (M13).
+
+### W6-N2 — P5: `memory_limit` is enforced on the arena, and a raw peak delta spirals below PHP 8.2
+
+The plan said to stop measuring the arena. That is right for what a unit of work costs and wrong for
+how much room is left: PHP refuses an allocation when it would grow the arena past the limit, so
+headroom is an arena question. `mustStop()`, the `$room` arithmetic in `next()` and the 40% reserve
+are unchanged. Only the per-unit cost moved to `memory_get_usage(false)`.
+
+The plan also asked for a "peak delta". `memory_reset_peak_usage()` exists from PHP 8.2 and the
+floor is 7.4, where the peak is a request-wide high-water mark. `peak_after - used_before` is then a
+constant gap, and dividing a constant by a shrinking batch raises the cost per record, which shrinks
+the batch again, down to one record at a time with the message "the records in this project are
+large enough that they are being examined one at a time". `WorkBudget::observe()` believes the peak
+only when the batch moved it, keeps the last figure measured that way as a floor for the request,
+and drops that floor when the kind of unit changes (records, groups, rows, changes). On 8.2+ the
+default probe restarts the peak per batch and the figure is exact.
+
+### W6-N3 — P2 converts 27 of the 39 uncounted writes, and the findings INSERT stays counted
+
+Converted: 15 in `SqlScanStore`, 12 in `UniqueFinalizer`. One more, `insertFinding`, was replaced by
+M9 and is deliberately COUNTED: it is the write whose silent shortfall reads as a cleaner project,
+so `insertFindings()` refuses the batch unless `affected()` equals the rows it sent. That costs one
+extra round trip per 500 findings.
+
+Left for their owners:
+
+| site | why | owner |
+|---|---|---|
+| 8 statements in `ScanRetention.php` | paging them needs the count to know whether more remains | wave 8 (P6) |
+| `WorkerSlots.php` provisioning INSERT | its `$added++` counts attempts, not rows; the fix reads the count | wave 8 |
+| 2 statements in `UniversalValidator::surveyRateLimited` | the file was under edit by another session during this wave | follow-up commit on this branch |
+
+After `execNoCount()` the three real `ScanDb` implementations throw `\LogicException` from
+`affected()` instead of returning -1, because a `=== 1` fence would fail quietly on -1 and a `+=`
+site would corrupt its total. `SqlScanStore::insertRecords()` now returns its own count so that every
+`affected()` read sits in the function that issued the `exec()`, and an order lint in
+`tests/scan_moduledb_php.php` fails the build otherwise.
+
+`insertCandidate` is still one statement per candidate. Batching it is safe (it already uses
+`ON DUPLICATE KEY UPDATE`, the same shape as `discover()`), and it is a follow-up, not part of M9.
+
+### W6-N4 — the item's file list was short, and one key name was stale
+
+Adding a method to `ScanDb` touches every implementer, none of which the plan listed:
+`tests/mysql/support/bootstrap.php` (`MysqliDb`, `UvRecordingDb`), `tests/scan_fault_support.php`
+(`ScriptedDb`), `tests/scan_service_php.php` (`FakeSourceDb`) and the three `tools/temporal_*.php`
+probes. The work also touched `php/Scan/UniqueFinalizer.php`, `tests/scan_moduledb_php.php` and
+`tests/scan_sqlstore_fault_php.php`. `ArrayScanStore.php` and `DbError.php` were listed and needed no
+code change. The unique key the plan calls `uq_active_identity` is `uq_active_identity_v2` since the
+version-2 migration.
