@@ -772,6 +772,29 @@ namespace INSPIRE\UniversalValidator\Scan {
         $rm['used'] > 0 && $rm['peak'] >= $rm['used']
         && array_keys($ro) === ['claim', 'stop', 'why'] && $ro['claim'] >= 1);
 
+    // ON 8.2+ THE PEAK IS RESTARTED, AND THAT IS WHAT MAKES IT EXACT (review
+    // BU-5). Nothing pinned it: with the memory_reset_peak_usage() call taken
+    // out, every suite stayed green. Real memory, real probe: a 24 MiB block
+    // is allocated and freed, leaving a high-water mark far above what follows;
+    // then one unit allocates and frees 1 MiB between mark() and observe().
+    // Restarted, the peak says 1 MiB, and a reserve line 10 MiB above the
+    // arena holds about ten such units. Not restarted, the batch sits under the
+    // old mark and measures nothing, and the claim does not move from 25.
+    if (function_exists('memory_reset_peak_usage')) {
+        $junk = str_repeat('j', 24 * $MB);
+        unset($junk);
+        $lim = (int) ((memory_get_usage(true) + 10 * $MB) / (1.0 - WorkBudget::RESERVE)) + 1;
+        $rb = new WorkBudget(['mode' => 'cron', 'memoryLimit' => $lim, 'timeLimit' => null,
+            'min' => 1, 'max' => 500, 'first' => 25, 'startedAt' => microtime(true)]);
+        $rmk = $rb->mark('records');
+        $blob = str_repeat('b', $MB);
+        unset($blob);
+        $rro = $rb->observe($rmk, 1);
+        check('measure: on 8.2+ a unit under an old high-water mark is measured by a restarted peak',
+            $rro['claim'] >= 5 && $rro['claim'] <= 10
+            && strpos((string) $rro['why'], 'rather than the clock') !== false);
+    }
+
     // -- one claim, and one floor, per kind of unit (review BU-1) -------------
     //
     // The budget used to hold ONE claim for the whole request while it kept its
