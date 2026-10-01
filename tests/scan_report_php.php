@@ -166,7 +166,8 @@ namespace {
 
     function mapper(array $over = []) {
         return new FindingRowMapper($over + ['pid' => PID, 'now' => NOW, 'valuesState' => 'raw',
-                                             'readerCeiling' => 'raw', 'identifiers' => []]);
+                                             'readerCeiling' => 'raw', 'identifiers' => [],
+                                             'recordIds' => 'raw']);
     }
 
     /** A ScanDimensions filled by hand, the way wave 11 will fill one from a snapshot. */
@@ -439,6 +440,16 @@ namespace {
 
         check('record ids: hashed with no hasher refuses to build',
             throws('InvalidArgumentException', function () { mapper(['recordIds' => 'hashed']); }));
+        // RP-2. Every other disclosure input fails closed; this one defaulted to
+        // raw, the most disclosing posture, so a caller that forgot it on a
+        // log-values=none project got raw ids and no exception.
+        check('record ids: no posture given refuses to build, rather than show raw ids',
+            throws('InvalidArgumentException', function () {
+                new FindingRowMapper(['pid' => PID, 'now' => NOW, 'valuesState' => 'raw',
+                                      'readerCeiling' => 'raw', 'identifiers' => []]);
+            }));
+        check('record ids: a NULL posture is no posture',
+            throws('InvalidArgumentException', function () { mapper(['recordIds' => null]); }));
         check('record ids: there is no third posture',
             throws('InvalidArgumentException', function () { mapper(['recordIds' => 'masked']); }));
         $calls = 0;

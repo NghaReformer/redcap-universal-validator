@@ -83,7 +83,8 @@ final class FindingRowMapper
      *                 compares it. There is no default: a mapper that reads a
      *                 clock is not pure, and one that guesses can show a value
      *                 the policy says has expired.
-     *   recordIds     'raw' (default) or 'hashed'.
+     *   recordIds     'raw' or 'hashed', required. No default: the only one
+     *                 that needs nothing else is raw, the most disclosing.
      *   hashRecordId  callable(string $id): ?string. REQUIRED when hashed. It is
      *                 INJECTED because the formula belongs to the audit log
      *                 (hash_hmac over the id, keyed by the module key and the
@@ -106,7 +107,16 @@ final class FindingRowMapper
             throw new \InvalidArgumentException('a finding mapper needs the time as Y-m-d H:i:s; '
                 . 'without it an expired value cannot be told from a kept one');
         }
-        $ids = isset($opts['recordIds']) ? (string) $opts['recordIds'] : self::IDS_RAW;
+        // REQUIRED, like the clock. This defaulted to raw - the most disclosing
+        // posture, beside a readerCeiling, valuesState and identifiers that all
+        // fail closed - so a caller that forgot it on a log-values=none project
+        // got the raw ids and no exception. There is no safe default to pick
+        // instead: hashed needs a hasher the caller has to supply anyway.
+        if (!isset($opts['recordIds'])) {
+            throw new \InvalidArgumentException('a finding mapper needs the record-id posture, raw or hashed; '
+                . 'there is no default, because the only one that needs nothing else is raw');
+        }
+        $ids = (string) $opts['recordIds'];
         if ($ids !== self::IDS_RAW && $ids !== self::IDS_HASHED) {
             throw new \InvalidArgumentException('record ids are shown raw or hashed; there is no "' . $ids . '"');
         }
