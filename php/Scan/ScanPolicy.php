@@ -37,6 +37,21 @@ final class ScanPolicy
     const D_MAX_PROJECTS    = 2;
     const D_STALE_HOURS     = 24;
     const D_RECORD_ATTEMPTS = 3;
+    /**
+     * The most attempts a record may be given, because it is the most the store
+     * can count.
+     *
+     * scan_record.attempts is a TINYINT UNSIGNED and both stores saturate it at
+     * 254 (LEAST(attempts + 1, 254)). ScanWorker ends a record when
+     * `$tries + 1 >= $maxAttempts`, so with the setting at 256 or more that is
+     * never true: a record the read keeps leaving out is requeued for ever,
+     * never reaches UNREADABLE or TOMBSTONE, and every pass reports
+     * `requeued > 0` - which js/scan.js reads as progress and re-issues at 0 ms.
+     * The setting had no upper bound. 254 rather than 255, which would also be
+     * reached, so the cap sits where the counter visibly stops and does not
+     * depend on the worker's comparison being off by exactly one.
+     */
+    const MAX_RECORD_ATTEMPTS = 254;
 
     /** Value modes, least disclosing first. Order is the safety ordering. */
     private static $modes = ['locations', 'identifier-redacted', 'raw'];
@@ -70,8 +85,12 @@ final class ScanPolicy
                                 ? $system['scan-system-max-concurrent-projects'] : null, self::D_MAX_PROJECTS),
             'staleHours'     => self::posInt(isset($system['scan-system-stale-run-hours'])
                                 ? $system['scan-system-stale-run-hours'] : null, self::D_STALE_HOURS),
-            'recordAttempts' => self::posInt(isset($system['scan-system-record-attempts'])
-                                ? $system['scan-system-record-attempts'] : null, self::D_RECORD_ATTEMPTS),
+            // Clamped, not merely parsed - see MAX_RECORD_ATTEMPTS. posInt()
+            // already turns zero, negatives and junk into the default, so the
+            // floor of 1 is its; the ceiling is the counter's.
+            'recordAttempts' => min(self::MAX_RECORD_ATTEMPTS,
+                                self::posInt(isset($system['scan-system-record-attempts'])
+                                ? $system['scan-system-record-attempts'] : null, self::D_RECORD_ATTEMPTS)),
             // WHAT IS TRUE, which is that nothing detects a collection gap. This
             // said 'separate' - gaps reported apart from violations - for as long
             // as the file has existed, and no gap detector has ever shipped: the

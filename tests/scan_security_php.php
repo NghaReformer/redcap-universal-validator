@@ -604,6 +604,25 @@ namespace INSPIRE\UniversalValidator\Scan {
             check('policy: malformed retention falls back to the default, not to forever',
                 $r['valueDays'] === 30);
         }
+        // CL-6. The attempt counter saturates at 254 in both stores, and the
+        // worker ends a record when tries + 1 >= the setting - so a setting of
+        // 256 or more is never reached and a record the read leaves out is
+        // requeued for ever. The policy is where that number is decided.
+        $att = function ($raw) {
+            return ScanPolicy::resolve(['scan-system-record-attempts' => $raw], [])['recordAttempts'];
+        };
+        check('policy: record attempts up to the counter\'s ceiling are taken as given',
+            $att('254') === 254 && $att(254) === 254 && $att('5') === 5 && $att(1) === 1);
+        check('policy: and anything past it is held at the ceiling, where the counter stops',
+            $att('255') === ScanPolicy::MAX_RECORD_ATTEMPTS && $att('300') === 254
+            && $att(300) === 254 && $att('99999999999') === 254);
+        check('policy: the ceiling is the 254 both stores saturate at',
+            ScanPolicy::MAX_RECORD_ATTEMPTS === 254);
+        foreach (['0', 0, '-5', -5, 'abc', '', null, '3.5', []] as $junk) {
+            check('policy: malformed record attempts fall back to the default, never 0 or below',
+                $att($junk) === ScanPolicy::D_RECORD_ATTEMPTS);
+        }
+
         foreach (['', 'wat', null, 'RAW'] as $junk) {
             check('policy: an unrecognised value mode discloses nothing',
                 ScanPolicy::resolve([], ['scan-value-storage' => $junk])['valueMode'] === 'locations');

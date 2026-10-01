@@ -55,6 +55,20 @@ namespace {
     }
 
     /**
+     * A uniqueness phase with nothing to decide. The worker refuses to pass the
+     * phase without a finalizer at all, and the real one needs a database; the
+     * runs below are about what happens to records, not to duplicate groups.
+     */
+    class SvcNoDuplicates implements \INSPIRE\UniversalValidator\Scan\DuplicateFinalizer
+    {
+        public function step($generationId, $limit = 500)
+        {
+            return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'why' => null];
+        }
+    }
+
+    /**
      * A module with settings and, optionally, a database.
      *
      * No query() at all is a real REDCap build: the framework has not always
@@ -565,6 +579,55 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('stall: the threshold is a sentence on a page, so it is in neither the policy nor the fingerprint',
         !array_key_exists('stallSeconds', ScanPolicy::resolve([], []))
         && ScanService::STALL_SECONDS === 120);
+}
+
+/* =====================================================================
+ * CL-6  THE LARGEST ATTEMPT SETTING STILL ENDS A RECORD
+ *
+ * The attempt counter saturates at 254 and the worker ends a record when
+ * tries + 1 >= the setting, so `scan-system-record-attempts` = 300 made that
+ * comparison false for ever: a record the read leaves out was requeued on every
+ * pass, reported `requeued > 0`, and the browser read that as progress and asked
+ * again at 0 ms. The policy is clamped; this drives the real worker under the
+ * policy the setting resolves to, one record per pass, and asks that the record
+ * that is gone from the project gets an ending.
+ * ===================================================================== */
+{
+    $policy = ScanPolicy::resolve(['scan-system-record-attempts' => '300'], []);
+    $store = new ArrayScanStore();
+    $runId = (int) $store->startRun(800, ['created_by' => 'alice'])['run']['run_id'];
+    $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true)],
+                                   ['id_bin' => 'GONE', 'hash' => hash('sha256', 'GONE', true)]]);
+    $read = function ($ids) {
+        $d = [];
+        foreach ($ids as $id) if ($id !== 'GONE') $d[$id] = ['1' => ['x' => 'v']];
+        return ['ok' => true, 'data' => $d, 'why' => null];
+    };
+    $passes = 0;
+    $states = [];
+    while ($passes < 400) {
+        $passes++;
+        $w = new ScanWorker($store, [
+            'read' => $read, 'attempts' => $policy['recordAttempts'], 'owner' => 'w1',
+            'evaluate' => function ($id, $node) {
+                return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+            },
+            'finalizer' => new \SvcNoDuplicates(),
+            'exists' => function (array $ids) { return array_fill_keys($ids, false); },
+            'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => null,
+                'timeLimit' => null, 'min' => 1, 'max' => 1, 'first' => 1,
+                'startedAt' => microtime(true) - 2.8])]);
+        $res = $w->work(800, $runId);
+        $states = $store->recordStates($runId);
+        if (!empty($res['done'])) break;
+    }
+    check('CL-6: an attempt setting past the counter is held at the counter\'s ceiling',
+        $policy['recordAttempts'] === 254);
+    check('CL-6: and under it a record the project no longer holds reaches an ending',
+        isset($states[ScanStore::REC_TOMBSTONE]) && (int) $states[ScanStore::REC_TOMBSTONE] === 1
+        && empty($states[ScanStore::REC_PENDING]) && empty($states[ScanStore::REC_CLAIMED]));
+    check('CL-6: in a bounded number of passes, not by running out of test',
+        $passes < 400);
 }
 }
 
