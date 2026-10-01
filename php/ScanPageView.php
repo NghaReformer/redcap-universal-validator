@@ -308,6 +308,26 @@ class ScanPageView
                   . 'to check the External Modules log.';
 
     /**
+     * Shown to somebody watching a run that NOBODY is working on (review CL-2).
+     *
+     * Only an open page drives a scan, and this page says closing it is safe -
+     * so a quiet run with no worker is paused, not broken. It used to get
+     * STALLED, which told the reader to stop it and start a new one, beside
+     * the Continue button that was the right answer.
+     */
+    const PAUSED = 'This scan is paused: nothing has worked on it for {minutes} minutes, which is '
+                 . 'what happens when the page that was running it is closed. Nothing has been '
+                 . 'lost. Press Continue to carry on from where it stopped.';
+
+    /**
+     * Shown while a run sits in `cancelling`. Only a later work request
+     * finishes a stop, so nothing will move it until somebody asks - and it is
+     * never stalled, whatever its clock says.
+     */
+    const STOPPING = 'This scan was asked to stop and has not finished stopping. Press Continue to '
+                   . 'finish stopping it.';
+
+    /**
      * The progress line, in the three parts it can have. The first stands alone
      * whenever nothing was excluded or removed, which is nearly always - and the
      * line is then exactly what it was before these existed.
@@ -337,6 +357,8 @@ class ScanPageView
             'coverageUnknown' => self::COVERAGE_UNKNOWN,
             'truncated'       => self::DETAIL_TRUNCATED,
             'stalled'         => self::STALLED,
+            'paused'          => self::PAUSED,
+            'stopping'        => self::STOPPING,
             'plain'           => self::COUNT_PLAIN,
             'checked'         => self::COUNT_CHECKED,
             'excluded'        => self::COUNT_EXCLUDED,
@@ -404,15 +426,29 @@ class ScanPageView
         return $line . ($pct === null ? '' : '  (' . $pct . '%)');
     }
 
-    /** The stalled sentence for this status, or null when it should not be shown. */
+    /**
+     * The sentence for somebody watching a run that is not moving, or null.
+     *
+     * Named for the node it fills (uv-scan-stalled). STOPPING, STALLED or
+     * PAUSED, in that order, each only when the server said so: the decision is
+     * ScanService::progressOf()'s, and this only words it.
+     */
     public static function stalledText($status)
     {
-        if (!is_array($status) || empty($status['ok']) || empty($status['stalled'])
+        if (!is_array($status) || empty($status['ok'])
                 || empty($status['active']) || !empty($status['terminal'])) {
             return null;
         }
+        if (!empty($status['stopping'])) return self::STOPPING;
+        if (!empty($status['stalled'])) {
+            $tpl = self::STALLED;
+        } elseif (!empty($status['paused'])) {
+            $tpl = self::PAUSED;
+        } else {
+            return null;
+        }
         $idle = isset($status['idleSeconds']) ? (int) $status['idleSeconds'] : 0;
-        return str_replace('{minutes}', (string) max(1, (int) floor($idle / 60)), self::STALLED);
+        return str_replace('{minutes}', (string) max(1, (int) floor($idle / 60)), $tpl);
     }
 
     /**

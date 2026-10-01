@@ -361,6 +361,12 @@ final class ScanService
                                            $ent['unknown']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
+        // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
+        // unless the row already carries it. See progressOf() for why a quiet
+        // run needs it before it may be called stalled.
+        if (!array_key_exists('lease_expires_at', $run)) {
+            $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
+        }
         $progress = self::progressOf($run, $store->recordStates($runId), time());
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
@@ -385,6 +391,8 @@ final class ScanService
             'removed'   => $progress['removed'],
             'settled'   => $progress['settled'],
             'stalled'   => $progress['stalled'],
+            'paused'    => $progress['paused'],
+            'stopping'  => $progress['stopping'],
             'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run),
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
@@ -437,10 +445,42 @@ final class ScanService
      * records". Only an active run can be stalled: a finished one is not going
      * anywhere on purpose.
      *
-     * @param array $run    a ScanStore::run() row
+     * A QUIET RUN IS NOT A STALLED ONE (review CL-2). Only an open tab drives a
+     * scan, the page attaches without resuming and tells people closing the tab
+     * is safe - so a run nobody is driving is the ordinary state of a PAUSED
+     * run. It was called stalled two minutes after the tab closed, with the
+     * sentence "stop it and start a new one" beside the Continue button that
+     * was the right answer. Three readings of a quiet run now, and only one is
+     * the alarm:
+     *
+     *   stalled   a worker is there and nothing finishes. The only proof of a
+     *             worker the row carries is the lease claim() takes, and claim()
+     *             writes `lease_expires_at` and `updated_at` together. A live
+     *             lease ALONE is not that proof: it outlives the request that
+     *             took it by five minutes (SqlScanStore::claim), so a tab closed
+     *             three minutes ago still "holds" it. So the lease must be live
+     *             AND taken within the threshold. Nothing outside scanning
+     *             renews a lease, so only scanning can be stalled.
+     *   paused    nobody is working it. Press Continue. In the three finishing
+     *             phases a quiet run cannot be told from an abandoned one, and
+     *             this is the reading that sends somebody to Continue rather
+     *             than to throw the run away.
+     *   stopping  Stop was pressed and nothing has finished it, which only a
+     *             later work request does. Never stalled: it is waiting for
+     *             exactly that request.
+     *
+     * A run still PLANNING is none of them (review CL-3). Planning is one
+     * synchronous request inside start(), progress_at stays NULL until the
+     * manifest freezes, and the clock was therefore created_at: a long listing
+     * read as stalled while appendManifest() was busy writing. Nothing a reader
+     * can press would help it, so nothing is said.
+     *
+     * @param array $run    a ScanStore::run() row, plus `lease_expires_at` when
+     *                      the caller has it; absent or unreadable is no lease
      * @param array $states ScanStore::recordStates(): state => count
      * @param int   $now    unix time
-     * @return array{done:int, excluded:int, removed:int, settled:int, stalled:bool, idleSeconds:int}
+     * @return array{done:int, excluded:int, removed:int, settled:int, stalled:bool,
+     *               paused:bool, stopping:bool, idleSeconds:int}
      */
     public static function progressOf(array $run, array $states, $now, $stallSeconds = self::STALL_SECONDS)
     {
@@ -470,11 +510,46 @@ final class ScanService
         // alarming reading of it.
         $idle = $clock === null ? 0 : max(0, (int) $now - $clock);
         $active = ScanPhase::isActive($phase) && empty($run['terminal']);
+        $threshold = max(1, (int) $stallSeconds);
+
+        $stopping = $active && $phase === ScanPhase::CANCELLING;
+        $quiet = $active && !$stopping && $phase !== ScanPhase::PLANNING
+                 && $clock !== null && $idle >= $threshold;
+        // An unreadable lease is no lease, and an unreadable touch is no touch:
+        // both fail toward `paused`, the reading that does not tell anybody to
+        // throw the run away.
+        $lease = $at('lease_expires_at');
+        $touched = $at('updated_at');
+        $driven = $phase === ScanPhase::SCANNING
+                  && $lease !== null && $lease > (int) $now
+                  && $touched !== null && ((int) $now - $touched) < $threshold;
 
         return ['done' => $done, 'excluded' => $excluded, 'removed' => $removed,
                 'settled' => $done + $excluded + $removed,
-                'stalled' => $active && $clock !== null && $idle >= max(1, (int) $stallSeconds),
+                'stalled' => $quiet && $driven,
+                'paused' => $quiet && !$driven,
+                'stopping' => $stopping,
                 'idleSeconds' => $idle];
+    }
+
+    /**
+     * When the run's worker lease runs out, or null when there is none or it
+     * cannot be read.
+     *
+     * NULL FAILS TOWARD `paused`. A lease that cannot be read is treated as no
+     * lease, so a read failure here can never make a run look stalled.
+     *
+     * @return ?string a UTC DATETIME as the store wrote it
+     */
+    private function leaseOf($pid, $runId)
+    {
+        try {
+            $r = $this->db->select('SELECT lease_expires_at FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? AND project_id = ?', [$runId, $pid]);
+            return (isset($r[0][0]) && is_string($r[0][0]) && $r[0][0] !== '') ? $r[0][0] : null;
+        } catch (\Throwable $e) {
+            return null;
+        }
     }
 
     /** Ask a run to stop. The epoch bump is what makes it beat a working worker. */

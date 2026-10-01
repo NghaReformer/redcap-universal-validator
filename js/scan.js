@@ -336,12 +336,26 @@
         // that a pass made no progress from the pass itself and says so in the
         // note; showing both would be two sentences about one fact. Revealed
         // before it is written, for the reason the completion sentence is.
+        //
+        // THREE SENTENCES, AND ONLY ONE IS THE ALARM (review CL-2). The server
+        // decides which: `stopping` for a run Stop was pressed on, `stalled`
+        // for a run a worker holds while nothing finishes, `paused` for a run
+        // nobody is working. Paused used to arrive as stalled, so a run left by
+        // a closed tab - the ordinary way to leave one - told the next reader
+        // to stop it and start again, beside the Continue button that was the
+        // right answer. ScanPageView::stalledText() picks in the same order.
         var stalledNode = el('uv-scan-stalled');
         if (stalledNode) {
-            if (!st.terminal && st.active && st.stalled && !UV.state.running) {
+            var L2 = labels(), quiet = null;
+            if (!st.terminal && st.active && !UV.state.running) {
+                if (st.stopping) quiet = L2.stopping || '';
+                else if (st.stalled) quiet = L2.stalled || '';
+                else if (st.paused) quiet = L2.paused || '';
+            }
+            if (quiet) {
                 var mins = Math.max(1, Math.floor((st.idleSeconds | 0) / 60));
                 stalledNode.style.display = '';
-                text(stalledNode, fill(labels().stalled || '', { minutes: mins }));
+                text(stalledNode, fill(quiet, { minutes: mins }));
             } else {
                 stalledNode.style.display = 'none';
                 text(stalledNode, '');

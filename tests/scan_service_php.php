@@ -530,27 +530,72 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScanService::progressOf($row([]), [], $NOW)['settled'] === 0);
 
     check('stall: a run that finished a record ten seconds ago is not stalled',
-        $p['stalled'] === false && $p['idleSeconds'] === 10);
-    $s = ScanService::progressOf($row(['progress_at' => $ago(500)]), $census, $NOW);
-    check('stall: one that has finished nothing for longer than the threshold is',
-        $s['stalled'] === true && $s['idleSeconds'] === 500);
+        $p['stalled'] === false && $p['paused'] === false && $p['idleSeconds'] === 10);
+    // A worker holds the run: claim() took the lease a second ago, as it does
+    // on every pass of a tab that is driving it.
+    $held = function ($s) use ($NOW) { return gmdate('Y-m-d H:i:s', $NOW + $s); };
+    $s = ScanService::progressOf($row(['progress_at' => $ago(500), 'lease_expires_at' => $held(299)]),
+        $census, $NOW);
+    check('stall: one a worker holds that has finished nothing for longer than the threshold is',
+        $s['stalled'] === true && $s['paused'] === false && $s['idleSeconds'] === 500);
     // THE WEDGE. claim() refreshes updated_at on a run whose every batch is
     // being refused, which is exactly the run a watcher needs to be told about.
     check('stall: in scanning, a fresh updated_at does NOT hide it',
-        ScanService::progressOf($row(['progress_at' => $ago(500), 'updated_at' => $ago(1)]),
-            $census, $NOW)['stalled'] === true);
+        ScanService::progressOf($row(['progress_at' => $ago(500), 'updated_at' => $ago(1),
+            'lease_expires_at' => $held(299)]), $census, $NOW)['stalled'] === true);
     // The other three phases never move progress_at, so their cursor writes are
     // the only clock there is.
     foreach (ScanService::PHASES_ON_THE_UPDATE_CLOCK as $ph) {
         $busy = ScanService::progressOf($row(['phase' => $ph, 'progress_at' => $ago(5000),
             'updated_at' => $ago(3)]), $census, $NOW);
         check("stall: in $ph a moving cursor is progress", $busy['stalled'] === false
-            && $busy['idleSeconds'] === 3);
+            && $busy['paused'] === false && $busy['idleSeconds'] === 3);
+        // NOTHING IN THIS PHASE RENEWS A LEASE, so a cursor that has stopped
+        // cannot be told from a run nobody is driving - and it is given the
+        // reading that sends somebody to Continue, even with a lease left over
+        // from scanning.
         $stuck = ScanService::progressOf($row(['phase' => $ph, 'progress_at' => $ago(5000),
-            'updated_at' => $ago(4000)]), $census, $NOW);
-        check("stall: and in $ph a cursor that has stopped is a stall",
-            $stuck['stalled'] === true && $stuck['idleSeconds'] === 4000);
+            'updated_at' => $ago(4000), 'lease_expires_at' => $held(60)]), $census, $NOW);
+        check("stall: and in $ph a cursor that has stopped is PAUSED, not stalled",
+            $stuck['paused'] === true && $stuck['stalled'] === false && $stuck['idleSeconds'] === 4000);
     }
+
+    // CL-2. A RUN NOBODY IS DRIVING IS PAUSED. Only an open tab works a scan,
+    // and the page says closing it is safe; the run that tab leaves behind was
+    // called stalled two minutes later, and the page told its next reader to
+    // stop it and start a new one.
+    $closed = ScanService::progressOf($row(['progress_at' => $ago(600), 'updated_at' => $ago(600)]),
+        $census, $NOW);
+    check('CL-2: a run whose tab was closed ten minutes ago, with no lease, is paused - not stalled',
+        $closed['paused'] === true && $closed['stalled'] === false && $closed['idleSeconds'] === 600);
+    check('CL-2: and so is one whose lease ran out',
+        ScanService::progressOf($row(['progress_at' => $ago(600), 'updated_at' => $ago(1),
+            'lease_expires_at' => $ago(5)]), $census, $NOW)['paused'] === true);
+    // A LEASE OUTLIVES ITS REQUEST by five minutes. The tab closed three
+    // minutes ago: its lease is still "live", and nobody has touched the run
+    // since. That is the closed tab, not the wedge.
+    $leftover = ScanService::progressOf($row(['progress_at' => $ago(180), 'updated_at' => $ago(180),
+        'lease_expires_at' => $held(120)]), $census, $NOW);
+    check('CL-2: a lease left by a tab closed three minutes ago does not make the run stalled',
+        $leftover['paused'] === true && $leftover['stalled'] === false);
+    check('CL-2: an unreadable lease is no lease, so it can never make a run look stalled',
+        ScanService::progressOf($row(['progress_at' => $ago(600), 'lease_expires_at' => 'not a date']),
+            $census, $NOW)['stalled'] === false);
+    // A STOPPED RUN sits in `cancelling` until a later request finishes it.
+    $stop = ScanService::progressOf($row(['phase' => ScanPhase::CANCELLING,
+        'progress_at' => $ago(9000), 'updated_at' => $ago(1), 'lease_expires_at' => $held(299)]),
+        $census, $NOW);
+    check('CL-2: a run that was asked to stop is stopping - never stalled, never paused',
+        $stop['stopping'] === true && $stop['stalled'] === false && $stop['paused'] === false);
+    check('CL-2: and a run that was not asked to stop is not stopping',
+        $closed['stopping'] === false && $s['stopping'] === false);
+    // CL-3. PLANNING is one synchronous request inside start(), timed from
+    // created_at because progress_at stays NULL until the manifest freezes.
+    $plan = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+        'created_at' => $ago(150), 'updated_at' => $ago(1), 'progress_at' => null,
+        'lease_expires_at' => $held(299)], [ScanStore::REC_PENDING => 400000], $NOW);
+    check('CL-3: a run still listing its records for two and a half minutes is not stalled',
+        $plan['stalled'] === false && $plan['paused'] === false && $plan['stopping'] === false);
     check('stall: the list of those phases is the three finishing ones, and not scanning',
         count(ScanService::PHASES_ON_THE_UPDATE_CLOCK) === 3
         && !in_array(ScanPhase::SCANNING, ScanService::PHASES_ON_THE_UPDATE_CLOCK, true));
@@ -564,8 +609,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScanService::progressOf(['phase' => ScanPhase::SCANNING, 'terminal' => null,
             'created_at' => 'not a date'], $census, $NOW) ['stalled'] === false);
     check('stall: the threshold is the caller\'s to tighten',
-        ScanService::progressOf($row([]), $census, $NOW, 5)['stalled'] === true
-        && ScanService::progressOf($row([]), $census, $NOW, 11)['stalled'] === false);
+        ScanService::progressOf($row(['lease_expires_at' => $held(299)]), $census, $NOW, 5)['stalled'] === true
+        && ScanService::progressOf($row(['lease_expires_at' => $held(299)]), $census, $NOW, 11)['stalled'] === false
+        && ScanService::progressOf($row([]), $census, $NOW, 5)['paused'] === true);
     // UTC IN, UTC OUT. The store stamps gmdate(); read back in a server zone
     // east of Greenwich, every run would look hours idle.
     $tz = date_default_timezone_get();

@@ -112,8 +112,17 @@ namespace ExternalModules {
         public $projectGroups = [];
         public $runRow = null;
         public $recordStates = [];
+        /**
+         * When the run's worker lease runs out. Not a run column, so status()
+         * asks for it on its own - and a quiet run is only STALLED while a
+         * worker holds it (review CL-2). Null is no lease: a paused run.
+         */
+        public $leaseExpires = null;
         public function query($sql, $params = []) {
             if (!$this->fenced) return null;
+            if (strpos($sql, 'SELECT lease_expires_at FROM') !== false) {
+                return new \ExternalModules\FakeRes($this->runRow === null ? [] : [[$this->leaseExpires]]);
+            }
             if (strpos($sql, 'uv_scan_run') !== false) {
                 if (strpos($sql, 'active_slot = 1') !== false) {
                     return new \ExternalModules\FakeRes($this->activeRunId === null
@@ -382,6 +391,7 @@ namespace {
         $m->projectGroups = isset($opts['groups']) ? $opts['groups'] : [];
         $m->runRow = isset($opts['runRow']) ? $opts['runRow'] : null;
         $m->recordStates = isset($opts['recordStates']) ? $opts['recordStates'] : [];
+        $m->leaseExpires = isset($opts['lease']) ? $opts['lease'] : null;
         \REDCap::$dictionary = $dict;
         \REDCap::$data = $data;
         // Every per-scenario switch is reset HERE and set from $opts, never by the
@@ -1509,12 +1519,43 @@ namespace {
         // progress clock decides whether the watcher is told anything.
         check('PANEL: a run that is moving carries the stalled node hidden and empty',
             preg_match('/<p id="uv-scan-stalled"[^>]*style="display:none;[^"]*"><\/p>/', $live) === 1);
-        $STALE = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900)] + $LIVE);
+        // A worker holds it - claim() took the lease a second ago and moved
+        // updated_at - and nothing has finished for fifteen minutes: the wedge.
+        $STALE = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+                             'updated_at' => gmdate('Y-m-d H:i:s', time() - 1)] + $LIVE);
         list($stale, ) = render($U(), $D, $data, [], $on([
-            'activeRun' => 55, 'runRow' => $STALE, 'recordStates' => [['100', '3'], ['0', '7']]]));
-        check('PANEL: a run that has finished nothing for fifteen minutes says so before any script runs',
+            'activeRun' => 55, 'runRow' => $STALE, 'recordStates' => [['100', '3'], ['0', '7']],
+            'lease' => gmdate('Y-m-d H:i:s', time() + 299)]));
+        check('PANEL: a run a worker holds that has finished nothing for fifteen minutes says so',
             preg_match('/<p id="uv-scan-stalled"[^>]*style="margin-top[^"]*">No progress has been '
                      . 'recorded on this scan for 1[45] minutes\./', $stale) === 1);
+        // CL-2. The same quiet run with nobody working on it - the tab that
+        // drove it was closed, which this page tells people is safe - is
+        // PAUSED, and is told to press Continue rather than to start again.
+        $LEFT = uv_run_row(['progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+                            'updated_at' => gmdate('Y-m-d H:i:s', time() - 900)] + $LIVE);
+        list($left, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $LEFT, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a run nobody is working on is paused, and is told to press Continue',
+            preg_match('/<p id="uv-scan-stalled"[^>]*style="margin-top[^"]*">This scan is paused: '
+                     . 'nothing has worked on it for 1[45] minutes/', $left) === 1
+            && strpos($left, 'Press Continue to carry on') !== false);
+        // The node only: the page also prints every label into its script block.
+        $stalledP = function ($html) {
+            return preg_match('/<p id="uv-scan-stalled"[^>]*>([^<]*)<\/p>/', $html, $m) === 1
+                ? html_entity_decode($m[1], ENT_QUOTES) : null;
+        };
+        check('PANEL: and is NOT told to stop it and start a new one',
+            is_string($stalledP($left)) && strpos($stalledP($left), 'start a new one') === false);
+        // A RUN THAT WAS STOPPED sits in `cancelling` until a later request
+        // finishes it. It was called stalled too.
+        $STOPPED = uv_run_row(['phase' => 'cancelling',
+            'progress_at' => gmdate('Y-m-d H:i:s', time() - 900),
+            'cancel_requested_at' => gmdate('Y-m-d H:i:s', time() - 600)] + $LIVE);
+        list($stopped, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => $STOPPED, 'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL: a stopped run says it is stopping and how to finish, never that it stalled',
+            $stalledP($stopped) === \INSPIRE\UniversalValidator\ScanPageView::STOPPING);
         // And what it examined is not what merely settled: three done, two that
         // could not be stored, five still waiting.
         list($mixed, ) = render($U(), $D, $data, [], $on([
@@ -1809,6 +1850,22 @@ namespace {
         check('PREFILL: under two minutes still reads as a minute, never as zero',
             strpos($V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 5]))['stalled'],
                    'for 1 minutes') !== false);
+        // CL-2. Paused and stopping are the server's words for a quiet run that
+        // is NOT the alarm, and each gets its own sentence.
+        $pz = $V::panelPrefill($status(['paused' => true, 'idleSeconds' => 600]))['stalled'];
+        check('PREFILL: a paused run is said to be paused, for how long, and to press Continue',
+            is_string($pz) && strpos($pz, 'This scan is paused') === 0
+            && strpos($pz, 'for 10 minutes') !== false && strpos($pz, 'Press Continue') !== false
+            && strpos($pz, 'start a new one') === false);
+        check('PREFILL: a run being stopped says so, whatever else it was sent',
+            $V::panelPrefill($status(['stopping' => true, 'stalled' => true, 'paused' => true,
+                'phase' => 'cancelling', 'idleSeconds' => 9000]))['stalled'] === $V::STOPPING);
+        check('PREFILL: a stall outranks a pause when both arrive, because the server chose it',
+            strpos($V::panelPrefill($status(['stalled' => true, 'paused' => true,
+                'idleSeconds' => 300]))['stalled'], 'No progress has been recorded') === 0);
+        check('PREFILL: and a finished run is never paused or stopping either',
+            $V::panelPrefill($status(['paused' => true, 'stopping' => true, 'active' => false,
+                'phase' => 'terminal', 'terminal' => 'cancelled']))['stalled'] === null);
 
         // OC-2. THE STORED DECISION IS SAID. A run refused `clean` because a
         // rule could not be evaluated, with nothing found, rendered byte for
@@ -1858,7 +1915,8 @@ namespace {
         // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
         // the two: js/scan.js holds a fallback for each and no other copy.
         $L = $V::labels();
-        $sentences = ['stalled', 'plain', 'checked', 'excluded', 'removed', 'foundUnknown',
+        $sentences = ['stalled', 'paused', 'stopping', 'plain', 'checked', 'excluded', 'removed',
+                      'foundUnknown',
                       'notCertified', 'ruleProblem', 'ruleProblems'];
         $all = '';
         foreach ($sentences as $k) {

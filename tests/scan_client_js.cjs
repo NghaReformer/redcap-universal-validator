@@ -123,6 +123,11 @@ UV.labels = {
   stalled: 'No progress has been recorded on this scan for {minutes} minutes. If it does not move '
          + 'soon, stop it and start a new one, or ask your REDCap administrator to check the '
          + 'External Modules log.',
+  paused: 'This scan is paused: nothing has worked on it for {minutes} minutes, which is what '
+        + 'happens when the page that was running it is closed. Nothing has been lost. Press '
+        + 'Continue to carry on from where it stopped.',
+  stopping: 'This scan was asked to stop and has not finished stopping. Press Continue to finish '
+          + 'stopping it.',
   plain: '{done} of {total} records',
   checked: '{done} of {total} records checked',
   excluded: '{n} could not be checked',
@@ -671,6 +676,22 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await show(Object.assign(finished('partial'), { stalled: true, idleSeconds: 9000 }));
   check('stalled: a finished run is never stalled, whatever it is sent',
     els['uv-scan-stalled'].style.display === 'none');
+  // CL-2. A run nobody is working on is PAUSED: the server says so, and the
+  // reader is told to press Continue - not to stop it and start a new one.
+  await show(counted({ paused: true, idleSeconds: 600 }));
+  check('paused: a watching tab is told the run is paused and to press Continue',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('This scan is paused') === 0
+    && els['uv-scan-stalled'].textContent.indexOf('for 10 minutes') !== -1
+    && els['uv-scan-stalled'].textContent.indexOf('start a new one') === -1);
+  await show(Object.assign(counted({ stopping: true, stalled: true, idleSeconds: 9000 }),
+                           { phase: 'cancelling' }));
+  check('stopping: a run that was asked to stop says so, never that it stalled',
+    els['uv-scan-stalled'].textContent === UV.labels.stopping);
+  await show(Object.assign(finished('partial'), { paused: true, stopping: true }));
+  check('paused: a finished run is never paused or stopping, whatever it is sent',
+    els['uv-scan-stalled'].style.display === 'none');
+
   // DRIVING. Same status, but this tab is the one doing the work.
   reset([{ ok: true, run_id: 7 }, worked(counted({ stalled: true, idleSeconds: 330 }))]);
   UV.start();
