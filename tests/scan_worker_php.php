@@ -881,6 +881,24 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('kinds: and a kind not yet seen starts from the first claim, not from another kind\'s',
         $b6->claim('rows') === 20);
 
+    // WHAT THE FLOOR IS STILL FOR, and why it is this kind's own. Records were
+    // measured exactly at 2.6 MiB each; a cheap groups batch was measured
+    // exactly too (its mark restarted the peak); then the room left fell from
+    // 26 MiB to 13 and a records batch measured nothing. Only the records
+    // floor knows a records batch now fits five. Without a floor the claim
+    // would hold at ten; with the groups figure in its place it would grow.
+    $p7 = $scripted([[40, 40, 42], [40, 92, 94],       // records: moved, 52 MiB / 20
+                     [40, 40, 94], [40, 40.1, 94],     // groups: restarted, 0.1 MiB / 10
+                     [53, 92, 107], [53, 92, 107]]);   // records: did not move; arena up 13
+    $b7 = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 200 * $MB, 'timeLimit' => null,
+        'min' => 1, 'max' => 500, 'first' => 20, 'startedAt' => microtime(true),
+        'probe' => $p7->fn]);
+    $b7->observe($b7->mark('records', $t), 20, $t + 1.0);
+    $b7->observe($b7->mark('groups', $t), 10, $t + 1.0);
+    $o7 = $b7->observe($b7->mark('records', $t), 10, $t + 1.0);
+    check('kinds: a records batch that measured nothing still shrinks by the records floor',
+        $o7['claim'] === 5 && strpos((string) $o7['why'], 'rather than the clock') !== false);
+
     // -- below PHP 8.2: what a batch under the high-water mark proves (BU-3/4)
     //
     // Drives a budget through a sequence of batches against the heap model,
