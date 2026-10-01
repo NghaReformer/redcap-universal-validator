@@ -113,6 +113,13 @@ final class WorkBudget
      */
     const FIRST_UNIT = 0.10;
 
+    /**
+     * Fraction of memory_limit a batch in flight may grow to before it stops
+     * taking on units. Half the reserve is left for committing what it holds.
+     * See sample().
+     */
+    const IN_BATCH = 0.80;
+
     // Said the same way wherever they are said. Both describe a PAUSE, not a
     // failure: the request stops claiming and the next one carries on, and a
     // message that read like an error would send someone looking for a fault.
@@ -131,6 +138,15 @@ final class WorkBudget
     const NO_ROOM = 'this request had used nearly all of the memory PHP allows it before the '
                   . 'scan began, so it could not do any work. The scan has stopped rather than '
                   . 'retrying; raise memory_limit for this server and resume it';
+    // A batch stopped part-way by sample(). Pauses, both of them: what was
+    // examined is kept, and the rest is handed back for the next request.
+    const CUT_SHORT = 'the records in this batch took more memory than expected, so it kept what '
+                    . 'it had examined, handed the rest back, and the scan continues in the next '
+                    . 'one';
+    const SET_ASIDE = 'one record produced more than this request could hold beside what was '
+                    . 'already in memory, so it was set aside to be tried again and the scan '
+                    . 'continues in the next one; a record that keeps doing this is reported as '
+                    . 'one that could not be examined';
 
     private $mode;
     private $min;
@@ -145,6 +161,9 @@ final class WorkBudget
     private $observed = 0;  // batches this request has finished and been told about
     private $squeezed = false; // admit() let this request past the reserve for one unit
     private $batchTop = null;  // the highest real usage sampled since mark(), or null
+    private $batchBase = 0;    // real usage before the first unit: what the units hold is above it
+    private $batchLast = 0;    // real usage at the last sample, for the growth of one unit
+    private $batchStep = 0;    // the most one unit of this batch has grown real usage by
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
@@ -214,12 +233,15 @@ final class WorkBudget
     {
         $m = $this->read(true);
         $this->batchTop = $m['used'];
+        $this->batchBase = $m['used'];
+        $this->batchLast = $m['used'];
+        $this->batchStep = 0;
         return ['at' => $now === null ? microtime(true) : (float) $now,
                 'used' => $m['used'], 'peak' => $m['peak'], 'kind' => (string) $kind];
     }
 
     /**
-     * One unit inside the batch is finished; note what is held now.
+     * Note what a batch in flight holds now, and say whether it may go on.
      *
      * Between units is the only place the real usage of a batch in flight can
      * be seen, and below 8.2 it is the only in-batch figure there is: the peak
@@ -227,13 +249,60 @@ final class WorkBudget
      * shows nothing at all by the time it is observed. The highest usage
      * sampled here is a LOWER bound on the batch's peak, so observe() lets it
      * cap the next batch and never lets it justify growth.
+     *
+     * THE BATCH IS SIZED BEFORE IT IS CLAIMED, AND THAT IS NOT ENOUGH (review
+     * EE-1). The first batch of a request has no measurement behind it. 25
+     * records that raise 4,000 findings each hold about 156 MB of findings
+     * until the commit, and at memory_limit=128M the request died before the
+     * budget had observed anything.
+     *
+     * AND THE COMMIT IS NOT FREE. What the units hold - their findings - is
+     * written by the commit, and a store may hold a second copy of it while it
+     * does: the in-memory store copies every finding it keeps. Leaving a fixed
+     * share of the limit for the commit was measured against real memory and
+     * died inside the commit. So the room kept is a copy of what the units
+     * hold, measured from just before the first unit; the record data the
+     * batch read is not counted, because the commit does not copy it.
+     *
+     * After each unit ($unitDone) this answers:
+     *
+     *   'drop'  the unit just finished cannot be kept: the arena plus a copy of
+     *           everything the units hold, this one included, reaches the limit
+     *           itself. The caller lets this unit's result go, which returns its
+     *           share, and counts an attempt against it, so a record that always
+     *           does this ends in a terminal state instead of a loop.
+     *   'stop'  keep this unit and take on no more: one more unit growing like
+     *           the largest so far, with a copy of it and of what is held,
+     *           would reach the limit, or the arena would pass IN_BATCH of it.
+     *           The caller commits what it examined and hands the rest back.
+     *   null    go on.
+     *
+     * A sample that is not after a unit only notes what is held. The one after
+     * the read also marks where the units start: the read is not a unit, and
+     * its size says nothing about the next one.
+     *
+     * @return string|null 'drop' | 'stop' | null
      */
-    public function sample()
+    public function sample($unitDone = true)
     {
         $m = $this->read(false);
-        if ($this->batchTop !== null && $m['used'] > $this->batchTop) {
-            $this->batchTop = $m['used'];
+        if ($this->batchTop === null) return null;          // no batch in flight
+        if ($m['used'] > $this->batchTop) $this->batchTop = $m['used'];
+        $step = max(0, $m['used'] - $this->batchLast);
+        $this->batchLast = $m['used'];
+        if (!$unitDone) {
+            $this->batchBase = $m['used'];
+            return null;
         }
+        if ($this->memLimit === null) return null;
+        if ($step > $this->batchStep) $this->batchStep = $step;
+        $held = max(0, $m['used'] - $this->batchBase);
+        if ($m['arena'] + $held >= $this->memLimit) return 'drop';
+        if ($m['arena'] + $held + 2 * $this->batchStep >= $this->memLimit
+                || $m['arena'] + $this->batchStep >= (int) ($this->memLimit * self::IN_BATCH)) {
+            return 'stop';
+        }
+        return null;
     }
 
     /**

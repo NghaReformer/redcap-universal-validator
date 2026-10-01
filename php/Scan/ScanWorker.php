@@ -508,7 +508,16 @@ final class ScanWorker
             $blocked  += $r['blocked'];
             $found    += $r['findings'];
 
-            $adj = $budget->observe($mark, count($claimed));
+            $adj = $budget->observe($mark,
+                max(1, isset($r['examined']) ? (int) $r['examined'] : count($claimed)));
+            // A batch memory cut short ends the request: what it examined is
+            // committed and the rest is back in the queue, and this request is
+            // the one that is short of memory.
+            if (!empty($r['cut'])) {
+                $stop = 'memory';
+                $why = $r['why'];
+                break;
+            }
             if ($adj['stop'] !== null) {
                 $stop = $adj['stop'];
                 $why = $adj['why'];
@@ -597,7 +606,7 @@ final class ScanWorker
                     : 'the records could not be read from the project just now');
         }
         $data = isset($got['data']) && is_array($got['data']) ? $got['data'] : [];
-        if ($budget !== null) $budget->sample();
+        if ($budget !== null) $budget->sample(false);
 
         $after = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
@@ -626,6 +635,16 @@ final class ScanWorker
         // keyed so one broken rule met by every record in the batch is one mark.
         $marks = [];
 
+        // CUT SHORT BY MEMORY (review EE-1). The batch was sized before it was
+        // claimed, and the first batch of a request has nothing behind it, so
+        // the budget is asked after every record whether the next one still
+        // fits - see WorkBudget::sample(). 'stop' keeps this record and takes
+        // no more; 'drop' lets this record's result go as well. Both shapes are
+        // ordinal => claim token, as giveBack() and releaseClaims() take them.
+        $cut = null;
+        $setAside = [];    // evaluated, not kept: an attempt is counted against it
+        $untouched = [];   // never reached: handed straight back, no attempt
+
         foreach ($claimed as $c) {
             $id = $c['id_bin'];
             $tries = isset($c['attempts']) ? (int) $c['attempts'] : 0;
@@ -634,6 +653,11 @@ final class ScanWorker
             // whose token no longer matches, which is what stops one taken-over
             // record from killing the batch it travelled in.
             $claim = isset($c['claim']) ? (int) $c['claim'] : 0;
+
+            if ($cut !== null) {
+                $untouched[(int) $c['ordinal']] = $claim;
+                continue;
+            }
 
             if ($moved($id)) {
                 // One more attempt, unless it has already had them all. A record
@@ -683,7 +707,17 @@ final class ScanWorker
             }
 
             $ev = $this->evaluate($id, $data[$id]);
-            if ($budget !== null) $budget->sample();
+            $verdict = ($budget !== null) ? $budget->sample() : null;
+            if ($verdict === 'drop') {
+                // Its findings go first, before anything else asks for memory.
+                // It is not written as examined, so it cannot be certified;
+                // it is counted as attempted, so it cannot loop. See below.
+                $ev = null;
+                $setAside[(int) $c['ordinal']] = $claim;
+                $cut = 'drop';
+                continue;
+            }
+            if ($verdict === 'stop') $cut = 'stop';
             if (!empty($ev['why'])) {
                 // The record was read and could not be examined. Reported as
                 // unreadable rather than as clean - H-05 in one line.
@@ -755,15 +789,38 @@ final class ScanWorker
             // written down - by the time the give-back below has run, the row
             // says it was excluded and nothing says why.
             $this->noteBatchRefused($runId, $why);
-            return $this->giveBack($runId, $epoch, $claims, $maxAttempts,
+            // Records a cut kept the batch from reaching were never attempted,
+            // so they go back without an attempt counted against them.
+            $out = $this->giveBack($runId, $epoch, array_diff_key($claims, $untouched), $maxAttempts,
                 ScanStore::REC_UNSTORED, 'fenced', $why);
+            if ($untouched) $this->store->releaseClaims($runId, $epoch, $this->owner(), $untouched);
+            return $out;
         }
         // Remembered only once COMMITTED. A refused batch wrote nothing, so the
         // next one must offer these again.
         foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
+
+        // WHAT THE CUT LEFT, settled after the commit and outside it. A record
+        // set aside WAS attempted: its attempt is counted in a transaction of
+        // its own (noteAttempts, the same door a failed read or a refused
+        // commit uses), so a record whose findings never fit runs out of
+        // attempts and ends as one that could not be examined - reported and
+        // blocking - instead of being handed back for ever. Records never
+        // reached are handed back as they were.
+        if ($setAside) {
+            $note = $this->store->noteAttempts($runId, $epoch, $this->owner(), $setAside,
+                                               $maxAttempts, ScanStore::REC_UNREADABLE);
+            if (is_array($note) && isset($note['retired'])) $blocked += (int) $note['retired'];
+        }
+        if ($setAside || $untouched) {
+            $this->store->releaseClaims($runId, $epoch, $this->owner(), $setAside + $untouched);
+        }
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => count($batch['findings']),
-                'candidates' => count($batch['candidates']), 'why' => null];
+                'candidates' => count($batch['candidates']),
+                'examined' => count($claimed) - count($untouched), 'cut' => $cut,
+                'why' => $cut === 'drop' ? WorkBudget::SET_ASIDE
+                       : ($cut === 'stop' ? WorkBudget::CUT_SHORT : null)];
     }
 
     /**

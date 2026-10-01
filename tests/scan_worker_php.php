@@ -1501,7 +1501,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     // time the first batch is observed, so the request stops there - with that
     // batch committed and the run left to be carried on.
     list($store, $runId) = $fixture(['A', 'B', 'C', 'D', 'E', 'F']);
-    $tight = $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 95]]);
+    // Reads, in order: admit, mark, a sample after the read and one after each
+    // of the two records, then observe. The arena jumps only at observe; a
+    // jump during the batch is a different test (the batch is cut short).
+    $tight = $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 12], [10, 10, 12], [10, 10, 12],
+                        [10, 10, 95]]);
     $capped = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
         'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true),
         'probe' => $tight->fn]);
@@ -1704,6 +1708,116 @@ namespace INSPIRE\UniversalValidator\Scan {
     $w->work(800, $runId);
     check('below 8.2: what a batch held between records caps the next batch',
         array_slice($readSizes, 0, 2) === [25, 22]);
+
+    // -- a batch is cut short before it outgrows the limit (review EE-1) -----
+    //
+    // The budget sizes a batch BEFORE it is claimed, from what earlier batches
+    // cost, and the first batch of a request has nothing behind it. 25 records
+    // that raise 4,000 findings each are about 156 MB of findings, held until
+    // the commit, and at memory_limit=128M the request died before the budget
+    // had observed anything. So the worker asks after every record: if the
+    // next one grows like the largest so far, would it - with a copy of every
+    // finding held, which the commit may need while it writes them - reach the
+    // limit? Then it stops there, commits what it examined, and hands the rest
+    // back unexamined. Here each record holds 6 MiB of findings over a 20 MiB
+    // base: after 8 the arena is 68 MiB holding 48 MiB of findings, and a ninth
+    // with its copy would reach 68 + 48 + 12 = 128 MiB.
+    $heldFindings = function (ModelHeap $h, array $perRecord, $limitBytes, &$died) use ($MB) {
+        return function ($id, $node) use ($h, $perRecord, $limitBytes, &$died, $MB) {
+            $h->used += (int) ((isset($perRecord[$id]) ? $perRecord[$id] : $perRecord['*']) * $MB);
+            if ($h->used > $limitBytes) $died = true;      // where PHP would have died
+            return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+        };
+    };
+    $budgetOn = function (ModelHeap $h, $first) use ($MB) {
+        return new WorkBudget(['mode' => 'cron', 'memoryLimit' => 128 * $MB, 'timeLimit' => null,
+            'min' => 1, 'max' => 500, 'first' => $first, 'startedAt' => microtime(true),
+            'probe' => $h->probe()]);
+    };
+    $ids25 = [];
+    for ($i = 1; $i <= 25; $i++) $ids25[] = 'R' . $i;
+    list($store, $runId) = $fixture($ids25);
+    $died = false;
+    $h = new ModelHeap(20, true);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
+        'evaluate' => $heldFindings($h, ['*' => 6], 128 * $MB, $died), 'attempts' => 3,
+        'finalizer' => $fin(), 'budget' => $budgetOn($h, 25)]);
+    $res = $w->work(800, $runId);
+    check('cut: a batch whose findings would pass the limit stops before they do',
+        $died === false && $res['ok'] === true && $res['worked'] === 8);
+    check('cut: what was examined is committed, and the request stops with the reason',
+        (int) $store->run(800, $runId)['manifest_done'] === 8 && $res['stop'] === 'memory'
+        && strpos((string) $res['why'], 'handed the rest back') !== false);
+    check('cut: the records it never reached are handed back unexamined',
+        $store->recordState($runId, 9) === ScanStore::REC_PENDING
+        && $store->recordState($runId, 25) === ScanStore::REC_PENDING);
+    $worked = [8];
+    for ($pass = 0; $pass < 3; $pass++) {
+        $h->used = 20 * $MB;                               // each request starts afresh
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
+            'evaluate' => $heldFindings($h, ['*' => 6], 128 * $MB, $died), 'attempts' => 3,
+            'finalizer' => $fin(), 'budget' => $budgetOn($h, 25)]);
+        $worked[] = $w->work(800, $runId)['worked'];
+    }
+    // No attempt was counted against the records handed back: none of them is
+    // excluded, and every one is examined in a later request.
+    check('cut: and later requests pick them up where the last one stopped, none excluded',
+        $died === false && $worked === [8, 8, 8, 1] && $store->manifestComplete($runId) === true
+        && $store->recordStates($runId) === [ScanStore::REC_DONE => 25]);
+
+    // A CUT BATCH WHOSE COMMIT IS REFUSED. The eight records it examined were
+    // attempted and are charged one attempt, as any refused batch's are; the
+    // seventeen it never reached were not, and must not be.
+    require_once __DIR__ . '/scan_fault_support.php';
+    list($inner, $runId) = $fixture($ids25);
+    $refusing = new class($inner) extends FaultyStore {
+        public function commitBatch($runId, $owner, $epoch, array $batch)
+        {
+            return 'the database refused this batch';
+        }
+    };
+    $h = new ModelHeap(20, true);
+    $w = new ScanWorker($refusing, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
+        'evaluate' => $heldFindings($h, ['*' => 6], 128 * $MB, $died), 'attempts' => 3,
+        'finalizer' => $fin(), 'budget' => $budgetOn($h, 25)]);
+    $res = $w->work(800, $runId);
+    $rows = $inner->claim($runId, 'probe', (int) $inner->run(800, $runId)['lease_epoch'], 25);
+    $tries = [];
+    foreach ((array) $rows as $row) $tries[(int) $row['ordinal']] = (int) $row['attempts'];
+    check('cut: a refused commit charges the records it examined and not the ones it never reached',
+        $res['ok'] === false && count($tries) === 25 && $tries[1] === 1 && $tries[8] === 1
+        && $tries[9] === 0 && $tries[25] === 0);
+
+    // ONE RECORD THAT CANNOT BE KEPT. R3's findings take 70 MiB. Kept, the
+    // commit could need as much again while it writes them, and 92 + 70 is
+    // past the 128 MiB limit itself. So it is set aside: its findings are let
+    // go, ONE ATTEMPT is counted against it outside the work that failed, and
+    // it is handed back. A record that does this every time runs out of
+    // attempts and ends in a terminal state - reported, blocking, and not a
+    // loop. The records before it are committed; the ones after it go back.
+    list($store, $runId) = $fixture(['R1', 'R2', 'R3', 'R4', 'R5', 'R6']);
+    $died = false;
+    $h = new ModelHeap(20, true);
+    $results = [];
+    for ($pass = 0; $pass < 4; $pass++) {
+        $h->used = 20 * $MB;
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
+            'evaluate' => $heldFindings($h, ['R3' => 70, '*' => 1], 128 * $MB, $died),
+            'attempts' => 3, 'finalizer' => $fin(), 'budget' => $budgetOn($h, 6)]);
+        $results[] = $w->work(800, $runId);
+        if ($pass === 0) {
+            check('set aside: the records before it are committed and it is not',
+                $results[0]['worked'] === 2 && $store->recordState($runId, 3) === ScanStore::REC_PENDING
+                && $store->recordState($runId, 1) === ScanStore::REC_DONE
+                && strpos((string) $results[0]['why'], 'set aside') !== false);
+        }
+    }
+    check('set aside: three tries end it as a record that could not be examined, not a loop',
+        $died === false && $store->recordState($runId, 3) === ScanStore::REC_UNREADABLE
+        && $results[2]['blocked'] === 1);
+    check('set aside: and every other record is examined',
+        $store->manifestComplete($runId) === true
+        && $store->recordStates($runId) === [ScanStore::REC_DONE => 5, ScanStore::REC_UNREADABLE => 1]);
 
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
@@ -2372,7 +2486,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         $oneBatch = function () use ($scripted, $MB) {
             return new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
                 'min' => 2, 'max' => 2, 'first' => 2, 'startedAt' => microtime(true),
-                'probe' => $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 95]])->fn]);
+                'probe' => $scripted([[10, 10, 12], [10, 10, 12], [10, 10, 12], [10, 10, 12],
+                                      [10, 10, 12], [10, 10, 95]])->fn]);
         };
         list($store, $runId) = $fixture($ids);
         $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
