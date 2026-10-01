@@ -489,6 +489,19 @@ namespace {
             $state([], ['readerCeiling' => 'identifier-redacted', 'identifiers' => null])[0] === 'identifier');
         check('value: a raw reader of a raw run is shown a flagged field, as the legacy report does',
             $state([], ['identifiers' => ['a_val' => true]])[0] === 'shown');
+        // RP-8. A LIST of names - the shape a snapshot reader could plausibly
+        // produce - was read as a map with no field in it, so an
+        // identifier-redacted reader was shown the very field it named.
+        check('value: identifiers given as a list of names refuses to build, rather than withhold nothing',
+            throws('InvalidArgumentException', function () {
+                mapper(['readerCeiling' => 'identifier-redacted', 'identifiers' => ['a_val']]);
+            }));
+        check('value: and so does a map with any numeric key',
+            throws('InvalidArgumentException', function () {
+                mapper(['identifiers' => ['b_val' => true, 0 => 'a_val']]);
+            }));
+        check('value (control): an empty map is "no identifiers", and builds',
+            $state([], ['readerCeiling' => 'identifier-redacted', 'identifiers' => []])[0] === 'shown');
 
         // 5. the byte cut
         $e = "\xC3\xA9";                                     // e-acute, two bytes
@@ -656,6 +669,14 @@ namespace {
         check('reasons: bits = 0 is "not recorded": the code stands as stored',
             mapper()->toFinding(row(['check_type' => 'pooled', 'reason_code' => 'check-character;junk']))['reason']
                 === 'check-character;junk');
+        // RP-8. A bit nobody has a name for was dropped without a word, unlike
+        // an unknown joined part, which detail() names.
+        $odd = (1 << 7) | (1 << 12);
+        $oddF = mapper()->toFinding(row(['check_type' => 'pooled', 'reason_code' => 'pooled', 'reason_bits' => $odd]));
+        check('reasons: a mask bit nobody has a name for is named by its position, not dropped',
+            $oddF['reason'] === 'junk;bit-12' && ReasonCode::pooledNames(1 << 12) === ['bit-12']);
+        check('reasons: and the sentence says it was reported',
+            strpos(ScanColumns::row($oddF, dims())['problem'], 'Also reported: bit-12.') !== false);
         check('reasons: a mask on any other code is ignored',
             mapper()->toFinding(row(['reason_bits' => $bits]))['reason'] === 'assert');
         check('reasons: "unspecified" is a storage word and leaves as no reason',

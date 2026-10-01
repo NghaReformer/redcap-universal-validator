@@ -107,12 +107,23 @@ final class ReasonCode
         return $r['code'];
     }
 
-    /** Which pooled problems a stored mask names. For the report, later. */
+    /**
+     * Which pooled problems a stored mask names. For the report, later.
+     *
+     * A BIT WITH NO NAME IS NAMED BY ITS POSITION, as `bit-N`. It was dropped,
+     * so a mask written by a later release read as fewer problems than it
+     * held; MessageCatalog::detail() names a part it has no sentence for, and
+     * now has a part to name.
+     */
     public static function pooledNames($bits)
     {
+        $bits = (int) $bits;
         $out = [];
         foreach (self::$pooled as $i => $name) {
-            if (((int) $bits) & (1 << $i)) $out[] = $name;
+            if ($bits & (1 << $i)) $out[] = $name;
+        }
+        for ($i = count(self::$pooled); $i < PHP_INT_SIZE * 8; $i++) {
+            if ($bits & (1 << $i)) $out[] = 'bit-' . $i;
         }
         return $out;
     }

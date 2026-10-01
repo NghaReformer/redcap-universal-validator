@@ -163,8 +163,20 @@ final class FindingRowMapper
         // a missing or misspelt ceiling shows locations only.
         $this->effective = ScanPolicy::floor($this->stored,
             isset($opts['readerCeiling']) ? $opts['readerCeiling'] : null);
-        $this->identifiers = (isset($opts['identifiers']) && is_array($opts['identifiers']))
-            ? $opts['identifiers'] : null;
+        $flags = (isset($opts['identifiers']) && is_array($opts['identifiers'])) ? $opts['identifiers'] : null;
+        if ($flags !== null) {
+            // A MAP, field => true. A list of names ['a_val'] is keyed 0, 1, ...
+            // and was read as a map naming no field, so an identifier-redacted
+            // reader was shown the field it named. REDCap field names start
+            // with a letter, so a numeric key can only be a list.
+            foreach ($flags as $k => $unused) {
+                if (!is_string($k)) {
+                    throw new \InvalidArgumentException('identifiers is a map of field name => true; '
+                        . 'a list of names would withhold nothing');
+                }
+            }
+        }
+        $this->identifiers = $flags;
     }
 
     /**
