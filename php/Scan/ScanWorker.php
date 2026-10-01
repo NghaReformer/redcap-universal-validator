@@ -777,6 +777,11 @@ final class ScanWorker
             $worked++;
         }
 
+        // A 'stop' on the last record cut nothing off. The budget still hears
+        // what the batch cost when it is observed; the request is not told a
+        // batch was cut short that was not.
+        if ($cut === 'stop' && !$untouched) $cut = null;
+
         $batch['marks'] = array_values($marks);
         $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch);
         if ($ok !== true) {

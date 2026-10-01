@@ -1788,6 +1788,18 @@ namespace INSPIRE\UniversalValidator\Scan {
         $died === false && $worked === [8, 8, 8, 1] && $store->manifestComplete($runId) === true
         && $store->recordStates($runId) === [ScanStore::REC_DONE => 25]);
 
+    // A BATCH THAT ENDS ON ITS LAST RECORD WAS NOT CUT. Eight records reach the
+    // same line on the eighth, and there is nothing left to hand back, so the
+    // request is not told a batch was cut short.
+    list($store, $runId) = $fixture(['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8']);
+    $h = new ModelHeap(20, true);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
+        'evaluate' => $heldFindings($h, ['*' => 6], 128 * $MB, $died), 'attempts' => 3,
+        'finalizer' => $fin(), 'budget' => $budgetOn($h, 25)]);
+    $res = $w->work(800, $runId);
+    check('cut: a batch that stops on its last record is not reported as cut short',
+        $res['worked'] === 8 && strpos((string) $res['why'], 'handed the rest back') === false);
+
     // A CUT BATCH WHOSE COMMIT IS REFUSED. The eight records it examined were
     // attempted and are charged one attempt, as any refused batch's are; the
     // seventeen it never reached were not, and must not be.
