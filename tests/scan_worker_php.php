@@ -764,6 +764,90 @@ namespace INSPIRE\UniversalValidator\Scan {
         $rm['used'] > 0 && $rm['peak'] >= $rm['used']
         && array_keys($ro) === ['claim', 'stop', 'why'] && $ro['claim'] >= 1);
 
+    // -- one claim, and one floor, per kind of unit (review BU-1) -------------
+    //
+    // The budget used to hold ONE claim for the whole request while it kept its
+    // memory figure per kind. So a cheap kind of batch could double the claim
+    // with nothing to say about memory, and the next batch of an expensive kind
+    // was handed that doubled number. Catch-up alternates exactly like this:
+    // records that cost megabytes, change-log pages that cost a kilobyte.
+    /**
+     * A model of PHP's heap, for driving the budget through whole sequences.
+     *
+     * `used` is real usage and `peak` the high-water mark; the arena is 2 MiB
+     * chunks over usage, as PHP takes them. With `$reset` the peak restarts
+     * when the budget asks (PHP 8.2+); without it the peak is request-wide, as
+     * on 7.4. A batch costs whatever the test makes it spike.
+     */
+    class ModelHeap
+    {
+        public $used;
+        public $peak;
+        public $reset;
+        public function __construct($usedMb, $reset)
+        {
+            $this->used = (int) ($usedMb * 1048576);
+            $this->peak = $this->used;
+            $this->reset = (bool) $reset;
+        }
+        public function probe()
+        {
+            return function ($resetPeak) {
+                $did = $resetPeak && $this->reset;
+                if ($did) $this->peak = $this->used;
+                return ['used' => $this->used, 'peak' => $this->peak,
+                        'arena' => (int) (ceil($this->used / 2097152) * 2097152), 'reset' => $did];
+            };
+        }
+        /** Something was held for a moment and let go. */
+        public function spike($bytes)
+        {
+            $this->peak = max($this->peak, $this->used + (int) $bytes);
+        }
+    }
+
+    $heap = new ModelHeap(10, true);
+    $kinds = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'min' => 1, 'max' => 500, 'first' => 10, 'startedAt' => microtime(true),
+        'probe' => $heap->probe()]);
+    $seen = ['records' => [], 'changes' => []];
+    $at = microtime(true);
+    for ($i = 0; $i < 6; $i++) {
+        // 4 MiB a record against 50 MiB of room is 12 records; a change-log
+        // row costs a kilobyte and may grow as fast as the clock allows.
+        foreach (['records' => 4 * $MB, 'changes' => 1024] as $kind => $cost) {
+            $size = $kinds->claim($kind);     // not $n: that is the check counter
+            $seen[$kind][] = $size;
+            $mk = $kinds->mark($kind, $at);
+            $heap->spike($size * $cost);
+            $at += 0.01;
+            $kinds->observe($mk, $size, $at);
+        }
+    }
+    check('kinds: records alternating with cheap pages never exceed what memory allowed records',
+        max($seen['records']) === 12 && array_slice($seen['records'], 1) === [12, 12, 12, 12, 12]);
+    check('kinds: while the cheap kind grows on its own clock',
+        $seen['changes'][0] === 10 && max($seen['changes']) >= 160);
+
+    // AND THE FLOOR IS KEPT PER KIND, not dropped whenever the kind changes.
+    // Below 8.2 a records batch that stays under the high-water mark measures
+    // only what it kept, so the last exact records figure is all that stands
+    // between it and a blind doubling. It used to be thrown away by any batch
+    // of another kind in between.
+    $p6 = $scripted([[40, 40, 42], [40, 92, 94],       // records: moved the peak, 52 MiB / 20
+                     [40, 92, 94], [40, 92, 94],       // groups: did not
+                     [40, 92, 94], [40, 92, 94]]);     // records again: did not
+    $b6 = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 200 * $MB, 'timeLimit' => null,
+        'min' => 1, 'max' => 500, 'first' => 20, 'startedAt' => microtime(true),
+        'probe' => $p6->fn]);
+    $b6->observe($b6->mark('records', $t), 20, $t + 1.0);
+    $b6->observe($b6->mark('groups', $t), 10, $t + 1.0);
+    $o6 = $b6->observe($b6->mark('records', $t), 10, $t + 1.0);
+    check('kinds: the records figure survives a batch of another kind in between',
+        $o6['claim'] === 10 && $b6->claim('records') === 10);
+    check('kinds: and a kind not yet seen starts from the first claim, not from another kind\'s',
+        $b6->claim('rows') === 20);
+
     // ======================================================================
     // ScanWorker: claim, prove it held still, look, commit - or commit nothing
     // ======================================================================
@@ -812,7 +896,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         public $emitted = 0;
         public $collisions = 0;
 
-        public function step($generationId, $limit = 500)
+        public function step($generationId, $limit = 500, $readLimit = null)
         {
             $this->calls++;
             $done = $this->calls >= $this->rounds;
@@ -1320,6 +1404,173 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('seam: and every batch it marks, it observes',
         preg_match_all('/->\s*mark\s*\(/', $workerCode) === 4
         && preg_match_all('/->\s*observe\s*\(/', $workerCode) === 4);
+
+    // -- a verify page reads records, so it is sized as records (review BU-1) -
+    //
+    // UniqueFinalizer::step() was handed ONE limit, the request's one claim,
+    // and used it for discover pages (a page of group rows, a kilobyte each)
+    // and verify pages (a re-read of whole records, through the scan's own
+    // read) alike. Discover pages cost nothing, so they doubled the claim to
+    // the maximum; the verify page that followed then re-read 500 records and
+    // the request died at memory_limit, the worker slot still leased.
+    /**
+     * UniqueFinalizer::step()'s contract with its pages made explicit: group
+     * pages first, then verify pages that re-read records. Without a read
+     * limit a verify page is as large as a group page, which is what the
+     * production class does when it is not given one.
+     */
+    class PagedFinalizer implements DuplicateFinalizer
+    {
+        public $discover;
+        public $verify;
+        public $heap;
+        public $perRecord;
+        public $pages = [];     // [what, the limit it was given]
+        public function __construct(ModelHeap $heap, $discover, $verify, $perRecord)
+        {
+            $this->heap = $heap; $this->discover = $discover; $this->verify = $verify;
+            $this->perRecord = $perRecord;
+        }
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+            if ($this->discover > 0) {
+                $n = min($limit, $this->discover);
+                $this->discover -= $n;
+                $this->pages[] = ['discover', $limit];
+                $this->heap->spike($n * 1024);
+                usleep(1000);       // a page takes time, so the clock lets it grow
+                $out['groups'] = $n;
+                return $out;
+            }
+            if ($this->verify > 0) {
+                $lim = $readLimit === null ? $limit : $readLimit;
+                $n = min($lim, $this->verify);
+                $this->verify -= $n;
+                $this->pages[] = ['verify', $lim];
+                $this->heap->spike($n * $this->perRecord);
+                $out['verified'] = $n;
+                $out['read'] = $n;
+                return $out;
+            }
+            $out['done'] = true;
+            return $out;
+        }
+    }
+    $limitsOf = function (PagedFinalizer $f, $what) {
+        $out = [];
+        foreach ($f->pages as $p) if ($p[0] === $what) $out[] = $p[1];
+        return $out;
+    };
+    $heapBudget = function (ModelHeap $h) use ($MB) {
+        return new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+            'min' => 1, 'max' => 500, 'first' => 10, 'startedAt' => microtime(true),
+            'probe' => $h->probe()]);
+    };
+
+    // A REQUEST THAT STARTS IN UNIQUE-FINALIZE, as every browser pass after
+    // the first one in that phase does. 150 groups to discover, then a group of
+    // 30 candidates at 4 MiB a record, against 50 MiB of room.
+    list($store, $runId) = $fixture(['A']);
+    $ep = (int) $store->run(800, $runId)['lease_epoch'];
+    $store->advancePhase($runId, $ep, ScanPhase::CATCH_UP);
+    $store->advancePhase($runId, $ep, ScanPhase::UNIQUE);
+    $h = new ModelHeap(10, true);
+    $pf = new PagedFinalizer($h, 150, 30, 4 * $MB);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'budget' => $heapBudget($h), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $pf]);
+    $res = $w->work(800, $runId);
+    check('kinds: group pages grow on their own claim',
+        $limitsOf($pf, 'discover') === [10, 20, 40, 80]);
+    check('kinds: a verify page is handed the RECORDS claim, not the doubled group claim',
+        $limitsOf($pf, 'verify') !== [] && $limitsOf($pf, 'verify')[0] === 10);
+    // 10 records at 4 MiB is 40 MiB measured; 50 MiB of room holds 12. The
+    // second page asking for 12 is the proof the first was measured as records.
+    check('kinds: and it is measured as records, so the next verify page is sized by it',
+        $limitsOf($pf, 'verify') === [10, 12, 12] && $res['ok'] === true);
+
+    // THE SAME REQUEST THAT SCANNED. Records were capped at 12 by memory; the
+    // group pages start from their own first claim, and the verify pages from
+    // the records claim memory set.
+    list($store, $runId) = $fixture(['R1', 'R2', 'R3', 'R4', 'R5', 'R6', 'R7', 'R8', 'R9', 'R10',
+        'R11', 'R12', 'R13', 'R14', 'R15', 'R16', 'R17', 'R18', 'R19', 'R20', 'R21', 'R22', 'R23',
+        'R24', 'R25', 'R26', 'R27', 'R28', 'R29', 'R30']);
+    $h = new ModelHeap(10, true);
+    $readSizes = [];
+    $heavyReader = function ($ids) use ($h, $MB, &$readSizes) {
+        $readSizes[] = count($ids);
+        $h->spike(count($ids) * 4 * $MB);
+        $data = [];
+        foreach ($ids as $id) $data[$id] = ['1' => ['x' => 'v']];
+        return ['ok' => true, 'data' => $data, 'why' => null];
+    };
+    $pf = new PagedFinalizer($h, 30, 20, 4 * $MB);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $heavyReader,
+        'evaluate' => $finder(0), 'budget' => $heapBudget($h), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $pf]);
+    $res = $w->work(800, $runId);
+    check('kinds: the scan itself was capped by memory at 12 records a batch',
+        $readSizes === [10, 12, 8] && $res['worked'] === 30);
+    check('kinds: a group page after it does not inherit the records claim',
+        $limitsOf($pf, 'discover') === [10, 20]);
+    check('kinds: and a verify page inherits exactly the records claim',
+        $limitsOf($pf, 'verify') === [12, 12]);
+
+    // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
+    // records a verify page read so the worker can measure it as records.
+    /** Just enough of the database for one verify page of one group. */
+    class VerifyPageDb implements ScanDb
+    {
+        public $limits = [];
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'MAX(group_hmac)') !== false) return [['g1']];
+            if (strpos($sql, 'GROUP BY group_hmac') !== false) return [];
+            if (strpos($sql, 'ix_pending') !== false) return [[7, 'g1', 1, 0, 0, 'new', null, 9]];
+            if (preg_match('/ORDER BY candidate_id LIMIT (\d+)/', $sql, $m)) {
+                $this->limits[] = (int) $m[1];
+                $rows = [];
+                // Two candidates per record: two fields under one rule.
+                for ($i = 1; $i <= min(40, (int) $m[1]); $i++) {
+                    $rows[] = [$i, 'R' . (int) ceil($i / 2), 0, 1, 'f' . ($i % 2), null];
+                }
+                return $rows;
+            }
+            return [];
+        }
+        public function exec($sql, array $params = []) { return 1; }
+        public function execNoCount($sql, array $params = []) { }
+        public function affected() { return 1; }
+        public function begin() { }
+        public function commit() { }
+        public function rollback() { }
+    }
+    $vdb = new VerifyPageDb();
+    $asked = [];
+    $uf = new UniqueFinalizer($vdb, ['pid' => 800, 'read' => function (array $locs) use (&$asked) {
+        $values = [];
+        foreach ($locs as $l) {
+            $asked[(string) $l['record']] = true;
+            $values[UniqueFinalizer::locKey($l)] = ['same'];
+        }
+        return ['ok' => true, 'values' => $values, 'why' => null];
+    }]);
+    $vr = $uf->step(1, 500, 6);
+    check('finalizer: a verify page is bounded by the read limit, not the group limit',
+        $vdb->limits === [6] && $vr['verified'] === 6);
+    check('finalizer: and reports the records it re-read, which is what it costs',
+        isset($vr['read']) && $vr['read'] === 3 && count($asked) === 3);
+    $vdb2 = new VerifyPageDb();
+    $uf2 = new UniqueFinalizer($vdb2, ['pid' => 800, 'read' => function (array $locs) {
+        $values = [];
+        foreach ($locs as $l) $values[UniqueFinalizer::locKey($l)] = ['same'];
+        return ['ok' => true, 'values' => $values, 'why' => null];
+    }]);
+    $uf2->step(1, 4);
+    check('finalizer: a caller that gives no read limit gets the old single limit',
+        $vdb2->limits === [4]);
 
     // -- the duplicate phase is entered, not skipped -------------------------
     //

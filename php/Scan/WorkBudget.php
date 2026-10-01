@@ -57,6 +57,18 @@ namespace INSPIRE\UniversalValidator\Scan;
  * smaller batch again, down to one record at a time and a false message saying
  * the records in the project are large.
  *
+ * ONE CLAIM PER KIND OF UNIT, NOT ONE PER REQUEST (review BU-1). A request
+ * works records, duplicate groups, summary rows and change-log rows, and a
+ * unit of one costs nothing like a unit of another. The floor was already kept
+ * per kind; the claim was not. So a run of cheap batches - group pages of a
+ * kilobyte each - doubled the one claim up to the maximum with nothing to say
+ * about memory, and the next batch of an expensive kind was handed that number:
+ * a verify page re-read 500 whole records and the request died at
+ * memory_limit. Each kind now has its own claim and its own floor, each starts
+ * at the first claim, and a kind's claim moves only on that kind's own
+ * batches. A batch that re-reads records is a batch of records, whoever runs
+ * it, and the caller labels it so.
+ *
  * A SHUTDOWN HANDLER IS NOT A MEMORY GUARD. PHP can run one after an OOM, and it
  * can improve the diagnostic, but the allocation has already failed and the
  * batch is already lost. It is worth having and it is not what keeps this
@@ -94,10 +106,10 @@ final class WorkBudget
     private $memLimit;      // bytes, or null for "no limit"
     private $timeLimit;     // seconds, or null for "no limit"
     private $startedAt;
-    private $claim;         // the size the next batch should ask for
+    private $first;         // the size a kind's first batch asks for
+    private $claims = [];   // kind => the size that kind's next batch should ask for
     private $probe;         // ?callable(bool $resetPeak): {used, peak, arena}
-    private $perUnit = 0.0; // the last EXACT per-unit peak cost, in bytes
-    private $perUnitKind = null;
+    private $floors = [];   // kind => the last EXACT per-unit peak cost, in bytes
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
@@ -120,7 +132,7 @@ final class WorkBudget
         // START SMALL. The first batch of a run has no measurement behind it, so
         // its size is a guess, and a guess that is too large is an OOM while a
         // guess that is too small costs one extra round trip.
-        $this->claim = isset($opts['first'])
+        $this->first = isset($opts['first'])
             ? max($this->min, min($this->max, (int) $opts['first']))
             : max($this->min, min($this->max, 25));
         $this->probe = (isset($opts['probe']) && is_callable($opts['probe'])) ? $opts['probe'] : null;
@@ -155,8 +167,11 @@ final class WorkBudget
      * Note where a batch starts, for observe() to measure from.
      *
      * $kind names what the batch is a batch OF - records, groups, rows. A cost
-     * per record says nothing about the cost per duplicate group, so the floor
-     * observe() keeps is dropped when the kind changes.
+     * per record says nothing about the cost per duplicate group, so the claim
+     * and the floor observe() keeps are both kept per kind. The kind is read
+     * from the mark when the batch is observed, so a caller that learns only
+     * afterwards what its batch was (a finalizer step that turned out to
+     * re-read records) relabels the mark before observing it.
      *
      * @return array{at:float, used:int, peak:int, kind:string}
      */
@@ -182,19 +197,20 @@ final class WorkBudget
         $used0 = isset($mark['used']) ? (int) $mark['used'] : $m['used'];
         $peak0 = isset($mark['peak']) ? (int) $mark['peak'] : $m['peak'];
         $kind  = isset($mark['kind']) ? (string) $mark['kind'] : '';
-        if ($kind !== $this->perUnitKind) {
-            $this->perUnit = 0.0;
-            $this->perUnitKind = $kind;
-        }
+        // THE FLOOR IS THIS KIND'S. It used to be one figure that any batch of
+        // another kind wiped, so a records batch after a page of groups below
+        // 8.2 had no floor at all and measured only what it retained.
+        $floor = isset($this->floors[$kind]) ? $this->floors[$kind] : 0.0;
         $delta = 0;
         if ($units > 0) {
             if ($m['peak'] > $peak0) {
-                $this->perUnit = max(0, $m['peak'] - $used0) / $units;
+                $floor = $this->floors[$kind] = max(0, $m['peak'] - $used0) / $units;
             }
-            $per = max(max(0, $m['used'] - $used0) / $units, $this->perUnit);
+            $per = max(max(0, $m['used'] - $used0) / $units, $floor);
             $delta = (int) ceil($per * $units);
         }
         return $this->next([
+            'kind' => $kind,
             'records' => $units,
             'seconds' => max(0.0, $now - (isset($mark['at']) ? (float) $mark['at'] : $now)),
             'memoryDelta' => $delta,
@@ -215,10 +231,17 @@ final class WorkBudget
         return $t;
     }
 
-    /** How many records the next batch should ask for. */
-    public function claim()
+    /**
+     * How many units the next batch of this kind should ask for.
+     *
+     * A kind with no batch behind it in this request asks for the first claim,
+     * never for another kind's: what a page of group rows proved about memory
+     * says nothing about a page of records.
+     */
+    public function claim($kind = '')
     {
-        return $this->claim;
+        $kind = (string) $kind;
+        return isset($this->claims[$kind]) ? $this->claims[$kind] : $this->first;
     }
 
     /**
@@ -260,13 +283,16 @@ final class WorkBudget
      * Callers inside the scan go through mark()/observe(), which measure; this
      * is the arithmetic, kept public so it can be driven with stated numbers.
      *
-     * @param array $obs {records:int, seconds:float,
+     * @param array $obs {kind:string     what the batch was a batch of; '' when unsaid,
+     *                    records:int, seconds:float,
      *                    memoryDelta:int  what the batch cost, in bytes of REAL usage,
      *                    usage:int        the ARENA now, which is what the limit caps}
      * @return array{claim:int, stop:?string, why:?string}
      */
     public function next(array $obs)
     {
+        $kind    = isset($obs['kind']) ? (string) $obs['kind'] : '';
+        $current = $this->claim($kind);
         $done    = isset($obs['records']) ? max(0, (int) $obs['records']) : 0;
         $seconds = isset($obs['seconds']) ? max(0.0, (float) $obs['seconds']) : 0.0;
         $memPer  = 0;
@@ -275,7 +301,7 @@ final class WorkBudget
         }
         $usage = isset($obs['usage']) ? (int) $obs['usage'] : $this->read(false)['arena'];
 
-        $want = $this->claim;
+        $want = $current;
         if ($done > 0 && $seconds > 0.0) {
             $perRecord = $seconds / $done;
             $want = (int) floor($this->target() / $perRecord);
@@ -284,7 +310,7 @@ final class WorkBudget
             // empty records measures a per-record cost that no later batch will
             // repeat, and acting on it in one step is how a scan that had been
             // running comfortably suddenly asks for ten thousand records.
-            $ceiling = (int) ceil($this->claim * self::MAX_GROWTH);
+            $ceiling = (int) ceil($current * self::MAX_GROWTH);
             if ($want > $ceiling) $want = $ceiling;
         }
         $want = max($this->min, min($this->max, $want));
@@ -295,8 +321,8 @@ final class WorkBudget
         if ($this->memLimit !== null && $memPer > 0) {
             $room = (int) ($this->memLimit * (1.0 - self::RESERVE)) - $usage;
             if ($room <= 0) {
-                $this->claim = $this->min;
-                return ['claim' => $this->claim, 'stop' => 'memory', 'why' => self::OUT_OF_MEMORY];
+                $this->claims[$kind] = $this->min;
+                return ['claim' => $this->min, 'stop' => 'memory', 'why' => self::OUT_OF_MEMORY];
             }
             $fits = (int) floor($room / $memPer);
             if ($fits < $want) {
@@ -311,7 +337,7 @@ final class WorkBudget
             }
         }
 
-        $this->claim = $want;
+        $this->claims[$kind] = $want;
         $stop = $this->mustStop(null, $usage);
         if ($stop === 'time')   return ['claim' => $want, 'stop' => $stop, 'why' => self::OUT_OF_TIME];
         if ($stop === 'memory') return ['claim' => $want, 'stop' => $stop, 'why' => self::OUT_OF_MEMORY];

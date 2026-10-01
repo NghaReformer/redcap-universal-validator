@@ -327,8 +327,16 @@ final class ScanWorker
                             'why' => 'this scan has no way to decide duplicate values, so it '
                                    . 'stopped rather than reporting that it found none'];
                 }
+                // TWO CLAIMS, because a step is one of two different things
+                // and nobody knows which until it has run (review BU-1). A page
+                // of group or candidate rows costs a kilobyte a row; a verify
+                // page re-reads whole records through the scan's own read and
+                // costs what a scanning batch costs. Handing both the one claim
+                // let cheap pages double it to the maximum, and the verify page
+                // after them re-read 500 records and died at memory_limit with
+                // this worker's slot still leased.
                 $mark = $budget->mark('groups');
-                $r = $fin->step($generationId, $budget->claim());
+                $r = $fin->step($generationId, $budget->claim('groups'), $budget->claim('records'));
                 $found += $r['emitted'];
                 $blocked += $r['collisions'];
                 if ($r['done']) {
@@ -340,8 +348,16 @@ final class ScanWorker
                     $done = true;
                     break;
                 }
-                $adj = $budget->observe($mark,
-                    max(1, $r['verified'] + $r['emitted'] + $r['groups']));
+                // A step that re-read records WAS a batch of records, and is
+                // measured as one, so the next verify page is sized by what
+                // re-reading records actually cost.
+                $units = max(1, $r['verified'] + $r['emitted'] + $r['groups']);
+                $reread = isset($r['read']) ? max(0, (int) $r['read']) : 0;
+                if ($reread > 0) {
+                    $mark['kind'] = 'records';
+                    $units = $reread;
+                }
+                $adj = $budget->observe($mark, $units);
                 if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
                 continue;
             }
@@ -354,7 +370,7 @@ final class ScanWorker
                 $roll = isset($this->deps['rollup']) ? $this->deps['rollup'] : null;
                 if ($roll instanceof RollupBuilder) {
                     $mark = $budget->mark('rows');
-                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim());
+                    $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'));
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
                             // The lease moved under us. Its page was discarded
@@ -382,7 +398,7 @@ final class ScanWorker
             // round would find it unchanged and settle over work not yet done.
             if ($phase === ScanPhase::CATCH_UP) {
                 $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
-                                                      $budget->claim());
+                                                      $budget->claim('records'));
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
                                                              $found, $phase);
                 if (!$claimed) {
@@ -398,7 +414,7 @@ final class ScanWorker
                     $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
                     if ($cu instanceof CatchUp) {
                         $mark = $budget->mark('changes');
-                        $r = $cu->step($pid, $runId, $epoch, $budget->claim());
+                        $r = $cu->step($pid, $runId, $epoch, $budget->claim('changes'));
                         if (!$r['done']) {
                             $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
@@ -414,7 +430,8 @@ final class ScanWorker
                     break;
                 }
             } else {
-                $claimed = $this->store->claim($runId, $this->owner(), $epoch, $budget->claim());
+                $claimed = $this->store->claim($runId, $this->owner(), $epoch,
+                                               $budget->claim('records'));
             }
 
             if ($claimed === false) {

@@ -16,10 +16,21 @@ interface DuplicateFinalizer
     /**
      * One bounded unit of work.
      *
+     * TWO LIMITS, because a step is one of two very different things (review
+     * BU-1). $limit bounds a page of group or candidate ROWS - discovery and
+     * emission, a kilobyte a row. $readLimit bounds a verify page, which
+     * re-reads whole RECORDS through the scan's own read and costs what a
+     * scanning batch costs. With one limit for both, cheap pages grew it to
+     * the maximum and the verify page after them re-read 500 records in one
+     * go. Null means $limit, for callers that size nothing.
+     *
+     * `read` in the answer is how many records the step re-read, so the caller
+     * can measure that step as a batch of records rather than of groups.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, why:?string}
+     *               collisions:int, read:int, why:?string}
      */
-    public function step($generationId, $limit = 500);
+    public function step($generationId, $limit = 500, $readLimit = null);
 }
 
 /**
@@ -151,14 +162,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
      * budget decides how much of a request this phase may take - the same
      * arrangement the scanning phase has, for the same reason.
      *
+     * The two limits, and `read`, are DuplicateFinalizer::step()'s.
+     *
      * @return array{done:bool, groups:int, verified:int, emitted:int, published:int,
-     *               collisions:int, why:?string}
+     *               collisions:int, read:int, why:?string}
      */
-    public function step($generationId, $limit = 500)
+    public function step($generationId, $limit = 500, $readLimit = null)
     {
         $limit = max(1, min(5000, (int) $limit));
+        $readLimit = $readLimit === null ? $limit : max(1, min(5000, (int) $readLimit));
         $out = ['done' => false, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                'published' => 0, 'collisions' => 0, 'why' => null];
+                'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
 
         // Discovery first: a group that has not been discovered cannot be
         // worked, and discovery is cheap and resumable from what it has already
@@ -174,8 +188,10 @@ final class UniqueFinalizer implements DuplicateFinalizer
         }
 
         if ($g['phase'] === self::G_NEW || $g['phase'] === self::G_VERIFYING) {
-            $r = $this->verify($generationId, $g, $limit);
+            // A verify page re-reads records, so the RECORDS limit bounds it.
+            $r = $this->verify($generationId, $g, $readLimit);
             $out['verified'] += $r['checked'];
+            $out['read'] += $r['read'];
             $out['collisions'] += $r['collision'] ? 1 : 0;
             $out['why'] = $r['why'];
             return $out;
@@ -349,7 +365,11 @@ final class UniqueFinalizer implements DuplicateFinalizer
      * - so a comparison delegated to the server would merge tuples this module
      * considers distinct, and it would do it silently.
      *
-     * @return array{checked:int, collision:bool, why:?string}
+     * `read` is how many distinct records the page handed the reader, which is
+     * what the page costs: the reader re-reads whole records, and two fields
+     * of one record under one rule are one record read, not two.
+     *
+     * @return array{checked:int, collision:bool, read:int, why:?string}
      */
     public function verify($generationId, array $g, $limit)
     {
@@ -366,14 +386,16 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 SET phase = ?, emit_cursor = 0
                 WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
                 [self::G_EMITTING, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-            return ['checked' => 0, 'collision' => false, 'why' => null];
+            return ['checked' => 0, 'collision' => false, 'read' => 0, 'why' => null];
         }
 
         $locs = [];
+        $records = [];
         foreach ($rows as $r) {
             $locs[] = ['record' => $r[1], 'event_id' => self::eventOrNull($r[2]),
                        'instance' => (int) $r[3], 'field' => $r[4],
                        'candidate_id' => (int) $r[0], 'version' => $r[5]];
+            $records[(string) $r[1]] = true;
         }
 
         $read = isset($this->deps['read']) ? $this->deps['read'] : null;
@@ -383,13 +405,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
             // module will emit.
             $this->block($g, 'the values behind this duplicate group could not be re-read, so it '
                 . 'was not decided');
-            return ['checked' => 0, 'collision' => true, 'why' => 'no reader was configured'];
+            return ['checked' => 0, 'collision' => true, 'read' => 0,
+                    'why' => 'no reader was configured'];
         }
+        // From here on the records WERE read, whatever happens next, and the
+        // memory that cost is what the caller has to measure.
+        $n = count($records);
         $got = $read($locs);
         if (empty($got['ok'])) {
             $this->block($g, 'the values behind this duplicate group could not be re-read, so it '
                 . 'was not decided');
-            return ['checked' => 0, 'collision' => true,
+            return ['checked' => 0, 'collision' => true, 'read' => $n,
                     'why' => isset($got['why']) ? $got['why'] : 'the values could not be re-read'];
         }
         $values = isset($got['values']) && is_array($got['values']) ? $got['values'] : [];
@@ -408,7 +434,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $is  = isset($now[$l['record']]) ? $now[$l['record']] : null;
                 if ($was !== $is) {
                     $this->restart($g);
-                    return ['checked' => 0, 'collision' => false,
+                    return ['checked' => 0, 'collision' => false, 'read' => $n,
                             'why' => 'a record in this duplicate group changed while it was being '
                                    . 'checked, so the group is being checked again'];
                 }
@@ -427,7 +453,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 // singleton with nothing said.
                 $this->block($g, 'part of this duplicate group could not be re-read, so it was '
                     . 'not decided');
-                return ['checked' => $checked, 'collision' => true, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
             }
             $tuple = self::canonicalTuple($values[$key]);
             if ($rep === null) {
@@ -442,7 +468,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 // coverage and says so.
                 $this->block($g, 'two different values in this project share a hash, so this '
                     . 'group\'s duplicates could not be decided');
-                return ['checked' => $checked, 'collision' => true, 'why' => null];
+                return ['checked' => $checked, 'collision' => true, 'read' => $n, 'why' => null];
             }
             $cursor = $l['candidate_id'];
             $checked++;
@@ -452,7 +478,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
             SET phase = ?, verify_cursor = ?
             WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
             [self::G_VERIFYING, $cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-        return ['checked' => $checked, 'collision' => false, 'why' => null];
+        return ['checked' => $checked, 'collision' => false, 'read' => $n, 'why' => null];
     }
 
     /**
