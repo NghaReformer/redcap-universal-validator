@@ -61,10 +61,10 @@ namespace {
      */
     class SvcNoDuplicates implements \INSPIRE\UniversalValidator\Scan\DuplicateFinalizer
     {
-        public function step($generationId, $limit = 500)
+        public function step($generationId, $limit = 500, $readLimit = null)
         {
             return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
-                    'published' => 0, 'collisions' => 0, 'why' => null];
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
         }
     }
 

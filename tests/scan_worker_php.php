@@ -2700,9 +2700,12 @@ namespace INSPIRE\UniversalValidator\Scan {
         $live->addAggregate($lid, $K[0], 'x', null, 40);
         check('findings: a run still working reports what it has stored so far',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid), ['detail_rows' => 7])) === 7);
-        check('findings: so does one that ended before it could build a summary',
+        // OC-4: a run that ended without a verdict answers with the LARGER of
+        // its counter and whatever summary it built, because the counter misses
+        // every duplicate the uniqueness finalizer wrote.
+        check('findings: one that ended without a verdict answers with the larger of its counter and its summary',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
-                ['detail_rows' => 7, 'terminal' => ScanOutcome::CANCELLED])) === 7);
+                ['detail_rows' => 7, 'terminal' => ScanOutcome::CANCELLED])) === 40);
         check('findings: and one that reached a verdict answers from the summary',
             ScanPromotion::findingsOf($live, array_merge($live->run(815, $lid),
                 ['detail_rows' => 7, 'terminal' => ScanOutcome::PARTIAL])) === 40);
