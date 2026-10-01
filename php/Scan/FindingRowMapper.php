@@ -77,6 +77,7 @@ final class FindingRowMapper
     private $now;
     private $hashed;
     private $hasher;
+    private $recordIdField;
     private $stored;
     private $effective;
     private $identifiers;
@@ -107,6 +108,9 @@ final class FindingRowMapper
      *                 project) and Hmac::P_RECORD is a different formula: a
      *                 report hashed with that one names every record something
      *                 the log has never heard of.
+     *   recordIdField the project's record-id field. REQUIRED when hashed: a
+     *                 finding on that field carries the id as its value, and
+     *                 a hashed Record cell beside a raw Value cell is no hash.
      *   valuesState   the run's values_state: what the scan KEPT.
      *   readerCeiling the most this reader may see. Defaults to the least.
      *   identifiers   field => true for Identifier fields, or null when the
@@ -142,11 +146,18 @@ final class FindingRowMapper
             // produce a full, plausible report with the wrong ids in it.
             throw new \InvalidArgumentException('hashed record ids need the hasher the audit log uses; none was given');
         }
+        $idField = isset($opts['recordIdField']) ? (string) $opts['recordIdField'] : '';
+        if ($ids === self::IDS_HASHED && $idField === '') {
+            // Without it the mapper cannot tell which Value cells hold the id.
+            throw new \InvalidArgumentException('hashed record ids need the record-id field, '
+                . 'whose findings carry the id as their value; none was given');
+        }
 
         $this->pid = $pid;
         $this->now = $now;
         $this->hashed = ($ids === self::IDS_HASHED);
         $this->hasher = $hasher;
+        $this->recordIdField = $idField;
         $this->stored = ScanPolicy::floor(isset($opts['valuesState']) ? $opts['valuesState'] : null, 'raw');
         // THE READER CAN ONLY LOWER IT. floor() ranks an unknown mode lowest, so
         // a missing or misspelt ceiling shows locations only.
@@ -269,6 +280,12 @@ final class FindingRowMapper
         //    value and this reader is capped below raw. Flags that cannot be
         //    read withhold: "could not tell" is not "is not".
         if ($bin === self::IDENTIFIER_MARKER) return self::cell('identifier', true);
+        //    The record id, when this report hashes record ids. A rule on the
+        //    record-id field puts the id in the Value cell, beside a Record
+        //    cell that hashed it. The hash is already in that Record cell, so
+        //    withholding loses nothing; hashing a value that may have been cut
+        //    at 255 bytes could name a record that does not exist.
+        if ($this->hashed && $field === $this->recordIdField) return self::cell('identifier', true);
         if ($this->effective !== 'raw'
             && ($this->identifiers === null || !empty($this->identifiers[$field]))) {
             return self::cell('identifier', true);

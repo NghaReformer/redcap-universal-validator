@@ -195,7 +195,7 @@ namespace {
     function mapper(array $over = []) {
         return new FindingRowMapper($over + ['pid' => PID, 'now' => NOW, 'valuesState' => 'raw',
                                              'readerCeiling' => 'raw', 'identifiers' => [],
-                                             'recordIds' => 'raw']);
+                                             'recordIds' => 'raw', 'recordIdField' => 'record_id']);
     }
 
     /** A ScanDimensions filled by hand, the way wave 11 will fill one from a snapshot. */
@@ -544,6 +544,23 @@ namespace {
         $line = (new ScanReport($map, dims(), runRow()))->csvLine(row(['record_id_bin' => 'PATIENT-0042']));
         check('record ids: nor in the line of the file', strpos($line, 'PATIENT-0042') === false
             && strpos($line, $shown) !== false);
+
+        // RP-5. A finding ON the record-id field carries the id as its value. The
+        // Record cell was hashed and the Value cell beside it was not.
+        $onId = row(['record_id_bin' => 'PATIENT-0042', 'field' => 'record_id', 'check_type' => 'single',
+                     'reason_code' => 'format', 'value_bin' => 'PATIENT-0042', 'value_len' => 12]);
+        $idLine = (new ScanReport($map, dims(), runRow()))->csvLine($onId);
+        check('record ids: a finding on the record-id field does not put the raw id in its Value cell',
+            strpos($idLine, 'PATIENT-0042') === false && strpos($idLine, $shown) !== false
+            && $map->toFinding($onId)['valueState'] === 'identifier');
+        check('record ids (control): another field\'s value is still shown under hashed ids',
+            $map->toFinding(row(['record_id_bin' => 'PATIENT-0042']))['value'] === 'NO');
+        check('record ids (control): with raw ids the record-id field\'s value is shown, as the Record cell is',
+            mapper()->toFinding($onId)['value'] === 'PATIENT-0042');
+        check('record ids: hashed with no record-id field named refuses to build',
+            throws('InvalidArgumentException', function () use ($audit) {
+                mapper(['recordIds' => 'hashed', 'hashRecordId' => $audit, 'recordIdField' => null]);
+            }));
 
         // Hmac::P_RECORD is the scan's INTERNAL record hash. It is a different
         // formula, and a report hashed with it names records the log never has.
