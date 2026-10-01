@@ -249,7 +249,8 @@ function storeContract(callable $newStore, $label)
     $sc = $newStore();
     $cid = (int) $sc->startRun(760, ['created_by' => 'alice'])['run']['run_id'];
     $C('a complete run with nothing found is recorded clean',
-        $sc->finish($cid, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true])) === true
+        $sc->finish($cid, ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+            'violations' => 0, 'ruleProblems' => 0])) === true
         && (int) $sc->run(760, $cid)['clean'] === 1
         && $sc->run(760, $cid)['clean'] !== null);
     $did = (int) $sc->startRun(761, ['created_by' => 'alice'])['run']['run_id'];

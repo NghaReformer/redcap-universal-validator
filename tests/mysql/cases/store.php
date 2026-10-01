@@ -745,7 +745,8 @@ $DECIDED = 783;
         (int) $row[2] === 7 && (int) $row[3] === 2 && (int) $row[4] === 5);
     check('decided: the reason it ended, and the slot given back',
         $row[5] === $o['why'] && (int) $row[6] === 1);
-    $clean = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true]);
+    $clean = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+                                  'violations' => 0, 'ruleProblems' => 0]);
     check('decided: a second finaliser with a better story is refused',
         $s->finish($rid, $clean) === false);
     $again = $raw($rid);
