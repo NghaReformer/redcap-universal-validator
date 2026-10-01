@@ -526,6 +526,32 @@ namespace {
         check('H-05: and the reason is stated', !empty($res['incomplete']));
     }
     {
+        // EE-2. A record whose every READ field is blank. getData omits a blank
+        // field, so without the record-id field in the request the record comes
+        // back with no node at all: the legacy scan reported it "requested but
+        // not returned", and the durable worker, since H18 asks whether it
+        // still exists, filed it UNREADABLE on every run. It is exactly the
+        // record @UVREQUIRED exists to flag.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => '']]];
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;              // model REDCap: blanks are omitted
+        $res = $m->scanProject(PID);
+        check('EE-2: the legacy scan examines a record whose every read field is blank',
+            $res['status'] === 'complete' && empty($res['incomplete']));
+        check('EE-2: and reports the blank required field', vcount($res) === 1);
+
+        $m = mkMod($D, $data);
+        \REDCap::$filterByFields = true;
+        $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+        $got = (!empty($ctx['ok']) && is_callable($ctx['read'])) ? $ctx['read'](['1']) : null;
+        check('EE-2: the durable read returns a node for that record',
+            is_array($got) && !empty($got['ok']) && isset($got['data'][1]));
+        $ev = isset($got['data'][1]) ? $ctx['evaluate']('1', $got['data'][1]) : null;
+        check('EE-2: and evaluating it files the blank required field',
+            is_array($ev) && $ev['why'] === null && count($ev['findings']) === 1);
+    }
+    {
         // REDCap returned the record, with nothing in it. Zero contexts is not
         // zero violations.
         $D = dict(['record_id' => ['fa'], 'a_val' => ['fa', '@UVREQUIRED']]);

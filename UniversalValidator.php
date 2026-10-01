@@ -3023,10 +3023,14 @@ class UniversalValidator extends AbstractExternalModule
             // skipping it produced a green "No violations found" for records that
             // were never examined, which is the worst possible failure for a tool
             // whose entire output is an assurance.
+            // The record-id field rides along, as in durableScanContext(): without
+            // it a record whose every read field is blank is omitted by getData
+            // and reported as "requested but not returned" instead of examined.
             try {
                 $data = \REDCap::getData([
                     'project_id' => $pid, 'return_format' => 'array',
-                    'records' => $chunk, 'fields' => array_keys($readSet),
+                    'records' => $chunk,
+                    'fields' => array_keys($readSet + [$pk => true]),
                     'exportDataAccessGroups' => true,
                 ]);
             } catch (\Throwable $e) {
@@ -3436,7 +3440,24 @@ class UniversalValidator extends AbstractExternalModule
         // The read the worker performs. Explicit records, and only the fields
         // the plan actually needs - the same narrowing the chunked legacy path
         // does, for the same reason.
+        //
+        // PLUS THE RECORD-ID FIELD, for the reason foldRuleConditions() gives
+        // (H-06): getData omits a blank field, so a record whose every field in
+        // the read set is blank comes back with no node at all. Since H18 the
+        // worker asks whether such a record still exists, is told it does, and
+        // files it UNREADABLE on every run - so the record @UVREQUIRED exists to
+        // flag is never evaluated and the project can never finish complete.
+        // The record id is stored for every record and is never blank. It is
+        // added to the READ only: $plan['readSet'] also keys the entitlement,
+        // and the record id is not form data the scan reports on.
         $fields = array_keys($plan['readSet']);
+        $pk = null;
+        try {
+            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField($pid);
+        } catch (\Throwable $e) {
+            $pk = null;     // not exposed on this build; the read is what it was
+        }
+        if (is_string($pk) && $pk !== '' && !in_array($pk, $fields, true)) $fields[] = $pk;
         $read = function (array $recordIds) use ($pid, $fields) {
             try {
                 if (!is_callable(['\REDCap', 'getData'])) {

@@ -331,10 +331,19 @@ namespace {
         // THE EXACT SET, both directions. This is the check that catches a
         // future column enricher reading a field it never added to the read set,
         // and equally a derivation that entitles more than the run reads.
+        //
+        // ONE STATED EXCEPTION: the record-id field (EE-2). It is read so that a
+        // record whose every field is blank still comes back from getData, and
+        // it is not entitled because its value is the record's name, which the
+        // run already holds for every record it lists. Entitling it would refuse
+        // the scan to anyone barred from the first instrument for no disclosure.
         $ownKeys = array_keys($p['ctx']['ownership']);
+        $askedData = array_values(array_diff($p['asked'], ['record_id']));
         sort($ownKeys, SORT_STRING);
         check('C5: the entitlement is derived from exactly the fields getData is asked for',
-            $ownKeys === $p['asked']);
+            $ownKeys === $askedData);
+        check('C5: and the record-id field is read alongside them (EE-2)',
+            in_array('record_id', $p['asked'], true));
         // THE UPPER BOUND, and it is the check standing between this fix and a
         // module that refuses every scan on every project.
         check('C5: an instrument no rule reads is NOT in the entitlement set',
