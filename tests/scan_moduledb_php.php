@@ -293,12 +293,40 @@ namespace INSPIRE\UniversalValidator\Scan {
     // used to have, and the fix was to make it return its own count.
     // ---------------------------------------------------------------------
 
+    /**
+     * Calls on an object that cannot move what affected() answers: reads and
+     * transaction control. Any OTHER method called between a write and the read
+     * of its count is "unknown" - it may itself write (review ST-3).
+     */
+    const ORDER_LINT_SAFE = ['select', 'begin', 'commit', 'rollback'];
+
     /** @return array list of "function:line problem" for one PHP source text */
     function writeOrderFaults($source)
     {
         $toks = token_get_all($source);
         $faults = [];
         $fn = null; $fnDepth = null; $depth = 0; $pendingFn = null; $last = null;
+        // TWO MORE THINGS THE LINEAR WALK COULD NOT SEE (review ST-3).
+        //
+        // A HELPER BETWEEN THE WRITE AND THE READ. `$this->audit()` sends an
+        // uncounted INSERT, so `exec(); $this->audit(); affected()` reads a
+        // count the helper has already spoiled - and the walk, which only knew
+        // the db's own verbs, saw exec() then affected() and passed it. Any
+        // method called after the write (outside the write's own argument list)
+        // and before the read now makes the count unknown, unless it is one of
+        // ORDER_LINT_SAFE.
+        //
+        // A WRITE ON EACH SIDE OF A BRANCH. `if (..) execNoCount(); else exec();
+        // affected()` is linear token order execNoCount, exec, read - so the
+        // walk saw exec() last and passed a read that is wrong on one path. An
+        // uncounted write since the previous read, then a branch (else,
+        // elseif, case, default, or a ternary's ? or :), then the counted
+        // write, is now a fault. That also catches some code which would be
+        // correct - an uncounted write followed by an if/else that writes
+        // counted on both arms - and the cure is the one insertFindingChunk()
+        // takes: give the counted write and its read a function of their own.
+        $writeEnd = -1; $taint = null;
+        $lastReadAt = -1; $lastExecAt = -1; $noCountAt = []; $branchAt = [];
         $count = count($toks);
         for ($i = 0; $i < $count; $i++) {
             $t = $toks[$i];
@@ -307,6 +335,8 @@ namespace INSPIRE\UniversalValidator\Scan {
                     $depth++;
                     if ($pendingFn !== null && $fn === null) {
                         $fn = $pendingFn; $fnDepth = $depth; $last = null;
+                        $taint = null; $writeEnd = -1;
+                        $lastReadAt = $lastExecAt = -1; $noCountAt = []; $branchAt = [];
                     }
                     $pendingFn = null;
                 } elseif ($t === '}') {
@@ -314,7 +344,16 @@ namespace INSPIRE\UniversalValidator\Scan {
                     $depth--;
                 } elseif ($t === ';') {
                     $pendingFn = null;          // an interface or abstract declaration
+                } elseif (($t === '?' || $t === ':') && $i > $writeEnd) {
+                    // A ternary's two arms are branches. Not inside a write's
+                    // own arguments, which run before the write whatever they
+                    // choose.
+                    $branchAt[] = $i;
                 }
+                continue;
+            }
+            if (in_array($t[0], [T_ELSE, T_ELSEIF, T_CASE, T_DEFAULT], true)) {
+                $branchAt[] = $i;
                 continue;
             }
             if ($t[0] === T_CURLY_OPEN || $t[0] === T_DOLLAR_OPEN_CURLY_BRACES) { $depth++; continue; }
@@ -346,14 +385,46 @@ namespace INSPIRE\UniversalValidator\Scan {
                 break;
             }
             if (!$open) continue;
+            $where = ($fn === null ? '(file scope)' : $fn) . ':' . $name[2] . ' ';
             if ($name[1] === 'exec' || $name[1] === 'execNoCount') {
                 $last = $name[1];
+                $taint = null;
+                if ($name[1] === 'exec') $lastExecAt = $i; else $noCountAt[] = $i;
+                // The write's own argument list is evaluated BEFORE the write,
+                // so a call inside it cannot spoil the count; skip to its end.
+                $paren = 0;
+                for ($p = $k; $p < $count; $p++) {
+                    if ($toks[$p] === '(') $paren++;
+                    elseif ($toks[$p] === ')' && --$paren === 0) break;
+                }
+                $writeEnd = $p;
             } elseif ($name[1] === 'affected') {
                 if ($last !== 'exec') {
-                    $faults[] = ($fn === null ? '(file scope)' : $fn) . ':' . $name[2] . ' '
+                    $faults[] = $where
                         . ($last === null ? 'reads a count with no write above it'
                                           : 'reads a count after execNoCount()');
+                } elseif ($taint !== null) {
+                    $faults[] = $where . 'reads a count after ' . $taint
+                        . '(), which may have written since the counted one';
+                } else {
+                    // An uncounted write since the previous read, then a
+                    // branch, then the counted write this read follows.
+                    $split = false;
+                    foreach ($noCountAt as $nc) {
+                        if ($nc <= $lastReadAt) continue;
+                        foreach ($branchAt as $b) {
+                            if ($b > $nc && $b < $lastExecAt) { $split = true; break 2; }
+                        }
+                    }
+                    if ($split) {
+                        $faults[] = $where . 'reads a count that an execNoCount() on another '
+                            . 'branch may have replaced';
+                    }
                 }
+                $lastReadAt = $i;
+            } elseif ($last !== null && $i > $writeEnd
+                      && !in_array($name[1], ORDER_LINT_SAFE, true)) {
+                $taint = $name[1];
             }
         }
         return $faults;
@@ -377,6 +448,67 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('order lint: the word in a comment or a string is not a read',
         writeOrderFaults($wrap("// \$this->db->affected()\n\$s = '\$this->db->affected()';"
             . ' $this->db->execNoCount("U");')) === []);
+    // ST-3: a helper between the write and the read.
+    check('order lint: a helper called between the write and the read is caught',
+        count(writeOrderFaults($wrap(
+            '$this->db->exec("U"); $this->audit(1); return $this->db->affected();'))) === 1);
+    check('order lint: but a call inside the write\'s own arguments is not',
+        writeOrderFaults($wrap(
+            '$this->db->exec("U", [$this->now()]); return $this->db->affected();')) === []);
+    check('order lint: nor is a read of the database between them',
+        writeOrderFaults($wrap(
+            '$this->db->exec("U"); $this->db->select("S"); return $this->db->affected();')) === []);
+    // ST-3: a write on each side of a branch.
+    check('order lint: an uncounted write on the other branch of an if is caught',
+        count(writeOrderFaults($wrap('if ($a) $this->db->execNoCount("A"); else $this->db->exec("U");'
+            . ' return $this->db->affected();'))) === 1);
+    check('order lint: and of a switch',
+        count(writeOrderFaults($wrap('switch ($a) { case 1: $this->db->execNoCount("A"); break;'
+            . ' default: $this->db->exec("U"); } return $this->db->affected();'))) === 1);
+    check('order lint: and of a ternary',
+        count(writeOrderFaults($wrap('$a ? $this->db->execNoCount("A") : $this->db->exec("U");'
+            . ' return $this->db->affected();'))) === 1);
+    check('order lint: while an uncounted write before the previous read is not',
+        writeOrderFaults($wrap('$this->db->execNoCount("A"); $this->db->exec("U");'
+            . ' $x = $this->db->affected(); if ($x) { $this->db->exec("V"); }'
+            . ' else { $this->db->exec("W"); } return $this->db->affected();')) === []);
+    check('order lint: nor a ternary inside an uncounted write\'s own arguments',
+        writeOrderFaults($wrap('$this->db->execNoCount("A", [$a ? 1 : 2]); $this->db->exec("U");'
+            . ' return $this->db->affected();')) === []);
+
+    // THE REVIEW'S MUTATIONS OF THE REAL STORE, made in memory. Each anchor is
+    // asserted present first, so a refactor that moves one fails here rather
+    // than quietly turning the check into a test of nothing.
+    $storeSrc = file_get_contents(__DIR__ . '/../php/Scan/SqlScanStore.php');
+    $mutations = [
+        'M1 cancel() reads its count after audit(), which sends an uncounted write' => [
+            "        \$ok = \$this->db->affected() === 1;\n"
+            . "        if (\$ok) \$this->audit(\$pid, \$runId, 'cancel', \$actor, null);",
+            "        \$this->audit(\$pid, \$runId, 'cancel', \$actor, null);\n"
+            . "        \$ok = \$this->db->affected() === 1;"],
+        'M2 the claim fence is exec() on one branch and execNoCount() on the other' => [
+            "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)",
+            "                if (\$rec['state'] === 99) \$this->db->execNoCount('UPDATE x', []); else\n"
+            . "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)"],
+        'M3 the claim fence itself sent uncounted' => [
+            "                \$this->db->exec('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)",
+            "                \$this->db->execNoCount('UPDATE ' . Schema::table('scan_record') . '\n"
+            . "                    SET state = ?, attempts = LEAST(attempts + 1, 254)"],
+        'M4 finish() sent uncounted' => [
+            "        \$this->db->exec('UPDATE ' . Schema::table('scan_run') . '\n"
+            . "            SET phase = ?, terminal = ?",
+            "        \$this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '\n"
+            . "            SET phase = ?, terminal = ?"],
+    ];
+    check('order lint: the store as shipped has no fault to find', writeOrderFaults($storeSrc) === []);
+    foreach ($mutations as $what => $m) {
+        check('order lint: mutation anchor present - ' . $what, strpos($storeSrc, $m[0]) !== false);
+        check('order lint: and caught - ' . $what,
+            count(writeOrderFaults(str_replace($m[0], $m[1], $storeSrc))) >= 1);
+    }
 
     $lintFiles = glob(__DIR__ . '/../php/Scan/*.php');
     $lintFiles[] = __DIR__ . '/../UniversalValidator.php';
