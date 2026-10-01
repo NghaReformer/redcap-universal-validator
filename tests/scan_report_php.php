@@ -595,6 +595,26 @@ namespace {
         check('record ids (control): under log-values=none the legacy report hashes the id',
             is_string($shown) && $shown !== 'PATIENT-0042' && strlen($shown) === 64);
 
+        // RP-5, legacy half. The same leak lived in UniversalValidator's own
+        // report: a finding ON the record-id field put the raw id in the Value
+        // cell beside the hashed Record cell.
+        $idDict = dict(['record_id' => ['@UVASSERT={"assert":"[record_id] = \'zzz\'"}'], 'req' => []]);
+        $onIdLegacy = function ($logValues) use ($idDict, $data) {
+            $mm = mkMod($idDict, $data, [], ['log-values' => $logValues]);
+            $res = $mm->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
+            foreach ($res['violations'] as $v) {
+                if ($v['field'] === 'record_id') return $v;
+            }
+            return null;
+        };
+        $hashedRow = $onIdLegacy('none');
+        check('record ids: the legacy report withholds the value of a finding on the record-id field',
+            $hashedRow !== null && strpos(json_encode($hashedRow), 'PATIENT-0042') === false
+            && $hashedRow['value'] === '[identifier withheld]');
+        $rawRow = $onIdLegacy('');
+        check('record ids (control): with raw ids the legacy report shows that value, as its Record cell does',
+            $rawRow !== null && $rawRow['value'] === 'PATIENT-0042');
+
         $audit = function ($id) use ($key) { return hash_hmac('sha256', (string) $id, $key . '|' . PID); };
         $map = mapper(['recordIds' => 'hashed', 'hashRecordId' => $audit]);
         $f = $map->toFinding(row(['record_id_bin' => 'PATIENT-0042']));

@@ -2851,22 +2851,7 @@ class UniversalValidator extends AbstractExternalModule
         $dupes      = $plan['dupes'];
 
         // Record list first (ids only), then chunked full reads.
-        $pk = null;
-        try {
-            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
-        } catch (\Throwable $e) {
-        }
-        if (!is_string($pk) || $pk === '') {
-            // REDCap's FIRST data-dictionary field is the record identifier, so
-            // derive it rather than fall back to what this used to do: ask for
-            // every rule field for every record in ONE unchunked call. On a large
-            // project that is the whole project in memory before a single record
-            // has been examined, which defeats the chunk loop below entirely and
-            // fails as an uncatchable OOM rather than as a reported result.
-            $ddPk = $this->dataDictionary($pid);
-            $ddKeys = is_array($ddPk) ? array_keys($ddPk) : [];
-            $pk = isset($ddKeys[0]) ? (string) $ddKeys[0] : '';
-        }
+        $pk = $this->recordIdFieldOf($pid);
         if ($pk === '') {
             $result['incomplete'][] = 'the record identifier field could not be determined, so the '
                 . 'record list could not be read without exporting the whole project';
@@ -3189,6 +3174,36 @@ class UniversalValidator extends AbstractExternalModule
         return ($h === null || $h === '') ? '[record id unavailable]' : $h;
     }
 
+    /**
+     * The project's record-id field, or '' when it cannot be established.
+     *
+     * ONE ANSWER FOR EVERY CALLER. The scan's record list, both scan reads, the
+     * form path's read (H-06) and the report's redaction of the record-id field
+     * all need this, and three of them asked REDCap separately, two without the
+     * dictionary fallback. REDCap's FIRST data-dictionary field is the record
+     * identifier, so a build that does not expose getRecordIdField() still has
+     * an answer; without it the legacy scan used to ask for every rule field for
+     * every record in ONE unchunked call, which on a large project is the whole
+     * project in memory before a record has been examined.
+     */
+    private function recordIdFieldOf($pid)
+    {
+        $pk = null;
+        try {
+            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField($pid);
+        } catch (\Throwable $e) {
+            $pk = null;
+        }
+        if (is_string($pk) && $pk !== '') return $pk;
+        try {
+            $dd = $this->dataDictionary($pid);
+        } catch (\Throwable $e) {
+            $dd = null;
+        }
+        $keys = is_array($dd) ? array_keys($dd) : [];
+        return isset($keys[0]) ? (string) $keys[0] : '';
+    }
+
     /** Longest value the report will carry. A report is not a second copy of the project. */
     const REPORT_VALUE_MAX = 120;
 
@@ -3236,6 +3251,16 @@ class UniversalValidator extends AbstractExternalModule
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
         if (self::mustRedact($ids, $field, $mode)) return '[identifier withheld]';
+        // THE RECORD ID IS AN IDENTIFIER WHEREVER IT IS HASHED. Under
+        // log-values = none the Record column carries an HMAC because the id
+        // itself identifies the participant, and a finding on the record-id
+        // field put that same id, raw, in the Value cell beside it. Withheld
+        // under every mode, because the hashing is the project's posture and
+        // the reader's ceiling cannot lift it.
+        if (!empty($plan['hashRecordIds']) && isset($plan['recordIdField'])
+            && $plan['recordIdField'] !== '' && $field === (string) $plan['recordIdField']) {
+            return '[identifier withheld]';
+        }
 
         if (!mb_check_encoding($val, 'UTF-8')) {
             return '[' . strlen($val) . ' bytes, not valid text]';
@@ -3451,13 +3476,8 @@ class UniversalValidator extends AbstractExternalModule
         // added to the READ only: $plan['readSet'] also keys the entitlement,
         // and the record id is not form data the scan reports on.
         $fields = array_keys($plan['readSet']);
-        $pk = null;
-        try {
-            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField($pid);
-        } catch (\Throwable $e) {
-            $pk = null;     // not exposed on this build; the read is what it was
-        }
-        if (is_string($pk) && $pk !== '' && !in_array($pk, $fields, true)) $fields[] = $pk;
+        $pk = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
+        if ($pk !== '' && !in_array($pk, $fields, true)) $fields[] = $pk;
         $read = function (array $recordIds) use ($pid, $fields) {
             try {
                 if (!is_callable(['\REDCap', 'getData'])) {
@@ -3710,7 +3730,10 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none')];
+                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                // So reportValue() can withhold a finding's value on the field
+                // whose value IS the record id the column above hashes.
+                'recordIdField' => $this->recordIdFieldOf($pid)];
 
         // What this installation can actually support, and therefore what a run
         // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
@@ -5255,14 +5278,9 @@ class UniversalValidator extends AbstractExternalModule
         // 'ok' where it should be 'ambiguous'.
         // $fields is deliberately NOT widened: it keys $resolution and the value
         // map, and the caller asked about its own fields only.
-        $pk = null;
-        try {
-            if (is_callable(['\REDCap', 'getRecordIdField'])) $pk = \REDCap::getRecordIdField();
-        } catch (\Throwable $e) {
-            $pk = null;     // not exposed on this build; the guard below still holds
-        }
+        $pk = $this->recordIdFieldOf($project_id);   // '' when unknown; the guard below still holds
         $readFields = $fields;
-        if (is_string($pk) && $pk !== '' && !in_array($pk, $readFields, true)) $readFields[] = $pk;
+        if ($pk !== '' && !in_array($pk, $readFields, true)) $readFields[] = $pk;
 
         $params = [
             'project_id'    => $project_id,
