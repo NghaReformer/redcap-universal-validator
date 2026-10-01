@@ -167,3 +167,55 @@ $NEIGHBOUR = uv_neighbour($PID);
         \INSPIRE\UniversalValidator\Scan\RecordManifestSource::dataTable($dbA, $PID) === 'redcap_data');
     $A->query("UPDATE redcap_projects SET data_table = 'redcap_data' WHERE project_id = " . $PID);
 }
+
+// THE RECORD LIST IS A CACHE (review CL-1). REDCap builds redcap_record_list in
+// the background and says how far it got in redcap_record_counts. A list that
+// holds C1 while the data table holds C1 and C2 - a record created or edited
+// while the cache was being rebuilt - must neither leave C2 off the manifest nor
+// report it deleted.
+$CACHE = 910;
+{
+    $MS = '\INSPIRE\UniversalValidator\Scan\RecordManifestSource';
+    uv_redcap_project($A, $CACHE);
+    $A->query("INSERT INTO redcap_record_list (project_id, record, dag_id) VALUES (" . $CACHE . ", 'C1', NULL)");
+    foreach (array(array('C1', 'record_id'), array('C2', 'record_id'), array('C2', 'dob')) as $row) {
+        $A->query("INSERT INTO redcap_data (project_id, event_id, record, field_name, `value`)
+            VALUES (" . $CACHE . ", 1, '" . $row[0] . "', '" . $row[1] . "', 'x')");
+    }
+
+    // A REDCap that keeps no status: the index is judged by the probe, as it
+    // always was - and an absence from it is now confirmed against the data.
+    $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
+    check('cache: with no status table, a non-empty index is walked as before',
+        $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
+    $ans = $o['source']->exist(array('C1', 'C2', 'C9'));
+    check('cache: a record the index lacks but the data table holds is still there',
+        $ans['C1'] === true && $ans['C2'] === true);
+    check('cache: and a record neither holds is gone', $ans['C9'] === false);
+
+    uv_redcap_counts_schema($A);
+    uv_redcap_counts($A, $CACHE, 'PROCESSING');
+    $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
+    check('cache: a list REDCap is still building is not walked',
+        $o['ok'] === true && strpos($o['source']->via(), 'redcap_data') === 0);
+    $ids = array();
+    foreach ($o['source']->page(null, array(), 10)['rows'] as $r) $ids[] = $r['id'];
+    check('cache: so the record the list lacks is on the manifest', $ids === array('C1', 'C2'));
+
+    uv_redcap_counts($A, $CACHE, 'COMPLETE');
+    $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
+    check('cache: a list REDCap reports complete is walked',
+        $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
+    check('cache: and still confirms an absence against the data before calling it a deletion',
+        $o['source']->exist(array('C2'))['C2'] === true);
+    uv_redcap_counts($A, $CACHE, 'FIX_SORT');
+    $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
+    check('cache: FIX_SORT is complete, with only its order to repair',
+        $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
+
+    $A->query('DELETE FROM redcap_record_counts WHERE project_id = ' . $CACHE);
+    $o = $MS::open($dbA, $CACHE, array('pk' => 'record_id'));
+    check('cache: a project REDCap has no status for walks the data table',
+        $o['ok'] === true && strpos($o['source']->via(), 'redcap_data') === 0);
+    $A->query('DROP TABLE redcap_record_counts');
+}

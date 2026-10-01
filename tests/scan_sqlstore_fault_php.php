@@ -36,6 +36,14 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
+    // CL-1 and the catch-up resolver: a record-list cache that is not the
+    // project, and a probe that cannot answer.
+    require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
+    require_once __DIR__ . '/../php/Scan/SourceFence.php';
+    require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
+    require_once __DIR__ . '/../php/Scan/CatchUp.php';
     require_once __DIR__ . '/scan_fault_support.php';
     require_once __DIR__ . '/scan_run_row.php';
 
@@ -623,6 +631,203 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('marks: one with no axis is refused before the transaction is opened',
         $r['kind'] === 'other' && $r['class'] === 'RuntimeException' && $bad->log === []);
 
+    // =====================================================================
+    // CL-1 - REDCap's record list is a cache, and a cache is not the project
+    // =====================================================================
+    //
+    // redcap_record_list is built by REDCap in the background, and
+    // redcap_record_counts.record_list_status says how far it got. exist()
+    // answered "gone" for any id the list did not hold, and open() walked the
+    // list whenever it held one row for the project. A half-built list
+    // therefore tombstoned live records - through catch-up and through the
+    // worker's H18 path - and could leave records off the manifest entirely.
+
+    /**
+     * REDCap's three tables, as far as RecordManifestSource reads them.
+     * $index is the cache; $data is [record, field_name] rows; $status is the
+     * cache's record_list_status, or null for no row; $statusColumn false
+     * models a REDCap that keeps no status at all.
+     */
+    $cacheDb = function (array $index, array $data, $status = null, $statusColumn = true) {
+        return new class($index, $data, $status, $statusColumn) implements ScanDb {
+            public $index; public $data; public $status; public $statusColumn;
+            public $dataFails = false; public $statusFails = false; public $hasData = true;
+            public $log = [];
+            public function __construct($i, $d, $s, $c)
+            {
+                $this->index = $i; $this->data = $d; $this->status = $s; $this->statusColumn = $c;
+            }
+            public function select($sql, array $params = [])
+            {
+                $this->log[] = $sql;
+                if (strpos($sql, 'information_schema.columns') !== false) {
+                    if ($params[0] === 'redcap_record_list') return [['project_id'], ['record'], ['dag_id']];
+                    if ($params[0] === 'redcap_data') {
+                        return $this->hasData ? [['project_id'], ['record'], ['field_name']] : [];
+                    }
+                    if ($params[0] === 'redcap_record_counts') {
+                        return $this->statusColumn ? [['project_id'], ['record_count'], ['record_list_status']]
+                                                   : [['project_id'], ['record_count']];
+                    }
+                    return [];
+                }
+                if (strpos($sql, 'FROM redcap_record_counts') !== false) {
+                    if ($this->statusFails) throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    return $this->status === null ? [] : [[$this->status]];
+                }
+                if (strpos($sql, 'FROM redcap_projects') !== false) {
+                    return $this->hasData ? [['redcap_data']] : [];
+                }
+                if (strpos($sql, 'FROM redcap_record_list') !== false) {
+                    $ids = $this->index;
+                    $want = array_slice($params, 1);
+                } else {
+                    if ($this->dataFails && strpos($sql, 'DISTINCT record') !== false) {
+                        throw new \RuntimeException('Lock wait timeout exceeded', 1205);
+                    }
+                    $field = strpos($sql, 'field_name = ?') !== false ? $params[1] : null;
+                    $ids = [];
+                    foreach ($this->data as $row) {
+                        if ($field === null || $row[1] === $field) $ids[] = $row[0];
+                    }
+                    $ids = array_values(array_unique($ids));
+                    $want = array_slice($params, $field === null ? 1 : 2);
+                }
+                sort($ids);
+                if (strpos($sql, ' IN (') !== false) {
+                    $ids = array_values(array_intersect($ids, array_map('strval', $want)));
+                } elseif (preg_match('/record (>?=) \? /', $sql, $cmp)) {
+                    $at = (string) $params[count($params) - 1];
+                    $ids = array_values(array_filter($ids, function ($r) use ($cmp, $at) {
+                        return $cmp[1] === '=' ? $r === $at : strcmp($r, $at) >= 0;
+                    }));
+                }
+                if (preg_match('/LIMIT (\d+)/', $sql, $lim)) $ids = array_slice($ids, 0, (int) $lim[1]);
+                // The index walk selects the group beside the record.
+                $dag = strpos($sql, 'dag_id') !== false;
+                return array_map(function ($r) use ($dag) { return $dag ? [$r, null] : [$r]; }, $ids);
+            }
+            public function exec($sql, array $params = []) {}
+            public function execNoCount($sql, array $params = []) {}
+            public function affected() { return 0; }
+            public function begin() {}
+            public function commit() {}
+            public function rollback() {}
+        };
+    };
+    // R1 is in the cache; R2 is only in the data table - created, or edited,
+    // while the cache was being rebuilt; R9 is nowhere.
+    $data = [['R1', 'record_id'], ['R1', 'dob'], ['R2', 'record_id'], ['R2', 'dob']];
+
+    $o = RecordManifestSource::open($cacheDb(['R1'], $data, null, false), 800, ['pk' => 'record_id']);
+    check('cache: with no status kept, a non-empty index is still the walk it was',
+        $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
+    // A list REDCap calls COMPLETE can still be stale by the time it is asked,
+    // so exist() confirms an absence whatever the status said at open().
+    $db = $cacheDb(['R1'], $data, 'COMPLETE');
+    $open = RecordManifestSource::open($db, 800, ['pk' => 'record_id']);
+    $ans = $open['source']->exist(['R1', 'R2', 'R9']);
+    check('cache: a record the cache lacks but the data table holds is still there',
+        $open['source']->via() === 'redcap_record_list' && $ans['R1'] === true && $ans['R2'] === true);
+    check('cache: and a record neither holds is gone', $ans['R9'] === false);
+
+    $db->dataFails = true;
+    $ans = $open['source']->exist(['R2', 'R9']);
+    check('cache: a confirmation that cannot be read answers "still there"',
+        $ans['R2'] === true && $ans['R9'] === true);
+
+    // A source whose data table could not be resolved has nothing to confirm
+    // an absence against.
+    $none = $cacheDb(['R1'], $data, null, false);
+    $none->hasData = false;
+    $nOpen = RecordManifestSource::open($none, 800, ['pk' => 'record_id']);
+    check('cache: and with no data table to ask, an absence is not a deletion',
+        $nOpen['ok'] === true && $nOpen['source']->exist(['R9'])['R9'] === true);
+
+    // THE STATUS. Anything but COMPLETE or FIX_SORT walks the data table.
+    foreach (['NOT_STARTED' => false, 'PROCESSING' => false, 'COMPLETE' => true,
+              'FIX_SORT' => true] as $status => $index) {
+        $o = RecordManifestSource::open($cacheDb(['R1'], $data, $status), 800, ['pk' => 'record_id']);
+        check('cache: a list REDCap reports ' . $status . ' is ' . ($index ? '' : 'not ') . 'walked',
+            $o['ok'] === true
+            && ($index ? $o['source']->via() === 'redcap_record_list'
+                       : strpos($o['source']->via(), 'redcap_data') === 0));
+    }
+    $o = RecordManifestSource::open($cacheDb(['R1'], $data, null), 800, ['pk' => 'record_id']);
+    check('cache: a project REDCap has no status row for walks the data table',
+        $o['ok'] === true && strpos($o['source']->via(), 'redcap_data') === 0);
+    $sf = $cacheDb(['R1'], $data, 'COMPLETE');
+    $sf->statusFails = true;
+    $o = RecordManifestSource::open($sf, 800, ['pk' => 'record_id']);
+    check('cache: a status that cannot be read walks the data table',
+        $o['ok'] === true && strpos($o['source']->via(), 'redcap_data') === 0);
+    $o = RecordManifestSource::open($cacheDb(['R1'], $data, 'PROCESSING', false), 800, ['pk' => 'record_id']);
+    check('cache: a REDCap that keeps no status column is judged by the probe, as before',
+        $o['ok'] === true && $o['source']->via() === 'redcap_record_list');
+    $p = RecordManifestSource::open($cacheDb(['R1'], $data, 'PROCESSING'), 800, ['pk' => 'record_id']);
+    $pg = $p['source']->page(null, [], 10);
+    $ids = [];
+    foreach ($pg['rows'] as $r) $ids[] = $r['id'];
+    check('cache: so a record the half-built list lacks is still on the manifest',
+        $ids === ['R1', 'R2']);
+    $o = RecordManifestSource::open($cacheDb(['R1'], $data, 'PROCESSING'), 800, []);
+    check('cache: and without a record-id field the refusal says the index is incomplete',
+        $o['ok'] === false && strpos($o['why'], 'record index is not complete') !== false
+        && strpos($o['why'], 'record-id field could not be determined') !== false);
+
+    // =====================================================================
+    // CATCH-UP over the cache
+    // =====================================================================
+
+    /** A change log with a fixed window, as tests/scan_worker_php.php builds one. */
+    $window = function (array $changed) {
+        return new class($changed) implements ChangeLog {
+            private $changed;
+            public function __construct($c) { $this->changed = $c; }
+            public function now() { return '500'; }
+            public function retained($open) { return ['ok' => true, 'why' => null]; }
+            public function changedSince($after, $upTo, $afterId, $limit)
+            {
+                $out = [];
+                foreach ($this->changed as $id => $v) {
+                    if ($afterId !== null && strcmp((string) $id, (string) $afterId) <= 0) continue;
+                    $out[] = ['id' => (string) $id, 'version' => $v];
+                }
+                return $out;
+            }
+        };
+    };
+    /** A run in catch-up whose records were all examined at version 100. */
+    $inCatchUp = function (array $ids) {
+        $store = new ArrayScanStore();
+        $r = $store->startRun(800, ['created_by' => 'alice', 'fence_open' => '1']);
+        $runId = (int) $r['run']['run_id'];
+        $recs = [];
+        foreach ($ids as $id) $recs[] = ['id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null];
+        $store->writeManifest($runId, $recs);
+        $epoch = (int) $store->run(800, $runId)['lease_epoch'];
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($store->claim($runId, 'w1', $epoch, count($ids)) as $c) {
+            $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                                   'version' => '100', 'claim' => $c['claim']];
+        }
+        $store->commitBatch($runId, 'w1', $epoch, $batch);
+        $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+        return [$store, $runId, $epoch];
+    };
+    $hash = function ($id) { return hash('sha256', $id, true); };
+
+    // THE CACHE AND CATCH-UP TOGETHER, which is the reviewer's case: R2 was
+    // EDITED during the run and the half-built list does not hold it.
+    list($store, $runId, $epoch) = $inCatchUp(['R1', 'R2']);
+    $src = RecordManifestSource::open($cacheDb(['R1'], $data, 'COMPLETE'), 800,
+        ['pk' => 'record_id'])['source'];
+    $cu = new CatchUp($store, ['fence' => $window(['R2' => '400']), 'hash' => $hash,
+        'exists' => function (array $ids) use ($src) { return $src->exist($ids); }]);
+    $res = $cu->step(800, $runId, $epoch, 100);
+    check('catch-up: a record edited during the run and missing from the cache is requeued',
+        $res['requeued'] === 1 && $res['gone'] === 0
+        && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
 }
 
 namespace {

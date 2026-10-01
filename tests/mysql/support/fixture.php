@@ -222,6 +222,28 @@ function uv_redcap_schema($conn) {
 }
 
 /**
+ * REDCap's record-list status table, separately (review CL-1).
+ *
+ * redcap_record_counts.record_list_status says whether redcap_record_list is a
+ * complete copy of the project's records or a cache still being built. It is
+ * not created with the other three because most cases model a REDCap that
+ * keeps no status, where the index is judged by the walk's probe alone.
+ */
+function uv_redcap_counts_schema($conn) {
+    $conn->query("CREATE TABLE redcap_record_counts (project_id INT NOT NULL PRIMARY KEY,
+        record_count INT NULL, time_of_count DATETIME NULL,
+        record_list_status ENUM('NOT_STARTED','PROCESSING','COMPLETE','FIX_SORT')
+            NOT NULL DEFAULT 'NOT_STARTED') ENGINE=InnoDB");
+}
+
+/** One project's cache status, replacing whatever it had. */
+function uv_redcap_counts($conn, $pid, $status) {
+    $conn->query('DELETE FROM redcap_record_counts WHERE project_id = ' . (int) $pid);
+    $conn->query("INSERT INTO redcap_record_counts (project_id, record_list_status) VALUES ("
+        . (int) $pid . ", '" . $conn->real_escape_string($status) . "')");
+}
+
+/**
  * The log table, separately.
  *
  * The walk case asserts what happens when there is no log at all, so creating it

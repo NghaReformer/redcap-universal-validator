@@ -385,7 +385,7 @@ function uv_resolve_schema($conn, $name) {
  */
 function uv_redcap_tables() {
     return array('redcap_log_event', 'redcap_record_list', 'redcap_data', 'redcap_projects',
-                 'uv_readonly_probe');
+                 'redcap_record_counts', 'uv_readonly_probe');
 }
 
 /**
