@@ -313,6 +313,25 @@ interface ScanStore
      * fenced, and a finding that cannot be attributed to a claimed record
      * cannot be held back when that record is lost.
      *
+     * TRUE DOES NOT MEAN ANYTHING WAS KEPT. A batch whose every record was
+     * taken over commits: there is nothing to refuse. It writes no finding, no
+     * state and no mark, because it holds no record and so has no standing to
+     * say anything about the run. A caller that remembers what it sent on
+     * `true` therefore needs to know whether the batch held anything (review
+     * ST-4). ScanWorker remembers the presence marks it has sent so that it
+     * stops offering them, and a mark it remembers but the store dropped is
+     * never offered again.
+     *
+     * So ArrayScanStore and SqlScanStore take an optional FIFTH parameter,
+     * by reference: `&$heldCount = null`. They set it to the number of the
+     * batch's records still held when it committed, and to 0 whenever nothing
+     * was written: a refusal, a rollback, or a batch that held no record. It
+     * is not in the signature above because adding it here would break every
+     * implementation that predates it, including the test doubles that
+     * override this method with four parameters. A caller passes a variable
+     * set to null. When the variable comes back still null, the store does not
+     * report holding, and the caller keeps its old reading of `true`.
+     *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.
      */

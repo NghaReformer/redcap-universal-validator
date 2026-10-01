@@ -320,9 +320,14 @@ function storeContract(callable $newStore, $label)
         return ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'], 'state' => ScanStore::REC_DONE,
                 'claim' => $claim === null ? $c['claim'] : $claim];
     };
+    // HOW MANY RECORDS IT HELD comes back through the optional fifth
+    // parameter, by reference, from both stores (review ST-4). -1 going in, so
+    // a store that never set it cannot pass for one that answered 0.
+    $heldN = -1;
     $C('a stale epoch refuses the batch',
         $sm->commitBatch($mid, 'w1', $mep - 1, ['bytes' => 0, 'findings' => [],
-            'records' => [$rowOf($mc[0])], 'marks' => [$mark]]) !== true);
+            'records' => [$rowOf($mc[0])], 'marks' => [$mark]], $heldN) !== true);
+    $C('and reports that it held no record', $heldN === 0);
     $has = function () use ($sm, $mid, $of) {
         foreach ($of($sm, $mid, 'rule-problem') as $a) if ($a['axis1'] === '12') return true;
         return false;
@@ -330,13 +335,20 @@ function storeContract(callable $newStore, $label)
     $C('and its mark with it', $has() === false);
     // A batch that holds NONE of its rows commits - there is nothing to refuse -
     // and still has no standing to say anything about the run.
+    $heldN = -1;
     $C('a batch whose every row was taken over commits nothing of its own',
         $sm->commitBatch($mid, 'w1', $mep, ['bytes' => 0, 'findings' => [],
-            'records' => [$rowOf($mc[0], (int) $mc[0]['claim'] + 999)], 'marks' => [$mark]]) === true);
+            'records' => [$rowOf($mc[0], (int) $mc[0]['claim'] + 999)], 'marks' => [$mark]], $heldN) === true);
     $C('not even a mark', $has() === false);
+    // THE ANSWER THE WORKER WAS MISSING. `true` alone read as "sent, so
+    // written", and the worker stopped offering a mark the store had dropped.
+    $C('and it says it held nothing, so the caller knows the mark was not written',
+        $heldN === 0);
+    $heldN = -1;
     $C('a batch that holds its row commits',
         $sm->commitBatch($mid, 'w1', $mep, ['bytes' => 0, 'findings' => [],
-            'records' => [$rowOf($mc[0])], 'marks' => [$mark, $mark]]) === true);
+            'records' => [$rowOf($mc[0])], 'marks' => [$mark, $mark]], $heldN) === true);
+    $C('and says it held that one row', $heldN === 1);
     $inBatch = array_values(array_filter($of($sm, $mid, 'rule-problem'),
         function ($a) { return $a['axis1'] === '12'; }));
     $C('and its mark lands once, with its explanation',
@@ -640,17 +652,23 @@ function storeContract(callable $newStore, $label)
     };
     $refusedEach = true;
     $named = true;
+    $heldAfterRefusal = true;
     foreach (ScanStore::FINDING_REQUIRED as $k) {
         // The SECOND of two findings, so the SQL store would have sent both
         // rows in one statement - the shape the lenient server mishandles.
         $broken = $whole9(2);
         $broken[$k] = null;
-        $no = $s9->commitBatch($rid9, 'w1', $ep9, $batch9([$whole9(1), $broken]));
+        $h9 = -1;
+        $no = $s9->commitBatch($rid9, 'w1', $ep9, $batch9([$whole9(1), $broken]), $h9);
+        // The record WAS held when the insert failed; the rollback undid it.
+        if ($h9 !== 0) $heldAfterRefusal = false;
         if (!is_string($no) || strpos($no, 'database refused') === false) $refusedEach = false;
         if (!is_string($no) || strpos($no, 'no ' . $k . ';') === false) $named = false;
     }
     $C('a finding with any required value missing refuses the whole batch', $refusedEach);
     $C('and the refusal names the value that was missing', $named);
+    $C('and reports no record held, though the batch held one until it was refused',
+        $heldAfterRefusal);
     $C('leaving the record unexamined and nothing stored',
         $s9->manifestComplete($rid9) === false
         && (int) $s9->run(752, $rid9)['detail_rows'] === 0

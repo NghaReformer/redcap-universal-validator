@@ -651,8 +651,11 @@ final class SqlScanStore implements ScanStore
      * record used to destroy the work of every record beside it. Dropping its
      * findings costs nothing: the new holder is committing them.
      */
-    public function commitBatch($runId, $owner, $epoch, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
     {
+        // Nothing held until the transaction has committed, so every refusal,
+        // throw and rollback below leaves it at 0. See ScanStore::commitBatch().
+        $heldCount = 0;
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
@@ -912,6 +915,7 @@ final class SqlScanStore implements ScanStore
             $this->db->execNoCount($sql, $args);
 
             $this->db->commit();
+            $heldCount = count($held);
             return true;
         } catch (\Throwable $e) {
             $this->db->rollback();

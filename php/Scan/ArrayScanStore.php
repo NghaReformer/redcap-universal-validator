@@ -244,8 +244,10 @@ final class ArrayScanStore implements ScanStore
         return ++$this->seq[$pid];
     }
 
-    public function commitBatch($runId, $owner, $epoch, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
     {
+        // Nothing held until the batch is kept. See ScanStore::commitBatch().
+        $heldCount = 0;
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
@@ -474,6 +476,7 @@ final class ArrayScanStore implements ScanStore
         $this->runs[$runId]['detail_bytes'] += isset($batch['bytes']) ? (int) $batch['bytes'] : 0;
         // One of exactly two places, and only when a record actually finished.
         if ($applied > 0) $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
+        $heldCount = count($held);
         return true;
     }
 
