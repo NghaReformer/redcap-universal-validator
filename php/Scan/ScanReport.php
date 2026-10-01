@@ -39,17 +39,23 @@ final class ScanReport
     private $run;
 
     /**
-     * @param FindingRowMapper $mapper built for this project and THIS reader
+     * @param FindingRowMapper $mapper built for this project, THIS reader, and
+     *                                 the values_state the run row holds
      * @param ScanDimensions   $dims   the labels, as the run saw the project
      * @param array            $run    the run row, keyed by ScanStore::RUN_COLUMNS
+     * @throws \RuntimeException         when the run is another project's
+     * @throws \InvalidArgumentException when the row is short, or kept other values
      */
     public function __construct(FindingRowMapper $mapper, ScanDimensions $dims, array $run)
     {
-        foreach (['terminal', 'coverage', 'detail', 'clean', 'values_state'] as $k) {
+        foreach (['project_id', 'terminal', 'coverage', 'detail', 'clean', 'values_state'] as $k) {
             if (!array_key_exists($k, $run)) {
                 throw new \InvalidArgumentException('a report needs the run it reports on; the row has no ' . $k);
             }
         }
+        // The run row was taken on trust: nothing compared its project or what
+        // it kept with the mapper that fills the cells. See checkRun().
+        $mapper->checkRun($run);
         $this->mapper = $mapper;
         $this->dims = $dims;
         $this->run = $run;

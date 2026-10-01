@@ -157,6 +157,34 @@ final class FindingRowMapper
     }
 
     /**
+     * Refuse a run row this mapper was not built for. ScanReport calls it before
+     * it says anything about the run.
+     *
+     * TWO FACTS THE REPORT TAKES FROM TWO PLACES. The heading's project and
+     * valuesState come from the run row; the cells come from this mapper. A
+     * report for this project could say "clean" from another project's run,
+     * and a mapper told `raw` would show values under a heading that says the
+     * run kept locations. The values state is compared as floor() reads it, so
+     * a run row spelling the lowest mode another way ('none') is the same mode.
+     *
+     * @throws \RuntimeException         when the run is another project's
+     * @throws \InvalidArgumentException when the run kept something else
+     */
+    public function checkRun(array $run)
+    {
+        $pid = isset($run['project_id']) ? (int) $run['project_id'] : 0;
+        if ($pid !== $this->pid) {
+            throw new \RuntimeException('a report for project ' . $this->pid . ' was handed the run of project '
+                . ($pid ?: 'none') . '; refusing to report on it');
+        }
+        $kept = ScanPolicy::floor(isset($run['values_state']) ? $run['values_state'] : null, 'raw');
+        if ($kept !== $this->stored) {
+            throw new \InvalidArgumentException('the run kept "' . $kept . '" and this mapper was told "'
+                . $this->stored . '"; build the mapper from the run row');
+        }
+    }
+
+    /**
      * @param array $stored one row, keyed by INPUT_KEYS
      * @return array the finding ScanColumns renders, plus valueState, ruleSource
      *               and findingId

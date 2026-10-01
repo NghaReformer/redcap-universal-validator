@@ -182,9 +182,14 @@ namespace {
         return $base;
     }
 
-    /** A run row BY NAME, which is how both stores answer run(). */
+    /**
+     * A run row BY NAME, which is how both stores answer run(). This project's,
+     * and one that kept values as mapper() is told it did, unless overridden.
+     * The project id is a string, as the driver hands it over.
+     */
     function runRow(array $keyed = []) {
-        return array_combine(ScanStore::RUN_COLUMNS, uv_run_row($keyed));
+        return array_combine(ScanStore::RUN_COLUMNS,
+            uv_run_row($keyed + ['project_id' => (string) PID, 'values_state' => 'raw']));
     }
 
     function mapper(array $over = []) {
@@ -740,7 +745,8 @@ namespace {
      * ===================================================================== */
     {
         $facts = function (array $run, $dimsObj = null, $expected = null) {
-            return (new ScanReport(mapper(), $dimsObj ?: dims(), runRow($run)))->runFacts($expected);
+            $vs = isset($run['values_state']) ? $run['values_state'] : 'raw';
+            return (new ScanReport(mapper(['valuesState' => $vs]), $dimsObj ?: dims(), runRow($run)))->runFacts($expected);
         };
         $complete = ['terminal' => ScanOutcome::COMPLETE, 'coverage' => ScanOutcome::FENCED,
                      'detail' => ScanOutcome::DETAIL_COMPLETE, 'values_state' => 'raw'];
@@ -783,6 +789,39 @@ namespace {
 
         check('facts: a report with no run to report on refuses to build',
             throws('InvalidArgumentException', function () { new ScanReport(mapper(), dims(), ['terminal' => 'complete']); }));
+
+        // RP-4. The mapper refuses a finding from another project; the report
+        // took the run row it certifies from on trust, so a report for this
+        // project could say "clean" from another project's run.
+        $foreign = $complete + ['clean' => 1, 'project_id' => (string) (PID + 1)];
+        check('facts: a report refuses another project\'s run row',
+            throws('RuntimeException', function () use ($foreign) { new ScanReport(mapper(), dims(), runRow($foreign)); }));
+        check('facts: and one with no project at all',
+            throws('RuntimeException', function () use ($complete) {
+                new ScanReport(mapper(), dims(), runRow($complete + ['clean' => 1, 'project_id' => null]));
+            }));
+        $noPid = runRow($complete + ['clean' => 1]);
+        unset($noPid['project_id']);
+        $said = '';
+        try { new ScanReport(mapper(), dims(), $noPid); } catch (\InvalidArgumentException $e) { $said = $e->getMessage(); }
+        check('facts: a run row without the column refuses to build, naming it',
+            strpos($said, 'project_id') !== false);
+        // The Value cells come from the mapper, the valuesState fact from the
+        // run row; told different things, the heading and the cells disagree.
+        check('facts: a mapper told raw cannot report a run that kept locations',
+            throws('InvalidArgumentException', function () use ($complete) {
+                new ScanReport(mapper(['valuesState' => 'raw']), dims(),
+                               runRow(['values_state' => 'locations'] + $complete + ['clean' => 1]));
+            }));
+        check('facts: nor one told locations report a run that kept raw values',
+            throws('InvalidArgumentException', function () use ($complete) {
+                new ScanReport(mapper(['valuesState' => 'locations']), dims(), runRow($complete + ['clean' => 1]));
+            }));
+        check('facts (control): a mapper built for this run builds, whatever spelling the run row uses',
+            !throws('Throwable', function () use ($complete) {
+                new ScanReport(mapper(['valuesState' => 'locations']), dims(),
+                               runRow(['values_state' => 'none'] + $complete + ['clean' => 1]));
+            }));
     }
 
     /* =====================================================================
