@@ -140,3 +140,109 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('rollup: and the cursor did not move either',
         (int) $store->progressState($rid)['rollupCursor'] === 0);
 }
+
+// OC-5: TWO WORKERS OF ONE RUN, ONE SUMMARY PAGE, TWO CONNECTIONS.
+//
+// The lease epoch moves only on cancel, so two workers sharing a run share it,
+// and the fence above cannot tell them apart. Worker A reads the cursor and its
+// page on connection A; worker B summarises the same page on connection B and
+// commits, in the gap before A's transaction; then A goes on. A must find the
+// cursor B moved and add nothing. Before the hold, every axis here read 12.
+{
+    $storeA = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $storeB = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbB);
+    $plant = function ($pid) use ($storeA, $A) {
+        $r = $storeA->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $storeA->writeManifest($rid, array(
+            array('id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null)));
+        $rows = array();
+        for ($i = 1; $i <= 6; $i++) {
+            $rows[] = "(" . $pid . ", " . $gen . ", UNHEX(SHA2('oc5-" . $pid . '-' . $i . "', 256)), 1, 1,
+                UNHEX(SHA2('R1', 256)), 'R1', 'x', 'demographics', 0, 'assert',
+                'required-blank', 'site_a', '" . str_repeat('c', 64) . "', 'r1')";
+        }
+        $A->query('INSERT INTO ' . Schema::table('finding') . '
+            (project_id, generation_id, finding_identity, valid_from_seq, active_slot, record_hash,
+             record_id_bin, field, host_form, rule_ord, check_type, reason_code, dag_key,
+             rule_revision, rule_source_id) VALUES ' . implode(',', $rows));
+        return array($rid, (int) $storeA->run($pid, $rid)['lease_epoch'], $gen);
+    };
+    $formTotal = function ($rid) use ($storeA) {
+        $n = 0;
+        foreach ($storeA->aggregates($rid) as $a) {
+            if ($a['kind'] === \INSPIRE\UniversalValidator\Scan\RollupBuilder::K_FORM) $n += (int) $a['cnt'];
+        }
+        return $n;
+    };
+    // Connection A, with one thing added: the first begin() first runs the
+    // other worker, which is the gap between reading the page and adding it.
+    $hookA = new class($dbA) implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $onBegin = null;
+        private $inner;
+        public function __construct($inner) { $this->inner = $inner; }
+        public function select($sql, array $params = []) { return $this->inner->select($sql, $params); }
+        public function exec($sql, array $params = []) { $this->inner->exec($sql, $params); }
+        public function execNoCount($sql, array $params = []) { $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() {
+            $f = $this->onBegin;
+            $this->onBegin = null;
+            if ($f) $f();
+            $this->inner->begin();
+        }
+        public function commit()   { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+    };
+
+    list($rid, $epoch, $gen) = $plant(955);
+    $first  = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($hookA, $storeA);
+    $second = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbB, $storeB);
+    $hookA->onBegin = function () use ($second, $rid, $epoch, $gen) {
+        $second->step(955, $rid, $epoch, $gen, 10);
+    };
+    $a = $first->step(955, $rid, $epoch, $gen, 10);
+    check('rollup: a page the other worker counted first is not counted again',
+        $formTotal($rid) === 6);
+    check('rollup: the worker that lost the page carries on rather than stopping',
+        $a['done'] === false && $a['rows'] === 0 && $a['why'] === null);
+    check('rollup: and its next page starts where the other worker left the cursor',
+        $first->step(955, $rid, $epoch, $gen, 10)['done'] === true && $formTotal($rid) === 6);
+
+    // A RUN THAT ENDS in the same gap takes nothing. Finishing does not move
+    // the epoch, so before the hold this page was added to a finished run.
+    list($rid, $epoch, $gen) = $plant(956);
+    $late = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($hookA, $storeA);
+    $hookA->onBegin = function () use ($storeB, $rid) {
+        $storeB->finish($rid, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('failed' => true)));
+    };
+    $b = $late->step(956, $rid, $epoch, $gen, 10);
+    check('rollup: a page read before the run finished is not added after it',
+        $formTotal($rid) === 0 && (int) $storeA->progressState($rid)['rollupCursor'] === 0);
+    check('rollup: and the worker is told the run has finished',
+        $b['rows'] === 0 && $b['why'] === \INSPIRE\UniversalValidator\Scan\ScanStore::ROLLUP_FINISHED);
+
+    // THE HOLD IS A LOCK, not a read. The test above passes for a plain SELECT,
+    // because B had already committed when A looked. Here A holds the row
+    // and B, asking while A's page is open, has to wait rather than read the
+    // cursor A is about to move. One second, then B gives up.
+    list($rid, $epoch, $gen) = $plant(957);
+    $dbA->begin();
+    $held = $storeA->holdRollupCursor($rid, $epoch);
+    $B->query('SET SESSION innodb_lock_wait_timeout = 1');
+    $waited = false;
+    try {
+        $other = $storeB->holdRollupCursor($rid, $epoch);
+        // A server that answers a lock wait with no row rather than an error
+        // still did not hand B the cursor.
+        $waited = !is_int($other);
+    } catch (\Throwable $e) {
+        $waited = true;
+    }
+    $dbA->rollback();
+    $B->query('SET SESSION innodb_lock_wait_timeout = DEFAULT');
+    check('rollup: the summary cursor is held for the life of the page', $held === 0);
+    check('rollup: a second worker cannot read it while the page is open', $waited);
+    check('rollup: and can once the page is closed', $storeB->holdRollupCursor($rid, $epoch) === 0);
+}

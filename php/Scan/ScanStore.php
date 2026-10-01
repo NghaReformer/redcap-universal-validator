@@ -492,6 +492,39 @@ interface ScanStore
     public function setProgressState($runId, $epoch, array $state);
 
     /**
+     * Why a summary page may not be counted. One copy, both stores, as BUSY_WHY.
+     *
+     * The run is gone, or the lease moved, or the run has already ended. They
+     * reach the worker as the reason it stopped, so each says what happened to
+     * the page and names nothing about the run.
+     */
+    const ROLLUP_NO_RUN     = 'this run could not be read, so no summary was built';
+    const ROLLUP_TAKEN_OVER = 'another worker took over this scan, so the summary page was '
+        . 'discarded rather than counted twice';
+    const ROLLUP_FINISHED   = 'this scan has already finished, so the summary page was '
+        . 'discarded rather than added to a summary that is no longer being built';
+
+    /**
+     * Hold the run row for one summary page, and say where the summary has got to.
+     *
+     * CALLED INSIDE THE CALLER'S TRANSACTION, before the page's counts are
+     * added, and the hold lasts until that transaction ends. The answer is the
+     * rollup cursor as it stands under the hold, as an int, or one of the
+     * ROLLUP_* sentences above when this worker may not add to the summary at
+     * all: no such run, a different lease epoch, or a run that has ended.
+     *
+     * WHY THE EPOCH IS NOT ENOUGH. The epoch moves only on cancel, so two
+     * workers sharing a run hold the same one. Both could read cursor 0, read
+     * the same page of findings, and add it, and the counters ADD. The caller
+     * compares the cursor this returns with the one its page started from and
+     * discards the page when they differ. Under the hold, a second worker
+     * waits for the first to commit and then sees the cursor it moved. A run
+     * that has ended takes no page for the same reason it takes no late commit:
+     * its stored verdict was read from the summary as it stood.
+     */
+    public function holdRollupCursor($runId, $epoch);
+
+    /**
      * Add to a counted aggregate.
      *
      * ADDS rather than sets, because an aggregate is built from bounded pages

@@ -1727,6 +1727,22 @@ final class SqlScanStore implements ScanStore
         return isset($r[0]);
     }
 
+    /**
+     * A locking read and nothing else. No begin() here: the hold has to last
+     * until the caller's page is written, so it lives in the caller's
+     * transaction, and a commit of our own would drop it before the counts
+     * it is guarding were added.
+     */
+    public function holdRollupCursor($runId, $epoch)
+    {
+        $r = $this->db->select('SELECT lease_epoch, terminal, rollup_cursor FROM '
+            . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+        if (!isset($r[0])) return self::ROLLUP_NO_RUN;
+        if ((int) $r[0][0] !== (int) $epoch) return self::ROLLUP_TAKEN_OVER;
+        if ($r[0][1] !== null) return self::ROLLUP_FINISHED;
+        return (int) $r[0][2];
+    }
+
     public function addAggregate($runId, $kind, $axis1, $axis2, $cnt, $blocks = 0, $samples = null)
     {
         $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_aggregate') . '

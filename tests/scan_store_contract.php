@@ -731,6 +731,35 @@ function storeContract(callable $newStore, $label)
     $C('leaving its progress where it ended',
         (int) $s7->run(740, $rid7)['manifest_done'] === 0);
 
+    // -- A SUMMARY PAGE IS HELD, AND THE CURSOR READ UNDER THE HOLD (OC-5) ----
+    //
+    // RollupBuilder compares this answer with the cursor its page started from.
+    // Both stores answer the cursor as an int and refuse in the same three
+    // sentences, so a worker stops for the same reason whichever store it has.
+    $s10 = $newStore();
+    $r10 = $s10->startRun(753, []);
+    $rid10 = (int) $r10['run']['run_id'];
+    $s10->writeManifest($rid10, [$mk5('V')]);
+    $ep10 = (int) $s10->run(753, $rid10)['lease_epoch'];
+    $C('a fresh run holds its summary cursor at 0', $s10->holdRollupCursor($rid10, $ep10) === 0);
+    $s10->setProgressState($rid10, $ep10, ['rollupCursor' => 7]);
+    $C('and answers the cursor a page moved it to',
+        $s10->holdRollupCursor($rid10, $ep10) === 7);
+    $C('a different lease epoch may not add a page',
+        $s10->holdRollupCursor($rid10, $ep10 + 1) === ScanStore::ROLLUP_TAKEN_OVER);
+    $C('nor may a run that does not exist',
+        $s10->holdRollupCursor($rid10 + 999, $ep10) === ScanStore::ROLLUP_NO_RUN);
+    $s10->finish($rid10, ScanOutcome::derive(['failed' => true]));
+    $C('nor a run that has finished, on the epoch it finished with',
+        $s10->holdRollupCursor($rid10, $ep10) === ScanStore::ROLLUP_FINISHED);
+    $s11 = $newStore();
+    $rid11 = (int) $s11->startRun(754, [])['run']['run_id'];
+    $s11->writeManifest($rid11, [$mk5('W')]);
+    $ep11 = (int) $s11->run(754, $rid11)['lease_epoch'];
+    $s11->cancel(754, $rid11, 'admin');
+    $C('and a cancel takes the summary away from the worker that held it',
+        $s11->holdRollupCursor($rid11, $ep11) === ScanStore::ROLLUP_TAKEN_OVER);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

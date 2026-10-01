@@ -853,6 +853,84 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r['kind'] === 'returned' && $r['value']['requeued'] === 2 && $r['value']['gone'] === 0
         && $store->recordState($runId, 1) === ScanStore::REC_PENDING
         && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
+
+    // -- OC-5: TWO WORKERS OF ONE RUN, ONE SUMMARY PAGE ------------------------
+    //
+    // Both workers hold the same lease epoch, so the epoch fence cannot tell
+    // them apart. The ScanDb below answers the findings read from a fixed page
+    // and runs $onBegin once, at the first begin(): the moment between "read
+    // the cursor and the page" and "add the page", which is where the other
+    // worker lives. tests/mysql/cases/rollup.php does the same on two real
+    // connections.
+    $pageDb = new class implements ScanDb {
+        public $page = [];
+        public $onBegin = null;
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'finding_id > ?') === false) return [];
+            $after = (int) $params[2];
+            $lim = preg_match('/LIMIT (\d+)/', $sql, $m) ? (int) $m[1] : PHP_INT_MAX;
+            $out = [];
+            foreach ($this->page as $r) {
+                if ($r[0] > $after && count($out) < $lim) $out[] = $r;
+            }
+            return $out;
+        }
+        public function exec($sql, array $params = []) {}
+        public function execNoCount($sql, array $params = []) {}
+        public function affected() { return 0; }
+        public function begin() {
+            $f = $this->onBegin;
+            $this->onBegin = null;
+            if ($f) $f();
+        }
+        public function commit() {}
+        public function rollback() {}
+    };
+    $pageDb->page = [[1, 'fa', 'required-blank', null, 'required'],
+                     [2, 'fa', 'out-of-range', 'site_a', 'assert'],
+                     [3, 'fb', 'required-blank', null, 'required']];
+    $formTotal = function (ArrayScanStore $s, $rid) {
+        $n = 0;
+        foreach ($s->aggregates($rid) as $a) {
+            if ($a['kind'] === RollupBuilder::K_FORM) $n += (int) $a['cnt'];
+        }
+        return $n;
+    };
+    $rollRun = function ($pid) {
+        $s = new ArrayScanStore();
+        $rid = (int) $s->startRun($pid, [])['run']['run_id'];
+        $s->writeManifest($rid, [['id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null]]);
+        $run = $s->run($pid, $rid);
+        return [$s, $rid, (int) $run['lease_epoch'], (int) $run['generation_id']];
+    };
+
+    list($s, $rid, $ep, $gen) = $rollRun(960);
+    $first = new RollupBuilder($pageDb, $s);
+    $second = new RollupBuilder($pageDb, $s);
+    $pageDb->onBegin = function () use ($second, $rid, $ep, $gen) {
+        $second->step(960, $rid, $ep, $gen, 10);
+    };
+    $a = $first->step(960, $rid, $ep, $gen, 10);
+    check('rollup: a page another worker of the run counted first is not counted again',
+        $formTotal($s, $rid) === 3);
+    check('rollup: the worker that lost the page is told nothing went wrong, and carries on',
+        $a === ['done' => false, 'rows' => 0, 'why' => null]);
+    check('rollup: and its next step reads from where the other worker got to',
+        $first->step(960, $rid, $ep, $gen, 10)['done'] === true && $formTotal($s, $rid) === 3);
+
+    // A RUN THAT ENDED WHILE THE PAGE WAS READ takes nothing from it. The epoch
+    // has not moved - finishing does not move it - so before the hold this page
+    // landed in the summary of a run whose verdict had already been read.
+    list($s, $rid, $ep, $gen) = $rollRun(961);
+    $late = new RollupBuilder($pageDb, $s);
+    $pageDb->onBegin = function () use ($s, $rid) {
+        $s->finish($rid, ScanOutcome::derive(['failed' => true]));
+    };
+    $b = $late->step(961, $rid, $ep, $gen, 10);
+    check('rollup: a page read before the run finished is not added after it',
+        $formTotal($s, $rid) === 0 && (int) $s->progressState($rid)['rollupCursor'] === 0);
+    check('rollup: and the worker is told why, so it stops',
+        $b['rows'] === 0 && $b['why'] === ScanStore::ROLLUP_FINISHED);
 }
 
 namespace {
