@@ -335,6 +335,16 @@ final class WorkBudget
      * minus one byte would refuse every batch and the scan would never start. An
      * unreadable value is also null: declining to guess, for the reason in
      * mustStop().
+     *
+     * THE NUMBER IS READ THE WAY PHP READS IT (review BU-6). This used to accept
+     * plain decimal digits and nothing else, so every other spelling PHP
+     * enforces came back null - "no limit" - and switched the memory guard off
+     * on a server that had one. PHP 8.2+ reads 0x, 0o and 0b prefixes; 7.4 and
+     * 8.x both read a leading 0 as octal (0256M is enforced as 174 MiB, so
+     * reading it as 256 put the reserve line above the real limit); both accept
+     * a leading '+'. A suffix may follow the digits after spaces, as PHP allows.
+     * A prefix with no digits the base can hold is unreadable, and a figure too
+     * large for an integer is not a limit anything can reach, so both are null.
      */
     public static function bytes($v)
     {
@@ -342,15 +352,29 @@ final class WorkBudget
         if (is_int($v)) return $v < 0 ? null : $v;
         $v = trim((string) $v);
         if ($v === '') return null;
-        if (!preg_match('/^(-?\d+)\s*([kmg]?)b?\z/i', $v, $m)) return null;
-        $n = (int) $m[1];
-        if ($n < 0) return null;      // -1: no limit
-        switch (strtolower($m[2])) {
-            case 'g': return $n * 1024 * 1024 * 1024;
-            case 'm': return $n * 1024 * 1024;
-            case 'k': return $n * 1024;
+        if (!preg_match('/^([+-]?)(0x[0-9a-f]+|0o[0-7]+|0b[01]+|0[0-7]*|[1-9][0-9]*)\s*([kmg]?)b?\z/i',
+                        $v, $m)) {
+            return null;
         }
-        return $n;
+        $digits = $m[2];
+        $prefix = strtolower(substr($digits, 0, 2));
+        if ($prefix === '0x')      $n = intval(substr($digits, 2), 16);
+        elseif ($prefix === '0o')  $n = intval(substr($digits, 2), 8);
+        elseif ($prefix === '0b')  $n = intval(substr($digits, 2), 2);
+        elseif ($digits[0] === '0') $n = intval(substr($digits, 1), 8);
+        else                       $n = intval($digits, 10);
+        // intval() saturates rather than wrapping, so the top of the range is
+        // where an overflow lands.
+        if ($n === PHP_INT_MAX) return null;
+        if ($m[1] === '-' && $n > 0) return null;      // -1: no limit
+        $factor = 1;
+        switch (strtolower($m[3])) {
+            case 'g': $factor = 1024 * 1024 * 1024; break;
+            case 'm': $factor = 1024 * 1024; break;
+            case 'k': $factor = 1024; break;
+        }
+        if ($n > intdiv(PHP_INT_MAX, $factor)) return null;
+        return $n * $factor;
     }
 
     /**

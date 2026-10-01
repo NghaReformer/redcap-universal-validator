@@ -543,6 +543,34 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('budget: a real time limit is read as itself',
         WorkBudget::seconds('30') === 30 && WorkBudget::seconds(30) === 30);
 
+    // EVERY SPELLING PHP ENFORCES IS A LIMIT HERE TOO (review BU-6). PHP 8.2+
+    // reads 0x, 0o and 0b prefixes in memory_limit, both 7.4 and 8.x read a
+    // leading 0 as octal, and both accept a leading '+'. Each of these used to
+    // parse to null, which is "no limit", which switched the memory guard off
+    // on a server that had a limit. The figures are the ones PHP itself
+    // enforced for these strings, read from its "Allowed memory size" fatal.
+    check('budget: a hexadecimal memory_limit is the limit PHP enforces',
+        WorkBudget::bytes('0x10000000') === 268435456 && WorkBudget::bytes('0X20m') === 33554432
+        && WorkBudget::bytes('0x1G') === 1073741824 && WorkBudget::bytes('0x10 M') === 16777216);
+    check('budget: so are the octal and binary prefixes PHP 8.2 added',
+        WorkBudget::bytes('0o1000000000') === 134217728 && WorkBudget::bytes('0O7M') === 7340032
+        && WorkBudget::bytes('0b1000000000000000000000000000') === 134217728
+        && WorkBudget::bytes('0B110M') === 6291456);
+    // 0256 is octal 174, and PHP enforced 182452224 bytes for it. Reading it as
+    // 256 MiB would put the reserve line above what PHP actually allows.
+    check('budget: a leading zero is octal, as PHP reads it',
+        WorkBudget::bytes('0256M') === 182452224 && WorkBudget::bytes('07M') === 7340032);
+    check('budget: and a leading plus sign is still a limit',
+        WorkBudget::bytes('+128M') === 134217728 && WorkBudget::bytes('+0x10M') === 16777216);
+    check('budget: a prefix with no digits, or digits the base cannot hold, is unreadable',
+        WorkBudget::bytes('0x') === null && WorkBudget::bytes('0b2') === null
+        && WorkBudget::bytes('0o9') === null && WorkBudget::bytes('089M') === null);
+    // A figure too large for an integer is not a limit anyone can reach. It
+    // used to come back as a float; it is "no limit" now, said as null.
+    check('budget: a limit past the integer range is no limit, not a float',
+        WorkBudget::bytes('99999999999G') === null
+        && WorkBudget::bytes('0xffffffffffffffffM') === null);
+
     // -- what the two modes aim at -------------------------------------------
     $browser = new WorkBudget(['mode' => 'browser', 'memoryLimit' => '128M',
                                'timeLimit' => null, 'startedAt' => 1000.0]);
