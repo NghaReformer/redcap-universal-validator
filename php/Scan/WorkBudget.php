@@ -92,6 +92,13 @@ final class WorkBudget
     /** A batch may at most double, whatever the arithmetic says. See next(). */
     const MAX_GROWTH = 2.0;
 
+    /**
+     * The share of memory_limit one unit is assumed to need when the request
+     * has measured nothing yet. See admit(). Deliberately generous: it is the
+     * whole of the safety margin for the one unit let past the reserve.
+     */
+    const FIRST_UNIT = 0.10;
+
     // Said the same way wherever they are said. Both describe a PAUSE, not a
     // failure: the request stops claiming and the next one carries on, and a
     // message that read like an error would send someone looking for a fault.
@@ -99,6 +106,17 @@ final class WorkBudget
                       . 'the next one';
     const OUT_OF_MEMORY = 'this request has used as much memory as it may, so the scan continues '
                         . 'in the next one';
+    // Also a pause, and an honest one: the request did one unit and stopped,
+    // and the next does the same. Said so the slowness has a reason attached.
+    const ONE_AT_A_TIME = 'most of the memory this request may use was taken before the scan '
+                        . 'began, so each request does one piece of work and the scan continues '
+                        . 'in the next one';
+    // NOT a pause, and deliberately not worded like one. Every request arrives
+    // with the same footprint and would stop in the same place, so "continues
+    // in the next one" here is a promise that is never kept.
+    const NO_ROOM = 'this request had used nearly all of the memory PHP allows it before the '
+                  . 'scan began, so it could not do any work. The scan has stopped rather than '
+                  . 'retrying; raise memory_limit for this server and resume it';
 
     private $mode;
     private $min;
@@ -110,6 +128,8 @@ final class WorkBudget
     private $claims = [];   // kind => the size that kind's next batch should ask for
     private $probe;         // ?callable(bool $resetPeak): {used, peak, arena}
     private $floors = [];   // kind => the last EXACT per-unit peak cost, in bytes
+    private $observed = 0;  // batches this request has finished and been told about
+    private $squeezed = false; // admit() let this request past the reserve for one unit
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
@@ -240,6 +260,9 @@ final class WorkBudget
      */
     public function claim($kind = '')
     {
+        // The one unit admit() let past the reserve. One, of any kind, and
+        // below the configured minimum on purpose - see admit().
+        if ($this->squeezed && $this->observed === 0) return 1;
         $kind = (string) $kind;
         return isset($this->claims[$kind]) ? $this->claims[$kind] : $this->first;
     }
@@ -278,6 +301,57 @@ final class WorkBudget
     }
 
     /**
+     * May this request start another unit of work? Null when it may.
+     *
+     * Otherwise {stop: 'time'|'memory', why: string, resumable: bool}, and the
+     * caller passes `why` on as it stands. `resumable` false means the next
+     * request would stop in the same place, so the caller must not answer as
+     * though the scan were carrying on.
+     *
+     * THE FIRST UNIT OF A REQUEST GETS THROUGH (review BU-2). mustStop() asks
+     * whether the arena is past the reserve, and asked before the first claim
+     * that is a question about the HOST: REDCap's bootstrap, the project's
+     * metadata and the rules the module builds are all in the arena before the
+     * scan does anything. Where that alone passed 60% of the limit, every
+     * request stopped before claiming, every request said "continues in the
+     * next one", and the run never moved until the abandoned-run sweep expired
+     * it. next() has always said one record alone, never zero; this is the same
+     * rule at the door. So when nothing has been done yet, one unit is let
+     * through if the arena plus a generous guess at one unit (FIRST_UNIT of the
+     * limit) is still under the limit itself - the reserve is spent on that
+     * one unit, which is what it is for. claim() then answers 1 until the unit
+     * has been observed, and the request stops after it.
+     *
+     * AND WHEN EVEN ONE UNIT WILL NOT FIT, IT SAYS SO. That is not a pause: the
+     * next request would arrive with the same footprint. It is reported as a
+     * stop that is not resumable, in words that name the setting to change.
+     *
+     * @return array{stop:string, why:string, resumable:bool}|null
+     */
+    public function admit($now = null, $usage = null)
+    {
+        $now = $now === null ? microtime(true) : (float) $now;
+        $usage = $usage === null ? $this->read(false)['arena'] : (int) $usage;
+        $stop = $this->mustStop($now, $usage);
+        if ($stop === null) return null;
+        if ($stop === 'time') return ['stop' => 'time', 'why' => self::OUT_OF_TIME, 'resumable' => true];
+        if ($this->observed > 0) {
+            return ['stop' => 'memory', 'why' => $this->memoryWhy(), 'resumable' => true];
+        }
+        if ($usage + (int) ($this->memLimit * self::FIRST_UNIT) < $this->memLimit) {
+            $this->squeezed = true;
+            return null;
+        }
+        return ['stop' => 'memory', 'why' => self::NO_ROOM, 'resumable' => false];
+    }
+
+    /** The memory pause, said for the request it is: an ordinary one, or one let through for a unit. */
+    private function memoryWhy()
+    {
+        return ($this->squeezed && $this->observed <= 1) ? self::ONE_AT_A_TIME : self::OUT_OF_MEMORY;
+    }
+
+    /**
      * Learn from the batch that just finished, and size the next one.
      *
      * Callers inside the scan go through mark()/observe(), which measure; this
@@ -293,6 +367,7 @@ final class WorkBudget
     {
         $kind    = isset($obs['kind']) ? (string) $obs['kind'] : '';
         $current = $this->claim($kind);
+        $this->observed++;
         $done    = isset($obs['records']) ? max(0, (int) $obs['records']) : 0;
         $seconds = isset($obs['seconds']) ? max(0.0, (float) $obs['seconds']) : 0.0;
         $memPer  = 0;
@@ -322,7 +397,7 @@ final class WorkBudget
             $room = (int) ($this->memLimit * (1.0 - self::RESERVE)) - $usage;
             if ($room <= 0) {
                 $this->claims[$kind] = $this->min;
-                return ['claim' => $this->min, 'stop' => 'memory', 'why' => self::OUT_OF_MEMORY];
+                return ['claim' => $this->min, 'stop' => 'memory', 'why' => $this->memoryWhy()];
             }
             $fits = (int) floor($room / $memPer);
             if ($fits < $want) {
@@ -340,7 +415,7 @@ final class WorkBudget
         $this->claims[$kind] = $want;
         $stop = $this->mustStop(null, $usage);
         if ($stop === 'time')   return ['claim' => $want, 'stop' => $stop, 'why' => self::OUT_OF_TIME];
-        if ($stop === 'memory') return ['claim' => $want, 'stop' => $stop, 'why' => self::OUT_OF_MEMORY];
+        if ($stop === 'memory') return ['claim' => $want, 'stop' => $stop, 'why' => $this->memoryWhy()];
         if ($memoryCapped) {
             return ['claim' => $want, 'stop' => null,
                     'why' => $want === 1

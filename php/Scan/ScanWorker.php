@@ -291,9 +291,23 @@ final class ScanWorker
         $done = false;
 
         while (true) {
-            $stop = $budget->mustStop();
-            if ($stop !== null) {
-                $why = ($stop === 'time') ? WorkBudget::OUT_OF_TIME : WorkBudget::OUT_OF_MEMORY;
+            // admit(), not mustStop() (review BU-2). Asked before the first
+            // claim, mustStop() was a question about the host request: past
+            // the reserve before the scan did anything, every request stopped
+            // here, said "continues in the next one" and claimed nothing, and
+            // the run never moved. admit() lets the first unit through when one
+            // fits under the limit itself, and says plainly when even that
+            // will not fit - ok:false, so the browser stops asking, because the
+            // next request would arrive with the same footprint.
+            $gate = $budget->admit();
+            if ($gate !== null) {
+                if (empty($gate['resumable'])) {
+                    return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
+                            'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
+                            'done' => false, 'stop' => $gate['stop'], 'why' => $gate['why']];
+                }
+                $stop = $gate['stop'];
+                $why = $gate['why'];
                 break;
             }
 

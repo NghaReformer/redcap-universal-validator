@@ -848,6 +848,42 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('kinds: and a kind not yet seen starts from the first claim, not from another kind\'s',
         $b6->claim('rows') === 20);
 
+    // -- a request that starts past the reserve (review BU-2) ---------------
+    //
+    // The worker asks before its first claim whether it must stop. When the
+    // host request already holds 60% of memory_limit before the scan does
+    // anything - REDCap's bootstrap, the project's metadata, the rules - the
+    // answer was 'memory' on every request, nothing was ever claimed, and the
+    // person watching read "continues in the next one" until the abandoned-run
+    // sweep expired the run. next() has always said "one record alone, never
+    // zero"; the gate in front of the first claim did not.
+    $pw = $scripted([[62, 62, 62]]);
+    $bw = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'first' => 25, 'startedAt' => microtime(true), 'probe' => $pw->fn]);
+    check('wedge: the reserve line itself has not moved', $bw->mustStop() === 'memory');
+    check('wedge: but the first unit of a request past it is let through', $bw->admit() === null);
+    check('wedge: and it is ONE unit, whatever kind it turns out to be',
+        $bw->claim('records') === 1 && $bw->claim('groups') === 1);
+    $ow = $bw->observe($bw->mark('records'), 1);
+    check('wedge: after which the request stops, and says why it is going slowly',
+        $ow['stop'] === 'memory' && strpos($ow['why'], 'before the scan began') !== false);
+    $gw = $bw->admit();
+    check('wedge: and is not let through a second time in the same request',
+        $gw['stop'] === 'memory' && $gw['resumable'] === true);
+    // No room for even one unit: 95 MiB of 100 leaves less than the tenth of
+    // the limit one unit is assumed to need. That is not a pause, and is not
+    // worded as one, because every request would arrive at the same place.
+    $bf = new WorkBudget(['mode' => 'cron', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+        'first' => 25, 'startedAt' => microtime(true), 'probe' => $scripted([[95, 95, 95]])->fn]);
+    $gf = $bf->admit();
+    check('wedge: with no room for one unit it stops, and does not promise to continue',
+        $gf['stop'] === 'memory' && $gf['resumable'] === false
+        && strpos($gf['why'], 'continues in the next one') === false
+        && strpos($gf['why'], 'memory_limit') !== false);
+    check('wedge: time is still a pause, past the reserve or not',
+        (new WorkBudget(['mode' => 'browser', 'memoryLimit' => null, 'timeLimit' => null,
+            'startedAt' => microtime(true) - 3600]))->admit()['resumable'] === true);
+
     // ======================================================================
     // ScanWorker: claim, prove it held still, look, commit - or commit nothing
     // ======================================================================
@@ -1389,6 +1425,39 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('seam: an arena past the reserve stops the request after the batch in hand',
         $res['stop'] === 'memory' && $res['worked'] === 2);
     check('seam: leaving the run workable', $res['done'] === false
+        && $store->run(800, $runId)['phase'] === 'scanning');
+
+    // THE WEDGE, THROUGH THE WORKER (review BU-2). 62 MiB of a 100 MiB limit
+    // is held before the worker starts, every request. Each request now does
+    // one record and the run moves; it used to claim nothing, forever.
+    list($store, $runId) = $fixture(['A', 'B', 'C']);
+    $pastReserve = function ($arenaMb) use ($scripted, $MB) {
+        return new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB, 'timeLimit' => null,
+            'first' => 25, 'startedAt' => microtime(true),
+            'probe' => $scripted([[$arenaMb, $arenaMb, $arenaMb]])->fn]);
+    };
+    $passes = [];
+    for ($i = 0; $i < 3; $i++) {
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(1), 'budget' => $pastReserve(62), 'owner' => 'w1',
+            'attempts' => 3, 'finalizer' => $fin()]);
+        $res = $w->work(800, $runId);
+        $passes[] = $res['worked'];
+    }
+    check('wedge: a request that starts past the reserve examines one record and stops',
+        $passes === [1, 1, 1] && $res['ok'] === true && $res['stop'] === 'memory');
+    check('wedge: so the run moves, one request at a time',
+        (int) $store->run(800, $runId)['manifest_done'] === 3);
+    list($store, $runId) = $fixture(['A']);
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(1), 'budget' => $pastReserve(95), 'owner' => 'w1',
+        'attempts' => 3, 'finalizer' => $fin()]);
+    $res = $w->work(800, $runId);
+    // ok:false is what stops the browser pumping; the run is untouched and
+    // resumable once the limit is raised.
+    check('wedge: with no room for one record the request stops the pump and says why',
+        $res['ok'] === false && $res['stop'] === 'memory' && $res['worked'] === 0
+        && strpos($res['why'], 'continues in the next one') === false
         && $store->run(800, $runId)['phase'] === 'scanning');
 
     // NOTHING IN THE WORKER READS MEMORY ANY MORE. Comments and strings are
