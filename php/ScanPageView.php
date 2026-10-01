@@ -206,8 +206,14 @@ class ScanPageView
             // and tests/scan_page_php.php checks that the first 40 characters of
             // each sentence appear literally in the HTML. Every existing
             // sentence happens to avoid one; this one avoids it on purpose.
-            Scan\ScanOutcome::EMPTY_SCOPE => 'No records were in scope for this scan, so nothing was '
-                                           . 'checked and this result says nothing about the project.',
+            //
+            // TWO WAYS IN, ONE SENTENCE. It said only that no records were in
+            // scope, which is false of the other way to get here: every record
+            // was in scope and was deleted before it could be checked. Both
+            // are true of what it now says first.
+            Scan\ScanOutcome::EMPTY_SCOPE => 'Nothing was checked: no records were in scope for this '
+                                           . 'scan, or every one was deleted before it could be '
+                                           . 'checked. This result says nothing about the project.',
             Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
                                            . 'picture of the project.',
             Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',

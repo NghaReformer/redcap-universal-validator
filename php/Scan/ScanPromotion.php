@@ -44,7 +44,9 @@ namespace INSPIRE\UniversalValidator\Scan;
  * cannot be read and will never be read, so requiring it to reach `done` holds
  * the run open forever - C3's mirror case. It reaches a terminal state of its
  * own and is counted, so a reader can see the project changed underneath the
- * scan without the run being unable to end.
+ * scan without the run being unable to end. It is not an examination either: a
+ * run whose records are ALL tombstones examined nothing and is an empty scope,
+ * never a pass - see `emptyScope` in facts().
  *
  * PHP 7.4.
  */
@@ -300,22 +302,34 @@ final class ScanPromotion
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
 
-        // AN EMPTY SCOPE, ASKED OF TWO INDEPENDENT SOURCES, because neither one
-        // alone is the question. `manifest_total` is 0 for the whole of planning
-        // and rows are appended before they are frozen, so a run mid-plan with
-        // records already queued would read as empty on that alone. The census
-        // is empty whenever a store read comes back with no rows. Both saying
-        // empty is the only reading that means nothing was listed AND nothing
-        // exists.
+        // NOTHING WAS EXAMINED: no record reached `done`, none is still waiting,
+        // and nothing is blocked. That is the question `emptyScope` answers, and
+        // it is asked of the census alone.
+        //
+        // It used to be `manifest_total === 0 && every state summed === 0`, and
+        // both halves were the wrong question. The sum counted TOMBSTONES, so a
+        // run whose every record was deleted before it could be read had a
+        // census of N, was not "empty", fell through to the clean row and was
+        // stored `complete, complete-through-fence, clean=1` - "every record was
+        // examined and nothing was found" over a run that examined none. And
+        // `manifest_total` is written once, at freeze, so a manifest emptied
+        // after it froze (total 5, no rows) was not empty either: the guard
+        // could not fire on the one case it was written for.
+        //
+        // NOT BLOCKED, ON PURPOSE. A run where every record was unreadable also
+        // examined nothing, but `blocked` already says the truer thing about it
+        // - the records are there and could not be read - and that is what the
+        // reader has to act on. Empty scope is for a run with nothing left to
+        // say about any record.
         //
         // ScanPlanner::plan() already refuses to start a run over an empty
-        // scope, so in normal operation this never fires. It is here because the
-        // real cost was never the empty project - it was that ANY bug which
-        // empties a manifest became a clean certificate rather than an error,
-        // and the planner cannot see a manifest emptied after it froze one.
-        $manifestTotal = isset($run['manifest_total']) ? (int) $run['manifest_total'] : 0;
-        $examined = 0;
-        foreach ($states as $c) $examined += (int) $c;
+        // scope, so in normal operation this fires only when every record was
+        // deleted mid-run. It is here because the real cost was never the empty
+        // project - it was that ANY bug which empties a manifest became a clean
+        // certificate rather than an error.
+        $examined = $n(ScanStore::REC_DONE);
+        $blocked = ($unread > 0 || (int) $g('blockingAggregates', 0) > 0
+                    || (int) $g('uniqueBlocking', 0) > 0);
 
         $rows  = isset($run['detail_rows']) ? (int) $run['detail_rows'] : 0;
         $bytes = isset($run['detail_bytes']) ? (int) $run['detail_bytes'] : 0;
@@ -331,15 +345,15 @@ final class ScanPromotion
             // `manifest-complete`, which says exactly what it did.
             'fenced' => !empty($run['fence_target']),
             'manifestDone' => ($pending === 0),
-            // Beside manifestDone deliberately: `pending === 0` over an empty
-            // census is exactly what made manifestDone true, and the reader
-            // needs to see the correction next to the thing it corrects.
-            'emptyScope' => ($manifestTotal === 0 && $examined === 0),
+            // Beside manifestDone deliberately: `pending === 0` over a census
+            // with nothing examined in it is exactly what made manifestDone
+            // true, and the reader needs to see the correction next to the
+            // thing it corrects.
+            'emptyScope' => ($examined === 0 && $pending === 0 && !$blocked),
             // Unread and unstable records, undecidable duplicate groups, and
             // anything an aggregate marked blocking. A TOMBSTONE IS ABSENT FROM
             // THIS LIST on purpose - see the class note.
-            'blocked' => ($unread > 0 || (int) $g('blockingAggregates', 0) > 0
-                          || (int) $g('uniqueBlocking', 0) > 0),
+            'blocked' => $blocked,
             'truncated' => $truncated,
             'cancelled' => $cancelled,
             'failed' => ($fpBad || $polBad),

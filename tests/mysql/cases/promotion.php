@@ -170,3 +170,67 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('unstored: not clean, and counted on the row as the one record not examined',
         (int) $raw[2] === 0 && (int) $raw[3] === 0 && (int) $raw[4] === 1);
 }
+
+// NOTHING EXAMINED IS NOT A PASS (review OC-1), on a real server.
+//
+// Two runs that examined nothing and were stored clean=1: one whose every record
+// was deleted before it could be read (two tombstones - the census summed them,
+// so the run was not "empty"), and one whose manifest was emptied after it froze
+// (manifest_total 2, no rows - the total said it was not empty). Both are
+// finished, fenced and found nothing, so the census is the only thing that can
+// refuse them.
+{
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $finishEmpty = function ($pid, $how) use ($store, $dbA, $A) {
+        $r = $store->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $store->writeManifest($rid, array(
+            array('id_bin' => 'G1', 'hash' => hash('sha256', 'G1', true), 'dag' => null),
+            array('id_bin' => 'G2', 'hash' => hash('sha256', 'G2', true), 'dag' => null)));
+        $epoch = (int) $store->run($pid, $rid)['lease_epoch'];
+        if ($how === 'tombstoned') {
+            $claimed = $store->claim($rid, 'w', $epoch, 5);
+            $rows = array();
+            foreach ($claimed as $c) {
+                $rows[] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'], 'version' => null,
+                    'record_hash' => $c['hash'],
+                    'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_TOMBSTONE);
+            }
+            $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(),
+                'records' => $rows));
+        } else {
+            $A->query('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ' . $rid);
+        }
+        foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
+                       \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
+            $store->advancePhase($rid, $epoch, $ph);
+        }
+        $store->setProgressState($rid, $epoch, array('fenceTarget' => '500', 'rollupCursor' => 0));
+        $roll = new \INSPIRE\UniversalValidator\Scan\RollupBuilder($dbA, $store);
+        while ($roll->step($pid, $rid, $epoch, $gen, 100)['done'] === false) { }
+        $p = \INSPIRE\UniversalValidator\Scan\ScanPromotion::promote($store, $pid, $rid,
+            array('uniqueDone' => true, 'rollupDone' => true,
+                  'blockingAggregates' => $store->blockingAggregates($rid)));
+        $raw = $A->query('SELECT terminal, coverage, clean IS NULL, clean, manifest_total
+            FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . $rid)->fetch_row();
+        return array($p, $raw, $store->recordStates($rid));
+    };
+
+    list($p, $raw, $states) = $finishEmpty(958, 'tombstoned');
+    check('nothing examined: the fixture deleted both records, and examined neither',
+        (int) array_sum($states) === 2
+        && !isset($states[\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE]));
+    check('nothing examined: a run whose every record was deleted finishes as an empty scope',
+        $p['promoted'] === true && $raw[0] === 'partial' && $raw[1] === 'empty-scope');
+    check('nothing examined: and is stored NOT clean - a 0, never the 1 it used to be',
+        (int) $raw[2] === 0 && (int) $raw[3] === 0);
+
+    list($p, $raw, $states) = $finishEmpty(959, 'emptied');
+    check('nothing examined: a manifest emptied after it froze still says it had two records',
+        (int) $raw[4] === 2 && $states === array());
+    check('nothing examined: and finishes as an empty scope, stored not clean',
+        $p['promoted'] === true && $raw[1] === 'empty-scope' && (int) $raw[2] === 0
+        && (int) $raw[3] === 0);
+}

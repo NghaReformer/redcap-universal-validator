@@ -45,8 +45,11 @@ final class ScanOutcome
     const COV_PARTIAL = 'partial';
     const COV_FAILED  = 'failed';
     /**
-     * The scope held no records, so nothing was examined and nothing may be
-     * claimed about the project.
+     * Nothing was examined, so nothing may be claimed about the project: the
+     * scope held no records, or every record in it was deleted before it could
+     * be read. The two are one value because they support the same claim -
+     * none - and ScanPromotion::facts() cannot tell them apart without a
+     * manifest count it has learned not to trust.
      *
      * ITS OWN VALUE RATHER THAN `failed` OR `manifest-complete`, and both of
      * those were tried on paper first. `failed` is what the two neighbouring
@@ -81,7 +84,7 @@ final class ScanOutcome
      *   cancelled:     bool  cancellation was requested and honoured
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
- *   emptyScope:    bool  the scope held no records at all; nothing was examined
+     *   emptyScope:    bool  nothing was examined: no records in scope, or all deleted
      *   violations:    int
      *   ruleProblems:  int
      *   gaps:          int   collection gaps; never a violation, never blocking
@@ -138,10 +141,14 @@ final class ScanOutcome
         // whose rule is that a forgotten field yields the weaker claim. It is
         // not: a false emptyScope falls through to weaker rows, while a true one
         // ASSERTS that the scope was empty. Asserting is never the safe default.
+        // THE SENTENCE COVERS BOTH WAYS IN. It said "no records were in scope",
+        // which is false of a run whose every record was deleted while it ran -
+        // they were in scope, and they stopped existing. What is true of both
+        // is that nothing was examined.
         if ($b('emptyScope')) {
             return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
-                'no records were in scope for this run, so nothing was examined and it '
-                . 'says nothing about the project');
+                'no record was examined - none was in scope, or every one was deleted before '
+                . 'it could be read - so it says nothing about the project');
         }
 
         // A record that could not be read, or a degradation that blocks

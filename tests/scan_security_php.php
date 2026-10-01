@@ -22,6 +22,10 @@ namespace {
     // ScanAuthorization composes the store contract's refusal wording; the
     // sentence itself belongs to the contract, so that has to be loaded too.
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
+    // promotion's facts() is the producer of the outcome table's inputs, and is
+    // pure: a run row and a census in, facts out.
+    require_once __DIR__ . '/../php/Scan/ScanPhase.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
     require_once __DIR__ . '/../php/Scan/ScanAuthorization.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
@@ -464,6 +468,52 @@ namespace INSPIRE\UniversalValidator\Scan {
             && $es['coverage'] === ScanOutcome::EMPTY_SCOPE);
         check('outcome: and its export says _NO_RECORDS rather than nothing at all',
             ScanOutcome::suffix($es) === '_NO_RECORDS');
+
+        // OC-1. EMPTY MEANS NOTHING WAS EXAMINED, and promotion is what decides
+        // that. It asked `manifest_total === 0 && every state summed === 0`,
+        // and the sum counted tombstones: a run whose every record was deleted
+        // before it could be read was not "empty", took the clean row, and was
+        // stored complete, complete-through-fence, clean=1. The manifest total
+        // is written once, at freeze, so a manifest emptied afterwards was not
+        // empty either. Facts below are a finished, fenced run with nothing
+        // found - the most reassuring input there is - so the census is the
+        // only thing that can refuse it.
+        $P = function (array $states, array $run = []) {
+            return ScanPromotion::facts(array_merge(['manifest_total' => 2, 'fence_target' => '500',
+                'detail_rows' => 0], $run), $states,
+                ['uniqueDone' => true, 'rollupDone' => true, 'violations' => 0, 'ruleProblems' => 0]);
+        };
+        $tomb = $P([ScanStore::REC_TOMBSTONE => 2]);
+        $to = ScanOutcome::derive($tomb['facts']);
+        check('outcome: a run whose every record was deleted examined NOTHING, so it is an empty scope',
+            $tomb['ready'] === true && $tomb['facts']['emptyScope'] === true
+            && $to['coverage'] === ScanOutcome::EMPTY_SCOPE);
+        check('outcome: and it is stored neither complete nor clean',
+            $to['terminal'] !== ScanOutcome::COMPLETE && $to['clean'] === false
+            && ScanOutcome::mayClaimClean($to) === false && ScanOutcome::cleanColumn($to) === 0);
+        check('outcome: its reason is true of a run whose records were deleted, and claims no examination',
+            strpos($to['why'], 'deleted') !== false && strpos($to['why'], 'was examined and') === false);
+        $gone = $P([], ['manifest_total' => 5]);
+        check('outcome: a manifest emptied after it froze is an empty scope, not a pass',
+            $gone['facts']['emptyScope'] === true
+            && ScanOutcome::derive($gone['facts'])['clean'] === false);
+        $unread = $P([ScanStore::REC_UNREADABLE => 2]);
+        check('outcome: a run where every record was UNREADABLE is blocked, not empty - the records are there',
+            $unread['facts']['emptyScope'] === false && $unread['facts']['blocked'] === true
+            && ScanOutcome::derive($unread['facts'])['coverage'] === ScanOutcome::COV_PARTIAL);
+        $held = ScanPromotion::facts(['manifest_total' => 2, 'fence_target' => '500'],
+            [ScanStore::REC_TOMBSTONE => 2], ['uniqueDone' => true, 'rollupDone' => true,
+            'violations' => 0, 'ruleProblems' => 0, 'blockingAggregates' => 1]);
+        check('outcome: and anything blocking is reported as blocked, not folded into empty',
+            $held['facts']['emptyScope'] === false && $held['facts']['blocked'] === true);
+        check('outcome: records still waiting are not an empty scope',
+            $P([ScanStore::REC_PENDING => 2])['facts']['emptyScope'] === false);
+        $one = $P([ScanStore::REC_DONE => 1, ScanStore::REC_TOMBSTONE => 1]);
+        check('outcome: one record examined and one deleted is not empty, and may still be clean',
+            $one['facts']['emptyScope'] === false
+            && ScanOutcome::derive($one['facts'])['clean'] === true);
+        check('outcome: a run still planning, with nothing listed yet, is empty as it always was',
+            $P([], ['manifest_total' => 0])['facts']['emptyScope'] === true);
 
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
