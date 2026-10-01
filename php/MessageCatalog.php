@@ -61,6 +61,18 @@ final class MessageCatalog
      */
     public static function explain(array $finding, array $rule, $audience = 'staff')
     {
+        // THE NUMBER A SENTENCE NAMES IS THE ONE THE RULE COLUMN SHOWS. A stored
+        // finding names its rule by source id, and ScanDimensions::ruleOf()
+        // may settle on another ordinal than the one the row carries; the
+        // sentence quoted the row's, so one row named two rules. A rule shape
+        // that carries a resolved `ordinal` wins. Below 1 there is no rule,
+        // and the sentence says '?' - the word template() already uses for a
+        // finding with no number - never "Rule 0". A rule shape without
+        // `ordinal` (the legacy sink's) keeps the finding's own number.
+        if (array_key_exists('ordinal', $rule)) {
+            $ord = (int) $rule['ordinal'];
+            $finding['rule'] = $ord > 0 ? $ord : '?';
+        }
         $t = self::template($finding, $rule, $audience);
         // An AUTHORED message is returned verbatim, exactly as before the
         // template split: {braces} an author typed are their own text, and

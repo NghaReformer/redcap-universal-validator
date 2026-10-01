@@ -710,6 +710,26 @@ namespace {
             $d->ruleOf(['rule' => -3])['ordinal'] === 0 && $d->ruleOf(['rule' => 'x'])['ordinal'] === 0
             && $d->ruleOf([])['ordinal'] === 0);
 
+        // RP-6. The last-resort sentence names a rule by number. It named the
+        // ordinal the row CARRIES while the Rule column shows the one ruleOf()
+        // resolved, so one row named two rules - and "Rule 0" came back in the
+        // sentence after W7-R4 took it out of the column.
+        $RULE_G = ['type' => 'geofence', 'label' => 'Inside the study area', 'message' => '', 'assert' => '', 'fields' => ['a_val']];
+        $dg = dims([1 => ['type' => 'x', 'label' => 'Old rule one', 'message' => '', 'assert' => '', 'fields' => []],
+                    3 => $RULE_G], ['src-moved' => 3]);
+        $gm = ScanColumns::row(mapper()->toFinding(row(['check_type' => 'geofence', 'reason_code' => 'outside',
+                                                         'rule_ord' => 1, 'rule_source_id' => 'src-moved'])), $dg);
+        check('rules: the sentence names the rule the Rule column shows',
+            $gm['rule'] === '3' && $gm['wording'] === 'fallback'
+            && strpos($gm['problem'], 'Rule 3 ') === 0 && strpos($gm['problem'], 'Rule 1 ') === false);
+        $g0 = ScanColumns::row(mapper()->toFinding(row(['check_type' => 'geofence', 'reason_code' => 'outside',
+                                                         'rule_ord' => 0, 'rule_source_id' => 'gone'])), dims());
+        check('rules: a finding with no rule is never "Rule 0" in the sentence either',
+            $g0['rule'] === '' && strpos($g0['problem'], 'Rule 0') === false && strpos($g0['problem'], 'Rule ? ') === 0);
+        $none = ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+        check('rules (control): a rule shape with no resolved ordinal keeps the finding\'s own number',
+            strpos(MessageCatalog::explain(['type' => 'geofence', 'reason' => 'x', 'rule' => 7], $none)['text'], 'Rule 7 ') === 0);
+
         // AN UNKNOWN KIND DEGRADES TO GENERIC WORDING, never to a hole or a throw.
         $future = ScanColumns::row(mapper()->toFinding(row(['check_type' => 'geofence', 'reason_code' => 'outside'])), $d);
         check('rules: a check type nobody has heard of still renders every cell',
