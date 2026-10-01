@@ -14,6 +14,7 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - The `collectionGaps` policy value reads `unimplemented`, because no collection-gap detector exists. Stored scan fingerprints are unaffected.
 - **Validation scan, report groundwork (remediation wave 7).** A stored finding can now be turned into a report row and a CSV line (`Scan\FindingRowMapper`, `Scan\ScanReport`). The value cell distinguishes an empty field, a value the scan did not keep, one that has expired, one withheld from this reader, an Identifier, and a value cut short. Record ids leave hashed by the same formula as the module log when the project's logging mode requires it. Nothing calls these classes yet: the findings page and the export stay off until a later release.
 - The survey uniqueness throttle makes one fewer database round trip per check.
+- Internal scan interfaces changed for the review fixes: `DuplicateFinalizer::step()` takes a read limit as a third argument and reports `read`; `ScanStore::claimPending()` takes an optional attempt limit and exhausted state; `commitBatch()` reports how many records it held through an optional fifth argument. Any out-of-tree implementation of these interfaces must add the parameters.
 
 ### Fixed
 
@@ -27,12 +28,33 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - `ScanPageView::verdict()`, an unused second implementation of the clean decision that disagreed with the one in use, is removed.
 - In the scan report, a pooled ID field with several problems now says which: the general line "One or more IDs in this field are not valid." is followed by one sentence per problem, such as "The same ID appears more than once in this field." A problem the wording file has no sentence for is named.
 - A rule problem that names an event or an instance in its sentence was recorded once per record during a durable scan. It is recorded once per rule and kind.
+- **Validation scan, adversarial review of waves 6 and 7.**
+  - A scan in which every record in scope was deleted before it could be examined, or whose record list emptied after planning, was certified clean. A scan that examined no record is now reported as covering no records and is never clean.
+  - The scan panel showed a finished scan with rule problems exactly as it showed a clean one. It now says when a finished scan does not certify the project, and how many rules could not be evaluated.
+  - A rule-problem explanation cut inside a multi-byte character made a strict MySQL or MariaDB server refuse the whole batch it was written with, so those records were never stored and the problem was never recorded.
+  - A batch of records with many findings each could exhaust `memory_limit` while its findings were written, and the next worker died on the same batch. Findings are written 500 at a time, and a batch stops early when the next record would not fit in memory.
+  - A record whose evaluation ends the PHP request (memory or time limit) was retried for ever and the scan never finished. Each such retry now counts as an attempt; after the configured number the record is reported as not examined.
+  - The memory budget let cheap duplicate-grouping steps raise the batch size used by the next step that reads whole records, which could exhaust memory. A request that started with more than 60% of `memory_limit` already in use did no work at all, on every attempt. Below PHP 8.2 a batch could grow past what memory had proved. A `memory_limit` written in hexadecimal, octal or binary turned the memory guard off.
+  - A record missing from REDCap's record-list cache while the cache was being rebuilt could be recorded as deleted, and the scan could still claim full coverage. A deletion is now confirmed against the project's data, and the cache is used for the record list only when REDCap reports it complete.
+  - A record whose every field read by the scan was blank was never examined, so a blank `@UVREQUIRED` field on it was never reported: the direct scan listed it as "requested but not returned" and the durable scan as unreadable on every run. Both scans now read the record-id field as well.
+  - Under `log-values = none` a finding on the record-id field showed the raw record id in the report's Value column, beside the hashed Record column. The value is withheld.
+  - A scan whose browser tab had been closed was reported as stalled after two minutes, with advice to stop it and start again, and so was a scan being stopped and a long planning step. These now read "paused" (press Continue) or "stopping". "Stalled" means a worker holds the scan and nothing is finishing.
+  - A tab watching a scan it was not running asked for its status once and never again. It now keeps checking, backing off to every 30 seconds, until the scan ends.
+  - A record-attempts setting above 254 meant a record could never be given up on, and the scan page re-sent requests without pause. The setting is held to 1–254.
+  - A cancelled or failed scan could report "nothing found" over duplicate-value findings already stored.
+  - Two tabs running one scan could count the same summary page twice.
+  - A database read that the framework answered with `false` was taken as an empty result, so a failed read of the scan summary could store a clean decision. It is now a storage failure.
+  - Catch-up treated an empty answer from the record-existence check as a deletion, and an existence check that failed stopped catch-up. Only an explicit "not there" is a deletion; a failure means "still there".
+  - A batch whose records had all been taken over by another worker made the worker skip its rule-problem notes for the rest of the request.
+  - Under a lenient `sql_mode`, a finding missing a required value was stored with a database default. The store now refuses it.
+- In the scan report groundwork (not yet visible): a duplicate-value finding showed an empty field, the record-id posture defaulted to the most disclosing option, the cache of hashed record ids grew with every record, a report accepted another project's scan row, only the Value cell was checked for valid UTF-8, an Identifier list given in the wrong shape was read as "no identifiers", unknown pooled-ID problem bits were dropped, the fallback sentence could name a different rule number than the Rule column, and a value cut on a byte no character starts with was labelled truncated instead of not-text. All are fixed.
 
 ### Verification
 
 - The database matrix (MySQL 5.7 and 8.0, MariaDB 10.5 and 10.11, default isolation and `READ COMMITTED`) asserts the statement count of a findings batch, that a duplicate finding in a later chunk still refuses the whole batch, and the query plan of the completeness check. Without the index hint, three of the four engines chose a plan that walks the whole manifest.
 - For wave 7 the matrix asserts the stored clean decision as `clean IS NULL` on the server, a duplicates-only project finishing complete and not clean, a rule problem marked from two connections landing as one row, and the production record-existence query telling a hidden record from a deleted one. It also found a defect the in-memory store could not: a variable name shared with the supersede statement dropped every rule-problem mark in a batch that closed earlier findings.
 - The report layer has its own suite, `tests/scan_report_php.php` (111 checks). It renders one record through the legacy scan and through the durable evaluator and compares every cell, and each group carries a control that shows its assertion can fail. 14 mutations of the new code were each caught.
+- Waves 6 and 7 were reviewed adversarially before merging: six reviewers, each on its own copy of the tree, with executed reproductions on PHP 7.4 and 8.3 and on MySQL and MariaDB. They found 7 high, 10 medium and 17 low findings. All were fixed, including those older than these waves, and each fix has a test that fails when the fix is reverted. A second round reviewed the fixes. The findings and what changed are recorded in `reports/scan-remediation-plan-2026-08-25.md`.
 
 ## 2.1.0-rc.1 — 2026-09-18
 

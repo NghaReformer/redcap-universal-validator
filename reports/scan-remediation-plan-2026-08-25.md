@@ -1107,3 +1107,54 @@ The store keeps the first 255 bytes of the value, which can end inside a multi-b
 - **Wave 8:** a findings read on both stores that returns `array_combine(FindingRowMapper::INPUT_KEYS, ...)`. Until then the test suite projects the evaluator's output onto those keys itself.
 - **Wave 8:** the `manifestComplete` answer for an unknown run differs between the two stores (W6-N1).
 - **Wave 11:** the `reason_bits` producer (R1), the record-hash seam (R2), the `uv_scan_dim` producer and reader with rules keyed by `rule_source_id` (R11), the message parity fixture (R8), and reading `clean IS NULL` as "not certified" (W7-N10). `ScanReport::runFacts()` already does the last of these.
+
+## Findings from the adversarial review of waves 6 and 7 (2026-10-01)
+
+Waves 6 and 7 were rebased onto `b3411b6` and reviewed by six red-team agents, each on its own copy of the tree: store I/O, work budget, outcome, tombstones and the client, the report layer, and an end-to-end run on MariaDB. They found 7 High, 10 Medium and 17 Low findings (two of them found twice). Every one was fixed before the merge, pre-existing ones included, each with a test that fails when its fix is reverted. The fixes are the commits whose messages end in "(review …)". A second round reviewed the fixes themselves; its findings are listed under R2 below.
+
+The ids are the reviewers' own: ST store, BU budget, OC outcome, CL client and tombstones, RP report, EE end to end.
+
+### High
+
+- **ST-1, a regression from B4b.** `marksFor()` cut a rule-problem sentence at byte 500 with `substr()`. The `samples` column is utf8mb4, so a multi-byte character across the cut is error 1366 on a strict server, and since B4b the mark is written inside `commitBatch()`: the whole batch was refused on every retry, its records ended UNSTORED, and the problem was never recorded. `ScanPromotion::sample()` scrubs and cuts with `mb_strcut()`; CatchUp's no-fence sample uses it too.
+- **EE-1, a regression from M9.** `insertFindings()` built a row for every finding before it chunked, so a batch held two copies of its findings: 25 records of 4,000 findings added 138.8 MB and died at 256M before `noteAttempts()`, leaving its claims held for the next worker to die on. The store now builds one 500-row chunk at a time. The worker samples memory after each record and cuts a batch short when the next record would not fit, committing what it examined and handing back the rest; a record that cannot fit alone is set aside with an attempt counted outside the failed work.
+- **EE-1, the death the store cannot see.** A request killed inside the read or the evaluation runs nothing after the fatal, so it counts no attempt and leaves its claims, and a record that kills PHP every time was retried for ever. Every way a live worker lets go of a row clears its claim token, so a free row that still carries one was left by a worker that died. `claimPending()` takes an attempt limit: such a row is charged the missing attempt, retired as UNREADABLE at the limit, and otherwise handed out alone, so it charges only itself.
+- **OC-1.** `facts()` called a scope empty only when the census of ALL states was 0, and tombstones are in the census. A run whose every record was deleted before it was read, or whose manifest emptied after it froze, was stored complete and clean. An empty scope now means no record reached DONE, none is pending and nothing blocks.
+- **OC-2.** No production surface read the stored decision, so a finished run with rule problems and no findings looked exactly like a clean one. `status()` returns `clean`, `ruleProblems` and `notExamined`, and the panel and the client add a sentence whenever a finished run is not certified.
+- **CL-1.** `exist()` answered from `redcap_record_list`, REDCap's record-list cache, whenever it held any row for the project, and `open()` walked it on the same test. A partly built or stale cache missing a live record made catch-up tombstone an edited record, and H18 tombstone a live one. `exist()` now confirms an absence against the data table, and `open()` uses the cache only when `redcap_record_counts.record_list_status` is COMPLETE or FIX_SORT. Any failure reads as "still there".
+- **BU-1, pre-existing.** The budget kept one claim per request and a memory floor per kind of unit. Cheap group pages doubled the claim to 500 and the verify page after them re-read 500 whole records and died. Each kind now has its own claim and floor, and the finalizer takes a separate read limit for verify pages (`DuplicateFinalizer::step($gen, $limit, $readLimit)`), reported back so the worker measures them as records.
+- **BU-2, pre-existing.** The memory check before the first claim gave zero work to any request that started past the 60% reserve, on every pass, for ever. `admit()` lets one unit through when it fits under the limit with a tenth of it to spare, and otherwise stops with a reason that names `memory_limit`.
+
+### Medium
+
+- **EE-2.** Both scan reads asked getData for the read set only, and getData omits a blank field, so a record whose every read field was blank came back with no node. The legacy scan called it "requested but not returned"; since H18 the durable worker filed it UNREADABLE on every run. Both reads now ask for the record-id field as well (the H-06 fix the form path already had). It is added to the read and not to the entitlement, which the entitlement test now states.
+- **OC-3.** `ModuleDb::select()` turned a framework `false`, or a result it could not walk, into `[]`, so one failed read of the summary stored a clean decision. Those now raise `ScanStoreUnavailable`.
+- **OC-4.** A run with no verdict reported `detail_rows`, which misses the finalizer's duplicates. It reports the larger of that and the summary, or "not counted" when both are 0.
+- **OC-5.** A rollup page was fenced on the lease epoch alone, which every worker of a run shares, so two tabs counted the same page. `holdRollupCursor()` locks the run row in the page transaction and re-checks the cursor and the terminal state. The run row is now locked before the aggregate rows, the order `commitBatch()` uses.
+- **CL-2.** Any quiet run read "stalled… stop it and start a new one", including one whose tab was simply closed and one already stopping. Stalled now needs the scanning phase, a live lease and no recent update; otherwise the run reads paused or stopping.
+- **CL-6.** The attempt counter stops at 254, so a `recordAttempts` setting above it meant a record was never retired and the client re-issued requests at 0 ms. The policy clamps the setting to 1–254.
+- **BU-3.** Below PHP 8.2 a batch under an earlier high-water mark measured nothing and the claim kept doubling until a batch died. A claim now grows only as far as the gap to the mark proves, and the in-batch samples cap it.
+- **RP-1, RP-2, RP-3** (report layer, inert until wave 11). A stored duplicate rendered as an empty field, because the finalizer stores no value and the mapper read that as blank; it reads "not kept". `recordIds` defaulted to raw, the one disclosure input that failed open; it is required. The cache of hashed record ids grew with every record (85 MiB at 500,000); it keeps the last one.
+
+### Low
+
+- **ST-2.** A multi-row INSERT under a lenient `sql_mode` stores a column default for a NULL in a NOT NULL column. Both stores refuse a finding missing any `ScanStore::FINDING_REQUIRED` key, and a MySQL check keeps that list equal to the schema.
+- **ST-3.** The write-order lint missed a count read after a helper call or across a branch. It tracks both.
+- **ST-4.** `commitBatch()` returned true for a batch that held none of its records and wrote no marks, and the worker remembered the marks as written. The stores report the held count through `&$heldCount`; the worker remembers marks only when it is not 0.
+- **OC-7.** `derive()` read a missing count as 0. A missing or malformed count now refuses clean.
+- **EE-4.** The empty-scope finish dropped the rule-problem count; it is stored. `clean = 0` is documented as "not certified".
+- **CL-3, CL-4, CL-5.** Planning is never reported stalled. A tab watching a run it is not driving keeps polling on the idle back-off until the run ends. The service's existence-probe wiring is a method with a test.
+- **BU-4, BU-5, BU-6.** One outlier record no longer pins the batch size for a PHP 7.4 request. The PHP 8.2 peak reset and the per-kind marks have tests. `memory_limit` written with `0x`, `0o`, `0b`, a leading zero or `+` is read as PHP reads it.
+- **RP-4 to RP-9 and the tail-byte note** (report layer). `ScanReport` refuses another project's run row or a values-state mismatch. With hashed ids the record-id field's value is withheld, in the mapper and in the legacy report's `reportValue()`. The fallback sentence names the rule the Rule column shows. Every cell leaves as UTF-8. An identifiers list is refused and an unknown mask bit is named `bit-N`. Five surviving mutants have checks. A cut ending in a byte no character starts with is labelled not-text.
+- **W7-N4 residue.** Catch-up tombstoned a record on any empty answer (`null`, `0`, `''`, `'0'`) and a probe that threw escaped `step()`. It now uses the worker's rule, `=== false` only, and a throw means "still there". This closes the catch-up half of W7-N4 that was scheduled for wave 8.
+
+### Shared helpers this review introduced
+
+- `UniversalValidator::recordIdFieldOf()` is the one answer to "which field is the record id", with the data-dictionary fallback. The legacy record list, the form path's read (H-06) and `scanPlan()` use it; `durableScanContext()` reads it from the plan.
+- `ScanPromotion::sample()` is the one UTF-8-safe cut for aggregate samples.
+- `ScanWorker::maxAttempts()` is the one reading of the attempt limit.
+
+### Left as it is, on purpose
+
+- A stored duplicate's value is not shown, where the legacy report shows it. Showing it needs a value column on `uv_unique_candidate` and the finalizer to write it; that is a schema change and belongs with the findings page in wave 11. The fixture check in `tests/scan_report_php.php` reads the finalizer's INSERT and names itself when that changes.
+- BU-1's suggested cap on clock growth across kinds was not added: with a claim per kind it holds by construction, and a cross-kind cap would throttle cheap group pages to the record size for nothing.
