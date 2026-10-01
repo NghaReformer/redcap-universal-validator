@@ -128,6 +128,9 @@ UV.labels = {
   excluded: '{n} could not be checked',
   removed: '{n} deleted during the scan',
   foundUnknown: 'Findings not counted, because the scan ended before it could total them',
+  notCertified: 'This result does not certify the project.',
+  ruleProblem: '1 rule could not be evaluated, so this result does not certify the project.',
+  ruleProblems: '{n} rules could not be evaluated, so this result does not certify the project.',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -674,6 +677,40 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await ticks(6);
   check('stalled: the tab DRIVING the scan does not show it - it has its own note for that',
     UV.state.running === true && els['uv-scan-stalled'].style.display === 'none');
+
+  // -- OC-2: what promotion decided --------------------------------------
+  //
+  // A run refused `clean` because a rule could not be evaluated, with nothing
+  // found, rendered exactly what a certified run rendered. The server now says
+  // what it decided, and every finished run not certified says so.
+  const fencedText = 'Every record was checked, including changes made while it ran.';
+  const decided = (over) => Object.assign(finished('complete-through-fence'), over);
+  await show(decided({ clean: 1, ruleProblems: 0 }));
+  const certText = els['uv-scan-done'].textContent;
+  check('verdict: a certified run says what it checked and nothing more', certText === fencedText);
+  await show(decided({ clean: 0, ruleProblems: 1 }));
+  check('verdict: a run with a rule it could not evaluate does NOT read as the certified one',
+    els['uv-scan-done'].textContent !== certText
+    && els['uv-scan-done'].textContent === fencedText + ' ' + UV.labels.ruleProblem);
+  await show(decided({ clean: 0, ruleProblems: 4 }));
+  check('verdict: and counts the rules when there is more than one',
+    els['uv-scan-done'].textContent.indexOf('4 rules could not be evaluated') !== -1
+    && els['uv-scan-done'].textContent.indexOf('{n}') === -1);
+  await show(decided({ clean: 0, ruleProblems: 0, findings: 3 }));
+  check('verdict: a run not certified for another reason says it is not certified',
+    els['uv-scan-done'].textContent === fencedText + ' ' + UV.labels.notCertified);
+  await show(Object.assign(finished('partial'), { terminal: 'cancelled', clean: null }));
+  check('verdict: so does a run with no decision',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  await show(finished('complete-through-fence'));
+  check('verdict: and a status that never said is not read as certified',
+    els['uv-scan-done'].textContent.indexOf(UV.labels.notCertified) !== -1);
+  const keptLabelsForVerdict = UV.labels;
+  UV.labels = {};
+  await show(decided({ clean: 0, ruleProblems: 1 }));
+  check('verdict: with no vocabulary handed over the sentence is still there',
+    els['uv-scan-done'].textContent.indexOf('could not be evaluated') !== -1);
+  UV.labels = keptLabelsForVerdict;
 
   // -- OC-4: findings that were never counted -----------------------------
   //

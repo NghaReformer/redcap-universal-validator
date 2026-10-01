@@ -259,6 +259,44 @@ class ScanPageView
     }
 
     /**
+     * Said after the coverage sentence of any finished run that is NOT
+     * certified clean - every terminal run whose stored `clean` is not 1.
+     *
+     * The coverage sentence is about what was CHECKED and says nothing about
+     * what was decided, so a run refused `clean` because a rule could not be
+     * evaluated, with nothing found, read exactly as a certified run reads:
+     * "Every record was checked, including changes made while it ran." beside
+     * "Nothing found yet". The rule wording is used whenever the run counted
+     * rule problems, because that is the reason a reader cannot see anywhere
+     * else on the panel; the plain wording covers every other reason, and a
+     * status that carries no decision at all gets it too.
+     *
+     * No apostrophes, for the reason given at STALLED.
+     */
+    const NOT_CERTIFIED = 'This result does not certify the project.';
+    const RULE_PROBLEM  = '1 rule could not be evaluated, so this result does not certify the '
+                        . 'project.';
+    const RULE_PROBLEMS = '{n} rules could not be evaluated, so this result does not certify the '
+                        . 'project.';
+
+    /**
+     * The not-certified sentence for this status, or null when none is owed.
+     *
+     * Null only for a run that is still going, and for a finished one whose
+     * stored decision is exactly 1. js/scan.js decides the same way.
+     */
+    public static function verdictText($status)
+    {
+        if (!is_array($status) || empty($status['terminal'])) return null;
+        $c = array_key_exists('clean', $status) ? $status['clean'] : null;
+        if ($c === 1 || $c === '1' || $c === true) return null;
+        $n = isset($status['ruleProblems']) ? (int) $status['ruleProblems'] : 0;
+        if ($n === 1) return self::RULE_PROBLEM;
+        if ($n > 1) return str_replace('{n}', (string) $n, self::RULE_PROBLEMS);
+        return self::NOT_CERTIFIED;
+    }
+
+    /**
      * Shown to somebody WATCHING a run that has stopped getting anywhere.
      *
      * No apostrophe anywhere in it: labels() is printed into a script block
@@ -304,6 +342,9 @@ class ScanPageView
             'excluded'        => self::COUNT_EXCLUDED,
             'removed'         => self::COUNT_REMOVED,
             'foundUnknown'    => self::FOUND_UNKNOWN,
+            'notCertified'    => self::NOT_CERTIFIED,
+            'ruleProblem'     => self::RULE_PROBLEM,
+            'ruleProblems'    => self::RULE_PROBLEMS,
         ];
     }
 
@@ -428,9 +469,11 @@ class ScanPageView
             'stalled' => self::stalledText($status),
             'found'  => self::foundText($status),
             'pct'    => $pct,
+            // ONE STRING, coverage then decision - see verdictText().
             'done'   => empty($status['terminal']) ? null
                 : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
-                                         isset($status['detail']) ? $status['detail'] : null),
+                                         isset($status['detail']) ? $status['detail'] : null)
+                  . (self::verdictText($status) === null ? '' : ' ' . self::verdictText($status)),
             'active' => !empty($status['active']),
         ];
     }

@@ -134,6 +134,32 @@
     }
 
     /**
+     * What a finished run that is NOT certified clean must add to its coverage
+     * sentence, or null when it owes nothing.
+     *
+     * The coverage sentence says what was checked, not what was decided, so a
+     * run refused `clean` because a rule could not be evaluated read exactly as
+     * a certified one did. Only a stored `clean` of exactly 1 owes nothing; a
+     * status without the field (an older server) is not certified, because the
+     * missing answer is never the reassuring one. ScanPageView::verdictText()
+     * decides the same way, from the same sentences.
+     */
+    function verdictText(st) {
+        if (!st.terminal || st.clean === 1) return null;
+        var L = labels(), n = st.ruleProblems | 0, tpl;
+        if (n === 1) {
+            return L.ruleProblem
+                || '1 rule could not be evaluated, so this result does not certify the project.';
+        }
+        if (n > 1) {
+            tpl = L.ruleProblems
+                || '{n} rules could not be evaluated, so this result does not certify the project.';
+            return fill(tpl, { n: n });
+        }
+        return L.notCertified || 'This result does not certify the project.';
+    }
+
+    /**
      * "Nothing found yet", "3 findings so far", or that they were not counted.
      *
      * A findings value that is not a number is NOT zero. A run that ended
@@ -145,7 +171,8 @@
     function foundText(st) {
         var f = st.findings, L = labels();
         if (typeof f !== 'number' || f < 0 || f !== Math.floor(f)) {
-            return L.foundUnknown || 'Findings not counted, because the scan ended before it could total them';
+            return L.foundUnknown
+                || 'Findings not counted, because the scan ended before it could total them';
         }
         return f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
     }
@@ -280,6 +307,8 @@
             // and a reader given only one of the two draws the wrong conclusion
             // from it.
             var sentence = coverageSentence(st.coverage, st.detail);
+            var verdict = verdictText(st);
+            if (verdict) sentence += ' ' + verdict;
             // Revealed BEFORE it is written. A live region that is display:none
             // when its text changes announces nothing in most assistive
             // technology, so the old order made the completion sentence the one

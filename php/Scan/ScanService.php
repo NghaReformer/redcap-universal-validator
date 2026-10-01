@@ -391,6 +391,35 @@ final class ScanService
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
             'why'       => null,
+        ] + self::decisionOf($run);
+    }
+
+    /**
+     * What promotion DECIDED about a finished run, as status() reports it.
+     *
+     * NONE OF THIS WAS REPORTED. promote() stores `clean`, `rule_problem_count`
+     * and `not_examined` on the row, and status() returned none of them - so a
+     * run refused `clean` because a rule could not be evaluated, with nothing
+     * found, read "Finished - 1 of 1 records (100%) - Nothing found yet - Every
+     * record was checked", byte for byte what a certified run reads. The page
+     * cannot say what it is not told.
+     *
+     * `clean` STAYS TRI-STATE: 1 certified, 0 decided and not certified, null
+     * no decision (still running, or a run that ended without a verdict). The
+     * counts mean something only where `clean` is not null; see W7-N10.
+     *
+     * @return array{clean:?int, ruleProblems:int, notExamined:int}
+     */
+    public static function decisionOf(array $run)
+    {
+        $c = array_key_exists('clean', $run) ? $run['clean'] : null;
+        $n = function ($k) use ($run) {
+            return isset($run[$k]) ? max(0, (int) $run[$k]) : 0;
+        };
+        return [
+            'clean'        => ($c === null || $c === '') ? null : ((int) $c === 1 ? 1 : 0),
+            'ruleProblems' => $n('rule_problem_count'),
+            'notExamined'  => $n('not_examined'),
         ];
     }
 

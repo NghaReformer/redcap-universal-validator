@@ -582,6 +582,48 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * OC-2  STATUS REPORTS WHAT PROMOTION DECIDED
+ *
+ * promote() stores clean, rule_problem_count and not_examined; status() returned
+ * none of them, so the page could not tell a certified run from one refused
+ * clean over a rule problem. decisionOf() is the part of status() that reads
+ * them, and it is reachable without an entitlement.
+ * ===================================================================== */
+{
+    $d = function (array $row) { return ScanService::decisionOf($row); };
+    check('OC-2: a certified run reports clean as 1',
+        $d(['clean' => '1', 'rule_problem_count' => '0', 'not_examined' => '0'])
+            === ['clean' => 1, 'ruleProblems' => 0, 'notExamined' => 0]);
+    check('OC-2: a run refused clean over a rule problem reports 0 and the count',
+        $d(['clean' => '0', 'rule_problem_count' => '1', 'not_examined' => '0'])
+            === ['clean' => 0, 'ruleProblems' => 1, 'notExamined' => 0]);
+    check('OC-2: no decision stays NO decision - null, never a 0 that reads as "found something"',
+        $d(['clean' => null, 'rule_problem_count' => '0', 'not_examined' => '0'])['clean'] === null
+        && $d([])['clean'] === null);
+    check('OC-2: records not examined are reported',
+        $d(['clean' => '0', 'not_examined' => '3'])['notExamined'] === 3);
+    check('OC-2: a value other than 1 is never read as certified',
+        $d(['clean' => '2'])['clean'] === 0 && $d(['clean' => 'yes'])['clean'] === 0);
+    // THE ROW status() IS GIVEN. A run finished by the real promotion over the
+    // in-memory store: one record examined, nothing found, one rule problem.
+    $ps = new ArrayScanStore();
+    $prid = (int) $ps->startRun(830, ['created_by' => 'alice', 'fence_open' => '10'])['run']['run_id'];
+    $ps->writeManifest($prid, [['id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true)]]);
+    $pep = (int) $ps->run(830, $prid)['lease_epoch'];
+    $pc = $ps->claim($prid, 'w', $pep, 5);
+    $ps->commitBatch($prid, 'w', $pep, ['bytes' => 0, 'findings' => [], 'records' => [
+        ['ordinal' => $pc[0]['ordinal'], 'record_hash' => $pc[0]['hash'], 'claim' => $pc[0]['claim'],
+         'state' => ScanStore::REC_DONE, 'version' => '500']]]);
+    ScanPromotion::noteRuleProblems($ps, $prid, [['rule' => 1, 'fields' => ['a'], 'why' => 'x']]);
+    $ps->setProgressState($prid, $pep, ['fenceTarget' => '500']);
+    ScanPromotion::promote($ps, 830, $prid, ['uniqueDone' => true, 'rollupDone' => true]);
+    $prow = $ps->run(830, $prid);
+    check('OC-2: a run promotion refused over a rule problem reaches status() as not certified',
+        $prow['terminal'] === ScanOutcome::COMPLETE
+        && ScanService::decisionOf($prow) === ['clean' => 0, 'ruleProblems' => 1, 'notExamined' => 0]);
+}
+
+/* =====================================================================
  * OC-4  A RUN WITH NO VERDICT NEVER SAYS ZERO OVER FINDINGS IT HAS
  *
  * status() reports findingsOf(). For a cancelled, failed or expired run that

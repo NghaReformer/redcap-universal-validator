@@ -1546,6 +1546,30 @@ namespace {
         check('PANEL: but the page still says a scan is running',
             strpos($opaque, 'on the server right now') !== false);
 
+        // OC-2, through the real status() and the real page. Two finished runs
+        // that differ ONLY in what promotion decided: one certified, one refused
+        // `clean` for a rule it could not evaluate. They rendered identically.
+        $END = ['phase' => 'terminal', 'terminal' => 'complete', 'coverage' => 'complete-through-fence',
+                'manifest_total' => '1', 'manifest_done' => '1', 'fence_target' => '918273'] + $LIVE;
+        list($certHtml, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => uv_run_row(['clean' => '1'] + $END),
+            'recordStates' => [['100', '1']]]));
+        list($ruleHtml, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55,
+            'runRow' => uv_run_row(['clean' => '0', 'rule_problem_count' => '1'] + $END),
+            'recordStates' => [['100', '1']]]));
+        $doneP = function ($html) {
+            return preg_match('/<p id="uv-scan-done"[^>]*>([^<]*)<\/p>/', $html, $m) === 1
+                ? html_entity_decode($m[1], ENT_QUOTES) : null;
+        };
+        check('PANEL: a certified run states what it checked, and no verdict sentence',
+            $doneP($certHtml) === \INSPIRE\UniversalValidator\ScanPageView::coverageSentence(
+                'complete-through-fence'));
+        check('PANEL: the run refused clean for a rule problem says so before any script runs',
+            strpos((string) $doneP($ruleHtml),
+                   \INSPIRE\UniversalValidator\ScanPageView::RULE_PROBLEM) !== false
+            && $doneP($ruleHtml) !== $doneP($certHtml));
+
         // Rights still decide. The panel is not a way around them.
         list($noRights, ) = render(new \ExternalModules\PlainUser(false, null), $D, $data, [], $on());
         check('PANEL: a user without design rights gets no panel',
@@ -1786,6 +1810,37 @@ namespace {
             strpos($V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 5]))['stalled'],
                    'for 1 minutes') !== false);
 
+        // OC-2. THE STORED DECISION IS SAID. A run refused `clean` because a
+        // rule could not be evaluated, with nothing found, rendered byte for
+        // byte what a certified run rendered: status() never reported the
+        // decision, and the coverage sentence is about checking, not deciding.
+        $fin = function (array $over) use ($status) {
+            return $status(array_merge(['phase' => 'terminal', 'terminal' => 'complete',
+                'coverage' => 'complete-through-fence', 'total' => 1, 'done' => 1, 'settled' => 1,
+                'findings' => 0, 'active' => false], $over));
+        };
+        $certified = $V::panelPrefill($fin(['clean' => 1, 'ruleProblems' => 0]));
+        $oneRule = $V::panelPrefill($fin(['clean' => 0, 'ruleProblems' => 1]));
+        check('PREFILL: a certified run says what it checked and nothing more',
+            $certified['done'] === $V::coverageSentence('complete-through-fence'));
+        check('PREFILL: a run with a rule that could not be evaluated does NOT read as the certified one',
+            $oneRule['done'] !== $certified['done']
+            && $oneRule['done'] === $V::coverageSentence('complete-through-fence') . ' '
+                                    . $V::RULE_PROBLEM);
+        check('PREFILL: and says it in one plain sentence, counting the rules',
+            strpos($V::panelPrefill($fin(['clean' => 0, 'ruleProblems' => 3]))['done'],
+                   '3 rules could not be evaluated, so this result does not certify the project.')
+                !== false);
+        check('PREFILL: a run not certified for any other reason says it is not certified',
+            substr($V::panelPrefill($fin(['clean' => 0, 'findings' => 2]))['done'],
+                   -strlen($V::NOT_CERTIFIED)) === $V::NOT_CERTIFIED);
+        check('PREFILL: so does a run with no decision at all, and a status that never said',
+            strpos($V::panelPrefill($fin(['terminal' => 'cancelled', 'clean' => null,
+                       'coverage' => 'partial']))['done'], $V::NOT_CERTIFIED) !== false
+            && strpos($V::panelPrefill($fin([]))['done'], $V::NOT_CERTIFIED) !== false);
+        check('PREFILL: and a run still going owes no verdict yet',
+            $V::verdictText($status(['clean' => 0, 'ruleProblems' => 2])) === null);
+
         // OC-4. A run that ended before its findings could be counted reports
         // NULL, and the line must say so rather than cast it to "Nothing found".
         $ended = $status(['phase' => 'terminal', 'terminal' => 'cancelled', 'active' => false]);
@@ -1803,17 +1858,26 @@ namespace {
         // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
         // the two: js/scan.js holds a fallback for each and no other copy.
         $L = $V::labels();
-        foreach (['stalled', 'plain', 'checked', 'excluded', 'removed', 'foundUnknown'] as $k) {
+        $sentences = ['stalled', 'plain', 'checked', 'excluded', 'removed', 'foundUnknown',
+                      'notCertified', 'ruleProblem', 'ruleProblems'];
+        $all = '';
+        foreach ($sentences as $k) {
             check("LABELS: the client is handed the '$k' sentence",
                 isset($L[$k]) && is_string($L[$k]) && $L[$k] !== '');
+            $all .= isset($L[$k]) ? $L[$k] : '';
         }
         check('LABELS: none of them carries an apostrophe into the script block',
-            strpos($L['stalled'] . $L['plain'] . $L['checked'] . $L['excluded'] . $L['removed']
-                   . $L['foundUnknown'], "'") === false);
+            strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
-        foreach (['plain', 'checked', 'excluded', 'removed', 'foundUnknown'] as $k) {
+        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
+        }
+        // Wrapped onto a second line in the client, so the literal is looked for
+        // on its own: still the page's wording, still the only other copy.
+        foreach (['foundUnknown', 'ruleProblem', 'ruleProblems'] as $k) {
+            check("LABELS: and the client's fallback for '$k' is the page's own wording",
+                preg_match('/L\.' . $k . '\s+\|\| \'' . preg_quote($L[$k], '/') . '\'/', $js) === 1);
         }
 
         // Nothing to describe must produce nothing, never a claim. A refused or
