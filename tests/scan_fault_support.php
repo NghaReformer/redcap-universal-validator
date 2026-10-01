@@ -323,6 +323,16 @@ class RecordingFramework
     public $chatty = false;
     /** @var bool a failed write returns false instead of throwing */
     public $writeReturnsFalse = false;
+    /**
+     * @var bool when true, every SELECT except ROW_COUNT() answers $selectAnswer -
+     *      false for a build that reports a failed read that way, or a shape
+     *      ModuleDb cannot walk
+     */
+    public $overrideSelect = false;
+    /** @var mixed what an overridden SELECT answers */
+    public $selectAnswer = false;
+    /** @var string|null when set, only a SELECT containing this is overridden */
+    public $overrideOnly = null;
     /** @var string[] statements, in order */
     public $queries = [];
     /** @var array list of [event, context] */
@@ -340,6 +350,10 @@ class RecordingFramework
         }
         if ($this->writeReturnsFalse && preg_match('/^\s*(INSERT|UPDATE|DELETE)/i', $sql)) {
             return false;
+        }
+        if ($this->overrideSelect && preg_match('/^\s*SELECT/i', $sql)
+                && ($this->overrideOnly === null || strpos($sql, $this->overrideOnly) !== false)) {
+            return $this->selectAnswer;
         }
         foreach ($this->canned as $needle => $rows) {
             if (strpos($sql, $needle) !== false) return $rows;

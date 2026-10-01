@@ -53,6 +53,13 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
     require_once __DIR__ . '/scan_fault_support.php';
+    // The store and the verdict, for the OC-3 leg: a failed read must reach
+    // promotion as a failure rather than as an empty project.
+    require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
+    require_once __DIR__ . '/../php/Scan/ScanPlanner.php';
+    require_once __DIR__ . '/../php/Scan/ScanPromotion.php';
+    require_once __DIR__ . '/scan_run_row.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -144,6 +151,82 @@ namespace INSPIRE\UniversalValidator\Scan {
         $sdb->select('SELECT * FROM plain', []) === [[1, 'a']]);
     check('moduledb: and an empty result is an empty list, never a null',
         $sdb->select('SELECT * FROM nothing', []) === []);
+
+    // =====================================================================
+    // OC-3 - A READ THAT FAILED IS NOT AN EMPTY ONE
+    // =====================================================================
+    //
+    // select() handed a false straight to rows(), which answered [] - so on a
+    // build that reports a failed statement by returning false, one failed
+    // read of the aggregates gave promotion zero violations and zero rule
+    // problems, and the run was stored clean. The same build is the one the
+    // write-side checks above already model; it is a real case, not a
+    // hypothetical one.
+    $readFalse = new RecordingFramework();
+    $readFalse->overrideSelect = true;
+    $readFalse->selectAnswer = false;
+    $rdb = new ModuleDb($readFalse);
+    check('moduledb: a read that returned false is a failure, not an empty result',
+        threw(function () use ($rdb) { $rdb->select('SELECT * FROM t', []); }) === 'unavailable');
+    foreach (['true' => true, 'null' => null, 'a string' => 'rows', 'an integer' => 0,
+              'an object with nothing to fetch' => new \stdClass()] as $what => $answer) {
+        $odd = new RecordingFramework();
+        $odd->overrideSelect = true;
+        $odd->selectAnswer = $answer;
+        $odb = new ModuleDb($odd);
+        check('moduledb: a read answered with ' . $what . ' is a failure, not an empty result',
+            threw(function () use ($odb) { $odb->select('SELECT * FROM t', []); }) === 'unavailable');
+    }
+    // THE CONTROL. A result that can be walked and holds nothing is still the
+    // empty answer it always was.
+    $walkable = new RecordingFramework();
+    $walkable->overrideSelect = true;
+    $walkable->selectAnswer = new class {
+        public function fetch_row() { return null; }
+    };
+    check('moduledb: a walkable result with no rows is still an empty list',
+        (new ModuleDb($walkable))->select('SELECT * FROM t', []) === []);
+    // And the write side is unchanged by it: exec() still reads a count that
+    // never arrived as a failure, through the same rows().
+    $noCount = new RecordingFramework();
+    $noCount->rowCount = null;
+    check('moduledb: a write whose count could not be read still fails as before',
+        threw(function () use ($noCount) { (new ModuleDb($noCount))->exec('UPDATE t SET a = 1', []); })
+            === 'unavailable');
+
+    // THROUGH THE STORE AND THE VERDICT, the path the finding was about. The
+    // run row and the record states read normally; only the aggregates read
+    // fails, and promotion must not finish the run on the strength of it.
+    $flaky = new RecordingFramework();
+    $flaky->canned = [
+        'FROM ' . Schema::table('scan_run') => [uv_run_row(['run_id' => 5, 'project_id' => 970,
+            'phase' => ScanPhase::ROLLUP, 'manifest_total' => '1', 'manifest_done' => '1',
+            'fence_target' => '500', 'detail_rows' => '3'])],
+        'GROUP BY state' => [[ScanStore::REC_DONE, 1]],
+    ];
+    $flaky->overrideSelect = true;
+    $flaky->overrideOnly = Schema::table('scan_aggregate');
+    $flaky->selectAnswer = false;
+    $fstore = new SqlScanStore(new ModuleDb($flaky));
+    check('moduledb: the store reports a failed aggregates read as a storage failure',
+        threw(function () use ($fstore) { $fstore->aggregates(5); }) === 'unavailable');
+    check('moduledb: and promotion does not certify a run over it',
+        threw(function () use ($fstore) {
+            ScanPromotion::promote($fstore, 970, 5, ['uniqueDone' => true, 'rollupDone' => true]);
+        }) === 'unavailable');
+    $finished = false;
+    foreach ($flaky->queries as $q) {
+        if (strpos($q, 'UPDATE ' . Schema::table('scan_run')) !== false
+                && strpos($q, 'terminal = ?') !== false) $finished = true;
+    }
+    check('moduledb: so the run was never written terminal', $finished === false);
+    $states = new RecordingFramework();
+    $states->overrideSelect = true;
+    $states->overrideOnly = 'GROUP BY state';
+    $states->selectAnswer = false;
+    $sstore = new SqlScanStore(new ModuleDb($states));
+    check('moduledb: a failed record-state census is a storage failure, not an empty census',
+        threw(function () use ($sstore) { $sstore->recordStates(5); }) === 'unavailable');
 
     // =====================================================================
     // THE UNCOUNTED WRITE (P2)

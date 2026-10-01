@@ -23,7 +23,14 @@ namespace INSPIRE\UniversalValidator\Scan;
  */
 interface ScanDb
 {
-    /** Rows as a list of positional arrays. Params are always bound, never interpolated. */
+    /**
+     * Rows as a list of positional arrays. Params are always bound, never interpolated.
+     *
+     * @throws ScanStoreUnavailable when the read failed. An empty list means
+     *         "no rows" and nothing else; a read that failed must never be
+     *         delivered as one, because every reader of a count or a verdict
+     *         would take it as zero.
+     */
     public function select($sql, array $params = []);
 
     /**
@@ -130,10 +137,33 @@ final class ModuleDb implements ScanDb
         $this->module = $module;
     }
 
+    /**
+     * A READ THAT FAILED IS NOT AN EMPTY ONE (review OC-3).
+     *
+     * This used to hand whatever query() returned to rows(), which answered []
+     * for false and for any shape it could not walk. So on a framework build
+     * that reports a failed statement by returning false, one failed read of
+     * scan_aggregate gave promotion zero violations and zero rule problems and
+     * the run was stored clean; recordStates() failed open the same way. P11
+     * closed this for manifestComplete() alone, by changing that one query.
+     * The fix belongs here, under every read: false, and any result this class
+     * cannot walk, throw ScanStoreUnavailable - the same answer exec() gives a
+     * write that returned false, and the one the common framework build already
+     * gives by throwing. Every caller reaches the H12 storage-failure handlers
+     * in ScanWorker::work() and ScanService, or wraps the read itself.
+     */
     public function select($sql, array $params = [])
     {
         $q = $this->module->query($sql, $params);
-        return self::rows($q);
+        if ($q === false) {
+            throw new ScanStoreUnavailable('the database refused a read');
+        }
+        $rows = self::rows($q);
+        if ($rows === null) {
+            throw new ScanStoreUnavailable('the database answered a read with a result this '
+                . 'module cannot walk (' . (is_object($q) ? get_class($q) : gettype($q)) . ')');
+        }
+        return $rows;
     }
 
     public function exec($sql, array $params = [])
@@ -199,7 +229,16 @@ final class ModuleDb implements ScanDb
     public function commit()   { $this->module->query('COMMIT', []); }
     public function rollback() { $this->module->query('ROLLBACK', []); }
 
-    /** Whatever shape the framework returned, as a list of positional rows. */
+    /**
+     * Whatever shape the framework returned, as a list of positional rows.
+     *
+     * NULL, NOT [], FOR A SHAPE IT CANNOT WALK. An empty list is an answer -
+     * "no such row" - and a result nobody could read is not one. select()
+     * throws on null; exec() reads a null ROW_COUNT() as "no count", which it
+     * already refuses.
+     *
+     * @return array|null
+     */
     private static function rows($q)
     {
         if (is_array($q)) return $q;
@@ -208,6 +247,8 @@ final class ModuleDb implements ScanDb
             while ($row = $q->fetch_row()) $out[] = $row;
         } elseif (is_object($q) && is_callable([$q, 'fetch_assoc'])) {
             while ($row = $q->fetch_assoc()) $out[] = array_values($row);
+        } else {
+            return null;
         }
         return $out;
     }

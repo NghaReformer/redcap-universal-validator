@@ -22,6 +22,10 @@ require_once __DIR__ . '/../../../php/Scan/ScanPhase.php';
 require_once __DIR__ . '/../../../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../../../php/Scan/ScanDb.php';
 require_once __DIR__ . '/../../../php/Scan/DbError.php';
+// Every storage failure the store raises is one of these. Nothing below loaded
+// it, so on this harness a failed read that the store reports as unavailable
+// died as "class not found" instead - a fatal, not the failure under test.
+require_once __DIR__ . '/../../../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
@@ -109,6 +113,38 @@ class Conn {
     }
     public function raw() { return $this->c; }
     public function affected() { return $this->c->affected_rows; }
+}
+
+/**
+ * The framework's query(), over one real connection, with a failure on demand.
+ *
+ * Some framework builds report a failed statement by RETURNING FALSE rather than
+ * throwing, and ModuleDb has to read that as a failure (review OC-3). A real
+ * server cannot be asked for a false, so a SELECT containing $failOn answers
+ * false here and every other statement goes to the server. Shaped like the dag
+ * case's module: a statement with no result set answers true, so ModuleDb's own
+ * ROW_COUNT() read on the same connection is where its counts come from.
+ */
+class UvFlakyModule {
+    private $c;
+    /** @var string|null a SELECT containing this answers false */
+    public $failOn = null;
+    /** @var int how many reads were made to fail */
+    public $failed = 0;
+    public function __construct($c) { $this->c = $c; }
+    public function query($sql, $params = []) {
+        if ($this->failOn !== null && stripos(ltrim($sql), 'SELECT') === 0
+                && strpos($sql, $this->failOn) !== false) {
+            $this->failed++;
+            return false;
+        }
+        if (!$params) return $this->c->query($sql);
+        $st = $this->c->prepare($sql);
+        bindAll($st, array_values($params));
+        $st->execute();
+        $r = $st->get_result();
+        return $r === false ? true : $r;
+    }
 }
 
 /** ScanDb over the raw mysqli connection. */
