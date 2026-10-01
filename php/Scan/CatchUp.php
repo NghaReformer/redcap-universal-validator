@@ -161,7 +161,13 @@ final class CatchUp
         }
 
         $known  = $this->store->scannedVersions($runId, $ids);
-        $exists = $this->ask('exists', $ids, true);
+        // A PROBE THAT THROWS ANSWERS "STILL THERE" FOR THE WHOLE PAGE. It used
+        // to escape step() and fail the request, which is the loud direction
+        // but not the one RecordManifestSource::exist() commits to: a read
+        // that cannot be made is "still there", the record is requeued, and
+        // the attempt limit turns a record that really cannot be read into a
+        // reported exclusion.
+        $exists = $this->ask('exists', $ids, true, true);
         $scope  = $this->ask('scope', $ids, true);
         $dags   = $this->ask('dag', $ids, null);
 
@@ -170,7 +176,13 @@ final class CatchUp
         $gone = [];
         foreach ($ids as $id) {
             $onManifest = isset($known[$id]);
-            $stillThere = !empty($exists[$id]);
+            // GONE ONLY ON AN EXPLICIT false FOR THIS ID - the rule
+            // ScanWorker::confirmedGone() already applies (W7-N4). This was
+            // empty(), so a resolver answering null, 0, '' or '0' for a record
+            // it could not place tombstoned a live one, and a tombstone does
+            // not stop a run finishing clean. Anything but false is "cannot
+            // tell", and cannot tell is not gone.
+            $stillThere = !(array_key_exists($id, $exists) && $exists[$id] === false);
 
             if (!$onManifest) {
                 // Created (or moved into scope) after the manifest was frozen.
@@ -266,14 +278,30 @@ final class CatchUp
         return $out;
     }
 
-    /** Ask a configured resolver about a page of ids, or assume the default. */
-    private function ask($which, array $ids, $default)
+    /**
+     * Ask a configured resolver about a page of ids, or assume the default.
+     *
+     * $survive: a resolver that throws answers $default for every id instead
+     * of ending the step. Only for a question whose default is the safe side -
+     * "still there" for existence. Scope is not asked this way: its default
+     * admits a record, and a scope probe that failed must not widen a
+     * group-scoped run.
+     */
+    private function ask($which, array $ids, $default, $survive = false)
     {
         $fn = isset($this->deps[$which]) ? $this->deps[$which] : null;
         if (!is_callable($fn)) {
             return array_fill_keys($ids, $default);
         }
-        $got = $fn($ids);
+        if ($survive) {
+            try {
+                $got = $fn($ids);
+            } catch (\Throwable $e) {
+                return array_fill_keys($ids, $default);
+            }
+        } else {
+            $got = $fn($ids);
+        }
         if (!is_array($got)) return array_fill_keys($ids, $default);
         $out = [];
         foreach ($ids as $id) {

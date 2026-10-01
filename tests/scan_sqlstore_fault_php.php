@@ -776,7 +776,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         && strpos($o['why'], 'record-id field could not be determined') !== false);
 
     // =====================================================================
-    // CATCH-UP over the cache
+    // CATCH-UP - "gone" is an explicit false, and a probe that throws is not one
     // =====================================================================
 
     /** A change log with a fixed window, as tests/scan_worker_php.php builds one. */
@@ -827,6 +827,31 @@ namespace INSPIRE\UniversalValidator\Scan {
     $res = $cu->step(800, $runId, $epoch, 100);
     check('catch-up: a record edited during the run and missing from the cache is requeued',
         $res['requeued'] === 1 && $res['gone'] === 0
+        && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
+
+    // W7-N4 RESIDUE: anything but an explicit false is "cannot tell".
+    foreach (['null' => null, 'zero' => 0, 'an empty string' => '', "'0'" => '0'] as $what => $v) {
+        list($store, $runId, $epoch) = $inCatchUp(['A', 'B']);
+        $cu = new CatchUp($store, ['fence' => $window(['A' => '400', 'B' => '400']), 'hash' => $hash,
+            'exists' => function (array $ids) use ($v) { return ['A' => $v, 'B' => false]; }]);
+        $res = $cu->step(800, $runId, $epoch, 100);
+        check('catch-up: a probe answering ' . $what . ' does not tombstone the record',
+            $store->recordState($runId, 1) === ScanStore::REC_PENDING && $res['requeued'] === 1);
+        check('catch-up: while an explicit false beside it still does (' . $what . ')',
+            $store->recordState($runId, 2) === ScanStore::REC_TOMBSTONE && $res['gone'] === 1);
+    }
+
+    // A PROBE THAT THROWS answers "still there" for the page, rather than
+    // ending the step.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B']);
+    $cu = new CatchUp($store, ['fence' => $window(['A' => '400', 'B' => '400']), 'hash' => $hash,
+        'exists' => function (array $ids) { throw new \RuntimeException('MySQL server has gone away', 2006); }]);
+    $r = outcomeOf(function () use ($cu, $runId, $epoch) { return $cu->step(800, $runId, $epoch, 100); });
+    check('catch-up: a probe that throws does not escape the step',
+        $r['kind'] === 'returned');
+    check('catch-up: and every record it was asked about is requeued, none tombstoned',
+        $r['kind'] === 'returned' && $r['value']['requeued'] === 2 && $r['value']['gone'] === 0
+        && $store->recordState($runId, 1) === ScanStore::REC_PENDING
         && $store->recordState($runId, 2) === ScanStore::REC_PENDING);
 }
 
