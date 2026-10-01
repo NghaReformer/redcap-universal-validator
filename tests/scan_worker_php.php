@@ -1696,6 +1696,20 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('marks: and a long explanation is bounded before it reaches a TEXT column',
         strlen(ScanPromotion::marksFor([['rule' => 1, 'why' => str_repeat('w', 5000)]])[0]['samples'])
             === ScanPromotion::SAMPLE_BYTES);
+    // A strict server refuses a utf8mb4 value that ends inside a character
+    // (1366), and the mark travels inside commitBatch(), so a byte cut would
+    // roll back the whole batch on every retry. 499 ASCII bytes put the
+    // two-byte 'ô' across the 500-byte limit.
+    $straddle = ScanPromotion::marksFor([['rule' => 1,
+        'why' => str_repeat('w', ScanPromotion::SAMPLE_BYTES - 2) . "C\xC3\xB4te d'Ivoire"]])[0]['samples'];
+    check('marks: a cut that falls inside a character backs off to the character before it',
+        mb_check_encoding($straddle, 'UTF-8') && strlen($straddle) === ScanPromotion::SAMPLE_BYTES - 1
+        && substr($straddle, -1) === 'C');
+    $latin1 = ScanPromotion::marksFor([['rule' => 1, 'why' => "caf\xE9 au lait"]])[0]['samples'];
+    check('marks: bytes that were never UTF-8 are scrubbed, not stored',
+        mb_check_encoding($latin1, 'UTF-8') && strpos($latin1, 'caf') === 0);
+    check('marks: a problem with no sentence keeps no sample',
+        ScanPromotion::marksFor([['rule' => 1]])[0]['samples'] === null);
     check('rule problems: a fenced, finished, finding-free run with one is NOT clean',
         ScanOutcome::mayClaimClean(ScanOutcome::derive(ScanPromotion::facts(
             $run, $all, array_merge($ok, ['ruleProblems' => $rpTotal]))['facts'])) === false);

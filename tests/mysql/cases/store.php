@@ -31,6 +31,7 @@ use INSPIRE\UniversalValidator\Scan\ScanStore;
 use INSPIRE\UniversalValidator\Scan\ScanOutcome;
 use INSPIRE\UniversalValidator\Scan\ScanPhase;
 use INSPIRE\UniversalValidator\Scan\Hmac;
+use INSPIRE\UniversalValidator\Scan\ScanPromotion;
 
 $PID = 700;
 $NEIGHBOUR = uv_neighbour($PID);
@@ -825,6 +826,22 @@ $MARKED = 784;
     $rows = array_values(array_filter($agg(), function ($r) { return $r[0] === '12'; }));
     check('marked: and its mark is there, once',
         count($rows) === 1 && (int) $rows[0][2] === 1 && $rows[0][4] === 'met while examining');
+
+    // A SENTENCE CUT INSIDE A CHARACTER. samples is utf8mb4 and the server is
+    // strict, so a byte cut through the two-byte 'ô' is error 1366 - and the
+    // mark is inside the batch, so the batch went with it, on every retry.
+    $c2 = $sa->claim($rid, 'w1', $ep, 1);
+    $two = ['ordinal' => $c2[0]['ordinal'], 'record_hash' => $c2[0]['hash'],
+            'state' => ScanStore::REC_DONE, 'claim' => $c2[0]['claim']];
+    $cut = ScanPromotion::marksFor([['rule' => 13, 'code' => 'branch-conflict',
+        'why' => str_repeat('w', ScanPromotion::SAMPLE_BYTES - 2) . "C\xC3\xB4te d'Ivoire"]]);
+    check('marked: a batch whose mark was cut at a character boundary commits on a strict server',
+        $sa->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [], 'records' => [$two],
+            'marks' => $cut]) === true);
+    $rows = array_values(array_filter($agg(), function ($r) { return $r[0] === '13'; }));
+    check('marked: and its sample is the sentence up to the character it could not split',
+        count($rows) === 1 && substr($rows[0][4], -1) === 'C'
+        && strlen($rows[0][4]) === ScanPromotion::SAMPLE_BYTES - 1);
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

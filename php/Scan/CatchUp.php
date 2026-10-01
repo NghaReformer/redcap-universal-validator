@@ -259,7 +259,7 @@ final class CatchUp
     private function unfenced($runId, array $out, $why)
     {
         $this->store->addAggregate($runId, self::K_NOFENCE, null, null, 1, 0,
-            substr((string) $why, 0, 500));
+            ScanPromotion::sample((string) $why));
         $out['done'] = true;
         $out['fenced'] = false;
         $out['why'] = $why;

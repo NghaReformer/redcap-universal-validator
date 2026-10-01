@@ -107,6 +107,29 @@ final class ScanPromotion
     const SAMPLE_BYTES = 500;
 
     /**
+     * A sentence cut to SAMPLE_BYTES that is still valid UTF-8.
+     *
+     * `samples` is a utf8mb4 column, and a strict server refuses a string that
+     * ends inside a character (error 1366). A rule-problem sentence quotes the
+     * designer's own expressions, so a multi-byte character can straddle the
+     * cut. Since B4b the mark is written inside commitBatch(), so one refused
+     * mark rolled back the whole batch, every retry carried the same mark, and
+     * the batch's records ended UNSTORED with the problem never recorded.
+     *
+     * Scrubbed first, because the sentence can carry project bytes that were
+     * never valid; then cut on a character boundary.
+     *
+     * @return string|null
+     */
+    public static function sample($why)
+    {
+        if (!is_string($why)) return null;
+        $why = mb_scrub($why, 'UTF-8');
+        return strlen($why) <= self::SAMPLE_BYTES
+            ? $why : mb_strcut($why, 0, self::SAMPLE_BYTES, 'UTF-8');
+    }
+
+    /**
      * What makes two reports of a rule problem THE SAME problem.
      *
      * The rule, and what is wrong with it. UniversalValidator keys its own list
@@ -150,8 +173,7 @@ final class ScanPromotion
             $k = $a1 . "\0" . $a2;
             if (isset($out[$k])) continue;
             $out[$k] = ['kind' => self::RULE_KINDS, 'axis1' => $a1, 'axis2' => $a2, 'blocks' => 0,
-                        'samples' => (isset($p['why']) && is_string($p['why']))
-                            ? substr($p['why'], 0, self::SAMPLE_BYTES) : null];
+                        'samples' => self::sample(isset($p['why']) ? $p['why'] : null)];
         }
         return array_values($out);
     }
