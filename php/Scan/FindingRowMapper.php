@@ -80,8 +80,15 @@ final class FindingRowMapper
     private $stored;
     private $effective;
     private $identifiers;
-    /** @var array record id => what it is shown as. A record has many findings. */
-    private $shownAs = [];
+    /**
+     * The LAST record id hashed, and what it is shown as. One slot, not a map:
+     * a record's findings arrive together, and a map keyed by every record
+     * the mapper has seen is a second copy of the project's ids held for the
+     * life of an export (85 MiB at 500,000 records). A record met again after
+     * another costs one more HMAC.
+     */
+    private $lastId = null;
+    private $lastShown = null;
 
     /**
      * @param array $opts
@@ -283,11 +290,11 @@ final class FindingRowMapper
         return ['state' => $state, 'value' => null, 'withheld' => (bool) $withheld];
     }
 
-    /** The record id as this report shows it. Hashed once per record. */
+    /** The record id as this report shows it. Hashed once per run of findings on one record. */
     private function recordOf($id)
     {
         if (!$this->hashed) return $id;
-        if (!isset($this->shownAs[$id])) {
+        if ($id !== $this->lastId) {
             $h = null;
             try {
                 $h = call_user_func($this->hasher, $id);
@@ -296,9 +303,10 @@ final class FindingRowMapper
             }
             // Never the raw id, and never an empty cell: a table of problems
             // nobody can reach reads as a fault in the reader's own export.
-            $this->shownAs[$id] = (is_string($h) && $h !== '') ? $h : self::ID_UNAVAILABLE;
+            $this->lastId = $id;
+            $this->lastShown = (is_string($h) && $h !== '') ? $h : self::ID_UNAVAILABLE;
         }
-        return $this->shownAs[$id];
+        return $this->lastShown;
     }
 
     /**

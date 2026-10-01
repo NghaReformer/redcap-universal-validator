@@ -564,6 +564,24 @@ namespace {
         $counting = mapper(['recordIds' => 'hashed', 'hashRecordId' => function ($id) use (&$calls) { $calls++; return 'h-' . strlen($id); }]);
         $counting->toFinding(row()); $counting->toFinding(row(['field' => 'b_val']));
         check('record ids: one record is hashed once, however many findings it has', $calls === 1);
+
+        // RP-3. The memo of hashed ids had no bound, so a mapper kept one entry
+        // per distinct record for its whole life - 85 MiB at 500,000 records,
+        // out of memory at 1,000,000 under 128M - behind a csvLine() that
+        // promises nothing is buffered. Streamed records must not accumulate.
+        $stream = mapper(['recordIds' => 'hashed',
+                          'hashRecordId' => function ($id) { return hash_hmac('sha256', $id, 'k'); }]);
+        $probe = row();
+        gc_collect_cycles();
+        $before = memory_get_usage();
+        for ($i = 0; $i < 50000; $i++) {
+            $probe['record_id_bin'] = 'P' . str_pad((string) $i, 9, '0', STR_PAD_LEFT);
+            $stream->toFinding($probe);
+        }
+        gc_collect_cycles();
+        $grew = memory_get_usage() - $before;
+        check('record ids: 50,000 distinct records streamed through one mapper keep no memory per record (grew '
+            . round($grew / 1024) . ' KiB)', $grew < 512 * 1024);
         foreach ([['null', function () { return null; }], ['empty', function () { return ''; }],
                   ['throwing', function () { throw new \RuntimeException('no key'); }]] as $case) {
             $r = mapper(['recordIds' => 'hashed', 'hashRecordId' => $case[1]])->toFinding(row())['record'];
