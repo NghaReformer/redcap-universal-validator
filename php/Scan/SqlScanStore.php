@@ -850,12 +850,10 @@ final class SqlScanStore implements ScanStore
                     array_merge([$runSeq, $projectId, $generationId], $closing));
             }
 
-            $keep = [];
-            foreach ($findings as $f) {
-                if (empty($held[(int) $f['ordinal']])) continue;
-                $keep[] = $f;
-            }
-            $stored = $this->insertFindings($keep);
+            // The findings of HELD records only, and the filter is applied inside
+            // insertFindings() as it walks them rather than by building a second
+            // list here - see the memory note there.
+            $stored = $this->insertFindings($findings, $held);
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
             // scan that depends on records other than the one being examined, so
@@ -1247,36 +1245,83 @@ final class SqlScanStore implements ScanStore
      * keeps its ROW_COUNT() read - one extra round trip per FINDING_CHUNK rows -
      * and refuses the batch if the server stored fewer rows than it was sent.
      *
+     * ONE CHUNK IN MEMORY AT A TIME (review EE-1). This used to build
+     * findingRow() for every finding of the batch and only then cut the list
+     * into chunks, so the batch was held twice over - once as the findings the
+     * worker handed in, once as 29-column rows - before a single row was sent.
+     * Measured: 25 records of 4,000 findings each added 138.8 MB on top of the
+     * batch, which died at a 256 MB memory_limit inside this method. A fatal
+     * there skips noteAttempts(), so the claims stay held, the same batch is
+     * claimed again when they go stale, and it dies the same way for ever. Now
+     * a row is built only when it is about to join the chunk being filled, and
+     * the chunk's parameters are dropped as soon as its INSERT has answered.
+     *
+     * @param array $held ordinal => true, the records this transaction still
+     *                    holds; a finding of any other record is not written
      * @return int rows stored
      */
-    private function insertFindings(array $findings)
+    private function insertFindings(array $findings, array $held)
     {
-        if (!$findings) return 0;
-        $rows = [];
-        foreach ($findings as $f) $rows[] = self::findingRow($f);
-        $cols = array_keys($rows[0]);
-        $mark = '(' . implode(',', array_fill(0, count($cols), '?')) . ')';
-        // MySQL allows 65,535 placeholders a statement. The division keeps a
-        // chunk legal if this table ever gains enough columns to matter.
-        $size = max(1, min(self::FINDING_CHUNK, intdiv(65535, count($cols))));
-        $head = 'INSERT INTO ' . Schema::table('finding') . '
+        $head = null;
+        $mark = null;
+        $full = null;          // the VALUES list of a full chunk, built once
+        $size = self::FINDING_CHUNK;
+        $flat = [];
+        $rows = 0;
+        $stored = 0;
+        foreach ($findings as $f) {
+            if (empty($held[(int) $f['ordinal']])) continue;
+            $row = self::findingRow($f);
+            if ($head === null) {
+                // findingRow() is the only column list, so the statement is
+                // shaped from the first row it builds.
+                $cols = array_keys($row);
+                $mark = '(' . implode(',', array_fill(0, count($cols), '?')) . ')';
+                // MySQL allows 65,535 placeholders a statement. The division
+                // keeps a chunk legal if this table ever gains enough columns
+                // to matter.
+                $size = max(1, min(self::FINDING_CHUNK, intdiv(65535, count($cols))));
+                $head = 'INSERT INTO ' . Schema::table('finding') . '
             (' . implode(', ', $cols) . ')
             VALUES ';
-        $stored = 0;
-        foreach (array_chunk($rows, $size) as $chunk) {
-            $flat = [];
-            foreach ($chunk as $row) {
-                foreach ($row as $v) $flat[] = $v;
+                $full = implode(',', array_fill(0, $size, $mark));
             }
-            $this->db->exec($head . implode(',', array_fill(0, count($chunk), $mark)), $flat);
-            $n = $this->db->affected();
-            if ($n !== count($chunk)) {
-                throw new \RuntimeException('the database stored ' . (int) $n . ' of '
-                    . count($chunk) . ' findings it was sent');
+            foreach ($row as $v) $flat[] = $v;
+            $rows++;
+            if ($rows >= $size) {
+                $stored += $this->insertFindingChunk($head . $full, $flat, $rows);
+                // Freed here, not when the loop ends: holding the last chunk's
+                // parameters while the next one fills is the copy this method
+                // exists not to make.
+                $flat = [];
+                $rows = 0;
             }
-            $stored += $n;
+        }
+        if ($rows > 0) {
+            $stored += $this->insertFindingChunk(
+                $head . implode(',', array_fill(0, $rows, $mark)), $flat, $rows);
         }
         return $stored;
+    }
+
+    /**
+     * One chunk of findings, and the count that says the server kept all of it.
+     *
+     * The write and the read of its count stay in this one function, which is
+     * what the order lint in tests/scan_moduledb_php.php requires: the count
+     * belongs to the statement straight above it and to nothing else.
+     *
+     * @return int rows stored, always equal to $rows
+     */
+    private function insertFindingChunk($sql, array $params, $rows)
+    {
+        $this->db->exec($sql, $params);
+        $n = $this->db->affected();
+        if ($n !== $rows) {
+            throw new \RuntimeException('the database stored ' . (int) $n . ' of '
+                . (int) $rows . ' findings it was sent');
+        }
+        return $n;
     }
 
     /**

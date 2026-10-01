@@ -450,6 +450,99 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('batched: a batch with no findings sends no findings statement at all',
         $got === true && $sent === 0);
 
+    // A CHUNK THAT FAILS PART WAY THROUGH TAKES THE WHOLE BATCH WITH IT. The
+    // second INSERT is refused after the first has succeeded; only the
+    // transaction can undo the first, so the rollback is what is asserted.
+    $mid = clone $countingDb;
+    $mid->rows = ['FOR UPDATE' => $fenceRow];
+    $mid->failAt('INSERT INTO ' . Schema::table('finding'), 2, new \RuntimeException(
+        'Lock wait timeout exceeded; try restarting transaction', 1205));
+    $got = (new SqlScanStore($mid))->commitBatch(1, 'w1', 0, $mkBatch(SqlScanStore::FINDING_CHUNK * 2));
+    check('batched: a second chunk the server refuses refuses the whole batch',
+        is_string($got) && strpos($got, 'database refused') !== false
+        && $mid->rollbacks === 1 && !in_array('COMMIT', $mid->log, true));
+
+    // =====================================================================
+    // EE-1 - commitBatch holds one chunk of rows, never the whole batch twice
+    // =====================================================================
+    //
+    // insertFindings() built a 29-column row for EVERY finding before it sent
+    // the first chunk, so a batch was held twice over. 25 records of 4,000
+    // findings added 138.8 MB and died at memory_limit=256M, before
+    // noteAttempts() could count the attempt - so the claims stayed held and
+    // the same batch was claimed and killed again for ever. The bound below is
+    // stated in chunks rather than megabytes so it means the same on 7.4 and
+    // 8.x: what commitBatch adds must be a small multiple of ONE chunk of the
+    // batch, whatever the batch's size.
+
+    /** Answers the fence, counts rows, and notes memory as each finding INSERT arrives. */
+    $memDb = new class implements ScanDb {
+        public $base = 0;
+        public $worst = 0;
+        public $inserts = 0;
+        private $aff = -1;
+        private $uncounted = false;
+        public function select($sql, array $params = [])
+        {
+            return strpos($sql, 'FOR UPDATE') !== false ? [[0, null, 700, 5, 5, null]] : [];
+        }
+        public function exec($sql, array $params = [])
+        {
+            $this->uncounted = false;
+            if (strpos($sql, 'INSERT INTO ' . Schema::table('finding')) !== false) {
+                $this->inserts++;
+                $this->worst = max($this->worst, memory_get_usage(false) - $this->base);
+                $this->aff = intdiv(count($params), 29);
+                return;
+            }
+            $this->aff = 1;
+        }
+        public function execNoCount($sql, array $params = []) { $this->uncounted = true; }
+        public function affected()
+        {
+            if ($this->uncounted) throw new \LogicException('uncounted');
+            return $this->aff;
+        }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    };
+    $records = 10;
+    $perRecord = 2000;
+    $big = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'marks' => []];
+    gc_collect_cycles();
+    $empty = memory_get_usage(false);
+    for ($r = 1; $r <= $records; $r++) {
+        $rh = hash('sha256', 'rec' . $r, true);
+        $big['records'][] = ['ordinal' => $r, 'record_hash' => $rh, 'state' => ScanStore::REC_DONE,
+                             'version' => '9', 'claim' => 7];
+        for ($i = 1; $i <= $perRecord; $i++) {
+            // Shaped as UniversalValidator::durableEvaluateRecord() builds one,
+            // with the ordinal ScanWorker::batch() adds.
+            $big['findings'][] = ['ordinal' => $r, 'project_id' => 700, 'generation_id' => 5,
+                'identity' => hash('sha256', "id-$r-$i", true), 'valid_from_seq' => 5,
+                'record_hash' => $rh, 'record_id_bin' => 'REC-' . $r, 'event_id' => 101,
+                'instance' => $i, 'host_form' => 'visit', 'field' => 'v_' . ($i % 50),
+                'rule_source_id' => 'rule-' . ($i % 50), 'rule_revision' => str_repeat('a', 64),
+                'rule_ord' => $i % 50, 'check_type' => 'required', 'reason_code' => 'required-blank',
+                'dag_key' => null, 'value_bin' => null, 'value_len' => null, 'value_truncated' => 0,
+                'value_fingerprint' => null, 'value_expires_at' => null];
+        }
+    }
+    $total = $records * $perRecord;
+    $perFinding = (memory_get_usage(false) - $empty) / $total;
+    gc_collect_cycles();
+    $memDb->base = memory_get_usage(false);
+    $got = (new SqlScanStore($memDb))->commitBatch(1, 'w1', 0, $big);
+    $chunkBytes = $perFinding * SqlScanStore::FINDING_CHUNK;
+    check('memory: a batch of ' . $total . ' findings commits, a chunk at a time',
+        $got === true && $memDb->inserts === (int) ceil($total / SqlScanStore::FINDING_CHUNK));
+    check('memory: and what commitBatch adds is a few chunks, not a second copy of the batch'
+        . ' (added ' . round($memDb->worst / 1048576, 1) . ' MB, one chunk is about '
+        . round($chunkBytes / 1048576, 2) . ' MB)',
+        $memDb->worst < 4 * $chunkBytes);
+    unset($big);
+
     // =====================================================================
     // B4b - a mark carried in a batch REACHES THE SERVER
     // =====================================================================
