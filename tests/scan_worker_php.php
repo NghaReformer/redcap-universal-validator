@@ -726,8 +726,12 @@ namespace INSPIRE\UniversalValidator\Scan {
                      [40, 92, 94], [40, 92, 94]]);      // batch 4: another kind of unit
     $b2m = $measured(200, $p2);
     $o2 = $b2m->observe($b2m->mark('records', $t), 10, $t + 1.0);
+    // Not charged, so it does not shrink. But nor does it double blind (review
+    // BU-3): it grows only as far as the high-water mark itself proves. Ten
+    // records peaked at most 30 MiB above where they started, 3 MiB each at
+    // the outside, and 48 MiB of room holds 16 of those. The clock wanted 20.
     check('measure: a peak the batch did not move is not charged to the batch',
-        $o2['claim'] === 20 && $o2['why'] === null);
+        $o2['claim'] === 16 && $o2['why'] === null);
     // 52 MiB over 20 records is 2.6 MiB each; 120 - 94 leaves room for 10.
     $o3 = $b2m->observe($b2m->mark('records', $t), 20, $t + 2.0);
     check('measure: a peak the batch DID move is, exactly', $o3['claim'] === 10);
@@ -736,10 +740,14 @@ namespace INSPIRE\UniversalValidator\Scan {
     $o4 = $b2m->observe($b2m->mark('records', $t), 10, $t + 1.0);
     check('measure: and the last exact figure holds when a later batch measures nothing',
         $o4['claim'] === 10);
-    // A cost per record says nothing about a cost per duplicate group.
+    // A cost per record says nothing about a cost per duplicate group, so the
+    // groups batch has no exact figure of its own. It stays under the request's
+    // high-water mark, so all that is known is that ten groups cost at most
+    // 52 MiB; 26 MiB of room proves five, not the twenty the clock would allow,
+    // and the claim holds where it is (review BU-3).
     $o5 = $b2m->observe($b2m->mark('groups', $t), 10, $t + 1.0);
-    check('measure: but it is not carried over to a different kind of unit',
-        $o5['claim'] === 20);
+    check('measure: a kind with nothing exact yet holds its claim rather than doubling blind',
+        $o5['claim'] === 10);
 
     // HEADROOM IS STILL THE ARENA, because that is what memory_limit caps.
     $p3 = $scripted([[30, 30, 61]]);
@@ -784,10 +792,12 @@ namespace INSPIRE\UniversalValidator\Scan {
         public $used;
         public $peak;
         public $reset;
-        public function __construct($usedMb, $reset)
+        public function __construct($usedMb, $reset, $peakMb = null)
         {
             $this->used = (int) ($usedMb * 1048576);
-            $this->peak = $this->used;
+            // A peak above usage is something earlier in the request that
+            // allocated and let go - REDCap's bootstrap, say.
+            $this->peak = max($this->used, (int) (($peakMb === null ? 0 : $peakMb) * 1048576));
             $this->reset = (bool) $reset;
         }
         public function probe()
@@ -847,6 +857,83 @@ namespace INSPIRE\UniversalValidator\Scan {
         $o6['claim'] === 10 && $b6->claim('records') === 10);
     check('kinds: and a kind not yet seen starts from the first claim, not from another kind\'s',
         $b6->claim('rows') === 20);
+
+    // -- below PHP 8.2: what a batch under the high-water mark proves (BU-3/4)
+    //
+    // Drives a budget through a sequence of batches against the heap model,
+    // and stops where PHP would have died: a batch whose true peak passes the
+    // limit. Each step is [kind, bytes per unit, bytes once for the batch].
+    $drive = function (WorkBudget $b, ModelHeap $h, array $steps, $limitBytes) {
+        $claims = [];
+        $fatal = null;
+        $at = microtime(true);
+        foreach ($steps as $i => $s) {
+            list($kind, $per, $extra) = $s;
+            $size = $b->claim($kind);
+            $claims[] = $size;
+            $mk = $b->mark($kind, $at);
+            if ($h->used + $size * $per + $extra > $limitBytes) { $fatal = $i; break; }
+            $h->spike($size * $per + $extra);
+            $at += 0.01;                     // fast: the clock always allows doubling
+            $b->observe($mk, $size, $at);
+        }
+        return [$claims, $fatal];
+    };
+    $old = function (ModelHeap $h, $limitMb, $first = 25) use ($MB) {
+        return new WorkBudget(['mode' => 'cron', 'memoryLimit' => $limitMb * $MB, 'timeLimit' => null,
+            'min' => 1, 'max' => 500, 'first' => $first, 'startedAt' => microtime(true),
+            'probe' => $h->probe()]);
+    };
+
+    // A BATCH UNDER AN EARLIER HIGH-WATER MARK MEASURES ONLY WHAT IT KEPT.
+    // Something earlier in the request peaked at 100 of 128 MiB and let go.
+    // Every batch of 0.3 MiB records stayed under that mark, measured nothing,
+    // and doubled: 25, 50, 100, 200, then 400 records needing 120 MiB on top of
+    // the 10 in use. It now grows only as far as the mark proves: 25 records
+    // cost at most 90 MiB, and 66.8 MiB of room does not prove 50.
+    $h = new ModelHeap(10, false, 100);
+    list($cl, $fatal) = $drive($old($h, 128), $h, array_fill(0, 12, ['records', (int) (0.3 * $MB), 0]),
+                               128 * $MB);
+    check('below 8.2: a batch under a stale high-water mark does not double blind into a fatal',
+        $fatal === null && max($cl) === 25);
+    // ...and where the mark DOES prove room, growth goes on. Here it sits only
+    // 10 MiB above usage: 25 records cost at most that, and 80 MiB of room
+    // proves 200, so the clock's doubling is allowed until a batch moves the
+    // peak and is measured exactly.
+    $h = new ModelHeap(40, false, 50);
+    list($cl, $fatal) = $drive($old($h, 200), $h, array_fill(0, 6, ['records', (int) (0.2 * $MB), 0]),
+                               200 * $MB);
+    check('below 8.2: a batch still grows as far as the high-water mark proves it may',
+        $fatal === null && $cl === [25, 50, 100, 200, 400, 400]);
+
+    // ONE OUTLIER DOES NOT PIN THE REST OF THE REQUEST (BU-4). A 40 MiB record
+    // in the second batch moves the peak and sets the floor at 0.85 MiB a
+    // record. Every later batch stays under that peak, so it used to measure
+    // nothing and the floor held the batch at 78 for the rest of the request.
+    // But a batch under the mark is PROVED to have cost no more than the gap
+    // up to it, and that bound tightens as the batch grows: the floor relaxes
+    // to it.
+    $h = new ModelHeap(10, false);
+    $steps = [['records', (int) (0.05 * $MB), 0], ['records', (int) (0.05 * $MB), 40 * $MB]];
+    for ($i = 0; $i < 8; $i++) $steps[] = ['records', (int) (0.05 * $MB), 0];
+    list($cl, $fatal) = $drive($old($h, 128), $h, $steps, 128 * $MB);
+    check('below 8.2: the outlier caps the batch after it',
+        $fatal === null && $cl[2] === 78);
+    check('below 8.2: and then the floor relaxes to what later batches prove, without a fatal',
+        $fatal === null && max(array_slice($cl, 3)) > 200);
+
+    // WHAT A BATCH HELD AT ONCE, sampled between its units, is a better lower
+    // bound than what it kept. 25 records held 75 MiB together under a stale
+    // 120 MiB mark and freed it; 66.8 MiB of room holds 22 of those.
+    $h = new ModelHeap(10, false, 120);
+    $sb = $old($h, 128);
+    $mk = $sb->mark('records', $t);
+    $h->used += 75 * $MB;
+    $sb->sample();
+    $h->used -= 75 * $MB;
+    $os = $sb->observe($mk, 25, $t + 0.01);
+    check('below 8.2: what a batch held between units caps the next one',
+        $os['claim'] === 22 && strpos((string) $os['why'], 'rather than the clock') !== false);
 
     // -- a request that starts past the reserve (review BU-2) ---------------
     //
@@ -1586,6 +1673,37 @@ namespace INSPIRE\UniversalValidator\Scan {
         $limitsOf($pf, 'discover') === [10, 20]);
     check('kinds: and a verify page inherits exactly the records claim',
         $limitsOf($pf, 'verify') === [12, 12]);
+
+    // THE WORKER SAMPLES BETWEEN RECORDS (review BU-3). Below 8.2, under a
+    // stale 120 MiB high-water mark in a 128 MiB limit: each batch holds 3 MiB
+    // a record while it works and gives it back record by record, so by the
+    // time the batch is observed nothing is held and the peak never moved.
+    // Only a sample taken inside the batch sees the 75 MiB that 25 records
+    // held at once - and 66.8 MiB of room holds 22 of them.
+    $sixty = [];
+    for ($i = 1; $i <= 60; $i++) $sixty[] = 'R' . $i;
+    list($store, $runId) = $fixture($sixty);
+    $h = new ModelHeap(10, false, 120);
+    $readSizes = [];
+    $holdingReader = function ($ids) use ($h, $MB, &$readSizes) {
+        $readSizes[] = count($ids);
+        $h->used += count($ids) * 3 * $MB;
+        $data = [];
+        foreach ($ids as $id) $data[$id] = ['1' => ['x' => 'v']];
+        return ['ok' => true, 'data' => $data, 'why' => null];
+    };
+    $releasing = function ($id, $node) use ($h, $MB) {
+        $h->used -= 3 * $MB;
+        return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+    };
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $holdingReader,
+        'evaluate' => $releasing, 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+        'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => 128 * $MB, 'timeLimit' => null,
+            'min' => 1, 'max' => 500, 'first' => 25, 'startedAt' => microtime(true),
+            'probe' => $h->probe()])]);
+    $w->work(800, $runId);
+    check('below 8.2: what a batch held between records caps the next batch',
+        array_slice($readSizes, 0, 2) === [25, 22]);
 
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.

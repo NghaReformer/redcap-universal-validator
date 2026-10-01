@@ -479,7 +479,7 @@ final class ScanWorker
             }
 
             $mark = $budget->mark('records');
-            $r = $this->batch($pid, $runId, $epoch, $claimed);
+            $r = $this->batch($pid, $runId, $epoch, $claimed, $budget);
             if (!$r['ok']) {
                 // A refused commit means this worker was overtaken, cancelled,
                 // or writing into a database that will not have it; a failed
@@ -551,9 +551,14 @@ final class ScanWorker
     /**
      * One claimed batch, read stably and committed as a unit.
      *
+     * $budget is told what is held after the read and after each record
+     * (WorkBudget::sample()). Below PHP 8.2 that is the only in-batch figure:
+     * the peak is request-wide, and a batch that stays under an earlier
+     * high-water mark shows nothing by the time it is observed.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int, why:?string}
      */
-    private function batch($pid, $runId, $epoch, array $claimed)
+    private function batch($pid, $runId, $epoch, array $claimed, WorkBudget $budget = null)
     {
         $ids = [];
         // ordinal => claim token, the shape every write about these rows takes.
@@ -592,6 +597,7 @@ final class ScanWorker
                     : 'the records could not be read from the project just now');
         }
         $data = isset($got['data']) && is_array($got['data']) ? $got['data'] : [];
+        if ($budget !== null) $budget->sample();
 
         $after = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
 
@@ -677,6 +683,7 @@ final class ScanWorker
             }
 
             $ev = $this->evaluate($id, $data[$id]);
+            if ($budget !== null) $budget->sample();
             if (!empty($ev['why'])) {
                 // The record was read and could not be examined. Reported as
                 // unreadable rather than as clean - H-05 in one line.

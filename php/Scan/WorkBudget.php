@@ -57,6 +57,20 @@ namespace INSPIRE\UniversalValidator\Scan;
  * smaller batch again, down to one record at a time and a false message saying
  * the records in the project are large.
  *
+ * BUT A BATCH UNDER THE MARK STILL PROVES SOMETHING (review BU-3, BU-4). Its
+ * peak cannot have been above the request's, so the gap up to the mark is an
+ * UPPER bound on what it cost. Used as a cost, that bound is the spiral above.
+ * Used as a limit on growth, it is exactly what was missing: a batch that
+ * measured nothing used to double on the clock alone, and below a stale mark
+ * of 100 MiB in a 128 MiB limit that went 25, 50, 100, 200, 400 records and
+ * died on the first batch big enough to pass the mark. So a kind with no exact
+ * figure yet may grow only as far as the gap proves fits, and otherwise holds;
+ * a kind that has one (the floor) may relax it down to that bound, because the
+ * bound is a fact about THIS batch and the floor is a fact about an earlier
+ * one. Without that, one outlier record pinned the batch size for the rest of
+ * the request. What a batch held at once, sampled between its units, is a
+ * LOWER bound and may only cap it.
+ *
  * ONE CLAIM PER KIND OF UNIT, NOT ONE PER REQUEST (review BU-1). A request
  * works records, duplicate groups, summary rows and change-log rows, and a
  * unit of one costs nothing like a unit of another. The floor was already kept
@@ -130,6 +144,7 @@ final class WorkBudget
     private $floors = [];   // kind => the last EXACT per-unit peak cost, in bytes
     private $observed = 0;  // batches this request has finished and been told about
     private $squeezed = false; // admit() let this request past the reserve for one unit
+    private $batchTop = null;  // the highest real usage sampled since mark(), or null
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
@@ -198,14 +213,34 @@ final class WorkBudget
     public function mark($kind = '', $now = null)
     {
         $m = $this->read(true);
+        $this->batchTop = $m['used'];
         return ['at' => $now === null ? microtime(true) : (float) $now,
                 'used' => $m['used'], 'peak' => $m['peak'], 'kind' => (string) $kind];
     }
 
     /**
+     * One unit inside the batch is finished; note what is held now.
+     *
+     * Between units is the only place the real usage of a batch in flight can
+     * be seen, and below 8.2 it is the only in-batch figure there is: the peak
+     * is request-wide, so a batch that stays under an earlier high-water mark
+     * shows nothing at all by the time it is observed. The highest usage
+     * sampled here is a LOWER bound on the batch's peak, so observe() lets it
+     * cap the next batch and never lets it justify growth.
+     */
+    public function sample()
+    {
+        $m = $this->read(false);
+        if ($this->batchTop !== null && $m['used'] > $this->batchTop) {
+            $this->batchTop = $m['used'];
+        }
+    }
+
+    /**
      * The batch that started at $mark has finished: size the next one.
      *
-     * See the class docblock for why the peak is believed only when it moved.
+     * See the class docblock for why the peak is believed only when it moved,
+     * and what a batch that did not move it still proves.
      *
      * @return array{claim:int, stop:?string, why:?string} as next() returns
      */
@@ -217,20 +252,39 @@ final class WorkBudget
         $used0 = isset($mark['used']) ? (int) $mark['used'] : $m['used'];
         $peak0 = isset($mark['peak']) ? (int) $mark['peak'] : $m['peak'];
         $kind  = isset($mark['kind']) ? (string) $mark['kind'] : '';
+        // What was held at once: the highest usage sampled between units, and
+        // what is held now. Usage the batch reached is a peak it reached, so a
+        // sample above the old mark means the mark moved.
+        $held = max($m['used'], $this->batchTop === null ? 0 : $this->batchTop);
+        $this->batchTop = null;
+        $peak = max($m['peak'], $held);
         // THE FLOOR IS THIS KIND'S. It used to be one figure that any batch of
         // another kind wiped, so a records batch after a page of groups below
         // 8.2 had no floor at all and measured only what it retained.
         $floor = isset($this->floors[$kind]) ? $this->floors[$kind] : 0.0;
         $delta = 0;
+        $atMost = null;
         if ($units > 0) {
-            if ($m['peak'] > $peak0) {
-                $floor = $this->floors[$kind] = max(0, $m['peak'] - $used0) / $units;
+            $low = max(0, $held - $used0) / $units;   // a lower bound on the cost per unit
+            $gap = max(0, $peak - $used0) / $units;   // exact if the peak moved; else an upper bound
+            if ($peak > $peak0) {
+                // EXACT: restarted at mark() on 8.2+, or moved by this batch.
+                $per = $floor = $this->floors[$kind] = $gap;
+            } elseif ($floor > 0) {
+                // AN EARLIER EXACT FIGURE, AND A BOUND ON THIS BATCH. The floor
+                // relaxes to the bound when the bound is tighter (BU-4).
+                $per = max($low, min($floor, $gap));
+            } else {
+                // NOTHING EXACT FOR THIS KIND YET. The lower bound may cap the
+                // next batch; the upper bound limits how far it may grow (BU-3).
+                $per = $low;
+                $atMost = $gap;
             }
-            $per = max(max(0, $m['used'] - $used0) / $units, $floor);
             $delta = (int) ceil($per * $units);
         }
         return $this->next([
             'kind' => $kind,
+            'atMost' => $atMost,
             'records' => $units,
             'seconds' => max(0.0, $now - (isset($mark['at']) ? (float) $mark['at'] : $now)),
             'memoryDelta' => $delta,
@@ -360,7 +414,9 @@ final class WorkBudget
      * @param array $obs {kind:string     what the batch was a batch of; '' when unsaid,
      *                    records:int, seconds:float,
      *                    memoryDelta:int  what the batch cost, in bytes of REAL usage,
-     *                    usage:int        the ARENA now, which is what the limit caps}
+     *                    usage:int        the ARENA now, which is what the limit caps,
+     *                    atMost:?float    bytes per unit the batch is known NOT to have
+     *                                     exceeded, when nothing exact was measured}
      * @return array{claim:int, stop:?string, why:?string}
      */
     public function next(array $obs)
@@ -374,7 +430,10 @@ final class WorkBudget
         if ($done > 0 && isset($obs['memoryDelta'])) {
             $memPer = max(0, (int) $obs['memoryDelta']) / $done;
         }
+        $atMost = isset($obs['atMost']) ? max(0.0, (float) $obs['atMost']) : 0.0;
         $usage = isset($obs['usage']) ? (int) $obs['usage'] : $this->read(false)['arena'];
+        $room = ($this->memLimit === null) ? null
+              : (int) ($this->memLimit * (1.0 - self::RESERVE)) - $usage;
 
         $want = $current;
         if ($done > 0 && $seconds > 0.0) {
@@ -390,11 +449,23 @@ final class WorkBudget
         }
         $want = max($this->min, min($this->max, $want));
 
+        // NOTHING EXACT, ONLY A BOUND (review BU-3). Below 8.2 a batch that
+        // stayed under the request's high-water mark measured only what it
+        // kept, and the clock doubled it on that - into the one batch big
+        // enough to pass the mark, which could need nearly twice the room
+        // there was. Growth now goes only as far as the bound proves fits, and
+        // otherwise the claim holds. Never below where it is: the bound is an
+        // over-estimate, and shrinking on it is the spiral the class docblock
+        // describes.
+        if ($room !== null && $atMost > 0 && $want > $current) {
+            $proven = $room > 0 ? (int) floor($room / $atMost) : 0;
+            if ($want > $proven) $want = max($current, $proven);
+        }
+
         // MEMORY HAS THE LAST WORD. Time only makes a batch slow; memory ends
         // the request without a report.
         $memoryCapped = false;
-        if ($this->memLimit !== null && $memPer > 0) {
-            $room = (int) ($this->memLimit * (1.0 - self::RESERVE)) - $usage;
+        if ($room !== null && $memPer > 0) {
             if ($room <= 0) {
                 $this->claims[$kind] = $this->min;
                 return ['claim' => $this->min, 'stop' => 'memory', 'why' => $this->memoryWhy()];
