@@ -174,6 +174,8 @@ function reset(s) {
   UV.state.lastPhase = null;
   UV.state.lastPct = null;
   UV.state.lastFindings = null;
+  UV.state.watchChain++;               // a watch from an earlier test dies quietly
+  UV.state.watchWait = 0;
   Object.keys(els).forEach((k) => {
     els[k].textContent = ''; els[k].style = {}; els[k]._attrs = {}; els[k].disabled = false;
   });
@@ -620,6 +622,78 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: attaching asks for status', sent[0].action === 'scan-status');
   check('client: on the run the page named', sent[0].payload.run_id === 42);
   check('client: and does not start working on it uninvited', UV.state.running === false);
+
+  // -- CL-4: a watching tab keeps watching ---------------------------------
+  //
+  // It asked scan-status once and never again, so a stall that began later was
+  // never shown and a stall sentence that stopped being true never came down.
+  // It now asks again on the no-progress ladder while the run is active, and
+  // stops when it is not.
+  reset([running(5, 10)]);                 // the transport repeats this for ever
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: an active run that this tab is only watching is asked about again',
+    pending.length === 1 && pending[0].ms === 1500);
+  let wd = await drive(12);
+  const statusAsks = sent.filter((s) => s.action === 'scan-status').length;
+  check('watch: on the no-progress ladder - 1.5 s doubling to 30 s, never 0 ms',
+    wd.slice(0, 7).join(',') === '1500,3000,6000,12000,24000,30000,30000'
+    && wd.every((ms) => ms > 0));
+  check('watch: one status request per step, and never a scan-work',
+    statusAsks === 13 && !sent.some((s) => s.action === 'scan-work'));
+  check('watch: still only watching', UV.state.running === false && pending.length === 1);
+
+  // A stall the server reports later is shown; one it stops reporting is taken down.
+  reset([running(5, 10), Object.assign(running(5, 10), { stalled: true, idleSeconds: 300 }),
+         running(6, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a run moving when the tab opened shows no stall', els['uv-scan-stalled'].style.display === 'none');
+  await drive(1);
+  check('watch: a stall that began afterwards is shown to the watcher',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent.indexOf('No progress has been recorded') === 0);
+  await drive(1);
+  check('watch: and taken down once the run moves again',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === '');
+
+  // A terminal run ends the watching.
+  reset([running(5, 10), finished('complete-through-fence')]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  await drive(1);
+  check('watch: a run that finishes stops the watching - no timer is left',
+    els['uv-scan-done'].style.display === '' && pending.length === 0);
+  await drive(5);
+  check('watch: and nothing more is asked', sent.length === 2);
+
+  // A refused status ends it too: the server has said this tab may not look.
+  reset([{ ok: false, why: 'no scan with that reference is running for this project' }]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a refused status is not asked again', pending.length === 0);
+
+  // A status that did not arrive is retried on the same ladder, never at once.
+  reset([{ reject: true }, running(5, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: a lost status is asked again after the ladder, not immediately',
+    pending.length === 1 && pending[0].ms === 1500);
+
+  // Pressing Continue ends the watching: the driver renders every answer itself.
+  reset([running(5, 10), worked(running(6, 10)), worked(running(7, 10))]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  const watchTimer = pending.shift();      // the watcher's queued poll, held back
+  UV.resume();
+  await ticks(6);
+  const before4 = sent.filter((s) => s.action === 'scan-status').length;
+  if (watchTimer) watchTimer.fn();
+  await ticks(6);
+  check('watch: once this tab drives, an old watching timer asks nothing',
+    !!watchTimer && sent.filter((s) => s.action === 'scan-status').length === before4);
+  UV.state.running = false;
+  UV.state.chain++;
 
   // -- what was examined, and what only LOOKS like progress (L4) -------------
   //

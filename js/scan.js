@@ -222,6 +222,8 @@
         stalledMs: 0,           // how long we have been getting nowhere, for the disclosure
         inflight: false,        // one scan-work in flight per tab, always
         chain: 0,               // which driver owns the loop; a stale one dies quietly
+        watchChain: 0,          // the same, for a tab that is only watching
+        watchWait: 0,           // the watching ladder, 0 until the first poll is queued
         seen: false,            // has any status arrived on this chain yet
         lastDone: -1, lastPhase: null, lastPct: null, lastFindings: null
     };
@@ -543,15 +545,68 @@
         refresh();
     }
 
+    /**
+     * Read the run once, and keep reading it while this tab only WATCHES it.
+     *
+     * A WATCHING TAB ASKED ONCE (review CL-4). The page attaches without
+     * resuming, so a tab opened beside a running scan - or after it was left -
+     * asked scan-status a single time and never again: a run that stalled
+     * later was never shown as stalled, and a stall sentence that had stopped
+     * being true was never taken down. While the run is active and this tab is
+     * not driving it, the status is asked again on the no-progress ladder
+     * (IDLE_MIN doubling to IDLE_MAX), never at 0 ms, and the asking stops when
+     * the run is terminal, when the server refuses, or when this tab starts
+     * driving - pump() renders every answer itself from then on.
+     *
+     * ONE WATCH PER TAB, by the same device as the driver: every refresh() is a
+     * new chain, and a timer from an older one dies when it fires.
+     */
     function refresh() {
         if (!UV.state.runId) return;
-        call('scan-status', { run_id: UV.state.runId }).then(render)['catch'](function () {});
+        UV.state.watchWait = 0;
+        poll(++UV.state.watchChain);
+    }
+
+    function poll(mine) {
+        call('scan-status', { run_id: UV.state.runId }).then(function (st) {
+            if (mine !== UV.state.watchChain) return;
+            try {
+                render(st);
+            } catch (e) {
+                // As before: a bug in rendering is not a reason to stop
+                // watching a scan that is still on the server.
+            }
+            keepWatching(st, mine);
+        }, function (e) {
+            if (mine !== UV.state.watchChain) return;
+            // A transport that does not exist is not a lost connection, and
+            // asking it again can never succeed - see pump().
+            if (e && e.uvFatal) return;
+            // The status did not arrive. The run did not therefore finish:
+            // ask again, on the same ladder, and never at once.
+            keepWatching(null, mine);
+        });
+    }
+
+    function keepWatching(st, mine) {
+        if (UV.state.running || UV.state.starting) return;
+        if (st && (st.ok === false || st.terminal || !st.active)) {
+            UV.state.watchWait = 0;
+            return;
+        }
+        var w = UV.state.watchWait = UV.state.watchWait
+            ? Math.min(IDLE_MAX, UV.state.watchWait * 2) : IDLE_MIN;
+        setTimeout(function () {
+            if (mine !== UV.state.watchChain || UV.state.running || UV.state.starting) return;
+            poll(mine);
+        }, w);
     }
 
     UV.start = function () {
         if (UV.state.running || UV.state.starting) return;
         UV.state.starting = true;
         UV.state.chain++;
+        UV.state.watchChain++;               // a tab that drives is no longer watching
         text(el('uv-scan-note'), '');
         busy(true);
         // .then(onOk, onErr), NOT .then(onOk)['catch'](onErr). With the catch
@@ -602,6 +657,7 @@
         if (!UV.state.runId) return;
         if (UV.state.running) return;        // a second Continue is not a second driver
         UV.state.chain++;
+        UV.state.watchChain++;               // a tab that drives is no longer watching
         UV.state.running = true;
         UV.state.wait = NET_MIN;
         UV.state.idle = 0;
