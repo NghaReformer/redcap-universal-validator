@@ -515,6 +515,21 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('outcome: a run still planning, with nothing listed yet, is empty as it always was',
             $P([], ['manifest_total' => 0])['facts']['emptyScope'] === true);
 
+        // EE-4. What the stored column means, row by row: 1 certified, 0
+        // decided and NOT certified - for any reason, not only "found
+        // something" - and NULL no decision at all.
+        check('outcome: the clean column is 1 only for a certified run',
+            ScanOutcome::cleanColumn($r) === 1);
+        foreach (['found something' => $v, 'a rule problem' => $u, 'truncated' => $t,
+                  'manifest only' => $m, 'blocked' => $b, 'empty scope' => $es] as $why => $o) {
+            check("outcome: a run not certified because of $why stores 0, a decision",
+                ScanOutcome::cleanColumn($o) === 0);
+        }
+        foreach (['cancelled' => $c, 'failed' => $f, 'expired' => $e] as $why => $o) {
+            check("outcome: a $why run stores NULL, no decision",
+                ScanOutcome::cleanColumn($o) === null);
+        }
+
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
         check('outcome: an empty fact set is never clean and never complete',

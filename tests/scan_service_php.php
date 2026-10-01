@@ -500,6 +500,34 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * EE-4  AN EMPTY SCOPE KEEPS THE RULE PROBLEMS THE PLANNER RECORDED
+ *
+ * The planner notes rule problems before it reads a record, then finishes a run
+ * whose manifest froze empty. That finish wrote rule_problem_count = 0 beside
+ * the marks it had just written: derive() does not carry the count, promote()
+ * adds it, and this path never goes through promote(). The run is stored
+ * clean = 0, so its counts are ones a report reads.
+ * ===================================================================== */
+{
+    $es = new ArrayScanStore();
+    $esOpen = RecordManifestSource::open(new \FakeSourceDb(), 149, ['pk' => null]);
+    $esr = (new ScanPlanner($es, str_repeat('k', 32)))->plan(149, [
+        'source' => $esOpen['source'], 'fence' => null,
+        'dagFilter' => '99',                     // a group no record is in
+        'rules' => [['type' => 'required', 'fields' => ['a']]], 'ownership' => ['a' => 'fa'],
+        'policy' => [], 'createdBy' => 'u', 'engine' => '1',
+        'ruleProblems' => [['rule' => 1, 'fields' => ['a'], 'why' => 'x', 'code' => 'c1'],
+                           ['rule' => 2, 'fields' => ['b'], 'why' => 'y', 'code' => 'c2']]]);
+    $esRow = $es->run(149, 1);
+    check('EE-4: a run whose manifest froze empty is refused and finished as an empty scope',
+        $esr['ok'] === false && $esRow['coverage'] === ScanOutcome::EMPTY_SCOPE
+        && $esRow['clean'] !== null && (int) $esRow['clean'] === 0);
+    check('EE-4: and keeps the two rule problems the planner recorded, rather than a 0',
+        (int) $esRow['rule_problem_count'] === 2
+        && ScanPromotion::tally($es->aggregates(1))['ruleProblems'] === 2);
+}
+
+/* =====================================================================
  * WHERE A RUN HAS GOT TO, AND WHETHER IT IS GETTING ANYWHERE (L4, L5)
  *
  * status() is reachable only through a module, a user and an entitlement,

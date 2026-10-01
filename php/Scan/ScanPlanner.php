@@ -202,7 +202,7 @@ final class ScanPlanner
         $problems = isset($req['ruleProblems']) && is_array($req['ruleProblems'])
             ? $req['ruleProblems'] : [];
         try {
-            ScanPromotion::noteRuleProblems($this->store, $runId, $problems);
+            $noted = ScanPromotion::noteRuleProblems($this->store, $runId, $problems);
         } catch (\Throwable $e) {
             $this->store->finish($runId, ScanOutcome::derive(['failed' => true]));
             return self::no('this scan could not record which of the project rules it is unable '
@@ -242,8 +242,16 @@ final class ScanPlanner
         // it was frozen, which this check cannot see.
         //
         // Terminal, not abandoned - the same rule the two refusals above obey.
+        //
+        // WITH THE RULE PROBLEMS IT ALREADY RECORDED (review EE-4). finish()
+        // writes rule_problem_count from the outcome, and derive() does not
+        // carry the count - promote() adds it - so this finish stored 0 beside
+        // marks this method had written a few lines above. `clean` is 0 here,
+        // so the count is one a report reads (W7-N10), and it was wrong.
         if ((int) $total === 0) {
-            $this->store->finish($runId, ScanOutcome::derive(['emptyScope' => true]));
+            $empty = ScanOutcome::derive(['emptyScope' => true, 'ruleProblems' => $noted]);
+            $empty['ruleProblems'] = (int) $noted;
+            $this->store->finish($runId, $empty);
             return ['ok' => false, 'busy' => false, 'run' => null,
                     // The walk counters travel, unlike self::no()'s empty stats:
                     // `listed` and `outOfScope` are the two numbers that

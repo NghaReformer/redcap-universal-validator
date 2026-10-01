@@ -260,12 +260,25 @@ final class ScanOutcome
     /**
      * What scan_run.clean holds for this outcome: 1, 0, or NULL.
      *
-     * THREE values, because "was it clean" has three answers. A run that failed,
-     * was cancelled or expired never reached the question, and a 0 there would
-     * read as "checked, and found something" in every report built on the
-     * column. NULL is also what Schema::upgradeDataV2 and the reaper write for
-     * those runs, and what every run finished before this column was written
-     * carries, so a reader has one meaning for it: NOT CERTIFIED.
+     * THREE values, because "was it clean" has three answers:
+     *
+     *   1     CERTIFIED. Complete, fenced, every count zero - mayClaimClean().
+     *   0     DECIDED, AND NOT CERTIFIED. The run reached the question and the
+     *         answer was no, for ANY reason: something was found, a rule could
+     *         not be evaluated, a record could not be read, the detail budget
+     *         ran out, the window was not proved, or nothing was examined. It
+     *         does NOT mean "checked, and found something", and this note used
+     *         to say it did (review EE-4) while partial and empty-scope runs
+     *         were written 0 beside it. A reader wanting "found something"
+     *         asks the counts; the counts mean something only where this
+     *         column is not NULL (W7-N10).
+     *   NULL  NO DECISION. A run that failed, was cancelled or expired never
+     *         reached the question. NULL is also what Schema::upgradeDataV2 and
+     *         the reaper write for those runs, and what every run finished
+     *         before this column was written carries.
+     *
+     * Partial runs stay 0 rather than NULL on purpose: they did reach the
+     * question, and their counts are the explanation a reader is owed.
      *
      * @return int|null
      */
