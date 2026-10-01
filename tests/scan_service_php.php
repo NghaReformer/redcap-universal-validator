@@ -200,6 +200,14 @@ namespace {
                 foreach ($this->rows as $r) if ($r[0] === $want) $out[] = [$r[0]];
                 return $out;
             }
+            // exist(): which of these ids the project still holds. Every
+            // parameter after the project id is one of the ids asked about.
+            if (strpos($sql, ' IN (') !== false) {
+                $asked = array_map('strval', array_slice($params, 1));
+                $out = [];
+                foreach ($this->rows as $r) if (in_array($r[0], $asked, true)) $out[] = [$r[0]];
+                return $out;
+            }
             $wantsDag = strpos($sql, 'dag_id') !== false;
             $after = null;
             if (strpos($sql, 'record >= ?') !== false) $after = (string) $params[1];
@@ -218,6 +226,29 @@ namespace {
         public function begin() {}
         public function commit() {}
         public function rollback() {}
+    }
+
+    /**
+     * A module whose database is the record index FakeSourceDb serves, and
+     * nothing else: no change log, so no fence, and no scan tables.
+     *
+     * Through the module's query(), because that is how ScanService reaches a
+     * database - it wraps the module in ModuleDb - so the record source the
+     * service opens for its existence probe is the real one, over this.
+     */
+    class SourceModule
+    {
+        public $src;
+        public function __construct() { $this->src = new FakeSourceDb(); }
+        public function query($sql, $params = [])
+        {
+            if (strpos($sql, 'information_schema.columns') !== false
+                    || strpos($sql, 'redcap_record_list') !== false
+                    || strpos($sql, 'redcap_projects') !== false) {
+                return $this->src->select($sql, $params);
+            }
+            return [];
+        }
     }
 
     /** A module whose user is a designer confined to group 7. */
@@ -730,6 +761,67 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
     check('OC-4: and a run still working reports its counter, as it did',
         $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+}
+
+/* =====================================================================
+ * CL-5 / EE-3  THE SERVICE GIVES ITS WORKER A WAY TO TELL "DELETED"
+ *
+ * ScanService hands the worker an `exists` probe over the project's record
+ * index, and the worker will only call a record it could not read a TOMBSTONE
+ * when the probe confirms it is gone. Deleting that one line from the service
+ * left every suite green: each worker test builds its own dependencies, and
+ * the service's were reachable only through a module, a user, an entitlement
+ * and a database. A record deleted mid-run then ended UNREADABLE, which caps
+ * coverage at partial.
+ *
+ * So the worker below is built from the service's own dependencies
+ * (workerDeps(), reached by reflection - it is private and stays so), over the
+ * real RecordManifestSource on a stand-in record index. Three are replaced,
+ * because they need tables this fixture does not have and are not under test:
+ * the installation slots (null is unrationed), the uniqueness finalizer, and
+ * the summary builder. The change log is absent, so there is no fence: the
+ * deleted record leaves no log entry to be found by.
+ * ===================================================================== */
+{
+    $cs = new ArrayScanStore();
+    $cid = (int) $cs->startRun(149, ['created_by' => 'alice'])['run']['run_id'];
+    $cs->writeManifest($cid, [['id_bin' => 'R001', 'hash' => hash('sha256', 'R001', true)],
+                              ['id_bin' => 'GONE1', 'hash' => hash('sha256', 'GONE1', true)]]);
+    $svcC = new ScanService(new \SourceModule());
+    $depsOf = new \ReflectionMethod(ScanService::class, 'workerDeps');
+    $depsOf->setAccessible(true);
+    $ctxC = [
+        // The export returns R001 and leaves GONE1 out, every time it is asked.
+        'read' => function (array $ids) {
+            $d = [];
+            foreach ($ids as $id) if ((string) $id === 'R001') $d['R001'] = ['1' => ['a' => 'x']];
+            return ['ok' => true, 'data' => $d, 'why' => null];
+        },
+        'evaluate' => function ($id, $node) {
+            return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+        },
+    ];
+    $deps = $depsOf->invoke($svcC, 149, $cs, $cs->run(149, $cid), ScanPolicy::resolve([], []),
+                            $ctxC, 'browser');
+    check('CL-5: the service hands its worker an existence probe',
+        isset($deps['exists']) && is_callable($deps['exists']));
+    $deps = array_merge($deps, ['slots' => null, 'finalizer' => new \SvcNoDuplicates(),
+                                'rollup' => null]);
+    $cpasses = 0;
+    do {
+        $cpasses++;
+        $cres = (new ScanWorker($cs, $deps))->work(149, $cid);
+    } while (empty($cres['done']) && $cpasses < 20);
+    $cstates = $cs->recordStates($cid);
+    check('CL-5: a record missing from the export and from the project ends as a TOMBSTONE',
+        isset($cstates[ScanStore::REC_TOMBSTONE]) && (int) $cstates[ScanStore::REC_TOMBSTONE] === 1
+        && empty($cstates[ScanStore::REC_UNREADABLE]));
+    check('CL-5: and the record that is there was examined',
+        isset($cstates[ScanStore::REC_DONE]) && (int) $cstates[ScanStore::REC_DONE] === 1);
+    $cp = ScanPromotion::promote($cs, 149, $cid, ['uniqueDone' => true, 'rollupDone' => true]);
+    check('CL-5: so the run covers its whole list - a deleted record is not a hole',
+        $cp['promoted'] === true && $cp['outcome']['coverage'] === ScanOutcome::MANIFEST
+        && $cp['outcome']['coverage'] !== ScanOutcome::COV_PARTIAL);
 }
 
 /* =====================================================================

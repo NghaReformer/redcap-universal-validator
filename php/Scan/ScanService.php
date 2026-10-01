@@ -283,26 +283,7 @@ final class ScanService
                 return ['ok'=>false, 'why'=>'Validation configuration or project structure changed. Stop this scan and start a new scan.'];
             }
         }
-        $worker = new ScanWorker($store, [
-            'slots'     => new WorkerSlots($this->db),
-            'slotTtl'   => self::SLOT_TTL,
-            'fence'     => $this->fence($pid),
-            'read'      => $ctx['read'],
-            'evaluate'  => $ctx['evaluate'],
-            'budget'    => new WorkBudget(['mode' => $mode, 'startedAt' => microtime(true)]),
-            'owner'     => $this->owner(),
-            'attempts'  => $policy['recordAttempts'],
-            'finalizer' => $this->finalizer($pid, $ctx),
-            'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
-            // The SAME question catch-up asks, of the same opened source: is
-            // this record still in the project. The worker asks it before it
-            // will call a record it could not read a deleted one.
-            'exists'    => $this->existsProbe($pid),
-            'rollup'    => new RollupBuilder($this->db, $store),
-            'note'      => function ($event, array $context) {
-                $this->note($event, $context);
-            },
-        ]);
+        $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode));
         $r = $worker->work($pid, $runId);
 
         // A RUN WHOSE STORAGE JUST FAILED IS NOT A RUN TO PROMOTE. Promotion
@@ -340,6 +321,42 @@ final class ScanService
             'maxBytes'       => $policy['maxBytes'],
         ]);
         return array_merge($r, ['status' => $this->status($pid, $runId)]);
+    }
+
+    /**
+     * Everything the worker is handed for one request.
+     *
+     * A METHOD OF ITS OWN SO IT CAN BE ASKED (review CL-5/EE-3). This was an
+     * array literal inside advanceRun(), which is reachable only through a
+     * module, a user, an entitlement and a database - so deleting its `exists`
+     * line left every suite green, and a record the export left out and the
+     * project no longer held became UNREADABLE rather than a TOMBSTONE,
+     * capping the run's coverage at partial for a record that was simply
+     * deleted. tests/scan_service_php.php now builds a worker from this and
+     * runs it over such a record.
+     */
+    private function workerDeps($pid, ScanStore $store, array $run, array $policy, array $ctx, $mode)
+    {
+        return [
+            'slots'     => new WorkerSlots($this->db),
+            'slotTtl'   => self::SLOT_TTL,
+            'fence'     => $this->fence($pid),
+            'read'      => $ctx['read'],
+            'evaluate'  => $ctx['evaluate'],
+            'budget'    => new WorkBudget(['mode' => $mode, 'startedAt' => microtime(true)]),
+            'owner'     => $this->owner(),
+            'attempts'  => $policy['recordAttempts'],
+            'finalizer' => $this->finalizer($pid, $ctx),
+            'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
+            // The SAME question catch-up asks, of the same opened source: is
+            // this record still in the project. The worker asks it before it
+            // will call a record it could not read a deleted one.
+            'exists'    => $this->existsProbe($pid),
+            'rollup'    => new RollupBuilder($this->db, $store),
+            'note'      => function ($event, array $context) {
+                $this->note($event, $context);
+            },
+        ];
     }
 
     /**
