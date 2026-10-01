@@ -148,6 +148,32 @@ interface ScanStore
     ];
 
     /**
+     * The keys every finding handed to commitBatch() must carry, non-null.
+     *
+     * Each names a NOT NULL column of uv_finding that has no default the store
+     * could honestly supply. Both stores refuse a finding missing any of them,
+     * and refuse the whole batch with it, before anything is written.
+     *
+     * WHY THE STORE ASKS RATHER THAN THE SERVER (review ST-2). A single-row
+     * INSERT of a NULL into a NOT NULL column is error 1048 under every
+     * sql_mode. A MULTI-row INSERT under a non-strict sql_mode is not: the
+     * server stores the column's implicit default - '' or 0 - with a warning,
+     * and the row count still matches what was sent. Batching the findings
+     * INSERT (M9) therefore turned a refusal into a finding with an empty
+     * instrument or an empty rule, on exactly the servers that are configured
+     * leniently. The columns the store fills itself when a key is absent
+     * (valid_from_seq, instance, rule_ord, the flags) are not listed.
+     *
+     * tests/mysql/cases/store.php compares this list with the NOT NULL columns
+     * the server reports, so a column added to the table without being added
+     * here fails the database matrix.
+     */
+    const FINDING_REQUIRED = [
+        'generation_id', 'identity', 'record_hash', 'record_id_bin', 'host_form', 'field',
+        'rule_source_id', 'rule_revision', 'check_type', 'reason_code',
+    ];
+
+    /**
      * Create a run and take the project's active slot, or report busy.
      *
      * MUST fail rather than wait when the slot is held (I1). Returns the run on

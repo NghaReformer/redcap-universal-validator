@@ -844,6 +844,67 @@ $MARKED = 784;
         && strlen($rows[0][4]) === ScanPromotion::SAMPLE_BYTES - 1);
 }
 
+// A LENIENT SERVER DOES NOT GET TO INVENT A VALUE (review ST-2). Findings go to
+// the server 500 to a statement, and under a non-strict sql_mode a MULTI-row
+// INSERT answers a NULL in a NOT NULL column by storing the type's implicit
+// default - '' for host_form - and counting the row as written. A single-row
+// INSERT refused the same NULL with 1048, so batching quietly turned a refused
+// batch into a finding with no instrument. Asked of the server itself, with the
+// session made lenient for the one commit.
+$LENIENT = 785;
+{
+    $s = new SqlScanStore($dbA);
+    $rid = (int) $s->startRun($LENIENT, ['created_by' => 'alice'])['run']['run_id'];
+    $gen = (int) $s->run($LENIENT, $rid)['generation_id'];
+    $seq = uv_run_seq($dbA, $rid);
+    $s->writeManifest($rid, [['id_bin' => 'LN-1', 'hash' => hash('sha256', 'LN-1', true), 'dag' => null]]);
+    $ep = (int) $s->run($LENIENT, $rid)['lease_epoch'];
+    $c = $s->claim($rid, 'w1', $ep, 1);
+    $f = function ($i) use ($LENIENT, $gen, $seq, $c) {
+        return ['ordinal' => $c[0]['ordinal'], 'project_id' => $LENIENT, 'generation_id' => $gen,
+                'identity' => hash('sha256', 'lenient-' . $i, true), 'valid_from_seq' => $seq,
+                'record_hash' => $c[0]['hash'], 'record_id_bin' => 'LN-1', 'host_form' => 'visit',
+                'field' => 'f' . $i, 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'check_type' => 'required', 'reason_code' => 'required-blank'];
+    };
+    $broken = $f(2);
+    $broken['host_form'] = null;
+    $mode = $A->query('SELECT @@SESSION.sql_mode')->fetch_row();
+    $A->query("SET SESSION sql_mode = ''");
+    try {
+        $got = $s->commitBatch($rid, 'w1', $ep, ['bytes' => 0, 'findings' => [$f(1), $broken],
+            'records' => [['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'],
+                           'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']]]]);
+    } finally {
+        $A->query("SET SESSION sql_mode = '" . $A->real_escape_string((string) $mode[0]) . "'");
+    }
+    check('lenient: a finding with no instrument is refused under a non-strict sql_mode',
+        is_string($got) && strpos($got, 'no host_form;') !== false);
+    $kept = $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ' . $LENIENT)->fetch_row();
+    check('lenient: and nothing was stored, rather than a row with an empty instrument',
+        (int) $kept[0] === 0);
+
+    // THE LIST AND THE TABLE AGREE. Every NOT NULL column the server cannot
+    // default must be one the store refuses a NULL for, or one it fills itself
+    // when the key is absent. A column added to uv_finding without a line in
+    // ScanStore::FINDING_REQUIRED fails here rather than on a lenient server.
+    $q = $A->query("SELECT COLUMN_NAME FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = '" . Schema::table('finding') . "'
+          AND IS_NULLABLE = 'NO' AND COLUMN_DEFAULT IS NULL AND EXTRA NOT LIKE '%auto_increment%'");
+    $server = [];
+    while ($row = $q->fetch_row()) $server[] = strtolower((string) $row[0]);
+    sort($server);
+    $byStore = ['valid_from_seq', 'rule_ord'];     // filled by findingRow() when absent
+    foreach (ScanStore::FINDING_REQUIRED as $k) $byStore[] = ($k === 'identity') ? 'finding_identity' : $k;
+    sort($byStore);
+    check('lenient: every NOT NULL column without a default is refused when NULL or filled by the store',
+        $server === $byStore);
+    if ($server !== $byStore) {
+        fwrite(STDERR, '  server: ' . implode(',', $server) . "\n  store:  " . implode(',', $byStore) . "\n");
+    }
+}
+
 // The identical assertions run in the fast suite against ArrayScanStore. Two
 // independent implementations judged by one set disagree wherever the contract
 // is ambiguous - which is exactly how the affected()-versus-FOR-UPDATE fence bug

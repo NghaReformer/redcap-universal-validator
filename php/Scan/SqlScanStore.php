@@ -1184,12 +1184,27 @@ final class SqlScanStore implements ScanStore
      */
     private static function findingRow(array $f)
     {
+        // The project first, so a finding missing both is refused for the same
+        // reason by both stores.
+        $pid = self::mustProject($f);
+        // A NULL IS REFUSED HERE, NOT LEFT TO THE SERVER (review ST-2). The
+        // statement this row joins is a multi-row INSERT, and under a
+        // non-strict sql_mode the server answers a NULL in a NOT NULL column
+        // by storing '' or 0 and counting the row as written - so the
+        // affected() check in insertFindingChunk() cannot see it. See
+        // ScanStore::FINDING_REQUIRED.
+        foreach (self::FINDING_REQUIRED as $k) {
+            if (!isset($f[$k])) {
+                throw new \RuntimeException('a finding reached the store with no ' . $k
+                    . '; refusing to let the database invent one');
+            }
+        }
         // A STAGED row is written with active_slot NULL and is invisible to every
         // report query until the finalizer publishes its group. Ordinary
         // findings are active from the moment they are written.
         $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
         return [
-            'project_id'        => self::mustProject($f),
+            'project_id'        => $pid,
             'generation_id'     => $f['generation_id'],
             'finding_identity'  => $f['identity'],
             // The RUN's sequence number. It used to be a per-record

@@ -612,6 +612,54 @@ function storeContract(callable $newStore, $label)
         $s8b->commitBatch($rid8b, 'w1', $ep8b, $wide) === true
         && (int) $s8b->run(751, $rid8b)['detail_rows'] === 600);
 
+    // -- A FINDING MISSING A REQUIRED VALUE IS REFUSED, BY BOTH STORES (ST-2) --
+    //
+    // The SQL store sends findings as multi-row INSERTs, and a lenient
+    // sql_mode stores '' for a NULL in a NOT NULL column there instead of
+    // refusing it. So both stores refuse the batch themselves, before anything
+    // is written, for every key ScanStore::FINDING_REQUIRED names.
+    $s9 = $newStore();
+    $r9 = $s9->startRun(752, []);
+    $rid9 = (int) $r9['run']['run_id'];
+    $s9->writeManifest($rid9, [$mk5('X')]);
+    $ep9 = (int) $s9->run(752, $rid9)['lease_epoch'];
+    $gen9 = (int) $s9->run(752, $rid9)['generation_id'];
+    $c9 = $s9->claim($rid9, 'w1', $ep9, 1);
+    $whole9 = function ($i) use ($c9, $gen9) {
+        return ['ordinal' => $c9[0]['ordinal'], 'project_id' => 752, 'generation_id' => $gen9,
+                'host_form' => 'fa', 'field' => 'x' . $i, 'check_type' => 'required',
+                'reason_code' => 'required-blank', 'record_id_bin' => 'X',
+                'identity' => hash('sha256', 'req-' . $i, true),
+                'record_hash' => hash('sha256', 'X', true),
+                'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64)];
+    };
+    $batch9 = function (array $findings) use ($c9) {
+        return ['bytes' => 0, 'findings' => $findings, 'records' => [[
+            'ordinal' => $c9[0]['ordinal'], 'record_hash' => $c9[0]['hash'],
+            'state' => ScanStore::REC_DONE, 'claim' => $c9[0]['claim']]]];
+    };
+    $refusedEach = true;
+    $named = true;
+    foreach (ScanStore::FINDING_REQUIRED as $k) {
+        // The SECOND of two findings, so the SQL store would have sent both
+        // rows in one statement - the shape the lenient server mishandles.
+        $broken = $whole9(2);
+        $broken[$k] = null;
+        $no = $s9->commitBatch($rid9, 'w1', $ep9, $batch9([$whole9(1), $broken]));
+        if (!is_string($no) || strpos($no, 'database refused') === false) $refusedEach = false;
+        if (!is_string($no) || strpos($no, 'no ' . $k . ';') === false) $named = false;
+    }
+    $C('a finding with any required value missing refuses the whole batch', $refusedEach);
+    $C('and the refusal names the value that was missing', $named);
+    $C('leaving the record unexamined and nothing stored',
+        $s9->manifestComplete($rid9) === false
+        && (int) $s9->run(752, $rid9)['detail_rows'] === 0
+        && $s9->findings(752, $gen9, [], 0, 100) === []);
+    // THE CONTROL: the same two findings, whole, commit.
+    $C('while the same batch with every value present commits',
+        $s9->commitBatch($rid9, 'w1', $ep9, $batch9([$whole9(1), $whole9(2)])) === true
+        && (int) $s9->run(752, $rid9)['detail_rows'] === 2);
+
     // -- THE ATTEMPT IS COUNTED FOR WORK ATTEMPTED ---------------------------
     //
     // B8 in four assertions. The counter must move in a transaction the failed

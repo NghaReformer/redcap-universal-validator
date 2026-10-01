@@ -462,6 +462,25 @@ namespace INSPIRE\UniversalValidator\Scan {
         is_string($got) && strpos($got, 'database refused') !== false
         && $mid->rollbacks === 1 && !in_array('COMMIT', $mid->log, true));
 
+    // ST-2: A NULL IN A NOT NULL COLUMN NEVER REACHES THE SERVER. Under a
+    // non-strict sql_mode a multi-row INSERT stores '' for it and still counts
+    // the row, so the count check cannot catch it; the store has to refuse
+    // first. This double accepts anything, which is what a lenient server does.
+    foreach (ScanStore::FINDING_REQUIRED as $k) {
+        $nul = clone $countingDb;
+        $nul->rows = ['FOR UPDATE' => $fenceRow];
+        $b = $mkBatch(2);
+        $b['findings'][1][$k] = null;
+        $got = (new SqlScanStore($nul))->commitBatch(1, 'w1', 0, $b);
+        $sent = 0;
+        foreach ($nul->log as $stmt) {
+            if (strpos($stmt, 'INSERT INTO ' . Schema::table('finding')) !== false) $sent++;
+        }
+        check('null: a finding with no ' . $k . ' refuses the batch before any finding is sent',
+            is_string($got) && strpos($got, 'no ' . $k . ';') !== false
+            && $sent === 0 && $nul->rollbacks === 1);
+    }
+
     // =====================================================================
     // EE-1 - commitBatch holds one chunk of rows, never the whole batch twice
     // =====================================================================

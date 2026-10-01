@@ -394,6 +394,17 @@ final class ArrayScanStore implements ScanStore
                 return 'the database refused to store these findings, so nothing from these '
                      . 'records was kept: a finding reached the store with no project';
             }
+            // THE SAME REFUSAL THE SQL STORE MAKES, in its words (review ST-2).
+            // That store refuses rather than let a lenient server store '' for
+            // a NULL; this one used to keep the finding with the key missing,
+            // so the fast suite blessed a batch production refuses.
+            foreach (self::FINDING_REQUIRED as $k) {
+                if (!isset($f[$k])) {
+                    return 'the database refused to store these findings, so nothing from these '
+                         . 'records was kept: a finding reached the store with no ' . $k
+                         . '; refusing to let the database invent one';
+                }
+            }
             $k = (int) $f['project_id'] . '|' . (int) $f['generation_id']
                . '|' . bin2hex($f['identity']);
             if (isset($active[$k]) || isset($incoming[$k])) {
