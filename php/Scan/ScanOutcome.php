@@ -85,8 +85,8 @@ final class ScanOutcome
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
      *   emptyScope:    bool  nothing was examined: no records in scope, or all deleted
-     *   violations:    int
-     *   ruleProblems:  int
+     *   violations:    int   ABSENT IS UNKNOWN, and unknown is never clean
+     *   ruleProblems:  int   ABSENT IS UNKNOWN, and unknown is never clean
      *   gaps:          int   collection gaps; never a violation, never blocking
      *   labelDegraded: bool  reporting-label degradation only; non-blocking
      * }
@@ -97,6 +97,18 @@ final class ScanOutcome
     {
         $b = function ($k) use ($f) { return !empty($f[$k]); };
         $i = function ($k) use ($f) { return isset($f[$k]) ? (int) $f[$k] : 0; };
+        // A COUNT THAT WAS NOT SUPPLIED IS NOT ZERO (review OC-7). `violations`
+        // and `ruleProblems` were read through $i(), so a caller that omitted
+        // either got 0 - the CLEAN direction - against the rule this docblock
+        // states. Absent, null, negative or not a number is UNKNOWN, and an
+        // unknown count refuses clean. Gaps keep $i(): they never decide it.
+        $count = function ($k) use ($f) {
+            if (!array_key_exists($k, $f)) return null;
+            $v = $f[$k];
+            if (is_int($v)) return $v >= 0 ? $v : null;
+            if (is_string($v) && ctype_digit($v)) return (int) $v;
+            return null;
+        };
 
         $detail = $b('truncated') ? self::DETAIL_TRUNCATED : self::DETAIL_COMPLETE;
         $gaps   = $i('gaps');
@@ -204,13 +216,22 @@ final class ScanOutcome
         // case the audit names M-02 and the legacy path already
         // refuses to imply. ScanPromotion::noteRuleProblems() is the producer
         // now; do not remove either term without checking it still has one.
-        $clean = ($i('violations') === 0 && $i('ruleProblems') === 0);
-        $why = $clean
-            ? ($b('labelDegraded')
+        $violations = $count('violations');
+        $ruleProblems = $count('ruleProblems');
+        $counted = ($violations !== null && $ruleProblems !== null);
+        $clean = ($counted && $violations === 0 && $ruleProblems === 0);
+        if ($clean) {
+            $why = $b('labelDegraded')
                 ? 'every record was examined and nothing was found; some labels could not be read, '
                   . 'so parts of the report show raw identifiers'
-                : 'every record was examined and nothing was found')
-            : 'every record was examined, and there is something to act on';
+                : 'every record was examined and nothing was found';
+        } elseif (!$counted) {
+            // Not "there is something to act on": nobody knows that either.
+            $why = 'every record was examined, but what was found was not counted, so the project '
+                 . 'cannot be called clean';
+        } else {
+            $why = 'every record was examined, and there is something to act on';
+        }
         return self::out(self::COMPLETE, self::FENCED, $detail, $clean, $gaps, $why);
     }
 

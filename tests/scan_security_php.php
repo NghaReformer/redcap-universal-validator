@@ -530,6 +530,29 @@ namespace INSPIRE\UniversalValidator\Scan {
                 ScanOutcome::cleanColumn($o) === null);
         }
 
+        // OC-7. A COUNT THAT WAS NOT SUPPLIED IS UNKNOWN, NOT ZERO. derive()
+        // read a missing `violations` or `ruleProblems` as 0, so a caller that
+        // forgot either - with every other fact at its most reassuring - got a
+        // clean certificate.
+        $whole = ['fenced' => true, 'manifestDone' => true];
+        $nc = ScanOutcome::derive($whole);
+        check('outcome: a whole, fenced run with NO counts supplied is not clean',
+            $nc['clean'] === false && ScanOutcome::mayClaimClean($nc) === false
+            && ScanOutcome::cleanColumn($nc) === 0);
+        check('outcome: and does not claim there is something to act on, which nobody knows either',
+            strpos($nc['why'], 'not counted') !== false);
+        check('outcome: one count without the other is still not clean',
+            ScanOutcome::derive($whole + ['violations' => 0])['clean'] === false
+            && ScanOutcome::derive($whole + ['ruleProblems' => 0])['clean'] === false);
+        foreach ([null, -1, 'none', '', 0.0, false, []] as $junk) {
+            check('outcome: a count that is not a count is unknown, and refuses clean',
+                ScanOutcome::derive($whole + ['violations' => $junk, 'ruleProblems' => 0])['clean'] === false
+                && ScanOutcome::derive($whole + ['violations' => 0, 'ruleProblems' => $junk])['clean'] === false);
+        }
+        check('outcome: both counted as zero, as integers or as the strings a row carries, is clean',
+            ScanOutcome::derive($whole + ['violations' => 0, 'ruleProblems' => 0])['clean'] === true
+            && ScanOutcome::derive($whole + ['violations' => '0', 'ruleProblems' => '0'])['clean'] === true);
+
         // A caller that forgets a field gets the WEAKER claim.
         $empty = ScanOutcome::derive([]);
         check('outcome: an empty fact set is never clean and never complete',
