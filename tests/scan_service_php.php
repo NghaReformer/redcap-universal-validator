@@ -188,9 +188,21 @@ namespace {
                 if (isset($params[0]) && $params[0] === 'redcap_record_list') {
                     return [['project_id'], ['record'], ['dag_id']];
                 }
-                return [];                        // no data table on this build
+                // The data table exists, because exist() confirms an absence
+                // from the record-list cache against it before it will call a
+                // record gone (review CL-1). It holds what the index holds.
+                if (isset($params[0]) && $params[0] === 'redcap_data') {
+                    return [['project_id'], ['record'], ['field_name']];
+                }
+                return [];
             }
             if (strpos($sql, 'redcap_projects') !== false) return [];
+            if (strpos($sql, 'FROM redcap_data') !== false && strpos($sql, ' IN (') !== false) {
+                $asked = array_map('strval', array_slice($params, 1));
+                $out = [];
+                foreach ($this->rows as $r) if (in_array($r[0], $asked, true)) $out[] = [$r[0]];
+                return $out;
+            }
             if (strpos($sql, 'FROM redcap_record_list') === false) return [];
 
             // boundaryGroup(): every id equal to one id.
