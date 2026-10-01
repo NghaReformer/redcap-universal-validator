@@ -221,10 +221,10 @@ class FaultyStore implements ScanStore
         return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds);
     }
 
-    public function commitBatch($runId, $owner, $epoch, array $batch)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
     {
         $this->gate('commitBatch');
-        return $this->inner->commitBatch($runId, $owner, $epoch, $batch);
+        return $this->inner->commitBatch($runId, $owner, $epoch, $batch, $heldCount);
     }
 
     public function releaseClaims($runId, $epoch, $owner, array $claims)

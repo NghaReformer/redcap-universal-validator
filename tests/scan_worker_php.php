@@ -1824,7 +1824,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     require_once __DIR__ . '/scan_fault_support.php';
     list($inner, $runId) = $fixture($ids25);
     $refusing = new class($inner) extends FaultyStore {
-        public function commitBatch($runId, $owner, $epoch, array $batch)
+        public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
         {
             return 'the database refused this batch';
         }
@@ -2582,10 +2582,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         $spy = new class($inner) extends FaultyStore {
             public $offered = [];
             public $refuse = 1;
-            public function commitBatch($runId, $owner, $epoch, array $batch) {
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null) {
                 $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
                 if ($this->refuse-- > 0) return 'refused for the test, and said so at some length';
-                return parent::commitBatch($runId, $owner, $epoch, $batch);
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount);
             }
         };
         $w3 = new ScanWorker($spy, ['fence' => new Versions(), 'read' => $reader,
@@ -2602,6 +2602,30 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('problems: it landed once',
             ScanPromotion::tally($inner->aggregates($run3))['ruleProblems'] === 1
             && $inner->recordStates($run3) === [ScanStore::REC_DONE => 4]);
+
+        // HELD NOTHING, WROTE NOTHING (review ST-4). A batch whose every claim
+        // another worker had already taken commits as `true` - nothing was
+        // refused - and writes no mark, because marks travel behind the record
+        // fences. The store says so through the held count; the worker must
+        // offer the mark again rather than remember it as written.
+        list($inner5, $run5) = $fixture(['A', 'B', 'C', 'D'], 819);
+        $lost = new class($inner5) extends FaultyStore {
+            public $offered = [];
+            public $lose = 1;
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null) {
+                $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
+                if ($this->lose-- > 0) { $heldCount = 0; return true; }
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount);
+            }
+        };
+        $w5 = new ScanWorker($lost, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $problemFor(['A' => [$P1], 'B' => [$P1], 'C' => [$P1], 'D' => [$P1]]),
+            'budget' => $twoAt(), 'owner' => 'w1', 'attempts' => 5, 'finalizer' => $fin()]);
+        $w5->work(819, $run5);
+        check('problems: a mark in a batch that held none of its records is offered again',
+            count($lost->offered) >= 2 && $lost->offered[0] === 1 && $lost->offered[1] === 1);
+        check('problems: and it is recorded once the next batch commits what it holds',
+            ScanPromotion::tally($inner5->aggregates($run5))['ruleProblems'] === 1);
 
         // A batch with nothing to say carries an empty list, not a missing key.
         list($store4, $run4) = $fixture(['A'], 818);

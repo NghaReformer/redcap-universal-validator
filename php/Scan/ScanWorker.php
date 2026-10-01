@@ -783,7 +783,10 @@ final class ScanWorker
         if ($cut === 'stop' && !$untouched) $cut = null;
 
         $batch['marks'] = array_values($marks);
-        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch);
+        // null when the store does not say how many records it still held (a
+        // store written before the out-parameter existed); 0 when it held none.
+        $held = null;
+        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch, $held);
         if ($ok !== true) {
             $why = is_string($ok) ? $ok
                  : 'this scan was stopped or taken over while these records were being '
@@ -803,7 +806,16 @@ final class ScanWorker
         }
         // Remembered only once COMMITTED. A refused batch wrote nothing, so the
         // next one must offer these again.
-        foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
+        //
+        // AND ONLY WHEN THE COMMIT HELD A RECORD (review ST-4). A batch whose
+        // every claim was taken by another worker commits as `true` and writes
+        // no marks, because the marks travel behind the record fences. Taking
+        // `true` alone as "written" skipped those marks for the rest of the
+        // request; if the other worker's own commit then failed, the problem
+        // was never recorded and the run could claim clean.
+        if ($held !== 0) {
+            foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
+        }
 
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of
