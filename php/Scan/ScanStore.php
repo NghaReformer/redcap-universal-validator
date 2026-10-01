@@ -293,7 +293,8 @@ interface ScanStore
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900);
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE);
 
     /**
      * Commit one batch: record states, findings and uniqueness candidates, in

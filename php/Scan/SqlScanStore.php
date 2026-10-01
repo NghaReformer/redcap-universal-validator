@@ -571,7 +571,8 @@ final class SqlScanStore implements ScanStore
      * dies leaves rows another worker reclaims once they have gone stale, and
      * nothing about a claim marks a record examined.
      */
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE)
     {
         $limit = max(1, (int) $limit);
         $token = $this->claimToken($runId);
@@ -592,17 +593,62 @@ final class SqlScanStore implements ScanStore
             $t = Schema::table('scan_record');
             $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
             $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
-                attempts, version_scanned
+                attempts, version_scanned, claim_seq
                 FROM ' . $t . '
                 WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
                 ORDER BY ordinal LIMIT ' . $limit,
                 [$runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
             $out = [];
+            $retire = [];
             foreach ($rows as $row) {
+                // ABANDONED: free, yet still carrying a claim. Every way a
+                // worker lets go of a row - commit, release, the give-back after
+                // a failure, a requeue - clears claim_seq to 0 in the same
+                // statement. A row that is free and still holds one was left by
+                // a worker that died: a request killed by memory_limit or
+                // max_execution_time inside the read or the evaluation, where
+                // nothing after the fatal ran and no attempt was counted. A
+                // record that kills PHP every time it is evaluated was therefore
+                // taken over and retried for ever, and the run never finished.
+                //
+                // So a takeover counts the attempt the dead worker could not,
+                // retires the row at the limit as any other exhausted record is
+                // retired, and otherwise hands it out ALONE: if it kills this
+                // worker too, it charges only itself and not the records that
+                // happened to share its batch. Only with $maxAttempts, so a
+                // caller that does not bound attempts keeps the old behaviour.
+                $abandoned = $maxAttempts !== null && (int) $row[6] !== 0;
+                $attempts = (int) $row[4];
+                if ($abandoned) {
+                    if ($out) break;                 // it goes alone, in a call of its own
+                    $attempts = min(254, $attempts + 1);
+                    if ($attempts >= max(1, (int) $maxAttempts)) {
+                        $retire[] = (int) $row[0];
+                        continue;
+                    }
+                }
                 $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
                           'hash' => $row[2], 'dag' => $row[3],
-                          'attempts' => (int) $row[4], 'version' => $row[5],
-                          'claim' => $token];
+                          'attempts' => $attempts, 'version' => $row[5],
+                          'claim' => $token, 'abandoned' => $abandoned];
+                if ($abandoned) break;
+            }
+            if ($retire) {
+                $marks = implode(',', array_fill(0, count($retire), '?'));
+                // Terminal, so the run can finish; blocking, so it can never
+                // finish clean - the same state noteAttempts() retires to.
+                $this->db->execNoCount('UPDATE ' . $t . '
+                    SET state = ?, attempts = LEAST(attempts + 1, 254),
+                        claim_owner = NULL, claim_seq = 0, updated_at = ?
+                    WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
+                    array_merge([(int) $exhausted, self::now(), $runId], $retire, [self::REC_DONE]));
+            }
+            if ($out && $out[0]['abandoned']) {
+                // The attempt the dead worker never counted, with the takeover.
+                $this->db->execNoCount('UPDATE ' . $t . '
+                    SET attempts = LEAST(attempts + 1, 254)
+                    WHERE run_id = ? AND ordinal = ? AND state < ?',
+                    [$runId, $out[0]['ordinal'], self::REC_DONE]);
             }
             if ($out) {
                 $ords = [];

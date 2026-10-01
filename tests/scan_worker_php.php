@@ -2627,6 +2627,46 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('problems: and it is recorded once the next batch commits what it holds',
             ScanPromotion::tally($inner5->aggregates($run5))['ruleProblems'] === 1);
 
+        // A RECORD THAT KILLS PHP. A worker killed by memory_limit or
+        // max_execution_time inside the read or the evaluation runs nothing
+        // after the fatal, so it counts no attempt and leaves its claims. The
+        // worker that takes the rows over must count that attempt and take
+        // each one ALONE, or a record that kills PHP every time is retried for
+        // ever and charges every record that shares its batch.
+        $quiet = function ($id, $node) {
+            return ['findings' => [], 'candidates' => [], 'bytes' => 0, 'why' => null, 'problems' => []];
+        };
+        list($store6, $run6) = $fixture(['K1', 'K2', 'K3'], 820);
+        $ep6 = (int) $store6->run(820, $run6)['lease_epoch'];
+        $store6->claim($run6, 'dead', $ep6, 3);              // and then nothing ran
+        $batches = [];
+        $counting = function (array $ids) use ($reader, &$batches) {
+            $batches[] = count($ids);
+            return $reader($ids);
+        };
+        $w6 = new ScanWorker($store6, ['fence' => new Versions(), 'read' => $counting,
+            'evaluate' => $quiet, 'budget' => $twoAt(), 'owner' => 'w2', 'attempts' => 3,
+            'finalizer' => $fin()]);
+        $w6->work(820, $run6);
+        check('dead worker: the rows it left are taken over one at a time',
+            $batches === [1, 1, 1]);
+        check('dead worker: and each is examined',
+            $store6->recordStates($run6) === [ScanStore::REC_DONE => 3]);
+
+        list($store7, $run7) = $fixture(['K4', 'K5'], 821);
+        $ep7 = (int) $store7->run(821, $run7)['lease_epoch'];
+        $store7->claim($run7, 'dead', $ep7, 2);
+        $evaluated7 = 0;
+        $w7 = new ScanWorker($store7, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => function ($id, $node) use ($quiet, &$evaluated7) {
+                $evaluated7++;
+                return $quiet($id, $node);
+            }, 'budget' => $twoAt(), 'owner' => 'w2', 'attempts' => 1, 'finalizer' => $fin()]);
+        $w7->work(821, $run7);
+        check('dead worker: out of attempts, its rows are retired as not examined, not evaluated again',
+            $evaluated7 === 0
+            && $store7->recordStates($run7) === [ScanStore::REC_UNREADABLE => 2]);
+
         // A batch with nothing to say carries an empty list, not a missing key.
         list($store4, $run4) = $fixture(['A'], 818);
         $w4 = new ScanWorker($store4, ['fence' => new Versions(), 'read' => $reader,

@@ -160,7 +160,8 @@ final class ArrayScanStore implements ScanStore
         return $total;
     }
 
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE)
     {
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
         // Refused and empty are DIFFERENT answers - see SqlScanStore::claim().
@@ -180,13 +181,28 @@ final class ArrayScanStore implements ScanStore
                  || ($rec['state'] === self::REC_CLAIMED
                      && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut);
             if (!$free) continue;
+            // ABANDONED: free, yet still carrying a claim. See SqlScanStore.
+            $abandoned = $maxAttempts !== null && (int) $rec['claim_seq'] !== 0;
+            if ($abandoned) {
+                if ($out) break;                     // it goes alone, in a call of its own
+                $now = min(254, (int) $rec['attempts'] + 1);
+                $this->records[$runId][$o]['attempts'] = $now;
+                if ($now >= max(1, (int) $maxAttempts)) {
+                    $this->records[$runId][$o]['state'] = (int) $exhausted;
+                    $this->records[$runId][$o]['claim_owner'] = null;
+                    $this->records[$runId][$o]['claim_seq'] = 0;
+                    $this->records[$runId][$o]['claimed_at'] = null;
+                    continue;
+                }
+            }
             $this->records[$runId][$o]['state'] = self::REC_CLAIMED;
             $this->records[$runId][$o]['claimed_at'] = time();
             // TAKING A STRAGGLER REPLACES ITS TOKEN, which is the whole
             // takeover fence: whoever held it before now matches nothing.
             $this->records[$runId][$o]['claim_owner'] = (string) $owner;
             $this->records[$runId][$o]['claim_seq'] = $token;
-            $out[] = self::claimRow($this->records[$runId][$o]);
+            $out[] = self::claimRow($this->records[$runId][$o]) + ['abandoned' => $abandoned];
+            if ($abandoned) break;
         }
         return $out;
     }

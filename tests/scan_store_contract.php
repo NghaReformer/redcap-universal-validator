@@ -728,6 +728,73 @@ function storeContract(callable $newStore, $label)
     $C('and a retired record is not handed back out',
         $s6->claimPending($rid6, 'w1', $ep6, 5) === []);
 
+    // -- A ROW A DEAD WORKER LEFT CLAIMED ------------------------------------
+    //
+    // A request killed by memory_limit or max_execution_time inside the read or
+    // the evaluation runs nothing after the fatal: no commit, no give-back, no
+    // attempt counted. A record that kills PHP every time it is evaluated was
+    // therefore taken over and retried for ever. A row that is free and still
+    // carries a claim token is that dead worker's, because every way a live
+    // worker lets go of a row clears the token.
+    $s8 = $newStore();
+    $rid8 = (int) $s8->startRun(735, [])['run']['run_id'];
+    $s8->writeManifest($rid8, [$mk5('V'), $mk5('W'), $mk5('X')]);
+    $ep8 = (int) $s8->run(735, $rid8)['lease_epoch'];
+    $C('dead worker: the fixture claims two rows and then runs nothing',
+        count($s8->claim($rid8, 'w1', $ep8, 2)) === 2);
+    $t8 = $s8->claimPending($rid8, 'w2', $ep8, 10, 900, 3);
+    $C('dead worker: a takeover hands out an abandoned row ALONE, whatever the limit',
+        is_array($t8) && count($t8) === 1 && $t8[0]['abandoned'] === true);
+    $C('dead worker: charged the attempt the dead worker never counted',
+        (int) $t8[0]['attempts'] === 1);
+    // The second takeover dies too, holding its row fresh. The next abandoned
+    // row also goes alone, and only then does the untouched one come out.
+    $t8b = $s8->claimPending($rid8, 'w3', $ep8, 10, 900, 3);
+    $C('dead worker: the next abandoned row goes alone as well',
+        is_array($t8b) && count($t8b) === 1 && $t8b[0]['abandoned'] === true
+        && $t8b[0]['ordinal'] !== $t8[0]['ordinal']);
+    $t8c = $s8->claimPending($rid8, 'w4', $ep8, 10, 900, 3);
+    $C('dead worker: a row nobody claimed is not abandoned, and is not charged',
+        is_array($t8c) && count($t8c) === 1 && $t8c[0]['abandoned'] === false
+        && (int) $t8c[0]['attempts'] === 0);
+
+    // AT THE LIMIT the row is retired, as any record out of attempts is:
+    // terminal, so the run can finish, and blocking, so it cannot finish clean.
+    $s9 = $newStore();
+    $rid9 = (int) $s9->startRun(736, [])['run']['run_id'];
+    $s9->writeManifest($rid9, [$mk5('Y')]);
+    $ep9 = (int) $s9->run(736, $rid9)['lease_epoch'];
+    $s9->claim($rid9, 'w1', $ep9, 1);
+    $C('dead worker: at the limit the abandoned row is retired, not handed out',
+        $s9->claimPending($rid9, 'w2', $ep9, 10, 900, 1) === []);
+    $st9 = $s9->recordStates($rid9);
+    $C('dead worker: retired as UNREADABLE, with the attempt counted',
+        isset($st9[ScanStore::REC_UNREADABLE]) && (int) $st9[ScanStore::REC_UNREADABLE] === 1);
+    $C('dead worker: so the manifest is complete and the run can end',
+        $s9->manifestComplete($rid9) === true);
+
+    // A RELEASED row is not abandoned, and a caller that gives no attempt
+    // limit keeps the old behaviour exactly.
+    $s10 = $newStore();
+    $rid10 = (int) $s10->startRun(737, [])['run']['run_id'];
+    $s10->writeManifest($rid10, [$mk5('Z1'), $mk5('Z2')]);
+    $ep10 = (int) $s10->run(737, $rid10)['lease_epoch'];
+    $c10 = $s10->claim($rid10, 'w1', $ep10, 1);
+    $s10->releaseClaims($rid10, $ep10, 'w1', [(int) $c10[0]['ordinal'] => (int) $c10[0]['claim']]);
+    $t10 = $s10->claimPending($rid10, 'w2', $ep10, 10, 900, 3);
+    $C('dead worker: a row its worker released is not abandoned, and goes out with the rest',
+        is_array($t10) && count($t10) === 2 && $t10[0]['abandoned'] === false
+        && $t10[1]['abandoned'] === false && (int) $t10[0]['attempts'] === 0);
+    $s11 = $newStore();
+    $rid11 = (int) $s11->startRun(738, [])['run']['run_id'];
+    $s11->writeManifest($rid11, [$mk5('Q1'), $mk5('Q2')]);
+    $ep11 = (int) $s11->run(738, $rid11)['lease_epoch'];
+    $s11->claim($rid11, 'w1', $ep11, 2);
+    $t11 = $s11->claimPending($rid11, 'w2', $ep11, 10);
+    $C('dead worker: with no attempt limit a takeover is as it was - every row, no charge',
+        is_array($t11) && count($t11) === 2 && (int) $t11[0]['attempts'] === 0
+        && (int) $t11[1]['attempts'] === 0);
+
     // -- A FINISHED RUN TAKES NO MORE WORK -----------------------------------
     //
     // Measured on a real server: a run retired by the stale-run sweep accepted

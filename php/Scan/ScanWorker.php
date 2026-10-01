@@ -411,8 +411,12 @@ final class ScanWorker
             // the next page of the window is walked; otherwise the confirming
             // round would find it unchanged and settle over work not yet done.
             if ($phase === ScanPhase::CATCH_UP) {
+                // With the attempt limit, so a row a dead worker left claimed is
+                // charged the attempt it died on and handed out alone (see
+                // SqlScanStore::claimPending()).
                 $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
-                                                      $budget->claim('records'));
+                                                      $budget->claim('records'), 900,
+                                                      $this->maxAttempts(), ScanStore::REC_UNREADABLE);
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
                                                              $found, $phase);
                 if (!$claimed) {
@@ -578,7 +582,7 @@ final class ScanWorker
             $claims[(int) $c['ordinal']] = isset($c['claim']) ? (int) $c['claim'] : 0;
         }
 
-        $maxAttempts = isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
+        $maxAttempts = $this->maxAttempts();
 
         $fence = isset($this->deps['fence']) ? $this->deps['fence'] : null;
         $before = ($fence instanceof RecordVersions) ? $fence->versions($ids) : [];
@@ -890,6 +894,12 @@ final class ScanWorker
      * because they are the same shape: work was attempted, nothing was stored,
      * and the rows must not be left looking untouched.
      */
+    /** How many attempts a record gets before it is retired as one that could not be examined. */
+    private function maxAttempts()
+    {
+        return isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
+    }
+
     private function giveBack($runId, $epoch, array $claims, $maxAttempts, $exhausted, $stop, $why)
     {
         $retired = 0;

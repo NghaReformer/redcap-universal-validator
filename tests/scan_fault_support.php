@@ -215,10 +215,12 @@ class FaultyStore implements ScanStore
     public function claim($runId, $owner, $epoch, $limit)
     { $this->gate('claim'); return $this->inner->claim($runId, $owner, $epoch, $limit); }
 
-    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900)
+    public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
+                                 $maxAttempts = null, $exhausted = ScanStore::REC_UNREADABLE)
     {
         $this->gate('claimPending');
-        return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds);
+        return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds,
+                                          $maxAttempts, $exhausted);
     }
 
     public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
