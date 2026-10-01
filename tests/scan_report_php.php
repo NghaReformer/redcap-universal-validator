@@ -476,6 +476,21 @@ namespace {
         check('value: withheld, expired and not kept are three different cells',
             count(array_unique([$cell([], ['readerCeiling' => 'locations']), $cell(['value_bin' => null]),
                 $cell(['value_len' => null, 'value_bin' => null], ['valuesState' => 'locations'])])) === 3);
+        // RP-9. Three different cells, and none of them the EMPTY cell: that is
+        // what a blank field renders, and a withheld or expired value is not
+        // one. The check above passed with either marker emptied.
+        $markers = ['withheld' => $cell([], ['readerCeiling' => 'locations']),
+                    'expired' => $cell(['value_bin' => null]), 'expired by date' => $cell(['value_expires_at' => EARLIER]),
+                    'not kept' => $cell(['value_len' => null, 'value_bin' => null], ['valuesState' => 'locations'])];
+        check('value: no marker is the empty cell a blank field renders ('
+            . implode(',', array_keys(array_filter($markers, function ($v) { return $v === ''; }))) . ')',
+            !in_array('', $markers, true)
+            && $markers['withheld'] === ScanColumns::VALUE_WORDS['withheld']
+            && $markers['expired'] === ScanColumns::VALUE_WORDS['expired']);
+        // RP-9 / W7-R6. Nothing writes a kept value with no expiry, and calling
+        // one expired would be false: it is shown.
+        check('value: a kept value with no expiry date is shown, not expired',
+            $state(['value_expires_at' => null]) === ['shown', 'NO', false]);
 
         // 4. identifiers
         check('value: the marker the scan stored is an identifier, under any ceiling',
@@ -515,6 +530,17 @@ namespace {
         check('value: and the cell says it was cut short',
             $cell(['value_bin' => $bin, 'value_len' => 400, 'value_truncated' => 1])
                 === str_repeat($e, 127) . ScanColumns::VALUE_CUT);
+        // RP-9. The cut above ends mid-character, so the repair passed with
+        // `>=` in place of `>`, which drops the last WHOLE character of every
+        // cut value. Cuts that end on a character boundary keep all of it.
+        $whole = [];
+        foreach (['abcdef', 'ab' . $e, 'ab' . "\xE2\x82\xAC", 'ab' . "\xF0\x9F\x98\x80"] as $v) {
+            if ($state(['value_bin' => $v, 'value_len' => 400, 'value_truncated' => 1]) !== ['truncated', $v, false]) {
+                $whole[] = bin2hex($v);
+            }
+        }
+        check('value: a cut that ends on a character boundary keeps its last character (' . implode(',', $whole) . ')',
+            $whole === []);
 
         // A byte that could never start a character is not half of one. The
         // repair read any byte >= 0xC0 as a lead byte, so a stray 0xC0, 0xC1 or
