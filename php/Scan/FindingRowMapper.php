@@ -329,6 +329,14 @@ final class FindingRowMapper
      * three continuation bytes to the lead byte, and if the lead byte announces
      * more bytes than are there, the sequence goes. A tail that is invalid for
      * any other reason is left alone, and the text test that follows refuses it.
+     *
+     * ONLY THE START OF A REAL CHARACTER GOES. Any byte >= 0xC0 was read as a
+     * lead byte, so a stray 0xC0, 0xC1 or 0xF5-0xFF at the end was dropped and
+     * the cell called "cut short" when the bytes were never text; so was a lead
+     * byte whose next byte rules out every character (E0 80, ED A0, F4 90).
+     * The partial sequence goes only if some continuation bytes would complete
+     * it. Every lead byte's allowed second-byte range holds 0x80 or 0xBF, so
+     * padding with each of those and asking the UTF-8 test settles it.
      */
     private static function wholeCharacters($bin)
     {
@@ -337,7 +345,14 @@ final class FindingRowMapper
             $c = ord($bin[$len - $back]);
             if (($c & 0xC0) === 0x80) continue;              // a continuation byte
             $need = $c >= 0xF0 ? 4 : ($c >= 0xE0 ? 3 : ($c >= 0xC0 ? 2 : 1));
-            return $need > $back ? (string) substr($bin, 0, $len - $back) : $bin;
+            if ($need <= $back) return $bin;                 // the last character is whole
+            $part = substr($bin, $len - $back);
+            $pad = $need - $back;
+            if (mb_check_encoding($part . str_repeat("\x80", $pad), 'UTF-8')
+                || mb_check_encoding($part . str_repeat("\xBF", $pad), 'UTF-8')) {
+                return (string) substr($bin, 0, $len - $back);
+            }
+            return $bin;                                     // not the start of any character
         }
         return $bin;
     }

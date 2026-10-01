@@ -516,6 +516,28 @@ namespace {
             $cell(['value_bin' => $bin, 'value_len' => 400, 'value_truncated' => 1])
                 === str_repeat($e, 127) . ScanColumns::VALUE_CUT);
 
+        // A byte that could never start a character is not half of one. The
+        // repair read any byte >= 0xC0 as a lead byte, so a stray 0xC0, 0xC1 or
+        // 0xF5-0xFF at a cut end was dropped and the rest called "cut short",
+        // when the bytes were never text. The same for a lead byte whose next
+        // byte rules out every character (an overlong, a surrogate, or a code
+        // point past U+10FFFF).
+        $tailOf = function ($bytes) use ($state) {
+            return $state(['value_bin' => 'abc' . $bytes, 'value_len' => 300, 'value_truncated' => 1]);
+        };
+        $wrongly = [];
+        foreach (["\xC0", "\xC1", "\xF5", "\xF8", "\xFF", "\xE0\x80", "\xED\xA0", "\xF0\x80", "\xF4\x90", "\xC0\x80"] as $b) {
+            if ($tailOf($b)[0] !== 'not-text') $wrongly[] = bin2hex($b);
+        }
+        check('value: a cut ending in a byte no character starts with is not text, not a cut ('
+            . implode(',', $wrongly) . ')', $wrongly === []);
+        $lost = [];
+        foreach (["\xC3", "\xE2\x82", "\xF0\x9F\x98", "\xE0\xA0", "\xED\x9F", "\xF0\x90", "\xF4\x8F\xBF", "\xE0"] as $b) {
+            if ($tailOf($b) !== ['truncated', 'abc', false]) $lost[] = bin2hex($b);
+        }
+        check('value (control): a cut inside any real character still loses only that character ('
+            . implode(',', $lost) . ')', $lost === []);
+
         // 6. not text
         check('value: bytes that are not text never reach a cell',
             $state(['value_bin' => "ab\xFFcd", 'value_len' => 5]) === ['not-text', null, true]
