@@ -227,6 +227,53 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('nothing examined: and is stored NOT clean - a 0, never the 1 it used to be',
         (int) $raw[2] === 0 && (int) $raw[3] === 0);
 
+    // A RUN CANCELLED DURING UNIQUE-FINALIZE (review OC-4). The finalizer has
+    // written two duplicates as active findings, the counter it never moves
+    // reads 0, and no summary was built. The page read that 0 as "Nothing found
+    // yet"; what it is told now is that the findings were not counted.
+    $r = $store->startRun(954, array('created_by' => 'alice', 'fence_open' => '10'));
+    $rid = (int) $r['run']['run_id'];
+    $gen = (int) $r['run']['generation_id'];
+    $store->writeManifest($rid, array(
+        array('id_bin' => 'D1', 'hash' => hash('sha256', 'D1', true), 'dag' => null),
+        array('id_bin' => 'D2', 'hash' => hash('sha256', 'D2', true), 'dag' => null)));
+    $epoch = (int) $store->run(954, $rid)['lease_epoch'];
+    $claimed = $store->claim($rid, 'w', $epoch, 5);
+    $rows = array();
+    foreach ($claimed as $c) {
+        $rows[] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'], 'version' => '500',
+            'record_hash' => $c['hash'], 'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE);
+    }
+    $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(), 'records' => $rows));
+    $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+    $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE);
+    for ($i = 0; $i < 2; $i++) {
+        $st = $A->prepare('INSERT INTO ' . Schema::table('finding') . '
+            (project_id, generation_id, finding_identity, valid_from_seq, active_slot,
+             record_hash, record_id_bin, event_id, instance, host_form, field, rule_source_id,
+             rule_revision, rule_ord, check_type, reason_code, reason_bits, severity,
+             group_hmac, stage_epoch)
+            VALUES (?, ?, ?, 1, 1, ?, ?, 1, 1, \'fa\', \'mrn\', \'r-unique\', ?, 0, \'unique\',
+                    \'duplicate\', 0, 1, ?, 1)');
+        $pidC = 954;
+        $ident = hash('sha256', 'dupe-cancel-' . $i, true);
+        $rh = hash('sha256', 'D' . ($i + 1), true);
+        $rb = 'D' . ($i + 1);
+        $rev = str_repeat('d', 64);
+        $grp = hash('sha256', 'group-cancel', true);
+        $st->bind_param('iisssss', $pidC, $gen, $ident, $rh, $rb, $rev, $grp);
+        $st->execute();
+    }
+    $store->cancel(954, $rid, 'alice');
+    $store->finish($rid, \INSPIRE\UniversalValidator\Scan\ScanOutcome::derive(array('cancelled' => true)));
+    $run = $store->run(954, $rid);
+    $active = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = 954 AND generation_id = ' . $gen . ' AND active_slot = 1')->fetch_row()[0];
+    check('cancelled in unique-finalize: two duplicates are active and the counter never moved',
+        $run['terminal'] === 'cancelled' && $active === 2 && (int) $run['detail_rows'] === 0);
+    check('cancelled in unique-finalize: the page is told they were not counted, never zero',
+        \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run) === null);
+
     list($p, $raw, $states) = $finishEmpty(959, 'emptied');
     check('nothing examined: a manifest emptied after it froze still says it had two records',
         (int) $raw[4] === 2 && $states === array());

@@ -224,19 +224,35 @@ final class ScanPromotion
      * finalizer wrote and keeps every finding catch-up superseded, so a page
      * reading it could say "0 findings" beside a run refused `clean` for having
      * some. A run still working has no summary yet and the counter is the only
-     * number there is; so has one that ended before building it, which is
-     * exactly the set ScanOutcome::NO_VERDICT names.
+     * number there is.
+     *
+     * A RUN THAT ENDED WITHOUT A VERDICT GETS A FLOOR, OR NOTHING. Cancelled,
+     * failed and expired runs - ScanOutcome::NO_VERDICT - answered from
+     * `detail_rows` too, so a run cancelled during unique-finalize said
+     * "Nothing found yet" over the duplicates the finalizer had already
+     * written as active findings. Such a run may have a summary, part of one or
+     * none, and nothing on the row says which. So it answers with the floor
+     * promote() uses - the larger of the counter and whatever summary exists -
+     * and when that floor is zero it answers NULL: not counted. Zero there is
+     * indistinguishable from duplicates written and never summarised, and a
+     * zero that might be false is the one number this must not print.
      *
      * Here rather than in ScanService so it can be asked of a store without a
      * module, a user and an entitlement around it.
+     *
+     * @return int|null null when the run ended before its findings could be counted
      */
     public static function findingsOf(ScanStore $store, array $run)
     {
         $terminal = isset($run['terminal']) ? $run['terminal'] : null;
-        if ($terminal === null || in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
-            return isset($run['detail_rows']) ? (int) $run['detail_rows'] : 0;
+        $rows = isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0;
+        if ($terminal === null) return $rows;
+        $summary = self::tally($store->aggregates((int) $run['run_id']))['violations'];
+        if (in_array($terminal, ScanOutcome::NO_VERDICT, true)) {
+            $floor = max($rows, $summary);
+            return $floor > 0 ? $floor : null;
         }
-        return self::tally($store->aggregates((int) $run['run_id']))['violations'];
+        return $summary;
     }
 
     /**

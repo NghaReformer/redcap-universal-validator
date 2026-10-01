@@ -127,6 +127,7 @@ UV.labels = {
   checked: '{done} of {total} records checked',
   excluded: '{n} could not be checked',
   removed: '{n} deleted during the scan',
+  foundUnknown: 'Findings not counted, because the scan ended before it could total them',
 };
 
 // -- a fake transport the test scripts -------------------------------------
@@ -673,6 +674,31 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await ticks(6);
   check('stalled: the tab DRIVING the scan does not show it - it has its own note for that',
     UV.state.running === true && els['uv-scan-stalled'].style.display === 'none');
+
+  // -- OC-4: findings that were never counted -----------------------------
+  //
+  // A run that ended before its summary was built answers findings: null. The
+  // line printed "null findings so far"; read as zero it would say "Nothing
+  // found yet" over duplicates the finalizer had already written.
+  const ended = Object.assign(finished('partial'), { terminal: 'cancelled', findings: null });
+  await show(ended);
+  check('found: a count that does not exist is said not to exist',
+    els['uv-scan-found'].textContent === UV.labels.foundUnknown
+    && els['uv-scan-found'].textContent.indexOf('null') === -1);
+  const noCount = Object.assign({}, ended);
+  delete noCount.findings;
+  await show(noCount);
+  check('found: and so is a status with no count at all, never "Nothing found yet"',
+    els['uv-scan-found'].textContent === UV.labels.foundUnknown);
+  await show(Object.assign({}, ended, { findings: 0 }));
+  check('found: a counted zero is still nothing found',
+    els['uv-scan-found'].textContent === 'Nothing found yet');
+  const keptLabels = UV.labels;
+  UV.labels = {};
+  await show(ended);
+  check('found: with no vocabulary handed over it still does not say nothing was found',
+    els['uv-scan-found'].textContent.indexOf('not counted') !== -1);
+  UV.labels = keptLabels;
 
   // SETTLED IS PROGRESS. A pass that excluded a record moved the run on as much
   // as one that examined it; read from `done` alone, a run working through a

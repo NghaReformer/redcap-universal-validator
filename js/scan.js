@@ -134,6 +134,23 @@
     }
 
     /**
+     * "Nothing found yet", "3 findings so far", or that they were not counted.
+     *
+     * A findings value that is not a number is NOT zero. A run that ended
+     * before its summary was built answers null (ScanPromotion::findingsOf),
+     * and this printed "null findings so far"; read as zero it would have said
+     * "Nothing found yet" over duplicates the finalizer had already written.
+     * ScanPageView::foundText() builds the same string.
+     */
+    function foundText(st) {
+        var f = st.findings, L = labels();
+        if (typeof f !== 'number' || f < 0 || f !== Math.floor(f)) {
+            return L.foundUnknown || 'Findings not counted, because the scan ended before it could total them';
+        }
+        return f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
+    }
+
+    /**
      * How a phase reads to somebody who did not design this.
      *
      * The table is the page's (ScanPageView::phaseLabels). An unrecognised phase
@@ -252,8 +269,7 @@
             bar.className = (p === null ? 'uv-bar uv-bar-indeterminate' : 'uv-bar');
         }
 
-        var found = st.findings === 0 ? 'Nothing found yet'
-            : (st.findings + ' finding' + (st.findings === 1 ? '' : 's') + ' so far');
+        var found = foundText(st);
         text(el('uv-scan-counts'), counts);
         text(el('uv-scan-found'), found);
 

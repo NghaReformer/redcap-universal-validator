@@ -1786,18 +1786,32 @@ namespace {
             strpos($V::panelPrefill($status(['stalled' => true, 'idleSeconds' => 5]))['stalled'],
                    'for 1 minutes') !== false);
 
+        // OC-4. A run that ended before its findings could be counted reports
+        // NULL, and the line must say so rather than cast it to "Nothing found".
+        $ended = $status(['phase' => 'terminal', 'terminal' => 'cancelled', 'active' => false]);
+        check('PREFILL: findings that were not counted are said to be not counted, never nothing found',
+            $V::panelPrefill(array_merge($ended, ['findings' => null]))['found'] === $V::FOUND_UNKNOWN
+            && strpos($V::FOUND_UNKNOWN, 'not counted') !== false);
+        $noKey = $ended;
+        unset($noKey['findings']);
+        check('PREFILL: and so is a status that carries no count at all',
+            $V::panelPrefill($noKey)['found'] === $V::FOUND_UNKNOWN);
+        check('PREFILL: a counted zero is still nothing found, and a count is still a count',
+            $V::panelPrefill(array_merge($ended, ['findings' => 0]))['found'] === 'Nothing found yet'
+            && $V::panelPrefill(array_merge($ended, ['findings' => 2]))['found'] === '2 findings so far');
+
         // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
         // the two: js/scan.js holds a fallback for each and no other copy.
         $L = $V::labels();
-        foreach (['stalled', 'plain', 'checked', 'excluded', 'removed'] as $k) {
+        foreach (['stalled', 'plain', 'checked', 'excluded', 'removed', 'foundUnknown'] as $k) {
             check("LABELS: the client is handed the '$k' sentence",
                 isset($L[$k]) && is_string($L[$k]) && $L[$k] !== '');
         }
         check('LABELS: none of them carries an apostrophe into the script block',
-            strpos($L['stalled'] . $L['plain'] . $L['checked'] . $L['excluded'] . $L['removed'], "'")
-                === false);
+            strpos($L['stalled'] . $L['plain'] . $L['checked'] . $L['excluded'] . $L['removed']
+                   . $L['foundUnknown'], "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
-        foreach (['plain', 'checked', 'excluded', 'removed'] as $k) {
+        foreach (['plain', 'checked', 'excluded', 'removed', 'foundUnknown'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

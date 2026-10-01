@@ -582,6 +582,41 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
+ * OC-4  A RUN WITH NO VERDICT NEVER SAYS ZERO OVER FINDINGS IT HAS
+ *
+ * status() reports findingsOf(). For a cancelled, failed or expired run that
+ * was the stored-row counter, which the uniqueness finalizer never moves: a run
+ * cancelled during unique-finalize said "Nothing found yet" over the duplicates
+ * it had written. The run row cannot say whether a summary was built, so a run
+ * with no verdict answers with the larger of the counter and whatever summary
+ * exists - and with NULL, "not counted", when both are zero.
+ * ===================================================================== */
+{
+    $agg = new ArrayScanStore();
+    $aid = (int) $agg->startRun(820, ['created_by' => 'alice'])['run']['run_id'];
+    $bare = new ArrayScanStore();
+    $bid = (int) $bare->startRun(821, ['created_by' => 'alice'])['run']['run_id'];
+    foreach (RollupBuilder::KINDS as $kind) $agg->addAggregate($aid, $kind, 'x', null, 2);
+    $as = function (ArrayScanStore $s, $pid, $id, array $over) {
+        return ScanPromotion::findingsOf($s, array_merge($s->run($pid, $id), $over));
+    };
+    foreach (ScanOutcome::NO_VERDICT as $how) {
+        check("OC-4: a $how run with nothing stored and nothing summarised is NOT COUNTED, never zero",
+            $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 0]) === null);
+        check("OC-4: a $how run whose summary holds findings the counter missed reports them",
+            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 0]) === 2);
+        check("OC-4: and a $how run answers with the larger of the two, whichever it is",
+            $as($agg, 820, $aid, ['terminal' => $how, 'detail_rows' => 5]) === 5
+            && $as($bare, 821, $bid, ['terminal' => $how, 'detail_rows' => 3]) === 3);
+    }
+    check('OC-4: a run that reached a verdict still answers from its summary alone',
+        $as($agg, 820, $aid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 2
+        && $as($bare, 821, $bid, ['terminal' => ScanOutcome::COMPLETE, 'detail_rows' => 9]) === 0);
+    check('OC-4: and a run still working reports its counter, as it did',
+        $as($agg, 820, $aid, ['terminal' => null, 'detail_rows' => 4]) === 4);
+}
+
+/* =====================================================================
  * CL-6  THE LARGEST ATTEMPT SETTING STILL ENDS A RECORD
  *
  * The attempt counter saturates at 254 and the worker ends a record when

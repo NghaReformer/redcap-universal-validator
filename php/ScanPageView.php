@@ -279,6 +279,17 @@ class ScanPageView
     const COUNT_EXCLUDED = '{n} could not be checked';
     const COUNT_REMOVED  = '{n} deleted during the scan';
 
+    /**
+     * Shown in place of a findings count that does not exist.
+     *
+     * A run cancelled, failed or expired before its summary was built cannot
+     * say how many findings it has: the uniqueness finalizer writes duplicates
+     * straight into the findings table, so the stored-row counter can read
+     * zero over active findings. ScanPromotion::findingsOf() answers NULL
+     * there, and NULL must never be printed as "Nothing found".
+     */
+    const FOUND_UNKNOWN = 'Findings not counted, because the scan ended before it could total them';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -292,7 +303,24 @@ class ScanPageView
             'checked'         => self::COUNT_CHECKED,
             'excluded'        => self::COUNT_EXCLUDED,
             'removed'         => self::COUNT_REMOVED,
+            'foundUnknown'    => self::FOUND_UNKNOWN,
         ];
+    }
+
+    /**
+     * "Nothing found yet", "3 findings so far", or that they were not counted.
+     *
+     * A findings value that is not a number is NOT zero. It used to be cast,
+     * so a status that could not count - null, or absent - read "Nothing found
+     * yet", which is the most reassuring thing the line can say.
+     * js/scan.js builds the same string.
+     */
+    public static function foundText($status)
+    {
+        $f = (is_array($status) && array_key_exists('findings', $status)) ? $status['findings'] : null;
+        if (!is_int($f) && !(is_string($f) && ctype_digit($f))) return self::FOUND_UNKNOWN;
+        $f = (int) $f;
+        return $f === 0 ? 'Nothing found yet' : ($f . ' finding' . ($f === 1 ? '' : 's') . ' so far');
     }
 
     /**
@@ -391,7 +419,6 @@ class ScanPageView
         // The BAR follows what is settled, so it reaches the end when the run
         // does; the TEXT says how much of that was actually examined.
         $pct   = self::pct(isset($status['settled']) ? (int) $status['settled'] : $done, $total);
-        $found = isset($status['findings']) ? (int) $status['findings'] : 0;
 
         return [
             'phase'  => self::phaseLabel(isset($status['phase']) ? $status['phase'] : ''),
@@ -399,8 +426,7 @@ class ScanPageView
             // Whoever loads this page is WATCHING, by definition: nothing on it
             // is driving a scan until a button is pressed.
             'stalled' => self::stalledText($status),
-            'found'  => $found === 0 ? 'Nothing found yet'
-                : ($found . ' finding' . ($found === 1 ? '' : 's') . ' so far'),
+            'found'  => self::foundText($status),
             'pct'    => $pct,
             'done'   => empty($status['terminal']) ? null
                 : self::coverageSentence(isset($status['coverage']) ? $status['coverage'] : '',
