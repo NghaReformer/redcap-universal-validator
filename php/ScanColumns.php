@@ -225,15 +225,42 @@ final class ScanColumns
         return $out;
     }
 
-    /** One finding as a flat row of strings, keyed by column key. */
+    /**
+     * One finding as a flat row of strings, keyed by column key.
+     *
+     * EVERY CELL LEAVES AS UTF-8. Only the Value cell was checked, by the
+     * mapper; a field label, rule label or assert expression carrying one
+     * Latin-1 byte reached the row as it was, json_encode() of the page's rows
+     * returned false, and ScanPageView::h() rendered the cell blank. One check
+     * here covers every column, including one added later. A byte that is not
+     * text becomes U+FFFD, so the rest of the label survives and the reader
+     * can see where a byte was lost.
+     */
     public static function row(array $finding, ScanDimensions $d, ?array $cols = null)
     {
         if ($cols === null) $cols = self::all($d);
         $row = [];
         foreach ($cols as $c) {
-            $row[$c['key']] = (string) call_user_func($c['render'], $finding, $d);
+            $s = (string) call_user_func($c['render'], $finding, $d);
+            $row[$c['key']] = mb_check_encoding($s, 'UTF-8') ? $s : self::scrub($s);
         }
         return $row;
+    }
+
+    /**
+     * Invalid UTF-8 sequences replaced by U+FFFD. mb_scrub() substitutes the
+     * process-wide substitute character, '?' by default, which reads as a real
+     * question mark; it is set for this call and put back.
+     */
+    private static function scrub($s)
+    {
+        $was = mb_substitute_character();
+        mb_substitute_character(0xFFFD);
+        try {
+            return (string) mb_scrub($s, 'UTF-8');
+        } finally {
+            mb_substitute_character($was);
+        }
     }
 
     /**

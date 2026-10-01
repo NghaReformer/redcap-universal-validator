@@ -775,6 +775,27 @@ namespace {
             array_values($rows[0]['cells']) === $cells($report->csvLine(row())));
         check('present: one bad row stops the report; it is never a shorter report',
             throws('InvalidArgumentException', function () use ($report) { $report->present([row(), ['field' => 'x']]); }));
+
+        // RP-7. Only the Value cell was held to UTF-8. One Latin-1 byte in a
+        // field label, a rule label or an assert expression reached the cells
+        // as it was, json_encode() of the page's rows returned false, and
+        // ScanPageView::h() rendered the cell blank.
+        $ld = dims([1 => ['type' => 'constraint', 'label' => "Poids (kg) \xE9tabli", 'message' => '',
+                          'assert' => "[a_val]<>'caf\xE9'", 'fields' => ['a_val']]]);
+        $ld->fieldLabels = ['a_val' => "Poids \xE9tabli"];
+        $lrows = (new ScanReport(mapper(), $ld, runRow()))->present([row()]);
+        $badCells = [];
+        foreach ($lrows[0]['cells'] as $k => $v) if (!mb_check_encoding($v, 'UTF-8')) $badCells[] = $k;
+        check('cells: a label that is not UTF-8 leaves as text, in every column (bad: ' . implode(',', $badCells) . ')',
+            $badCells === [] && json_encode($lrows) !== false);
+        check('cells: and keeps every byte that was text, marking the one that was not',
+            $lrows[0]['cells']['field_label'] === "Poids \u{FFFD}tabli"
+            && strpos($lrows[0]['cells']['problem'], "caf\u{FFFD}") !== false);
+        check('cells: the process-wide substitute character is put back', mb_substitute_character() === 63);
+        $okd = dims([1 => $RULE_A]);
+        $okd->fieldLabels = ['a_val' => "Poids \u{e9}tabli"];
+        check('cells (control): a label that is already text is not touched',
+            ScanColumns::row(mapper()->toFinding(row()), $okd)['field_label'] === "Poids \u{e9}tabli");
     }
 
     /* =====================================================================
