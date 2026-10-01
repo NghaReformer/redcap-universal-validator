@@ -143,6 +143,29 @@ namespace {
         return array_intersect_key($row, array_flip(FindingRowMapper::INPUT_KEYS));
     }
 
+    /**
+     * The row Scan\UniqueFinalizer writes for one duplicate candidate.
+     *
+     * Built from the finalizer's INSERT, not from what a duplicate ought to
+     * carry: rule ordinal 0, reason `duplicate`, no group, and NO VALUE. The
+     * INSERT names no value column, so value_bin and value_len are NULL and the
+     * rest take their column defaults. Section 1 holds this helper to that
+     * INSERT. The fixture it replaces gave the duplicate value_bin 'ID-7',
+     * which the finalizer has never written (RP-1).
+     */
+    function finalized(array $cand, $id) {
+        $ev = $cand['event_id'];
+        return [
+            'finding_id' => $id, 'project_id' => $cand['project_id'], 'record_id_bin' => $cand['record_id_bin'],
+            // UniqueFinalizer::eventOrNull(): the candidate's 0 sentinel is undone.
+            'event_id' => ($ev === null || $ev === '' || (int) $ev === 0) ? null : $ev,
+            'instance' => (int) $cand['instance'], 'host_form' => $cand['host_form'], 'field' => $cand['field'],
+            'rule_source_id' => $cand['rule_source_id'], 'rule_ord' => 0, 'check_type' => 'unique',
+            'reason_code' => 'duplicate', 'reason_bits' => 0, 'dag_key' => null,
+            'value_bin' => null, 'value_len' => null, 'value_truncated' => 0, 'value_expires_at' => null,
+        ];
+    }
+
     /** A hand-written stored row; every key present, overridable by name. */
     function row(array $over = []) {
         $base = [
@@ -198,29 +221,54 @@ namespace {
             'b_val' => ['@UVASSERT={"assert":"[b_val]=\'OK\'","message":"Say OK here","blockSave":"hard"}'],
             'req'   => ['@UVREQUIRED'],
             'pool'  => [],
+            'sid'   => ['@UVUNIQUE'],
         ]);
+        // R-2 is clean except for the duplicate it shares with R-1.
         $data = ['R-1' => [1 => ['record_id' => 'R-1', 'a_val' => 'NO', 'b_val' => $long, 'req' => '',
-                                 'pool' => '123 zz 123']]];
+                                 'pool' => '123 zz 123', 'sid' => 'ID-7']],
+                 'R-2' => [1 => ['record_id' => 'R-2', 'a_val' => 'OK', 'b_val' => 'OK', 'req' => 'x',
+                                 'pool' => '', 'sid' => 'ID-7']]];
         $m = mkMod($dict, $data, $subs);
 
         $legacy = $m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
         $ctx = $m->durableScanContext(PID, ['valueCeiling' => 'raw', 'generation' => 7, 'runSeq' => 7]);
         check('differential: the durable context opens', !empty($ctx['ok']));
         $ev = $ctx['evaluate'];
-        $durable = $ev('R-1', $data['R-1']);
+        $found = [];
+        $cands = [];
+        foreach ($data as $rid => $node) {
+            $out = $ev($rid, $node);
+            foreach ($out['findings'] as $f) $found[] = $f;
+            foreach ($out['candidates'] as $c) $cands[] = $c;
+        }
         $d = $m->scanDimensions(PID);
+        // What wave 11's snapshot supplies: the rule each source id names. With
+        // it, the finalizer's ordinal-0 duplicate finds the legacy rule number.
+        foreach ($ctx['plan']['ruleIds'] as $i => $id) $d->rulesBySource[$id['source_id']] = $i + 1;
 
         $byField = function (array $rows) {
             $out = [];
-            foreach ($rows as $r) $out[$r['field'] . '|' . $r['reason']] = $r;
+            foreach ($rows as $r) $out[$r['record'] . '|' . $r['field'] . '|' . $r['reason']] = $r;
             ksort($out);
             return $out;
         };
+        // Uniqueness is the one kind the durable path does not report per
+        // record: it stores candidates, and the finalizer writes the findings
+        // later. Those rows are compared on their own, below.
         $was = [];
-        foreach ($legacy['violations'] as $v) $was[] = ScanColumns::row($v, $d);
+        $wasDup = [];
+        foreach ($legacy['violations'] as $v) {
+            if ($v['type'] === 'unique') $wasDup[$v['record']] = ScanColumns::row($v, $d);
+            else $was[] = ScanColumns::row($v, $d);
+        }
         $map = mapper();
         $is = [];
-        foreach ($durable['findings'] as $i => $f) $is[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $d);
+        foreach ($found as $i => $f) $is[] = ScanColumns::row($map->toFinding(stored($f, $i + 1)), $d);
+        $isDup = [];
+        foreach ($cands as $i => $c) {
+            $isDup[$c['record_id_bin']] = ScanColumns::row($map->toFinding(finalized($c, 100 + $i)), $d);
+        }
+        ksort($wasDup); ksort($isDup);
 
         check('differential: the fixture produces findings on every rule kind it names',
             count($was) >= 4 && count($was) === count($is));
@@ -247,9 +295,57 @@ namespace {
         // may see locations only are NOT the legacy raw report.
         $capped = mapper(['readerCeiling' => 'locations']);
         $other = [];
-        foreach ($durable['findings'] as $i => $f) $other[] = ScanColumns::row($capped->toFinding(stored($f, $i + 1)), $d);
+        foreach ($found as $i => $f) $other[] = ScanColumns::row($capped->toFinding(stored($f, $i + 1)), $d);
         check('differential (control): a capped reader does not get the raw report',
             $byField($was) !== $byField($other));
+
+        // DUPLICATES (RP-1). The finalizer stores no value for a duplicate, so
+        // the stored report cannot show 'ID-7' as the legacy report does. What
+        // it must not do is say the field was EMPTY: on a run that kept values
+        // that is what a NULL length meant, and every @UVUNIQUE finding read as
+        // a blank field.
+        check('differential: both records\' duplicate is in both reports',
+            array_keys($wasDup) === ['R-1', 'R-2'] && array_keys($isDup) === ['R-1', 'R-2']);
+        check('differential (control): the legacy report shows the duplicated value',
+            isset($wasDup['R-1']) && $wasDup['R-1']['value'] === 'ID-7');
+        $dupCell = isset($isDup['R-1']) ? $isDup['R-1']['value'] : null;
+        check('differential: a stored duplicate is never shown as an empty field',
+            $dupCell !== null && $dupCell !== '' && $dupCell === ScanColumns::VALUE_WORDS['not-kept']);
+        $differ = [];
+        foreach ($wasDup as $rid => $cellsWas) {
+            if (!isset($isDup[$rid])) continue;
+            foreach (array_keys(array_diff_assoc($cellsWas, $isDup[$rid])) as $k) $differ[$k] = true;
+        }
+        ksort($differ);
+        // value: not stored (RP-1). reason and problem: the finalizer writes
+        // `duplicate`, the legacy path `duplicate-value` (W7-R4). Every location
+        // cell, the rule and the issue agree.
+        check('differential: a stored duplicate differs from the legacy one only where W7-R4 and RP-1 say (got '
+            . implode(',', array_keys($differ)) . ')',
+            array_keys($differ) === ['problem', 'reason', 'value']);
+
+        // The helper is the finalizer's INSERT, read from the finalizer. If a
+        // later wave gives the duplicate its value, this fails and says which
+        // fixture to change.
+        $fin = (string) file_get_contents(__DIR__ . '/../php/Scan/UniqueFinalizer.php');
+        $insCols = [];
+        $insMarks = [];
+        if (preg_match("/INSERT INTO ' \\. Schema::table\\('finding'\\) \\. '\\s*\\(([^)]*)\\)/", $fin, $mm)) {
+            $insCols = array_map('trim', explode(',', $mm[1]));
+        }
+        // The placeholders are the last $marks line before that INSERT; the
+        // file builds another INSERT's marks earlier on.
+        $at = strpos($fin, "INSERT INTO ' . Schema::table('finding')");
+        if ($at !== false && preg_match_all("/marks\\[\\] = '\\(([^)]*)\\)'/", substr($fin, 0, $at), $mm)) {
+            $insMarks = array_map('trim', explode(',', end($mm[1])));
+        }
+        $written = (count($insCols) === count($insMarks) && $insCols) ? array_combine($insCols, $insMarks) : [];
+        check('differential: the duplicate fixture is the row the finalizer writes - no value column, ordinal 0',
+            $written !== []
+            && array_intersect(['value_bin', 'value_len', 'value_truncated', 'value_expires_at', 'dag_key'],
+                               array_keys($written)) === []
+            && $written['rule_ord'] === '0' && $written['reason_bits'] === '0'
+            && strpos($fin, "'unique', 'duplicate', \$g['group_hmac']") !== false);
 
         // The identifier flags are read twice, by two classes. Held together.
         $flagDict = dict(['record_id' => [], 'p' => ['', 'y'], 'q' => ['', 'Yes'], 'r' => ['', '1'],
@@ -330,9 +426,21 @@ namespace {
             $state([]) === ['shown', 'NO', false] && $cell([]) === 'NO');
 
         // 1. nothing stored
-        check('value: no length on a run that kept values is an EMPTY field',
-            $state(['value_len' => null, 'value_bin' => null]) === ['blank', null, false]
-            && $cell(['value_len' => null, 'value_bin' => null]) === '');
+        $empty = ['value_len' => null, 'value_bin' => null, 'value_expires_at' => null];
+        $req = ['check_type' => 'required', 'reason_code' => 'required-blank'] + $empty;
+        check('value: no length on a run that kept values, for a required field, is an EMPTY field',
+            $state($req) === ['blank', null, false] && $cell($req) === '');
+        // RP-1. Every other check is inert on a blank field, so for them a NULL
+        // length on a kept-values run is a value nobody stored - the
+        // finalizer's duplicates - and "the field was empty" would be false.
+        check('value: no length on any other check is a value not kept, not an empty field',
+            $state($empty) === ['not-kept', null, true]
+            && $state(['check_type' => 'unique', 'reason_code' => 'duplicate'] + $empty)[0] === 'not-kept');
+        check('value: and a check type nobody has heard of is not called empty either',
+            $state(['check_type' => 'geofence', 'reason_code' => 'outside'] + $empty)[0] === 'not-kept');
+        check('value: an identifier-redacted run kept values too, so its empty required field is EMPTY',
+            $state($req, ['valuesState' => 'identifier-redacted', 'readerCeiling' => 'identifier-redacted'])
+                === ['blank', null, false]);
         check('value: no length on a locations run says nothing about the field',
             $state(['value_len' => null, 'value_bin' => null], ['valuesState' => 'locations'])
                 === ['not-kept', null, true]);
@@ -529,16 +637,20 @@ namespace {
         $RULE_B = ['type' => 'unique', 'label' => 'No duplicate IDs', 'message' => '', 'assert' => '', 'fields' => ['sid']];
         $d = dims([1 => $RULE_A, 2 => $RULE_B], ['src-b' => 2]);
 
-        // What Scan\UniqueFinalizer writes: ordinal 0, no DAG, reason `duplicate`.
-        $dup = mapper()->toFinding(row(['check_type' => 'unique', 'reason_code' => 'duplicate', 'rule_ord' => 0,
-                                        'rule_source_id' => 'src-b', 'dag_key' => null, 'field' => 'sid',
-                                        'value_bin' => 'ID-7', 'value_len' => 4]));
+        // What Scan\UniqueFinalizer writes: ordinal 0, no DAG, reason `duplicate`,
+        // and no value at all - see finalized(), which section 1 holds to the
+        // finalizer's INSERT.
+        $dup = mapper()->toFinding(finalized(['project_id' => PID, 'record_id_bin' => 'R-1', 'event_id' => 0,
+                                              'instance' => 1, 'host_form' => 'fa', 'field' => 'sid',
+                                              'rule_source_id' => 'src-b'], 9));
         $r = ScanColumns::row($dup, $d);
         check('rules: a duplicate finding is found by its source id',
             $r['rule'] === '2' && $r['rule_label'] === 'No duplicate IDs');
         check('rules: it is a Duplicate value, worded from the catalogue',
             $r['issue'] === 'Duplicate value' && strpos($r['problem'], 'more than once') !== false
             && $r['wording'] !== 'fallback');
+        check('rules: its value was not kept, which is not an empty field',
+            $dup['valueState'] === 'not-kept' && $r['value'] === ScanColumns::VALUE_WORDS['not-kept']);
         $orphan = ScanColumns::row($dup, dims([1 => $RULE_A]));
         check('rules: with no source map, ordinal 0 is an empty cell and never "0"',
             $orphan['rule'] === '' && $orphan['rule_label'] === '');

@@ -64,6 +64,15 @@ final class FindingRowMapper
     /** The code a pooled reason is stored under once its parts are a bitmask. */
     const POOLED_CODE = 'pooled';
 
+    /**
+     * The check types whose finding IS an empty field. Every other kind is
+     * inert on a blank (UniversalValidator::ruleFindings() skips it), so for
+     * them a stored row with no value is a value nobody stored, not an empty
+     * field. A list, not a switch: a type added later and not named here is
+     * told "not kept", which claims nothing about the data.
+     */
+    const EMPTY_IS_THE_FINDING = ['required' => true];
+
     private $pid;
     private $now;
     private $hashed;
@@ -166,7 +175,7 @@ final class FindingRowMapper
         }
 
         $field = (string) $stored['field'];
-        $value = $this->valueOf($stored, $field);
+        $value = $this->valueOf($stored, $field, (string) $stored['check_type']);
 
         return [
             'record'        => $this->recordOf((string) $stored['record_id_bin']),
@@ -192,17 +201,24 @@ final class FindingRowMapper
      *
      * @return array{state:string, value:?string, withheld:bool}
      */
-    private function valueOf(array $stored, $field)
+    private function valueOf(array $stored, $field, $type)
     {
-        // 1. Nothing was stored. On a run that kept values that means the field
-        //    was EMPTY, which is itself the finding for a required rule. On a
-        //    locations run it means nothing: the scan stores no length for a
-        //    value it withholds, so empty and withheld are one row, and saying
-        //    "blank" there would be a claim about data nobody recorded.
+        // 1. Nothing was stored. On a locations run that means nothing: the
+        //    scan stores no length for a value it withholds, so empty and
+        //    withheld are one row, and saying "blank" there would be a claim
+        //    about data nobody recorded.
+        //
+        //    On a run that kept values it means the field was EMPTY only for a
+        //    check whose finding is the empty field. This said "blank" for every
+        //    type, and Scan\UniqueFinalizer writes its duplicates with no value
+        //    column at all, so every @UVUNIQUE finding on such a run read as an
+        //    empty field - the one thing a duplicate cannot be. The legacy
+        //    report shows the duplicated value; this one cannot, and says so.
         if ($stored['value_len'] === null) {
-            return $this->stored === 'locations'
-                ? self::cell('not-kept', true)
-                : self::cell('blank', false);
+            if ($this->stored !== 'locations' && isset(self::EMPTY_IS_THE_FINDING[$type])) {
+                return self::cell('blank', false);
+            }
+            return self::cell('not-kept', true);
         }
         // 2. It was stored, and retention has removed it or is about to. The
         //    purge runs on a schedule; the date is the rule.
