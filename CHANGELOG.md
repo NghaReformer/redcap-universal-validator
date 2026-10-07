@@ -20,13 +20,14 @@ Git tags identify release snapshots. Release candidates are intended for develop
 
 - Pooled cleaning no longer treats regex syntax as separator characters. The comma of a `{n,m}` quantifier and the `:`, `=`, `!`, `<`, `>` and group name of a `(?...` prefix were kept, so a pooled `[A-Z][0-9]{6,7}` field reported the commas typed between IDs as junk, and an alternate using `(?:...)` or a lookahead beside one that did not was refused with "disagree about which characters survive cleaning". Both runtimes now share one reader, `CheckCharacter::patternLiterals` and its JavaScript twin.
 - An escaped separator (`\:`, `\/`, `\x3A`) is now kept by pooled cleaning like an unescaped one. It used to be dropped, so every member of a pooled `A\:B[0-9]{3}` field read as junk.
-- Rules whose alternates agreed about kept characters only because the old reader counted regex syntax (the `:` of `(?:` beside a literal `:`) stay accepted. Their runtime cleaning is unchanged.
+- Rules whose alternates agreed about kept characters only because the old reader counted regex syntax (the `:` of `(?:` beside a literal `:`) stay accepted when the field's cleaning is unchanged by the new reader.
 
 ### Upgrade note
 
 - Some rules that saved under 2.1.0-rc.1 overlap in a way the old sampler missed and are now refused, with a message naming both entries and an example value. An existing field with such a rule shows a configuration notice and is not validated until the overlapping format-only pattern is narrowed. Each of these rules let a shape-breaking mis-scan of the check-bearing family pass on format. In a 6,000-rule random comparison, 161 rules moved from accepted to refused, every one with a confirmed common value.
 - A rule whose pattern uses `{,n}` or a spaced quantifier is now refused the same way; rewrite it as `{0,n}` or without the spaces.
-- No other rule moves from accepted to refused: in a further 1,500 random pooled rules built around separators and group syntax, none did, and no parse that was clean before became unclean.
+- A rule where one alternate writes a separator escaped (`LG\/[0-9]{5}`) and no other alternate keeps that character is now refused with "disagree about which characters survive cleaning". Before this release the escaped character was dropped by cleaning, so that alternate's IDs could not be read, while a sibling's IDs separated by that character read clean. Keeping it now would turn those separators into junk for the sibling, so the designer has to choose: add the character to `keepChars`, or stop using it as a separator. In 3,000 random pooled rules built around escaped separators, 36 moved from accepted to refused for this reason.
+- No other rule moves from accepted to refused, and no input that parsed clean under 2.1.0-rc.1 parses unclean under a rule that still saves (checked over 4,500 random pooled rules built around separators, escapes and group syntax).
 
 ### Removed
 

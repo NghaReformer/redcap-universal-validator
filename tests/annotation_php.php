@@ -643,6 +643,18 @@ foreach ([
             ['label' => 'F', 'pattern' => $g[1][0], 'algorithm' => 'none', 'lengths' => $g[1][1]],
         ]) === '');
 }
+// Review 5, J1: the grandfather clause must not admit a rule whose runtime
+// cleaning changes. LG\/ is now kept as a separator, which would keep "/" for
+// the SK sibling too and turn "SK1234Z/SK5678S" - clean before - into junk.
+$J1 = [['label' => 'SK', 'pattern' => 'SK[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [7]],
+       ['label' => 'LG', 'pattern' => 'LG\/[0-9]{5}',       'algorithm' => 'none',             'lengths' => [8]]];
+check('J1 a newly kept escaped separator is not grandfathered',
+    strpos($altErr($J1), 'disagree about which characters survive cleaning (/)') !== false
+    && strpos($altErr($J1, ['keepChars' => ';']), 'disagree about which characters survive cleaning (/)') !== false);
+check('J1 ... declaring it in keepChars is still the escape hatch', $altErr($J1, ['keepChars' => '/']) === '');
+check('J1 ... and a sibling that already keeps "/" literally leaves the union unchanged, so it stands',
+    $altErr([['label' => 'SK', 'pattern' => 'SK/[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],
+             ['label' => 'LG', 'pattern' => 'LG\/[0-9]{5}',        'algorithm' => 'none',             'lengths' => [8]]]) === '');
 check('KEEP gate: a (?:...) alternate beside a plain one is not refused',
     $altErr([
         ['label' => 'GRP', 'pattern' => '(?:SK)[1-5][0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],

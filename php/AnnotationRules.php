@@ -943,15 +943,21 @@ class AnnotationRules
                 $differ = function ($a, $b) {
                     return array_merge(array_diff(str_split($a), str_split($b)), array_diff(str_split($b), str_split($a)));
                 };
+                // Grandfathered: before 2.1.0-rc.2 the reader counted regex
+                // syntax (the ":" of "(?:", the "," of "{n,m}") as kept
+                // characters, so a sibling using that character literally
+                // agreed by accident and the rule saved. That is allowed to
+                // stand only when the field's runtime KEEP union is the same
+                // under both readers, i.e. cleaning really is unchanged. An
+                // escaped separator the old reader dropped ("LG\/[0-9]{5}")
+                // is kept now, and kept for every sibling: a "/" people type
+                // between SK IDs would turn into junk, so that rule is refused.
+                $newUnion = ''; $legUnion = '';
+                foreach ($keepSets as $ks) { $newUnion .= $ks['keep']; $legUnion .= $ks['legacy']; }
+                $sameUnion = !array_diff(str_split($newUnion), str_split($legUnion));
                 foreach ($idxs as $ix) {
                     $diff = $differ($keepSets[$ix]['keep'], $first['keep']);
-                    // Grandfathered: before 2.1.0-rc.2 the reader counted regex
-                    // syntax (the ":" of "(?:", the "," of "{n,m}") as kept
-                    // characters, so a sibling using that character literally
-                    // agreed by accident and the rule saved. Its runtime KEEP
-                    // union is unchanged, so refusing it now would only stop a
-                    // working field from validating.
-                    if ($diff && !$differ($keepSets[$ix]['legacy'], $first['legacy'])) $diff = [];
+                    if ($diff && $sameUnion && !$differ($keepSets[$ix]['legacy'], $first['legacy'])) $diff = [];
                     if ($diff) {
                         $nm = $keepSets[$ix]['name'];
                         if ($nm === $first['name']) $nm = 'alternate ' . ($ix + 1);
