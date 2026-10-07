@@ -750,10 +750,10 @@ class CheckCharacter
         if ($c === '\\') {
             $i++;
             if ($i >= strlen($p)) return null;
-            $e = $p[$i++];
-            if ($e === 'b' || $e === 'B') { self::$ovApprox = true; return ['t' => 'eps']; }
-            $s = self::ovEscape($e, $p, $i);
-            return $s === null ? null : ['t' => 'set', 's' => $s];
+            if ($p[$i] === 'b' || $p[$i] === 'B') { $i++; self::$ovApprox = true; return ['t' => 'eps']; }
+            $atom = self::ovEscape($p, $i, false);
+            if ($atom === null) return null;
+            return ['t' => 'set', 's' => $atom[0] === 'code' ? self::ovCode($atom[1]) : $atom[1]];
         }
         $i++;
         return ['t' => 'set', 's' => self::ovChar($c)];
@@ -797,18 +797,21 @@ class CheckCharacter
             if ($p[$i] === ']') { $i++; break; }
             $lo = self::ovClassAtom($p, $i);
             if ($lo === null) return null;
-            if ($lo[0] === 'char' && $i + 1 < $n && $p[$i] === '-' && $p[$i + 1] !== ']') {
+            if ($lo[0] === 'code' && $i + 1 < $n && $p[$i] === '-' && $p[$i + 1] !== ']') {
                 $j = $i + 1;
                 $hi = self::ovClassAtom($p, $j);
                 if ($hi === null) return null;
-                if ($hi[0] === 'char') {
-                    if (ord($hi[1]) < ord($lo[1])) return null;     // out-of-order range
-                    for ($o = ord($lo[1]); $o <= ord($hi[1]); $o++) $set = self::ovOr($set, self::ovChar(chr($o)));
+                if ($hi[0] === 'code') {
+                    if ($hi[1] < $lo[1]) return null;               // out-of-order range
+                    // Endpoints outside the value alphabet (\x00, \x7F, a
+                    // lowercase letter) still bound the range: only the
+                    // characters a value can contain are kept from it.
+                    for ($o = $lo[1]; $o <= min($hi[1], 0x7E); $o++) $set = self::ovOr($set, self::ovCode($o));
                     $i = $j;
                     continue;
                 }
             }
-            $set = self::ovOr($set, $lo[0] === 'char' ? self::ovChar($lo[1]) : $lo[1]);
+            $set = self::ovOr($set, $lo[0] === 'code' ? self::ovCode($lo[1]) : $lo[1]);
         }
         if ($neg) {
             $all = self::ovAll();
@@ -819,51 +822,68 @@ class CheckCharacter
         return ['t' => 'set', 's' => $set];
     }
 
-    /** ['char', c] or ['set', bitmap] for one class member, or null. */
+    /** ['code', int] or ['set', bitmap] for one class member, or null. */
     private static function ovClassAtom($p, &$i)
     {
         $c = $p[$i++];
-        if ($c !== '\\') return ['char', $c];
+        if ($c !== '\\') return ['code', ord($c)];
         if ($i >= strlen($p)) return null;
-        $e = $p[$i++];
-        if ($e === 'b') return ['set', self::ovNone()];               // backspace: never in a value
-        if (strpos('dDwWsS', $e) !== false) return ['set', self::ovEscape($e, $p, $i)];
-        if (ctype_alnum($e)) {
-            $s = self::ovEscape($e, $p, $i);
-            if ($s === null) return null;
-            $k = strpos($s, '1');
-            return ($k === false) ? ['set', $s] : ['char', self::OVERLAP_ALPHABET[$k]];
-        }
-        return ['char', $e];
+        if ($p[$i] === 'b') { $i++; return ['code', 8]; }            // [\b] is backspace
+        return self::ovEscape($p, $i, true);
     }
 
-    /** Bitmap for an escape whose letter was just read, or null. */
-    private static function ovEscape($e, $p, &$i)
+    /**
+     * The escape whose letter is at $i (the backslash already read), as
+     * ['code', int] for one character or ['set', bitmap] for a shorthand class,
+     * or null when it is not modelled. Only forms the browser (JavaScript, no
+     * "u" flag) and the server (PCRE) read the same way are decoded.
+     */
+    private static function ovEscape($p, &$i, $inClass)
     {
         $digit = '0123456789';
         $word  = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz';
         $space = " \t\n\r\x0B\x0C";
+        $e = $p[$i++];
         switch ($e) {
-            case 'd': return self::ovChars($digit);
-            case 'D': return self::ovNot(self::ovChars($digit));
-            case 'w': return self::ovChars($word);
-            case 'W': return self::ovNot(self::ovChars($word));
-            case 's': return self::ovChars($space);
-            case 'S': return self::ovNot(self::ovChars($space));
-            case 'n': case 'r': case 't': case 'f': case 'v': case '0':
-                return self::ovNone();                               // control characters
+            case 'd': return ['set', self::ovChars($digit)];
+            case 'D': return ['set', self::ovNot(self::ovChars($digit))];
+            case 'w': return ['set', self::ovChars($word)];
+            case 'W': return ['set', self::ovNot(self::ovChars($word))];
+            case 's': return ['set', self::ovChars($space)];
+            case 'S': return ['set', self::ovNot(self::ovChars($space))];
+            case 't': return ['code', 9];
+            case 'n': return ['code', 10];
+            case 'f': return ['code', 12];
+            case 'r': return ['code', 13];
             case 'x':
                 if (!preg_match('/\G[0-9A-Fa-f]{2}/', $p, $m, 0, $i)) return null;
                 $i += 2;
-                return self::ovChar(chr(hexdec($m[0])));
+                return ['code', hexdec($m[0])];
             case 'u':
                 if (!preg_match('/\G[0-9A-Fa-f]{4}/', $p, $m, 0, $i)) return null;
                 $i += 4;
-                $o = hexdec($m[0]);
-                return $o < 128 ? self::ovChar(chr($o)) : self::ovNone();
+                return ['code', hexdec($m[0])];
         }
-        if (ctype_alnum($e)) return null;     // backreference or an escape not modelled
-        return self::ovChar($e);              // escaped punctuation is itself
+        if ($e >= '0' && $e <= '9') {
+            // Octal. "\0" plus up to two more octal digits reads the same in
+            // both engines; so does a 1-3 digit octal inside a class. Outside a
+            // class "\1".."\9" is a backreference to PCRE and may be one to
+            // JavaScript too, so it is not modelled.
+            if ($e !== '0' && !$inClass) return null;
+            if ($e > '7') return null;
+            preg_match('/\G[0-7]{0,2}/', $p, $m, 0, $i);
+            $i += strlen($m[0]);
+            $o = octdec($e . $m[0]);
+            return $o > 0377 ? null : ['code', $o];
+        }
+        if (ctype_alnum($e)) return null;     // an escape not modelled (\c, \k, ...)
+        return ['code', ord($e)];             // escaped punctuation is itself
+    }
+
+    /** The one-character bitmap for a code point (empty outside the alphabet). */
+    private static function ovCode($o)
+    {
+        return ($o >= 0x20 && $o <= 0x7E) ? self::ovChar(chr($o)) : self::ovNone();
     }
 
     private static function ovNone() { return str_repeat('0', strlen(self::OVERLAP_ALPHABET)); }
@@ -1017,10 +1037,14 @@ class CheckCharacter
                             foreach ($cb[$tb[1]] as $y2) {
                                 // Without a length every depth is the same
                                 // state, so a pair is visited once in total.
-                                $k = $key($x2, $y2, $len === null ? 0 : $depth + 1);
+                                // Without a length only two depths matter -
+                                // nothing consumed yet, or something - so a pair
+                                // is visited at most twice and an empty-string
+                                // accept at the start cannot hide a real one.
+                                $k = $key($x2, $y2, $len === null ? 1 : $depth + 1);
                                 if (isset($parent[$k]) || array_key_exists($k, $parent)) continue;
                                 if (++$visits > self::OVERLAP_MAX_VISITS) return null;
-                                $parent[$k] = [$key($x, $y, $len === null ? 0 : $depth), $ch];
+                                $parent[$k] = [$key($x, $y, $len === null ? min($depth, 1) : $depth), $ch];
                                 $done = ($x2 === $A['accept'] && $y2 === $B['accept'])
                                     && ($len === null || $depth + 1 === $len);
                                 if ($done) {
@@ -1204,6 +1228,16 @@ class CheckCharacter
                     . 'characters the class should contain.';
                 return null;
             }
+            if (preg_match('/\{,\d*\}/', preg_replace('/\\\\./s', '', $pattern))) {
+                // "{,n}" is literal text to a browser and to PCRE2 before 10.43, and a
+                // quantifier {0,n} from 10.43 on (bundled with PHP 8.4), so a server
+                // upgrade would silently split it from the browser.
+                $why = 'the format pattern uses "{,n}". JavaScript reads it as the literal text "{,n}", '
+                    . 'PCRE before 10.43 does too, and PCRE 10.43 and later (PHP 8.4) read it as {0,n}, so '
+                    . 'the pattern would behave differently in the browser and on some servers. Write {0,n} '
+                    . 'for "up to n", or escape the brace (\\{) for the literal text.';
+                return null;
+            }
             if (self::riskyPattern($pattern)) {
                 $why = 'the format pattern looks catastrophically backtracking (nested '
                     . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
@@ -1245,9 +1279,9 @@ class CheckCharacter
      * junk / invalid-ID verdict. Mirrors the preg_last_error guard in
      * matchesPattern() for the single-field path.
      */
-    // Public because checkFragment's config-time overlap check needs the same
-    // PCRE-error-guarded match the parser uses; a bare preg_match there could
-    // report an engine failure as a real match.
+    // Public so config-time callers (patternOverlap's example check, the
+    // tests) use the same PCRE-error-guarded match the parser uses; a bare
+    // preg_match could report an engine failure as a real match.
     public static function patTest($re, $t)
     {
         $m = @preg_match($re, $t);
@@ -1490,23 +1524,51 @@ class CheckCharacter
             }
         }
         if ($A['re'] !== null) {
-            $pat = (string) $A['pattern']; $meta = '\\^$.|?*+()[]{}';
-            for ($i = 0; $i < strlen($pat); $i++) {
-                $pc = $pat[$i];
-                if ($pc === '\\') {
-                    $i++;
-                    if ($i < strlen($pat)) {
-                        $pc = $pat[$i];
-                        if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
-                    }
-                    continue;
-                }
-                if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
-                    $K .= $pc;
-                }
+            $lit = self::patternLiterals($A['pattern']);
+            for ($i = 0; $i < strlen($lit); $i++) {
+                if (strpos($K, $lit[$i]) === false) $K .= $lit[$i];
             }
         }
         return $K;
+    }
+
+    /**
+     * The non-alphanumeric characters a pattern matches LITERALLY - its
+     * separators, such as the "-" in FC[1-9]-[0-9]{4} - which pooled cleaning
+     * must therefore keep. Regex syntax is not a literal: the comma of a {n,m}
+     * quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
+     * prefix used to be read as separators, so a pooled {6,7} pattern kept the
+     * commas people type between IDs, and one alternate using (?:...) was
+     * refused beside one that did not. Twin of QRID_patternLiterals (js).
+     */
+    public static function patternLiterals($pattern)
+    {
+        $pat = (string) $pattern;
+        $meta = '\\^$.|?*+()[]{}';
+        $n = strlen($pat);
+        $out = '';
+        for ($i = 0; $i < $n; $i++) {
+            $pc = $pat[$i];
+            if ($pc === '\\') {
+                $i++;
+                if ($i < $n && strpos($meta, $pat[$i]) !== false && strpos($out, $pat[$i]) === false) $out .= $pat[$i];
+                continue;
+            }
+            if ($pc === '{' && preg_match('/\G\{\d+(,\d*)?\}/', $pat, $m, 0, $i)) {
+                $i += strlen($m[0]) - 1;                             // a quantifier, not text
+                continue;
+            }
+            if ($pc === '(' && $i + 1 < $n && $pat[$i + 1] === '?') {
+                if (preg_match('/\G\(\?(?:<[A-Za-z_][A-Za-z0-9_]*>|<=|<!|[:=!])/', $pat, $m, 0, $i)) {
+                    $i += strlen($m[0]) - 1;                         // a group prefix, not text
+                    continue;
+                }
+            }
+            if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($out, $pc) === false) {
+                $out .= $pc;
+            }
+        }
+        return $out;
     }
 
     /** Does THIS (alternate, length) pair accept the token? Twin of verifiesAs (js). */

@@ -931,6 +931,15 @@ function QRID_gatePattern(raw, label){
       "behave differently in the browser and on the server — write out the characters the class should " +
       "contain." };
   }
+  if(/\{,\d*\}/.test(src.replace(/\\[\s\S]/g, ""))){
+    /* "{,n}" is literal text here and to PCRE2 before 10.43, and a quantifier
+       {0,n} from 10.43 on (bundled with PHP 8.4): a server upgrade would
+       silently split the two runtimes. Twin of gatePattern (php). */
+    return { re: null, error: pre + "idPattern" + " uses \"{,n}\". JavaScript reads it as the literal text " +
+      "\"{,n}\", PCRE before 10.43 does too, and PCRE 10.43 and later (PHP 8.4) read it as {0,n}, so the " +
+      "pattern would behave differently in the browser and on some servers. Write {0,n} for \"up to n\", " +
+      "or escape the brace (\\{) for the literal text." };
+  }
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
       "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
@@ -960,6 +969,35 @@ function QRID_gatePattern(raw, label){
 
    Twin of CheckCharacter::alternatesOf (php). */
 function QRID_altName(alt, i){ return alt.label ? alt.label : "alternate " + (i + 1); }
+/* The non-alphanumeric characters a pattern matches LITERALLY - its
+   separators, such as the "-" in FC[1-9]-[0-9]{4} - which pooled cleaning must
+   therefore keep. Regex syntax is not a literal: the comma of a {n,m}
+   quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
+   prefix used to be read as separators. Twin of CheckCharacter::patternLiterals
+   (php). */
+function QRID_patternLiterals(pattern){
+  var pat = String(pattern), meta = "\\^$.|?*+()[]{}", out = "", m;
+  for(var i = 0; i < pat.length; i++){
+    var pc = pat.charAt(i);
+    if(pc === "\\"){
+      i++;
+      if(i < pat.length && meta.indexOf(pat.charAt(i)) >= 0 && out.indexOf(pat.charAt(i)) < 0) out += pat.charAt(i);
+      continue;
+    }
+    if(pc === "{" && (m = /^\{\d+(,\d*)?\}/.exec(pat.slice(i)))){
+      i += m[0].length - 1;                     /* a quantifier, not text */
+      continue;
+    }
+    if(pc === "(" && pat.charAt(i + 1) === "?" &&
+       (m = /^\(\?(?:<[A-Za-z_][A-Za-z0-9_]*>|<=|<!|[:=!])/.exec(pat.slice(i)))){
+      i += m[0].length - 1;                     /* a group prefix, not text */
+      continue;
+    }
+    if(meta.indexOf(pc) < 0 && !/[A-Za-z0-9]/.test(pc) && out.indexOf(pc) < 0) out += pc;
+  }
+  return out;
+}
+
 function QRID_alternatesOf(cfg){
   var raw = cfg.alternates;
   function bad(msg){ return { list: [], error: msg }; }
@@ -3953,16 +3991,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         if(K.indexOf(CA.charAt(_c)) < 0) K += CA.charAt(_c);
     }
     if(A.re){
-      var _pat = String(A.pattern), _meta = "\\^$.|?*+()[]{}";
-      for(var _pi = 0; _pi < _pat.length; _pi++){
-        var _pc = _pat.charAt(_pi);
-        if(_pc === "\\"){                       /* escaped char: literal if it is a metachar */
-          _pi++; _pc = _pat.charAt(_pi);
-          if(_pc && _meta.indexOf(_pc) >= 0 && K.indexOf(_pc) < 0) K += _pc;
-          continue;
-        }
-        if(_meta.indexOf(_pc) < 0 && !/[A-Za-z0-9]/.test(_pc) && K.indexOf(_pc) < 0) K += _pc;
-      }
+      var _lit = QRID_patternLiterals(A.pattern);
+      for(var _li = 0; _li < _lit.length; _li++)
+        if(K.indexOf(_lit.charAt(_li)) < 0) K += _lit.charAt(_li);
     }
     return K;
   }

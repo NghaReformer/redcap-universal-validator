@@ -136,6 +136,14 @@ add('ownership: format-only declared first', { strip: '-', alternates: [
   overlapCfg.alternates[0], overlapCfg.alternates[1]] }, brk(M9) + ' ' + M9);
 add('ownership: format-only declared last', { strip: '-', alternates: [
   overlapCfg.alternates[1], overlapCfg.alternates[0]] }, brk(M9) + ' ' + M9);
+// regex syntax is not a separator: the comma of {6,7} and the ":" of (?:...)
+// must not survive cleaning, so commas typed between members are dropped
+add('keep: {n,m} comma is syntax, not a separator',
+  { algorithm: 'none', idPattern: '[A-Z][0-9]{6,7}', idLengths: [7, 8] }, 'A123456,B1234567, C765432');
+add('keep: (?:...) prefix is syntax, not a separator', { strip: '-', alternates: [
+  { label: 'GRP', pattern: '(?:SK)[1-5][0-9]{4}[0-9A-Z]', algorithm: mod37,  lengths: [8] },
+  { label: 'OLD', pattern: 'FC[1-9][0-9]{4}',             algorithm: 'none', lengths: [7] },
+] }, appD('SK10123') + ':FC10589');
 // ownership is per declared length: CHK's pattern also matches 8 characters,
 // but CHK only produces 9, so the 8-character token stays OLD's
 add('ownership: owners only at declared lengths', { strip: '-', alternates: [

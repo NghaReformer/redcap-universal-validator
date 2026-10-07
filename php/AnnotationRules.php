@@ -1177,20 +1177,9 @@ class AnnotationRules
                 if (strpos($K, $CA[$i]) === false) $K .= $CA[$i];
             }
         }
-        $pat = (string) $pattern; $meta = '\\^$.|?*+()[]{}';
-        for ($i = 0; $i < strlen($pat); $i++) {
-            $pc = $pat[$i];
-            if ($pc === '\\') {
-                $i++;
-                if ($i < strlen($pat)) {
-                    $pc = $pat[$i];
-                    if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
-                }
-                continue;
-            }
-            if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
-                $K .= $pc;
-            }
+        $lit = CheckCharacter::patternLiterals($pattern);
+        for ($i = 0; $i < strlen($lit); $i++) {
+            if (strpos($K, $lit[$i]) === false) $K .= $lit[$i];
         }
         return $K;
     }

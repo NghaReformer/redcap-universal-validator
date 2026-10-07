@@ -14,10 +14,16 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - The pooled refusal of a format-only alternate sharing any length with a check-bearing one is replaced by that test, run at each length the two share. Pooled alternates that share no length are not compared.
 - The overlap refusal stays even with shape ownership. Ownership only covers mis-scans that keep the check-bearing shape; one that breaks it (an `O` for a `0`, a dropped digit) would land in an overlapping format-only shape and pass on format.
 - Overlap messages now describe that failure instead of "whichever alternate accepts first wins", which is no longer how alternates are chosen.
+- Patterns using `{,n}` are refused when saved, in the browser and on the server. JavaScript and PCRE before 10.43 read it as the literal text `{,n}`; PCRE 10.43 and later (bundled with PHP 8.4) read it as `{0,n}`, so a server upgrade would have split the two runtimes. Write `{0,n}`.
+
+### Fixed
+
+- Pooled cleaning no longer treats regex syntax as separator characters. The comma of a `{n,m}` quantifier and the `:`, `=`, `!`, `<`, `>` and group name of a `(?...` prefix were kept, so a pooled `[A-Z][0-9]{6,7}` field reported the commas typed between IDs as junk, and an alternate using `(?:...)` or a lookahead beside one that did not was refused with "disagree about which characters survive cleaning". Both runtimes now share one reader, `CheckCharacter::patternLiterals` and its JavaScript twin.
 
 ### Upgrade note
 
 - Some rules that saved under 2.1.0-rc.1 overlap in a way the old sampler missed and are now refused, with a message naming both entries and an example value. An existing field with such a rule shows a configuration notice and is not validated until the overlapping format-only pattern is narrowed. Each of these rules let a shape-breaking mis-scan of the check-bearing family pass on format. In a 6,000-rule random comparison, 161 rules moved from accepted to refused, every one with a confirmed common value; no rule moved for any other reason.
+- A rule whose pattern uses `{,n}` is now refused the same way; rewrite it as `{0,n}`.
 
 ### Removed
 

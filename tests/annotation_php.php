@@ -613,6 +613,31 @@ check('HIV single: a corrupted check-character code is a check error',
 check('HIV single: a legacy A/B code is accepted', $singleReason($hivSingle, 'A12345') === 'ok:valid');
 check('HIV single: anything else is a format error', $singleReason($hivSingle, 'A1234X') === 'bad:format');
 
+// Review 3, H5: regex syntax is not a separator that cleaning must keep. The
+// comma of a {n,m} quantifier and the ":" "=" "!" "<" ">" and group name of a
+// "(?..." prefix used to be collected as literal characters.
+check('patternLiterals: separators are kept', CheckCharacter::patternLiterals('FC[1-9]-[0-9]{4}') === '-');
+check('patternLiterals: a {n,m} comma is syntax', CheckCharacter::patternLiterals('Ad{6,7}') === '');
+check('patternLiterals: (?: (?= (?! (?<= (?<! (?<name> prefixes are syntax',
+    CheckCharacter::patternLiterals('(?:P-)?(?=S)(?!X)(?<=Y)?(?<!Z)?(?<grp>SK)[0-9]{4}') === '-');
+check('patternLiterals: escaped metacharacters are literal, so an escaped {2,3} keeps its comma',
+    CheckCharacter::patternLiterals('A\.B\{2,3\}') === '.{,}');
+check('patternLiterals: a "{" that is not a quantifier is left alone (it is a metacharacter)',
+    CheckCharacter::patternLiterals('A{B') === '');
+check('KEEP gate: a (?:...) alternate beside a plain one is not refused',
+    $altErr([
+        ['label' => 'GRP', 'pattern' => '(?:SK)[1-5][0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],
+        ['label' => 'OLD', 'pattern' => 'FC[1-9][0-9]{4}',             'algorithm' => 'none',             'lengths' => [7]],
+    ]) === '');
+check('KEEP gate: a {n,m} alternate beside a fixed-length one is not refused',
+    $altErr([
+        ['label' => 'CHK', 'pattern' => '[A-Z][0-9A-Z]{7,8}', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+        ['label' => 'OLD', 'pattern' => '[A-Z][0-9]{7}',      'algorithm' => 'none',             'lengths' => [8]],
+    ]) === '');
+check('KEEP: commas typed between {n,m} pooled members are dropped, not junk',
+    CheckCharacter::validatePooledField(['type' => 'pooled', 'algorithm' => 'none',
+        'idPattern' => '[A-Z][0-9]{6,7}', 'idLengths' => [7, 8]], 'A123456,B1234567')['ok'] === true);
+
 // R2 - KEEP is computed once for the whole field, so an algorithm that can emit
 // "*" changes what survives cleaning for its siblings too
 check('alternates disagreeing about the kept character set rejected',
@@ -950,6 +975,26 @@ check('G1 pooled: no overlap at the lengths actually shared means no refusal',
 // L-4: the empty string proves nothing - both patterns accepting "" is not an
 // overlap a value could hit.
 check('L-4 an empty-string overlap is no claim', $ovEx('A{0,9}', 'B{0,3}') === 'disjoint');
+// Review 3, H1: two patterns that both accept "" must still be searched for a
+// NON-empty common value - the empty-string accept at the start hid it.
+check('patternOverlap: both accepting "" does not hide a real overlap',
+    $ovEx('0?', '0*') === '0' && $ovEx('[A-Z0-9]*', '[0-9]*') === '0'
+    && $ovEx('[^AB]?', '\w*') === '0');
+// Review 3, H2: escaped range endpoints outside the value alphabet still bound
+// the range, and octal escapes read as both engines read them.
+foreach ([['[\x00-\x7F]{5}[0-9A-Z]', '[0-9]{6}'], ['[\x20-\x7F]{5}[0-9A-Z]', '[A-Z0-9]{6}'],
+          ['[\x21-\x7A]{5}[0-9A-Z]', '[A-Z0-9]{6}'], ['[\0-9]{5}[0-9A-Z]', '[0-8]{6}'],
+          ['SK\061[0-9]{3}[0-9A-Z]', 'SK[0-9]{5}'], ['[\060-\071]{4}[0-9A-Z]', '[2-5]{5}'],
+          ['[\t-~]{3}', '[A-Z]{3}']] as $pair) {
+    $why = '';
+    $ex = $ovEx($pair[0], $pair[1]);
+    check('patternOverlap: escape endpoints and octal read correctly: ' . $pair[0] . ' / ' . $pair[1],
+        $ex !== 'unknown' && $ex !== 'disjoint'
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
+}
+check('patternOverlap: an octal escape outside a class that could be a backreference is unknown',
+    $ovEx('([A-Z])\101', 'AA') === 'unknown');
 // With a length, only values of exactly that length count: these two meet at
 // 5 characters and nowhere at 8.
 check('patternOverlap: an overlap at another length does not count',

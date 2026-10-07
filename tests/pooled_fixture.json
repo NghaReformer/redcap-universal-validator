@@ -924,6 +924,77 @@
       ]
     },
     {
+      "label": "keep: {n,m} comma is syntax, not a separator",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "[A-Z][0-9]{6,7}",
+        "idLengths": [
+          7,
+          8
+        ]
+      },
+      "input": "A123456,B1234567, C765432",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A123456",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "B1234567",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "C765432",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "keep: (?:...) prefix is syntax, not a separator",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GRP",
+            "pattern": "(?:SK)[1-5][0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "OLD",
+            "pattern": "FC[1-9][0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              7
+            ]
+          }
+        ]
+      },
+      "input": "SK10123D:FC10589",
+      "segs": [
+        {
+          "type": "id",
+          "id": "SK10123D",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "FC10589",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
       "label": "ownership: owners only at declared lengths",
       "config": {
         "strip": "-",
