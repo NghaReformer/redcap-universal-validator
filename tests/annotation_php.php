@@ -624,6 +624,25 @@ check('patternLiterals: escaped metacharacters are literal, so an escaped {2,3} 
     CheckCharacter::patternLiterals('A\.B\{2,3\}') === '.{,}');
 check('patternLiterals: a "{" that is not a quantifier is left alone (it is a metacharacter)',
     CheckCharacter::patternLiterals('A{B') === '');
+check('patternLiterals: an escaped separator is literal', CheckCharacter::patternLiterals('A\:B') === ':'
+    && CheckCharacter::patternLiterals('A\x3AB') === ':' && CheckCharacter::patternLiterals('A\/B\d') === '/');
+check('patternLiterals legacy: the pre-rc.2 reader, kept only to grandfather KEEP verdicts',
+    CheckCharacter::patternLiterals('(?:SK)\d{2,3}', true) === ':,' && CheckCharacter::patternLiterals('A\:B', true) === '');
+// Review 4, I1: main counted syntax characters as kept, so these siblings agreed
+// by accident and saved. Their runtime KEEP union is unchanged, so they stay
+// accepted rather than turning a working field into a configuration notice.
+foreach ([
+    [['(?:SK)[0-9]{4}[0-9A-Z]', [7]],    ['A:B[0-9]{3}', [6]]],
+    [['(?=D)[A-Z0-9]{5}[0-9A-Z]', [6]],  ['A=[0-9]{2}', [4]]],
+    [['(?<p>ST)[0-9]{3}[0-9A-Z]', [6]],  ['Q<[0-9]{2}>', [5]]],
+    [['[A-Z][0-9]{5,6}', [6, 7]],        ['X,[0-9]{3}', [5]]],
+] as $g) {
+    check('I1 a KEEP verdict main reached is grandfathered: ' . $g[0][0] . ' / ' . $g[1][0],
+        $altErr([
+            ['label' => 'K', 'pattern' => $g[0][0], 'algorithm' => 'none', 'lengths' => $g[0][1]],
+            ['label' => 'F', 'pattern' => $g[1][0], 'algorithm' => 'none', 'lengths' => $g[1][1]],
+        ]) === '');
+}
 check('KEEP gate: a (?:...) alternate beside a plain one is not refused',
     $altErr([
         ['label' => 'GRP', 'pattern' => '(?:SK)[1-5][0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],

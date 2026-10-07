@@ -1113,6 +1113,20 @@ class CheckCharacter
      * family wider (M-1). Escaped-backslash pairs are stripped first, exactly as
      * in usesUFlagEscape. Keep in sync with QRID_pcreOnly (js).
      */
+    public static function usesNewPcreQuantifier($pattern)
+    {
+        // A brace group of digits, commas and spaces is a quantifier only to
+        // PCRE2 10.43+ when it has an empty minimum ("{,n}") or white space.
+        // Twin of QRID_newPcreQuantifier (js).
+        $d = preg_replace('/\\\\./s', '', (string) $pattern);       // drop escaped characters
+        if (!preg_match_all('/\{[0-9 ,]*\}/', $d, $mm)) return false;
+        foreach ($mm[0] as $g) {
+            if (preg_match('/^\{ *,/', $g)) return true;
+            if (strpos($g, ' ') !== false && preg_match('/[0-9]/', $g)) return true;
+        }
+        return false;
+    }
+
     public static function usesPcreOnlySyntax($pattern)
     {
         $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
@@ -1228,14 +1242,16 @@ class CheckCharacter
                     . 'characters the class should contain.';
                 return null;
             }
-            if (preg_match('/\{,\d*\}/', preg_replace('/\\\\./s', '', $pattern))) {
-                // "{,n}" is literal text to a browser and to PCRE2 before 10.43, and a
-                // quantifier {0,n} from 10.43 on (bundled with PHP 8.4), so a server
-                // upgrade would silently split it from the browser.
-                $why = 'the format pattern uses "{,n}". JavaScript reads it as the literal text "{,n}", '
-                    . 'PCRE before 10.43 does too, and PCRE 10.43 and later (PHP 8.4) read it as {0,n}, so '
-                    . 'the pattern would behave differently in the browser and on some servers. Write {0,n} '
-                    . 'for "up to n", or escape the brace (\\{) for the literal text.';
+            if (self::usesNewPcreQuantifier($pattern)) {
+                // "{,n}" and quantifiers with spaces ("{2, 3}") are literal text to a
+                // browser and to PCRE2 before 10.43, and quantifiers from 10.43 on
+                // (bundled with PHP 8.4), so a server upgrade would silently split
+                // the server from the browser.
+                $why = 'the format pattern uses "{,n}" or a quantifier with spaces such as "{2, 3}". '
+                    . 'JavaScript reads these as literal text, PCRE before 10.43 does too, and PCRE 10.43 '
+                    . 'and later (PHP 8.4) read them as quantifiers, so the pattern would behave differently '
+                    . 'in the browser and on some servers. Write {0,n} or {2,3} without spaces, or escape '
+                    . 'the brace (\\{) for the literal text.';
                 return null;
             }
             if (self::riskyPattern($pattern)) {
@@ -1539,9 +1555,15 @@ class CheckCharacter
      * quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
      * prefix used to be read as separators, so a pooled {6,7} pattern kept the
      * commas people type between IDs, and one alternate using (?:...) was
-     * refused beside one that did not. Twin of QRID_patternLiterals (js).
+     * refused beside one that did not. An escaped separator is literal too:
+     * "\:" and "\x3A" both match ":", and used to be dropped by cleaning.
+     * Twin of QRID_patternLiterals (js).
+     *
+     * $legacy reproduces the reader before 2.1.0-rc.2 (syntax characters
+     * counted, escaped separators ignored). checkFragment uses it only to
+     * grandfather KEEP-agreement verdicts, never to build a KEEP set.
      */
-    public static function patternLiterals($pattern)
+    public static function patternLiterals($pattern, $legacy = false)
     {
         $pat = (string) $pattern;
         $meta = '\\^$.|?*+()[]{}';
@@ -1551,14 +1573,27 @@ class CheckCharacter
             $pc = $pat[$i];
             if ($pc === '\\') {
                 $i++;
-                if ($i < $n && strpos($meta, $pat[$i]) !== false && strpos($out, $pat[$i]) === false) $out .= $pat[$i];
+                if ($i >= $n) continue;
+                $ec = $pat[$i];
+                if ($legacy) {
+                    if (strpos($meta, $ec) !== false && strpos($out, $ec) === false) $out .= $ec;
+                    continue;
+                }
+                if (($ec === 'x' && preg_match('/\G[0-9A-Fa-f]{2}/', $pat, $m, 0, $i + 1))
+                        || ($ec === 'u' && preg_match('/\G[0-9A-Fa-f]{4}/', $pat, $m, 0, $i + 1))) {
+                    $i += strlen($m[0]);
+                    $ec = chr(min(hexdec($m[0]), 0x7F));            // only printable ASCII is kept below
+                } elseif (ctype_alnum($ec)) {
+                    continue;                                        // \d, \w, \b ... are not text
+                }
+                if ($ec >= ' ' && $ec <= '~' && !ctype_alnum($ec) && strpos($out, $ec) === false) $out .= $ec;
                 continue;
             }
-            if ($pc === '{' && preg_match('/\G\{\d+(,\d*)?\}/', $pat, $m, 0, $i)) {
+            if (!$legacy && $pc === '{' && preg_match('/\G\{\d+(,\d*)?\}/', $pat, $m, 0, $i)) {
                 $i += strlen($m[0]) - 1;                             // a quantifier, not text
                 continue;
             }
-            if ($pc === '(' && $i + 1 < $n && $pat[$i + 1] === '?') {
+            if (!$legacy && $pc === '(' && $i + 1 < $n && $pat[$i + 1] === '?') {
                 if (preg_match('/\G\(\?(?:<[A-Za-z_][A-Za-z0-9_]*>|<=|<!|[:=!])/', $pat, $m, 0, $i)) {
                     $i += strlen($m[0]) - 1;                         // a group prefix, not text
                     continue;

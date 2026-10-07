@@ -931,14 +931,15 @@ function QRID_gatePattern(raw, label){
       "behave differently in the browser and on the server — write out the characters the class should " +
       "contain." };
   }
-  if(/\{,\d*\}/.test(src.replace(/\\[\s\S]/g, ""))){
-    /* "{,n}" is literal text here and to PCRE2 before 10.43, and a quantifier
-       {0,n} from 10.43 on (bundled with PHP 8.4): a server upgrade would
-       silently split the two runtimes. Twin of gatePattern (php). */
-    return { re: null, error: pre + "idPattern" + " uses \"{,n}\". JavaScript reads it as the literal text " +
-      "\"{,n}\", PCRE before 10.43 does too, and PCRE 10.43 and later (PHP 8.4) read it as {0,n}, so the " +
-      "pattern would behave differently in the browser and on some servers. Write {0,n} for \"up to n\", " +
-      "or escape the brace (\\{) for the literal text." };
+  if(QRID_newPcreQuantifier(src)){
+    /* "{,n}" and quantifiers with spaces ("{2, 3}") are literal text here and
+       to PCRE2 before 10.43, and quantifiers from 10.43 on (bundled with PHP
+       8.4): a server upgrade would silently split the two runtimes. Twin of
+       gatePattern (php). */
+    return { re: null, error: pre + "idPattern" + " uses \"{,n}\" or a quantifier with spaces such as " +
+      "\"{2, 3}\". JavaScript reads these as literal text, PCRE before 10.43 does too, and PCRE 10.43 and " +
+      "later (PHP 8.4) read them as quantifiers, so the pattern would behave differently in the browser and " +
+      "on some servers. Write {0,n} or {2,3} without spaces, or escape the brace (\\{) for the literal text." };
   }
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
@@ -973,15 +974,38 @@ function QRID_altName(alt, i){ return alt.label ? alt.label : "alternate " + (i 
    separators, such as the "-" in FC[1-9]-[0-9]{4} - which pooled cleaning must
    therefore keep. Regex syntax is not a literal: the comma of a {n,m}
    quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
-   prefix used to be read as separators. Twin of CheckCharacter::patternLiterals
+   prefix used to be read as separators. An escaped separator is literal too:
+   "\:" and "\x3A" both match ":". Twin of CheckCharacter::patternLiterals
    (php). */
+/* A brace group of digits, commas and spaces is a quantifier only to PCRE2
+   10.43+ when it has an empty minimum ("{,n}") or white space. Twin of
+   CheckCharacter::usesNewPcreQuantifier (php). */
+function QRID_newPcreQuantifier(src){
+  var groups = String(src).replace(/\\[\s\S]/g, "").match(/\{[0-9 ,]*\}/g) || [];
+  for(var i = 0; i < groups.length; i++){
+    if(/^\{ *,/.test(groups[i])) return true;
+    if(groups[i].indexOf(" ") >= 0 && /[0-9]/.test(groups[i])) return true;
+  }
+  return false;
+}
+
 function QRID_patternLiterals(pattern){
   var pat = String(pattern), meta = "\\^$.|?*+()[]{}", out = "", m;
   for(var i = 0; i < pat.length; i++){
     var pc = pat.charAt(i);
     if(pc === "\\"){
       i++;
-      if(i < pat.length && meta.indexOf(pat.charAt(i)) >= 0 && out.indexOf(pat.charAt(i)) < 0) out += pat.charAt(i);
+      if(i >= pat.length) continue;
+      var ec = pat.charAt(i), hx = null;
+      if(ec === "x") hx = /^[0-9A-Fa-f]{2}/.exec(pat.slice(i + 1));
+      else if(ec === "u") hx = /^[0-9A-Fa-f]{4}/.exec(pat.slice(i + 1));
+      if(hx){
+        i += hx[0].length;
+        ec = String.fromCharCode(Math.min(parseInt(hx[0], 16), 0x7F));  /* only printable ASCII is kept below */
+      } else if(/[A-Za-z0-9]/.test(ec)){
+        continue;                               /* \d, \w, \b ... are not text */
+      }
+      if(ec >= " " && ec <= "~" && !/[A-Za-z0-9]/.test(ec) && out.indexOf(ec) < 0) out += ec;
       continue;
     }
     if(pc === "{" && (m = /^\{\d+(,\d*)?\}/.exec(pat.slice(i)))){

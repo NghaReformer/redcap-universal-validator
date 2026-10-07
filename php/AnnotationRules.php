@@ -878,7 +878,8 @@ class AnnotationRules
                 // comparison below was skipped entirely - silently disabling
                 // the gate. Copy-pasting an entry and forgetting to rename it
                 // is the obvious way to hit that.
-                $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'])];
+                $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern']),
+                                 'legacy' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'], true)];
             }
             // Both runtimes apply SHAPE OWNERSHIP: a value whose shape matches a
             // check-bearing alternate must pass that check, and a format-only
@@ -939,9 +940,18 @@ class AnnotationRules
             if (!$errors && count($keepSets) > 1) {
                 $idxs  = array_keys($keepSets);
                 $first = $keepSets[$idxs[0]];
+                $differ = function ($a, $b) {
+                    return array_merge(array_diff(str_split($a), str_split($b)), array_diff(str_split($b), str_split($a)));
+                };
                 foreach ($idxs as $ix) {
-                    $diff = array_merge(array_diff(str_split($keepSets[$ix]['keep']), str_split($first['keep'])),
-                                        array_diff(str_split($first['keep']), str_split($keepSets[$ix]['keep'])));
+                    $diff = $differ($keepSets[$ix]['keep'], $first['keep']);
+                    // Grandfathered: before 2.1.0-rc.2 the reader counted regex
+                    // syntax (the ":" of "(?:", the "," of "{n,m}") as kept
+                    // characters, so a sibling using that character literally
+                    // agreed by accident and the rule saved. Its runtime KEEP
+                    // union is unchanged, so refusing it now would only stop a
+                    // working field from validating.
+                    if ($diff && !$differ($keepSets[$ix]['legacy'], $first['legacy'])) $diff = [];
                     if ($diff) {
                         $nm = $keepSets[$ix]['name'];
                         if ($nm === $first['name']) $nm = 'alternate ' . ($ix + 1);
@@ -1168,7 +1178,7 @@ class AnnotationRules
      * CheckCharacter::pooledKeepFor and keepFor (js) -- used here only to prove
      * the alternates agree, since cleaning runs once for the whole field.
      */
-    private static function keepSetFor($base, $algo, $pattern)
+    private static function keepSetFor($base, $algo, $pattern, $legacy = false)
     {
         $K = $base;
         if ($algo !== 'none') {
@@ -1177,7 +1187,7 @@ class AnnotationRules
                 if (strpos($K, $CA[$i]) === false) $K .= $CA[$i];
             }
         }
-        $lit = CheckCharacter::patternLiterals($pattern);
+        $lit = CheckCharacter::patternLiterals($pattern, $legacy);
         for ($i = 0; $i < strlen($lit); $i++) {
             if (strpos($K, $lit[$i]) === false) $K .= $lit[$i];
         }

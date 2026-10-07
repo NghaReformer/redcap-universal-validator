@@ -144,6 +144,11 @@ add('keep: (?:...) prefix is syntax, not a separator', { strip: '-', alternates:
   { label: 'GRP', pattern: '(?:SK)[1-5][0-9]{4}[0-9A-Z]', algorithm: mod37,  lengths: [8] },
   { label: 'OLD', pattern: 'FC[1-9][0-9]{4}',             algorithm: 'none', lengths: [7] },
 ] }, appD('SK10123') + ':FC10589');
+// an escaped separator is literal: "\\:" and "\\x3A" both match ":"
+add('keep: escaped separator \\: is kept', { algorithm: 'none', idPattern: 'A\\:B[0-9]{3}', idLengths: [6] },
+  'A:B123 A:B456');
+add('keep: hex-escaped separator \\x3A is kept', { algorithm: 'none', idPattern: 'A\\x3AB[0-9]{3}', idLengths: [6] },
+  'A:B123,A:B456');
 // ownership is per declared length: CHK's pattern also matches 8 characters,
 // but CHK only produces 9, so the 8-character token stays OLD's
 add('ownership: owners only at declared lengths', { strip: '-', alternates: [

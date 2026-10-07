@@ -995,6 +995,56 @@
       ]
     },
     {
+      "label": "keep: escaped separator \\: is kept",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "A\\:B[0-9]{3}",
+        "idLengths": [
+          6
+        ]
+      },
+      "input": "A:B123 A:B456",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A:B123",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A:B456",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "keep: hex-escaped separator \\x3A is kept",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "A\\x3AB[0-9]{3}",
+        "idLengths": [
+          6
+        ]
+      },
+      "input": "A:B123,A:B456",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A:B123",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A:B456",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
       "label": "ownership: owners only at declared lengths",
       "config": {
         "strip": "-",
