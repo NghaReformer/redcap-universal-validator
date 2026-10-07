@@ -66,9 +66,9 @@ clean ID are refused when the rule is saved, each with a message naming the
 entry and the fix: lengths where one is the sum of two or more others, a
 format-only pattern that accepts a value a check-bearing pattern also accepts
 (in a pooled rule, between entries sharing a length), and entries that disagree
-about which characters survive cleaning. A check-bearing pattern that cannot be
-analysed for overlap &mdash; lookaround, a backreference, a named group &mdash;
-is refused where that test runs. Plain character classes avoid it.</p>
+about which characters survive cleaning. The overlap test is exact for
+ordinary patterns; a backreference, or lookaround it cannot settle, makes the
+rule refused rather than assumed safe. Plain character classes avoid it.</p>
 <p>Patterns run as JavaScript in the browser and as PCRE on the server, so
 syntax the two read differently is refused when the rule is saved:
 <code>\pL</code> and <code>\p{L}</code>, <code>\K \G \h \v \R \N \X \C

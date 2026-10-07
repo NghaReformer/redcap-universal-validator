@@ -511,16 +511,20 @@ message naming the two entries and an example value. Shape ownership already
 makes the check decide inside the check-bearing shape, but a mis-scan that
 breaks that shape (an `O` for a `0`, a dropped digit) would land in the
 overlapping format-only shape and pass on format. In a pooled field only
-entries that share a length are compared, since entries of different lengths
-never compete for a token. The same applies to lengths where one is the sum of
+entries that share a declared length are compared, because the parser never
+tries an entry at another length. That does not stop an inserted or dropped
+character from turning a check-bearing ID into a valid-looking ID of a
+format-only family of the neighbouring length; keep such families clearly
+different in shape as well. The same applies to lengths where one is the sum of
 two or more others: a single token could then swallow several real members and
 still verify.
 
-The overlap test looks for a value both patterns accept. If a check-bearing
-pattern is written in a form that cannot be analysed — lookaround, a
-backreference, a named group — the rule is refused rather than assumed safe,
-because the alternative is a mis-scan recorded as clean. Writing the pattern
-with plain character classes (`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
+The overlap test searches both patterns for a common value and is exact for
+ordinary patterns: classes, groups, alternation and quantifiers. A
+backreference, or a lookaround whose effect it cannot settle, makes the rule
+refused rather than assumed safe, because the alternative is a mis-scan recorded
+as clean. Writing the pattern with plain character classes
+(`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
 
 **Write patterns in portable regex.** They run as JavaScript in the browser and
 as PCRE on the server, so anything the two read differently is refused when the

@@ -778,7 +778,6 @@ class AnnotationRules
             $union = [];        // every length any alternate can produce
             $keepSets = [];
             $shapes = [];
-            $fwhy = '';
             foreach ($alts as $i => $a) {
                 if (!is_array($a)) {
                     $errors[] = 'alternate ' . ($i + 1) . ' must be a JSON object { ... } describing one '
@@ -891,45 +890,44 @@ class AnnotationRules
             // from landing in an overlapping format-only shape and passing on
             // format alone. So the two shapes must still be shown disjoint here.
             //
-            // Pattern subsumption is undecidable in general; this asks the
-            // decidable question instead - is there a CONCRETE string both
-            // accept? When no witness can be produced the answer is UNKNOWN, and
-            // unknown is refused: \D[0-9A-Z]{8} beside a format-only [0-9A-Z]{9}
-            // produced no witness under an older builder and then recorded every
-            // mis-scanned ID as clean (H-1).
-            //
-            // A pooled parser only tries a format at the lengths it declares, so
-            // two pooled alternates with no length in common can never compete
-            // for a token and need no probe. Sharing a length is fine when the
-            // shapes are disjoint (C-Z check-bearing codes beside legacy A/B
-            // codes, all six long), which the blunt shared-length refusal this
-            // replaces could not tell apart from a real overlap.
+            // CheckCharacter::patternOverlap decides it exactly: is there a
+            // value both patterns accept? For a pooled pair only values of a
+            // length both alternates declare count, because the parser only
+            // tries a format at its declared lengths; two pooled alternates
+            // with no length in common never compete for a token. So C-Z
+            // check-bearing codes beside legacy A/B codes, all six long, are
+            // accepted, while SK[0-9]+[0-9A-Z] beside [A-Z0-9]{9} is refused
+            // (the sampling probe this replaced looked only at 4-character SK
+            // values and missed it). When the answer is unknown - a pattern the
+            // reader cannot model, or the search budget exhausted - the rule is
+            // refused rather than assumed safe (H-1).
             if (!$errors && count($shapes) > 1) {
                 foreach ($shapes as $fi => $F) {
                     if (!$F['formatOnly']) continue;
                     foreach ($shapes as $ki => $K) {
                         if ($K['formatOnly']) continue;
-                        if ($F['lengths'] !== null && !array_intersect($F['lengths'], $K['lengths'])) continue;
-                        $ws = CheckCharacter::patternWitnesses($K['pattern']);
-                        if (!$ws) {
+                        $lens = ($F['lengths'] === null)
+                            ? [null] : array_values(array_intersect($F['lengths'], $K['lengths']));
+                        $ex = null;
+                        $unknown = false;
+                        foreach ($lens as $L) {
+                            $ov = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L);
+                            if ($ov['overlap'] === null) { $unknown = true; break; }
+                            if ($ov['overlap']) { $ex = $ov['example']; break; }
+                        }
+                        if ($unknown) {
                             $errors[] = $K['name'] . '\'s pattern is too complex to prove it does not '
                                 . 'overlap ' . $F['name'] . ', which has no check character. If the two '
                                 . 'shapes do overlap, a mis-scanned ' . $K['name'] . ' ID that no longer fits '
                                 . $K['name'] . '\'s pattern could pass as a clean ' . $F['name'] . ' ID, '
                                 . 'its check character never tested. Write ' . $K['name'] . '\'s pattern with '
-                                . 'explicit character classes (no lookaround, backreferences or '
-                                . 'assertions), or narrow ' . $F['name'] . '\'s so the two cannot overlap.';
+                                . 'explicit character classes (no backreferences), or narrow '
+                                . $F['name'] . '\'s so the two cannot overlap.';
                             break 2;
                         }
-                        $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
-                        if ($fre === null) continue;
-                        $w = null;
-                        foreach ($ws as $cand) {
-                            if (CheckCharacter::patTest($fre, $cand)) { $w = $cand; break; }
-                        }
-                        if ($w === null) continue;                  // no probe landed in both
+                        if ($ex === null) continue;
                         $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
-                            . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). A mis-scanned '
+                            . 'values meant for ' . $K['name'] . ' (for example "' . $ex . '"). A mis-scanned '
                             . $K['name'] . ' ID that no longer fits ' . $K['name'] . '\'s pattern - an O for '
                             . 'a 0, a dropped character - could then pass as a clean ' . $F['name'] . ' ID, '
                             . 'its check character never tested. Narrow ' . $F['name'] . '\'s pattern so '

@@ -363,7 +363,7 @@ removes that hyphen for the check-character calculation, not for the regex or po
 candidate length. Keep lengths inside the alternates; do not also set rule-level
 `idLengths`, `idMinLen`, `idMaxLen`, or `pattern`. An optional rule-level
 `expectedIds` requires that many valid members. Use a Notes field for longer lists.
-A format-only pattern that overlaps a check-bearing one is refused when saved.
+A format-only pattern that overlaps a check-bearing one (in a pooled rule, at a length both declare) is refused when saved.
 Each accepted member must pass one complete format. The existing pooled work limits and ambiguity checks apply.
 
 ### Full `@UVALIDATE` JSON keys

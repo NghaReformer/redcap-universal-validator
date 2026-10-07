@@ -742,7 +742,6 @@ check('M-04 non-ASCII alternate strip refused at config time',
 check('M-04 an ASCII alternate strip is still accepted',
     $altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'strip' => '-']], ['type' => 'single']) === '');
 
-// patternWitness must never guess: an unverifiable witness is discarded.
 // L-01: the union cap only runs on the POOLED path, so without a per-entry
 // bound a single-type rule could carry an arbitrarily long list into config.
 check('L-01 an over-long per-alternate lengths list is refused',
@@ -753,12 +752,6 @@ check('L-01 a list at the cap is still accepted',
     !isset(AnnotationRules::parseField('@UVALIDATE={"type":"single","alternates":[{"pattern":"A[0-9]{4}",'
         . '"algorithm":"none","lengths":[' . implode(',', range(1, 32)) . ']}]}')['error']));
 
-check('patternWitness builds a verified witness for a supported pattern',
-    CheckCharacter::patternWitness('SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-// Round 2: an unbuildable witness makes the overlap guard SILENT, so the
-// builder has to cover the ordinary ways an ID family gets written - a group,
-// an alternation of prefixes, a negated class. Taking the first branch is
-// enough: any one member of the check-bearing pattern proves the overlap.
 // Round 2 lows: checkFragment is public and documented as THE shared
 // validator returning a list of error strings, so a malformed alternates must
 // be REPORTED there, not throw (validateSettings swallows a throw into an
@@ -780,26 +773,54 @@ check('L-5 the alternate count is refused before the list is normalized',
     isset(AnnotationRules::normalizeAlternates(
         array_fill(0, 20000, ['pattern' => 'A[0-9]{4}', 'algorithm' => 'none']))['error']));
 
-check('patternWitness expands a group and takes the first branch',
-    CheckCharacter::patternWitness('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness handles top-level alternation',
-    CheckCharacter::patternWitness('SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness handles a negated class, preferring an ID-like member',
-    CheckCharacter::patternWitness('[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]') === '0K1-00000');
-check('patternWitness handles an optional non-capturing group',
-    CheckCharacter::patternWitness('(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness declines lookaround rather than guess',
-    CheckCharacter::patternWitness('(?=SK)[A-Z]{2}[0-9]{5}') === null);
-check('patternWitness declines an unbalanced group',
-    CheckCharacter::patternWitness('([A-Z])\\1[0-9]{7}') === null);
-// every witness it DOES return is a genuine member - that is what makes the
-// guard "proven overlap only" rather than a guess
-foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
-          'FC[1-9]-[0-9]{4}', '(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]', 'A(B(C|D)E)?[0-9]{2}'] as $wp) {
-    $w = CheckCharacter::patternWitness($wp);
+// patternOverlap decides overlap exactly. It reads the ordinary ways an ID
+// family is written - a group, an alternation of prefixes, a negated class, an
+// optional non-capturing group, a named group - and gives a concrete example.
+$ovEx = function ($a, $b, $len = null) {
+    $r = CheckCharacter::patternOverlap($a, $b, $len);
+    return $r['overlap'] === null ? 'unknown' : ($r['overlap'] ? $r['example'] : 'disjoint');
+};
+check('patternOverlap: a group', in_array($ovEx('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'), ['SK1-00000', 'DT1-00000'], true));
+check('patternOverlap: top-level alternation, either branch',
+    $ovEx('SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]', 'SK2-[0-9]{5}') === 'SK2-00000');
+check('patternOverlap: a negated class', $ovEx('[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+') === '0K1-00000');
+check('patternOverlap: an optional non-capturing group',
+    $ovEx('(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]', 'P-[A-Z0-9-]+') === 'P-SK1-00000');
+check('patternOverlap: a named group is an ordinary group', $ovEx('(?<x>[A-Z])[0-9]{8}', '[0-9A-Z]{9}') === 'A00000000');
+check('patternOverlap: disjoint prefixes', $ovEx('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'FC[1-9]-[0-9]{4}') === 'disjoint');
+check('patternOverlap: the HIV families are disjoint at their length and at any length',
+    $ovEx('[C-Z][0-9]{4}[0-9A-Z]', '[AB][0-9]{5}', 6) === 'disjoint'
+    && $ovEx('[C-Z][0-9]{4}[0-9A-Z]', '[AB][0-9]{5}') === 'disjoint');
+// lookaround is read as a superset; an overlap found there is reported only if
+// the real patterns confirm it, otherwise the answer is unknown
+check('patternOverlap: lookaround overlap whose first example the real pattern rejects is unknown',
+    $ovEx('(?=SK)[A-Z]{2}[0-9]{5}', '[A-Z0-9]{7}') === 'unknown');
+check('patternOverlap: lookaround overlap the real patterns confirm',
+    $ovEx('(?=A)[A-Z]{2}[0-9]{5}', '[A-Z0-9]{7}') === 'AA00000');
+check('patternOverlap: lookaround overlap the real patterns refute is unknown',
+    $ovEx('(?=[A-Z])[0-9A-Z]{9}', '[0-9]{9}') === 'unknown');
+check('patternOverlap: a lookaround superset that is disjoint proves disjoint',
+    $ovEx('(?=SK)[A-Z]{2}[0-9]{5}', '[0-9]{7}') === 'disjoint');
+check('patternOverlap: a backreference is unknown', $ovEx('([A-Z])\\1[0-9]{7}', '[0-9A-Z]{9}') === 'unknown');
+// The reviewer's misses of the sampling probe: overlaps neither sample reached.
+check('patternOverlap: an overlap at the shared length only (SK[0-9]+ vs 9 chars)',
+    $ovEx('SK[0-9]+[0-9A-Z]', '[A-Z0-9]{9}', 9) === 'SK0000000');
+check('patternOverlap: an overlap in the middle of a range ([A-Z] vs [B-Y0-9])',
+    $ovEx('[A-Z][0-9]{4}[0-9A-Z]', '[B-Y0-9][0-9]{5}', 6) === 'B00000');
+check('patternOverlap: a subset family (M-codes inside [A-Z])',
+    $ovEx('[A-Z][0-9]{4}[0-9A-Z]', 'M[0-9]{5}', 6) === 'M00000');
+check('patternOverlap: values are uppercased, so lowercase-only shapes never meet',
+    $ovEx('[a-z]{3}', '[a-z]{3}') === 'disjoint');
+// every example it DOES return is a genuine member of both patterns
+foreach ([['SK[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'], ['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'DT[0-9-]{6}[A-Z0-9]'],
+          ['[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]', '.{9}'], ['\D[0-9A-Z]{8}', '[0-9A-Z]{9}'],
+          ['A(B(C|D)E)?[0-9]{2}', 'ABDE[0-9]+'], ['FC[1-9]-[0-9]{4}', 'F[A-Z][0-9]-[0-9]*']] as $pair) {
     $why = '';
-    check('patternWitness output is a real member of ' . $wp,
-        $w === null || CheckCharacter::patTest(CheckCharacter::gatePattern($wp, $why, true), $w));
+    $ex = $ovEx($pair[0], $pair[1]);
+    check('patternOverlap example is a member of both: ' . $pair[0] . ' / ' . $pair[1],
+        $ex !== 'unknown' && $ex !== 'disjoint'
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
 }
 // ...and the guard now fires on all three shapes that bypassed it in round 1
 foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
@@ -819,22 +840,23 @@ check('H-1 a disjoint alternation family is not refused',
     ], ['type' => 'single']) === '');
 
 // ---- round 3 ------------------------------------------------------------
-// H-1: "no witness" is UNKNOWN, not "safe". A check-bearing pattern the builder
-// cannot analyse used to silence the guard completely, and a single-value field
-// has nothing else: every mis-scanned ID of that family recorded as clean.
+// H-1: "cannot tell" is UNKNOWN, not "safe". A check-bearing pattern the old
+// builder could not analyse silenced the guard completely, and every
+// mis-scanned ID of that family was recorded as clean. Each of these overlaps
+// LEGACY or cannot be proved not to, so each is refused.
 foreach (['(?=[A-Z])[0-9A-Z]{9}', '(?![0])[0-9A-Z]{9}', '(?<x>[A-Z])[0-9]{8}', '([A-Z])\\1[0-9]{7}'] as $opaque) {
-    check('H-1 an unanalysable check-bearing pattern is refused: ' . $opaque,
-        strpos($altErr([
+    check('H-1 a lookaround/backreference/named-group pattern overlapping LEGACY is refused: ' . $opaque,
+        $altErr([
             ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}', 'algorithm' => 'none'],
             ['label' => 'MINTED', 'pattern' => $opaque,       'algorithm' => $MOD],
-        ], ['type' => 'single']), 'too complex to prove') !== false);
+        ], ['type' => 'single']) !== '');
 }
-// The negated shorthands are ordinary regex, so the builder covers them rather
+// The negated shorthands are ordinary regex, so the reader covers them rather
 // than refusing the rule that uses them.
-check('H-1 the builder covers the negated shorthands',
-    CheckCharacter::patternWitness('\D[0-9A-Z]{8}') === 'A00000000'
-    && CheckCharacter::patternWitness('\S[0-9]{8}') === '000000000'
-    && CheckCharacter::patternWitness('\b[A-Z]{9}') === 'AAAAAAAAA');
+check('H-1 the overlap reader covers the negated shorthands and \b',
+    $ovEx('\D[0-9A-Z]{8}', '[0-9A-Z]{9}') === 'A00000000'
+    && $ovEx('\S[0-9]{8}', '[0-9]{9}') === '000000000'
+    && $ovEx('\b[A-Z]{9}', '[0-9]{9}') === 'disjoint');
 check('H-1 a rule using them is still accepted when the shapes are disjoint',
     $altErr([
         ['label' => 'GHIT', 'pattern' => '[^a-z]C[1-9]-[0-9]{4}',   'algorithm' => 'none'],
@@ -898,26 +920,42 @@ $PL = [['label' => 'CHK', 'pattern' => '[A-Z][0-9A-Z]{7}[0-9A-Z]?', 'algorithm' 
        ['label' => 'OLD', 'pattern' => '[A-Z][0-9]{7}',      'algorithm' => 'none', 'lengths' => [8]]];
 check('ownership pooled: a check-bearing family owns only its declared lengths',
     $altErr($PL) === '' && $pooledSegs($PL, 'A1234567') === 'A1234567:ok:1');
-// One witness probes ONE point, so a format-only alternate that overlaps
-// somewhere the ID-like pick does not reach read as clean. The second probe is
-// biased the other way; both are still verified against the pattern's own
-// regex, so a probe can only ever find a REAL overlap.
-check('H-1 the second probe finds a subset overlap the first misses',
+// A subset overlap anywhere in the pattern is found, not just at a sampled point.
+check('H-1 a subset format-only alternate is refused, naming an example',
     strpos($altErr([
         ['label' => 'SUB', 'pattern' => 'SK5-[0-9]{4}[0-9A-Z]',      'algorithm' => 'none'],
         ['label' => 'S4K', 'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',  'algorithm' => $MOD],
-    ], ['type' => 'single']), 'SK5-9999Z') !== false);
-foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
-          '\D[0-9A-Z]{8}', 'A(B(C|D)E)?[0-9]{2}', 'FC[1-9]-[0-9]{4}'] as $wp) {
-    $why = '';
-    $re  = CheckCharacter::gatePattern($wp, $why, true);
-    $all = CheckCharacter::patternWitnesses($wp);
-    check('every probe for ' . $wp . ' is a real member', $all !== [] && count(array_filter(
-        $all, function ($w) use ($re) { return !CheckCharacter::patTest($re, $w); })) === 0);
+    ], ['type' => 'single']), 'SK5-00000') !== false);
+// The reviewer's G1 rules: all refused by main's blunt shared-length guard,
+// passed by the sampling probe, refused again by the exact test.
+foreach ([
+    [['SK[0-9]+[0-9A-Z]', [9]],              ['[A-Z0-9]{9}', [9]]],
+    [['SK[1-5]X?[0-9]{2}[0-9A-Z]', [7]],     ['[A-Z0-9]{7}', [7]]],
+    [['[A-Z][0-9]{4}[0-9A-Z]', [6]],         ['[B-Y0-9][0-9]{5}', [6]]],
+    [['[A-Z][0-9]{4}[0-9A-Z]', [6]],         ['M[0-9]{5}', [6]]],
+] as $g) {
+    check('G1 pooled overlap at a shared length refused: ' . $g[0][0] . ' / ' . $g[1][0],
+        strpos($altErr([
+            ['label' => 'K', 'pattern' => $g[0][0], 'algorithm' => $MOD,   'lengths' => $g[0][1]],
+            ['label' => 'F', 'pattern' => $g[1][0], 'algorithm' => 'none', 'lengths' => $g[1][1]],
+        ]), 'its check character never tested') !== false);
 }
-// L-4: an empty string is not a witness - every pattern that can match nothing
-// accepts it, so it proves no overlap, and it reads as `for example ""`.
-check('L-4 an empty witness is no claim', CheckCharacter::patternWitness('A{0,9}') === null);
+// Only the shared length counts in a pooled rule: SK[0-9]+[0-9A-Z] and a
+// 9-character catch-all do overlap at 9, but not at 8.
+check('G1 pooled: no overlap at the lengths actually shared means no refusal',
+    $altErr([
+        ['label' => 'K', 'pattern' => 'SK[0-9]+[0-9A-Z]', 'algorithm' => $MOD,   'lengths' => [8]],
+        ['label' => 'F', 'pattern' => '[0-9]{8}',         'algorithm' => 'none', 'lengths' => [8]],
+    ]) === '');
+// L-4: the empty string proves nothing - both patterns accepting "" is not an
+// overlap a value could hit.
+check('L-4 an empty-string overlap is no claim', $ovEx('A{0,9}', 'B{0,3}') === 'disjoint');
+// With a length, only values of exactly that length count: these two meet at
+// 5 characters and nowhere at 8.
+check('patternOverlap: an overlap at another length does not count',
+    $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}', 8) === 'disjoint'
+    && $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}', 5) === 'SK000'
+    && $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}') === 'SK000');
 // L-1: checkFragment is documented as THE gate every channel goes through, so
 // it has to report on a hostile shape rather than throw - validateSettings
 // swallows a throw into an ALLOWED save of a rule nothing validated.

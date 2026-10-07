@@ -10,9 +10,18 @@ Git tags identify release snapshots. Release candidates are intended for develop
 ### Changed
 
 - **Check-bearing alternates own their shape.** A value whose shape matches any check-bearing alternate must pass that alternate's check character; format-only alternates are tried only when no check-bearing pattern matches. This applies to single-value and pooled fields, in the browser and on the server, and does not depend on declaration order. In a pooled field ownership is per declared length. Previously the first accepting alternate won.
-- The pooled refusal of a format-only alternate sharing any length with a check-bearing one is replaced by the overlap test single-value rules already used: the rule is refused only when a value both patterns accept can be found, or when the check-bearing pattern is too complex to analyse. Pooled alternates that share no length are not compared.
+- **Exact overlap test.** The save-time check for a format-only pattern that accepts a value a check-bearing pattern also accepts now searches both patterns for a common value instead of sampling two members of the check-bearing one. The sampler missed overlaps such as `SK[0-9]+[0-9A-Z]` beside `[A-Z0-9]{9}` (both samples were four characters long) and `[A-Z][0-9]{4}[0-9A-Z]` beside `[B-Y0-9][0-9]{5}`. A backreference, or lookaround whose effect cannot be settled, still makes the rule refused.
+- The pooled refusal of a format-only alternate sharing any length with a check-bearing one is replaced by that test, run at each length the two share. Pooled alternates that share no length are not compared.
 - The overlap refusal stays even with shape ownership. Ownership only covers mis-scans that keep the check-bearing shape; one that breaks it (an `O` for a `0`, a dropped digit) would land in an overlapping format-only shape and pass on format.
 - Overlap messages now describe that failure instead of "whichever alternate accepts first wins", which is no longer how alternates are chosen.
+
+### Upgrade note
+
+- Some rules that saved under 2.1.0-rc.1 overlap in a way the old sampler missed and are now refused, with a message naming both entries and an example value. An existing field with such a rule shows a configuration notice and is not validated until the overlapping format-only pattern is narrowed. Each of these rules let a shape-breaking mis-scan of the check-bearing family pass on format. In a 6,000-rule random comparison, 161 rules moved from accepted to refused, every one with a confirmed common value; no rule moved for any other reason.
+
+### Removed
+
+- `CheckCharacter::patternWitness()` and `patternWitnesses()`, replaced by `CheckCharacter::patternOverlap()`.
 
 ## 2.1.0-rc.1 — 2026-09-18
 

@@ -139,12 +139,14 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    disagree about which characters survive cleaning. The overlap refusal is
    needed even with shape ownership: a mis-scan that breaks the check-bearing
    shape (an `O` for a `0`, a dropped digit) would otherwise land in the
-   overlapping format-only shape and pass on format. In a pooled field the
-   overlap test runs only between entries that share a length, since entries of
-   different lengths never compete for a token. A check-bearing pattern that
-   cannot be analysed for overlap (lookaround, a backreference, a named group)
-   is refused where the test has to run. Each message names the entry and the
-   fix.
+   overlapping format-only shape and pass on format. The overlap test is exact
+   for ordinary patterns (classes, groups, alternation, quantifiers); a
+   backreference, or lookaround it cannot settle, makes the rule refused rather
+   than assumed safe. In a pooled field it compares only entries that share a
+   declared length, since the parser never tries an entry at another length.
+   Length separation does not stop an inserted or dropped character from
+   turning a check-bearing ID into a valid-looking ID of a format-only family of
+   the neighbouring length. Each message names the entry and the fix.
 
    **Patterns must be portable.** They run as JavaScript in the browser and as
    PCRE on the server, so syntax the two engines read differently is refused
