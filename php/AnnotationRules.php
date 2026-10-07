@@ -776,11 +776,7 @@ class AnnotationRules
             $baseKeep   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                 . (isset($frag['keepChars']) ? (string) $frag['keepChars'] : '');
             $union = [];        // every length any alternate can produce
-            $roLens = [];       // lengths of the FORMAT-ONLY alternates
-            $ckLens = [];       // lengths of the CHECK-BEARING alternates
             $keepSets = [];
-            $shapes = [];
-            $fwhy = '';
             foreach ($alts as $i => $a) {
                 if (!is_array($a)) {
                     $errors[] = 'alternate ' . ($i + 1) . ' must be a JSON object { ... } describing one '
@@ -867,10 +863,7 @@ class AnnotationRules
                         }
                     }
                     $union = array_merge($union, $ls);
-                    if ($aAlgo === 'none') $roLens = array_merge($roLens, $ls);
-                    else                   $ckLens = array_merge($ckLens, $ls);
                 }
-                $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none')];
                 // KEEP is computed once over the WHOLE field before anything is
                 // split, so it is the union across alternates. An algorithm that
                 // can emit "*" therefore makes "*" survive for a sibling that
@@ -884,54 +877,14 @@ class AnnotationRules
                 // is the obvious way to hit that.
                 $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'])];
             }
-            // A format-only alternate accepts on shape alone, and the first
-            // alternate that accepts wins - so if its pattern also accepts a
-            // value a check-bearing alternate is meant to verify, that check
-            // character is never tested and a mis-scan passes as clean. Pattern
-            // subsumption is undecidable in general; this asks the decidable
-            // question instead - is there a CONCRETE string both accept?
-            //
-            // When no witness can be produced the answer is UNKNOWN, and this
-            // used to treat unknown as safe. It is not: \D[0-9A-Z]{8} beside a
-            // format-only [0-9A-Z]{9} produced no witness, drew no complaint,
-            // and then recorded every mis-scanned ID as clean (H-1). A pooled
-            // rule is proved safe a second way - the shared-length guard below,
-            // which is complete there because the parser only tries a format at
-            // a length that format declared - so unknown is refused for
-            // single-value fields, where this is the only protection there is.
-            if (!$errors && count($shapes) > 1) {
-                foreach ($shapes as $fi => $F) {
-                    if (!$F['formatOnly']) continue;
-                    foreach ($shapes as $ki => $K) {
-                        if ($K['formatOnly']) continue;
-                        $ws = CheckCharacter::patternWitnesses($K['pattern']);
-                        if (!$ws) {
-                            if ($type === 'pooled') continue;        // lengths prove it instead
-                            $errors[] = $K['name'] . '\'s pattern is too complex to prove it does not '
-                                . 'overlap ' . $F['name'] . ', which has no check character. Whichever '
-                                . 'alternate accepts first wins, so if the two shapes do overlap, '
-                                . $K['name'] . '\'s check character would never be tested and a mis-scan '
-                                . 'would pass as a clean ID. Write ' . $K['name'] . '\'s pattern with '
-                                . 'explicit character classes (no lookaround, backreferences or '
-                                . 'assertions), or narrow ' . $F['name'] . '\'s so the two cannot overlap.';
-                            break 2;
-                        }
-                        $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
-                        if ($fre === null) continue;
-                        $w = null;
-                        foreach ($ws as $cand) {
-                            if (CheckCharacter::patTest($fre, $cand)) { $w = $cand; break; }
-                        }
-                        if ($w === null) continue;                  // no probe landed in both
-                        $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
-                            . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). Whichever '
-                            . 'alternate accepts first wins, so ' . $K['name'] . '\'s check character '
-                            . 'would never be tested and a mis-scan would pass as a clean ID. Narrow '
-                            . $F['name'] . '\'s pattern so the two cannot overlap.';
-                        break 2;
-                    }
-                }
-            }
+            // No overlap guard between format-only and check-bearing
+            // alternates: both runtimes apply SHAPE OWNERSHIP instead. A value
+            // whose shape matches any check-bearing alternate must pass that
+            // check, and a format-only alternate is consulted only when none
+            // does (CheckCharacter::validateSingleField, pooledVerifiesAs and
+            // their js twins). Overlapping shapes therefore cannot silence a
+            // check character, so there is nothing to refuse here - and the
+            // witness probe this replaced could only ever approximate that.
             if (!$errors && count($keepSets) > 1) {
                 $idxs  = array_keys($keepSets);
                 $first = $keepSets[$idxs[0]];
@@ -965,18 +918,6 @@ class AnnotationRules
                         . 'swallow ' . count($sw['parts']) . ' real ones and still verify, so a mis-scan '
                         . 'would be reported as a clean ID. Give the alternates lengths where no length is '
                         . 'the sum of two or more others, or split them into separate fields.';
-                }
-                // A format-only alternate sharing a length with a check-bearing
-                // one accepts first (declaration order is irrelevant — the DP
-                // takes any accepting pair), so that length's check character
-                // would never actually be tested.
-                $shared = array_values(array_unique(array_intersect($roLens, $ckLens)));
-                if (!$errors && $shared) {
-                    sort($shared);
-                    $errors[] = 'a format-only alternate and a check-character alternate are both '
-                        . implode(' and ', $shared) . ' characters long. At that length the format-only '
-                        . 'alternate would accept the value first, so the check character would never be '
-                        . 'tested. Give them different lengths, or drop the format-only alternate.';
                 }
             }
         }

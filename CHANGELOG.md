@@ -3,6 +3,19 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
+## 2.1.0-rc.2 — 2026-10-07
+
+**Check-bearing formats own their shape.** A rule with `alternates` can now mix a format-only family and a check-bearing family of the same length, which real projects need: the HIV viral-load field takes `C`–`Z` codes that carry a check character and legacy `A`/`B` codes that do not, all six characters long. Until now that rule was refused when saved.
+
+### Changed
+
+- A value whose shape matches any check-bearing alternate must pass that alternate's check character. Format-only alternates are tried only when no check-bearing pattern matches. This applies to single-value and pooled fields, in the browser and on the server, and does not depend on declaration order. A mis-scanned check-bearing ID is reported as a check-character error even when a format-only pattern would also accept it.
+- Removed two save-time refusals that this replaces: a pooled format-only alternate sharing a length with a check-bearing one, and a single-value format-only alternate whose pattern overlaps a check-bearing one (including the refusal of check-bearing patterns too complex to analyse for overlap). Both guarded against a format-only alternate silently accepting a mis-scanned check-bearing ID; ownership closes that at runtime for every value, where the overlap probe could only sample a few.
+
+### Removed
+
+- `CheckCharacter::patternWitness()` and `patternWitnesses()`, which only served the removed overlap probe.
+
 ## 2.1.0-rc.1 — 2026-09-18
 
 **Release candidate: expanded validation and scan reliability.** This release combines case-insensitive conditions, validation across events and repeating instruments, dropdown/autocomplete choice filtering, and the merged scan-remediation work.

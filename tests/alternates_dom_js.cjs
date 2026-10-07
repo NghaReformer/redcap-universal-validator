@@ -401,5 +401,100 @@ for (const extra of [{ idLengths: [8] }, { idMinLen: 8 }, { idMaxLen: 14 }, { id
     && NS.lastPooled.parse('\u{1F600}'.repeat(2049)) !== null);
 }
 
+// ---- shape ownership: format-only beside check-bearing, same length -------
+// A value whose shape matches a check-bearing alternate must pass that check;
+// a format-only alternate is consulted only when no check-bearing shape
+// matched. The driving case is the HIV viral-load field (C-Z codes carry a
+// check character, legacy A/B codes do not, both 6 long); the overlapping
+// LEGACY/MINTED pair is the 2026-08-27 round-3 reproduction.
+{
+  const probe = boot([], { singleFields: [], pooledFields: [], rules: [] });
+  const brk = (id) => id.slice(0, -1) + (id.slice(-1) === 'A' ? 'B' : 'A');
+  const C1 = mint(probe, 'C1234'), Z9 = mint(probe, 'Z9876'), M9 = mint(probe, 'ABCDEFGH');
+  const HIV = [
+    { label: 'CHECKED', pattern: '[C-Z][0-9]{4}[0-9A-Z]', algorithm: MOD,    lengths: [6] },
+    { label: 'LEGACY',  pattern: '[AB][0-9]{5}',          algorithm: 'none', lengths: [6] },
+  ];
+  const OVER = [
+    { label: 'LEGACY', pattern: '[0-9A-Z]{9}',    algorithm: 'none', lengths: [9] },
+    { label: 'MINTED', pattern: '\\D[0-9A-Z]{8}', algorithm: MOD,    lengths: [9] },
+  ];
+  const noLens = (alts) => alts.map((a) => ({ label: a.label, pattern: a.pattern, algorithm: a.algorithm }));
+  const single = (alts, value) => singleEnv(value, { alternates: noLens(alts) });
+  const pooledOf = (alts, value) => {
+    const box = makeEl('input'); box.name = 'pool'; box.value = value;
+    const env = boot([box], { singleFields: [], pooledFields: [], rules: [
+      { type: 'pooled', fields: ['pool'], strip: '-', alternates: alts },
+    ] });
+    return { box, msg: msgOf(env, 'pool'), api: env.NS.lastPooled };
+  };
+  const view = (segs) => segs.map((s) => s.type === 'id'
+    ? s.id + ':' + (s.valid ? 'ok' : 'bad') + ':' + s.alt : 'junk:' + s.text).join(' ');
+
+  // single field, HIV
+  {
+    const { sid, msg } = single(HIV, C1);
+    check('ownership single HIV: check-character code verified',
+      sid.__qridInvalid === false && /check character verified/.test(msg.innerHTML));
+  }
+  {
+    const { sid, msg } = single(HIV, brk(C1));
+    check('ownership single HIV: broken check is a CHECK error, never a format-only pass',
+      sid.__qridInvalid === true && /CHECK character/.test(msg.innerHTML));
+  }
+  {
+    const { sid, msg } = single(HIV, 'A12345');
+    check('ownership single HIV: legacy A/B code accepted as format-only',
+      sid.__qridInvalid === false && /LEGACY format OK/.test(msg.innerHTML));
+  }
+  {
+    const { sid, msg } = single(HIV, 'A1234X');
+    check('ownership single HIV: anything else is a FORMAT error',
+      sid.__qridInvalid === true && /FORMAT error/.test(msg.innerHTML));
+  }
+  // single field, overlapping shapes, both declaration orders
+  for (const [oi, alts] of [[0, OVER], [1, [OVER[1], OVER[0]]]]) {
+    {
+      const { sid } = single(alts, brk(M9));
+      check('ownership single overlap: broken minted ID refused, order ' + oi, sid.__qridInvalid === true);
+    }
+    {
+      const { sid, msg } = single(alts, M9);
+      check('ownership single overlap: good minted ID verified, order ' + oi,
+        sid.__qridInvalid === false && /MINTED: format/.test(msg.innerHTML));
+    }
+    {
+      const { sid } = single(alts, '123456789');
+      check('ownership single overlap: legacy-only shape accepted, order ' + oi, sid.__qridInvalid === false);
+    }
+  }
+  // the round-3 reproduction, exhaustively: 1 of 36 final characters accepted
+  {
+    let accepted = 0;
+    for (const ch of '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ') {
+      if (single(OVER, 'ABCDEFGH' + ch).sid.__qridInvalid === false) accepted++;
+    }
+    check('ownership single overlap: exactly one of 36 final characters accepted', accepted === 1);
+  }
+  // pooled field
+  {
+    const { box, api } = pooledOf(HIV, C1 + 'A12345' + Z9);
+    check('ownership pooled HIV: jammed run splits and verifies',
+      view(api.parse(C1 + 'A12345' + Z9)) === C1 + ':ok:0 A12345:ok:1 ' + Z9 + ':ok:0');
+    check('ownership pooled HIV: clean run does not block the save', box.__qridInvalid === false);
+  }
+  {
+    const { box, api } = pooledOf(HIV, brk(C1) + 'A12345');
+    check('ownership pooled HIV: broken member flagged, legacy neighbour kept',
+      view(api.parse(brk(C1) + 'A12345')) === brk(C1) + ':bad:0 A12345:ok:1');
+    check('ownership pooled HIV: a broken member blocks the save', box.__qridInvalid === true);
+  }
+  {
+    const { api } = pooledOf(OVER, '123456789' + brk(M9) + M9);
+    check('ownership pooled overlap: mixed run keeps the check in force',
+      view(api.parse('123456789' + brk(M9) + M9)) === '123456789:ok:0 ' + brk(M9) + ':bad:1 ' + M9 + ':ok:1');
+  }
+}
+
 console.log(`alternates_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

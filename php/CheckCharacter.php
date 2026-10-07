@@ -607,228 +607,6 @@ class CheckCharacter
         return null;
     }
 
-    /**
-     * A shortest concrete string this pattern accepts, or null when one cannot
-     * be produced. Used to decide, at config time, whether a format-only
-     * alternate would swallow a value a check-bearing one is meant to verify.
-     *
-     * Covers the pattern class this module supports: literals, escaped
-     * literals, character classes (including negated ones), ".", groups,
-     * alternation - the first branch is taken, which is enough, since ANY
-     * member of the check-bearing pattern proves the overlap - and the
-     * quantifiers ?, +, *, {n}, {n,m}. Lookaround returns null.
-     *
-     * The result is VERIFIED against the pattern's own compiled regex before it
-     * is returned, so a witness this builder gets wrong is discarded rather
-     * than used. The guard can therefore only ever fire on a string both
-     * patterns provably accept, never on a guess - which is what lets the
-     * builder pick ID-like members heuristically without risking a false
-     * refusal.
-     */
-    public static function patternWitness($pattern, $mode = 0)
-    {
-        $p = preg_replace('/^\\^/', '', (string) $pattern);
-        $p = preg_replace('/\\$$/', '', $p);
-        $i = 0;
-        $out = self::witnessSeq($p, $i, 0, $mode);
-        if ($out === null) return null;
-        // A top-level "|" is fine - the first branch was taken. Anything else
-        // left over (a stray ")") means the pattern is not balanced.
-        if ($i < strlen($p) && $p[$i] !== '|') return null;
-        // An empty witness is no claim: every pattern that can match nothing
-        // accepts it, so it proves no overlap, and "for example """ is not a
-        // sentence to put in front of a designer (L-4).
-        if ($out === '') return null;
-        $why = '';
-        $re = self::gatePattern($pattern, $why, true);
-        if ($re === null) return null;
-        return self::patTest($re, $out) ? $out : null;         // verify, or no claim
-    }
-
-    /**
-     * Every distinct witness this builder can produce for $pattern, in probe
-     * order. One witness only ever probes ONE point of the pattern, so a
-     * format-only sibling that overlaps somewhere else - SK5-[0-9]{4}[0-9A-Z]
-     * beside SK[1-5]-[0-9]{4}[0-9A-Z], where the "SK1" witness misses - read as
-     * clean. A second probe biased the other way (the LAST member of each class
-     * rather than the most ID-like) finds that family.
-     *
-     * Adding probes can only ever find MORE real overlaps, never invent one:
-     * each witness is still verified against the pattern's own compiled regex
-     * before it is returned, so every string here is a genuine member. It is a
-     * probe, not a proof - two patterns that overlap only at a point neither
-     * probe reaches are still admitted, which is why the alternates are also
-     * separated by length wherever the mode allows it.
-     */
-    public static function patternWitnesses($pattern)
-    {
-        $out = [];
-        foreach ([0, 1] as $mode) {
-            $w = self::patternWitness($pattern, $mode);
-            if ($w !== null && !in_array($w, $out, true)) $out[] = $w;
-        }
-        return $out;
-    }
-
-    /**
-     * One alternative of a pattern, from $i, stopping at "|" or ")" at this
-     * level. Returns null when the shape is outside the supported class.
-     */
-    private static function witnessSeq($p, &$i, $depth, $mode = 0)
-    {
-        if ($depth > 8) return null;                            // absurd nesting
-        $n = strlen($p);
-        $out = '';
-        while ($i < $n) {
-            $c = $p[$i];
-            if ($c === '|' || $c === ')') break;                // this alternative ends
-            $atom = null;
-            if ($c === '(') {
-                $i++;
-                if ($i < $n && $p[$i] === '?') {
-                    // "(?:" is an ordinary group; lookaround and the rest
-                    // constrain rather than contribute, so make no claim.
-                    if ($i + 1 < $n && $p[$i + 1] === ':') $i += 2;
-                    else return null;
-                }
-                $atom = self::witnessSeq($p, $i, $depth + 1, $mode);
-                if ($atom === null) return null;
-                if (!self::skipToGroupEnd($p, $i)) return null;
-            } elseif ($c === '\\') {
-                $i++;
-                if ($i >= $n) return null;
-                $e = $p[$i];
-                // Probe 1 biases every choice the other way (see
-                // patternWitnesses) so an overlap the ID-like pick misses is
-                // still found; probe 0 is the shape a real ID has.
-                if ($e === 'd') $atom = $mode ? '9' : '0';
-                elseif ($e === 'w') $atom = $mode ? 'z' : 'A';
-                elseif ($e === 's') $atom = ' ';
-                // The negated shorthands are as ordinary in a hand-written ID
-                // pattern as the positive ones, and declining them used to
-                // silence the overlap guard completely - \D[0-9A-Z]{8} beside a
-                // format-only [0-9A-Z]{9} shipped as a silent accept of every
-                // broken check character (H-1). Pick an ID-like member; the
-                // self-verification below discards the choice if it is wrong.
-                elseif ($e === 'D') $atom = $mode ? 'z' : 'A';  // non-digit
-                elseif ($e === 'W') $atom = $mode ? ' ' : '-';  // non-word
-                elseif ($e === 'S') $atom = $mode ? 'z' : '0';  // non-space
-                elseif ($e === 'b' || $e === 'B') $atom = '';   // zero-width assertion
-                else $atom = $e;                                // escaped literal
-                $i++;
-            } elseif ($c === '[') {
-                $close = self::classEnd($p, $i);
-                if ($close === -1) return null;
-                $body = substr($p, $i + 1, $close - $i - 1);
-                $neg = ($body !== '' && $body[0] === '^');
-                if ($neg) $body = substr($body, 1);
-                if ($body === '') return null;
-                $cls = self::expandClass($body);
-                if ($cls === null) return null;
-                $atom = $neg ? self::firstOutside($cls, $mode) : self::firstInside($cls, $mode);
-                if ($atom === null) return null;
-                $i = $close + 1;
-            } elseif ($c === '.') {
-                $atom = $mode ? 'z' : 'A';
-                $i++;
-            } else {
-                $atom = $c;
-                $i++;
-            }
-            $min = 1;
-            if ($i < $n) {
-                $q = $p[$i];
-                if ($q === '?') { $min = 0; $i++; }
-                elseif ($q === '+') { $min = 1; $i++; }
-                elseif ($q === '*') { $min = 0; $i++; }
-                elseif ($q === '{') {
-                    $close = strpos($p, '}', $i + 1);
-                    if ($close === false) return null;
-                    $spec = substr($p, $i + 1, $close - $i - 1);
-                    if (!preg_match('/^([0-9]+)(,([0-9]*))?$/', $spec, $m)) return null;
-                    $min = (int) $m[1];
-                    $i = $close + 1;
-                }
-            }
-            if ($min > self::MAX_ID_LEN) return null;
-            $out .= str_repeat($atom, $min);
-            if (strlen($out) > self::MAX_ID_LEN) return null;
-        }
-        return $out;
-    }
-
-    /** Advance past the remaining alternatives of the group we are inside. */
-    private static function skipToGroupEnd($p, &$i)
-    {
-        $n = strlen($p);
-        $lvl = 1;
-        while ($i < $n) {
-            $ch = $p[$i];
-            if ($ch === '\\') { $i += 2; continue; }
-            if ($ch === '[') {
-                $close = self::classEnd($p, $i);
-                if ($close === -1) return false;
-                $i = $close + 1;
-                continue;
-            }
-            if ($ch === '(') $lvl++;
-            elseif ($ch === ')') { $lvl--; if ($lvl === 0) { $i++; return true; } }
-            $i++;
-        }
-        return false;
-    }
-
-    /** Index of the "]" closing the class at $i, or -1. */
-    private static function classEnd($p, $i)
-    {
-        $n = strlen($p);
-        $j = $i + 1;
-        if ($j < $n && $p[$j] === '^') $j++;
-        if ($j < $n && $p[$j] === ']') $j++;                    // a literal "]" first
-        for (; $j < $n; $j++) {
-            if ($p[$j] === '\\') { $j++; continue; }
-            if ($p[$j] === ']') return $j;
-        }
-        return -1;
-    }
-
-    // A real ID is far likelier to be alphanumeric than to start with a space,
-    // and a witness that LOOKS like an ID is the one most likely to expose an
-    // overlap. Only the choice among valid members is heuristic - every witness
-    // is still verified against the real regex before use, so a poor pick can
-    // cost a missed warning but never a false refusal.
-    const WITNESS_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz';
-
-    /**
-     * The most ID-like member of an expanded class, or in probe mode 1 the
-     * LEAST ID-like one — the second probe exists to land somewhere the first
-     * cannot reach (see patternWitnesses).
-     */
-    private static function firstInside($cls, $mode = 0)
-    {
-        if ($cls === '') return null;
-        $n = strlen(self::WITNESS_PREFERENCE);
-        for ($j = 0; $j < $n; $j++) {
-            $k = $mode ? $n - 1 - $j : $j;
-            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) !== false) return self::WITNESS_PREFERENCE[$k];
-        }
-        return $mode ? $cls[strlen($cls) - 1] : $cls[0];
-    }
-
-    /** The most ID-like printable-ASCII character an expanded class excludes. */
-    private static function firstOutside($cls, $mode = 0)
-    {
-        $n = strlen(self::WITNESS_PREFERENCE);
-        for ($j = 0; $j < $n; $j++) {
-            $k = $mode ? $n - 1 - $j : $j;
-            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) === false) return self::WITNESS_PREFERENCE[$k];
-        }
-        for ($ch = 0x20; $ch <= 0x7E; $ch++) {
-            if (strpos($cls, chr($ch)) === false) return chr($ch);
-        }
-        return null;
-    }
-
     /** True iff the (JS-style) pattern compiles as an anchored PCRE. */
     public static function patternCompiles($pattern)
     {
@@ -1061,18 +839,21 @@ class CheckCharacter
                 return ['ok' => true, 'reason' => 'unconfigurable'];
             }
         }
+        // Shape ownership: a value whose shape matches ANY check-bearing
+        // alternate belongs to that family and must pass its check character.
+        // Format-only alternates are consulted only when no check-bearing
+        // shape matched, so they can never accept a mis-scanned check-bearing
+        // ID, whatever the patterns overlap and whatever the declaration
+        // order. Twin of verdict() pass 1 (js).
         $anyPattern = false; $shapeMatched = false;
         foreach ($ALTS as $A) {
+            if ($A['algorithm'] === 'none') continue;
             $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
             if ($pattern !== null) {
                 $anyPattern = true;
                 if (!self::matchesPattern($value, $pattern)) continue;
             }
             $shapeMatched = true;
-            if ($A['algorithm'] === 'none') {
-                // format-only: the shape IS the whole test
-                return ['ok' => true, 'reason' => $pattern !== null ? 'valid' : 'no-op'];
-            }
             if (self::validateId($A['algorithm'], $A['source'], $A['strip'], $value)) {
                 return ['ok' => true, 'reason' => 'valid'];
             }
@@ -1081,6 +862,14 @@ class CheckCharacter
         // single-format rule: a SHAPE that matched but whose check failed is a
         // check-character error; nothing matching any shape is a format error.
         if ($shapeMatched) return ['ok' => false, 'reason' => 'check-character'];
+        foreach ($ALTS as $A) {
+            if ($A['algorithm'] !== 'none') continue;
+            // format-only: the shape IS the whole test
+            $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
+            if ($pattern === null) return ['ok' => true, 'reason' => 'no-op'];
+            $anyPattern = true;
+            if (self::matchesPattern($value, $pattern)) return ['ok' => true, 'reason' => 'valid'];
+        }
         if ($anyPattern)   return ['ok' => false, 'reason' => 'format'];
         return ['ok' => false, 'reason' => 'check-character'];
     }
@@ -1186,10 +975,20 @@ class CheckCharacter
         // two runtimes would silently disagree.
         $PAIRS = []; $RESCAN = [];
         foreach ($LENS as $L) {
+            // Shape ownership: the check-bearing alternates that also produce
+            // IDs of length L. A token any of them shapes as its own must pass
+            // that check, so a format-only pair at L may not accept it
+            // (pooledVerifiesAs). A null entry is a check-bearing alternate
+            // without a pattern, which owns every token of its lengths.
+            $owners = [];
+            foreach ($ALTS as $A) {
+                if ($A['check'] && in_array($L, $A['lengths'], true)) $owners[] = $A['re'];
+            }
             foreach ($ALTS as $ai => $A) {
                 if (!in_array($L, $A['lengths'], true)) continue;
                 $P = ['len' => $L, 'alt' => $ai, 're' => $A['re'], 'regexOnly' => $A['regexOnly'],
-                      'algo' => $A['algorithm'], 'source' => $A['source'], 'strip' => $A['strip']];
+                      'algo' => $A['algorithm'], 'source' => $A['source'], 'strip' => $A['strip'],
+                      'owners' => $A['regexOnly'] ? $owners : []];
                 $PAIRS[] = $P;
                 // Regex-only alternates never take part in the junk re-scan: the
                 // shape IS their test, so stamping valid=false on a shape match
@@ -1267,7 +1066,14 @@ class CheckCharacter
     private static function pooledVerifiesAs(array $P, $t)
     {
         if ($P['re'] !== null && !self::patTest($P['re'], $t)) return false;
-        if ($P['regexOnly']) return true;
+        if ($P['regexOnly']) {
+            // a check-bearing family shapes this token as its own: its check
+            // decides, never a format-only sibling of the same length
+            foreach ($P['owners'] as $ore) {
+                if ($ore === null || self::patTest($ore, $t)) return false;
+            }
+            return true;
+        }
         return self::validateId($P['algo'], $P['source'], $P['strip'], $t);
     }
 

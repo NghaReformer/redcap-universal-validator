@@ -107,6 +107,36 @@ add('mixed manifest with junk between members', altCfg, FC + 'ZZ' + DT);
 // the union sum-swallow reasoning must keep them apart
 add('two adjacent format-only members stay two', altCfg, FC + FC2);
 
+// Shape ownership: a format-only alternate may share a length with a
+// check-bearing one. A token the check-bearing pattern shapes must pass that
+// check; the format-only alternate takes only tokens no check-bearing pattern
+// shapes. Disjoint shapes (the HIV viral-load codes) and overlapping ones (the
+// 2026-08-27 round-3 LEGACY/MINTED pair) both have to hold in both runtimes.
+const brk = (id) => id.slice(0, -1) + (id.slice(-1) === 'A' ? 'B' : 'A');   // same class, broken check
+const C1 = app('C1234'), Z9 = app('Z9876');
+const hivCfg = { strip: '-', alternates: [
+  { label: 'CHECKED', pattern: '[C-Z][0-9]{4}[0-9A-Z]', algorithm: mod37,  lengths: [6] },
+  { label: 'LEGACY',  pattern: '[AB][0-9]{5}',          algorithm: 'none', lengths: [6] },
+] };
+add('ownership: disjoint same-length run', hivCfg, C1 + 'A12345' + Z9 + 'B00001');
+add('ownership: broken check member is caught', hivCfg, brk(C1) + 'A12345');
+add('ownership: broken check member alone', hivCfg, brk(Z9));
+const M9 = app('ABCDEFGH');
+const overlapCfg = { strip: '-', alternates: [
+  { label: 'LEGACY', pattern: '[0-9A-Z]{9}',   algorithm: 'none', lengths: [9] },
+  { label: 'MINTED', pattern: '\\D[0-9A-Z]{8}', algorithm: mod37,  lengths: [9] },
+] };
+add('ownership: overlapping shapes, good minted ID', overlapCfg, M9);
+add('ownership: overlapping shapes, broken minted ID', overlapCfg, brk(M9));
+add('ownership: overlapping shapes, legacy-only shape', overlapCfg, '123456789');
+add('ownership: overlapping shapes, mixed run', overlapCfg, '123456789' + brk(M9) + M9);
+// declaration order is irrelevant: the format-only alternate listed first
+// still cannot take a token the check-bearing one shapes
+add('ownership: format-only declared first', { strip: '-', alternates: [
+  overlapCfg.alternates[0], overlapCfg.alternates[1]] }, brk(M9) + ' ' + M9);
+add('ownership: format-only declared last', { strip: '-', alternates: [
+  overlapCfg.alternates[1], overlapCfg.alternates[0]] }, brk(M9) + ' ' + M9);
+
 const out = {
   generated_by: 'tests/gen_pooled_fixture.cjs',
   note: 'Frozen browser pooled-parser output; recomputed by pooled_js.cjs and pooled_php.php.',

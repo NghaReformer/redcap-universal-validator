@@ -2490,21 +2490,29 @@ function QRIDSingleInit(QRID_CONFIG){
     var normR = Q.normalize(v, REGEX_RULES).trim();
     var i, A, shapeFailed = [];
 
-    /* ---- pass 1: acceptance, declaration order, first accept wins ---- */
+    /* ---- pass 1: acceptance, by shape ownership ----
+       A value whose shape matches ANY check-bearing alternate belongs to that
+       family and must pass its check character. Format-only alternates are
+       consulted only when no check-bearing shape matched, so they can never
+       accept a mis-scanned check-bearing ID, whatever the patterns overlap and
+       whatever the declaration order. Twin of validateSingleField (php). */
     for(i = 0; i < ALTS.length; i++){
       A = ALTS[i];
+      if(A.regexOnly) continue;
       if(A.re && !A.re.test(normR)) continue;
-      if(A.regexOnly){
-        return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + " format OK" : "ID format OK") +
-          ". (" + (MIXED ? "IDs in this format carry" : "This project's IDs carry") + " no check " +
-          "character, so typos that keep the format cannot be detected.)" };
-      }
       if(Q.validateIdCheck(v, A.scheme)){
         if(!A.re) return { ok: true, html: "&#10003; ID verified &mdash; the check character matches." };
         return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + ": format" : "Format") +
           " OK <b>and</b> check character verified." };
       }
       shapeFailed.push(A);           /* shape matched (or no shape to match), check did not */
+    }
+    for(i = 0; i < ALTS.length && !shapeFailed.length; i++){
+      A = ALTS[i];
+      if(!A.regexOnly || !A.re.test(normR)) continue;
+      return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + " format OK" : "ID format OK") +
+        ". (" + (MIXED ? "IDs in this format carry" : "This project's IDs carry") + " no check " +
+        "character, so typos that keep the format cannot be detected.)" };
     }
 
     /* ---- pass 2: a shape matched but its check character failed ---- */
@@ -3893,10 +3901,19 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
        alternates accepting one token produce identical output and betterThan
        needs no extra criterion. Feed alternate identity into the DP score and
        that guarantee is gone. */
-    for(var li3 = 0; li3 < LENS.length; li3++)
+    for(var li3 = 0; li3 < LENS.length; li3++){
+      /* Shape ownership: the check-bearing alternates that also produce IDs of
+         this length. A token any of them shapes as its own must pass that
+         check, so a format-only pair here may not accept it (verifiesAs). A
+         null entry is a check-bearing alternate without a pattern, which owns
+         every token of its lengths. Twin of pooledState's owners (php). */
+      var owners = [];
+      for(var oj = 0; oj < ALTS.length; oj++)
+        if(ALTS[oj].check && ALTS[oj].lengths.indexOf(LENS[li3]) >= 0) owners.push(ALTS[oj].re);
       for(var aj = 0; aj < ALTS.length; aj++)
         if(ALTS[aj].lengths.indexOf(LENS[li3]) >= 0)
-          PAIRS.push({ len: LENS[li3], alt: aj, a: ALTS[aj] });
+          PAIRS.push({ len: LENS[li3], alt: aj, a: ALTS[aj], owners: ALTS[aj].regexOnly ? owners : [] });
+    }
     for(var ri = 0; ri < PAIRS.length; ri++)
       if(PAIRS[ri].a.check && PAIRS[ri].a.re) RESCAN.push(PAIRS[ri]);
     if(!PAIRS.length){
@@ -3982,7 +3999,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      (legacy projects, no check character): the shape IS the whole test. */
   function verifiesAs(P, t){
     if(P.a.re && !P.a.re.test(t)) return false;
-    if(P.a.regexOnly) return true;
+    if(P.a.regexOnly){
+      /* a check-bearing family shapes this token as its own: its check
+         decides, never a format-only sibling of the same length */
+      for(var oi = 0; oi < P.owners.length; oi++)
+        if(!P.owners[oi] || P.owners[oi].test(t)) return false;
+      return true;
+    }
     return Q.validateIdCheck(t, P.a.scheme);
   }
   function parse(raw){

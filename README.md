@@ -124,16 +124,19 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    rule-level `pattern`, `idLengths`, `idMinLen` and `idMaxLen` must be left
    unset, because each entry carries its own.
 
+   Check-bearing entries own their shape. A value that matches the pattern of
+   any check-bearing entry must pass that entry's check character; a
+   format-only entry (`"algorithm":"none"`) is tried only when no check-bearing
+   pattern matches. Declaration order does not matter, and a format-only entry
+   may share a length, or even overlap, with a check-bearing one without
+   weakening the check: a mis-scanned check-bearing ID is reported as a
+   check-character error, never accepted on format.
+
    Some combinations are refused when the rule is saved rather than guessed at
    later: lengths where one is the sum of two or more others (one token could
-   then swallow several real members and still verify), a format-only entry
-   sharing a length with a check-bearing one (the format-only entry would
-   accept first, so that check character would never be tested), and entries
-   that disagree about which characters survive cleaning. Each message names
-   the entry and the fix. A single-value rule has no lengths to separate the
-   families, so it is refused instead when a check-bearing pattern cannot be
-   analysed for overlap — lookaround, a backreference, a named group. Plain
-   character classes avoid it.
+   then swallow several real members and still verify), and entries that
+   disagree about which characters survive cleaning. Each message names the
+   entry and the fix.
 
    **Patterns must be portable.** They run as JavaScript in the browser and as
    PCRE on the server, so syntax the two engines read differently is refused
