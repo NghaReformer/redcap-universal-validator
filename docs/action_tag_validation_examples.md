@@ -337,10 +337,11 @@ Several IDs in a Text or Notes field, including a mixture of studies:
 `GHIT` checks format only; the other three also verify ISO 7064 MOD 37,36.
 A matching regex alone does not make their final character valid.
 
-A format-only family may share a length with a check-bearing one. A value whose
-shape matches any check-bearing pattern must pass that check; format-only
-patterns are tried only when none matches. Here `C`-`Z` codes carry a check
-character and legacy `A`/`B` codes do not, both six characters long:
+A format-only family may share a length with a check-bearing one when their
+patterns cannot match the same value. A value whose shape matches any
+check-bearing pattern must pass that check; format-only patterns are tried only
+when none matches. Here `C`-`Z` codes carry a check character and legacy `A`/`B`
+codes do not, both six characters long:
 
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
@@ -362,8 +363,8 @@ removes that hyphen for the check-character calculation, not for the regex or po
 candidate length. Keep lengths inside the alternates; do not also set rule-level
 `idLengths`, `idMinLen`, `idMaxLen`, or `pattern`. An optional rule-level
 `expectedIds` requires that many valid members. Use a Notes field for longer lists.
-Declaration order does not decide overlaps. A check-bearing format always owns the
-values its pattern matches, and each accepted member must pass one complete format. The existing pooled work limits and ambiguity checks apply.
+A format-only pattern that overlaps a check-bearing one is refused when saved.
+Each accepted member must pass one complete format. The existing pooled work limits and ambiguity checks apply.
 
 ### Full `@UVALIDATE` JSON keys
 

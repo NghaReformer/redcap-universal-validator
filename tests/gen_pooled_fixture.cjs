@@ -136,6 +136,12 @@ add('ownership: format-only declared first', { strip: '-', alternates: [
   overlapCfg.alternates[0], overlapCfg.alternates[1]] }, brk(M9) + ' ' + M9);
 add('ownership: format-only declared last', { strip: '-', alternates: [
   overlapCfg.alternates[1], overlapCfg.alternates[0]] }, brk(M9) + ' ' + M9);
+// ownership is per declared length: CHK's pattern also matches 8 characters,
+// but CHK only produces 9, so the 8-character token stays OLD's
+add('ownership: owners only at declared lengths', { strip: '-', alternates: [
+  { label: 'CHK', pattern: '[A-Z][0-9A-Z]{7}[0-9A-Z]?', algorithm: mod37,  lengths: [9] },
+  { label: 'OLD', pattern: '[A-Z][0-9]{7}',             algorithm: 'none', lengths: [8] },
+] }, 'A1234567 ' + M9);
 
 const out = {
   generated_by: 'tests/gen_pooled_fixture.cjs',

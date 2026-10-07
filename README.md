@@ -127,16 +127,24 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    Check-bearing entries own their shape. A value that matches the pattern of
    any check-bearing entry must pass that entry's check character; a
    format-only entry (`"algorithm":"none"`) is tried only when no check-bearing
-   pattern matches. Declaration order does not matter, and a format-only entry
-   may share a length, or even overlap, with a check-bearing one without
-   weakening the check: a mis-scanned check-bearing ID is reported as a
-   check-character error, never accepted on format.
+   pattern matches, whatever the declaration order. A format-only entry may
+   share a length with a check-bearing one as long as their patterns cannot
+   match the same value, as with `C`-`Z` codes that carry a check character
+   beside legacy `A`/`B` codes that do not, all six long.
 
    Some combinations are refused when the rule is saved rather than guessed at
    later: lengths where one is the sum of two or more others (one token could
-   then swallow several real members and still verify), and entries that
-   disagree about which characters survive cleaning. Each message names the
-   entry and the fix.
+   then swallow several real members and still verify), a format-only pattern
+   that accepts a value a check-bearing pattern also accepts, and entries that
+   disagree about which characters survive cleaning. The overlap refusal is
+   needed even with shape ownership: a mis-scan that breaks the check-bearing
+   shape (an `O` for a `0`, a dropped digit) would otherwise land in the
+   overlapping format-only shape and pass on format. In a pooled field the
+   overlap test runs only between entries that share a length, since entries of
+   different lengths never compete for a token. A check-bearing pattern that
+   cannot be analysed for overlap (lookaround, a backreference, a named group)
+   is refused where the test has to run. Each message names the entry and the
+   fix.
 
    **Patterns must be portable.** They run as JavaScript in the browser and as
    PCRE on the server, so syntax the two engines read differently is refused

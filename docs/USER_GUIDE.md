@@ -488,13 +488,11 @@ families by shape alone could not catch that.
 
 **Families with and without a check character.** A value whose shape matches a
 check-bearing family belongs to that family and must pass its check character.
-A format-only family is tried only when no check-bearing pattern matches. So two
-families may share a length, and their patterns may even overlap: a mis-scanned
-check-bearing ID is still reported as a check-character error, never accepted
-on format. Declaration order does not matter.
-
-For example, an HIV viral-load field where `C`–`Z` codes carry a check character
-and older `A`/`B` codes do not, both six characters long:
+A format-only family is tried only when no check-bearing pattern matches, so
+declaration order does not matter. Two families may share a length when their
+patterns cannot match the same value. For example, an HIV viral-load field where
+`C`–`Z` codes carry a check character and older `A`/`B` codes do not, both six
+characters long:
 
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
@@ -503,10 +501,26 @@ and older `A`/`B` codes do not, both six characters long:
 ```
 
 `C1234` followed by a wrong final character is flagged; `A12345` is accepted on
-format.
+format. A format-only family has no check character, so a mis-scan that happens
+to produce a valid legacy code (a `C` read as an `A`) cannot be caught. That is
+the cost of keeping legacy codes, whatever the lengths.
 
-**What it will refuse.** Lengths where one is the sum of two or more others: a
-single token could then swallow several real members and still verify.
+**What it will refuse.** If a format-only pattern accepts a value a
+check-bearing pattern also accepts, the rule is rejected when saved, with a
+message naming the two entries and an example value. Shape ownership already
+makes the check decide inside the check-bearing shape, but a mis-scan that
+breaks that shape (an `O` for a `0`, a dropped digit) would land in the
+overlapping format-only shape and pass on format. In a pooled field only
+entries that share a length are compared, since entries of different lengths
+never compete for a token. The same applies to lengths where one is the sum of
+two or more others: a single token could then swallow several real members and
+still verify.
+
+The overlap test looks for a value both patterns accept. If a check-bearing
+pattern is written in a form that cannot be analysed — lookaround, a
+backreference, a named group — the rule is refused rather than assumed safe,
+because the alternative is a mis-scan recorded as clean. Writing the pattern
+with plain character classes (`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
 
 **Write patterns in portable regex.** They run as JavaScript in the browser and
 as PCRE on the server, so anything the two read differently is refused when the

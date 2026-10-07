@@ -922,6 +922,45 @@
           "alt": 0
         }
       ]
+    },
+    {
+      "label": "ownership: owners only at declared lengths",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "CHK",
+            "pattern": "[A-Z][0-9A-Z]{7}[0-9A-Z]?",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "OLD",
+            "pattern": "[A-Z][0-9]{7}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          }
+        ]
+      },
+      "input": "A1234567 ABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A1234567",
+          "valid": true,
+          "alt": 1
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 0
+        }
+      ]
     }
   ]
 }

@@ -735,7 +735,7 @@ class AnnotationRules
             if (!is_array($al) || !count($al) || array_keys($al) !== range(0, count($al) - 1)) {
                 $errors[] = '"alternates" must be a non-empty JSON list [ ... ] of formats, not an '
                     . 'object { ... } and not empty — the browser and the server order object keys '
-                    . 'differently, and alternates are tried in the order you write them.';
+                    . 'differently, and the order you write them decides which format a value is credited to.';
             } else {
                 $hasAlts = true;
             }
@@ -777,6 +777,8 @@ class AnnotationRules
                 . (isset($frag['keepChars']) ? (string) $frag['keepChars'] : '');
             $union = [];        // every length any alternate can produce
             $keepSets = [];
+            $shapes = [];
+            $fwhy = '';
             foreach ($alts as $i => $a) {
                 if (!is_array($a)) {
                     $errors[] = 'alternate ' . ($i + 1) . ' must be a JSON object { ... } describing one '
@@ -864,6 +866,8 @@ class AnnotationRules
                     }
                     $union = array_merge($union, $ls);
                 }
+                $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none'),
+                               'lengths' => ($type === 'pooled') ? $ls : null];
                 // KEEP is computed once over the WHOLE field before anything is
                 // split, so it is the union across alternates. An algorithm that
                 // can emit "*" therefore makes "*" survive for a sibling that
@@ -877,14 +881,63 @@ class AnnotationRules
                 // is the obvious way to hit that.
                 $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'])];
             }
-            // No overlap guard between format-only and check-bearing
-            // alternates: both runtimes apply SHAPE OWNERSHIP instead. A value
-            // whose shape matches any check-bearing alternate must pass that
-            // check, and a format-only alternate is consulted only when none
-            // does (CheckCharacter::validateSingleField, pooledVerifiesAs and
-            // their js twins). Overlapping shapes therefore cannot silence a
-            // check character, so there is nothing to refuse here - and the
-            // witness probe this replaced could only ever approximate that.
+            // Both runtimes apply SHAPE OWNERSHIP: a value whose shape matches a
+            // check-bearing alternate must pass that check, and a format-only
+            // alternate is consulted only when no check-bearing shape matched
+            // (CheckCharacter::validateSingleField, pooledVerifiesAs and their js
+            // twins). That stops a format-only alternate from excusing a bad
+            // check character inside the check-bearing shape. It cannot stop a
+            // mis-scan that BREAKS the shape - an O for a 0, a dropped digit -
+            // from landing in an overlapping format-only shape and passing on
+            // format alone. So the two shapes must still be shown disjoint here.
+            //
+            // Pattern subsumption is undecidable in general; this asks the
+            // decidable question instead - is there a CONCRETE string both
+            // accept? When no witness can be produced the answer is UNKNOWN, and
+            // unknown is refused: \D[0-9A-Z]{8} beside a format-only [0-9A-Z]{9}
+            // produced no witness under an older builder and then recorded every
+            // mis-scanned ID as clean (H-1).
+            //
+            // A pooled parser only tries a format at the lengths it declares, so
+            // two pooled alternates with no length in common can never compete
+            // for a token and need no probe. Sharing a length is fine when the
+            // shapes are disjoint (C-Z check-bearing codes beside legacy A/B
+            // codes, all six long), which the blunt shared-length refusal this
+            // replaces could not tell apart from a real overlap.
+            if (!$errors && count($shapes) > 1) {
+                foreach ($shapes as $fi => $F) {
+                    if (!$F['formatOnly']) continue;
+                    foreach ($shapes as $ki => $K) {
+                        if ($K['formatOnly']) continue;
+                        if ($F['lengths'] !== null && !array_intersect($F['lengths'], $K['lengths'])) continue;
+                        $ws = CheckCharacter::patternWitnesses($K['pattern']);
+                        if (!$ws) {
+                            $errors[] = $K['name'] . '\'s pattern is too complex to prove it does not '
+                                . 'overlap ' . $F['name'] . ', which has no check character. If the two '
+                                . 'shapes do overlap, a mis-scanned ' . $K['name'] . ' ID that no longer fits '
+                                . $K['name'] . '\'s pattern could pass as a clean ' . $F['name'] . ' ID, '
+                                . 'its check character never tested. Write ' . $K['name'] . '\'s pattern with '
+                                . 'explicit character classes (no lookaround, backreferences or '
+                                . 'assertions), or narrow ' . $F['name'] . '\'s so the two cannot overlap.';
+                            break 2;
+                        }
+                        $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
+                        if ($fre === null) continue;
+                        $w = null;
+                        foreach ($ws as $cand) {
+                            if (CheckCharacter::patTest($fre, $cand)) { $w = $cand; break; }
+                        }
+                        if ($w === null) continue;                  // no probe landed in both
+                        $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
+                            . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). A mis-scanned '
+                            . $K['name'] . ' ID that no longer fits ' . $K['name'] . '\'s pattern - an O for '
+                            . 'a 0, a dropped character - could then pass as a clean ' . $F['name'] . ' ID, '
+                            . 'its check character never tested. Narrow ' . $F['name'] . '\'s pattern so '
+                            . 'the two cannot overlap.';
+                        break 2;
+                    }
+                }
+            }
             if (!$errors && count($keepSets) > 1) {
                 $idxs  = array_keys($keepSets);
                 $first = $keepSets[$idxs[0]];
@@ -1056,10 +1109,11 @@ class AnnotationRules
         if (array_keys($alts) !== range(0, count($alts) - 1)) {
             // A JSON object would be ordered differently by the two runtimes
             // (PHP keeps insertion order, JavaScript reorders integer-like
-            // keys), and alternates are tried in DECLARATION order.
+            // keys), and declaration order decides which alternate a value is
+            // credited to.
             return ['error' => '"alternates" must be a JSON list [ ... ], not an object { ... } - '
-                . 'the browser and the server order object keys differently, and alternates are '
-                . 'tried in the order you write them.'];
+                . 'the browser and the server order object keys differently, and the order you '
+                . 'write them decides which format a value is credited to.'];
         }
         $clean = [];
         foreach ($alts as $i => $a) {

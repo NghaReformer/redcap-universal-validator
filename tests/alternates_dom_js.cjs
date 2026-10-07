@@ -405,8 +405,10 @@ for (const extra of [{ idLengths: [8] }, { idMinLen: 8 }, { idMaxLen: 14 }, { id
 // A value whose shape matches a check-bearing alternate must pass that check;
 // a format-only alternate is consulted only when no check-bearing shape
 // matched. The driving case is the HIV viral-load field (C-Z codes carry a
-// check character, legacy A/B codes do not, both 6 long); the overlapping
-// LEGACY/MINTED pair is the 2026-08-27 round-3 reproduction.
+// check character, legacy A/B codes do not, both 6 long). The overlapping
+// LEGACY/MINTED pair is the 2026-08-27 round-3 reproduction: the server
+// refuses it at save (a shape-BREAKING mis-scan would pass on format), so here
+// it only exercises ownership as the runtime backstop.
 {
   const probe = boot([], { singleFields: [], pooledFields: [], rules: [] });
   const brk = (id) => id.slice(0, -1) + (id.slice(-1) === 'A' ? 'B' : 'A');

@@ -59,14 +59,16 @@ it. Each entry needs its own <code>pattern</code>; a pooled rule also needs
 entries per rule. When <code>alternates</code> is used the rule-level
 <code>pattern</code>, <code>idLengths</code>, <code>idMinLen</code> and
 <code>idMaxLen</code> must be left unset.</p>
-<p>Combinations that could report a mis-scan as a clean ID are refused when the
-rule is saved, each with a message naming the entry and the fix: lengths where
-one is the sum of two or more others, a format-only entry sharing a length with
-a check-bearing one, and entries that disagree about which characters survive
-cleaning. A single-value rule has no lengths to separate the families, so it is
-refused instead when a check-bearing pattern cannot be analysed for overlap
-&mdash; lookaround, a backreference, a named group. Plain character classes
-avoid it.</p>
+<p>A value that matches the pattern of a check-bearing entry must pass that
+entry's check character; format-only entries are tried only when no
+check-bearing pattern matches. Combinations that could report a mis-scan as a
+clean ID are refused when the rule is saved, each with a message naming the
+entry and the fix: lengths where one is the sum of two or more others, a
+format-only pattern that accepts a value a check-bearing pattern also accepts
+(in a pooled rule, between entries sharing a length), and entries that disagree
+about which characters survive cleaning. A check-bearing pattern that cannot be
+analysed for overlap &mdash; lookaround, a backreference, a named group &mdash;
+is refused where that test runs. Plain character classes avoid it.</p>
 <p>Patterns run as JavaScript in the browser and as PCRE on the server, so
 syntax the two read differently is refused when the rule is saved:
 <code>\pL</code> and <code>\p{L}</code>, <code>\K \G \h \v \R \N \X \C
