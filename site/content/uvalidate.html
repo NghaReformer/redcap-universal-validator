@@ -50,9 +50,9 @@ it. Each entry needs its own <code>pattern</code>; a pooled rule also needs
 <code>lengths</code> on every entry.</p>
 <pre><code>@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
   {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}</code></pre>
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}</code></pre>
 <p>Entry keys: <code>pattern</code> (required), <code>algorithm</code>,
 <code>source</code>, <code>strip</code>, <code>lengths</code>,
 <code>label</code>; anything omitted falls back to the rule-level value. Up to 8

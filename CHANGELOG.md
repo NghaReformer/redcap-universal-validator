@@ -3,6 +3,15 @@
 Release notes for Universal Field Validator, a REDCap external module.
 Git tags identify release snapshots. Release candidates are intended for development-project verification before production adoption.
 
+## Unreleased
+
+### Documentation
+
+- The `alternates` section of `docs/action_tag_validation_examples.md` is rewritten as a set of tested recipes: several studies in one field, the same length with and without a check character, legacy and checked IDs of one study, formats with different separators, more formats than the 8-entry limit, per-entry `source` and `strip`, `expectedIds`, and choosing the format list with `when`. It also lists every rule refused when saved, with its message, and the rules that save but may not do what the designer meant.
+- Each recipe carries a block of tested values (`input => result`). CI runs every line through the server verdict (`tests/docs_examples_php.php`) and the browser engine (`tests/docs_examples_js.cjs`), and each refused example must be refused for the reason printed beside it.
+- Phase 2 example patterns use site digits `[1-9]` (`SK[1-9]`, `DT[1-9]`, `ST[1-9]`), matching the studies' current ID registry.
+- The save check compares the characters kept by each entry of a one-ID `alternates` rule as well as a pooled one, so a one-ID rule mixing `-` and `/` separators needs `keepChars`. This is now documented.
+
 ## 2.1.0-rc.2 — 2026-10-07
 
 **Same-length families with and without a check character.** A pooled rule with `alternates` can now mix a format-only family and a check-bearing family of the same length when their patterns cannot match the same value. Real projects need this. The HIV viral-load field takes `C`–`Z` codes that carry a check character and legacy `A`/`B` codes that do not, all six characters long. Until now that rule was refused when saved.

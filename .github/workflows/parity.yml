@@ -57,6 +57,8 @@ jobs:
         run: node tests/choices_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
         run: node tests/alternates_dom_js.cjs
+      - name: JS documented outcomes (expect blocks in the example docs)
+        run: node tests/docs_examples_js.cjs
       - name: JS config-error notice
         run: node tests/config_notice_js.cjs
       - name: JS dispatcher config-error routing

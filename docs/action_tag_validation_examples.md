@@ -211,6 +211,12 @@ Pattern rules worth knowing:
   quantifiers (`.*.*`, `[0-9]*[0-9]*`). The fix: put a required, non-overlapping piece
   between quantifiers, or use bounded `{n}` counts. `.*x.*`, `[A-Z]+[0-9]+`, `FC[0-9]{4}`
   all pass.
+- **`{,n}` and quantifiers with spaces are rejected** (`FC[0-9]{,4}`, `[0-9]{2, 3}`).
+  The browser reads them as literal text and PHP 8.4 reads them as counts, so the two
+  would disagree. Write `{0,4}` or `{2,3}`, or escape the brace (`\{`) when you mean
+  the text.
+- **Escaped separators count.** In a pooled rule, a character the pattern spells out
+  is kept while the field is cleaned, whether it is written plain or escaped (`\/`, `\:`).
 
 ### Level 5 — pattern *and* check character together
 
@@ -249,8 +255,7 @@ slash, space, underscore, pipe and backslash — so `TBABC-00239` checks as `TBA
 without configuration. Unicode dashes in *values* are unified automatically; `strip`
 itself must be printable ASCII.
 
-`keepChars` (pooled rules only) lists extra characters to keep while a pooled field is
-cleaned. Before splitting, a pooled value keeps only `A-Z`, `0-9`, the characters the
+`keepChars` lists extra characters to keep while a pooled field is cleaned. Before splitting, a pooled value keeps only `A-Z`, `0-9`, the characters the
 pattern itself spells out (such as `-`), and the check algorithm's own special
 characters. Everything else, including spaces, commas and new lines, is removed.
 Name a character in `keepChars` when it is part of an ID and nothing else protects it:
@@ -267,7 +272,15 @@ Name a character in `keepChars` when it is part of an ID and nothing else protec
 ]}
 ```
 
-`keepChars` takes up to 64 printable ASCII characters.
+```text expect
+OL00029* NW00042U     =>  valid: OL00029*, NW00042U
+OL12345M              =>  valid: OL12345M
+OL12345*              =>  refused: check-character
+```
+
+`keepChars` takes up to 64 printable ASCII characters. The save check also compares
+kept characters in a one-ID `alternates` rule, so such a rule may need `keepChars` too,
+even though a one-ID field is never split (see [Recipe 5](#recipe-5-formats-with-different-separators)).
 
 ### Level 8 — pooled fields (many IDs in one box)
 
@@ -290,6 +303,8 @@ A pooled rule reads several IDs from one field.
 two real IDs, and the parser could not tell the difference. The same applies to exact
 lengths: `[4,5,9]` is rejected because 9 = 4 + 5. Narrow the range, set exact lengths,
 or split into separate fields. This is checked when you save, not discovered on a form.
+With `alternates`, the check runs over the lengths of every entry together; see
+[When IDs cannot share one pooled field](#when-ids-cannot-share-one-pooled-field).
 
 ### Level 9 — conditional, labeled, with a fix hint
 
@@ -306,65 +321,538 @@ or split into separate fields. This is checked when you save, not discovered on 
 
 ### Several formats on one field (`alternates`)
 
-Use one `alternates` list when the **entered ID itself** determines its format.
-Each entry has its own regex and check-character algorithm; a value is valid when
-one complete alternate passes. This differs from repeated tags with `when`, where
-another answer chooses the rule. Do not create several unconditional `@UVALIDATE`
-tags to express alternatives: those tags conflict.
+Use one `alternates` list when the entered ID itself shows which format it is.
+Each entry has its own pattern and its own check-character algorithm, and a value is
+valid when one complete entry accepts it. When another answer decides the format
+(the country, the study arm), write one tag per answer with `when` instead; see
+[Recipe 10](#recipe-10-another-answer-picks-the-format-list). Several unconditional
+`@UVALIDATE` tags on one field conflict, so never use them as alternatives.
+
+#### How a value is matched to a format
+
+1. **Check-bearing entries come first.** If the value fits the pattern of any entry
+   that has a check character, it must pass that check character. A wrong check
+   character is reported as a check-character error, and the value is not tried
+   against the format-only entries.
+2. **Format-only entries are tried only when no check-bearing pattern fits.** When
+   several format-only patterns fit, the first one listed is credited.
+3. **Order cannot weaken rule 1.** Listing a format-only entry first does not let it
+   take a value that a check-bearing pattern fits.
+4. **A pooled field applies the same rules to each member**, separately at each
+   declared length.
+
+The rule is checked when it is saved. A format-only pattern that can match a value a
+check-bearing pattern also matches is refused (in a pooled rule, only at a length both
+entries declare). Rule 1 catches a mis-scan that keeps the check-bearing shape. A
+mis-scan that breaks the shape, such as an `O` read for a `0` or a dropped character,
+would otherwise fall into the overlapping format-only pattern and pass on format
+alone. [Rules refused when saved](#rules-refused-when-saved) lists every refusal with
+its message.
+
+#### Reading the tested values
+
+Each recipe is followed by a block of tested values. The left side of `=>` is what is
+typed or scanned, with `\n` marking a new line. The right side is the verdict:
+
+| Result                       | Meaning                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `valid`                      | A one-ID field accepted the value.                                                        |
+| `valid: ID, ID, ...`         | A pooled field accepted the value. These are the members it read, in order.               |
+| `refused: format`            | One-ID field: no entry's pattern fits.                                                    |
+| `refused: check-character`   | The value fits a check-bearing pattern but its check character is wrong (pooled: at least one member). |
+| `refused: junk`              | Pooled: characters that belong to no ID were left over.                                   |
+| `refused: duplicate`         | Pooled: the same ID appears twice.                                                        |
+| `refused: no-id`             | Pooled: no ID could be read at all.                                                       |
+| `refused: count`             | Pooled: the number of IDs differs from `expectedIds`.                                     |
+
+CI runs every tested value through the server verdict and through the browser engine,
+and fails when either result differs from the one printed here.
+
+#### Recipe 1: one ID per field, several studies
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736"},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736"}
+]}
+```
+
+```text expect
+FC1-0589      =>  valid
+SK2-0019I     =>  valid
+DT1-00151N    =>  valid
+ST3-00042S    =>  valid
+dt1-00151n    =>  valid
+SK2-0019A     =>  refused: check-character
+DT1-00151     =>  refused: format
+FC1-05899     =>  refused: format
+XX1-0001      =>  refused: format
+```
+
+`GHIT` checks format only. The other three also verify ISO 7064 Mod 37,36, so a value
+that fits their pattern with the wrong last character is refused. `strip:"-"` removes
+the hyphen before the check character is computed; the pattern still sees it. A
+one-ID rule needs no `lengths`.
+
+#### Recipe 2: the same studies, many IDs in one field
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+]}
+```
+
+```text expect
+FC1-0589 SK2-0019I DT1-00151N ST3-00042S        =>  valid: FC1-0589, SK2-0019I, DT1-00151N, ST3-00042S
+FC1-0589SK2-0019IDT1-00151N                     =>  valid: FC1-0589, SK2-0019I, DT1-00151N
+FC1-0589, SK2-0019I; DT1-00151N\nST3-00042S     =>  valid: FC1-0589, SK2-0019I, DT1-00151N, ST3-00042S
+FC1-0589 SK2-0019A                              =>  refused: check-character
+FC1-0589 SK2-0019I FC1-0589                     =>  refused: duplicate
+FC1-0589 SK2-001 DT1-00151N                     =>  refused: junk
+FC1-0589-SK2-0019I                              =>  refused: junk
+hello                                           =>  refused: no-id, junk
+```
+
+Every pooled entry needs `lengths`: the length of its IDs including the characters
+its pattern spells out, such as the hyphen. The lengths here are 8, 9, 10 and 10.
+IDs may be separated by spaces, commas, semicolons or new lines, or scanned back to
+back. A character that any pattern contains (the `-` here) is kept while the field is
+cleaned, so typing it between IDs leaves junk.
+
+#### Recipe 3: same length, with and without a check character
+
+A viral-load field takes three kinds of ID: `C`-`Z` codes that carry a check character,
+legacy `A`/`B` codes that do not, and retired `VLB-` barcodes. The first two are both
+six characters long. They can share that length because no value fits both patterns.
 
 One ID per field:
 
 ```text
 @UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
-  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
-  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736"},
-  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736"}
+  {"label":"Viral load ID (check character)","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"Legacy viral load ID (A/B)","pattern":"[AB][0-9]{5}","algorithm":"none"},
+  {"label":"Retired VLB barcode","pattern":"VLB-[0-9]{5}","algorithm":"none"}
 ]}
 ```
 
-Several IDs in a Text or Notes field, including a mixture of studies:
+```text expect
+C12348        =>  valid
+Z0007D        =>  valid
+A12345        =>  valid
+B00001        =>  valid
+VLB-00012     =>  valid
+VLB–00012     =>  valid
+vlb-00012     =>  valid
+C1234A        =>  refused: check-character
+C12345        =>  refused: check-character
+O12345        =>  refused: check-character
+VLB00012      =>  refused: format
+AB1234        =>  refused: format
+```
+
+`O12345` is a legacy ID mis-scanned with the letter `O` for the digit `0`. It fits
+the `C`-`Z` pattern, so it must pass that check character, and it does not. The
+en dash in `VLB–00012` is read as a hyphen.
+
+Several IDs in one field:
 
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
-  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+  {"label":"Viral load ID (check character)","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},
+  {"label":"Legacy viral load ID (A/B)","pattern":"[AB][0-9]{5}","algorithm":"none","lengths":[6]},
+  {"label":"Retired VLB barcode","pattern":"VLB-[0-9]{5}","algorithm":"none","lengths":[9]}
 ]}
 ```
 
-`GHIT` checks format only; the other three also verify ISO 7064 MOD 37,36.
-A matching regex alone does not make their final character valid.
+```text expect
+C12348 A12345 VLB-00012      =>  valid: C12348, A12345, VLB-00012
+C12348Z0007D                 =>  valid: C12348, Z0007D
+A12345B00001                 =>  valid: A12345, B00001
+VLB-00012VLB-00013           =>  valid: VLB-00012, VLB-00013
+VLB–00012,C12348             =>  valid: VLB-00012, C12348
+C12348;C1234A                =>  refused: check-character
+C12348 O12345                =>  refused: check-character
+A12345 A12345                =>  refused: duplicate
+VLB00012 A12345              =>  refused: junk
+C12348-A12345                =>  refused: junk
+```
 
-A format-only family may share a length with a check-bearing one when their
-patterns cannot match the same value. A value whose shape matches any
-check-bearing pattern must pass that check; format-only patterns are tried only
-when none matches. Here `C`-`Z` codes carry a check character and legacy `A`/`B`
-codes do not, both six characters long:
+`VLB00012` lost its hyphen, so it fits no pattern and is reported as junk. To accept
+VLB codes without the hyphen, write that entry as `"pattern":"VLB-?[0-9]{5}"` with
+`"lengths":[8,9]`.
+
+#### Recipe 4: one study, legacy IDs and checked IDs
+
+GHIT Cameroon IDs were first printed without a check character (`FC1-0589`); newer
+labels add one (`FC1-0589C`). Keep both readable:
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT (check character)","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}
+]}
+```
+
+```text expect
+FC1-0589C     =>  valid
+FC3-0179J     =>  valid
+FC9-1200      =>  valid
+FC1-0589A     =>  refused: check-character
+```
 
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
-  {"label":"Check character verified code","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},
-  {"label":"Non Check character verified code","pattern":"[AB][0-9]{5}","algorithm":"none","lengths":[6]}
+  {"label":"GHIT (check character)","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}
 ]}
 ```
 
-| Alternate key         | Meaning                                                                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `label`             | Human-readable format name in validation feedback.                                                                                                                    |
-| `pattern`           | Required whole-ID regex, checked before separator stripping.                                                                                                          |
-| `algorithm`         | This format's algorithm; inherits the rule's algorithm when omitted. Use`none` explicitly for format-only IDs.                                                      |
-| `source`, `strip` | Optional per-format overrides of the rule's normalization settings.                                                                                                   |
-| `lengths`           | Required for each pooled alternate: candidate lengths including characters retained by its pattern, such as the hyphen in these examples. Omit for a single-ID field. |
+```text expect
+FC1-0589C FC3-0179J     =>  valid: FC1-0589C, FC3-0179J
+FC9-1200 FC1-0589C      =>  valid: FC9-1200, FC1-0589C
+FC1-0589A               =>  refused: junk
+FC1-0589                =>  valid: FC1-0589
+```
 
-The lengths above are **8, 9, 10 and 10**, including the hyphen. `strip:"-"`
-removes that hyphen for the check-character calculation, not for the regex or pooled
-candidate length. Keep lengths inside the alternates; do not also set rule-level
-`idLengths`, `idMinLen`, `idMaxLen`, or `pattern`. An optional rule-level
-`expectedIds` requires that many valid members. Use a Notes field for longer lists.
-A format-only pattern that overlaps a check-bearing one (in a pooled rule, at a length both declare) is refused when saved.
-Each accepted member must pass one complete format. The existing pooled work limits and ambiguity checks apply.
+The cost of keeping legacy IDs valid: a checked ID whose last character was dropped
+(`FC1-0589`) is itself a valid legacy ID, so it passes. In a pooled field, a checked
+ID with a wrong last character reads as the legacy ID plus one junk character, so the
+field is still refused, as junk rather than as a check-character error. Remove the
+legacy entry once every label in use carries a check character.
+
+#### Recipe 5: formats with different separators
+
+GHIT Nigeria IDs use a slash (`ZRC2/0123V`) where Cameroon IDs use a hyphen:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT Cameroon (legacy)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"GHIT Nigeria (legacy)","pattern":"ZRC[1-3]/[0-9]{4}","algorithm":"none","lengths":[9]}
+]}
+```
+
+```text expect
+FC1-0589C ZRC2/0123V        =>  valid: FC1-0589C, ZRC2/0123V
+ZRC1/0042U ZRC3/0001        =>  valid: ZRC1/0042U, ZRC3/0001
+FC9-1200,ZRC2/0123V         =>  valid: FC9-1200, ZRC2/0123V
+ZRC2/0123A                  =>  refused: junk
+FC1-0589C/ZRC2/0123V        =>  refused: junk
+ZRC1-0042U                  =>  refused: no-id, junk
+```
+
+Two settings make this work:
+
+- `strip:"-/"` removes both separators before the check character is computed. The
+  Nigeria check character was minted over `ZRC20123`, without the slash.
+- `keepChars:"/"` keeps the slash while the field is cleaned. Without it the rule is
+  refused, because cleaning runs once over the whole field and the Cameroon entries
+  would not otherwise keep `/`.
+
+A kept character cannot separate IDs: `/` between two IDs is junk.
+
+The one-ID version needs the same `keepChars`. A one-ID field is never split, but the
+save check compares the characters each entry keeps in every `alternates` rule:
+
+```text
+@UVALIDATE={"strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"}
+]}
+```
+
+```text expect
+FC1-0589C      =>  valid
+ZRC2/0123V     =>  valid
+ZRC2/0123A     =>  refused: check-character
+ZRC2-0123V     =>  refused: format
+```
+
+#### Recipe 6: a check alphabet with an extra character
+
+ISO 7064 Mod 37,2 can end an ID in `*`. When it shares a pooled field with an
+algorithm that cannot, declare `*` in `keepChars`; see the example under
+[Level 7](#level-7--separators-strip-keepchars).
+
+#### Recipe 7: more formats than the 8-entry limit
+
+A rule holds at most 8 entries. Several families with the same algorithm can share one
+entry through alternation (`(?:A|B)`). This field holds lab sample IDs from Wave11
+testing, RapidTB, Start4All, the three Phase 2 studies and GHIT Cameroon and Nigeria:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"Wave11 testing","pattern":"[1-8][A-Z]{3}-[0-9]{5}","algorithm":"none","lengths":[10]},
+  {"label":"RapidTB","pattern":"PP[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"Start4All","pattern":"SC[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT (check character)","pattern":"(?:FC[1-9]-[0-9]{4}|ZRC[1-3]/[0-9]{4})[0-9A-Z]","algorithm":"3736","lengths":[9,10]},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}|ZRC[1-3]/[0-9]{4}","algorithm":"none","lengths":[8,9]}
+]}
+```
+
+```text expect
+1KUM-00123 SC1-0001 PP6-1234 DT1-00151N ST3-00042S SK2-0019I FC1-0589C ZRC2/0123V FC3-0179 ZRC1/0042  =>  valid: 1KUM-00123, SC1-0001, PP6-1234, DT1-00151N, ST3-00042S, SK2-0019I, FC1-0589C, ZRC2/0123V, FC3-0179, ZRC1/0042
+1KUM-00123DT1-00151NFC1-0589CZRC1/0042PP2-0002SK2-0019I    =>  valid: 1KUM-00123, DT1-00151N, FC1-0589C, ZRC1/0042, PP2-0002, SK2-0019I
+1KUM-00123, DT1-00151N; ST3-00042S\nSK2-0019I  SC3-0042    =>  valid: 1KUM-00123, DT1-00151N, ST3-00042S, SK2-0019I, SC3-0042
+pp1-0001 1kum-00123 dt1-00151n                             =>  valid: PP1-0001, 1KUM-00123, DT1-00151N
+1KUM-00123 DT1-00151A SK2-0019A                            =>  refused: check-character
+1KUM-00123X                                                =>  refused: junk
+PP7-0001 SC0-0001                                          =>  refused: no-id, junk
+1KUM-00123 HSK1-0019                                       =>  refused: junk
+1KUM-00123 1KUM-00123                                      =>  refused: duplicate
+```
+
+Things to know about this rule:
+
+- An entry's `lengths` lists every length its pattern can produce. The GHIT entries
+  declare two each, one per country.
+- A merged entry has one label, so the field reports `GHIT (check character)` without
+  naming the country.
+- Wave11 testing IDs and DARE-TB/SCREEN-TB IDs are all 10 characters long. They share
+  that length safely because a Wave11 ID starts with a digit.
+- Healthcare-worker IDs (`HSK1-0019`) and pool IDs (`PXDT1-00011`) are refused as
+  junk. They need their own field, or the free entries of a smaller rule.
+- `1KUM-00123X` is a Wave11 screening ID. This field is for testing IDs, so the
+  extra `X` is junk.
+
+#### Recipe 8: per-format `source` and `strip`
+
+An entry's `source` and `strip` replace the rule-level value for that entry only. Here
+a lab number's Mod 11,10 check digit covers only its digits, while a TB register
+number's Mod 37,36 check covers the whole ID:
+
+```text
+@UVALIDATE={"blockSave":"hard","alternates":[
+  {"label":"Lab number","pattern":"LB-[0-9]{7}","algorithm":"mod11_10","source":"digits_only"},
+  {"label":"TB register","pattern":"TB[A-Z]{3}-[0-9]{5}[0-9A-Z]","algorithm":"3736","strip":"-"}
+]}
+```
+
+```text expect
+LB-1234568      =>  valid
+LB-1234567      =>  refused: check-character
+TBABC-002397    =>  valid
+TBABC-00239K    =>  refused: check-character
+LB-123456       =>  refused: format
+```
+
+#### Recipe 9: a fixed number of IDs (`expectedIds`)
+
+A pooled sample of exactly three Phase 2 participants:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","expectedIds":3,"blockSave":"hard","alternates":[
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+]}
+```
+
+```text expect
+DT1-00151N DT7-00320B ST3-00042S              =>  valid: DT1-00151N, DT7-00320B, ST3-00042S
+DT1-00151N ST3-00042S                         =>  refused: count
+DT1-00151N DT7-00320B ST3-00042S ST9-10077Y   =>  refused: count
+DT1-00151N DT7-00320B ST3-00042A              =>  refused: check-character
+```
+
+#### Recipe 10: another answer picks the format list
+
+When the site's country, not the ID, decides which formats are allowed, write one tag
+per answer. Each tag can carry its own `alternates`:
+
+```text
+@UVALIDATE={"when":"[country]='1'","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Cameroon (legacy)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}
+]}
+@UVALIDATE={"when":"[country]='2'","strip":"-/","blockSave":"hard","alternates":[
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Nigeria (legacy)","pattern":"ZRC[1-3]/[0-9]{4}","algorithm":"none"}
+]}
+```
+
+A Nigerian ID entered for a Cameroon site is then refused, which one combined rule
+could not do. See [Branching](#branching--several-tags-of-the-same-kind).
+
+#### When IDs cannot share one pooled field
+
+A pooled field splits a run of characters by length. If one declared length equals the
+sum of two or more others, two short IDs scanned back to back could read as one long
+ID, so the rule is refused. GHIT Vietnam IDs are 10 to 21 characters long
+(`HN-PED-123Y` is 11, `GHIT-HCM-OPC-BTH-045W` is 21), and their own lengths already
+collide: 20 = 10 + 10. They can only be validated one ID per field:
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT Vietnam (check character)","pattern":"(?:GHIT-CT-ACF-BT-[0-9]{3}|GHIT-HCM-OPC-(?:BTH|BD|BC|BT|CLA|CL|CK|THO|TH|TD|TP|AL|GV|HH|LX|MK|NL|PL|XC)-[0-9]{3}|HN-(?:HLH|NLH)-[0-9]{3}-[AB]|HN-PED-[0-9]{3}|HP-HPLH-[0-9]{3})[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Vietnam (legacy)","pattern":"GHIT-CT-ACF-BT-[0-9]{3}|GHIT-HCM-OPC-(?:BTH|BD|BC|BT|CLA|CL|CK|THO|TH|TD|TP|AL|GV|HH|LX|MK|NL|PL|XC)-[0-9]{3}|HN-(?:HLH|NLH)-[0-9]{3}-[AB]|HN-PED-[0-9]{3}|HP-HPLH-[0-9]{3}","algorithm":"none"}
+]}
+```
+
+```text expect
+HN-PED-123Y               =>  valid
+HN-HLH-007-AJ             =>  valid
+HP-HPLH-045G              =>  valid
+GHIT-HCM-OPC-BTH-045W     =>  valid
+GHIT-CT-ACF-BT-210X       =>  valid
+HN-PED-123                =>  valid
+HN-PED-123A               =>  refused: check-character
+GHIT-HCM-OPC-ZZ-045       =>  refused: format
+```
+
+#### Rules refused when saved
+
+Each of these shows a configuration error under the field and validates nothing until
+it is fixed. The `# refused:` line quotes the start of the message; CI checks that
+each rule is refused for that reason.
+
+```text invalid
+# A format-only pattern that can match a check-bearing ID. Narrow OLD to [AB][0-9]{5}.
+# refused: its pattern also accepts values meant for NEW
+@UVALIDATE={"alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"[A-Z][0-9]{5}","algorithm":"none"}]}
+
+# The same overlap in a pooled rule, at the length both entries declare.
+# refused: its pattern also accepts values meant for NEW
+@UVALIDATE={"type":"pooled","alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},{"label":"OLD","pattern":"[A-Z][0-9]{5}","algorithm":"none","lengths":[6]}]}
+
+# A backreference or lookaround the overlap test cannot settle. Write explicit classes.
+# refused: too complex to prove
+@UVALIDATE={"alternates":[{"label":"NEW","pattern":"(?=C)[A-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"(?!C)[A-Z][0-9]{5}","algorithm":"none"}]}
+
+# Pooled lengths where one is the sum of others (18 = 8 + 10). Split into separate fields.
+# refused: could swallow
+@UVALIDATE={"type":"pooled","alternates":[{"label":"RapidTB","pattern":"PP[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},{"label":"Vietnam PED","pattern":"HN-PED-[0-9]{3}","algorithm":"none","lengths":[10]},{"label":"Vietnam ACF","pattern":"GHIT-CT-ACF-BT-[0-9]{3}","algorithm":"none","lengths":[18]}]}
+
+# Nine entries. Merge families that share an algorithm (Recipe 7).
+# refused: at most 8 are supported
+@UVALIDATE={"alternates":[{"pattern":"A1[0-9]{4}","algorithm":"none"},{"pattern":"A2[0-9]{4}","algorithm":"none"},{"pattern":"A3[0-9]{4}","algorithm":"none"},{"pattern":"A4[0-9]{4}","algorithm":"none"},{"pattern":"A5[0-9]{4}","algorithm":"none"},{"pattern":"A6[0-9]{4}","algorithm":"none"},{"pattern":"A7[0-9]{4}","algorithm":"none"},{"pattern":"A8[0-9]{4}","algorithm":"none"},{"pattern":"A9[0-9]{4}","algorithm":"none"}]}
+
+# Pooled entries that keep different characters. Add "keepChars":"/" (Recipe 5).
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"type":"pooled","strip":"-/","alternates":[{"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},{"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+
+# One-ID rules are compared the same way. Add "keepChars":"/".
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"strip":"-/","alternates":[{"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"}]}
+
+# An escaped separator is kept like a plain one, so the same rule applies.
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"type":"pooled","alternates":[{"label":"SK","pattern":"SK[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[7]},{"label":"LG","pattern":"LG\\/[0-9]{5}","algorithm":"none","lengths":[8]}]}
+
+# {,n} and quantifiers with spaces. PHP 8.4 and the browser read them differently. Write {0,4} or {2,3}.
+# refused: quantifier with spaces
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{,4}"}
+# refused: quantifier with spaces
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{2, 3}","algorithm":"none"}]}
+
+# A pooled entry without "lengths".
+# refused: needs "lengths"
+@UVALIDATE={"type":"pooled","alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}]}
+
+# Rule-level lengths or pattern beside alternates. Put them inside each entry.
+# refused: must not also set rule-level "idLengths"
+@UVALIDATE={"type":"pooled","idLengths":[8],"alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}]}
+# refused: must not also set a rule-level "pattern"
+@UVALIDATE={"pattern":"FC[0-9]{4}","alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}]}
+
+# An empty list, an entry without a pattern, an unknown entry key, an unknown algorithm.
+# refused: non-empty list
+@UVALIDATE={"alternates":[]}
+# refused: needs a non-empty "pattern"
+@UVALIDATE={"alternates":[{"label":"X","algorithm":"3736"}]}
+# refused: unknown option(s): prefix
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{4}","algorithm":"none","prefix":"FC"}]}
+# refused: unknown algorithm "mod99"
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{4}","algorithm":"mod99"}]}
+```
+
+#### Rules that save but may not do what you meant
+
+The save check cannot know your intent. These rules are accepted:
+
+- **A pooled `lengths` value the pattern cannot produce.** `FC[1-9]-[0-9]{4}` is 8
+  characters long, so `"lengths":[7]` never matches and every ID reads as junk:
+
+  ```text
+  @UVALIDATE={"type":"pooled","strip":"-","alternates":[{"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[7]}]}
+  ```
+
+  ```text expect
+  FC1-0589    =>  refused: no-id, junk
+  ```
+
+  Count the characters of a real ID, separators included, before you save.
+- **Two format-only patterns that overlap.** A value both fit is credited to the first
+  one listed. The verdict is the same; only the label differs.
+- **Two check-bearing patterns that overlap.** A value both fit passes when either
+  check character matches, which gives a mis-scan two chances. Keep check-bearing
+  patterns disjoint, by prefix or by length. Here `C`-`M` codes fit both entries, so
+  `C12348` (right for Mod 37,36) and `C12349` (right for Mod 37,2) both pass. Mod 37,2
+  can produce `*`, which Mod 37,36 cannot, so the rule declares `keepChars:"*"`.
+
+  ```text
+  @UVALIDATE={"keepChars":"*","alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"[C-M][0-9]{4}[0-9A-Z*]","algorithm":"372"}]}
+  ```
+
+  ```text expect
+  C12348    =>  valid
+  C12349    =>  valid
+  C12347    =>  refused: check-character
+  ```
+
+- **Legacy and checked forms of one family** (Recipe 4). A checked ID with its last
+  character dropped is a valid legacy ID.
+- **`lengths` in a one-ID rule** is accepted and ignored:
+
+  ```text
+  @UVALIDATE={"strip":"-","alternates":[{"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[7]}]}
+  ```
+
+  ```text expect
+  FC1-0589    =>  valid
+  ```
+
+#### Keys
+
+| Entry key   | Meaning                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `label`     | Format name shown in validation feedback. Without one, the entry is named by its position in the list.                         |
+| `pattern`   | Required. Whole-ID regex, matched before separators are stripped.                                                               |
+| `algorithm` | This format's check algorithm. Inherits the rule's `algorithm` when omitted; write `none` for a format-only entry.              |
+| `source`    | What the check runs over for this entry; replaces the rule's `source`.                                                          |
+| `strip`     | Separators removed before this entry's check; replaces the rule's `strip`.                                                      |
+| `lengths`   | Pooled rules: required. Every length this entry's IDs can have, counting the characters its pattern keeps. Ignored in a one-ID rule. |
+
+Rule-level keys that work with `alternates`: `type`, `algorithm` (the default for
+entries that omit theirs), `source`, `strip`, `keepChars`, `expectedIds`,
+`blockSave`, `when`, `suggestFix`, `caseSensitive`, `note`. Rule-level `pattern`,
+`idLengths`, `idMinLen` and `idMaxLen` are refused; put patterns and lengths inside
+the entries. A rule holds at most 8 entries. The pooled work limits and ambiguity
+checks apply as for any pooled rule.
+
+One rule using every rule-level key. The `Lab` entry has no `algorithm`, so it uses
+the rule's Damm check over the digits only; `Legacy` overrides it with `none`:
+
+```text
+@UVALIDATE={"type":"pooled","algorithm":"damm","source":"digits_only","strip":"-","keepChars":"#","expectedIds":2,"blockSave":"confirm","when":"[sample_type]='2'","suggestFix":true,"caseSensitive":true,"note":"Pooled sputum pair","alternates":[
+  {"label":"Lab","pattern":"LB-[0-9]{7}","lengths":[10]},
+  {"label":"Legacy","pattern":"OLD#[0-9]{4}","algorithm":"none","lengths":[8]}
+]}
+```
+
+```text expect
+LB-1234566 OLD#0042     =>  valid: LB-1234566, OLD#0042
+LB-1234565 OLD#0042     =>  refused: check-character
+LB-1234566              =>  refused: count
+```
 
 ### Full `@UVALIDATE` JSON keys
 
@@ -992,7 +1480,7 @@ imports, deleted instances or writes that do not invoke a save hook.
 @UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'","message":"Document follow-up of the prior adverse event"}
 
 # Format rule gated by consent recorded at baseline.
-@UVALIDATE={"algorithm":"none","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","when":"[baseline_arm_1][consent]='1'"}
+@UVALIDATE={"algorithm":"none","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","when":"[baseline_arm_1][consent]='1'"}
 
 # A choices branch can also use a saved region in another event.
 @UVCHOICES={"when":"[baseline_arm_1][region]='1'","show":["1BAM","1CME"]}
@@ -2005,6 +2493,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Codes in one `show`/`hide` list | 200 |
 | Composite `with` fields | 5 |
 | `keepChars` length | 64 |
+| Entries in one `alternates` list | 8 |
 
 ### Algorithms
 

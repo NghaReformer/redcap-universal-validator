@@ -470,9 +470,9 @@ algorithm. A token is valid if any one of them accepts it.
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
   {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
 ```
 
 **Try it.** Scan one of each, with or without separators. All four read as
@@ -524,7 +524,7 @@ ordinary patterns: classes, groups, alternation and quantifiers. A
 backreference, or a lookaround whose effect it cannot settle, makes the rule
 refused rather than assumed safe, because the alternative is a mis-scan recorded
 as clean. Writing the pattern with plain character classes
-(`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
+(`SK[1-9]-[0-9]{4}[0-9A-Z]`) is all it takes.
 
 **Write patterns in portable regex.** They run as JavaScript in the browser and
 as PCRE on the server, so anything the two read differently is refused when the
