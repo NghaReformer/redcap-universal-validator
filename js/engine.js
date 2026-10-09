@@ -1824,6 +1824,29 @@ function QRID_whenDecCmp(a, b){
   }
   return sa > 0 ? mag : -mag;
 }
+/* @UVRANGE: a typed or saved number as a NUM_RE string, "" for blank, or null
+   when it is not a number. One comma is the decimal mark on a *_comma_decimal
+   field. Twin of Logic::normalizeNumber. */
+function QRID_rangeNumber(value, decimalComma){
+  var v = QRID_whenTrim(value == null ? "" : String(value));
+  if(v === "") return "";
+  if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
+  return QRID_WHEN_NUM_RE.test(v) ? v : null;
+}
+/* The @UVRANGE verdict: { tier: ok|soft|hard|inert, reason }. Bounds inclusive,
+   exact decimal comparison. Twin of Logic::rangeVerdict; tests/range_fixture.json
+   pins both. */
+function QRID_rangeVerdict(spec, value){
+  var n = QRID_rangeNumber(value, !!spec.decimalComma);
+  if(n === "") return { tier: "inert", reason: null };
+  if(n === null) return { tier: "hard", reason: "not-a-number" };
+  function b(k){ return (spec[k] != null && spec[k] !== "") ? String(spec[k]) : null; }
+  if(b("hardLo") !== null && QRID_whenDecCmp(n, b("hardLo")) < 0) return { tier: "hard", reason: "hard-low" };
+  if(b("hardHi") !== null && QRID_whenDecCmp(n, b("hardHi")) > 0) return { tier: "hard", reason: "hard-high" };
+  if(b("softLo") !== null && QRID_whenDecCmp(n, b("softLo")) < 0) return { tier: "soft", reason: "soft-low" };
+  if(b("softHi") !== null && QRID_whenDecCmp(n, b("softHi")) > 0) return { tier: "soft", reason: "soft-high" };
+  return { tier: "ok", reason: null };
+}
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
@@ -3359,6 +3382,187 @@ function QRIDWindowInit(QRID_CONFIG){
         if(a.length !== 1 || a[0].deferred) return null;
         var v = verdictOf(a[0], f).verdict;
         return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
+      } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ---- range validator (@UVRANGE) --------------------------------------------
+   Two tiers of plausibility limits for a number. Outside "soft" the value is
+   unusual: an amber note, and with softBlock "confirm" the save asks first.
+   Outside "hard", or not a number, it is implausible: a red note, and the save
+   is held (hardBlock "hard") or asks (hardBlock "confirm"). A value inside the
+   soft range says nothing: a green OK on every number would be noise. A calc
+   (rangeComputed) and a read-only input never hold the save, nobody typed them.
+   The verdict is QRID_rangeVerdict, the twin of Logic::rangeVerdict
+   (tests/range_fixture.json); UniversalValidator::findingsRange is the server
+   twin. The note appears when the field is left, not while a number is being
+   typed: "1" on the way to "12" is not a finding. */
+function QRIDRangeInit(QRID_CONFIG){
+  var NUM = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/;
+  function styleMsg(el, kind){   /* "warn" | "bad" */
+    var c = (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
+                              : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var SOFT = cfg.rangeSoftBlock || "confirm", HARD = cfg.rangeHardBlock || "hard";
+    if(!configError && SOFT !== "off" && SOFT !== "confirm"){
+      configError = 'softBlock must be "off" or "confirm" — got "' + SOFT + '".';
+    }
+    if(!configError && HARD !== "confirm" && HARD !== "hard"){
+      configError = 'hardBlock must be "confirm" or "hard" — got "' + HARD + '".';
+    }
+    var spec = { decimalComma: cfg.decimalComma === true };
+    var keys = { softLo: "rangeSoftLo", softHi: "rangeSoftHi", hardLo: "rangeHardLo", hardHi: "rangeHardHi" };
+    var any = false;
+    for(var k in keys){
+      if(!Object.prototype.hasOwnProperty.call(keys, k)) continue;
+      var b = cfg[keys[k]];
+      if(b === undefined || b === null || b === "") continue;
+      if(typeof b !== "string" || !NUM.test(b)){
+        if(!configError) configError = "@UVRANGE limit " + k + " is not a number.";
+        continue;
+      }
+      spec[k] = b; any = true;
+    }
+    /* A deferred stub (the page could not be given this rule) carries no limits:
+       it reports its deferral, not a configuration error. */
+    if(!configError && !cfg.deferred && !any) configError = "@UVRANGE has no limits to check.";
+    var DEFERRED = !configError && !!cfg.deferred;
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    /* blockSave is what QRID_buildVariants reads and turns "off" for a deferred
+       rule or one whose branch was chosen from values read when the page opened;
+       the tier's own setting applies only while it is not "off". */
+    return { configError: configError, gate: GATE,
+             blockSave: (cfg.rangeComputed === true || DEFERRED) ? "off" : HARD,
+             softBlock: SOFT, hardBlock: HARD,
+             deferred: DEFERRED, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             spec: spec,
+             softText: (typeof cfg.rangeSoftText === "string") ? cfg.rangeSoftText : "",
+             hardText: (typeof cfg.rangeHardText === "string") ? cfg.rangeHardText : "",
+             mode: { range: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = false;
+  for(var abi = 0; abi < VS.all.length; abi++){
+    if(VS.all[abi].blockSave !== "off"){ ANY_BLOCK = true; break; }
+  }
+  function blockFor(V, tier){
+    if(V.blockSave === "off") return "off";
+    return tier === "soft" ? V.softBlock : V.hardBlock;
+  }
+  function describe(V, r){
+    if(V.message) return QRID_escapeHtml(V.message);
+    if(r.reason === "not-a-number") return "This is not a number.";
+    var t = r.tier === "soft" ? V.softText : V.hardText;
+    var low = r.reason === "soft-low" || r.reason === "hard-low";
+    var text = r.tier === "soft"
+      ? (low ? "This value is lower than usual" : "This value is higher than usual")
+      : (low ? "This value is below the plausible range" : "This value is above the plausible range");
+    return text + (t ? " (" + (r.tier === "soft" ? "expected " : "allowed ") + QRID_escapeHtml(t) + ")" : "") + ".";
+  }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-n")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-n", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "n");
+    /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
+       time: the note waits for the field to be left, the guard does not. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} },
+                __qridRecheck: function(){ check(); } };
+      QRID_registerBlocker(GITEM, fieldName, "off");
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "n", null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "n");
+          setGuard(false); QRID_setModeState(input, "n", null);
+          return;
+        }
+        inert(); return;
+      }
+      var r;
+      try { r = QRID_rangeVerdict(V.spec, QRID_WHEN.readRef(fieldName, null)); } catch(e){ inert(); return; }   /* fail open */
+      if(r.tier !== "soft" && r.tier !== "hard"){ inert(); return; }
+      var kind = r.tier === "soft" ? "warn" : "bad";
+      styleMsg(msg, kind);
+      QRID_setModeState(input, "n", kind);
+      setGuard(true, blockFor(V, r.tier));
+      var base = describe(V, r);
+      if(V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(limits chosen from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
+      }
+      msg.innerHTML = (kind === "warn" ? "&#9888; " : "&#10007; ") + base;
+    }
+    /* Typing clears the note; leaving the field (or a change from a script,
+       a calc or the slider) judges the value. The self-watch below also hears
+       every keystroke, so it stays quiet while the person is in the field. */
+    function typing(){ return typeof document !== "undefined" && document.activeElement === input; }
+    if(input.addEventListener){
+      input.addEventListener("input", function(){ if(msg.style.display !== "none") inert(); });
+      input.addEventListener("change", function(){ check(); });
+      input.addEventListener("blur", function(){ check(); });
+    }
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ if(!typing()) check(); });
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "range", mode: { range: true, configError: configError },
+      test: function(){
+        var a = QRID_activeVariants(VS);
+        if(a.length !== 1 || a[0].deferred) return null;
+        var t = QRID_rangeVerdict(a[0].spec, QRID_WHEN.readRef(f, null)).tier;
+        return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
       } };
   });
   function boot(){
@@ -5095,7 +5299,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
                       "choicesHide", "choicesAll", "windowFrom", "windowFromOp", "windowLo",
                       "windowHi", "windowUnit", "windowNotFuture", "dateType", "dateFormat",
-                      "fromType", "fromFormat", "existsLocal", "existsSurveys"];
+                      "fromType", "fromFormat", "existsLocal", "existsSurveys", "rangeSoftLo",
+                      "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock",
+                      "rangeHardBlock", "rangeUnit", "rangeSoftText", "rangeHardText",
+                      "decimalComma", "rangeComputed"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -5104,7 +5311,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "unique": "unique",
     "choices": "choices",
     "window": "window",
-    "exists": "exists"
+    "exists": "exists",
+    "range": "range"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -5114,9 +5322,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "unique": "QRIDUniqueInit",
     "choices": "QRIDChoiceFilterInit",
     "window": "QRIDWindowInit",
-    "exists": "QRIDExistsInit"
+    "exists": "QRIDExistsInit",
+    "range": "QRIDRangeInit"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\" or \"exists\"";
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\" or \"range\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -5129,7 +5338,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDUniqueInit: QRIDUniqueInit,
     QRIDChoiceFilterInit: QRIDChoiceFilterInit,
     QRIDWindowInit: QRIDWindowInit,
-    QRIDExistsInit: QRIDExistsInit
+    QRIDExistsInit: QRIDExistsInit,
+    QRIDRangeInit: QRIDRangeInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -5274,6 +5484,9 @@ window.INSPIREUniversalValidator = {
     verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, units: QRID_WINDOW_UNITS
   },
+  rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
+    verdict: QRID_rangeVerdict, number: QRID_rangeNumber
+  },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
   constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
@@ -5282,6 +5495,7 @@ window.INSPIREUniversalValidator = {
   choiceFilterInit: QRIDChoiceFilterInit, /* @UVCHOICES — locked by tests/choices_dom_js.cjs */
   windowInit: QRIDWindowInit,           /* @UVWINDOW — locked by tests/window_dom_js.cjs */
   existsInit: QRIDExistsInit,           /* @UVEXISTS — locked by tests/exists_dom_js.cjs */
+  rangeInit: QRIDRangeInit,             /* @UVRANGE — locked by tests/range_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

@@ -752,6 +752,51 @@ class Logic
         return $sa > 0 ? $mag : -$mag;
     }
 
+    /** Exact decimal comparison of two NUM_RE-shaped strings (-1, 0, 1). The public face of decCmp. */
+    public static function numCompare($a, $b)
+    {
+        return self::decCmp((string) $a, (string) $b);
+    }
+
+    /**
+     * A typed or saved number as a NUM_RE string, or null when it is not one.
+     * Whitespace is trimmed. With $decimalComma (REDCap's *_comma_decimal
+     * validations) one comma is the decimal mark, so "17,5" reads as 17.5; a
+     * value saved with a point still reads. Exponents ("1e3"), thousands
+     * separators and a lone sign or point are not numbers. Blank is ''.
+     * The twin is QRID_rangeNumber in js/engine.js.
+     */
+    public static function normalizeNumber($value, $decimalComma = false)
+    {
+        $v = trim((string) $value, " \t\r\n");
+        if ($v === '') return '';
+        if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
+        return preg_match(self::NUM_RE, $v) ? $v : null;
+    }
+
+    /**
+     * The @UVRANGE verdict for one value: ['tier' => ok|soft|hard|inert,
+     * 'reason' => null|soft-low|soft-high|hard-low|hard-high|not-a-number].
+     * $spec holds 'softLo', 'softHi', 'hardLo', 'hardHi' (NUM_RE strings, null
+     * = open) and 'decimalComma'. Bounds are inclusive. Blank is inert; a value
+     * that is not a number is hard; outside the hard limits is hard; outside
+     * the soft ones is soft. Exact decimal comparison, so 2.50 equals 2.5 and
+     * numbers past 2^53 keep every digit. The twin is QRID_rangeVerdict;
+     * tests/range_fixture.json pins both.
+     */
+    public static function rangeVerdict(array $spec, $value)
+    {
+        $n = self::normalizeNumber($value, !empty($spec['decimalComma']));
+        if ($n === '') return ['tier' => 'inert', 'reason' => null];
+        if ($n === null) return ['tier' => 'hard', 'reason' => 'not-a-number'];
+        $b = function ($k) use ($spec) { return (isset($spec[$k]) && $spec[$k] !== null && $spec[$k] !== '') ? (string) $spec[$k] : null; };
+        if ($b('hardLo') !== null && self::decCmp($n, $b('hardLo')) < 0) return ['tier' => 'hard', 'reason' => 'hard-low'];
+        if ($b('hardHi') !== null && self::decCmp($n, $b('hardHi')) > 0) return ['tier' => 'hard', 'reason' => 'hard-high'];
+        if ($b('softLo') !== null && self::decCmp($n, $b('softLo')) < 0) return ['tier' => 'soft', 'reason' => 'soft-low'];
+        if ($b('softHi') !== null && self::decCmp($n, $b('softHi')) > 0) return ['tier' => 'soft', 'reason' => 'soft-high'];
+        return ['tier' => 'ok', 'reason' => null];
+    }
+
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
     private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false)
     {

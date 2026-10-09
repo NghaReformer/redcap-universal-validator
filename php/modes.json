@@ -202,6 +202,37 @@
       "dialog": false,
       "js": {"factories": {"exists": "QRIDExistsInit"}},
       "scan": {"issueLabels": {"*": "Not found in its source"}}
+    },
+    {
+      "mode": "range",
+      "tag": "@UVRANGE",
+      "types": ["range"],
+      "defaultType": "range",
+      "parser": "parseRangeValue",
+      "checker": "checkRange",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "calc", "slider"],
+        "textValidations": "^(?:|int|integer|float|number(?:_[1-9]dp)?(?:_comma_decimal)?)$",
+        "annotationWhy": "@UVRANGE does not support \"{type}\" fields — it checks a number typed into a Text field, a calc or a slider.",
+        "dialogWhy": "a Range rule supports number Text fields, calc fields and sliders"
+      },
+      "hooks": {"field": "annotateRangeField"},
+      "evaluator": "findingsRange",
+      "refKeys": [],
+      "branchKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
+                     "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
+                     "caseSensitive", "message", "references"],
+      "clientKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
+                     "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
+                     "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
+      "needs": [],
+      "dialog": false,
+      "js": {"factories": {"range": "QRIDRangeInit"}},
+      "scan": {"issueLabels": {"soft-low": "Unusual value", "soft-high": "Unusual value",
+                               "hard-low": "Implausible value", "hard-high": "Implausible value",
+                               "not-a-number": "Not a number", "*": "Implausible value"},
+               "detailKeys": ["rangeSoftText", "rangeHardText"]}
     }
   ]
 }

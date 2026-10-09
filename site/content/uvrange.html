@@ -1,0 +1,76 @@
+<p>REDCap's number validation takes one minimum and one maximum, and only warns. A lab
+value has two kinds of limit: the range most patients fall in, and the range outside
+which the number is almost certainly a typing or unit error. <code>@UVRANGE</code>
+checks both, live as the value is entered: outside the <strong>soft</strong> range the
+value is unusual and the save asks first; outside the <strong>hard</strong> range it is
+implausible and the save is held.</p>
+
+<h2>Syntax</h2>
+
+<p><strong>JSON form only.</strong> At least one of <code>soft</code> and
+<code>hard</code>.</p>
+
+<pre><code>@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"hardBlock":"confirm","unit":"mmHg"}
+
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>soft</code></td><td><code>[low, high]</code>, both ends included. Outside it the
+    value is unusual. <code>null</code> leaves an end open</td></tr>
+<tr><td><code>hard</code></td><td><code>[low, high]</code>, both ends included. Outside it the
+    value is implausible. The soft limits must lie inside the hard ones</td></tr>
+<tr><td><code>softBlock</code></td><td><code>confirm</code> (default): the save asks first;
+    <code>off</code>: the note only</td></tr>
+<tr><td><code>hardBlock</code></td><td><code>hard</code> (default): the save is held;
+    <code>confirm</code>: the save asks first</td></tr>
+<tr><td><code>unit</code></td><td>A short label shown in the note, such as
+    <code>g/dL</code> (up to 20 characters)</td></tr>
+<tr><td><code>message</code>, <code>when</code>, <code>caseSensitive</code></td>
+    <td>As for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<p>Limits are compared as exact decimals, so <code>17.50</code> equals <code>17.5</code>
+and no rounding moves a value across a limit. Write a very large or very precise limit
+in quotes, e.g. <code>"9007199254740993"</code>. <code>blockSave</code> is refused: use
+<code>softBlock</code> and <code>hardBlock</code>.</p>
+
+<h2>Field types</h2>
+
+<p>Text fields with <strong>integer</strong> or <strong>number</strong> validation (any
+number of decimals, comma decimals included) or with no validation, <strong>calc</strong>
+fields and <strong>sliders</strong>. On a comma-decimal field <code>17,5</code> reads as
+17.5 and the note writes the limits with a comma. A Text field without validation
+accepts anything, so a value that is not a number is reported as implausible.</p>
+
+<h2>What is checked, and when</h2>
+
+<ul>
+<li>A <strong>blank</strong> field checks nothing. Pair the field with
+    <code>@UVREQUIRED</code> when it must be filled.</li>
+<li>The note appears when the field is <strong>left</strong>, not while a number is being
+    typed. Clicking Save checks the value as it is, left or not.</li>
+<li>A value inside the soft range shows nothing: the tag only speaks about numbers
+    that need a second look.</li>
+<li>A <strong>calc</strong> field is noted but never holds the save, since nobody typed
+    it. A read-only field is the same.</li>
+<li><strong>Different limits per group</strong>: one tag per group, each with its own
+    <code>when</code>. When no <code>when</code> is true the field is not checked; add one
+    tag without <code>when</code> to cover everyone else. A selector on another form is
+    read when the page opens, so that check is advisory and never blocks.</li>
+</ul>
+
+<h2>Audit</h2>
+
+<p>The post-save audit logs a value outside either range as <code>type: range</code>
+with reason <code>soft-low</code>, <code>soft-high</code>, <code>hard-low</code>,
+<code>hard-high</code> or <code>not-a-number</code>, whatever <code>softBlock</code> says,
+and the Validation scan reports it as an unusual value, an implausible value or not a
+number, with the expected or allowed range.</p>

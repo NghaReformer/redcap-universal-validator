@@ -1856,6 +1856,34 @@ class UniversalValidator extends AbstractExternalModule
         return $out;
     }
 
+    /**
+     * Range mode (@UVRANGE): each saved number must lie inside the "hard"
+     * range, and is reported as unusual outside the "soft" one. The verdict is
+     * Logic::rangeVerdict, the twin of the browser's. A blank value checks
+     * nothing; a value that is not a number is implausible ("not-a-number").
+     * Soft findings are logged and scanned like hard ones: "softBlock" only
+     * decides whether the browser asks before saving.
+     */
+    private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $spec = ['decimalComma' => !empty($rule['decimalComma'])];
+        foreach (['softLo' => 'rangeSoftLo', 'softHi' => 'rangeSoftHi', 'hardLo' => 'rangeHardLo', 'hardHi' => 'rangeHardHi'] as $k => $rk) {
+            if (isset($rule[$rk])) $spec[$k] = $rule[$rk];
+        }
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value)) continue;
+            $r = Logic::rangeVerdict($spec, (string) $value);
+            if ($r['tier'] === 'ok' || $r['tier'] === 'inert') continue;
+            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
+                                 'reason' => $r['reason']];
+        }
+        return $out;
+    }
+
     /** @var array|null a pinned clock (tests); null reads the real one */
     private $clockOverride = null;
     /** @var array zone name ('' = the server's own) => that clock, read once per request */
@@ -3745,6 +3773,52 @@ class UniversalValidator extends AbstractExternalModule
         $frag['dateType'] = $tv['type'];
         $frag['dateFormat'] = $tv['format'];
         return $frag;
+    }
+
+    /**
+     * @UVRANGE "field" hook: a Text field must take numbers (validation none,
+     * integer or number in any of its forms — modes.json
+     * eligibility.textValidations); a calc and a slider always do. A
+     * *_comma_decimal field is marked so both runtimes read 17,5 as 17.5, and
+     * a calc is marked so the browser never blocks a value nobody typed. The
+     * two ranges travel as display texts too ("12 to 17.5 g/dL"), written with
+     * the field's own decimal mark, for the message and the scan report.
+     */
+    private function annotateRangeField(array $frag, $name, array $meta, $pid)
+    {
+        $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+        if ($ftype === 'text') {
+            $validation = self::validationOf($meta);
+            $re = ModeRegistry::eligibility('range')['textValidations'] ?? null;
+            if (!is_string($re) || !preg_match('~' . $re . '~', $validation)) {
+                return ['error' => AnnotationRules::TAG_RANGE . ' needs a number field — give this Text field integer or '
+                    . 'number validation, or none (it has "' . $validation . '").', '_tag' => AnnotationRules::TAG_RANGE];
+            }
+            if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $frag['decimalComma'] = true;
+        } elseif ($ftype === 'calc') {
+            $frag['rangeComputed'] = true;
+        }
+        $unit = isset($frag['rangeUnit']) ? $frag['rangeUnit'] : '';
+        $comma = !empty($frag['decimalComma']);
+        foreach (['Soft', 'Hard'] as $t) {
+            $text = self::rangeText($frag['range' . $t . 'Lo'] ?? null, $frag['range' . $t . 'Hi'] ?? null, $unit, $comma);
+            if ($text !== null) $frag['range' . $t . 'Text'] = $text;
+        }
+        return $frag;
+    }
+
+    /**
+     * One tier of an @UVRANGE rule in words: "12 to 17.5 g/dL", "at least 12",
+     * "at most 17.5"; null for a tier with no limits. A comma field shows 17,5.
+     */
+    private static function rangeText($lo, $hi, $unit, $comma)
+    {
+        $f = function ($n) use ($comma) { return $comma ? str_replace('.', ',', (string) $n) : (string) $n; };
+        $u = $unit !== '' ? ' ' . $unit : '';
+        if ($lo !== null && $hi !== null) return $f($lo) . ' to ' . $f($hi) . $u;
+        if ($lo !== null) return 'at least ' . $f($lo) . $u;
+        if ($hi !== null) return 'at most ' . $f($hi) . $u;
+        return null;
     }
 
     /**

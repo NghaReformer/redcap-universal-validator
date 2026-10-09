@@ -50,10 +50,11 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVCHOICES'  => 'choices',
     '@UVWINDOW'   => 'window',      // 2.2.0
     '@UVEXISTS'   => 'exists',      // 2.3.0
+    '@UVRANGE'    => 'range',       // 2.5.0
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
           'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
-          'TAG_EXISTS' => 'exists'] as $const => $mode) {
+          'TAG_EXISTS' => 'exists', 'TAG_RANGE' => 'range'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -73,6 +74,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project
     'existsProject', 'existsPid', 'existsRemoteTargets',
+    // 2.5.0 @UVRANGE
+    'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
+    'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -88,6 +92,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
     'existsLocal', 'existsSurveys',
+    // 2.5.0 @UVRANGE
+    'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
+    'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
 ]);
 
 // Branching::modeOfType.
@@ -221,6 +228,27 @@ check('window issue label: outside the window', ModeRegistry::issueLabel('window
 check('window refusal wording', ModeRegistry::ineligibleWhy('window', 'notes')
     === '@UVWINDOW does not support "notes" fields — it checks a date typed into a Text field with date or datetime validation.');
 
+// The range mode (2.5.0).
+check('range type is the range mode', ModeRegistry::modeOfType('range') === 'range');
+check('range field types', ModeRegistry::eligibility('range')['fieldTypes'] === ['text', 'calc', 'slider']);
+check('range needs neither clock nor transport', !ModeRegistry::needs('range', 'clock') && !ModeRegistry::needs('range', 'transport'));
+check('range has no algorithm', !ModeRegistry::hasAlgorithm('range'));
+check('range is annotation-only', !ModeRegistry::inDialog('range'));
+check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'Unusual value'
+    && ModeRegistry::issueLabel('range', 'soft-high') === 'Unusual value'
+    && ModeRegistry::issueLabel('range', 'hard-low') === 'Implausible value'
+    && ModeRegistry::issueLabel('range', 'hard-high') === 'Implausible value'
+    && ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number');
+check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText']);
+$tv = ModeRegistry::eligibility('range')['textValidations'];
+foreach (['' => true, 'integer' => true, 'int' => true, 'float' => true, 'number' => true, 'number_2dp' => true,
+          'number_comma_decimal' => true, 'number_1dp_comma_decimal' => true, 'date_ymd' => false, 'email' => false,
+          'number_10dp' => false, 'integer_comma_decimal' => false, 'xnumber' => false, 'numberx' => false] as $v => $ok) {
+    check('range text validation ' . json_encode($v) . ($ok ? ' allowed' : ' refused'), (bool) preg_match('~' . $tv . '~', $v) === $ok);
+}
+check('range refusal wording', ModeRegistry::ineligibleWhy('range', 'notes')
+    === '@UVRANGE does not support "notes" fields — it checks a number typed into a Text field, a calc or a slider.');
+
 // ---- 2. coverage ------------------------------------------------------------
 
 $config = json_decode(file_get_contents($root . '/config.json'), true);
@@ -228,7 +256,7 @@ $configTags = [];
 foreach ($config['action-tags'] as $t) $configTags[] = $t['tag'];
 $pages = file_get_contents($root . '/site/pages.py');
 preg_match('/^TAG_SLUGS = \(([^)]*)\)/m', $pages, $m);
-$slugs = $m ? array_map(function ($s) { return trim($s, " \"'"); }, explode(',', $m[1])) : [];
+$slugs = $m ? array_map(function ($s) { return trim($s, " \t\r\n\"'"); }, explode(',', $m[1])) : [];
 $catalog = json_decode(file_get_contents($root . '/php/messages/catalog.json'), true);
 $engine = file_get_contents($root . '/js/engine.js');
 $nsAt = strpos($engine, 'window.INSPIREUniversalValidator = {');

@@ -63,6 +63,10 @@ jobs:
           node tests/window_dom_js.cjs
       - name: JS exists (@UVEXISTS) DOM contract (asks on change, could-not-check never blocks, cache)
         run: node tests/exists_dom_js.cjs
+      - name: JS range (@UVRANGE) verdict vs fixture, and its DOM contract (tiers, comma decimals, calc never blocks)
+        run: |
+          node tests/range_js.cjs
+          node tests/range_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
         run: node tests/alternates_dom_js.cjs
       - name: JS documented outcomes (expect blocks in the example docs)
@@ -187,6 +191,10 @@ jobs:
         run: php tests/exists_php.php
       - name: PHP @UVEXISTS in another project (consent, rights there, probe log, budgets, audit, scan)
         run: php tests/exists_cross_php.php
+      - name: PHP @UVRANGE verdict vs fixture, grammar, field hook, branches, audit and scan
+        run: |
+          php tests/range_php.php
+          php tests/range_module_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)

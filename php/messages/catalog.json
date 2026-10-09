@@ -60,6 +60,34 @@
     "staff":  "The value is not saved where this rule looks for it.",
     "survey": "This value was not found."
   },
+  "range/soft-low": {
+    "staff":  "The value is lower than usual for this field.",
+    "survey": "This value is lower than expected. Please check it.",
+    "detail": "Expected {rangeSoftText}."
+  },
+  "range/soft-high": {
+    "staff":  "The value is higher than usual for this field.",
+    "survey": "This value is higher than expected. Please check it.",
+    "detail": "Expected {rangeSoftText}."
+  },
+  "range/hard-low": {
+    "staff":  "The value is below the lowest plausible value for this field.",
+    "survey": "This value is too low.",
+    "detail": "Allowed {rangeHardText}."
+  },
+  "range/hard-high": {
+    "staff":  "The value is above the highest plausible value for this field.",
+    "survey": "This value is too high.",
+    "detail": "Allowed {rangeHardText}."
+  },
+  "range/not-a-number": {
+    "staff":  "The value is not a number.",
+    "survey": "Please enter a number."
+  },
+  "range/*": {
+    "staff":  "The value is outside its plausible range.",
+    "survey": "This value is not allowed here."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."

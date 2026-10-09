@@ -50,7 +50,8 @@ class Page:
 # --- pages -----------------------------------------------------------------
 # Ordered as they appear in the nav.
 
-TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists")
+TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists",
+             "uvrange")
 
 PAGES = [
     Page(
@@ -164,6 +165,19 @@ PAGES = [
         keywords=("@UVEXISTS", "REDCap action tag", "referential integrity", "lookup",
                   "specimen ID", "record ID check"),
         related=("uvunique", "uvassert", "index"),
+    ),
+    Page(
+        slug="uvrange",
+        title="@UVRANGE — plausible ranges for lab values and vital signs in REDCap",
+        heading="@UVRANGE",
+        description=(
+            "@UVRANGE is a REDCap action tag that checks a number against two ranges: a soft "
+            "range that asks before saving an unusual value, and a hard range that holds an implausible one."
+        ),
+        nav_label="@UVRANGE",
+        keywords=("@UVRANGE", "REDCap action tag", "range check", "plausibility check",
+                  "lab values", "vital signs", "soft and hard limits"),
+        related=("uvassert", "uvrequired", "index"),
     ),
     Page(
         slug="install",

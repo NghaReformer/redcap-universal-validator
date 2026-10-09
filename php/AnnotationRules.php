@@ -42,6 +42,10 @@ class AnnotationRules
     const TAG_CHOICES = '@UVCHOICES';
     const TAG_WINDOW = '@UVWINDOW';
     const TAG_EXISTS = '@UVEXISTS';
+    const TAG_RANGE = '@UVRANGE';
+
+    /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
+    const MAX_RANGE_UNIT = 20;
 
     /** Where an @UVEXISTS lookup may search: the whole project (default), the
      *  record's own Data Access Group, or the event of the entry being checked. */
@@ -695,6 +699,101 @@ class AnnotationRules
         if ($targets) $out[isset($out['existsProject']) ? 'existsRemoteTargets' : 'existsTargets'] = array_values(array_unique($targets));
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVRANGE value into a range fragment: two tiers of plausibility
+     * limits for a number. JSON form only:
+     *   @UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+     *   @UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"hardBlock":"hard"}
+     * Outside "soft" is unusual (softBlock: off or confirm, default confirm);
+     * outside "hard", or not a number at all, is implausible (hardBlock:
+     * confirm or hard, default hard). Bounds are inclusive; null leaves a side
+     * open. Each bound is kept as an exact decimal string (rangeBound), so the
+     * two runtimes compare the same digits. Whether the field holds numbers is
+     * checked with the data dictionary in hand
+     * (UniversalValidator::annotateRangeField).
+     */
+    private static function parseRangeValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_RANGE . ' needs its settings as JSON, e.g. '
+                . self::TAG_RANGE . '={"soft":[12,17.5],"hard":[3,25]}.'];
+        }
+        // A whole number past PHP_INT_MAX stays a string, so it is kept exactly.
+        $cfg = json_decode($val, true, 512, JSON_BIGINT_AS_STRING);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_RANGE . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        if (array_key_exists('blockSave', $cfg)) {
+            return ['error' => '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" (off or confirm) '
+                . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
+        }
+        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive', 'references'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'range'];
+        foreach (['soft' => 'rangeSoft', 'hard' => 'rangeHard'] as $k => $prefix) {
+            if (!array_key_exists($k, $cfg)) continue;
+            $pair = $cfg[$k];
+            if (!is_array($pair) || array_keys($pair) !== [0, 1]) {
+                return ['error' => '"' . $k . '" must be a list of two limits, [low, high] — e.g. [12,17.5], or [null,140] for no low limit.'];
+            }
+            if ($pair[0] === null && $pair[1] === null) {
+                return ['error' => '"' . $k . '" needs at least one limit — [null,null] would check nothing.'];
+            }
+            foreach ([0 => 'Lo', 1 => 'Hi'] as $i => $side) {
+                if ($pair[$i] === null) continue;
+                $b = self::rangeBound($pair[$i]);
+                if ($b === null) {
+                    return ['error' => 'the "' . $k . '" ' . ($i === 0 ? 'low' : 'high') . ' limit must be a number such as 12 or '
+                        . '17.5 — got ' . json_encode($pair[$i]) . '. Write a very large or very precise number in quotes, '
+                        . 'e.g. "9007199254740993".'];
+                }
+                $out[$prefix . $side] = $b;
+            }
+        }
+        foreach (['softBlock' => 'rangeSoftBlock', 'hardBlock' => 'rangeHardBlock', 'unit' => 'rangeUnit',
+                  'when' => 'when', 'message' => 'message'] as $k => $key) {
+            if (!isset($cfg[$k])) continue;
+            if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+            $out[$key] = $k === 'unit' ? trim($cfg[$k]) : $cfg[$k];
+        }
+        self::takeCaseSensitive($cfg, $out);
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * One @UVRANGE limit as an exact decimal string, or null. A whole number
+     * is kept as written; a fraction is written back the shortest way that
+     * reads as the same double (17.5, 0.1); a string must already be a plain
+     * decimal. Exponents are refused: "1e3" is not how a lab range is written,
+     * and a double past 2^53 has already lost digits.
+     */
+    private static function rangeBound($b)
+    {
+        if (is_int($b)) return (string) $b;
+        if (is_float($b)) {
+            if (!is_finite($b) || abs($b) >= 9007199254740992.0) return null;
+            // Shortest round-trip form whatever php.ini says: an old
+            // serialize_precision of 17 would turn 0.1 into 0.10000000000000001.
+            $old = function_exists('ini_set') ? ini_set('serialize_precision', '-1') : false;
+            $s = json_encode($b);
+            if ($old !== false) ini_set('serialize_precision', $old);
+            if (!is_string($s) || !preg_match(Logic::NUM_RE, $s)) return null;
+            return preg_replace('/\.0$/', '', $s);
+        }
+        if (is_string($b)) {
+            $t = trim($b);
+            return preg_match(Logic::NUM_RE, $t) ? $t : null;
+        }
+        return null;
     }
 
     /**
@@ -1617,6 +1716,72 @@ class AnnotationRules
         if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
                 && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
             $errors[] = self::TAG_EXISTS . ' does not support event or instance references in "when" yet — use '
+                . 'fields of this entry.';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a range (@UVRANGE) fragment: at least one limit,
+     * every limit an exact decimal string, low <= high within each tier, each
+     * soft limit inside the hard range (a value the soft range calls usual must
+     * never be implausible), the two enforcement keys and a short unit label.
+     * Whether the field holds numbers is checked in the channel glue, where
+     * the data dictionary is in hand.
+     */
+    public static function checkRange(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (array_key_exists('blockSave', $frag)) {
+            $errors[] = '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" and "hardBlock".';
+        }
+        $b = [];
+        foreach (['rangeSoftLo' => 'soft low', 'rangeSoftHi' => 'soft high', 'rangeHardLo' => 'hard low', 'rangeHardHi' => 'hard high'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            if (!is_string($frag[$k]) || !preg_match(Logic::NUM_RE, $frag[$k])) {
+                $errors[] = 'the ' . $label . ' limit must be a number — got ' . json_encode($frag[$k]) . '.';
+                continue;
+            }
+            $b[$k] = $frag[$k];
+        }
+        if (!array_key_exists('rangeSoftLo', $frag) && !array_key_exists('rangeSoftHi', $frag)
+                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag)) {
+            $errors[] = self::TAG_RANGE . ' needs "soft" or "hard" limits, e.g. "soft":[12,17.5],"hard":[3,25].';
+        }
+        foreach (['Soft' => 'soft', 'Hard' => 'hard'] as $t => $label) {
+            if (isset($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi'])
+                    && Logic::numCompare($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi']) > 0) {
+                $errors[] = 'the "' . $label . '" low limit (' . $b['range' . $t . 'Lo'] . ') is above its high limit ('
+                    . $b['range' . $t . 'Hi'] . ').';
+            }
+        }
+        foreach (['rangeSoftLo' => 'low', 'rangeSoftHi' => 'high'] as $k => $side) {
+            if (!isset($b[$k])) continue;
+            $below = isset($b['rangeHardLo']) && Logic::numCompare($b[$k], $b['rangeHardLo']) < 0;
+            $above = isset($b['rangeHardHi']) && Logic::numCompare($b[$k], $b['rangeHardHi']) > 0;
+            if ($below || $above) {
+                $errors[] = 'the "soft" ' . $side . ' limit (' . $b[$k] . ') is outside the "hard" range — a value '
+                    . '"soft" accepts would be refused as implausible. Keep both soft limits inside the hard ones.';
+            }
+        }
+        if (isset($frag['rangeSoftBlock']) && !in_array($frag['rangeSoftBlock'], ['off', 'confirm'], true)) {
+            $errors[] = '"softBlock" must be off or confirm.';
+        }
+        if (isset($frag['rangeHardBlock']) && !in_array($frag['rangeHardBlock'], ['confirm', 'hard'], true)) {
+            $errors[] = '"hardBlock" must be confirm or hard.';
+        }
+        if (array_key_exists('rangeUnit', $frag)) {
+            $u = $frag['rangeUnit'];
+            if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
+                    || (function_exists('mb_strlen') ? mb_strlen($u, 'UTF-8') : strlen($u)) > self::MAX_RANGE_UNIT) {
+                $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "g/dL".';
+            }
+        }
+        // The check reads only the tagged field; an event/instance reference in
+        // "when" would need the extended pipeline, which this tag does not run.
+        if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
+                && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
+            $errors[] = self::TAG_RANGE . ' does not support event or instance references in "when" yet — use '
                 . 'fields of this entry.';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));

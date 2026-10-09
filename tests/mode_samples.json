@@ -41,6 +41,11 @@
       "tagForm": "@UVEXISTS={\"in\":\"[b]\",\"when\":\"[a]='x'\",%s}",
       "fragment": {"existsIn": "b", "existsTargets": ["b"]},
       "client": {}
+    },
+    "range": {
+      "tagForm": "@UVRANGE={\"hard\":[0,10],\"when\":\"[a]='x'\",%s}",
+      "fragment": {"rangeHardLo": "0", "rangeHardHi": "10"},
+      "client": {"rangeHardLo": "0", "rangeHardHi": "10"}
     }
   }
 }
