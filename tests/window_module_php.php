@@ -240,6 +240,11 @@ namespace {
 
     $plan = new \ReflectionMethod($m, 'scanPlan'); $plan->setAccessible(true);
     $record = new \ReflectionMethod($m, 'scanRecord'); $record->setAccessible(true);
+    // A durable scan may start only for a reader entitled to every form it
+    // reads; the "from" field's form is one of them.
+    $own = $plan->invoke($m, 149, [])['ownership'];
+    check('scan entitlement: the "from" field is read and owned by its form',
+        ($own['visit_date_bl'] ?? null) === 'baseline_form' && ($own['visit_date_2'] ?? null) === 'visit_form');
     $runAt = function ($utc) use ($m, $plan, $record, $DATA) {
         $p = $plan->invoke($m, 149, ['clockAt' => $utc]);
         $found = [];
