@@ -3101,11 +3101,9 @@ function QRIDWindowInit(QRID_CONFIG){
       if(!fromOp && !cfg.deferred) configError = '@UVWINDOW cannot read its "from" date.';
     }
     var DEFERRED = !configError && !!cfg.deferred;
-    if(DEFERRED) BLOCK = "off";
-    /* Advisory-only cross-form, as for @UVASSERT (QRIDConstraintInit): a "from"
-       date read when the page was built can go stale, so it never blocks. */
+    /* A "from" date read when the page was built can go stale. QRID_buildVariants
+       turns blockSave off for it, and for a deferred rule, so neither blocks. */
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
-    if(SNAPSHOT) BLOCK = "off";
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);   /* applicability */
     /* A "from" field on this page re-checks the window when it changes. */
     var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
