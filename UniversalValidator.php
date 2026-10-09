@@ -360,9 +360,9 @@ class UniversalValidator extends AbstractExternalModule
      * the ONE dispatch shared with the project scan page — the hook and the
      * scan can never disagree about what a violation is.
      */
-    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null, array $resolution = [])
+    private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null, array $resolution = [], array $meta = [])
     {
-        $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution);
+        $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution, $meta);
         foreach ($f['unconfigurable'] as $u) {
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
         }
@@ -379,11 +379,13 @@ class UniversalValidator extends AbstractExternalModule
      *
      * $whenAst: pre-parsed condition AST(s) from the hook, or null — null makes
      * this method parse the rule's own "when" (and each branch's) itself, the
-     * path the scan takes. Returns:
+     * path the scan takes. $meta carries what the caller knows about the
+     * record beyond its values: 'dag' (the record's Data Access Group, null for
+     * none; absent = not known, read when a rule needs it). Returns:
      *   ['invalid'         => [ ['field','value','algo','type','reason'], ... ],
      *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ]]
      */
-    private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null, array $resolution = [])
+    private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null, array $resolution = [], array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
 
@@ -453,7 +455,7 @@ class UniversalValidator extends AbstractExternalModule
                 'type'   => isset($rule['type']) ? $rule['type'] : 'single',
                 'fields' => $rule['fields'],
             ], $branch);
-            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution);
+            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -503,7 +505,7 @@ class UniversalValidator extends AbstractExternalModule
 
         // The mode's own verdict (php/modes.json "evaluator").
         $evaluator = ModeRegistry::evaluator($mode);
-        return $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution);
+        return $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta);
     }
 
     /**
@@ -541,6 +543,339 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         return $out;
+    }
+
+    /**
+     * Exists mode (@UVEXISTS): the saved value must already be saved somewhere
+     * else — a record ID of this project, or a value of the "in" field in some
+     * entry, narrowed by "event", "scope" and "match". A blank value checks
+     * nothing, and so does a blank "match" field of this record (the entry it
+     * would narrow to is not known yet). A lookup that cannot be completed is a
+     * rule problem ("lookup-unavailable"), never a pass and never a finding.
+     *
+     * The audit asks findExisting() per value; a scan request builds one index
+     * of the searched field per rule and answers every record from it
+     * ($existsIndexOn, set by scanRecord).
+     */
+    private function findingsExists(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+            $lv = [];
+            foreach ($locals as $lf) {
+                $state = isset($resolution[$lf]) ? $resolution[$lf] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => [$field],
+                        'why' => 'the "match" field ' . self::resolutionProblem($state, $lf) . ' — field not checked'];
+                    continue 2;
+                }
+                $v = isset($values[$lf]) ? $values[$lf] : '';
+                if (is_array($v) || trim((string) $v) === '') continue 2;   // nothing to narrow by yet
+                $lv[$lf] = trim((string) $v);
+            }
+            $r = $this->existsLookup($project_id, $rule, trim((string) $value), $lv, $event_id, $record, $meta);
+            if ($r['state'] === 'not-found') {
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'exists', 'type' => 'exists', 'reason' => 'not-found'];
+            } elseif ($r['state'] !== 'found') {
+                $out['unconfigurable'][] = ['fields' => [$field],
+                    'why' => 'the lookup in ' . self::existsSourceName($rule) . ' could not be completed (lookup-unavailable)'
+                           . ' — field not checked; check it again later'];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Whether an exists rule looks only inside the record's own DAG. A branched
+     * rule does so only when every branch does (each branch carries its own keys).
+     */
+    private static function existsConfinedToDag(array $rule)
+    {
+        $parts = (isset($rule['branches']) && is_array($rule['branches']) && $rule['branches'])
+            ? $rule['branches'] : [$rule];
+        foreach ($parts as $p) {
+            if (!is_array($p) || (isset($p['existsScope']) ? $p['existsScope'] : 'project') !== 'dag') return false;
+        }
+        return true;
+    }
+
+    /** "the record IDs" or "[field]", for messages. */
+    private static function existsSourceName(array $rule)
+    {
+        $in = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
+        return $in === 'record' ? 'the record IDs' : '[' . $in . ']';
+    }
+
+    /** Scan requests answer @UVEXISTS from one index per rule (see findingsExists). */
+    private $existsIndexOn = false;
+    /** @var array lookup key => index, or false for one that could not be built */
+    private $existsIndexes = [];
+
+    /**
+     * One @UVEXISTS lookup: ['state' => found|not-found|unknown, 'record' => ?, 'dag' => ?].
+     * $meta['dag'] is the DAG of the record being checked when the caller knows
+     * it (a scan does); otherwise it is read here, and only for "scope":"dag".
+     */
+    private function existsLookup($pid, array $rule, $value, array $locals, $eventId, $record, array $meta = [])
+    {
+        $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
+        $dag = false;
+        if ($scope === 'dag') {
+            if (array_key_exists('dag', $meta) && $meta['dag'] !== false) {
+                $dag = $meta['dag'];
+            } else {
+                $rd = $this->recordDagOf($pid, $record);
+                if ($rd === false || !$rd['found']) return ['state' => 'unknown', 'record' => null, 'dag' => null];
+                $dag = $rd['dag'];
+            }
+        }
+        if ($this->existsIndexOn) return $this->existsIndexLookup($pid, $rule, $value, $locals, $eventId, $dag);
+        return $this->findExisting($pid, $rule, $value, $locals, $eventId, $dag, true);
+    }
+
+    /**
+     * Whether $value is saved where the rule looks. $locals holds the values of
+     * the "match" fields of the record being checked; $dag the DAG to stay in
+     * for "scope":"dag" (null = no DAG, false = not known, which answers
+     * unknown). Exact comparison of trimmed stored values, case-sensitive: a
+     * date is compared in the Y-M-D form REDCap stores.
+     *
+     * $narrow (the live endpoint and the audit): first ask REDCap for candidate
+     * entries only (filterLogic). A hit there is final. A miss is not trusted:
+     * the read is repeated without the filter, over the searched fields only,
+     * and a failure of that read answers unknown. The narrowing can therefore
+     * save work but never turn a saved value into "not found".
+     */
+    private function findExisting($pid, array $rule, $value, array $locals, $eventId, $dag, $narrow = false)
+    {
+        $unknown = ['state' => 'unknown', 'record' => null, 'dag' => null];
+        $value = trim((string) $value);
+        $spec = $this->existsSpec($pid, $rule, $value, $locals, $eventId);
+        if ($spec === null || $value === '') return $unknown;
+        $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
+        if ($scope === 'dag' && $dag === false) return $unknown;
+        try {
+            if ($spec['in'] === 'record') {
+                $pk = $this->recordIdFieldOf($pid);
+                if ($pk === null) return $unknown;
+                $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [$value],
+                                          'fields' => [$pk], 'exportDataAccessGroups' => true]);
+                if (!is_array($data)) return $unknown;
+                foreach ($data as $rec => $node) {
+                    if ((string) $rec !== $value || !is_array($node)) continue;
+                    $rdag = self::dagOfRecordNode($node);
+                    if ($scope === 'dag' && $rdag !== $dag) continue;
+                    return ['state' => 'found', 'record' => (string) $rec, 'dag' => $rdag];
+                }
+                return ['state' => 'not-found', 'record' => null, 'dag' => null];
+            }
+            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => array_keys($spec['target']),
+                       'exportDataAccessGroups' => true];
+            if ($spec['event'] !== null) $params['events'] = [$spec['event']];
+            if ($narrow) {
+                $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target']);
+                if ($fl !== null) {
+                    try {
+                        $n = \REDCap::getData($params + ['filterLogic' => $fl]);
+                        $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag) : null;
+                        if ($hit !== null) return ['state' => 'found'] + $hit;
+                    } catch (\Throwable $e) {
+                        // a filter this build cannot run: the full read below decides
+                    }
+                }
+            }
+            $data = \REDCap::getData($params);
+            if (!is_array($data)) return $unknown;
+            $hit = self::existsMatchIn($data, $spec, $scope, $dag);
+            return $hit !== null ? ['state' => 'found'] + $hit : ['state' => 'not-found', 'record' => null, 'dag' => null];
+        } catch (\Throwable $e) {
+            return $unknown;
+        }
+    }
+
+    /**
+     * What one lookup compares: 'in', the 'target' field => value map (the
+     * searched field plus the "match" targets), and the one event id to search
+     * ('event', null = every event). Null when the event cannot be resolved or
+     * a "match" value is blank.
+     */
+    private function existsSpec($pid, array $rule, $value, array $locals, $eventId)
+    {
+        $in = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
+        if ($in === '') return null;
+        $target = [];
+        if ($in !== 'record') $target[$in] = (string) $value;
+        foreach ((isset($rule['existsMatch']) && is_array($rule['existsMatch'])) ? $rule['existsMatch'] : [] as $t => $l) {
+            $lv = isset($locals[$l]) ? trim((string) $locals[$l]) : '';
+            if ($lv === '') return null;
+            $target[(string) $t] = $lv;
+        }
+        $event = null;
+        if (!empty($rule['existsEvent'])) {
+            $event = $this->eventIdOf($pid, $rule['existsEvent']);
+            if ($event === null) return null;
+        } elseif ((isset($rule['existsScope']) ? $rule['existsScope'] : 'project') === 'event') {
+            if ($eventId === null || $eventId === '') return null;
+            $event = $eventId;
+        }
+        return ['in' => $in, 'target' => $target, 'event' => $event];
+    }
+
+    /** The first entry of an exported data set that holds every target value, as ['record','dag'], or null. */
+    private static function existsMatchIn(array $data, array $spec, $scope, $dag)
+    {
+        foreach ($data as $rec => $node) {
+            if (!is_array($node)) continue;
+            $rdag = self::dagOfRecordNode($node);
+            if ($scope === 'dag' && $rdag !== $dag) continue;
+            foreach (self::recordContexts($node) as $ctx) {
+                if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                $row = $ctx['values'];
+                $ok = true;
+                foreach ($spec['target'] as $f => $tv) {
+                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? trim((string) $row[$f]) : '';
+                    if ($rv !== $tv) { $ok = false; break; }
+                }
+                if ($ok) return ['record' => (string) $rec, 'dag' => $rdag];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The scan's answer: the searched fields of the whole project are read
+     * ONCE per rule and request into a hash set, and each record is answered
+     * from it. An index that cannot be read, or that would not fit in memory,
+     * answers unknown for every record of the request.
+     */
+    private function existsIndexLookup($pid, array $rule, $value, array $locals, $eventId, $dag)
+    {
+        $unknown = ['state' => 'unknown', 'record' => null, 'dag' => null];
+        $spec = $this->existsSpec($pid, $rule, $value, $locals, $eventId);
+        if ($spec === null) return $unknown;
+        $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
+        if ($scope === 'dag' && $dag === false) return $unknown;
+        $fields = array_keys($spec['target']);
+        $key = json_encode([$spec['in'], $fields, isset($rule['existsEvent']) ? $rule['existsEvent'] : null]);
+        if (!array_key_exists($key, $this->existsIndexes)) {
+            $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
+                !empty($rule['existsEvent']) ? $spec['event'] : null);
+        }
+        $idx = $this->existsIndexes[$key];
+        if ($idx === false) return $unknown;
+        $k = implode("\x1f", array_values($spec['target']));
+        if ($spec['in'] === 'record') $k = (string) $value;
+        if (!isset($idx[$k])) return ['state' => 'not-found', 'record' => null, 'dag' => null];
+        foreach ($idx[$k] as $hit) {
+            if ($scope === 'dag' && $hit[1] !== $dag) continue;
+            if ($scope === 'event' && (string) $hit[2] !== (string) $spec['event']) continue;
+            return ['state' => 'found', 'record' => $hit[0], 'dag' => $hit[1]];
+        }
+        return ['state' => 'not-found', 'record' => null, 'dag' => null];
+    }
+
+    /**
+     * key => [[record, dag, event_id], ...] for one searched field set, or false.
+     * The key joins the target values in rule order with \x1f, which no stored
+     * REDCap value contains; a record-ID index is keyed by the record ID.
+     */
+    private function buildExistsIndex($pid, $in, array $fields, $event)
+    {
+        try {
+            $limit = self::memoryLimitBytes();
+            if ($in === 'record') {
+                $pk = $this->recordIdFieldOf($pid);
+                if ($pk === null) return false;
+                $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
+                                          'exportDataAccessGroups' => true]);
+                if (!is_array($data)) return false;
+                $idx = [];
+                foreach ($data as $rec => $node) {
+                    if (is_array($node)) $idx[(string) $rec] = [[(string) $rec, self::dagOfRecordNode($node), null]];
+                }
+                return $idx;
+            }
+            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => $fields, 'exportDataAccessGroups' => true];
+            if ($event !== null) $params['events'] = [$event];
+            $data = \REDCap::getData($params);
+            if (!is_array($data)) return false;
+            $idx = [];
+            foreach ($data as $rec => $node) {
+                if (!is_array($node)) continue;
+                $rdag = self::dagOfRecordNode($node);
+                foreach (self::recordContexts($node) as $ctx) {
+                    if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
+                    $parts = [];
+                    foreach ($fields as $f) {
+                        $v = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? trim((string) $ctx['values'][$f]) : '';
+                        if ($v === '') continue 2;   // an entry with a blank searched field holds nothing to find
+                        $parts[] = $v;
+                    }
+                    $k = implode("\x1f", $parts);
+                    $hit = [(string) $rec, $rdag, (string) $ctx['event_id']];
+                    if (!isset($idx[$k]) || !in_array($hit, $idx[$k], true)) $idx[$k][] = $hit;
+                }
+                if ($limit > 0 && memory_get_usage(true) >= (int) ($limit * 0.6)) return false;
+            }
+            return $idx;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** The record-ID field of a project: REDCap's first dictionary field. */
+    private function recordIdFieldOf($pid)
+    {
+        $dd = $this->dataDictionary($pid);
+        if (is_array($dd) && $dd) {
+            reset($dd);
+            return (string) key($dd);
+        }
+        return null;
+    }
+
+    /** The event id of a unique event name in this project, or null. */
+    private function eventIdOf($pid, $name)
+    {
+        try {
+            if (!is_callable(['\REDCap', 'getEventNames'])) return null;
+            $names = \REDCap::getEventNames(true);
+            if (!is_array($names)) return null;
+            foreach ($names as $id => $unique) {
+                if ((string) $unique === (string) $name) return $id;
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+
+    /**
+     * The saved record's DAG: ['found' => bool, 'dag' => ?string], or false
+     * when it could not be read. 'found' false is a record not saved yet.
+     */
+    private function recordDagOf($pid, $record)
+    {
+        if ($record === null || $record === '') return ['found' => false, 'dag' => null];
+        $pk = $this->recordIdFieldOf($pid);
+        if ($pk === null) return false;
+        try {
+            $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [(string) $record],
+                                      'fields' => [$pk], 'exportDataAccessGroups' => true]);
+            if (!is_array($data)) return false;
+            foreach ($data as $rec => $node) {
+                if ((string) $rec === (string) $record && is_array($node)) {
+                    return ['found' => true, 'dag' => self::dagOfRecordNode($node)];
+                }
+            }
+            return ['found' => false, 'dag' => null];
+        } catch (\Throwable $e) {
+            return false;
+        }
     }
 
     /**
@@ -1157,6 +1492,11 @@ class UniversalValidator extends AbstractExternalModule
             if (is_array($r) && array_key_exists('_origin', $r)) unset($config['rules'][$i]['_origin']);
         }
         $config['rules'] = self::hoistChoicesAll($config['rules']);
+        // Where an @UVEXISTS lookup searches stays on the server: the endpoint
+        // re-reads it from the stored rule, so the page never needs it.
+        foreach ($config['rules'] as $i => $r) {
+            if (is_array($r)) $config['rules'][$i] = ModeRegistry::clientShape($r);
+        }
         // "Today" for @UVWINDOW notFuture is the SERVER's today, not the
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
@@ -2290,6 +2630,88 @@ class UniversalValidator extends AbstractExternalModule
         if (!isset($frag['uniqueWith'])) return $frag;
         $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
         return $errs ? ['error' => implode(' ', $errs), '_tag' => AnnotationRules::TAG_UNIQUE] : $frag;
+    }
+
+    /**
+     * @UVEXISTS "field" hook: the survey opt-in is refused when any field the
+     * lookup touches is an Identifier — the field itself, the fields it is
+     * matched by, the searched fields, and the record-ID field for a record-ID
+     * lookup. "Found" on an identifying value is the same existence oracle the
+     * @UVUNIQUE refusal closes. Fails CLOSED: flags that cannot be read refuse.
+     */
+    private function annotateExistsField(array $frag, $name, array $meta, $pid)
+    {
+        if (empty($frag['existsSurveys'])) return $frag;
+        $ids = $this->projectIdentifierFields($pid);
+        $touch = array_merge([$name],
+            (isset($frag['existsLocal']) && is_array($frag['existsLocal'])) ? $frag['existsLocal'] : [],
+            (isset($frag['existsTargets']) && is_array($frag['existsTargets'])) ? $frag['existsTargets'] : []);
+        if (($frag['existsIn'] ?? null) === 'record') {
+            $pk = $this->recordIdFieldOf($pid);
+            if ($pk !== null) $touch[] = $pk;
+        }
+        $hit = $ids === null ? $name : self::firstIdentifier($ids, $touch);
+        if ($hit === null) return $frag;
+        return ['error' => ($ids === null
+                ? 'the survey lookup ("surveys") cannot be enabled while the project\'s Identifier flags cannot be read.'
+                : 'field "' . $hit . '" is an Identifier, so the survey lookup ("surveys") cannot be enabled: a survey '
+                  . 'answer of "found" would let anyone holding the survey link test whether a value is in this study. '
+                  . 'Drop "surveys" (staff still get the live check, and the post-save audit and the Validation scan '
+                  . 'still cover survey answers), or un-flag the field if it is not identifying.'),
+            '_tag' => AnnotationRules::TAG_EXISTS];
+    }
+
+    /**
+     * @UVEXISTS "dictionary" hook: the searched field and each "match" field
+     * must exist and hold one scalar value, the searched field must not be the
+     * field itself, a pair of fields compared with each other must hold the
+     * same kind of date (or both no date: REDCap stores dates as Y-M-D and the
+     * comparison is exact), and "event" must name an event of the project.
+     */
+    private function annotateExistsDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS]; };
+        $dd = $this->dataDictionary($pid);
+        if (!is_array($dd) || !is_array($types)) return $refuse('the data dictionary could not be read, so "in" cannot be checked.');
+        $scalar = ['text', 'notes', 'dropdown', 'radio', 'yesno', 'truefalse', 'sql', 'slider', 'calc'];
+        $family = function ($f) use ($dd) {
+            $tv = isset($dd[$f]) ? TemporalValue::fromValidation(self::validationOf($dd[$f])) : null;
+            return $tv === null ? 'no date' : ($tv['type'] === 'date' ? 'dates' : 'dates with a time');
+        };
+        $field = function ($f, $role) use ($types, $scalar) {
+            if (!isset($types[$f])) return $role . ' "' . $f . '" is not a field in this project — check the spelling.';
+            if (!in_array($types[$f], $scalar, true)) {
+                return $role . ' "' . $f . '" is a ' . $types[$f] . ' field — the lookup needs one value per field.';
+            }
+            return null;
+        };
+        $in = isset($frag['existsIn']) ? $frag['existsIn'] : '';
+        $pairs = [];
+        if ($in !== 'record') {
+            if ($in === $name) return $refuse('"in" names this field itself — a value is always found in its own field. Name the field that holds the saved values.');
+            $why = $field($in, '"in" field');
+            if ($why !== null) return $refuse($why);
+            $pairs[] = [$in, $name];
+        }
+        foreach ((isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [] as $t => $l) {
+            $why = $field((string) $t, '"match" target');
+            if ($why === null) $why = $field($l, '"match" field');
+            if ($why !== null) return $refuse($why);
+            if ($l === $name) return $refuse('"match" uses this field itself for "' . $t . '" — it is already the value looked up.');
+            $pairs[] = [(string) $t, $l];
+        }
+        foreach ($pairs as list($a, $b)) {
+            if ($family($a) !== $family($b)) {
+                return $refuse('"' . $a . '" holds ' . $family($a) . ' and "' . $b . '" holds ' . $family($b)
+                    . ' — values are compared exactly, so both must be the same kind.');
+            }
+        }
+        if (isset($frag['existsEvent'])) {
+            if ($this->eventIdOf($pid, $frag['existsEvent']) === null) {
+                return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
+            }
+        }
+        return $frag;
     }
 
     /**
@@ -4152,19 +4574,35 @@ class UniversalValidator extends AbstractExternalModule
         // the scan is the one issuing certificates. Every other unevaluable
         // condition in this module lands in 'unconfigurable'; this one was
         // silent, which is the one outcome the contract forbids.
+        //
+        // @UVEXISTS has the same blind spot from the other side: a value saved
+        // only in another group reads "not found" from a group-confined read,
+        // and whether this request's read is confined depends on who runs it.
+        // A rule that looks across groups is reported the same way.
         if ($dagFilter !== null) {
             foreach ($live as $i => $r) {
-                if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
-                $scope = isset($r['uniqueScope']) ? strtolower((string) $r['uniqueScope']) : 'project';
-                if ($scope !== 'project') continue;      // 'dag' and 'event' ARE evaluable here
-                $unconf[$i . '|dag-scoped-unique'] = [
-                    'rule' => $i + 1,
-                    'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                    'why' => 'this rule requires values to be unique across the WHOLE project, but this scan '
-                           . 'is confined to one Data Access Group - a duplicate in another group cannot be '
-                           . 'seen from here, so the rule was NOT evaluated. Run the scan without a group '
-                           . 'scope to check it.',
-                ];
+                $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
+                if ($mode === 'unique') {
+                    $scope = isset($r['uniqueScope']) ? strtolower((string) $r['uniqueScope']) : 'project';
+                    if ($scope !== 'project') continue;      // 'dag' and 'event' ARE evaluable here
+                    $unconf[$i . '|dag-scoped-unique'] = [
+                        'rule' => $i + 1,
+                        'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                        'why' => 'this rule requires values to be unique across the WHOLE project, but this scan '
+                               . 'is confined to one Data Access Group - a duplicate in another group cannot be '
+                               . 'seen from here, so the rule was NOT evaluated. Run the scan without a group '
+                               . 'scope to check it.',
+                    ];
+                } elseif ($mode === 'exists' && !self::existsConfinedToDag($r)) {
+                    $unconf[$i . '|dag-scoped-exists'] = [
+                        'rule' => $i + 1,
+                        'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                        'why' => 'this rule looks for the value across every Data Access Group, but this scan is '
+                               . 'confined to one group - a value saved only in another group would read as not '
+                               . 'found, so the rule was NOT evaluated. Run the scan without a group scope to '
+                               . 'check it.',
+                    ];
+                }
             }
             $out['unconf'] = $unconf;
         }
@@ -4251,6 +4689,9 @@ class UniversalValidator extends AbstractExternalModule
                                 array &$uniqueSeen, array &$unconf)
     {
         $this->temporalBegin($pid);
+        // A scan request answers @UVEXISTS from one index per rule, not one
+        // whole-project read per record (findingsExists).
+        $this->existsIndexOn = true;
         $ctxAll = self::recordContexts($node);
         if (!$ctxAll) {
             // REDCap returned the record with no event row at all. There is
@@ -4299,7 +4740,7 @@ class UniversalValidator extends AbstractExternalModule
                         self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
                         continue;
                     }
-                    $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck]);
+                    $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck], ['dag' => $recDag]);
                     foreach ($f['invalid'] as $v) {
                         // Computed ONCE, and compared with === false. A truthiness
                         // test here would turn a legitimate value of '0' into null.
@@ -4843,6 +5284,10 @@ class UniversalValidator extends AbstractExternalModule
             return $this->scanAction($action, $project_id, $payload);
         }
 
+        if ($action === 'exists-check') {
+            return $this->existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                $survey_hash, $user_id, $group_id);
+        }
         if ($action !== 'unique-check') return ['error' => 'unknown action'];
         try {
             // AUTHENTICATION, not survey-ness, decides which guards apply.
@@ -4911,6 +5356,15 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 // ...and never faster than the throttle allows.
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+            } else {
+                // A signed-in caller is throttled too, and answered only about
+                // forms they may open: "already used" on a field of a form the
+                // user has no access to is a read of that form by another door.
+                if ($this->signedInRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+                $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $withFields)) !== null) {
+                    return ['error' => 'not a checkable field'];
+                }
             }
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
@@ -4969,6 +5423,189 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
         }
+    }
+
+    /**
+     * The live @UVEXISTS lookup: is this value already saved where the rule
+     * looks? Same posture as unique-check, in this order:
+     *   1. the field must carry a live exists rule; where to look is re-read
+     *      from that stored rule, never taken from the request;
+     *   2. an unauthenticated caller (a survey) is answered only for a rule that
+     *      opted in, never when any field the lookup touches is an Identifier
+     *      (unreadable flags refuse), and never faster than the survey throttle;
+     *   3. a signed-in caller is throttled per session and answered only when
+     *      they may open every form the lookup reads;
+     *   4. "match" fields not on this page are read from the saved record;
+     *   5. the reply is found / not-found / unknown. A survey never gets a reason
+     *      or a record; staff get the record only inside their own DAG.
+     * Every failure answers unknown or an error, which the browser shows as
+     * "could not check" and never blocks on.
+     */
+    private function existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $user_id, $group_id)
+    {
+        $unknown = function ($why = null) use ($user_id, $survey_hash) {
+            $staff = ($user_id !== null && $user_id !== '') && ($survey_hash === null || $survey_hash === '');
+            return ['state' => 'unknown', 'record' => null, 'why' => $staff ? $why : null];
+        };
+        try {
+            $isAuthenticated = ($user_id !== null && $user_id !== '');
+            $isSurvey = ($survey_hash !== null && $survey_hash !== '');
+            $field = (isset($payload['field']) && is_string($payload['field'])) ? strtolower(trim($payload['field'])) : '';
+            if ($field === '' || !preg_match('/^[a-z][a-z0-9_]*$/', $field)) return ['error' => 'not a checkable field'];
+            $raw = (isset($payload['values']) && is_array($payload['values'])) ? $payload['values'] : [];
+            if (count($raw) > 8) return ['error' => 'too many values'];
+            $values = [];
+            foreach ($raw as $k => $v) {
+                if (!is_string($k) || (!is_string($v) && !is_numeric($v))) continue;
+                $v = (string) $v;
+                if (strlen($v) > 1024) return ['error' => 'value too long'];
+                $values[strtolower($k)] = $v;
+            }
+            $rule = $this->activeRuleFor($this->getRules($project_id), 'exists', $field, $project_id, $record,
+                $event_id, $instrument, $repeat_instance);
+            if ($rule === null) return ['error' => 'not a checkable field'];
+            $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
+            $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
+            if (!$isAuthenticated) {
+                if (empty($rule['existsSurveys'])) return ['error' => 'not enabled on surveys'];
+                $touch = array_merge([$field], $locals, $targets);
+                if (($rule['existsIn'] ?? null) === 'record') {
+                    $pk = $this->recordIdFieldOf($project_id);
+                    if ($pk === null) return ['error' => 'not enabled on surveys'];
+                    $touch[] = $pk;
+                }
+                $ids = $this->projectIdentifierFields($project_id);
+                if ($ids === null || self::firstIdentifier($ids, $touch) !== null) return ['error' => 'not enabled on surveys'];
+                if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+            } else {
+                if ($this->signedInRateLimited($project_id)) return $unknown('too many checks in the last minute — wait a moment');
+                $barred = $this->firstUnreadableField($project_id, $user_id, array_merge([$field], $locals, $targets));
+                if ($barred !== null) return $unknown('you do not have access to the form that holds [' . $barred . ']');
+            }
+            $value = isset($values[$field]) ? trim($values[$field]) : '';
+            if ($value === '') return ['error' => 'nothing to look up'];
+            // Values arrive as the page shows them; the lookup compares stored ones.
+            $values = $this->storedFormOf($project_id, $values);
+            $value = trim($values[$field]);
+            $lv = [];
+            $onForm = $locals ? $this->fieldsOnInstrument($project_id, $instrument) : null;
+            $offPage = [];
+            foreach ($locals as $lf) {
+                $onPage = $onForm !== null && isset($onForm[$lf]);
+                $v = isset($values[$lf]) ? trim($values[$lf]) : '';
+                if ($onPage || $v !== '') { $lv[$lf] = $v; continue; }
+                $offPage[] = $lf;
+            }
+            if ($offPage) {
+                if ($record === null || $record === '') {
+                    foreach ($offPage as $lf) $lv[$lf] = '';
+                } else {
+                    $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
+                    foreach ($offPage as $lf) {
+                        $lv[$lf] = (isset($saved[$lf]) && !is_array($saved[$lf])) ? trim((string) $saved[$lf]) : '';
+                    }
+                }
+            }
+            foreach ($lv as $lf => $v) {
+                if ($v === '') return $unknown('[' . $lf . '] is blank, so there is nothing to match against yet');
+            }
+            $dag = null;
+            if (($rule['existsScope'] ?? 'project') === 'dag') {
+                $rd = $this->recordDagOf($project_id, $record);
+                if ($rd === false) return $unknown('the record\'s Data Access Group could not be read');
+                // A record not saved yet is created in the user's own group, or in none.
+                // A group whose name cannot be read is not "no group" (dagNameOf).
+                if ($rd['found']) {
+                    $dag = $rd['dag'];
+                } elseif ($group_id !== null && $group_id !== '') {
+                    $dag = ScanPageView::dagNameOf($group_id);
+                    if ($dag === null) return $unknown('your Data Access Group could not be read');
+                }
+            }
+            $r = $this->findExisting($project_id, $rule, $value, $lv, $event_id, $dag, true);
+            if ($r['state'] === 'unknown') return $unknown('the saved values could not be read just now');
+            $recOut = null;
+            if ($r['state'] === 'found' && $isAuthenticated && !$isSurvey && ($rule['existsIn'] ?? null) !== 'record') {
+                $recOut = $r['record'];
+                if ($group_id !== null && $group_id !== '') {
+                    $userDag = ScanPageView::dagNameOf($group_id);
+                    if ($userDag === null || $r['dag'] !== $userDag) $recOut = null;
+                }
+            }
+            return ['state' => $r['state'], 'record' => $recOut];
+        } catch (\Throwable $e) {
+            return ['error' => 'lookup failed'];   // the client shows "could not check"; no detail leaks
+        }
+    }
+
+    /** Per-session window for a signed-in caller of the live lookups (unique-check, exists-check). */
+    const THROTTLE_SIGNED_IN = 60;
+
+    /**
+     * Throttle for SIGNED-IN callers of the live lookups, per session and project.
+     *
+     * Keyed on the session, which for this caller is not something they can
+     * shed: the session IS the sign-in, so a request without it is not signed
+     * in and meets the survey path's guards instead. One budget covers both
+     * endpoints. Fails open (no session, unreadable state), like the survey
+     * throttle: the live check is a convenience and the audit is the net.
+     */
+    private function signedInRateLimited($pid)
+    {
+        try {
+            if (!function_exists('session_status') || session_status() !== PHP_SESSION_ACTIVE) return false;
+            $key = 'uvalidate_lookup_hits_' . (int) $pid;
+            $now = time();
+            $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+            $hits = array_values(array_filter($hits, function ($t) use ($now) {
+                return is_int($t) && ($now - $t) < 60;
+            }));
+            if (count($hits) >= self::THROTTLE_SIGNED_IN) { $_SESSION[$key] = $hits; return true; }
+            $hits[] = $now;
+            $_SESSION[$key] = $hits;
+            return false;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * The first of $fields whose form the signed-in caller may not open, or
+     * null when they may open them all. A field the dictionary cannot place, or
+     * rights that cannot be read, count as not readable (fail closed).
+     */
+    private function firstUnreadableField($pid, $user_id, array $fields)
+    {
+        $rights = $this->callerFormRights($pid, $user_id);
+        $dd = $this->dataDictionary($pid);
+        foreach ($fields as $f) {
+            $f = (string) $f;
+            if ($f === '') continue;
+            $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
+            if ($form === '' || !self::mayReadForm($rights, $form)) return $f;
+        }
+        return null;
+    }
+
+    /**
+     * The form rights of the signed-in caller of an AJAX action: the framework
+     * user's, or - when this request has no framework user - those REDCap
+     * holds for $user_id, the identity the framework authenticated.
+     */
+    private function callerFormRights($pid, $user_id)
+    {
+        $r = $this->userFormRights($pid);
+        if ($r !== null || $this->currentUsername() !== null || $user_id === null || $user_id === '') return $r;
+        try {
+            if (is_callable(['\REDCap', 'getUserRights'])) {
+                $all = \REDCap::getUserRights((string) $user_id);
+                if (is_array($all) && isset($all[$user_id]['forms']) && is_array($all[$user_id]['forms'])) {
+                    return $all[$user_id]['forms'];
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
     }
 
     /** Per-session window. Cheap, and keyed on something the caller controls. */
@@ -5180,9 +5817,18 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function uniqueRuleFor(array $rules, $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead = false)
     {
+        return $this->activeRuleFor($rules, 'unique', $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead);
+    }
+
+    /**
+     * The live rule of one MODE covering one field, flattened to its active
+     * branch (see uniqueRuleFor), or null. Shared by the two live lookups.
+     */
+    private function activeRuleFor(array $rules, $mode, $field, $pid, $record, $event_id, $instrument, $repeat_instance, $allowTemporalRead = false)
+    {
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
-            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== $mode) continue;
             if (empty($r['fields']) || !is_array($r['fields']) || !in_array($field, $r['fields'], true)) continue;
             // Record-local rules are rendered as advisory assertions. The legacy
             // no-auth uniqueness endpoint must never reinterpret them as project scope.
@@ -5223,7 +5869,7 @@ class UniversalValidator extends AbstractExternalModule
             else return null;
             $b = $r['branches'][$pick];
             unset($b['when']);
-            return array_merge(['type' => 'unique', 'fields' => $r['fields']], $b);
+            return array_merge(['type' => $r['type'], 'fields' => $r['fields']], $b);
         }
         return null;
     }

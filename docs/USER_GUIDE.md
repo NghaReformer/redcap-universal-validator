@@ -881,7 +881,7 @@ rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
 Required and Unique rules: the same minus calc. Choice-filter rules
 (`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
 rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
-validation.
+validation. Lookup rules (`@UVEXISTS`): Text, dropdown, radio and SQL fields.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -913,6 +913,20 @@ this one is open. On a survey, or for a user without rights to that form, the
 `from` date is not sent to the page; the page then checks only `notFuture`, and
 the window is checked when the record is saved. Annotation-only; see the README
 section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**Can a specimen ID on a result form be checked against the registered specimens?**
+Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
+`@UVEXISTS=[specimen_id]` accepts a value only if some record holds it in
+`specimen_id`; `@UVEXISTS=record` accepts only the ID of a saved record. Add
+`"match":{"site_code":"[site]"}` to look only at specimens of the same site,
+`"event"` to look in one event, and `"scope":"dag"` to stay inside the record's
+Data Access Group. The page asks the server when the value is entered or
+changed, not on every keystroke, and answers found, not found, or could not
+check. "Could not check" never blocks a save; the post-save audit checks the
+value again. Users are answered only about forms they may open. Surveys need
+`"surveys":true`, which is refused when the lookup touches an Identifier field.
+Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**

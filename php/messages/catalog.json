@@ -52,6 +52,14 @@
     "staff":  "The date is outside its allowed window.",
     "survey": "This date is not allowed here."
   },
+  "exists/not-found": {
+    "staff":  "The value is not saved where this rule looks for it.",
+    "survey": "This value was not found."
+  },
+  "exists/*": {
+    "staff":  "The value is not saved where this rule looks for it.",
+    "survey": "This value was not found."
+  },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",
     "survey": "This entry is not valid together with the other answers."

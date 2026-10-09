@@ -153,6 +153,19 @@ namespace {
             return isset(self::$groupNames[$group_id]) ? self::$groupNames[$group_id] : '';
         }
         public static function getRecordIdField() { return 'record_id'; }
+        /** Forms each username may NOT open; everyone else opens every dictionary form. */
+        public static $formsWithheld = [];
+        /** REDCap's static rights read, keyed by username. Only a named user has a row. */
+        public static function getUserRights($username = null) {
+            if ($username === null || $username === '') return [];
+            $forms = [];
+            foreach (self::$dictionary as $meta) {
+                if (!isset($meta['form_name'])) continue;
+                $f = (string) $meta['form_name'];
+                $forms[$f] = in_array($f, self::$formsWithheld[$username] ?? [], true) ? '0' : '1';
+            }
+            return [$username => ['forms' => $forms]];
+        }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';

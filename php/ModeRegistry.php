@@ -65,6 +65,9 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has no "' . $k . '" list');
                 }
             }
+            if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
+            }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no eligibility.fieldTypes');
             }
@@ -178,6 +181,36 @@ final class ModeRegistry
             foreach (self::all() as $m) foreach ($m['clientKeys'] as $k) $out[$k] = true;
             return array_keys($out);
         });
+    }
+
+    /**
+     * Keys the server reads and the page must never carry (the union of every
+     * mode's optional serverKeys): where an @UVEXISTS lookup searches is
+     * re-read from the stored rule by the endpoint, so the page has no use for
+     * it and a survey respondent has no business seeing it.
+     */
+    public static function serverKeys()
+    {
+        return self::memo('serverKeys', function () {
+            $out = [];
+            foreach (self::all() as $m) {
+                foreach ((isset($m['serverKeys']) && is_array($m['serverKeys'])) ? $m['serverKeys'] : [] as $k) $out[$k] = true;
+            }
+            return array_keys($out);
+        });
+    }
+
+    /** A rule as the page may see it: every server key removed, on the rule and on each branch. */
+    public static function clientShape(array $r)
+    {
+        foreach (self::serverKeys() as $k) unset($r[$k]);
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $i => $b) {
+                if (!is_array($b)) continue;
+                foreach (self::serverKeys() as $k) unset($r['branches'][$i][$k]);
+            }
+        }
+        return $r;
     }
 
     /** Field-type eligibility of a mode: fieldTypes plus the refusal wording. */

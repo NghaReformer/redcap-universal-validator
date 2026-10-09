@@ -552,6 +552,59 @@ record, and/or that it is not after today:
   re-checks the windows counted from it. The Validation scan reports the same
   findings. Configure via field annotation only.
 
+## Values that must already exist — the `@UVEXISTS` tag
+
+REDCap can check that a value has the right shape, not that it refers to
+something that is real. `@UVEXISTS` checks, as the value is entered, that it is
+already saved in the project: a record ID, or a value of another field such as
+the specimen ID on the collection form.
+
+```text
+@UVEXISTS=record
+@UVEXISTS=[specimen_id]
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"dag",
+           "match":{"site_code":"[site]"},"blockSave":"hard"}
+```
+
+- `in` is `record` (a record ID of this project) or one field reference (a value
+  saved in that field, in any record). `event` looks in one event, by its unique
+  name. `scope` is `project` (default), `dag` (records of the same Data Access
+  Group; records in no group form one group) or `event` (the event of the entry
+  being checked). `match` looks only at saved entries whose target field equals
+  a field of this record, `{"target":"[field of this record]"}`, up to 5 pairs;
+  the target values must sit in the same entry as the searched value (one event
+  row, or one repeat instance with its event row). Optional `when`, `message`,
+  `blockSave`, `surveys`.
+- **Exact comparison of stored values.** Trimmed and case-sensitive. A date is
+  compared as REDCap stores it (Y-M-D), whatever format the field shows, so the
+  searched field and the field itself must hold the same kind of date (or both
+  none). Dropdown and radio values are compared by code.
+- **Asked on change, not per keystroke.** The page asks the server when the value
+  is entered or changed, and once when the form opens. Typing clears the
+  previous answer. The answer is *found* (green), *not found* (red, enforced per
+  `blockSave`) or *could not check* (amber, never blocks): a failed read, a
+  `match` field that is blank on another form, or a busy server all answer
+  *could not check*. Where the rule looks is never sent to the page.
+- **Who gets an answer.** Signed-in users are answered only when they may open
+  every form the lookup reads (the searched field and the `match` fields; a
+  record-ID lookup needs no extra form), and at most 60 lookups a minute per
+  session, shared with `@UVUNIQUE`. Staff see the record the value was found in
+  unless they are in a Data Access Group and the record is not; a record-ID
+  lookup never echoes a record.
+- **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
+  check on surveys, answered as found / not found only, under the survey
+  throttle. It is refused when any field the lookup touches is an Identifier
+  (the field, the `match` fields, the searched field, or the record-ID field for
+  a record-ID lookup), and when the Identifier flags cannot be read.
+- **Audited.** The post-save audit logs `type: exists`, reason `not-found`. The
+  Validation scan reads the searched field once per rule and checks every record
+  against it. A lookup that cannot be completed is reported as a rule problem,
+  never as a pass. A scan confined to one Data Access Group does not evaluate a
+  rule that looks across groups (`scope` other than `dag`) and says so.
+- Works on Text, dropdown, radio and SQL fields; composes with the other modes on
+  the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
+  annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -728,6 +781,13 @@ check-character primitive, but the full runtime path the module actually uses:
   and `tests/window_module_php.php` the server side: annotation checks, the
   page fold of an off-page `from` date, the audit, reverse dependencies, the
   scan, the scan clock and the `window-timezone` setting.
+- `tests/exists_php.php` — `@UVEXISTS` on the server: the grammar and
+  dictionary checks, the page config without the lookup target, the
+  `exists-check` endpoint (found / not found / could not check, a narrowed miss
+  confirmed by a full read, rights, throttle, surveys, the DAG-masked record),
+  the audit, the one-read scan index and group-confined scans.
+  `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur
+  only, never blocks on *could not check*, the cache and stale replies.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -769,6 +829,8 @@ node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

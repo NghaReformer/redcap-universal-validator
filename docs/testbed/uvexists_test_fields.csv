@@ -1,0 +1,20 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+ux_rec,uv_exists_test,Lookups (UVEXISTS) - values that must already exist,text,Mother record ID (must be a saved record; hard),,"XE-2 is found, XE-9 is not and blocks the save. The answer never names a record.",,,,,,,,,,,"@UVEXISTS={""in"":""record"",""blockSave"":""hard""}"
+ux_spec,uv_exists_test,,text,"Specimen ID registered on any specimen form (hard, custom message)",,"S-003 is found in record XE-1. S-999 and s-003 are not found. "" S-001 "" is found (trimmed).",,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""blockSave"":""hard"",""message"":""Register this specimen on the specimen form first.""}"
+ux_spec_bl,uv_exists_test,,text,Specimen ID registered at Baseline (advisory),,"S-001 is found. S-003 is registered at Visit 1 only, so it is not found here. Advisory: the save goes through.",,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""event"":""baseline_arm_1""}"
+ux_type,uv_exists_test,,dropdown,Specimen type for the next field,"1, Sputum | 2, Blood | 3, Urine",Blank: the next field asks nothing.,,,,,,,,,,,
+ux_spec_m,uv_exists_test,,text,Specimen ID of the type chosen above,,S-100 with Blood is found; S-101 with Sputum is not (S-101 is Urine).,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""match"":{""xs_type"":""[ux_type]""}}"
+ux_code,uv_exists_test,,text,Participant code issued at enrolment,,PX-0003 is found; PX-9999 is not.,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""event"":""event_1_arm_1""}"
+ux_consent_dmy,uv_exists_test,,text,A consent date that was recorded (D-M-Y),,Typed as D-M-Y: 10-01-2026 is found (stored 2026-01-10); 11-01-2026 is not.,date_dmy,,,,,,,,,,"@UVEXISTS={""in"":""[xe_consent_date]""}"
+ux_code_site,uv_exists_test,,text,Participant code of the same enrolment site,,Matched by the enrolment site saved on xe_enrol (another form). PX-0002 is found while both records are site 1.,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""match"":{""xe_site"":""[xe_site]""}}"
+ux_gate,uv_exists_test,,yesno,Check the next field?,,,,,,,,,,,,,
+ux_when,uv_exists_test,,text,"Specimen ID, checked only when the gate above is Yes",,"With the gate No nothing is asked. With Yes, S-999 is not found.",,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""when"":""[ux_gate]='1'"",""blockSave"":""hard""}"
+ux_both,uv_exists_test,,text,Specimen ID: registered AND not used by another record,,Composes @UVEXISTS and @UVUNIQUE. Save S-001 on XE-1; on XE-2 S-001 is found but already recorded.,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""blockSave"":""hard""} @UVUNIQUE={""blockSave"":""hard""}"
+ux_survey,uv_exists_test,,text,Participant code (also checked on the survey),,"On the survey: PX-0001 is found, PX-9999 is not; no record is named.",,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""surveys"":true}"
+ux_dag,uv_exists_test,,text,Participant code in this record's Data Access Group,,Only when the project has DAGs: a code of a record in another group is not found.,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""scope"":""dag""}"
+ux_bad_self,uv_exists_test,Configuration errors (each must show an error and check nothing),text,Bad: searches itself,,,,,,,,,,,,,"@UVEXISTS={""in"":""[ux_bad_self]""}"
+ux_bad_nofield,uv_exists_test,,text,Bad: unknown field,,,,,,,,,,,,,@UVEXISTS=[no_such_field]
+ux_bad_multi,uv_exists_test,,text,Bad: searches a checkbox,,,,,,,,,,,,,@UVEXISTS=[xe_consent]
+ux_bad_family,uv_exists_test,,text,Bad: a plain text field searching a date field,,,,,,,,,,,,,@UVEXISTS=[xe_consent_date]
+ux_bad_event,uv_exists_test,,text,Bad: unknown event,,,,,,,,,,,,,"@UVEXISTS={""in"":""[xs_id]"",""event"":""nowhere_arm_1""}"
+ux_bad_notes,uv_exists_test,,notes,Bad: notes field,,,,,,,,,,,,,@UVEXISTS=[xs_id]

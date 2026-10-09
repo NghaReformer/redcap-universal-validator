@@ -8,7 +8,9 @@
     "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
     "the verdict itself); fieldList = a list of field names the rule reads; operand = one field reference whose",
     "value the verdict reads (op = the key the browser gets the folded operand under, value = the key the",
-    "server's extended compile writes the resolved value to)."
+    "server's extended compile writes the resolved value to).",
+    "serverKeys (optional): keys the server needs and the page must not carry; they are removed from every",
+    "rule and branch before the page config is written (ModeRegistry::clientShape)."
   ],
   "common": {
     "refKeys": [
@@ -170,6 +172,35 @@
       "js": {"factories": {"window": "QRIDWindowInit"}},
       "scan": {"issueLabels": {"future": "Date in the future", "*": "Date outside allowed window"},
                "detailKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit"]}
+    },
+    {
+      "mode": "exists",
+      "tag": "@UVEXISTS",
+      "types": ["exists"],
+      "defaultType": "exists",
+      "parser": "parseExistsValue",
+      "checker": "checkExists",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "dropdown", "radio", "sql"],
+        "annotationWhy": "@UVEXISTS does not support \"{type}\" fields — it looks up one typed or chosen value among saved records.",
+        "dialogWhy": "an Exists rule supports Text, dropdown, radio and SQL fields"
+      },
+      "hooks": {"field": "annotateExistsField", "dictionary": "annotateExistsDictionary"},
+      "evaluator": "findingsExists",
+      "refKeys": [
+        {"key": "existsLocal", "kind": "fieldList", "role": "test"},
+        {"key": "existsTargets", "kind": "fieldList", "role": "test"}
+      ],
+      "branchKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsSurveys", "existsLocal",
+                     "existsTargets"],
+      "clientKeys": ["existsLocal", "existsSurveys",
+                     "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
+      "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets"],
+      "needs": ["transport"],
+      "dialog": false,
+      "js": {"factories": {"exists": "QRIDExistsInit"}},
+      "scan": {"issueLabels": {"*": "Not found in its source"}}
     }
   ]
 }

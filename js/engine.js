@@ -2236,23 +2236,26 @@ function QRID_attachMsgRegion(input, fieldName, mode){
                   "false"; else the attribute is removed.
    "info" is deliberately not an opinion about validity (it is the uniqueness
    check saying "asking the server"), which keeps today's behaviour of clearing
-   aria-invalid while a check is in flight.
+   aria-invalid while a check is in flight. "warn" is the same: a lookup that
+   could not be completed says nothing about the value.
    Save-blocking is NOT routed through here: each mode keeps its own guard item,
    which is what makes composition correct in the first place. */
-var QRID_OUTLINE = { bad: "2px solid #c62828", info: "2px solid #0067c0", ok: "2px solid #2e9e44" };
-function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "info" | null */
+var QRID_OUTLINE = { bad: "2px solid #c62828", warn: "2px solid #b7791f", info: "2px solid #0067c0", ok: "2px solid #2e9e44" };
+function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "warn" | "info" | null */
   if(!input) return;
   var st = input.__qridModeState;
   if(!st){ st = {}; input.__qridModeState = st; }
   if(kind === null || kind === undefined) delete st[mode]; else st[mode] = kind;
-  var bad = false, info = false, ok = false;
+  var bad = false, warn = false, info = false, ok = false;
   for(var k in st){
     if(!Object.prototype.hasOwnProperty.call(st, k)) continue;
     if(st[k] === "bad") bad = true;
+    else if(st[k] === "warn") warn = true;
     else if(st[k] === "info") info = true;
     else if(st[k] === "ok") ok = true;
   }
   input.style.outline = bad ? QRID_OUTLINE.bad
+                     : warn ? QRID_OUTLINE.warn
                      : info ? QRID_OUTLINE.info
                      : ok   ? QRID_OUTLINE.ok : "";
   QRID_setInvalidState(input, bad ? true : (ok ? false : null));
@@ -3900,7 +3903,7 @@ function QRID_inList(list, v){
    here FAILS OPEN — a network error or missing transport never traps a save;
    the server audit is the race/backstop net. tests/unique_dom_js.cjs locks
    this contract; UniversalValidator::redcap_module_ajax is the server twin. */
-function QRID_uniqueTransport(){
+function QRID_ajaxTransport(){
   var name = (typeof QRID_COMBINED_CONFIG === "object" && QRID_COMBINED_CONFIG) ? QRID_COMBINED_CONFIG.jsmoName : null;
   if(typeof name !== "string" || !name) return null;
   try {
@@ -3909,6 +3912,8 @@ function QRID_uniqueTransport(){
   } catch(e){}
   return null;
 }
+/* The transport's first name, from when @UVUNIQUE was its only user. */
+var QRID_uniqueTransport = QRID_ajaxTransport;
 function QRIDUniqueInit(QRID_CONFIG){
   function styleMsg(el, kind){   /* true=free, false=used, "info"=checking */
     var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -4023,7 +4028,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       var key = JSON.stringify(payload.values);
       if(lastResp && lastResp.key === key){ renderResp(lastResp.resp, V); return; }  /* cached answer */
       if(pendingKey === key) return;                    /* already asked; the answer will render */
-      var t = QRID_uniqueTransport();
+      var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
         inert(); return;
@@ -4079,6 +4084,217 @@ function QRIDUniqueInit(QRID_CONFIG){
   /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "unique", mode: { unique: true, configError: configError } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ---- exists validator (@UVEXISTS) ------------------------------------------
+   The value must already be saved somewhere in the project: a record ID, or a
+   value of the field named in "in". Where to look is NOT on this page - the
+   server strips it (ModeRegistry::clientShape) and the exists-check endpoint
+   re-reads it from the stored rule. The page sends the field's value and the
+   values of its "match" fields; a match field not on this page is sent blank
+   and read from the saved record by the server.
+   Requests go out on change/blur and once on load, never per keystroke:
+   typing clears the verdict, so a half-typed value never reads "not found".
+   Answers: found (green), not-found (red; blocks per blockSave), unknown
+   (amber "could not check"; never blocks). Every failure is unknown.
+   tests/exists_dom_js.cjs locks this contract; existsCheck() in
+   UniversalValidator.php is the server twin. */
+function QRIDExistsInit(QRID_CONFIG){
+  function styleMsg(el, kind){   /* "ok" | "bad" | "warn" | "info" */
+    var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+          : (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
+          : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
+          : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    return { configError: configError, gate: GATE, blockSave: BLOCK,
+             deferred: !configError && !!cfg.deferred,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
+             surveys: cfg.existsSurveys === true,
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             mode: { exists: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+  function trim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-x")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-x", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "x");
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "x", null); }
+    var seq = 0;            /* stale-response guard: only the LATEST request may render */
+    var pendingKey = null;  /* payload already asked, awaiting an answer */
+    var lastResp = null;    /* {key, resp}: one-deep cache of found / not-found answers */
+    var dirty = {};         /* field name => typed since its last change/blur */
+    function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
+    function unknown(V, why){
+      if(QRID_IS_SURVEY){ inert(); return; }
+      styleMsg(msg, "warn");
+      QRID_setModeState(input, "x", "warn");
+      setGuard(false);
+      msg.innerHTML = "&#9888; Could not check this value just now" +
+        (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ". It is checked again after saving.";
+    }
+    function renderResp(resp, V){
+      if(resp.state === "found"){
+        styleMsg(msg, "ok");
+        QRID_setModeState(input, "x", "ok");
+        setGuard(false);
+        msg.innerHTML = "&#10003; Found" +
+          (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".";
+      } else if(resp.state === "not-found"){
+        styleMsg(msg, "bad");
+        QRID_setModeState(input, "x", "bad");
+        setGuard(true, V.blockSave);
+        msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+          : "This value is not saved where it should be. Check it, or record it there first.");
+      } else {
+        unknown(V, resp.why);
+      }
+    }
+    var activeVariant = null;
+    function check(){
+      var act = QRID_activeVariants(VS);
+      var nextVariant = act.length === 1 ? act[0] : null;
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; lastResp = null; activeVariant = nextVariant; }
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "x")){ setGuard(false); QRID_setModeState(input, "x", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "x"); setGuard(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "x");
+          setGuard(false); QRID_setModeState(input, "x", null);
+          return;
+        }
+        inert(); return;
+      }
+      /* Surveys are opt-in per rule, as for @UVUNIQUE. */
+      if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
+      var val = trim(QRID_WHEN.readRef(fieldName, null));
+      if(val === ""){ ++seq; pendingKey = null; inert(); return; }
+      var payload = { field: fieldName, values: {} };
+      payload.values[fieldName] = val;
+      for(var li = 0; li < V.locals.length; li++){
+        var lf = V.locals[li];
+        var onPage = !!QRID_findAnchor(lf);
+        var lv = trim(QRID_WHEN.readRef(lf, null));
+        /* A match field on this page that is blank: nothing to narrow by yet. */
+        if(onPage && lv === ""){ ++seq; pendingKey = null; inert(); return; }
+        payload.values[lf] = onPage ? lv : "";
+      }
+      var key = JSON.stringify(payload.values);
+      if(lastResp && lastResp.key === key){ renderResp(lastResp.resp, V); return; }
+      if(pendingKey === key) return;
+      var t = QRID_ajaxTransport();
+      if(!t){
+        try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
+        inert(); return;
+      }
+      var my = ++seq;
+      pendingKey = key;
+      /* pending: informative, never blocking */
+      styleMsg(msg, "info");
+      msg.innerHTML = "&#8230; checking&hellip;";
+      QRID_setModeState(input, "x", "info");
+      setGuard(false);
+      function render(err, resp){
+        if(my !== seq) return;
+        pendingKey = null;
+        if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
+          try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          unknown(V, null); return;
+        }
+        if(resp.state !== "unknown") lastResp = { key: key, resp: resp };
+        renderResp(resp, V);
+      }
+      try {
+        var p = t.ajax("exists-check", payload);
+        if(p && typeof p.then === "function"){
+          p.then(function(r){ render(null, r); }, function(e){ render(e || "rejected", null); });
+        } else {
+          render("no promise from transport", null);
+        }
+      } catch(e){ render(e, null); }
+    }
+    /* Typing clears the verdict; change and blur ask. */
+    function watchTyping(name, el){
+      if(!el || !el.addEventListener) return;
+      el.addEventListener("input", function(){
+        dirty[name] = true;
+        if(name === fieldName || msg.style.display !== "none"){ ++seq; pendingKey = null; inert(); }
+      });
+      var settleNow = function(){ dirty[name] = false; check(); };
+      el.addEventListener("change", settleNow);
+      el.addEventListener("blur", settleNow);
+    }
+    watchTyping(fieldName, input);
+    /* Anything else that changes (REDCap's date picker or autocomplete without
+       a native event, a "match" field, a "when" field) reaches the shared
+       when-registry. Asked after a pause, and only when nobody is typing. */
+    var settle = QRID_debounced(function(){ if(!typing()) check(); });
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(settle);
+    for(var vi = 0; vi < VS.all.length; vi++){
+      if(VS.all[vi].gate) VS.all[vi].gate.onChange(settle);
+      for(var lj = 0; lj < VS.all[vi].locals.length; lj++){
+        var lname = VS.all[vi].locals[lj];
+        if(!Object.prototype.hasOwnProperty.call(dirty, lname)){ dirty[lname] = false; watchTyping(lname, QRID_findAnchor(lname)); }
+        var lw = QRID_WHEN.gateFor("[" + lname + "]<>''", null);
+        if(lw) lw.onChange(settle);
+      }
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "exists", mode: { exists: true, configError: configError } };
   });
   function boot(){
     if(configError){
@@ -4715,7 +4931,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
                       "choicesHide", "choicesAll", "windowFrom", "windowFromOp", "windowLo",
                       "windowHi", "windowUnit", "windowNotFuture", "dateType", "dateFormat",
-                      "fromType", "fromFormat"];
+                      "fromType", "fromFormat", "existsLocal", "existsSurveys"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -4723,7 +4939,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "required": "required",
     "unique": "unique",
     "choices": "choices",
-    "window": "window"
+    "window": "window",
+    "exists": "exists"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -4732,9 +4949,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "required": "QRIDRequiredInit",
     "unique": "QRIDUniqueInit",
     "choices": "QRIDChoiceFilterInit",
-    "window": "QRIDWindowInit"
+    "window": "QRIDWindowInit",
+    "exists": "QRIDExistsInit"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\" or \"window\"";
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\" or \"exists\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -4746,7 +4964,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDRequiredInit: QRIDRequiredInit,
     QRIDUniqueInit: QRIDUniqueInit,
     QRIDChoiceFilterInit: QRIDChoiceFilterInit,
-    QRIDWindowInit: QRIDWindowInit
+    QRIDWindowInit: QRIDWindowInit,
+    QRIDExistsInit: QRIDExistsInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -4898,6 +5117,7 @@ window.INSPIREUniversalValidator = {
   uniqueInit: QRIDUniqueInit,           /* @UVUNIQUE — locked by tests/unique_dom_js.cjs */
   choiceFilterInit: QRIDChoiceFilterInit, /* @UVCHOICES — locked by tests/choices_dom_js.cjs */
   windowInit: QRIDWindowInit,           /* @UVWINDOW — locked by tests/window_dom_js.cjs */
+  existsInit: QRIDExistsInit,           /* @UVEXISTS — locked by tests/exists_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

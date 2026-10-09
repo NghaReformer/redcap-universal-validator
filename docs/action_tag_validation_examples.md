@@ -8,7 +8,7 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog, except `@UVCHOICES` and `@UVWINDOW`. The tags and
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW` and `@UVEXISTS`. The tags and
 the dialog are the same rules through different doors, and they mix freely.
 
 ---
@@ -23,6 +23,7 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVUNIQUE` — no duplicates across records](#uvunique--no-duplicates-across-records)
 - [`@UVCHOICES` — dropdowns and autocomplete](#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices)
 - [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
+- [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -34,6 +35,7 @@ the dialog are the same rules through different doors, and they mix freely.
   - [`@UVREQUIRED` recipes](#uvrequired-recipes)
   - [`@UVUNIQUE` recipes](#uvunique-recipes)
   - [`@UVWINDOW` recipes](#uvwindow-recipes)
+  - [`@UVEXISTS` recipes](#uvexists-recipes)
   - [Combination recipes](#combination-recipes)
 - [Tags the module refuses](#tags-the-module-refuses)
 - [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
@@ -52,6 +54,7 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVUNIQUE`   | The value is**not used by another record**                                | Same as above,**minus calc**                             |
 | `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
 | `@UVWINDOW`   | A date falls **within a window** around another date, or is not after today | Text with date, datetime or datetime-with-seconds validation   |
+| `@UVEXISTS`   | The value is **already saved** in the project: a record ID, or a value of another field | Text, dropdown, radio, SQL                                     |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -1422,6 +1425,170 @@ These are refused when the rule is saved:
 @UVWINDOW={"message":"Check the date"}
 ```
 
+## `@UVEXISTS` — values that must already exist
+
+REDCap checks that a value has the right shape. It cannot check that a specimen ID
+typed on a lab result was ever registered, or that a record ID named on a transfer
+form belongs to a real participant. `@UVEXISTS` asks the server, as the value is
+entered, whether the value is already saved in the project.
+
+### Level 1 — a record ID of this project
+
+```text
+# on: mother_record_id — the mother must already be enrolled
+@UVEXISTS=record
+```
+
+The value must be the ID of a saved record. The answer is "found" or "not found";
+a record-ID lookup never names another record.
+
+### Level 2 — a value saved in another field
+
+```text
+# on: result_specimen_id — the specimen must be registered on the collection form
+@UVEXISTS=[specimen_id]
+```
+
+The value must be saved in `specimen_id` in some record, in any event or repeat
+instance. Staff see the record it was found in, unless they are in a Data Access
+Group and that record is not.
+
+### Level 3 — one event, one group, one site
+
+```text
+# on: result_specimen_id — registered at enrolment, by the same site
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","match":{"site_code":"[site]"}}
+
+# on: referral_id — only among records of the same Data Access Group
+@UVEXISTS={"in":"[referral_id]","scope":"dag"}
+
+# on: kit_number — a kit dispensed in the same event as this entry
+@UVEXISTS={"in":"[kit_dispensed]","scope":"event"}
+```
+
+`event` names one event by its unique name. `scope` is `project` (the default),
+`dag` (records of the same Data Access Group as this record; records in no group
+form one group) or `event` (the event of the entry being checked). `match` looks
+only at saved entries whose target field holds the same value as a field of this
+record: `{"site_code":"[site]"}` reads "where `site_code` equals this record's
+`[site]`". Up to 5 pairs. The target values must be saved in the same entry as the
+searched value: one event row, or one repeat instance together with its event row.
+
+### Level 4 — message, enforcement, condition, surveys
+
+```text
+# on: result_specimen_id — hard block, with a message the lab understands
+@UVEXISTS={"in":"[specimen_id]","message":"Register this specimen on the collection form first.",
+           "blockSave":"hard"}
+
+# on: partner_id — checked only when a partner is reported
+@UVEXISTS={"in":"[participant_id]","when":"[has_partner]='1'"}
+
+# on: voucher_code — also checked on the survey
+@UVEXISTS={"in":"[voucher_issued]","surveys":true}
+```
+
+### Semantics worth knowing
+
+- **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
+  each `match` target must exist and hold one value (no checkbox, file or
+  descriptive field).
+- **The comparison is exact.** Values are trimmed and compared letter for letter,
+  case included. A date is compared as REDCap stores it (Y-M-D), whatever format
+  the field shows, so the field and the field searched must hold the same kind of
+  date: two dates, two datetimes, or neither. Dropdown and radio values are
+  compared by code, so the two fields need the same codes.
+- **Asked when the value is entered, not per keystroke.** The page asks when the
+  field is changed or left, and once when the form opens. Typing clears the last
+  answer, so a half-typed value never reads "not found".
+- **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
+  and *could not check* (amber; never blocks). A failed read, a `match` field that
+  is blank on another form, a busy server and missing rights all answer *could not
+  check*, and staff see the reason. The post-save audit checks the value again.
+- **Blank checks nothing.** A blank value is not looked up. A blank `match` field
+  on the same page means there is nothing to narrow by yet, so nothing is asked.
+- **Where the rule looks stays on the server.** The page holds the rule's
+  message and enforcement but not `in`, `event`, `scope` or `match`; the server
+  reads them from the stored rule.
+- **Rights.** A signed-in user is answered only when they may open the forms that
+  hold the searched field and the `match` fields. A record-ID lookup needs no extra
+  form. At most 60 lookups a minute per user session, shared with `@UVUNIQUE`.
+- **Surveys: opt-in.** `"surveys":true` turns the check on for surveys, with a
+  found / not found answer only and the survey rate limit. It is refused when any
+  field the lookup touches is an Identifier, including the record-ID field for
+  `@UVEXISTS=record`, because a "found" answer would let anyone holding the survey
+  link test whether a value is in the study.
+- **The server checks every save.** The post-save audit logs a violation as
+  `type: exists` with reason `not-found`. A lookup that cannot be completed is
+  logged as a rule problem, never as a pass.
+- **The Validation scan** reads the searched field once for each rule and checks
+  every record against it, with "Not found in its source" in the Issue column. A
+  scan confined to one Data Access Group skips rules whose `scope` is not `dag`,
+  and reports them as not evaluated, because a value saved only in another group
+  would read as not found.
+- **Configure dialog:** none. `@UVEXISTS` exists only as an action tag.
+
+### `@UVEXISTS` JSON keys
+
+`in`, `event`, `scope`, `match`, `surveys`, `when`, `message`, `blockSave` and
+`caseSensitive`. Any other key is a configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Nothing to look in.
+# refused: needs to know where to look
+@UVEXISTS=
+
+# Two fields. The lookup searches one.
+# refused: is not a place to look
+@UVEXISTS=[specimen_id][aliquot_id]
+
+# The JSON form needs "in".
+# refused: needs "in"
+@UVEXISTS={"scope":"dag"}
+
+# Another project. Not supported in this version.
+# refused: unknown @UVEXISTS option(s): project
+@UVEXISTS={"in":"[specimen_id]","project":12}
+
+# Scopes are project, dag and event.
+# refused: "scope" must be project, dag or event
+@UVEXISTS={"in":"[specimen_id]","scope":"site"}
+
+# "event" takes the unique event name.
+# refused: unique event name
+@UVEXISTS={"in":"[specimen_id]","event":"Enrolment visit"}
+
+# One event, or the entry's own event. Not both.
+# refused: cannot be combined
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"event"}
+
+# A record ID belongs to the whole record.
+# refused: does not apply to "in":"record"
+@UVEXISTS={"in":"record","event":"enrolment_arm_1"}
+
+# A record ID has nothing to match.
+# refused: a record ID has nothing to match
+@UVEXISTS={"in":"record","match":{"site_code":"[site]"}}
+
+# "match" maps a target field to a field of this record.
+# refused: "match" must be an object
+@UVEXISTS={"in":"[specimen_id]","match":["[site]"]}
+
+# The match value must be a field reference.
+# refused: must be one field reference
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"A"}}
+
+# The searched field already holds the value looked up.
+# refused: is the field named in "in"
+@UVEXISTS={"in":"[specimen_id]","match":{"specimen_id":"[site]"}}
+
+# A quoted boolean.
+# refused: "surveys" must be true or false
+@UVEXISTS={"in":"[voucher_issued]","surveys":"true"}
+```
+
 ---
 
 ## Combining tags on one field
@@ -2415,6 +2582,45 @@ counts as the same value), `scope` narrows the **search** (which records are com
 @UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"when":"[visit_type]='1'"}
 ```
 
+### `@UVEXISTS` recipes
+
+#### Results that point at registered specimens
+
+```text
+# on: result_specimen_id — the specimen must be registered, hard block
+@UVEXISTS={"in":"[specimen_id]","blockSave":"hard","message":"Register this specimen on the collection form first."}
+
+# on: aliquot_parent — the parent tube must be registered at the same site
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"confirm"}
+```
+
+#### Links between participants
+
+```text
+# on: mother_record_id — the mother is enrolled in this project
+@UVEXISTS=record
+
+# on: index_case_id — the index case is a participant of the same group
+@UVEXISTS={"in":"[participant_id]","scope":"dag"}
+```
+
+#### Visits and kits
+
+```text
+# on: kit_returned — the returned kit was dispensed in this event
+@UVEXISTS={"in":"[kit_dispensed]","scope":"event"}
+
+# on: screening_number — issued at the screening event
+@UVEXISTS={"in":"[screening_number]","event":"screening_arm_1"}
+```
+
+#### Surveys
+
+```text
+# on: voucher_code — the respondent enters a voucher the study issued (not an Identifier)
+@UVEXISTS={"in":"[voucher_issued]","surveys":true,"blockSave":"hard"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -2538,8 +2744,8 @@ you can recognise the mistake; the fix is on the right.
 
 Everything a tag can say, the module's **Configure** dialog can say too. Use the
 dialog when one rule covers many fields, when you want a rule that is not tied to the
-data dictionary, or when a designer should not edit annotations. `@UVCHOICES` and
-`@UVWINDOW` exist only as tags.
+data dictionary, or when a designer should not edit annotations. `@UVCHOICES`,
+`@UVWINDOW` and `@UVEXISTS` exist only as tags.
 
 **Step 1 — open it.** Control Center or the project's *External Modules* page →
 **Universal Field Validator** → **Configure**.
@@ -2705,6 +2911,20 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `from` date on another form never blocks |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
+### `@UVEXISTS`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `in`            | string          | *(none)*     | `record`, or one field reference such as `[specimen_id]`; the shorthand `@UVEXISTS=[field]` sets it |
+| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"` or `"in":"record"` |
+| `scope`         | string          | `project`    | `project`, `dag` (this record's group), `event` (this entry's event)   |
+| `match`         | object          | *(none)*     | `{"target_field":"[field of this record]"}`, up to 5 pairs, same entry as the searched value |
+| `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier   |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string          | generic line   | Replaces the "not found" line                                          |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when` (the lookup itself is always exact)        |
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -2761,6 +2981,8 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `keepChars` length | 64 |
 | Entries in one `alternates` list | 8 |
 | `@UVWINDOW` bound, either side of `from` | 36,500 units |
+| `@UVEXISTS` `match` pairs | 5 |
+| `@UVEXISTS` lookups per user session | 60 a minute, shared with `@UVUNIQUE` |
 
 ### Algorithms
 
@@ -2852,6 +3074,13 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVWINDOW={"from":"[dob]","window":[0,null]}           not before birth
 @UVWINDOW={"from":"[enrol_date]","window":[-28,0]}     up to 28 days before enrolment
 @UVWINDOW={"from":"[rand_date]","window":[10,14],"unit":"weeks","blockSave":"hard"}
+
+# ── @UVEXISTS — values that must already exist ──────────────────────────────
+@UVEXISTS=record                                       a record ID of this project
+@UVEXISTS=[specimen_id]                                a value saved in specimen_id
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1"}
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"hard"}
+@UVEXISTS={"in":"[referral_id]","scope":"dag"}
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

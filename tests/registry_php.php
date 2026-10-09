@@ -49,9 +49,11 @@ check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags
     '@UVUNIQUE'   => 'unique',
     '@UVCHOICES'  => 'choices',
     '@UVWINDOW'   => 'window',      // 2.2.0
+    '@UVEXISTS'   => 'exists',      // 2.3.0
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
-          'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window'] as $const => $mode) {
+          'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window',
+          'TAG_EXISTS' => 'exists'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
@@ -67,6 +69,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    // 2.3.0 @UVEXISTS
+    'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -80,6 +84,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowFromOp', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    // 2.3.0 @UVEXISTS (where it looks stays on the server)
+    'existsLocal', 'existsSurveys',
 ]);
 
 // Branching::modeOfType.

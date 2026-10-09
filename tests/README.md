@@ -19,6 +19,8 @@ node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
@@ -173,6 +175,25 @@ server clock.
   withheld, unresolved), `config.clock`, the audit reasons, re-auditing on a
   save of the `from` form, scan labels and detail lines, and the durable scan
   clock taken from the run's start time.
+
+## `exists_php.php` and `exists_dom_js.cjs` — the lookup contract
+
+`exists_php.php` mocks `REDCap::getData` so that it honours `records`, `events`
+and a simple `filterLogic`, and can be told to misbehave: a filtered read that
+wrongly comes back empty, a full read that throws, every read throwing, or a read
+that returns every event. It covers the grammar and dictionary refusals, that
+the lookup target never reaches the page config, the `exists-check` endpoint
+(found, not found and could not check; a narrowed miss confirmed by the full
+read; trimmed, case-sensitive comparison of stored values; dates typed as shown;
+`match` fields on and off the page; events, scopes and branches; the form-rights
+gate and the per-session throttle, both shared with `unique-check`; the survey
+opt-in and its Identifier refusal; the DAG-masked record), the audit, the scan
+index read once per rule, and the group-confined scan.
+
+`exists_dom_js.cjs` drives the browser rule with fake timers and a stub
+transport: typing clears the answer and asks nothing, change and blur ask once,
+*could not check* never blocks, unknown answers are not cached, a late reply for
+an older value is dropped, surveys are opt-in and never see a reason.
 
 ## `hook_php.php` — the audit-path contract
 

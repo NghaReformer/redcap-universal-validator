@@ -36,6 +36,11 @@
       "tagForm": "@UVWINDOW={\"notFuture\":true,\"when\":\"[a]='x'\",%s}",
       "fragment": {"windowNotFuture": true},
       "client": {"windowNotFuture": true, "dateType": "date", "dateFormat": "ymd"}
+    },
+    "exists": {
+      "tagForm": "@UVEXISTS={\"in\":\"[b]\",\"when\":\"[a]='x'\",%s}",
+      "fragment": {"existsIn": "b", "existsTargets": ["b"]},
+      "client": {}
     }
   }
 }

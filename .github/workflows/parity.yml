@@ -61,6 +61,8 @@ jobs:
         run: |
           node tests/window_js.cjs
           node tests/window_dom_js.cjs
+      - name: JS exists (@UVEXISTS) DOM contract (asks on change, could-not-check never blocks, cache)
+        run: node tests/exists_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
         run: node tests/alternates_dom_js.cjs
       - name: JS documented outcomes (expect blocks in the example docs)
@@ -181,6 +183,8 @@ jobs:
         run: |
           php tests/window_php.php
           php tests/window_module_php.php
+      - name: PHP @UVEXISTS grammar, hooks, endpoint (rights, throttle, surveys), audit and scan index
+        run: php tests/exists_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)

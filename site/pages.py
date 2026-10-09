@@ -50,7 +50,7 @@ class Page:
 # --- pages -----------------------------------------------------------------
 # Ordered as they appear in the nav.
 
-TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow")
+TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow", "uvexists")
 
 PAGES = [
     Page(
@@ -151,6 +151,19 @@ PAGES = [
         keywords=("@UVWINDOW", "REDCap action tag", "visit window", "date validation",
                   "future date", "longitudinal study"),
         related=("uvassert", "uvrequired", "index"),
+    ),
+    Page(
+        slug="uvexists",
+        title="@UVEXISTS — check that a value already exists in a REDCap project",
+        heading="@UVEXISTS",
+        description=(
+            "@UVEXISTS is a REDCap action tag that checks a value is already saved in the "
+            "project, such as a specimen ID registered on another form or an existing record ID."
+        ),
+        nav_label="@UVEXISTS",
+        keywords=("@UVEXISTS", "REDCap action tag", "referential integrity", "lookup",
+                  "specimen ID", "record ID check"),
+        related=("uvunique", "uvassert", "index"),
     ),
     Page(
         slug="install",

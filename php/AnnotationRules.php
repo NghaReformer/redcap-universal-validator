@@ -41,6 +41,14 @@ class AnnotationRules
     const TAG_UNIQUE = '@UVUNIQUE';
     const TAG_CHOICES = '@UVCHOICES';
     const TAG_WINDOW = '@UVWINDOW';
+    const TAG_EXISTS = '@UVEXISTS';
+
+    /** Where an @UVEXISTS lookup may search: the whole project (default), the
+     *  record's own Data Access Group, or the event of the entry being checked. */
+    const EXISTS_SCOPES = ['project', 'dag', 'event'];
+
+    /** Cap on @UVEXISTS "match" pairs, so a lookup stays one narrow read. */
+    const MAX_EXISTS_MATCH = 5;
 
     /** Largest window bound, in units either side of the anchor. */
     const MAX_WINDOW_BOUND = 36500;
@@ -569,6 +577,112 @@ class AnnotationRules
         self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVEXISTS value into an exists fragment. The value must already
+     * be saved somewhere in the project:
+     *   @UVEXISTS=record                  a record ID of this project
+     *   @UVEXISTS=[specimen_id]           a saved value of field specimen_id
+     *   @UVEXISTS={"in":"[specimen_id]","event":"enrol_arm_1","scope":"dag",
+     *              "match":{"site_code":"[site]"},"when":"...","message":"...",
+     *              "blockSave":"hard","surveys":true}
+     * "match" narrows the lookup to saved entries whose target field holds the
+     * same value as a field of this record (target field => [local field]).
+     * "surveys" is an opt-in, as for @UVUNIQUE: a found / not found answer is
+     * record-derived information.
+     */
+    private static function parseExistsValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '') {
+            return ['error' => self::TAG_EXISTS . ' needs to know where to look: ' . self::TAG_EXISTS . '=record, '
+                . self::TAG_EXISTS . '=[field], or the JSON form with "in".'];
+        }
+        if ($val[0] !== '{') {
+            $in = self::existsSource($val);
+            if ($in === null) {
+                return ['error' => self::TAG_EXISTS . '=' . $val . ' is not a place to look — use record, one field '
+                    . 'reference such as [specimen_id], or the JSON form for other options.'];
+            }
+            $out = ['type' => 'exists', 'existsIn' => $in];
+            if ($in !== 'record') $out['existsTargets'] = [$in];
+            $errs = self::checkFragment($out, $opts);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_EXISTS . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['in', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_EXISTS . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        if (!isset($cfg['in'])) {
+            return ['error' => self::TAG_EXISTS . ' needs "in": "record" or one field reference such as "[specimen_id]".'];
+        }
+        if (!is_string($cfg['in'])) return ['error' => '"in" must be a string.'];
+        $in = self::existsSource($cfg['in']);
+        if ($in === null) {
+            return ['error' => '"in" must be "record" or one field reference such as "[specimen_id]" — got '
+                . json_encode($cfg['in']) . '. To look in one event, add "event".'];
+        }
+        $out = ['type' => 'exists', 'existsIn' => $in];
+        if (isset($cfg['event'])) {
+            if (!is_string($cfg['event'])) return ['error' => '"event" must be a unique event name such as "enrolment_arm_1".'];
+            $out['existsEvent'] = strtolower(trim($cfg['event']));
+        }
+        if (isset($cfg['scope'])) {
+            if (!is_string($cfg['scope'])) return ['error' => '"scope" must be a string.'];
+            $out['existsScope'] = strtolower(trim($cfg['scope']));
+        }
+        if (isset($cfg['match'])) {
+            if (!is_array($cfg['match']) || !$cfg['match'] || array_keys($cfg['match']) === range(0, count($cfg['match']) - 1)) {
+                return ['error' => '"match" must be an object of target field to field of this record, e.g. '
+                    . '{"site_code":"[site]"}.'];
+            }
+            $match = [];
+            foreach ($cfg['match'] as $target => $local) {
+                $t = strtolower(trim((string) $target));
+                $l = is_string($local) ? self::existsSource($local) : null;
+                if ($l === null || $l === 'record') {
+                    return ['error' => '"match" value for "' . $t . '" must be one field reference of this record, such as "[site]".'];
+                }
+                if (isset($match[$t])) return ['error' => '"match" names the target "' . $t . '" twice.'];
+                $match[$t] = $l;
+            }
+            $out['existsMatch'] = $match;
+        }
+        if (isset($cfg['surveys'])) {
+            if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
+            if ($cfg['surveys']) $out['existsSurveys'] = true;
+        }
+        foreach (['when', 'message', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        self::takeCaseSensitive($cfg, $out);
+        // What the rule reads, as field lists: the fields of THIS record the
+        // lookup is narrowed by, and the fields it searches in other entries.
+        if (isset($out['existsMatch'])) $out['existsLocal'] = array_values(array_unique(array_values($out['existsMatch'])));
+        $targets = $in === 'record' ? [] : [$in];
+        foreach (array_keys(isset($out['existsMatch']) ? $out['existsMatch'] : []) as $t) $targets[] = (string) $t;
+        if ($targets) $out['existsTargets'] = array_values(array_unique($targets));
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /** "record", or the field one plain [field] reference names, or null. */
+    private static function existsSource($text)
+    {
+        $t = trim((string) $text);
+        if (strtolower($t) === 'record') return 'record';
+        return preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)\]$/', $t, $m) ? strtolower($m[1]) : null;
     }
 
     /** Parse one raw tag value into a fragment (see parseField). */
@@ -1386,6 +1500,77 @@ class AnnotationRules
         }
         if ($notFuture && $frag['windowNotFuture'] !== true) {
             $errors[] = '"notFuture" must be true or false (unquoted).';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for an exists (@UVEXISTS) fragment: a source that is
+     * "record" or a field name, a known scope, an "event" that is a plausible
+     * unique event name, "match" pairs of field names under the cap, and the
+     * combinations that make no sense ("event" with "scope":"event"; "event",
+     * "scope":"event" or "match" on a record-ID lookup). Whether the fields and
+     * the event exist is checked in the channel glue with the dictionary in hand.
+     * Event and instance references in "when" are not supported here yet.
+     */
+    public static function checkExists(array $frag, array $opts = [])
+    {
+        $errors = [];
+        $in = isset($frag['existsIn']) ? $frag['existsIn'] : null;
+        if (!is_string($in) || ($in !== 'record' && !preg_match('/^[a-z][a-z0-9_]*$/', $in))) {
+            $errors[] = self::TAG_EXISTS . ' needs "in": "record" or one field reference such as "[specimen_id]".';
+        }
+        $scope = isset($frag['existsScope']) ? $frag['existsScope'] : 'project';
+        if (!in_array($scope, self::EXISTS_SCOPES, true)) {
+            $scopes = self::EXISTS_SCOPES;
+            $last = array_pop($scopes);
+            $errors[] = '"scope" must be ' . implode(', ', $scopes) . ' or ' . $last . '.';
+        }
+        if (isset($frag['existsEvent']) && (!is_string($frag['existsEvent']) || !preg_match('/^[a-z0-9_]+$/', $frag['existsEvent']))) {
+            $errors[] = '"event" must be a unique event name such as "enrolment_arm_1".';
+        }
+        if (isset($frag['existsEvent']) && $scope === 'event') {
+            $errors[] = '"event" and "scope":"event" cannot be combined — "event" names the one event to look in, '
+                . '"scope":"event" means the event of the entry being checked.';
+        }
+        if ($in === 'record') {
+            if (isset($frag['existsEvent'])) $errors[] = '"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            if ($scope === 'event') $errors[] = '"scope":"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            if (isset($frag['existsMatch'])) $errors[] = '"match" needs "in" to name a field; a record ID has nothing to match.';
+        }
+        if (isset($frag['existsMatch'])) {
+            $match = $frag['existsMatch'];
+            if (!is_array($match) || !$match) {
+                $errors[] = '"match" must name at least one target field.';
+            } elseif (count($match) > self::MAX_EXISTS_MATCH) {
+                $errors[] = '"match" is limited to ' . self::MAX_EXISTS_MATCH . ' fields.';
+            } else {
+                foreach ($match as $t => $l) {
+                    if (!is_string($t) || !preg_match('/^[a-z][a-z0-9_]*$/', $t)) {
+                        $errors[] = '"match" target ' . json_encode($t) . ' is not a valid REDCap field name.';
+                        break;
+                    }
+                    if (!is_string($l) || !preg_match('/^[a-z][a-z0-9_]*$/', $l)) {
+                        $errors[] = '"match" value for "' . $t . '" must be one field reference such as "[site]".';
+                        break;
+                    }
+                    if ($t === $in) {
+                        $errors[] = '"match" target "' . $t . '" is the field named in "in" — it already holds the value looked up.';
+                        break;
+                    }
+                }
+            }
+        }
+        if (isset($frag['existsSurveys']) && $frag['existsSurveys'] !== true) {
+            $errors[] = '"surveys" must be true or false (unquoted).';
+        }
+        // The lookup reads saved values of one project through one read; an
+        // event/instance reference in "when" would need the extended pipeline,
+        // which this tag does not run yet.
+        if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
+                && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
+            $errors[] = self::TAG_EXISTS . ' does not support event or instance references in "when" yet — use '
+                . 'fields of this entry.';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
     }
