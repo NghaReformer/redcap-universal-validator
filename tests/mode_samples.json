@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "One working sample per validation mode in php/modes.json, for the tests that must cover every mode.",
+    "tests/registry_php.php fails when a mode has no entry here, so a new mode is exercised by those loops",
+    "from the day it is added. tagForm: an annotation with a \"when\" and a %s slot for one more JSON key.",
+    "fragment: the extra keys a fragment of this mode needs to validate clean. client: keys the engine needs",
+    "to start the mode's validator with a failing value \"bad\" in field \"target\"."
+  ],
+  "modes": {
+    "check": {
+      "tagForm": "@UVALIDATE={\"algorithm\":\"luhn\",\"when\":\"[a]='x'\",%s}",
+      "fragment": {},
+      "client": {"algorithm": "none", "idPattern": "GOOD"}
+    },
+    "constraint": {
+      "tagForm": "@UVASSERT={\"assert\":\"[a]=[b]\",\"when\":\"[a]='x'\",%s}",
+      "fragment": {"assert": "[a]=[b]"},
+      "client": {"assert": "1=0"}
+    },
+    "required": {
+      "tagForm": "@UVREQUIRED={\"when\":\"[a]='x'\",%s}",
+      "fragment": {},
+      "client": {}
+    },
+    "unique": {
+      "tagForm": "@UVUNIQUE={\"when\":\"[a]='x'\",%s}",
+      "fragment": {},
+      "client": {"uniqueScope": "project"}
+    },
+    "choices": {
+      "tagForm": "@UVCHOICES={\"when\":\"[a]='x'\",\"hide\":[\"9\"],%s}",
+      "fragment": {"choicesHide": ["9"]},
+      "client": {"choicesHide": ["bad"], "choicesAll": ["bad", "good"]}
+    }
+  }
+}

@@ -30,6 +30,7 @@ namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/CheckCharacter.php';
 require_once __DIR__ . '/Logic.php';
+require_once __DIR__ . '/ModeRegistry.php';
 
 class AnnotationRules
 {
@@ -39,22 +40,15 @@ class AnnotationRules
     const TAG_UNIQUE = '@UVUNIQUE';
     const TAG_CHOICES = '@UVCHOICES';
 
-    /**
-     * Every action tag this module owns, mapped to the validation MODE the tag
-     * configures. @UVALIDATE is the original check-character / regex ID tag;
-     * the intent-named tags each configure one added mode. Different modes on
-     * one field COMPOSE (all must pass); several tags of the SAME mode on one
-     * field branch (php/Branching.php). The mode travels on the rule as its
-     * "type" (single|pooled = check; constraint; required; …), which is what
-     * the client dispatcher, the server audit, and Branching all key on.
+    /*
+     * Which tag configures which validation MODE, the field types each mode
+     * accepts, and the parser/validator each one uses all live in
+     * php/modes.json (served by ModeRegistry). Different modes on one field
+     * COMPOSE (all must pass); several tags of the SAME mode on one field
+     * branch (php/Branching.php). The mode travels on the rule as its "type"
+     * (single|pooled = check; constraint; required; ...), which is what the
+     * client dispatcher, the server audit, and Branching all key on.
      */
-    const TAGS = [
-        self::TAG          => 'check',
-        self::TAG_ASSERT   => 'constraint',
-        self::TAG_REQUIRED => 'required',
-        self::TAG_UNIQUE   => 'unique',
-        self::TAG_CHOICES  => 'choices',
-    ];
 
     /** Uniqueness scopes: whole project (default), within the record's Data
      *  Access Group, or within the same event of a longitudinal project. */
@@ -62,33 +56,6 @@ class AnnotationRules
 
     /** Composite-key size cap: [field]+with must stay a cheap lookup. */
     const MAX_UNIQUE_WITH = 5;
-
-    /** Field types a constraint (@UVASSERT) may be attached to — any scalar
-     *  input whose current answer is a single readable value. Checkbox (multi
-     *  value), file and descriptive fields are excluded as the VALIDATED field,
-     *  though any of them may still be REFERENCED inside an assert condition. */
-    const CONSTRAINT_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                    'yesno', 'truefalse', 'calc', 'sql', 'slider'];
-
-    /** Field types @UVREQUIRED may be attached to. Same scalar family as
-     *  constraints MINUS calc (the person entering data cannot type into a
-     *  calc, so "required" would trap them on a field they cannot fix). */
-    const REQUIRED_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                  'yesno', 'truefalse', 'sql', 'slider'];
-
-    /** Field types @UVUNIQUE may be attached to — same list as required (no
-     *  calc: a data enterer cannot fix a calc collision). Composite "with"
-     *  fields are checked separately against the data dictionary. */
-    const UNIQUE_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                'yesno', 'truefalse', 'sql', 'slider'];
-
-    /** Field types @UVCHOICES may filter — the multiple-choice family whose
-     *  options come from select_choices_or_calculations. yesno/truefalse have
-     *  fixed options (filtering one of two makes the field a foregone
-     *  conclusion, not a choice) and sql options live outside the dictionary,
-     *  so neither is eligible. Matrix membership is refused separately in the
-     *  channel glue (grid rows render different markup). */
-    const CHOICES_FIELD_TYPES = ['radio', 'dropdown', 'checkbox'];
 
     /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
      *  every re-evaluation, so the list must stay small. REDCap fields with
@@ -298,14 +265,11 @@ class AnnotationRules
     {
         $any = false;
         $out = [];
-        foreach (self::TAGS as $tag => $mode) {
+        foreach (ModeRegistry::tagMap() as $tag => $mode) {
+            $parser = ModeRegistry::mode($mode)['parser'];
             foreach (self::extractTagsFor($annotation, $tag) as $val) {
                 $any = true;
-                if ($mode === 'constraint')    $frag = self::parseAssertValue($val, $opts);
-                elseif ($mode === 'required')  $frag = self::parseRequiredValue($val, $opts);
-                elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val, $opts);
-                elseif ($mode === 'choices')   $frag = self::parseChoicesValue($val, $opts);
-                else                           $frag = self::parseValue($val, $opts);
+                $frag = self::$parser($val, $opts);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
@@ -670,24 +634,19 @@ class AnnotationRules
 
         // "alternates" describes accepted ID FORMATS, which only the check
         // modes read. Left unremarked on the others it validates clean, is
-        // carried through Branching::BRANCH_KEYS and shipped to the browser,
+        // carried through the branch keys (ModeRegistry::branchKeys()) and shipped to the browser,
         // and a designer reads it as active configuration when nothing will
         // ever consult it.
         if (isset($frag['alternates']) && $frag['alternates'] !== null && $frag['alternates'] !== ''
-                && !in_array($type, ['single', 'pooled'], true)) {
+                && !in_array($type, ModeRegistry::types('check'), true)) {
             return ['"alternates" applies only to ID checks (type "single" or "pooled"); a '
                 . $type . ' rule has no ID format to match.'];
         }
-        // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
-        // It shares "when"/"blockSave" with check rules but none of the
-        // check-character/pattern/pooled machinery, so it validates separately.
-        if ($type === 'constraint') return array_merge(self::checkConstraint($frag, $opts), $caseErrors);
-        // Required mode (@UVREQUIRED): blank-while-required is the only test.
-        if ($type === 'required') return array_merge(self::checkRequired($frag, $opts), $caseErrors);
-        // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
-        if ($type === 'unique') return array_merge(self::checkUnique($frag, $opts), $caseErrors);
-        // Choices mode (@UVCHOICES): dynamic show/hide of individual options.
-        if ($type === 'choices') return array_merge(self::checkChoices($frag, $opts), $caseErrors);
+        // Every mode except the ID check has its own validator (modes.json
+        // "checker"): it shares "when"/"blockSave" with check rules but none of
+        // the check-character/pattern/pooled machinery below.
+        $checker = ModeRegistry::mode(ModeRegistry::modeOfType($type))['checker'];
+        if ($checker !== null) return array_merge(self::$checker($frag, $opts), $caseErrors);
 
         $errors = $caseErrors;
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';

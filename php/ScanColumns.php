@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ModeRegistry.php';
+
 /**
  * What a scan report shows, declared once and rendered the same way everywhere.
  *
@@ -40,21 +42,17 @@ final class ScanColumns
             [
                 'key' => 'issue', 'label' => 'Issue', 'group' => 'problem',
                 'visible' => function () { return true; },
-                // Derived, never switched on: the map has a default, so an
-                // unknown type still lands somewhere truthful.
+                // Derived, never switched on: the labels live in
+                // php/modes.json, and an unknown type falls to the check
+                // mode's "Wrong value", so it still lands somewhere truthful.
+                // A 'choices' finding is NOT a wrong value: the code was a
+                // legal option when it was saved and the rule list changed
+                // under it. Filing it beside a mistyped ID sends it to the
+                // wrong person - one is a data-entry error, the other a design
+                // change with existing data behind it.
                 'render' => function (array $f) {
-                    // 'choices' is NOT a wrong value: the code was a legal
-                    // option when it was saved and the rule list changed under
-                    // it. Filing it beside a mistyped ID sends it to the wrong
-                    // person - one is a data-entry error, the other a design
-                    // change with existing data behind it.
-                    $map = [
-                        'required' => 'Missing value',
-                        'unique'   => 'Duplicate value',
-                        'choices'  => 'No longer an allowed choice',
-                    ];
-                    $t = isset($f['type']) ? $f['type'] : '';
-                    return isset($map[$t]) ? $map[$t] : 'Wrong value';
+                    return ModeRegistry::issueLabel(isset($f['type']) ? $f['type'] : '',
+                                                    isset($f['reason']) ? $f['reason'] : '');
                 },
             ],
             [

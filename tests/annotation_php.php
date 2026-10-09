@@ -13,6 +13,7 @@ require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\AnnotationRules;
 use INSPIRE\UniversalValidator\CheckCharacter;
+use INSPIRE\UniversalValidator\ModeRegistry;
 
 $n = 0;
 $fail = 0;
@@ -332,14 +333,13 @@ check('assert caseSensitive quoted -> error', isset($f[0]['error'])
     && strpos($f[0]['error'], 'caseSensitive') !== false && $f[0]['_tag'] === '@UVASSERT');
 $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":1}');
 check('assert caseSensitive:1 -> error', isset($f[0]['error']));
-// Every tag with a "when" takes the flag; each refuses a non-boolean.
-$tagForms = [
-    '@UVALIDATE' => '@UVALIDATE={"algorithm":"luhn","when":"[a]=\'x\'",%s}',
-    '@UVREQUIRED' => '@UVREQUIRED={"when":"[a]=\'x\'",%s}',
-    '@UVUNIQUE' => '@UVUNIQUE={"when":"[a]=\'x\'",%s}',
-    '@UVCHOICES' => '@UVCHOICES={"when":"[a]=\'x\'","hide":["9"],%s}',
-    '@UVASSERT' => '@UVASSERT={"assert":"[a]=[b]","when":"[a]=\'x\'",%s}',
-];
+// Every tag with a "when" takes the flag; each refuses a non-boolean. One
+// sample per mode in php/modes.json (tests/mode_samples.json), so a new mode
+// is covered here the day it is added.
+$modeSamples = json_decode(file_get_contents(__DIR__ . '/mode_samples.json'), true)['modes'];
+$tagForms = [];
+foreach (ModeRegistry::all() as $m) $tagForms[$m['tag']] = $modeSamples[$m['mode']]['tagForm'];
+check('every mode has a tagForm sample', count($tagForms) === count(ModeRegistry::all()));
 foreach ($tagForms as $tag => $form) {
     $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":true'));
     check($tag . ' caseSensitive:true carried', !isset($f[0]['error']) && $f[0]['caseSensitive'] === true);
@@ -349,8 +349,8 @@ foreach ($tagForms as $tag => $form) {
     check($tag . ' caseSensitive non-boolean -> error', isset($f[0]['error'])
         && strpos($f[0]['error'], 'caseSensitive') !== false);
 }
-foreach (['single', 'pooled', 'constraint', 'required', 'unique', 'choices'] as $t) {
-    $frag = ['type' => $t, 'caseSensitive' => 'yes', 'assert' => '[a]=[b]', 'choicesHide' => ['9']];
+foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) {
+    $frag = array_merge(['type' => $t, 'caseSensitive' => 'yes'], $modeSamples[$m['mode']]['fragment']);
     $errs = AnnotationRules::checkFragment($frag);
     check('checkFragment (' . $t . ', settings channel) refuses a non-boolean caseSensitive',
         (bool) array_filter($errs, function ($e) { return strpos($e, 'caseSensitive') !== false; }));

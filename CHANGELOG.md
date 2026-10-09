@@ -5,8 +5,13 @@ Git tags identify release snapshots. Release candidates are intended for develop
 
 ## Unreleased
 
+### Changed
+
+- The validation modes (one per action tag) are now listed in one file, `php/modes.json`: the tag, its rule types, the field types it accepts, its parser, validator and findings method, the keys its rules carry, and its scan labels. The server reads it through `php/ModeRegistry.php`. `tests/gen_mode_registry.cjs` writes the browser's copy into `js/engine.js`, and CI fails when that copy is stale. Before, each of these lists was kept by hand in about a dozen places. Behaviour is unchanged: `tests/registry_php.php` holds copies of the replaced lists and fails if the registry stops reproducing them.
+
 ### Fixed
 
+- A stored Configure-dialog rule whose type is `choices` (a mode the dialog has no boxes for) now shows a configuration notice naming the `@UVCHOICES` action tag. It used to be assembled from the check-character boxes and refused with an unrelated message.
 - **Long numbers no longer stall a save or a scan.** A data-entry user could type a number of up to 4,096 digits into a field read by an average, sum or minimum/maximum. Each member was then scaled and re-summed for every entry of the record, one digit at a time, and none of that work counted against the evaluation budget. With 160 repeat entries of 4,000 digits one audit took 166 seconds and one scan 260 seconds. Multiplication and addition now work in machine-integer blocks, and decimal arithmetic on values of 64 or more characters is charged to the record's budget each time it runs. The same record now finishes in about 0.2 seconds; entries past the budget are reported as unchecked ("context limit or evaluation budget reached") instead of being decided. Values shorter than 64 characters cost nothing extra, so ordinary data is checked exactly as before. (Wargame 2026-09-23, P1.)
 - **A long `events` list no longer stalls a save.** A binding's `events` list accepted repeated entries, an entry for an event with no saved row cost no budget, and every relative entry re-scanned all of the project's events for every entry of the record. A 64 KB annotation repeating `previous-event-name` 2,900 times made one save take 70 seconds at 50 entries. An event listed twice is now refused when the rule is configured ("lists event … more than once"), event names are resolved once per request, and an event with no saved row costs one unit like any other read. The largest list still accepted, every event once plus the relative selectors, takes about 30 ms for that record. (Wargame 2026-09-23, P2.)
 

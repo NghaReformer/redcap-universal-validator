@@ -16,7 +16,7 @@
  *
  *   - Branch rule shape: { type, fields: [ONE field], branches: [ ... ] }.
  *     Each branch is a SPARSE copy of its source rule's per-rule keys
- *     (BRANCH_KEYS below) plus "when" (string, or null for the else branch).
+ *     (ModeRegistry::branchKeys()) plus "when" (string, or null for the else branch).
  *   - Branch order = source-rule order (dialog rules first, then annotation
  *     rules — getRules() order); the else branch is forced LAST.
  *   - Runtime resolution: active = conditional branches whose "when" is true;
@@ -40,25 +40,19 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ModeRegistry.php';
+
 class Branching
 {
-    /**
-     * Per-rule keys a branch inherits from its source rule (sparse copy —
-     * only keys the rule actually carries). "when" is handled separately
-     * (null marks the else branch); "fields"/"type"/"configError" never
-     * belong to a branch.
+    /*
+     * Per-rule keys a branch inherits from its source rule (sparse copy, only
+     * keys the rule actually carries) are ModeRegistry::branchKeys(): the
+     * union of every mode's "branchKeys" in php/modes.json. "when" is handled
+     * separately (null marks the else branch); "fields"/"type"/"configError"
+     * never belong to a branch. choicesAll travels on every branch (identical
+     * per field, attached from the dictionary) so a flattened branch is
+     * self-contained.
      */
-    const BRANCH_KEYS = ['algorithm', 'idPattern', 'alternates', 'source', 'strip', 'keepChars',
-                         'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
-                         'blockSave', 'suggestFix', 'note',
-                         // constraint mode (@UVASSERT)
-                         'assert', 'caseSensitive', 'message', 'references',
-                         // unique mode (@UVUNIQUE)
-                         'uniqueWith', 'uniqueScope', 'uniqueSurveys',
-                         // choices mode (@UVCHOICES) — choicesAll travels on
-                         // every branch (identical per field, attached from the
-                         // dd) so a flattened branch is self-contained.
-                         'choicesShow', 'choicesHide', 'choicesAll'];
 
     /**
      * The validation MODE a rule's "type" belongs to. Different modes on one
@@ -67,17 +61,12 @@ class Branching
      * field-sharing logic below groups claims by (field, mode), and the client
      * dispatcher + server duplicate guard must key on the same pair.
      * single|pooled are two TYPES of the one "check" mode (their single-vs-
-     * pooled clash stays a mixed-type conflict within that mode).
+     * pooled clash stays a mixed-type conflict within that mode). The map is
+     * php/modes.json; unknown types belong to the check mode.
      */
     public static function modeOfType($type)
     {
-        switch ($type) {
-            case 'constraint': return 'constraint';
-            case 'required':   return 'required';
-            case 'unique':     return 'unique';
-            case 'choices':    return 'choices';
-            default:           return 'check'; // single | pooled | '' | unknown
-        }
+        return ModeRegistry::modeOfType($type);
     }
 
     /**
@@ -277,7 +266,7 @@ class Branching
     private static function branchOf(array $rule)
     {
         $b = [];
-        foreach (self::BRANCH_KEYS as $k) {
+        foreach (ModeRegistry::branchKeys() as $k) {
             if (isset($rule[$k])) $b[$k] = $rule[$k];
         }
         $b['when'] = self::whenOf($rule);

@@ -22,6 +22,7 @@ use ExternalModules\AbstractExternalModule;
 
 require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
+require_once __DIR__ . '/php/ModeRegistry.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/Branching.php';
@@ -191,7 +192,7 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     if ($ownFieldOnForm) continue;      // already audited by the normal scope
                     $touches = false;
-                    foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
+                    foreach (ModeRegistry::conditionTexts($r) as $cond) {
                         $p = Logic::parse($cond);
                         if (empty($p['ok'])) continue;
                         foreach (Logic::referencedFields($p['ast']) as $ref) {
@@ -242,18 +243,14 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
             }
 
-            // Constraint rules (@UVASSERT) compare fields their "assert" names,
-            // and unique rules (@UVUNIQUE) read their composite "with" fields —
-            // widen the read set with both, so the audit can evaluate them
-            // (mirrors the "when" widening above).
+            // Every other field a rule's configuration reads — the operands of
+            // an "assert", the composite "with" fields of a unique rule, and
+            // whatever a mode declares in php/modes.json — widens the read set
+            // the same way, so the audit can evaluate the rule (mirrors the
+            // "when" widening above).
             foreach ($rules as $r) {
                 if (!empty($r['configError'])) continue;
-                foreach (self::ruleAsserts($r) as $a) {
-                    $pa = Logic::parse($a);
-                    if (empty($pa['ok'])) continue;
-                    foreach (Logic::referencedFields($pa['ast']) as $ref) $readSet[$ref[0]] = true;
-                }
-                foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
+                foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
             }
 
             // Read every audited + condition-referenced field for this exact
@@ -461,20 +458,19 @@ class UniversalValidator extends AbstractExternalModule
             return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution);
         }
 
-        $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
-        $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
-        $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
-        $pattern = isset($rule['idPattern']) ? $rule['idPattern'] : null;
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
+        $mode    = ModeRegistry::modeOfType($type);
 
         // An algorithm outside the whitelist would make CheckCharacter::compute
         // throw inside validateId, which reads as "invalid ID" — a config
-        // problem must never be reported as a data problem. Constraint /
-        // required / unique / choices rules carry no algorithm and skip this gate.
-        if ($type !== 'constraint' && $type !== 'required' && $type !== 'unique' && $type !== 'choices'
-            && !in_array($algo, AnnotationRules::ALGORITHMS, true)) {
-            $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'unknown algorithm "' . $algo . '"'];
-            return $out;
+        // problem must never be reported as a data problem. Only modes that
+        // carry an algorithm (php/modes.json "hasAlgorithm") take this gate.
+        if (ModeRegistry::hasAlgorithm($mode)) {
+            $algo = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
+            if (!in_array($algo, AnnotationRules::ALGORITHMS, true)) {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'unknown algorithm "' . $algo . '"'];
+                return $out;
+            }
         }
 
         // Conditional rule: evaluate the "when" against this context's values
@@ -507,163 +503,196 @@ class UniversalValidator extends AbstractExternalModule
             if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) return $out;
         }
 
-        // Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
-        // common case live via the AJAX check; two near-simultaneous submits
-        // can both pass it, so the audit re-checks the SAVED value against
-        // every other record. (The scan page does NOT take this path — it
-        // detects duplicates in one aggregate pass over the scanned data
-        // instead of one whole-project read per record.)
-        if ($type === 'unique') {
-            $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-            $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
-            foreach ($rule['fields'] as $field) {
-                if (isset($dupes[$field])) continue;
-                if ($onForm !== null && !isset($onForm[$field])) continue;
-                $value = isset($values[$field]) ? $values[$field] : null;
-                if ($value === null || is_array($value) || trim((string) $value) === '') continue;
-                if (isset($rule['uniqueRecordResults'])) {
-                    if (!array_key_exists($field,$rule['uniqueRecordResults']) || $rule['uniqueRecordResults'][$field] === null) {
-                        $out['unconfigurable'][]=['fields'=>[$field],'why'=>'Record uniqueness could not be resolved.'];
-                    } elseif ($rule['uniqueRecordResults'][$field] === false) {
-                        $out['invalid'][]=['field'=>$field,'value'=>$value,'algo'=>'unique','type'=>'unique','reason'=>'duplicate-value'];
-                    }
-                    continue;
-                }
-                $cand = [$field => trim((string) $value)];
-                foreach ($with as $w) {
-                    $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
-                }
-                if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id) !== null) {
-                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
-                }
-            }
-            return $out;
-        }
+        // The mode's own verdict (php/modes.json "evaluator").
+        $evaluator = ModeRegistry::evaluator($mode);
+        return $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution);
+    }
 
-        // Required mode (@UVREQUIRED): the INVERSE emptiness rule — a BLANK
-        // field is the violation (every other mode is inert on blank). The
-        // "when" gate above already skipped the rule when the condition is
-        // false, so reaching here means the requirement is in force. Nothing
-        // identifying is in a blank, so the finding carries an empty value.
-        if ($type === 'required') {
-            foreach ($rule['fields'] as $field) {
-                if (isset($dupes[$field])) continue;
-                if ($onForm !== null && !isset($onForm[$field])) continue;
-                $value = isset($values[$field]) ? $values[$field] : null;
-                if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
-                if ($value === null || trim((string) $value) === '') {
-                    $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
+    /**
+     * Unique mode (@UVUNIQUE): the race backstop. The browser prevents the
+     * common case live via the AJAX check; two near-simultaneous submits
+     * can both pass it, so the audit re-checks the SAVED value against
+     * every other record. (The scan page does NOT take this path — it
+     * detects duplicates in one aggregate pass over the scanned data
+     * instead of one whole-project read per record.)
+     */
+    private function findingsUnique(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+        $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+            if (isset($rule['uniqueRecordResults'])) {
+                if (!array_key_exists($field,$rule['uniqueRecordResults']) || $rule['uniqueRecordResults'][$field] === null) {
+                    $out['unconfigurable'][]=['fields'=>[$field],'why'=>'Record uniqueness could not be resolved.'];
+                } elseif ($rule['uniqueRecordResults'][$field] === false) {
+                    $out['invalid'][]=['field'=>$field,'value'=>$value,'algo'=>'unique','type'=>'unique','reason'=>'duplicate-value'];
                 }
+                continue;
             }
-            return $out;
+            $cand = [$field => trim((string) $value)];
+            foreach ($with as $w) {
+                $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
+            }
+            if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id) !== null) {
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
+            }
         }
+        return $out;
+    }
 
-        // Choices mode (@UVCHOICES): a saved value that is a currently-hidden
-        // choice is the violation. The "when" gate above already skipped the
-        // rule while its condition is false, so reaching here means the filter
-        // is in force. A value outside the field's own choice list (e.g. a
-        // missing-data code like -99) is out of the filter's scope — never
-        // flagged. Checkbox values arrive as code=>0/1 maps (keepArrays); this
-        // is the one mode that must judge them.
-        if ($type === 'choices') {
-            $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
-                ? array_map('strval', $rule['choicesAll']) : [];
-            if (isset($rule['choicesShow']) && is_array($rule['choicesShow'])) {
-                if (!$all) {
-                    // A "show" whitelist is only meaningful against the full
-                    // list — without it the complement cannot be computed.
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                        'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
-                    return $out;
-                }
-                $hidden = array_diff($all, array_map('strval', $rule['choicesShow']));
-            } elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) {
-                $hidden = array_map('strval', $rule['choicesHide']);
-            } else {
+    /**
+     * Required mode (@UVREQUIRED): the INVERSE emptiness rule — a BLANK
+     * field is the violation (every other mode is inert on blank). The
+     * "when" gate above already skipped the rule when the condition is
+     * false, so reaching here means the requirement is in force. Nothing
+     * identifying is in a blank, so the finding carries an empty value.
+     */
+    private function findingsRequired(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if (is_array($value)) continue; // non-scalar (checkbox map) — not a required target
+            if ($value === null || trim((string) $value) === '') {
+                $out['invalid'][] = ['field' => $field, 'value' => '', 'algo' => 'required', 'type' => 'required', 'reason' => 'required-blank'];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Choices mode (@UVCHOICES): a saved value that is a currently-hidden
+     * choice is the violation. The "when" gate above already skipped the
+     * rule while its condition is false, so reaching here means the filter
+     * is in force. A value outside the field's own choice list (e.g. a
+     * missing-data code like -99) is out of the filter's scope — never
+     * flagged. Checkbox values arrive as code=>0/1 maps (keepArrays); this
+     * is the one mode that must judge them.
+     */
+    private function findingsChoices(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $all = (isset($rule['choicesAll']) && is_array($rule['choicesAll']))
+            ? array_map('strval', $rule['choicesAll']) : [];
+        if (isset($rule['choicesShow']) && is_array($rule['choicesShow'])) {
+            if (!$all) {
+                // A "show" whitelist is only meaningful against the full
+                // list — without it the complement cannot be computed.
                 $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                    'why' => 'the choices rule carries neither a "show" nor a "hide" list — rule skipped'];
+                    'why' => 'a "show" list needs the field\'s full choice list — rule skipped'];
                 return $out;
             }
-            $hiddenSet = array_fill_keys(array_values($hidden), true);
-            foreach ($rule['fields'] as $field) {
-                if (isset($dupes[$field])) continue;
-                if ($onForm !== null && !isset($onForm[$field])) continue;
-                $value = isset($values[$field]) ? $values[$field] : null;
-                if (is_array($value)) {
-                    foreach ($value as $code => $checked) {
-                        if ((string) $checked !== '1') continue;
-                        $c = (string) $code;
-                        if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
-                        if (isset($hiddenSet[$c])) {
-                            // locus: WHICH hidden code. A checkbox can have
-                            // several ticked at once, and every one of them is
-                            // a separate problem at the same field - so without
-                            // this they were the same finding twice, the unique
-                            // key refused the second, and the batch that
-                            // carried them both was rolled back entire.
-                            $out['invalid'][] = ['field' => $field, 'value' => $c, 'algo' => 'choices',
-                                                 'type' => 'choices', 'reason' => 'hidden-choice',
-                                                 'locus' => $c];
-                        }
+            $hidden = array_diff($all, array_map('strval', $rule['choicesShow']));
+        } elseif (isset($rule['choicesHide']) && is_array($rule['choicesHide'])) {
+            $hidden = array_map('strval', $rule['choicesHide']);
+        } else {
+            $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                'why' => 'the choices rule carries neither a "show" nor a "hide" list — rule skipped'];
+            return $out;
+        }
+        $hiddenSet = array_fill_keys(array_values($hidden), true);
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if (is_array($value)) {
+                foreach ($value as $code => $checked) {
+                    if ((string) $checked !== '1') continue;
+                    $c = (string) $code;
+                    if ($all && !in_array($c, $all, true)) continue; // outside the choice list — out of scope
+                    if (isset($hiddenSet[$c])) {
+                        // locus: WHICH hidden code. A checkbox can have
+                        // several ticked at once, and every one of them is
+                        // a separate problem at the same field - so without
+                        // this they were the same finding twice, the unique
+                        // key refused the second, and the batch that
+                        // carried them both was rolled back entire.
+                        $out['invalid'][] = ['field' => $field, 'value' => $c, 'algo' => 'choices',
+                                             'type' => 'choices', 'reason' => 'hidden-choice',
+                                             'locus' => $c];
                     }
-                    continue;
                 }
-                if ($value === null || trim((string) $value) === '') continue;
-                $v = trim((string) $value);
-                if ($all && !in_array($v, $all, true)) continue; // outside the choice list — out of scope
-                if (isset($hiddenSet[$v])) {
-                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'choices',
-                                         'type' => 'choices', 'reason' => 'hidden-choice'];
-                }
+                continue;
             }
+            if ($value === null || trim((string) $value) === '') continue;
+            $v = trim((string) $value);
+            if ($all && !in_array($v, $all, true)) continue; // outside the choice list — out of scope
+            if (isset($hiddenSet[$v])) {
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'choices',
+                                     'type' => 'choices', 'reason' => 'hidden-choice'];
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Constraint mode (@UVASSERT): the field is invalid whenever its
+     * "assert" condition is false against this context's values. An empty
+     * field is inert (emptiness is @UVREQUIRED's concern, not a
+     * constraint's). No check character / pattern — just the test. The
+     * condition is re-parsed here (config-validated, cheap) and evaluated
+     * against the full value map, so no fold is needed server-side.
+     */
+    private function findingsConstraint(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
+        if (empty($a['ok'])) {
+            $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "assert" condition cannot be evaluated — field skipped'];
             return $out;
         }
-
-        // Constraint mode (@UVASSERT): the field is invalid whenever its
-        // "assert" condition is false against this context's values. An empty
-        // field is inert (emptiness is @UVREQUIRED's concern, not a
-        // constraint's). No check character / pattern — just the test. The
-        // condition is re-parsed here (config-validated, cheap) and evaluated
-        // against the full value map, so no fold is needed server-side.
-        if ($type === 'constraint') {
-            $a = Logic::parse(isset($rule['assert']) ? (string) $rule['assert'] : '');
-            if (empty($a['ok'])) {
-                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "assert" condition cannot be evaluated — field skipped'];
+        // A reference the context could not actually RESOLVE (off-event, on
+        // a different repeating instrument, or a failed read) must not be
+        // evaluated: Logic::operandValue would render it '' and the assert
+        // would "fail" against a value we never read, logging a violation
+        // for correct data on every save and every scan (H-01/H-04/M-01).
+        // Surface it instead — the module's rule is that nothing fails
+        // silently (M-05).
+        foreach (Logic::referencedFields($a['ast']) as $ref) {
+            $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
+            if ($state !== 'ok') {
+                $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                    'why' => 'the "assert" condition ' . self::resolutionProblem($state, $ref[0])];
                 return $out;
             }
-            // A reference the context could not actually RESOLVE (off-event, on
-            // a different repeating instrument, or a failed read) must not be
-            // evaluated: Logic::operandValue would render it '' and the assert
-            // would "fail" against a value we never read, logging a violation
-            // for correct data on every save and every scan (H-01/H-04/M-01).
-            // Surface it instead — the module's rule is that nothing fails
-            // silently (M-05).
-            foreach (Logic::referencedFields($a['ast']) as $ref) {
-                $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
-                if ($state !== 'ok') {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                        'why' => 'the "assert" condition ' . self::resolutionProblem($state, $ref[0])];
-                    return $out;
-                }
-            }
-            foreach ($rule['fields'] as $field) {
-                if (isset($dupes[$field])) continue;
-                if ($onForm !== null && !isset($onForm[$field])) continue;
-                $value = isset($values[$field]) ? $values[$field] : null;
-                // Inert when blank. Whitespace-only counts as blank on BOTH
-                // sides now: the client already trims with this charlist before
-                // deciding inertness, and the two evaluators trim with it before
-                // comparing, so anything else made the browser silent while the
-                // server logged a violation (M-04).
-                if ($value === null || is_array($value)) continue;
-                if (trim((string) $value, " \t\r\n") === '') continue;
-                if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
-                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
-                }
-            }
-            return $out;
         }
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            // Inert when blank. Whitespace-only counts as blank on BOTH
+            // sides now: the client already trims with this charlist before
+            // deciding inertness, and the two evaluators trim with it before
+            // comparing, so anything else made the browser silent while the
+            // server logged a violation (M-04).
+            if ($value === null || is_array($value)) continue;
+            if (trim((string) $value, " \t\r\n") === '') continue;
+            if (!Logic::evaluate($a['ast'], $values, Logic::BLANK_PASSES, !empty($rule['caseSensitive']))) {
+                $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'constraint', 'type' => 'constraint', 'reason' => 'assert:' . ($rule['_temporalAssertLabel'] ?? $rule['assert'])];
+            }
+        }
+        return $out;
+    }
 
+    /**
+     * Check mode (@UVALIDATE, single|pooled): the check character and/or
+     * format of each value, through the same verdict functions the browser
+     * twins.
+     */
+    private function findingsCheck(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $algo    = isset($rule['algorithm']) && $rule['algorithm'] !== '' ? $rule['algorithm'] : 'iso7064_mod37_36';
+        $source  = isset($rule['source']) && $rule['source'] !== '' ? $rule['source'] : 'normalized_id';
+        $strip   = isset($rule['strip']) ? $rule['strip'] : "-/ _|\\";
+        $pattern = isset($rule['idPattern']) ? $rule['idPattern'] : null;
         $unconfigurable = [];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
@@ -895,7 +924,7 @@ class UniversalValidator extends AbstractExternalModule
         // that nothing fails silently, and the old empty catch hid exactly the
         // diagnosis this bug needed. The client still fails open (never traps a
         // save) and the post-save audit remains the net.
-        if (self::hasUniqueRules($config['rules'])) {
+        if (ModeRegistry::rulesNeed($config['rules'], 'transport')) {
             $why = null;
             try {
                 if (is_callable([$this, 'initializeJavascriptModuleObject'])) {
@@ -1045,7 +1074,7 @@ class UniversalValidator extends AbstractExternalModule
             // Both the "when" gate and the "assert" test (constraint mode) are
             // folded the same way: a comparison the browser can read live stays
             // live; one needing an off-instrument field is settled on the server.
-            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $w) {
+            foreach (ModeRegistry::conditionTexts($r) as $w) {
                 if (isset($asts[$w])) continue;
                 $p = Logic::parse($w);
                 if (empty($p['ok'])) continue; // a bad condition is already a configError rule
@@ -1179,13 +1208,17 @@ class UniversalValidator extends AbstractExternalModule
                 if (!empty($frozen[$r['when']])) $rules[$i]['deferred'] = true;
                 foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) $snapFields[$sf] = true;
             }
-            if (isset($r['assert']) && isset($folded[$r['assert']])) {
-                $rules[$i]['assertAst'] = $foldedAssert[$r['assert']][empty($r['caseSensitive']) ? 0 : 1];
-                // A frozen ASSERT must never block: its verdict is stale the
+            // The TEST conditions ("assert", and any a mode declares with role
+            // "test" in php/modes.json) fold with the test polarity.
+            foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
+                $tk = $rk['key'];
+                if (!isset($r[$tk]) || !isset($folded[$r[$tk]])) continue;
+                $rules[$i][$rk['ast']] = $foldedAssert[$r[$tk]][empty($r['caseSensitive']) ? 0 : 1];
+                // A frozen TEST must never block: its verdict is stale the
                 // moment the user types, and the post-save audit re-checks it.
-                if (!empty($frozen[$r['assert']])) $rules[$i]['deferred'] = true;
-                if (!empty($blocked[$r['assert']])) $noteFor($i, $r['assert']);
-                foreach (isset($snapshot[$r['assert']]) ? $snapshot[$r['assert']] : [] as $sf => $_) $snapFields[$sf] = true;
+                if (!empty($frozen[$r[$tk]])) $rules[$i]['deferred'] = true;
+                if (!empty($blocked[$r[$tk]])) $noteFor($i, $r[$tk]);
+                foreach (isset($snapshot[$r[$tk]]) ? $snapshot[$r[$tk]] : [] as $sf => $_) $snapFields[$sf] = true;
             }
             if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
             if (isset($r['branches']) && is_array($r['branches'])) {
@@ -1219,14 +1252,16 @@ class UniversalValidator extends AbstractExternalModule
                         }
                         if (!empty($frozen[$b['when']])) $rules[$i]['branches'][$bi]['deferred'] = true;
                     }
-                    if (isset($b['assert']) && isset($folded[$b['assert']])) {
-                        $rules[$i]['branches'][$bi]['assertAst'] = $foldedAssert[$b['assert']][empty($b['caseSensitive']) ? 0 : 1];
-                        if (!empty($frozen[$b['assert']])) $rules[$i]['branches'][$bi]['deferred'] = true;
-                        if (!empty($blocked[$b['assert']])) {
-                            $noteFor($i, $b['assert']);
-                            foreach ($blocked[$b['assert']] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
+                    foreach (ModeRegistry::refKeys('cond', 'test') as $rk) {
+                        $tk = $rk['key'];
+                        if (!isset($b[$tk]) || !isset($folded[$b[$tk]])) continue;
+                        $rules[$i]['branches'][$bi][$rk['ast']] = $foldedAssert[$b[$tk]][empty($b['caseSensitive']) ? 0 : 1];
+                        if (!empty($frozen[$b[$tk]])) $rules[$i]['branches'][$bi]['deferred'] = true;
+                        if (!empty($blocked[$b[$tk]])) {
+                            $noteFor($i, $b[$tk]);
+                            foreach ($blocked[$b[$tk]] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                         }
-                        foreach (isset($snapshot[$b['assert']]) ? $snapshot[$b['assert']] : [] as $sf => $_) $bSnap[$sf] = true;
+                        foreach (isset($snapshot[$b[$tk]]) ? $snapshot[$b[$tk]] : [] as $sf => $_) $bSnap[$sf] = true;
                     }
                     // M-01: branch configs never inherit rule-level keys on the
                     // client, so a branch's snapshot/deferral diagnostics have to
@@ -1442,12 +1477,7 @@ class UniversalValidator extends AbstractExternalModule
         foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
             $out[(string) $f] = true;
         }
-        foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
-            $p = Logic::parse($cond);
-            if (empty($p['ok'])) continue;
-            foreach (Logic::referencedFields($p['ast']) as $ref) $out[(string) $ref[0]] = true;
-        }
-        foreach (self::ruleUniqueWith($r) as $w) $out[(string) $w] = true;
+        foreach (ModeRegistry::refFields($r) as $f) $out[(string) $f] = true;
         return array_keys($out);
     }
 
@@ -1470,49 +1500,6 @@ class UniversalValidator extends AbstractExternalModule
         if (!is_array($rights)) return false;                  // unestablished -> clears nothing
         if (!array_key_exists($form, $rights)) return false;   // no entry -> no
         return (string) $rights[$form] !== '0';
-    }
-
-    /** Every non-empty "when" a rule carries (its own, and its branches'). */
-    private static function ruleWhens(array $r)
-    {
-        $out = [];
-        if (isset($r['when']) && is_string($r['when']) && $r['when'] !== '') $out[] = $r['when'];
-        if (isset($r['branches']) && is_array($r['branches'])) {
-            foreach ($r['branches'] as $b) {
-                if (isset($b['when']) && is_string($b['when']) && $b['when'] !== '') $out[] = $b['when'];
-            }
-        }
-        return $out;
-    }
-
-    /** Every non-empty "assert" a rule carries (its own, and its branches'). */
-    private static function ruleAsserts(array $r)
-    {
-        $out = [];
-        if (isset($r['assert']) && is_string($r['assert']) && $r['assert'] !== '') $out[] = $r['assert'];
-        if (isset($r['branches']) && is_array($r['branches'])) {
-            foreach ($r['branches'] as $b) {
-                if (isset($b['assert']) && is_string($b['assert']) && $b['assert'] !== '') $out[] = $b['assert'];
-            }
-        }
-        return $out;
-    }
-
-    /** Every composite "with" field a unique rule carries (own + branches'). */
-    private static function ruleUniqueWith(array $r)
-    {
-        $out = [];
-        if (isset($r['uniqueWith']) && is_array($r['uniqueWith'])) {
-            foreach ($r['uniqueWith'] as $w) { if (is_string($w) && $w !== '') $out[] = $w; }
-        }
-        if (isset($r['branches']) && is_array($r['branches'])) {
-            foreach ($r['branches'] as $b) {
-                if (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) {
-                    foreach ($b['uniqueWith'] as $w) { if (is_string($w) && $w !== '') $out[] = $w; }
-                }
-            }
-        }
-        return $out;
     }
 
     /**
@@ -1679,7 +1666,7 @@ class UniversalValidator extends AbstractExternalModule
         // constraint (@UVASSERT-style) and required (@UVREQUIRED-style) are
         // the added modes — their rows read only their own boxes below.
         $ruleType = !empty($s['rule-type']) ? (string) $s['rule-type'] : 'single';
-        $mode = Branching::modeOfType($ruleType);
+        $mode = ModeRegistry::modeOfType($ruleType);
         $fields = isset($s['fields']) ? $s['fields'] : [];
         if (!is_array($fields)) $fields = [$fields];
         $fields = array_values(array_filter($fields, function ($f) {
@@ -1713,25 +1700,28 @@ class UniversalValidator extends AbstractExternalModule
                 $fields = array_values(array_intersect($fields, $known));
             }
         }
+        // A mode this dialog has no boxes for (php/modes.json "dialog": false)
+        // is configured with its action tag. A stored row naming one (a hand
+        // edit, or an upgrade) is refused visibly rather than assembled from
+        // boxes that do not describe it.
+        if ($fields && !ModeRegistry::inDialog($mode)) {
+            return [
+                'type'        => 'single',
+                'fields'      => $fields,
+                'configError' => 'rule type "' . $ruleType . '" cannot be set up in this dialog — use the '
+                    . ModeRegistry::tag($mode) . ' action tag on the field instead.',
+            ];
+        }
         // Field-type eligibility is per MODE (COR-003, mirrored from the
-        // annotation channel): check-character/regex rules can only attach to
-        // Text/Notes inputs; a constraint reads any scalar field's answer; a
-        // required rule additionally excludes calc (the person entering data
-        // cannot fill a calc, so requiring one would trap them).
+        // annotation channel, both read from php/modes.json): check-character/
+        // regex rules can only attach to Text/Notes inputs; a constraint reads
+        // any scalar field's answer; a required rule additionally excludes calc
+        // (the person entering data cannot fill a calc, so requiring one would
+        // trap them).
         if ($types !== null && $fields) {
-            if ($mode === 'constraint') {
-                $allowed = AnnotationRules::CONSTRAINT_FIELD_TYPES;
-                $why = 'a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields';
-            } elseif ($mode === 'required') {
-                $allowed = AnnotationRules::REQUIRED_FIELD_TYPES;
-                $why = 'a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)';
-            } elseif ($mode === 'unique') {
-                $allowed = AnnotationRules::UNIQUE_FIELD_TYPES;
-                $why = 'a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fix a calc collision)';
-            } else {
-                $allowed = ['text', 'notes'];
-                $why = 'only Text and Notes fields can be validated';
-            }
+            $elig = ModeRegistry::eligibility($mode);
+            $allowed = $elig['fieldTypes'];
+            $why = $elig['dialogWhy'];
             $wrong = [];
             foreach ($fields as $f) {
                 if (isset($types[$f]) && !in_array($types[$f], $allowed, true)) $wrong[] = $f . ' (' . $types[$f] . ')';
@@ -1761,7 +1751,7 @@ class UniversalValidator extends AbstractExternalModule
         // the algorithm/pattern/pooled boxes visible in the shared dialog do
         // not apply to these modes (their labels say so) and must not leak
         // into the rule. checkFragment routes to the mode's own validator.
-        if ($mode === 'constraint' || $mode === 'required' || $mode === 'unique') {
+        if ($mode !== 'check') {
             $rule = ['type' => $ruleType, 'fields' => $fields];
             if ($mode === 'constraint' && isset($s['assert']) && trim((string) $s['assert']) !== '') {
                 $rule['assert'] = trim((string) $s['assert']);
@@ -1789,8 +1779,8 @@ class UniversalValidator extends AbstractExternalModule
                 if (!is_array($rule['references'])) $errors[] = 'Reference bindings must be a JSON object.';
             }
             foreach (AnnotationRules::checkFragment($rule, $opts) as $e) $errors[] = $e;
-            // Dictionary-dependent reference checks for BOTH conditions.
-            foreach (['when', 'assert'] as $condKey) {
+            // Dictionary-dependent reference checks for every condition key.
+            foreach (ModeRegistry::condKeys() as $condKey) {
                 if (isset($rule[$condKey]) && $types !== null) {
                     $w = Logic::parse($rule[$condKey], $opts);
                     if (!empty($w['ok'])) {
@@ -2028,62 +2018,22 @@ class UniversalValidator extends AbstractExternalModule
             if ($ann === '' || stripos($ann, '@UV') === false) continue;
             $frags = AnnotationRules::parseAllTags($ann, $this->temporalOptions($pid));
             if ($frags === null) continue; // no module tag (e.g. @UVALIDATED)
-            // Field-type eligibility is per MODE: check-character/regex still
-            // needs a Text/Notes input; a constraint (@UVASSERT) reads any
-            // scalar field's answer, so it accepts dropdowns/dates/etc.
+            // Field-type eligibility is per MODE (php/modes.json): check-
+            // character/regex still needs a Text/Notes input; a constraint
+            // (@UVASSERT) reads any scalar field's answer, so it accepts
+            // dropdowns/dates/etc. A mode may add its own checks on the field's
+            // dictionary row through its "field" hook.
             $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
             foreach ($frags as $k => $frag) {
                 if (isset($frag['error'])) continue;
-                $mode = isset($frag['type']) ? $frag['type'] : 'single';
-                if ($mode === 'constraint') {
-                    if (!in_array($ftype, AnnotationRules::CONSTRAINT_FIELD_TYPES, true)) {
-                        $frags[$k] = ['error' => AnnotationRules::TAG_ASSERT . ' does not support "' . $ftype
-                            . '" fields — it checks one scalar field\'s value against a condition.',
-                            '_tag' => AnnotationRules::TAG_ASSERT];
-                    }
-                } elseif ($mode === 'required') {
-                    if (!in_array($ftype, AnnotationRules::REQUIRED_FIELD_TYPES, true)) {
-                        $frags[$k] = ['error' => AnnotationRules::TAG_REQUIRED . ' does not support "' . $ftype
-                            . '" fields' . ($ftype === 'calc'
-                                ? ' — a calc value is computed, the person entering data cannot fill it in.'
-                                : ' — it requires a scalar input the person can fill in.'),
-                            '_tag' => AnnotationRules::TAG_REQUIRED];
-                    }
-                } elseif ($mode === 'unique') {
-                    if (!in_array($ftype, AnnotationRules::UNIQUE_FIELD_TYPES, true)) {
-                        $frags[$k] = ['error' => AnnotationRules::TAG_UNIQUE . ' does not support "' . $ftype
-                            . '" fields — it compares one scalar field\'s value across records.',
-                            '_tag' => AnnotationRules::TAG_UNIQUE];
-                    } elseif (!empty($frag['uniqueSurveys'])) {
-                        // Refuse the survey opt-in when the primary field OR any
-                        // composite "with" field is an Identifier (H-01); name the
-                        // offending field so a composite hit is not mistaken for the
-                        // primary one.
-                        $withF = (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [];
-                        $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF));
-                        if ($idField !== null) {
-                            $frags[$k] = ['error' => ($idField === $name ? '' : 'composite "with" field "' . $idField . '": ')
-                                . self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
-                        }
-                    }
-                } elseif ($mode === 'choices') {
-                    $grid = isset($meta['matrix_group_name']) ? trim((string) $meta['matrix_group_name']) : '';
-                    if (!in_array($ftype, AnnotationRules::CHOICES_FIELD_TYPES, true)) {
-                        $frags[$k] = ['error' => AnnotationRules::TAG_CHOICES . ' does not support "' . $ftype
-                            . '" fields — it filters the options of a radio, dropdown or checkbox field.',
-                            '_tag' => AnnotationRules::TAG_CHOICES];
-                    } elseif ($grid !== '') {
-                        // Matrix rows render different markup than standalone
-                        // choice fields — the client cannot hide their options
-                        // reliably, so refuse instead of half-working.
-                        $frags[$k] = ['error' => AnnotationRules::TAG_CHOICES . ' does not support matrix fields '
-                            . '(this field is in matrix "' . $grid . '") — move the field out of the matrix to filter its choices.',
-                            '_tag' => AnnotationRules::TAG_CHOICES];
-                    }
-                } elseif (!in_array($ftype, ['text', 'notes'], true)) {
-                    $frags[$k] = ['error' => 'this tag only works on Text or Notes fields (this field is "'
-                        . $ftype . '").'];
+                $mode = ModeRegistry::modeOfType(isset($frag['type']) ? $frag['type'] : '');
+                $why = ModeRegistry::ineligibleWhy($mode, $ftype);
+                if ($why !== null) {
+                    $frags[$k] = ['error' => $why, '_tag' => ModeRegistry::tag($mode)];
+                    continue;
                 }
+                $hook = ModeRegistry::hook($mode, 'field');
+                if ($hook !== null) $frags[$k] = $this->$hook($frag, $name, $meta, $pid);
             }
             $perField[$name] = $frags;
         }
@@ -2091,13 +2041,15 @@ class UniversalValidator extends AbstractExternalModule
         // Dictionary-dependent reference checks for this channel — parseAllTags/
         // checkFragment already validated syntax; whether the referenced fields
         // exist (and checkbox codes are real) needs the dd, which is in hand
-        // here. Both the "when" gate and the "assert" condition are checked.
+        // here. Every condition key is checked (the "when" gate, the "assert"
+        // test, ...), then the mode's own "dictionary" hook runs.
         $types = null;
         $choices = null;
         foreach ($perField as $name => $frags) {
             foreach ($frags as $k => $frag) {
                 if (isset($frag['error'])) continue;
-                foreach (['when', 'assert'] as $condKey) {
+                $mode = ModeRegistry::modeOfType(isset($frag['type']) ? $frag['type'] : '');
+                foreach (ModeRegistry::condKeys() as $condKey) {
                     if (!isset($frag[$condKey])) continue;
                     $w = Logic::parse($frag[$condKey], $this->temporalOptions($pid));
                     if (empty($w['ok'])) continue; // syntax error already surfaced
@@ -2108,61 +2060,93 @@ class UniversalValidator extends AbstractExternalModule
                     $errs = Logic::checkRefs($w['ast'], $types === null ? [] : $types, $choices === null ? [] : $choices);
                     if ($errs) {
                         $perField[$name][$k] = ['error' => implode(' ', $errs),
-                            '_tag' => self::tagOfFrag($frag)];
+                            '_tag' => ModeRegistry::tag($mode)];
                         break;
                     }
                 }
-                // Composite-key fields of a unique rule must exist and hold ONE
-                // scalar value (checkbox is multi-valued; file/descriptive have
-                // no comparable value) — and "with" naming the field itself is
-                // a tautology, not a composite.
-                if (!isset($perField[$name][$k]['error']) && isset($frag['uniqueWith'])) {
-                    if ($types === null) {
-                        $types = $this->projectFieldTypes($pid);
-                        $choices = $this->projectFieldChoices($pid);
-                    }
-                    $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
-                    if ($errs) {
-                        $perField[$name][$k] = ['error' => implode(' ', $errs),
-                            '_tag' => AnnotationRules::TAG_UNIQUE];
-                    }
+                if (isset($perField[$name][$k]['error'])) continue;
+                $hook = ModeRegistry::hook($mode, 'dictionary');
+                if ($hook === null) continue;
+                if ($types === null) {
+                    $types = $this->projectFieldTypes($pid);
+                    $choices = $this->projectFieldChoices($pid);
                 }
-                // @UVCHOICES codes must exist in the field's OWN choice list,
-                // and the full code list travels on the rule (choicesAll) so
-                // the client can compute a "show" whitelist's complement
-                // without enumerating the DOM (checkbox inputs are only
-                // findable by exact name, code included). choicesAll is part
-                // of groupMulti's canonical key, so two fields with identical
-                // tags but different choice lists never share a rule.
-                if (!isset($perField[$name][$k]['error'])
-                        && isset($frag['type']) && $frag['type'] === 'choices') {
-                    if ($types === null) {
-                        $types = $this->projectFieldTypes($pid);
-                        $choices = $this->projectFieldChoices($pid);
-                    }
-                    $all = (is_array($choices) && isset($choices[$name]))
-                        ? array_map('strval', $choices[$name]) : [];
-                    if (!$all) {
-                        $perField[$name][$k] = ['error' => 'this field has no parseable choice list — '
-                            . AnnotationRules::TAG_CHOICES . ' has nothing to filter.',
-                            '_tag' => AnnotationRules::TAG_CHOICES];
-                    } else {
-                        $authored = isset($frag['choicesShow']) ? $frag['choicesShow']
-                            : (isset($frag['choicesHide']) ? $frag['choicesHide'] : []);
-                        $missing = array_values(array_diff($authored, $all));
-                        if ($missing) {
-                            $perField[$name][$k] = ['error' => 'choice code(s) '
-                                . implode(', ', array_map('json_encode', $missing))
-                                . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
-                                '_tag' => AnnotationRules::TAG_CHOICES];
-                        } else {
-                            $perField[$name][$k]['choicesAll'] = $all;
-                        }
-                    }
-                }
+                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices);
             }
         }
         return AnnotationRules::groupMulti($perField);
+    }
+
+    /**
+     * @UVUNIQUE "field" hook: refuse the survey opt-in when the primary field
+     * OR any composite "with" field is an Identifier (H-01), naming the
+     * offending field so a composite hit is not mistaken for the primary one.
+     */
+    private function annotateUniqueField(array $frag, $name, array $meta, $pid)
+    {
+        if (empty($frag['uniqueSurveys'])) return $frag;
+        $withF = (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [];
+        $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF));
+        if ($idField === null) return $frag;
+        return ['error' => ($idField === $name ? '' : 'composite "with" field "' . $idField . '": ')
+            . self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
+    }
+
+    /**
+     * @UVUNIQUE "dictionary" hook: composite-key fields must exist and hold ONE
+     * scalar value (checkbox is multi-valued; file/descriptive have no
+     * comparable value), and "with" naming the field itself is a tautology,
+     * not a composite.
+     */
+    private function annotateUniqueDictionary(array $frag, $name, $types, $choices)
+    {
+        if (!isset($frag['uniqueWith'])) return $frag;
+        $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+        return $errs ? ['error' => implode(' ', $errs), '_tag' => AnnotationRules::TAG_UNIQUE] : $frag;
+    }
+
+    /**
+     * @UVCHOICES "field" hook: matrix rows render different markup than
+     * standalone choice fields, so the client cannot hide their options
+     * reliably. Refuse instead of half-working.
+     */
+    private function annotateChoicesField(array $frag, $name, array $meta, $pid)
+    {
+        $grid = isset($meta['matrix_group_name']) ? trim((string) $meta['matrix_group_name']) : '';
+        if ($grid === '') return $frag;
+        return ['error' => AnnotationRules::TAG_CHOICES . ' does not support matrix fields '
+            . '(this field is in matrix "' . $grid . '") — move the field out of the matrix to filter its choices.',
+            '_tag' => AnnotationRules::TAG_CHOICES];
+    }
+
+    /**
+     * @UVCHOICES "dictionary" hook: codes must exist in the field's OWN choice
+     * list, and the full code list travels on the rule (choicesAll) so the
+     * client can compute a "show" whitelist's complement without enumerating
+     * the DOM (checkbox inputs are only findable by exact name, code included).
+     * choicesAll is part of groupMulti's canonical key, so two fields with
+     * identical tags but different choice lists never share a rule.
+     */
+    private function annotateChoicesDictionary(array $frag, $name, $types, $choices)
+    {
+        $all = (is_array($choices) && isset($choices[$name]))
+            ? array_map('strval', $choices[$name]) : [];
+        if (!$all) {
+            return ['error' => 'this field has no parseable choice list — '
+                . AnnotationRules::TAG_CHOICES . ' has nothing to filter.',
+                '_tag' => AnnotationRules::TAG_CHOICES];
+        }
+        $authored = isset($frag['choicesShow']) ? $frag['choicesShow']
+            : (isset($frag['choicesHide']) ? $frag['choicesHide'] : []);
+        $missing = array_values(array_diff($authored, $all));
+        if ($missing) {
+            return ['error' => 'choice code(s) '
+                . implode(', ', array_map('json_encode', $missing))
+                . ' do not exist on this field — its codes are: ' . implode(', ', $all) . '.',
+                '_tag' => AnnotationRules::TAG_CHOICES];
+        }
+        $frag['choicesAll'] = $all;
+        return $frag;
     }
 
     /**
@@ -2350,27 +2334,6 @@ class UniversalValidator extends AbstractExternalModule
         return null;
     }
 
-    /** Whether any live (non-config-error) rule is a unique rule. */
-    private static function hasUniqueRules(array $rules)
-    {
-        foreach ($rules as $r) {
-            if (!is_array($r) || !empty($r['configError'])) continue;
-            if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') === 'unique') return true;
-        }
-        return false;
-    }
-
-    /** The action tag a fragment came from, for config-error attribution. */
-    private static function tagOfFrag(array $frag)
-    {
-        $type = isset($frag['type']) ? $frag['type'] : '';
-        if ($type === 'constraint') return AnnotationRules::TAG_ASSERT;
-        if ($type === 'required')   return AnnotationRules::TAG_REQUIRED;
-        if ($type === 'unique')     return AnnotationRules::TAG_UNIQUE;
-        if ($type === 'choices')    return AnnotationRules::TAG_CHOICES;
-        return AnnotationRules::TAG;
-    }
-
     /**
      * Dictionary checks for a unique rule's composite "with" fields: each must
      * exist, hold one scalar value, and not be the unique field itself.
@@ -2412,7 +2375,7 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             if (empty($r['fields']) || !is_array($r['fields'])) continue;
-            $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+            $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
             $seen = [];
             foreach ($r['fields'] as $f) {
                 if (isset($seen[$f])) continue; // a field twice in ONE rule is not a cross-rule dupe
@@ -3893,12 +3856,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($this->temporalReadFields([$r], $pid) as $f) $readSet[$f] = true;
             }
             foreach ($r['fields'] as $f) $readSet[$f] = true;
-            foreach (array_merge(self::ruleWhens($r), self::ruleAsserts($r)) as $cond) {
-                $p = Logic::parse($cond);
-                if (empty($p['ok'])) continue;
-                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
-            }
-            foreach (self::ruleUniqueWith($r) as $w) $readSet[$w] = true;
+            foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
         }
         // A project-scope unique rule cannot be evaluated from a DAG-confined
         // scan: the scan reads one group, so a value duplicated ACROSS groups is
@@ -3909,7 +3867,7 @@ class UniversalValidator extends AbstractExternalModule
         // silent, which is the one outcome the contract forbids.
         if ($dagFilter !== null) {
             foreach ($live as $i => $r) {
-                if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+                if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
                 $scope = isset($r['uniqueScope']) ? strtolower((string) $r['uniqueScope']) : 'project';
                 if ($scope !== 'project') continue;      // 'dag' and 'event' ARE evaluable here
                 $unconf[$i . '|dag-scoped-unique'] = [
@@ -4023,7 +3981,7 @@ class UniversalValidator extends AbstractExternalModule
         $resCache = [];
         $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
         foreach ($plan['live'] as $i => $r) {
-            $mode = Branching::modeOfType(isset($r['type']) ? $r['type'] : '');
+            $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
                 if (!isset($hostCache[$hostForm])) {
@@ -4048,7 +4006,7 @@ class UniversalValidator extends AbstractExternalModule
                             continue;
                         }
                         $evaluatedRule = $prepared['rule'];
-                        $evaluatedMode = Branching::modeOfType($evaluatedRule['type'] ?? '');
+                        $evaluatedMode = ModeRegistry::modeOfType($evaluatedRule['type'] ?? '');
                     }
                     if ($evaluatedMode === 'unique' && !isset($evaluatedRule['uniqueRecordResults'])) {
                         self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
@@ -4935,7 +4893,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
-            if (Branching::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
+            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'unique') continue;
             if (empty($r['fields']) || !is_array($r['fields']) || !in_array($field, $r['fields'], true)) continue;
             // Record-local rules are rendered as advisory assertions. The legacy
             // no-auth uniqueness endpoint must never reinterpret them as project scope.

@@ -2,6 +2,7 @@
 namespace INSPIRE\UniversalValidator;
 require_once __DIR__.'/TemporalLogic.php';
 require_once __DIR__.'/AddressResolver.php';
+require_once __DIR__.'/ModeRegistry.php';
 
 /** Pure compilation and dependency discovery. No compiled metadata is persisted on rules. */
 final class TemporalRules
@@ -10,14 +11,14 @@ final class TemporalRules
     public static function extended(array $rule)
     {
         if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return true;
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){$p=Logic::parse($rule[$key],['qualified'=>true]);if(!empty($p['ok'])&&Logic::qualifiedRefs($p['ast']))return true;}
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){$p=Logic::parse($rule[$key],['qualified'=>true]);if(!empty($p['ok'])&&Logic::qualifiedRefs($p['ast']))return true;}
         foreach($rule['branches']??[] as $b)if(self::extended($b))return true;
         return false;
     }
     public static function fields(array $rule)
     {
-        $out=array_merge($rule['fields']??[],$rule['uniqueWith']??[]);
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        $out=$rule['fields']??[];foreach(ModeRegistry::refKeys('fieldList') as $rk)$out=array_merge($out,is_array($rule[$rk['key']]??null)?$rule[$rk['key']]:[]);
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];
             foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];
@@ -72,7 +73,7 @@ final class TemporalRules
             }
 
         }
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='binding'&&!array_key_exists($r[1],$refs))$errors[]='Undefined reference binding {'.$r[1].'}.';
             $collection=function($operand)use($refs){
@@ -100,7 +101,7 @@ final class TemporalRules
             if($event['state']==='ok')$ids[$event['event']]=true;
             elseif($event['state']==='unreadable')$unknown=true;
         };
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$add($ref[1],$ref[3]);
         }
@@ -130,7 +131,7 @@ final class TemporalRules
     public static function validateProject(array $rule, ProjectShape $shape)
     {
         $errors=[];$references=[];
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);
             if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$references[]=[$ref[1],$ref[3],$ref[4]];
         }
@@ -211,21 +212,21 @@ final class TemporalRules
         // Long exact arithmetic spends the same budget as the reads that fed it.
         $charge=function($units)use($resolver){return $resolver->charge($units);};
         $compiled=$rule;
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
-            if(!$browser && $key==='assert' && ($compiled['when']??null)==='1=0' && !$problems)continue;
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
+            if(!$browser && in_array($key,ModeRegistry::condKeys('test'),true) && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
             $tree=$walk($p['ast']);
             // The browser evaluates its own tree; only saved-data callers need the verdict here.
-            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']),$charge);
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);
             if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
         }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){
             if($live)$problems[]='unauthorized';
-            else foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},$key==='assert',!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
+            else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
-        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser)foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];}
+        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser)foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         if($browser){unset($compiled['references']);$compiled['blockSave']='off';}
         return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];

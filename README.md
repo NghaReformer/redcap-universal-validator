@@ -710,6 +710,8 @@ node tests/gen_when_fuzz.cjs  # regenerate the seeded when-fuzz fixture
 php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cases)
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
+php  tests/registry_php.php    # mode registry (php/modes.json): frozen maps, coverage, bad file
+node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js after editing php/modes.json
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)

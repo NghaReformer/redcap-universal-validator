@@ -4389,24 +4389,57 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
 /* ---- dispatcher: one validator instance per rule ---- */
 (function(){
   var C = QRID_COMBINED_CONFIG;
+  /* DEFAULT_KEYS: every key a rule carries to its factory (the union of the
+     modes' clientKeys). "deferred" marks a rule the server had to freeze (an
+     off-page ref this viewer may not read): the verdict is stale the moment
+     the user types, so the client shows it as advisory and never blocks.
+     MODE_OF_TYPE / FACTORY_OF_TYPE: which mode a rule type belongs to and
+     which factory starts it. */
+  /* @generated mode-registry BEGIN — written from php/modes.json by tests/gen_mode_registry.cjs.
+     Edit php/modes.json and re-run that script; never edit this block. */
   var DEFAULT_KEYS = ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
-                      "blockSave", "when", "whenAst",
-                      /* constraint mode (@UVASSERT). "deferred" marks an assert
-                         the server had to freeze (an off-page ref this viewer may
-                         not read): the verdict is stale the moment the user types,
-                         so the client shows it as advisory and never blocks. */
-                      "assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
-                      /* unique mode (@UVUNIQUE) */
-                      "uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts",
-                      /* choices mode (@UVCHOICES) */
-                      "choicesShow", "choicesHide", "choicesAll"];
+                      "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
+                      "message", "deferred", "deferredWhy", "snapshotFields", "uniqueWith",
+                      "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
+                      "choicesHide", "choicesAll"];
+  var MODE_OF_TYPE = {
+    "single": "check",
+    "pooled": "check",
+    "constraint": "constraint",
+    "required": "required",
+    "unique": "unique",
+    "choices": "choices"
+  };
+  var FACTORY_OF_TYPE = {
+    "single": "QRIDSingleInit",
+    "pooled": "QRIDPooledInit",
+    "constraint": "QRIDConstraintInit",
+    "required": "QRIDRequiredInit",
+    "unique": "QRIDUniqueInit",
+    "choices": "QRIDChoiceFilterInit"
+  };
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\" or \"choices\"";
+  /* @generated mode-registry END */
+  /* The factories the registry may name. Hand-written, because a name in a
+     data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
+     fails when the registry names a factory that is missing here. */
+  var QRID_FACTORY_BY_NAME = {
+    QRIDSingleInit: QRIDSingleInit,
+    QRIDPooledInit: QRIDPooledInit,
+    QRIDConstraintInit: QRIDConstraintInit,
+    QRIDRequiredInit: QRIDRequiredInit,
+    QRIDUniqueInit: QRIDUniqueInit,
+    QRIDChoiceFilterInit: QRIDChoiceFilterInit
+  };
+  function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
-     Branching::modeOfType in php/Branching.php. Different modes on one field
-     COMPOSE (each attaches its own validator); same-mode sharing is branched
-     server-side. Duplicate detection therefore keys on (field, mode). */
+     ModeRegistry::modeOfType in php/ModeRegistry.php. Different modes on one
+     field COMPOSE (each attaches its own validator); same-mode sharing is
+     branched server-side. Duplicate detection therefore keys on (field, mode).
+     Unknown types belong to the check mode. */
   function modeOfType(t){
-    return (t === "constraint" || t === "required" || t === "unique" || t === "choices") ? t : "check";
+    return (typeof t === "string" && own(MODE_OF_TYPE, t)) ? MODE_OF_TYPE[t] : "check";
   }
   /* Keys a multi-format rule carries PER ALTERNATE. They must not be inherited
      from the top-level config, because the server merges defaults() there
@@ -4496,21 +4529,15 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     cfg.fields = rule.configError ? (rule.fields || [])
                : (rule.fields || []).filter(function(f){ return counts[dupKey(f, rule.type)] === 1; });
     if(!cfg.fields.length) return;
-    if(rule.type === "pooled"){
-      QRIDPooledInit(cfg);
-    } else if(rule.type === "constraint"){
-      QRIDConstraintInit(cfg);
-    } else if(rule.type === "required"){
-      QRIDRequiredInit(cfg);
-    } else if(rule.type === "unique"){
-      QRIDUniqueInit(cfg);
-    } else if(rule.type === "choices"){
-      QRIDChoiceFilterInit(cfg);
-    } else if(rule.type === "single" || rule.type === undefined || rule.type === "" || rule.configError){
+    var factory = (typeof rule.type === "string" && own(FACTORY_OF_TYPE, rule.type))
+      ? QRID_FACTORY_BY_NAME[FACTORY_OF_TYPE[rule.type]] : null;
+    if(factory){
+      factory(cfg);
+    } else if(rule.type === undefined || rule.type === "" || rule.configError){
       QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
-        '] has unknown type "' + rule.type + '" — use "single", "pooled", "constraint", "required", "unique" or "choices".';
+        '] has unknown type "' + rule.type + '" — use ' + KNOWN_TYPES_TEXT + '.';
       QRIDSingleInit(cfg);
     }
   });

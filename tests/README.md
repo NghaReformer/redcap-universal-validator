@@ -14,6 +14,8 @@ node tests/risky_js.cjs         # JS risky-pattern heuristic vs risky_patterns.j
 php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
 php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
 php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
+php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, coverage, bad file
+node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
@@ -126,6 +128,24 @@ Three properties make the pair hard to break quietly:
   verdict and fails if it now agrees, so a sentinel cannot rot into a case that
   would pass either way.
 
+## `php/modes.json` — the mode registry contract
+
+Each action tag configures one validation mode, and `php/modes.json` lists
+them: the tag, its rule types, the field types it accepts, its parser and
+validator, the keys a rule carries, and the scan labels.
+`php/ModeRegistry.php` serves the file to the server, and
+`gen_mode_registry.cjs` writes the parts the browser needs into `js/engine.js`.
+
+- `registry_php.php` holds copies of the hand-kept lists the registry replaced
+  (tag map, branch keys, client keys, field-type gates, refusal wording) and
+  fails if the registry no longer reproduces them.
+- It also fails when a mode is missing from a place that stays hand-written:
+  `config.json` action-tags, `site/pages.py`, `php/messages/catalog.json`, the
+  engine's public namespace, or `mode_samples.json`.
+- `mode_samples.json` holds one working sample per mode. `annotation_php.php`
+  and `deferral_dom_js.cjs` loop over it, so a new mode is covered by their
+  every-mode checks without editing them.
+
 ## `hook_php.php` — the audit-path contract
 
 Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.
@@ -142,8 +162,9 @@ non-text field rejection, and the save-time `validateSettings` gate.
 ## CI
 
 `.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite
-on PHP 7.4, 8.1 and 8.3 (the declared minimum is exercised, not just stated),
-`php -l`-lints the PHP, checks that `pooled_fixture.json` is regenerated, and
+on PHP 7.4, 8.1, 8.3 and 8.4 (the declared minimum is exercised, not just
+stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
+`when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
 matching). Green CI means the module's client and server engines agree with

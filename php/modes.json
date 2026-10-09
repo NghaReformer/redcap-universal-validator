@@ -1,0 +1,144 @@
+{
+  "_comment": [
+    "The validation modes this module knows, one entry per action tag. This file is the single source:",
+    "php/ModeRegistry.php reads it for the server, and tests/gen_mode_registry.cjs writes the browser's copy",
+    "into js/engine.js (CI fails when that copy is stale). Adding a mode means adding an entry here plus the",
+    "methods it names; tests/registry_php.php lists the hand-written places that must also name the new tag.",
+    "Order matters: tags are read in this order, and branchKeys/clientKeys are unions in this order.",
+    "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
+    "the verdict itself); fieldList = a list of field names the rule reads."
+  ],
+  "common": {
+    "refKeys": [
+      {"key": "when", "kind": "cond", "role": "gate", "ast": "whenAst"}
+    ]
+  },
+  "modes": [
+    {
+      "mode": "check",
+      "tag": "@UVALIDATE",
+      "types": ["single", "pooled"],
+      "defaultType": "single",
+      "parser": "parseValue",
+      "checker": null,
+      "hasAlgorithm": true,
+      "eligibility": {
+        "fieldTypes": ["text", "notes"],
+        "annotationWhy": "this tag only works on Text or Notes fields (this field is \"{type}\").",
+        "dialogWhy": "only Text and Notes fields can be validated"
+      },
+      "hooks": {},
+      "evaluator": "findingsCheck",
+      "refKeys": [],
+      "branchKeys": ["algorithm", "idPattern", "alternates", "source", "strip", "keepChars",
+                     "idLengths", "idMinLen", "idMaxLen", "expectedIds",
+                     "blockSave", "suggestFix", "note"],
+      "clientKeys": ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
+                     "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
+                     "blockSave", "when", "whenAst"],
+      "needs": [],
+      "dialog": true,
+      "js": {"factories": {"single": "QRIDSingleInit", "pooled": "QRIDPooledInit"}},
+      "scan": {"issueLabels": {"*": "Wrong value"}}
+    },
+    {
+      "mode": "constraint",
+      "tag": "@UVASSERT",
+      "types": ["constraint"],
+      "defaultType": "constraint",
+      "parser": "parseAssertValue",
+      "checker": "checkConstraint",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "calc", "sql", "slider"],
+        "annotationWhy": "@UVASSERT does not support \"{type}\" fields — it checks one scalar field's value against a condition.",
+        "dialogWhy": "a Constraint rule supports Text, Notes, dropdown, radio, yes/no, true/false, calc and slider fields"
+      },
+      "hooks": {},
+      "evaluator": "findingsConstraint",
+      "refKeys": [
+        {"key": "assert", "kind": "cond", "role": "test", "ast": "assertAst"}
+      ],
+      "branchKeys": ["assert", "caseSensitive", "message", "references"],
+      "clientKeys": ["assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
+      "needs": [],
+      "dialog": true,
+      "js": {"factories": {"constraint": "QRIDConstraintInit"}},
+      "scan": {"issueLabels": {"*": "Wrong value"}}
+    },
+    {
+      "mode": "required",
+      "tag": "@UVREQUIRED",
+      "types": ["required"],
+      "defaultType": "required",
+      "parser": "parseRequiredValue",
+      "checker": "checkRequired",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "sql", "slider"],
+        "annotationWhy": "@UVREQUIRED does not support \"{type}\" fields — it requires a scalar input the person can fill in.",
+        "annotationWhyFor": {
+          "calc": "@UVREQUIRED does not support \"calc\" fields — a calc value is computed, the person entering data cannot fill it in."
+        },
+        "dialogWhy": "a Required rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fill it)"
+      },
+      "hooks": {},
+      "evaluator": "findingsRequired",
+      "refKeys": [],
+      "branchKeys": ["blockSave", "caseSensitive", "message", "references"],
+      "clientKeys": ["blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
+      "needs": [],
+      "dialog": true,
+      "js": {"factories": {"required": "QRIDRequiredInit"}},
+      "scan": {"issueLabels": {"*": "Missing value"}}
+    },
+    {
+      "mode": "unique",
+      "tag": "@UVUNIQUE",
+      "types": ["unique"],
+      "defaultType": "unique",
+      "parser": "parseUniqueValue",
+      "checker": "checkUnique",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text", "notes", "dropdown", "radio", "yesno", "truefalse", "sql", "slider"],
+        "annotationWhy": "@UVUNIQUE does not support \"{type}\" fields — it compares one scalar field's value across records.",
+        "dialogWhy": "a Unique rule supports Text, Notes, dropdown, radio, yes/no, true/false and slider fields (not calc — the person entering data cannot fix a calc collision)"
+      },
+      "hooks": {"field": "annotateUniqueField", "dictionary": "annotateUniqueDictionary"},
+      "evaluator": "findingsUnique",
+      "refKeys": [
+        {"key": "uniqueWith", "kind": "fieldList", "role": "test"}
+      ],
+      "branchKeys": ["uniqueWith", "uniqueScope", "uniqueSurveys"],
+      "clientKeys": ["uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts"],
+      "needs": ["transport"],
+      "dialog": true,
+      "js": {"factories": {"unique": "QRIDUniqueInit"}},
+      "scan": {"issueLabels": {"*": "Duplicate value"}}
+    },
+    {
+      "mode": "choices",
+      "tag": "@UVCHOICES",
+      "types": ["choices"],
+      "defaultType": "choices",
+      "parser": "parseChoicesValue",
+      "checker": "checkChoices",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["radio", "dropdown", "checkbox"],
+        "annotationWhy": "@UVCHOICES does not support \"{type}\" fields — it filters the options of a radio, dropdown or checkbox field.",
+        "dialogWhy": "a Choices rule supports radio, dropdown and checkbox fields"
+      },
+      "hooks": {"field": "annotateChoicesField", "dictionary": "annotateChoicesDictionary"},
+      "evaluator": "findingsChoices",
+      "refKeys": [],
+      "branchKeys": ["choicesShow", "choicesHide", "choicesAll"],
+      "clientKeys": ["choicesShow", "choicesHide", "choicesAll"],
+      "needs": [],
+      "dialog": false,
+      "js": {"factories": {"choices": "QRIDChoiceFilterInit"}},
+      "scan": {"issueLabels": {"*": "No longer an allowed choice"}}
+    }
+  ]
+}

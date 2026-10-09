@@ -611,6 +611,19 @@ namespace {
     check('non-text picker field surfaces a config error',
         strpos($html, 'only Text and Notes fields') !== false);
 
+    // A stored dialog row naming a mode the dialog has no boxes for
+    // (php/modes.json "dialog": false) is refused, naming the action tag.
+    $choicesRow = [[
+        'rule-type' => 'choices', 'fields' => ['gender'], 'fields-csv' => '',
+        'when' => "[main_id_1]='x'", 'block-save' => 'off',
+    ]];
+    $m = newModule($choicesRow, $ddRadio, $classicData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $html = ob_get_clean();
+    check('a dialog row of a tag-only mode surfaces a config error naming the tag',
+        strpos($html, 'cannot be set up in this dialog') !== false && strpos($html, '@UVCHOICES') !== false);
+
     // ---- 16) validateSettings: the save-time gate ----
     $m = newModule([], $dictionary, [], 149);
     $m->projectIdReturn = 149;
