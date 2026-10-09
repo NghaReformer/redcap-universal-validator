@@ -1,0 +1,9 @@
+event_name,arm_num,unique_event_name,day_offset
+Event 1,1,event_1_arm_1,0
+Baseline,1,baseline_arm_1,5
+Visit 1,1,visit_1_arm_1,30
+Visit 2,1,visit_2_arm_1,60
+Unscheduled,1,unscheduled_arm_1,70
+Followup,1,followup_arm_1,90
+Sub enrol,2,sub_enrol_arm_2,0
+Sub visit,2,sub_visit_arm_2,30

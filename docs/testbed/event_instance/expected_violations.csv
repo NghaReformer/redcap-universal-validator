@@ -1,0 +1,38 @@
+record,event,instance,field,why
+XE-2,baseline_arm_1,1,xv_date,before consent
+XE-2,visit_1_arm_1,1,xv_weight,65 < previous 70
+XE-2,baseline_arm_1,1,xv_temp,37.0 > next 36.0
+XE-2,visit_1_arm_1,1,xv_height,160 < first 170
+XE-2,baseline_arm_1,1,xv_code_confirm,PX-9999 vs PX-0002
+XE-2,baseline_arm_1,1,xv_window,234 days
+XE-2,baseline_arm_1,1,xv_dose,sum 60 > 50
+XE-2,visit_1_arm_1,1,xv_dose,sum 60 > 50
+XE-2,visit_1_arm_1,1,xv_hr,100 > max other 90
+XE-2,baseline_arm_1,1,xv_kit,K-100 twice
+XE-2,visit_1_arm_1,1,xv_kit,K-100 twice
+XE-2,baseline_arm_1,1,xv_ae_note,required: enrol AE=1
+XE-2,visit_1_arm_1,1,xv_ae_note,required: enrol AE=1
+XE-2,baseline_arm_1,1,xs_id,S-100 twice (unique)
+XE-2,baseline_arm_1,2,xs_id,S-100 twice (unique)
+XE-2,baseline_arm_1,1,xs_type,3 distinct types
+XE-2,baseline_arm_1,2,xs_type,3 distinct types
+XE-2,baseline_arm_1,3,xs_type,3 distinct types
+XE-2,baseline_arm_1,2,xs_date,01-14 < previous 01-15
+XE-2,baseline_arm_1,1,xs_volume,sum 90 > 50
+XE-2,baseline_arm_1,2,xs_volume,sum 90 > 50
+XE-2,baseline_arm_1,3,xs_volume,sum 90 > 50
+XE-2,baseline_arm_1,2,xs_hb,"15 > mean(10,10)"
+XE-2,visit_1_arm_1,1,xr_spec_id,S-999 matches nothing
+XE-2,visit_1_arm_1,1,xr_absent_note,required: no match
+XE-2,visit_1_arm_1,1,xr_time,120 h > 48
+XE-2,followup_arm_1,1,xc_visits,9 vs 2
+XE-2,followup_arm_1,1,xc_total_vol,1 vs 90
+XE-2,followup_arm_1,1,xc_mean_weight,1 vs 67.5
+XE-2,followup_arm_1,1,xc_kits,9 vs 1
+XE-2,followup_arm_1,1,xc_min_hb,1 vs 10
+XE-2,followup_arm_1,1,xc_any_pos,no positive
+XE-3,baseline_arm_1,1,xs_next_cmp,"instance 2 missing: UNRESOLVED, not a violation"
+XE-3,baseline_arm_1,3,xs_date,"instance 2 missing: UNRESOLVED, not a violation"
+XE-3,unscheduled_arm_1,2,xu_date,instance 1 missing: UNRESOLVED
+XE-4,sub_visit_arm_2,1,xsub_weight,79 < arm-1 baseline 80
+XE-4,sub_visit_arm_2,1,xv_arm_ref,79 < arm-1 baseline 80
