@@ -532,14 +532,21 @@ record, and/or that it is not after today:
   date. The message names the allowed dates in the field's own format.
 - **Today is the server's date.** The page gets the server clock and moves it
   forward while it stays open, so a wrong computer clock cannot accept tomorrow's
-  date and a form left open past midnight moves to the next day.
+  date and a form left open past midnight moves to the next day. A computer clock
+  moved forward while the form is open moves it too; the post-save audit reads the
+  server clock and still logs the date. The project setting **Time zone for
+  @UVWINDOW "notFuture"** sets the time zone, when it differs from the server's.
 - **Blank checks nothing.** A blank field, or a blank `from` date, is not
   checked; a date still being typed shows no verdict.
 - **Other forms and events.** A `from` date on another form is read when the page
-  opens and the check is advisory (it never blocks). On a survey, or without
-  rights to that form, the value never reaches the page and the browser skips
-  the rule. With event and instance references enabled, `from` may name another
-  event: `[baseline_arm_1][visit_date]`.
+  opens and the window part is advisory (it never blocks); `notFuture` keeps its
+  `blockSave`. On a survey, or without rights to that form, the value never
+  reaches the page: the browser checks only `notFuture`, and staff see a note
+  that the window is checked on save. With event and instance references
+  enabled, `from` may name another event: `[baseline_arm_1][visit_date]`; such a
+  rule is advisory on the page, like every rule with an event or instance
+  reference. On a multi-page survey, put the `from` field on the same page as the date it
+  anchors, or the window is checked only after the save.
 - **Audited.** The post-save audit logs `type: window` with reason
   `window-early`, `window-late` or `future`, and saving the `from` date's form
   re-checks the windows counted from it. The Validation scan reports the same
@@ -720,7 +727,7 @@ check-character primitive, but the full runtime path the module actually uses:
   `tests/window_fixture.json`. `tests/window_dom_js.cjs` drives the browser rule
   and `tests/window_module_php.php` the server side: annotation checks, the
   page fold of an off-page `from` date, the audit, reverse dependencies, the
-  scan and the durable-scan clock.
+  scan, the scan clock and the `window-timezone` setting.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -761,7 +768,7 @@ node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fai
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
-php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, durable clock
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

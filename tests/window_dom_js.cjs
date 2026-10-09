@@ -16,7 +16,14 @@
  *   - a deferred rule never blocks, and says why only on staff forms,
  *   - branched windows pick the active branch,
  *   - a rule with nothing to check is a visible configuration error,
- *   - weeks and datetime hours.
+ *   - weeks and datetime hours,
+ *   - a jQuery-only change (REDCap's date picker) re-checks the field,
+ *   - a withheld "from" date: staff are told the window is checked on save,
+ *     survey respondents are told nothing, and notFuture still applies,
+ *   - "future" keeps the authored block when a snapshot or withheld "from"
+ *     date makes the window part advisory,
+ *   - a "from" that names the field itself gives no window verdict,
+ *   - a deferred stub with no bounds shows its deferral, not a config error.
  *
  * The verdict itself is parity-locked by tests/window_js.cjs + window_php.php;
  * this file tests the DOM wiring around it.
@@ -60,7 +67,7 @@ function makeEl(tag) {
   };
 }
 
-function boot(els, config) {
+function boot(els, config, prep) {
   const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
   delete require.cache[require.resolve(enginePath)];
   const allEls = [];
@@ -86,6 +93,7 @@ function boot(els, config) {
     _alerts: [], alert(m) { this._alerts.push(m); }, confirm() { return true; },
     INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, config),
   };
+  if (prep) prep(win);
   global.document = doc; global.window = win;
   require(enginePath);
   return { doc, win, holders, allEls, NS: win.INSPIREUniversalValidator };
@@ -340,6 +348,94 @@ const realNow = Date.now;
   v.value = '2026-01-20'; v.fire('change');
   ev = submitEv(); env.doc.fire('submit', ev);
   check('compose: a failing window blocks on its own', ev._prevented === true && /between/.test(wMsg(env, 'd').innerHTML));
+}
+
+// ---- 11) a jQuery-only change re-checks the field -----------------------------
+{
+  function jq(el) { return {
+    on(events, fn) { events.split(' ').forEach((e) => { const name = e.split('.')[0];
+      (el._jqHandlers || (el._jqHandlers = {}))[name] = (el._jqHandlers[name] || []).concat(fn); }); return this; } }; }
+  jq.fn = { on: true };
+  const jqFire = (el, name) => ((el._jqHandlers && el._jqHandlers[name]) || []).forEach((fn) => fn({}));
+  const a = dateEl('a', '2026-01-01');
+  const v = dateEl('d', '2026-01-03');
+  const env = boot([a, v], { rules: [{ type: 'window', fields: ['d'], windowFrom: '[a]', windowFromOp: ['ref', 'a', null],
+    windowLo: 0, windowHi: 7, dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }] },
+    (win) => { win.jQuery = jq; });
+  const msg = wMsg(env, 'd');
+  check('jQuery page: inside the window', /OK/.test(msg.innerHTML));
+  v.value = '2026-01-20'; jqFire(v, 'change');   // the date picker: jQuery change, no native event
+  check('jQuery-only change of the field re-checks it', /between 2026-01-01 and 2026-01-08/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('jQuery-only change: the save is trapped', ev._prevented === true);
+}
+
+// ---- 12) withheld "from" date ---------------------------------------------------
+{
+  const withheldRule = (extra) => Object.assign({ type: 'window', fields: ['fu_date'], windowFrom: '[enrol_date]',
+    windowFromOp: ['withheld'], windowLo: 0, windowHi: 30, windowUnit: 'days',
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }, extra || {});
+  {
+    const v = dateEl('fu_date', '2026-01-01');
+    const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [withheldRule({ windowNotFuture: true })] });
+    const msg = wMsg(env, 'fu_date');
+    check('withheld: staff are told the window is checked on save', /not checked on this page/.test(msg.innerHTML)
+      && /checked when the record is saved/.test(msg.innerHTML) && /\[enrol_date\]/.test(msg.innerHTML));
+    check('withheld: no verdict on the field', v.getAttribute('aria-invalid') === null);
+    let ev = submitEv(); env.doc.fire('submit', ev);
+    check('withheld: the window part never blocks', ev._prevented === false);
+    v.value = '2026-10-10'; v.fire('change');
+    check('withheld: notFuture is still judged', /after today \(2026-10-09\)/.test(msg.innerHTML));
+    ev = submitEv(); env.doc.fire('submit', ev);
+    check('withheld: a future date is still blocked as authored', ev._prevented === true);
+    v.value = ''; v.fire('change');
+    check('withheld: a blank field says nothing', !shown(msg));
+  }
+  {
+    const v = dateEl('fu_date', '2026-01-01');
+    const env = boot([v], { context: 'survey', clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
+      rules: [withheldRule({ windowNotFuture: true })] });
+    const msg = wMsg(env, 'fu_date');
+    check('withheld on a survey: silent', !shown(msg));
+    v.value = '2026-10-10'; v.fire('change');
+    check('withheld on a survey: notFuture still judged', /after today/.test(msg.innerHTML) && !/enrol_date/.test(msg.innerHTML));
+  }
+}
+
+// ---- 13) "future" keeps its block when the window part is a snapshot ------------
+{
+  const v = dateEl('fu_date', '2026-10-10');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [{ type: 'window', fields: ['fu_date'],
+    windowFrom: '[enrol_date]', windowFromOp: ['lit', '2026-02-01'], snapshotFields: ['enrol_date'], windowNotFuture: true,
+    windowLo: 0, windowHi: 3650, dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'fu_date');
+  check('snapshot + future: says future, no snapshot caveat', /after today/.test(msg.innerHTML) && !/read when this page was opened/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('snapshot + future: blocked as authored', ev._prevented === true);
+  v.value = '2026-01-01'; v.fire('change');
+  check('snapshot + early: advisory with the caveat', /read when this page was opened/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('snapshot + early: never blocks', ev._prevented === false);
+}
+
+// ---- 14) a "from" that names the field itself ------------------------------------
+{
+  const v = dateEl('visit_date', '2026-01-05');
+  const env = boot([v], { rules: [{ type: 'window', fields: ['visit_date'], windowFrom: '[baseline_arm_1][visit_date]',
+    windowFromOp: ['ref', 'visit_date', null], windowLo: 21, windowHi: 35,
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }] });
+  check('"from" is the field itself: no window verdict', !shown(wMsg(env, 'visit_date')) && v.getAttribute('aria-invalid') === null);
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('"from" is the field itself: never blocks', ev._prevented === false);
+}
+
+// ---- 15) a deferred stub: no bounds, no date type --------------------------------
+{
+  const v = dateEl('fu_date', '2026-01-01');
+  const env = boot([v], { rules: [{ type: 'window', fields: ['fu_date'], blockSave: 'off', deferred: true,
+    deferredWhy: ['Extended reference unavailable: unresolved.'] }] });
+  check('deferred stub: no configuration error', !cfgErr(env, 'fu_date'));
+  check('deferred stub: shows its deferral', /not being checked/.test(wMsg(env, 'fu_date').innerHTML));
 }
 
 Date.now = realNow;

@@ -123,7 +123,7 @@ namespace {
         \REDCap::$data = $data;
         \REDCap::$rights = $rights;
         // Pin the server clock: the test must not depend on the day it runs.
-        $rp = new \ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class, 'clockMemo');
+        $rp = new \ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class, 'clockOverride');
         $rp->setAccessible(true);
         $rp->setValue($m, $CLOCK);
         return $m;
@@ -159,6 +159,19 @@ namespace {
     check('date counted from a datetime: refused', strpos($err('bad_family'), 'holds dates with a time and this field holds dates') !== false);
     check('notes field: refused by eligibility', strpos($err('bad_notes'), 'does not support "notes" fields') !== false);
     check('every refusal names @UVWINDOW', strpos($err('bad_family'), '@UVWINDOW on "bad_family"') === 0);
+    // With event and instance references on, [event-name][f] and [f][current-instance]
+    // are this same entry too; [f][previous-instance] is another entry.
+    $SELF = $DICT;
+    $SELF['self_ev']   = f('visit_form', '@UVWINDOW={"from":"[event-name][self_ev]","window":[0,2]}', 'date_ymd');
+    $SELF['self_in']   = f('visit_form', '@UVWINDOW={"from":"[self_in][current-instance]","window":[0,2]}', 'date_ymd');
+    $SELF['self_prev'] = f('visit_form', '@UVWINDOW={"from":"[self_prev][previous-instance]","window":[0,2]}', 'date_ymd');
+    $ms = mod($SELF, $DATA, $FULL, 'nurse');
+    $ms->projectSettings['enable-event-instance-refs'] = true;
+    $ps = page($ms, 'form', '2', 'visit_form');
+    $serr = function ($field) use ($ps) { $r = ruleFor($ps, $field); return $r && isset($r['configError']) ? $r['configError'] : ''; };
+    check('"from" [event-name] of itself: refused', strpos($serr('self_ev'), 'names this field itself') !== false);
+    check('"from" itself at [current-instance]: refused', strpos($serr('self_in'), 'names this field itself') !== false);
+    check('"from" itself at [previous-instance]: another entry, not refused as itself', strpos($serr('self_prev'), 'names this field itself') === false);
 
     // ---- 2) the fold: live, snapshot, and nothing shipped when not entitled ---
     $r = ruleFor($p, 'visit_date_2');
@@ -172,13 +185,14 @@ namespace {
 
     $p = page(mod($DICT, $DATA, $PART, 'nurse'), 'form', '2', 'visit_form');
     $r = ruleFor($p, 'visit_date_2');
-    check('no rights to the "from" form: deferred, nothing shipped', $r && !empty($r['deferred']) && !isset($r['windowFromOp']));
+    check('no rights to the "from" form: withheld, nothing shipped', $r && ($r['windowFromOp'] ?? null) === ['withheld']);
+    check('no rights: the rule stays live for notFuture', $r && empty($r['deferred']));
     check('no rights: the saved date is nowhere in the page', strpos($p['html'], '2026-03-01') === false);
     check('no rights: no reason that would name the form', empty($r['deferredWhy']));
 
     $p = page(mod($DICT, $DATA, $FULL, 'nurse'), 'survey', '2', 'visit_form');
     $r = ruleFor($p, 'visit_date_2');
-    check('survey: deferred, nothing shipped', $r && !empty($r['deferred']) && !isset($r['windowFromOp']));
+    check('survey: withheld, nothing shipped', $r && ($r['windowFromOp'] ?? null) === ['withheld'] && empty($r['deferred']));
     check('survey: the saved date is nowhere in the page', strpos($p['html'], '2026-03-01') === false);
     check('survey: a "from" on the same page stays live', ruleFor($p, 'v_end')['windowFromOp'] === ['ref', 'v_start', null]);
 
@@ -245,29 +259,43 @@ namespace {
     $own = $plan->invoke($m, 149, [])['ownership'];
     check('scan entitlement: the "from" field is read and owned by its form',
         ($own['visit_date_bl'] ?? null) === 'baseline_form' && ($own['visit_date_2'] ?? null) === 'visit_form');
-    $runAt = function ($utc) use ($m, $plan, $record, $DATA) {
-        $p = $plan->invoke($m, 149, ['clockAt' => $utc]);
-        $found = [];
-        $sink = new \INSPIRE\UniversalValidator\CallbackFindingSink(function (array $v) use (&$found) { $found[$v['field']] = $v['reason']; });
-        $seen = []; $unconf = [];
-        $record->invokeArgs($m, [$p, 149, '2', $DATA['2'], $sink, &$seen, &$unconf]);
-        return ['plan' => $p, 'found' => $found];
+    // Every scan request judges "today" by the clock when it runs. A durable run
+    // used to pin the day it started, and then a record re-scanned on a later
+    // day with that day's date was reported as "Date in the future".
+    $p = $plan->invoke($m, 149, []);
+    check('scan plan: no pinned clock', !array_key_exists('clock', $p));
+    $found = [];
+    $sink = new \INSPIRE\UniversalValidator\CallbackFindingSink(function (array $v) use (&$found) { $found[$v['field']] = $v['reason']; });
+    $seen = []; $unconf = [];
+    $record->invokeArgs($m, [$p, 149, '2', $DATA['2'], $sink, &$seen, &$unconf]);
+    check('scan record: judged by the current clock', ($found['collected'] ?? null) === 'future');
+    $later = mod($DICT, $DATA, $FULL, 'nurse');
+    $rp = new \ReflectionProperty($later, 'clockOverride'); $rp->setAccessible(true);
+    $rp->setValue($later, ['today' => '2026-10-10', 'now' => '2026-10-10 09:00:00']);
+    $found = []; $seen = []; $unconf = [];
+    $record->invokeArgs($later, [$plan->invoke($later, 149, []), 149, '2', $DATA['2'], $sink, &$seen, &$unconf]);
+    check('scan record on the next day: that date is no longer future', !isset($found['collected']));
+
+    // The project's time zone, when set, decides today and now.
+    $clockOf = function ($zone) use ($DICT, $DATA, $FULL) {
+        $z = mod($DICT, $DATA, $FULL, 'nurse');
+        $rp = new \ReflectionProperty($z, 'clockOverride'); $rp->setAccessible(true);
+        $rp->setValue($z, null);
+        if ($zone !== null) $z->projectSettings['window-timezone'] = $zone;
+        $sc = new \ReflectionMethod($z, 'serverClock'); $sc->setAccessible(true);
+        return $sc->invoke($z, 149);
     };
-    $tz = date_default_timezone_get();
-    date_default_timezone_set('UTC');
-    $r1 = $runAt('2026-10-09 23:00:00');
-    check('durable run: "today" is the day the run started', $r1['plan']['clock'] === ['today' => '2026-10-09', 'now' => '2026-10-09 23:00:00']);
-    check('durable run started the day before: the date is future', ($r1['found']['collected'] ?? null) === 'future');
-    $r2 = $runAt('2026-10-10 00:00:01');
-    check('durable run started on that day: not future', !isset($r2['found']['collected']));
-    date_default_timezone_set('Pacific/Kiritimati');   // UTC+14: REDCap stamps dates in server time
-    $r3 = $runAt('2026-10-09 12:00:00');
-    check('durable run: the stored UTC start is read in the server timezone', $r3['plan']['clock']['today'] === '2026-10-10');
-    date_default_timezone_set($tz);
-    $clock = new \ReflectionMethod($m, 'evaluationClock'); $clock->setAccessible(true);
-    check('the scan clock does not outlive the record', $clock->invoke($m) === $CLOCK);
-    $bad = $plan->invoke($m, 149, ['clockAt' => 'yesterday']);
-    check('an unreadable run start falls back to the server clock', $bad['clock'] === $CLOCK);
+    $kiri = (new \DateTimeImmutable('now', new \DateTimeZone('Pacific/Kiritimati')))->format('Y-m-d');
+    $here = (new \DateTimeImmutable('now'))->format('Y-m-d');
+    check('window-timezone: today is the date in that zone', $clockOf('Pacific/Kiritimati')['today'] === $kiri);
+    check('window-timezone blank: the server zone', $clockOf(null)['today'] === $here);
+    check('window-timezone unknown: the server zone, never an error', $clockOf('Mars/Olympus')['today'] === $here);
+    check('window-timezone: an offset is not a zone name', $clockOf('+14:00')['today'] === $here);
+    $vs = mod($DICT, $DATA, $FULL, 'nurse');
+    $msg = $vs->validateSettings(['window-timezone' => 'Mars/Olympus']);
+    check('window-timezone: an unknown name is refused when saved', is_string($msg) && strpos($msg, 'Mars/Olympus') !== false);
+    check('window-timezone: a zone name saves', $vs->validateSettings(['window-timezone' => 'Africa/Douala']) === null);
+    check('window-timezone: blank saves', $vs->validateSettings(['window-timezone' => '']) === null);
     // The report: the issue label and the staff detail line come from the registry.
     $dims = \INSPIRE\UniversalValidator\ScanDimensions::build(149, $DICT, [
         ['type' => 'window', 'fields' => ['visit_date_2'], 'windowFrom' => '[visit_date_bl]', 'windowLo' => 21, 'windowHi' => 35, 'windowUnit' => 'days'],
@@ -287,14 +315,6 @@ namespace {
         \INSPIRE\UniversalValidator\MessageCatalog::explain(['type' => 'window', 'reason' => 'future', 'rule' => 1], $dims->rule(1))
         === ['text' => 'The date is in the future.', 'source' => 'catalog']);
 
-    // The start the service hands the plan comes from the store, bound to the project.
-    $store = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
-    $started = $store->startRun(149, ['created_by' => 'nurse']);
-    $rid = $started['run']['run_id'];
-    check('the store keeps when a run started', (bool) preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', (string) $store->runStartedAt(149, $rid)));
-    check('...and tells no other project', $store->runStartedAt(150, $rid) === null && $store->runStartedAt(149, $rid + 99) === null);
-    check('ScanService passes the run start as the plan clock',
-        strpos(file_get_contents(__DIR__ . '/../php/Scan/ScanService.php'), "'clockAt'      => \$this->store()->runStartedAt(") !== false);
 
     fwrite(STDOUT, "window_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);

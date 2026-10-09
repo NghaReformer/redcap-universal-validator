@@ -18,7 +18,7 @@ php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, 
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
-php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, durable clock
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing

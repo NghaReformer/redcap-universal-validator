@@ -905,9 +905,14 @@ Yes. The `@UVWINDOW` tag checks a date against a window counted from another
 date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit
 21 to 35 days after baseline, both days included, and the message names the
 allowed dates. `"notFuture":true` refuses a date after today, where "today" is
-the server's date, not the computer's. A blank `from` date checks nothing. A
+the server's date, not the computer's. If the study runs in another time zone
+than the server, name it in the project setting **Time zone for @UVWINDOW
+"notFuture"** (for example `Africa/Douala`). A blank `from` date checks nothing. A
 `from` date on another form only advises, because that form could change while
-this one is open. Annotation-only; see the README section and
+this one is open. On a survey, or for a user without rights to that form, the
+`from` date is not sent to the page; the page then checks only `notFuture`, and
+the window is checked when the record is saved. Annotation-only; see the README
+section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**

@@ -1442,7 +1442,9 @@ function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
     var a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
     if(!a||QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||typeof unit!=='string'||QRID_WINDOW_UNITS[unit]===undefined
        ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks')){out.verdict='unknown';return out;}
-    var u=QRID_WINDOW_UNITS[unit],diff=v.seconds-a.seconds;
+    var u=QRID_WINDOW_UNITS[unit];
+    if(type==='datetime')a.seconds-=((a.seconds%60)+60)%60;   /* read to the minute, as the field is */
+    var diff=v.seconds-a.seconds;
     if(lo!==null)out.earliest=QRID_temporalCanonical(a.seconds+(lo|0)*u,v.date);
     if(hi!==null)out.latest=QRID_temporalCanonical(a.seconds+(hi|0)*u,v.date);
     if(lo!==null&&diff<(lo|0)*u)windowReason='window-early';
@@ -3081,10 +3083,12 @@ function QRIDWindowInit(QRID_CONFIG){
     var lo = bound(cfg.windowLo), hi = bound(cfg.windowHi);
     var hasWindow = lo !== null || hi !== null;
     var notFuture = cfg.windowNotFuture === true;
-    if(!configError && !hasWindow && !notFuture){
+    /* A deferred stub (the page could not be given this rule) carries no bounds
+       or date type: it reports its deferral, not a configuration error. */
+    if(!configError && !cfg.deferred && !hasWindow && !notFuture){
       configError = '@UVWINDOW has nothing to check — set a "from" date with a "window", or "notFuture": true.';
     }
-    if(!configError && (cfg.dateType !== "date" && cfg.dateType !== "datetime" && cfg.dateType !== "datetime_seconds")){
+    if(!configError && !cfg.deferred && (cfg.dateType !== "date" && cfg.dateType !== "datetime" && cfg.dateType !== "datetime_seconds")){
       configError = "@UVWINDOW needs a date field — this field's date type is unknown.";
     }
     /* The anchor. A rule the server built always carries windowFromOp unless it
@@ -3093,7 +3097,8 @@ function QRIDWindowInit(QRID_CONFIG){
     var fromOp = null;
     if(!configError && hasWindow){
       var op = cfg.windowFromOp;
-      if(op && op.length && (op[0] === "ref" || op[0] === "lit")) fromOp = op;
+      /* "withheld": the server sent nothing of a "from" date this viewer may not read. */
+      if(op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld")) fromOp = op;
       else if(typeof cfg.windowFrom === "string" && cfg.windowFrom !== ""){
         var p = QRID_whenParse(cfg.windowFrom + "=''");
         if(p.ok && p.ast[0] === "cmp" && p.ast[2][0] === "ref" && p.ast[2][2] === null) fromOp = ["ref", p.ast[2][1], null];
@@ -3108,6 +3113,10 @@ function QRIDWindowInit(QRID_CONFIG){
     /* A "from" field on this page re-checks the window when it changes. */
     var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
     return { configError: configError, gate: GATE, fromWatch: FROM_WATCH, blockSave: BLOCK,
+             /* "future" never depends on the "from" date, so a snapshot or withheld
+                anchor (which turns blockSave off) does not soften it. */
+             futureBlock: BLOCK,
+             windowWithheld: !!(fromOp && fromOp[0] === "withheld"),
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
@@ -3123,12 +3132,21 @@ function QRIDWindowInit(QRID_CONFIG){
 
   var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
   var configError = VS.configError;
-  var ANY_BLOCK = VS.firstBlock !== "off";
+  var FUTURE_BLOCK = "off";
+  for(var fbi = 0; fbi < VS.all.length; fbi++){
+    var fv = VS.all[fbi];
+    if(!fv.configError && !fv.deferred && fv.spec.notFuture && fv.futureBlock !== "off"){ FUTURE_BLOCK = fv.futureBlock; break; }
+  }
+  var ANY_BLOCK = VS.firstBlock !== "off" || FUTURE_BLOCK !== "off";
 
-  /* One variant's verdict for the field's current value. */
+  /* One variant's verdict for the field's current value. A "from" that names the
+     field itself (the extended path folds [baseline_arm_1][visit_date] to a live
+     ref on the baseline visit) is not an anchor: no window applies there. */
   function verdictOf(V, fieldName){
     var val = QRID_WHEN.readRef(fieldName, null);
-    var anchor = V.fromOp ? (V.fromOp[0] === "ref" ? QRID_WHEN.readRef(V.fromOp[1], null) : String(V.fromOp[1])) : null;
+    var op = V.fromOp, anchor = null;
+    if(op && op[0] === "ref") anchor = op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null);
+    else if(op && op[0] === "lit") anchor = String(op[1]);
     var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
     var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, clock);
     r.clock = clock;
@@ -3172,10 +3190,21 @@ function QRIDWindowInit(QRID_CONFIG){
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} },
                 __qridRecheck: function(){ check(); } };
-      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock !== "off" ? VS.firstBlock : FUTURE_BLOCK);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     function inert(){ msg.style.display = "none"; setGuard(false); QRID_setModeState(input, "w", null); }
+    /* The window part was not sent to this page. Staff are told it is checked
+       on save; a survey respondent is told nothing. */
+    function withheld(V){
+      if(QRID_IS_SURVEY){ inert(); return; }
+      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+        "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+      msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
+        " is not checked on this page: that date is on a form you cannot view here." +
+        " It is checked when the record is saved.";
+      setGuard(false); QRID_setModeState(input, "w", null);
+    }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
@@ -3194,13 +3223,20 @@ function QRIDWindowInit(QRID_CONFIG){
       }
       var r;
       try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
-      if(r.verdict !== "ok" && r.verdict !== "future" && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
+      var future = r.verdict === "future";
+      if(r.verdict === "unknown" || (r.verdict === "inert" && !V.windowWithheld)){ inert(); return; }
+      if(!future && V.windowWithheld){
+        /* inert here can only mean "nothing else to check": the value is typed */
+        if(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === ""){ inert(); return; }
+        withheld(V); return;
+      }
+      if(r.verdict !== "ok" && !future && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
       var ok = r.verdict === "ok";
       styleMsg(msg, ok);
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
-      setGuard(!ok, V.blockSave);
+      setGuard(!ok, future ? V.futureBlock : V.blockSave);
       var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
-      if(!ok && V.snapshot && !QRID_IS_SURVEY){
+      if(!ok && !future && V.snapshot && !QRID_IS_SURVEY){
         base += ' <span style="opacity:.8">(counted from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
@@ -3213,6 +3249,10 @@ function QRIDWindowInit(QRID_CONFIG){
       input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
       input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
     }
+    /* A jQuery-only change (REDCap's date picker, its Today and Now buttons, a
+       script) reaches the when-registry, not these native listeners. */
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ check(); });
     for(var gi = 0; gi < VS.all.length; gi++){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
       if(VS.all[gi].fromWatch) VS.all[gi].fromWatch.onChange(function(){ check(); });

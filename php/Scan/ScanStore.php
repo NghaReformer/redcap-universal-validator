@@ -130,15 +130,6 @@ interface ScanStore
     public function run($pid, $runId);
 
     /**
-     * When the run started, as stored ('Y-m-d H:i:s' UTC), or null when it
-     * cannot be read. Every request of one run judges "today" (@UVWINDOW
-     * notFuture) against this instant, so a run that spans midnight does not
-     * change its mind halfway through. Kept out of run() on purpose: that row
-     * is read positionally in many places, and a clock is not run state.
-     */
-    public function runStartedAt($pid, $runId);
-
-    /**
      * Freeze the manifest: write every in-scope record id with its ordinal, then
      * set the totals. MUST set totals before the run may leave planning, so a
      * run can never redefine what "all" means once work has started.

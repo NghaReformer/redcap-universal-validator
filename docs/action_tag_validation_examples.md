@@ -1333,22 +1333,42 @@ Without the feature, `from` must be a field of the same event.
   read that form, its saved value is used and the check is **advisory**: it shows
   the verdict but never blocks the save, because that form could change while
   this one is open. On a survey, or without rights to that form, the value is not
-  sent to the page at all and the browser does not check the rule.
+  sent to the page at all. The browser then checks only `notFuture`; staff see a
+  note that the window is checked when the record is saved, and a survey
+  respondent sees nothing about it.
+- **`notFuture` keeps its `blockSave`.** "After today" does not depend on the
+  `from` date, so a hard rule still blocks a future date when the window part is
+  advisory or not sent. A rule whose `from` names another event is advisory as a
+  whole on the page, like every rule with an event or instance reference.
+- **Multi-page surveys.** The browser reads a `from` date only on the page being
+  shown. If the `from` field is on an earlier page of the survey, the window is
+  not checked while the respondent types; the post-save audit still checks it.
+  Put both dates on one page to check the window as they are entered.
+- **A `from` entry that does not exist yet** (no row in that event, no such
+  instance) counts as a blank `from` date: nothing is checked until it is saved.
+- **Today is the server's date.** The page gets the server clock when it opens
+  and moves it forward while it stays open, so a wrong computer clock cannot
+  accept tomorrow's date and a form left open past midnight moves to the next
+  day. A computer clock moved forward while the form is open moves it too; the
+  post-save audit reads the server clock and still logs the date. The date is
+  taken in the server's time zone unless the project setting **Time zone for
+  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`.
 - **The server checks every save.** The post-save audit logs a violation as
   `type: window` with reason `window-early`, `window-late` or `future`. Saving
   only the form that holds the `from` date re-checks the windows counted from it.
 - **The Validation scan** reports the same findings, with "Date outside allowed
   window" or "Date in the future" in the Issue column and the missed bound in the
   detail line. A scan judges "future" against the day it runs, so it flags only
-  dates that are still in the future on that day. A durable scan uses the day the
-  run started for every record.
+  dates that are still in the future on that day. Each part of a durable scan
+  reads the clock when that part runs.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys
 
 `from`, `window`, `unit`, `notFuture`, `when`, `message`, `blockSave`,
-`caseSensitive`. A rule needs `from` with `window`, or `"notFuture":true`, or
-both. Any other key is a configuration error.
+`caseSensitive`, and `references` (named bindings that `when` reads as `{alias}`;
+needs event and instance references). A rule needs `from` with `window`, or
+`"notFuture":true`, or both. Any other key is a configuration error.
 
 These are refused when the rule is saved:
 

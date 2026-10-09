@@ -7,9 +7,9 @@ D-M-Y and M-D-Y date fields that ships with it. The automated suites
 real REDCap date inputs, real save paths and the real server clock.
 
 Target: chpr-redcap.org pid 149 (longitudinal, event and instance references
-enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 18
+enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 19
 fields on one new instrument `uv_window_test`. Every annotation in it was run
-through the module offline before this sheet was written: the 13 rule fields
+through the module offline before this sheet was written: the 14 rule fields
 configure, and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 ---
@@ -18,8 +18,8 @@ configure, and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 1. Deploy the release that contains `@UVWINDOW` and confirm the version in
    Control Center.
-2. **Append, never replace.** Download the current dictionary, append the 18
-   rows of the CSV, upload. The diff must report one new instrument and 18 new
+2. **Append, never replace.** Download the current dictionary, append the 19
+   rows of the CSV, upload. The diff must report one new instrument and 19 new
    fields, and nothing else.
 3. Designate `uv_window_test` on `event_1_arm_1` (same event as `xe_enrol`,
    so `uw_offpage` reads the consent date from another form of the same event).
@@ -61,6 +61,9 @@ Type `2026-03-01` in `uw_anchor` first.
 | B3 | Set the computer clock one day ahead, reload, `uw_nofuture` = the computer's "today" | Still refused: today is the server's date. Restore the clock after |
 | B4 | `uw_now_sec` = now; then now + 5 minutes | OK; then "This date and time is in the future." |
 | B5 | **[optional]** Open the form shortly before the server's midnight, type tomorrow's date in `uw_nofuture`, wait until after midnight, press Save | Before midnight: refused. After midnight the save goes through without a reload |
+| B6 | `uw_nofuture` = tomorrow, leave the field; then click REDCap's **Today** button beside it | Red, then green OK without leaving or retyping the field (the date picker changes the field without a native change event) |
+| B7 | Project setting **Time zone for @UVWINDOW "notFuture"** = `Mars/Olympus`, Save | Refused: "... is not a time zone name ..." |
+| B8 | **[optional, only while the server's date is behind UTC+14]** Set the time zone to `Pacific/Kiritimati`, reload, `uw_nofuture` = the server's tomorrow | OK: it is already that day in Kiritimati. Clear the setting after |
 
 ## Section C: datetime window
 
@@ -76,19 +79,24 @@ Type `2026-03-01` in `uw_anchor` first.
 | D1 | Read the config rule for `uw_offpage` | `windowFromOp` is `["lit","2026-01-10"]`, `snapshotFields` is `["xe_consent_date"]` |
 | D2 | `uw_offpage` = 2026-02-09 | OK |
 | D3 | `uw_offpage` = 2026-02-10, press Save | Red message with "(counted from xe_consent_date, read when this page was opened ...)". The save is not blocked, although the tag says hard |
+| D3b | `uw_offpage_nf` = tomorrow, press Save | "This date is after today (...)", with no "counted from" note; save blocked. "Future" does not depend on the consent date, so it keeps the hard block |
 | D4 | `uw_cross` = 2026-01-29, then 2026-03-17 | OK, then red ("between 2026-01-29 and 2026-03-16"); never blocks |
-| D5 | Account without rights to `xe_enrol`: open the form, read the `uw_offpage` rule | `deferred` is set, no `windowFromOp`, and 2026-01-10 appears nowhere in the config |
+| D5 | Account without rights to `xe_enrol`: open the form, read the `uw_offpage` rule | `windowFromOp` is `["withheld"]`, `deferred` is not set, and 2026-01-10 appears nowhere in the config |
+| D5b | Same account: `uw_offpage` = 2026-02-10, press Save | Amber note "The window counted from [xe_consent_date] is not checked on this page ... It is checked when the record is saved."; the save goes through |
+| D5c | Same account: `uw_offpage_nf` = tomorrow, press Save | "This date is after today"; save blocked |
 | D6 | Enable `uv_window_test` as a survey and open it | No rule carries the consent date; staff-only text such as "(21 to 35 days from ...)" is absent |
+| D7 | In the survey: `uw_offpage` = 2026-02-10, then `uw_offpage_nf` = tomorrow and submit | `uw_offpage` shows nothing; `uw_offpage_nf` says "This date is after today" and the submit is blocked |
 
 ## Section E: post-save audit and scan
 
 | # | Action | Expect |
 |---|---|---|
-| E1 | With `uw_anchor` saved as 2026-03-01, import `uw_live` = 2026-04-06 through the Data Import Tool (bypasses the browser) | Module log: `invalid-id-saved`, `type: window`, reason `window-late` |
-| E2 | Import `uw_nofuture` = a date next year | Module log: reason `future` |
+| E1 | `uw_anchor` = 2026-03-01, `uw_dmy` = 09-03-2026 (advisory: red, does not block), press Save | Module log: `invalid-id-saved`, `type: window`, reason `window-late` |
+| E2 | `uw_now_sec` = `2027-06-01 10:00:00` (advisory), press Save | Module log: reason `future` |
+| E2b | **[optional]** Import `uw_live` = 2026-04-06 through the Data Import Tool (bypasses the browser) | Module log: reason `window-late`. Whether REDCap runs the save hook on an import depends on its version; if no entry appears, E4 still finds the value |
 | E3 | With `uw_offpage` saved as 2026-02-09, change only `xe_consent_date` on `xe_enrol` to 2026-01-01 and save | Saving the anchor's form re-audits `uw_offpage`: a new `window-late` finding (2026-02-09 is 39 days after 2026-01-01) |
 | E4 | Run the Validation scan | Findings for E1/E2 with Issue "Date outside allowed window" / "Date in the future" and the missed bound in the detail line |
-| E5 | **[durable scan only]** Start a run, note its start date | Every record is judged against the start date even if the run passes midnight |
+| E5 | **[durable scan only]** Run a durable scan | The same findings as E4. Each part of the run reads the server clock when it runs, so a later catch-up does not flag a date that has become today |
 
 ## Section F: configuration errors
 

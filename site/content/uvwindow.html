@@ -34,6 +34,8 @@ or <code>"notFuture": true</code>, or both.</p>
     (a datetime: after now)</td></tr>
 <tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
     <code>caseSensitive</code></td><td>As for the other tags</td></tr>
+<tr><td><code>references</code></td><td>Named bindings that <code>when</code> reads as
+    <code>{alias}</code>; needs event and instance references</td></tr>
 </tbody>
 </table>
 </div>
@@ -54,10 +56,17 @@ message shows the allowed dates the way the field shows them.</p>
     covers that.</li>
 <li><strong>Today is the server's date</strong>, never the computer's, so a laptop
     whose clock is a day ahead cannot accept tomorrow's date. A page left open
-    across midnight moves to the next day.</li>
+    across midnight moves to the next day. When the study's time zone differs from
+    the server's, name it in the project setting <em>Time zone for @UVWINDOW
+    "notFuture"</em>.</li>
 <li>A <code>from</code> date on <strong>another form</strong> is read when the page
     opens. That check is advisory: it shows the verdict but never blocks the save,
-    because the other form could change while this one is open.</li>
+    because the other form could change while this one is open.
+    <code>notFuture</code> keeps its <code>blockSave</code>.</li>
+<li>On a <strong>survey</strong>, or for a user without rights to that form, the
+    <code>from</code> date is not sent to the page. The page checks only
+    <code>notFuture</code>, and the window is checked when the record is saved. On a
+    multi-page survey, put the <code>from</code> field on the same page.</li>
 </ul>
 
 <div class="note">

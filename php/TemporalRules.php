@@ -234,14 +234,25 @@ final class TemporalRules
         }
         // An operand is a VALUE the verdict reads, not a comparison, so it never folds to a
         // Boolean: the browser gets a live ref or a permitted snapshot, saved-data callers the
-        // value itself. One the viewer may not read is refused outright, since any window built
-        // from it would show it.
+        // value itself.
+        //  - No saved entry yet (no row in that event, no such instance) is a blank value:
+        //    the window waits for it, as it waits for a blank field.
+        //  - One the viewer may not read is ['withheld']: nothing of it is sent, and the
+        //    browser checks only what does not depend on it.
+        //  - One that is the host field itself, in this same entry, is marked: a field is
+        //    never judged against its own value (on the browser the live ref names it).
         foreach(self::operands($rule) as list($rk,$op)){
             if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $r=$resolver->resolve($op,$context);
+            if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
             if(isset($r['members'])){$problems[]='invalid';$node=['unknown'];}
-            else{$was=$denied;$denied=false;$node=$member($r);if($browser&&$denied)$problems[]='unauthorized';$denied=$was;}
-            if($browser)$compiled[$rk['op']]=$node;else $compiled[$rk['value']]=$node[0]==='lit'?(string)$node[1]:null;
+            elseif(($r['state']??null)==='ok'&&$browser&&empty($r['self'])&&$mayRead&&!$mayRead($r['location']['instrument']??null))$node=['withheld'];
+            else $node=$member($r);
+            if($browser)$compiled[$rk['op']]=$node;
+            else{
+                $compiled[$rk['value']]=$node[0]==='lit'?(string)$node[1]:null;
+                if(!empty($r['self'])&&in_array($r['location']['field']??null,$rule['fields']??[],true))$compiled[$rk['value'].'Self']=$r['location']['field'];
+            }
         }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){

@@ -156,6 +156,9 @@ final class TemporalLogic
                 return $out;
             }
             $u = self::WINDOW_UNITS[$unit];
+            // A field without seconds reads its anchor to the minute too, so the
+            // bounds it is judged by are the bounds its message can show.
+            if ($type === 'datetime') $a['seconds'] -= (($a['seconds'] % 60) + 60) % 60;
             $diff = $v['seconds'] - $a['seconds'];
             if ($lo !== null) $out['earliest'] = TemporalValue::canonical($a['seconds'] + (int) $lo * $u, $v['type']);
             if ($hi !== null) $out['latest'] = TemporalValue::canonical($a['seconds'] + (int) $hi * $u, $v['type']);

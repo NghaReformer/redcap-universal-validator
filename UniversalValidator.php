@@ -729,13 +729,17 @@ class UniversalValidator extends AbstractExternalModule
             'type' => isset($rule['dateType']) ? $rule['dateType'] : null,
             'fromType' => isset($rule['fromType']) ? $rule['fromType'] : null,
         ];
-        $clock = $spec['notFuture'] ? $this->evaluationClock() : null;
+        $clock = $spec['notFuture'] ? $this->serverClock($project_id) : null;
+        // The extended path marks a "from" that resolved to the field itself, in
+        // this same entry ([baseline_arm_1][visit_date] saved on the baseline
+        // visit): no window applies there.
+        $self = isset($rule['windowFromValueSelf']) ? $rule['windowFromValueSelf'] : null;
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || is_array($value)) continue;
-            $r = TemporalLogic::windowVerdict($spec, (string) $value, 'ymd', $anchor, 'ymd', $clock);
+            $r = TemporalLogic::windowVerdict($spec, (string) $value, 'ymd', $self === $field ? '' : $anchor, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
                 $out['unconfigurable'][] = ['fields' => [$field],
                     'why' => 'the saved date or its "from" date is not a date this rule can read — field skipped'];
@@ -748,54 +752,46 @@ class UniversalValidator extends AbstractExternalModule
         return $out;
     }
 
-    /** @var array|null the clock this request evaluates "today" against; see evaluationClock() */
+    /** @var array|null a pinned clock (tests); null reads the real one */
     private $clockOverride = null;
-    /** @var array|null the server clock, read once per request */
-    private $clockMemo = null;
+    /** @var array zone name ('' = the server's own) => that clock, read once per request */
+    private $clockMemo = [];
 
     /**
-     * Today and now on the server, as REDCap itself sees them (the server's
-     * timezone, which is the timezone REDCap stamps its own dates in), read
-     * once per request so every field of one save or one scan is judged
-     * against the same instant.
+     * Today and now for the @UVWINDOW "notFuture" check, read once per request
+     * so every field of one save, page or scan request is judged against the
+     * same instant. The zone is the project's "window-timezone" setting, else
+     * the server's own (the zone REDCap stamps its dates in). A project whose
+     * sites sit ahead of the server sets it, or "now" typed there is "future".
      *
      * @return array{today:string, now:string}  'Y-m-d' and 'Y-m-d H:i:s'
      */
-    private function serverClock()
+    private function serverClock($pid = null)
     {
-        if ($this->clockMemo === null) {
-            $now = new \DateTimeImmutable('now');
-            $this->clockMemo = ['today' => $now->format('Y-m-d'), 'now' => $now->format('Y-m-d H:i:s')];
+        if ($this->clockOverride !== null) return $this->clockOverride;
+        $zone = $this->clockZone($pid);
+        $key = $zone === null ? '' : $zone->getName();
+        if (!isset($this->clockMemo[$key])) {
+            $now = $zone === null ? new \DateTimeImmutable('now') : new \DateTimeImmutable('now', $zone);
+            $this->clockMemo[$key] = ['today' => $now->format('Y-m-d'), 'now' => $now->format('Y-m-d H:i:s')];
         }
-        return $this->clockMemo;
+        return $this->clockMemo[$key];
     }
 
-    /**
-     * The clock "notFuture" is judged against: the server clock, unless the
-     * caller pinned another one (the durable scan pins its run's start, so a
-     * run that spans midnight judges every record against one day).
-     */
-    private function evaluationClock()
+    /** The project's "window-timezone" setting as a zone; null for none or an unknown name. */
+    private function clockZone($pid = null)
     {
-        return $this->clockOverride !== null ? $this->clockOverride : $this->serverClock();
+        $name = null;
+        try { $name = $this->getProjectSetting('window-timezone', $pid); } catch (\Throwable $e) {}
+        $name = is_string($name) ? trim($name) : '';
+        if ($name === '' || !self::isClockZone($name)) return null;
+        return new \DateTimeZone($name);
     }
 
-    /**
-     * The server clock at a stored UTC instant ('Y-m-d H:i:s', the scan
-     * tables' format), in the server's timezone as serverClock() reads it. An
-     * absent or unreadable instant is "now".
-     */
-    private function clockAt($utc)
+    /** Whether $name is a timezone the "window-timezone" setting accepts (an IANA name). */
+    private static function isClockZone($name)
     {
-        if (!is_string($utc) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $utc)) return $this->serverClock();
-        try {
-            $at = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $utc, new \DateTimeZone('UTC'));
-            if ($at === false) return $this->serverClock();
-            $at = $at->setTimezone(new \DateTimeZone(date_default_timezone_get()));
-            return ['today' => $at->format('Y-m-d'), 'now' => $at->format('Y-m-d H:i:s')];
-        } catch (\Throwable $e) {
-            return $this->serverClock();
-        }
+        return is_string($name) && in_array($name, \DateTimeZone::listIdentifiers(\DateTimeZone::ALL), true);
     }
 
     /**
@@ -1164,7 +1160,7 @@ class UniversalValidator extends AbstractExternalModule
         // "Today" for @UVWINDOW notFuture is the SERVER's today, not the
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
-        if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock();
+        if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
         return $config;
     }
 
@@ -1324,9 +1320,12 @@ class UniversalValidator extends AbstractExternalModule
         //   on this page       live ['ref', field, null], read as typed
         //   entitled off-page  its saved value as ['lit', Y-M-D] plus a
         //                      snapshot note, so the client never blocks on it
-        //   anything else      deferred with no reason: a survey respondent or
-        //                      a user without rights to that form must not see
-        //                      the value, and a window built from it would show it
+        //   anything else      ['withheld']: a survey respondent or a user
+        //                      without rights to that form must not see the
+        //                      value, and a window built from it would show it.
+        //                      The rule stays live for what does not need it
+        //                      ("notFuture"); the browser says the rest is
+        //                      checked after saving.
         $foldOperand = function ($text) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
             $out = ['op' => null, 'deferred' => true, 'why' => [], 'snapshot' => []];
             $op = ModeRegistry::operandRef($text);
@@ -1342,11 +1341,13 @@ class UniversalValidator extends AbstractExternalModule
                 $out['deferred'] = false;
                 return $out;
             }
+            $out['deferred'] = false;
             if (isset($disclosable[$f])) {
                 $v = isset($values[$f]) ? $values[$f] : '';
                 $out['op'] = ['lit', is_array($v) ? '' : (string) $v];
-                $out['deferred'] = false;
                 $out['snapshot'][$f] = true;
+            } else {
+                $out['op'] = ['withheld'];
             }
             return $out;
         };
@@ -2123,6 +2124,12 @@ class UniversalValidator extends AbstractExternalModule
             // Turning the dialect off preserves its authored rules for reactivation.
             $parseExtended = $enabled || $wasEnabled;
             $errors = ($enabled && !$wasEnabled) ? $this->temporalActivationProblems($pid) : [];
+            $zone = (isset($settings['window-timezone']) && is_string($settings['window-timezone']))
+                ? trim($settings['window-timezone']) : '';
+            if ($zone !== '' && !self::isClockZone($zone)) {
+                $errors[] = 'Time zone for @UVWINDOW "notFuture": "' . $zone . '" is not a time zone name. '
+                    . 'Use a name such as Africa/Douala or Europe/London, or leave it blank to use the time zone of the server.';
+            }
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
@@ -2375,7 +2382,11 @@ class UniversalValidator extends AbstractExternalModule
         if (!$dd || !isset($dd[$from])) {
             return $refuse('"from" names "[' . $from . ']", which is not a field in this project.');
         }
-        if ($from === $name && $op[0] === 'ref') {
+        // [event-name][f] and [f][current-instance] are this same entry too. Another
+        // event or instance is not, except where it happens to be the current one;
+        // TemporalRules marks that case and the window then does not apply.
+        if ($from === $name && ($op[0] === 'ref'
+                || (in_array($op[3], [null, 'event-name'], true) && in_array($op[4], [null, 'current-instance'], true)))) {
             return $refuse('"from" names this field itself — a window needs another date to count from.');
         }
         $meta = $dd[$from];
@@ -3894,11 +3905,7 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none'),
-                // The instant "today" means for every record of this scan
-                // (@UVWINDOW notFuture). A durable run passes the moment it
-                // started, so its later requests agree with its first.
-                'clock' => $this->clockAt(isset($opts['clockAt']) ? $opts['clockAt'] : null)];
+                'hashRecordIds' => ($this->logMode($pid) === 'none')];
 
         // What this installation can actually support, and therefore what a run
         // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
@@ -4242,20 +4249,6 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
                                 array &$uniqueSeen, array &$unconf)
-    {
-        // Every rule of this record judges "today" against the plan's clock.
-        $held = $this->clockOverride;
-        $this->clockOverride = isset($plan['clock']) && is_array($plan['clock']) ? $plan['clock'] : null;
-        try {
-            return $this->scanRecordAt($plan, $pid, $rec, $node, $sink, $uniqueSeen, $unconf);
-        } finally {
-            $this->clockOverride = $held;
-        }
-    }
-
-    /** scanRecord() under the plan's clock. */
-    private function scanRecordAt(array $plan, $pid, $rec, array $node, FindingSink $sink,
-                                  array &$uniqueSeen, array &$unconf)
     {
         $this->temporalBegin($pid);
         $ctxAll = self::recordContexts($node);

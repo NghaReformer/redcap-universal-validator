@@ -394,18 +394,34 @@ namespace {
     $m=$win();$m->projectSettings['enable-event-instance-refs']=false;
     check('window from another event needs the feature',strpos(ruleOf(render($m,'fa'),'a_val')['configError']??'','event and instance references')!==false);
     $m=$win();REDCap::$rights['nurse']['forms']['fb']='0';$p=render($m,'fa');
-    check('window anchor on a form the viewer cannot read: deferred, nothing shipped',!empty(ruleOf($p,'a_val')['deferred'])&&strpos($p['raw'],'2026-01-01')===false);
+    check('window anchor on a form the viewer cannot read: withheld, nothing shipped',(ruleOf($p,'a_val')['windowFromOp']??null)===['withheld']&&empty(ruleOf($p,'a_val')['deferred'])&&strpos($p['raw'],'2026-01-01')===false);
     $m=$win();$fold=new ReflectionMethod($m,'foldTemporalRules');$fold->setAccessible(true);
     $rule=['type'=>'window','fields'=>['a_val'],'windowFrom'=>'[baseline_arm_1][b_open][2]','windowLo'=>21,'windowHi'=>35,
            'windowUnit'=>'days','dateType'=>'date','dateFormat'=>'ymd','fromType'=>'date','fromFormat'=>'ymd'];
     $survey=$fold->invoke($m,[$rule],PID,'1','fa',1,1,'survey');
-    check('window anchor on a survey: deferred, no operand',!empty($survey[0]['deferred'])&&!isset($survey[0]['windowFromOp'])&&strpos(json_encode($survey),'2026-01-01')===false);
+    check('window anchor on a survey: withheld, nothing shipped',($survey[0]['windowFromOp']??null)===['withheld']&&empty($survey[0]['deferred'])&&strpos(json_encode($survey),'2026-01-01')===false);
     $m=$win();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
     $res=$m->scanProject(PID);
     check('window from a blank anchor in another event: inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);
     $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);
     $res=$m->scanProject(PID);
     check('window from an anchor entry that does not exist: never a verdict',!$res['violations']);
+    check('...and not unresolved: the window waits for the entry, as for a blank date',!$res['unconfigurable']);
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$m->redcap_save_record(PID,'1','fa',1,1);
+    check('...nor on save',!invalid($m)&&!unconf($m));
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$r=ruleOf(render($m,'fa'),'a_val');
+    check('...and the page gets a blank anchor, not a deferral',$r&&empty($r['deferred'])&&($r['windowFromOp']??null)===['lit','']);
+    // A "from" that is the host field itself on one of its entries: that entry is
+    // never judged against its own value; the other entries are.
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');
+    $res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=($v['event_id']??'?').'/'.($v['instance']??'?').':'.$v['reason'];sort($hit);
+    check('window from its own entry: that entry has no verdict, the others do',$hit===['1/3:window-early','2/1:window-late']&&!$res['unconfigurable']);
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');$m->redcap_save_record(PID,'1','fa',1,1);
+    $hit=[];foreach(invalid($m) as $c)$hit[]=$c[1]['event_id'].'/'.$c[1]['instance'].':'.$c[1]['reason'];sort($hit);
+    check('window from its own entry: saving it re-audits the others, never itself',$hit===['1/3:window-early','2/1:window-late']&&!unconf($m));
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('window from its own entry: the page names the field itself (the browser reads no anchor)',($r['windowFromOp']??null)===['ref','a_val',null]);
 
     $goldenPath=__DIR__.'/temporal_golden.json';
     if(in_array('--update-golden',$argv,true))file_put_contents($goldenPath,json_encode($golden,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");

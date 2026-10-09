@@ -85,17 +85,7 @@ final class ArrayScanStore implements ScanStore
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
              'fence_open'])));
         $this->records[$id] = [];
-        $this->startedAt[$id] = gmdate('Y-m-d H:i:s');
         return ['ok' => true, 'busy' => false, 'run' => $this->runs[$id], 'why' => null];
-    }
-
-    /** @var array run id => 'Y-m-d H:i:s' UTC, set by startRun */
-    private $startedAt = [];
-
-    public function runStartedAt($pid, $runId)
-    {
-        $r = $this->run($pid, $runId);
-        return ($r !== null && isset($this->startedAt[$runId])) ? $this->startedAt[$runId] : null;
     }
 
     public function run($pid, $runId)

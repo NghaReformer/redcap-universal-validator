@@ -182,9 +182,6 @@ class FaultyStore implements ScanStore
     public function run($pid, $runId)
     { $this->gate('run'); return $this->inner->run($pid, $runId); }
 
-    public function runStartedAt($pid, $runId)
-    { $this->gate('runStartedAt'); return $this->inner->runStartedAt($pid, $runId); }
-
     public function writeManifest($runId, array $records)
     { $this->gate('writeManifest'); return $this->inner->writeManifest($runId, $records); }
 
