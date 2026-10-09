@@ -1488,6 +1488,42 @@ searched value: one event row, or one repeat instance together with its event ro
 @UVEXISTS={"in":"[voucher_issued]","surveys":true}
 ```
 
+### Level 5 — a value saved in another project
+
+```text
+# on: result_specimen_id — the specimen is registered in the lab project (project 412)
+@UVEXISTS={"in":"[specimen_id]","project":412}
+
+# the same, with an alias this project's settings map to the lab project
+@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"}}
+
+# on: lab_record_id — a record ID of the lab project
+@UVEXISTS={"in":"record","project":"lab"}
+```
+
+`project` names another project on the same REDCap server, by its project id or
+by an alias. An alias is set in this project's module settings ("@UVEXISTS
+project aliases"), so the data dictionary can move between a test and a
+production server unchanged; only the alias row differs. `in`, `event` and the
+`match` targets then name fields and events of that project; the `match` values
+stay fields of this record. Three switches must all be on:
+
+1. **The server.** An administrator turns on "@UVEXISTS in other projects" in the
+   module's Control Center settings. It is off by default.
+2. **The searched project.** It must have this module enabled and list this
+   project under "Projects that may look up values here", with the fields it may
+   search (`record` for its record ID) and who gets an answer:
+   - *Only users who have rights to those fields in this project* (the default):
+     the user needs a current rights row there and access to the form of each
+     searched field. A user in a Data Access Group there is answered from their
+     own group only.
+   - *Any signed-in user of the asking project*: found / not found only, and no
+     searched field may be an Identifier there. Any value typed in the asking
+     project can then be tested against the searched one, which is why this is
+     the searched project's choice.
+3. **Surveys,** only when the searched project answers any signed-in user, also
+   ticks "Also answer survey respondents", and the rule says `"surveys":true`.
+
 ### Semantics worth knowing
 
 - **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
@@ -1548,10 +1584,45 @@ searched value: one event row, or one repeat instance together with its event ro
   the run.
 - **Configure dialog:** none. `@UVEXISTS` exists only as an action tag.
 
+### Semantics in another project
+
+- **One refusal for every reason.** Until the searched project's agreement
+  passes, every problem shows the same setup error: the project does not exist,
+  does not have the module, does not list this project, or does not list a
+  searched field. Neither its dictionary nor its data is read before then, so
+  the error tells a designer nothing about that project. Field errors (a field
+  missing there, a different kind of date, an unknown event) come only after.
+- **The record found there is never shown.** Staff get found / not found and,
+  for *could not check*, a reason.
+- **Every lookup is logged in the searched project.** Its module log gets one
+  `uv-exists-probe` line per lookup, answered or refused: the asking project,
+  the channel (staff, survey, audit), the user, the field, the result, and the
+  value as a keyed hash under that project's key. The value is left out when
+  that project's "How to log invalid values" is "none" or "off", and is never
+  logged raw.
+- **Budgets.** At most 30 lookups a minute per signed-in session into one
+  project, and 1,200 a minute answered by one project from every caller
+  together. Administrators can change both in the Control Center settings. Over
+  either, or when the counter cannot be kept, the lookup answers *could not
+  check*.
+- **An empty read is not "not found".** When the searched project returns no
+  records at all to the lookup (or, for a user confined to a group there, none
+  of that group), the answer is *could not check*.
+- **The audit** asks as the user who saved. A save with no signed-in user (a
+  survey) is checked only when the searched project answers survey respondents.
+  Anything else is logged as a rule problem.
+- **The Validation scan** reads the searched project once per searched field per
+  scan request and leaves one `uv-exists-index-read` line in its log. The rule
+  is reported as not evaluated when the person running the scan would not be
+  answered, or is in a Data Access Group of the searched project. Changes saved
+  in the searched project do not re-open a durable scan of this one. A scan
+  confined to one group of this project still checks these rules: this
+  project's groups mean nothing in the other one.
+
 ### `@UVEXISTS` JSON keys
 
-`in`, `event`, `scope`, `match`, `surveys`, `when`, `message`, `blockSave` and
-`caseSensitive`. Any other key is a configuration error.
+`in`, `project`, `event`, `scope`, `match`, `surveys`, `when`, `message`,
+`blockSave` and `caseSensitive`. Any other key is a configuration error.
 
 These are refused when the rule is saved:
 
@@ -1568,9 +1639,13 @@ These are refused when the rule is saved:
 # refused: needs "in"
 @UVEXISTS={"scope":"dag"}
 
-# Another project. Not supported in this version.
-# refused: unknown @UVEXISTS option(s): project
-@UVEXISTS={"in":"[specimen_id]","project":12}
+# Another project: a project id, or an alias that starts with a letter.
+# refused: "project" must be a project id
+@UVEXISTS={"in":"[specimen_id]","project":"12-lab"}
+
+# Groups and events of this record mean nothing in another project.
+# refused: not shared between projects
+@UVEXISTS={"in":"[specimen_id]","project":"lab","scope":"dag"}
 
 # Scopes are project, dag and event.
 # refused: "scope" must be project, dag or event
@@ -2641,6 +2716,16 @@ counts as the same value), `scope` narrows the **search** (which records are com
 @UVEXISTS={"in":"[voucher_issued]","surveys":true,"blockSave":"hard"}
 ```
 
+#### Another project
+
+```text
+# on: result_specimen_id — registered in the lab project, at the same site
+@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"},"blockSave":"hard"}
+
+# on: screening_id — screened in the screening project's screening event
+@UVEXISTS={"in":"[screening_id]","project":"screening","event":"screening_arm_1"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -2936,6 +3021,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Key               | Type            | Default        | Notes                                                                  |
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
 | `in`            | string          | *(none)*     | `record`, or one field reference such as `[specimen_id]`; the shorthand `@UVEXISTS=[field]` sets it |
+| `project`       | number or string | *(this project)* | Another project's id, or an alias from this project's settings. Not with `"scope":"dag"` or `"scope":"event"` |
 | `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"` or `"in":"record"` |
 | `scope`         | string          | `project`    | `project`, `dag` (this record's group), `event` (this entry's event)   |
 | `match`         | object          | *(none)*     | `{"target_field":"[field of this record]"}`, up to 5 pairs, same entry as the searched value |
@@ -3003,6 +3089,8 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `@UVWINDOW` bound, either side of `from` | 36,500 units |
 | `@UVEXISTS` `match` pairs | 5 |
 | `@UVEXISTS` lookups per user session | 60 a minute, shared with `@UVUNIQUE` |
+| `@UVEXISTS` lookups into one other project, per user session | 30 a minute (Control Center setting) |
+| `@UVEXISTS` lookups one project answers for other projects | 1,200 a minute (Control Center setting) |
 
 ### Algorithms
 
@@ -3101,6 +3189,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1"}
 @UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"hard"}
 @UVEXISTS={"in":"[referral_id]","scope":"dag"}
+@UVEXISTS={"in":"[specimen_id]","project":"lab"}       saved in another project (both must agree)
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

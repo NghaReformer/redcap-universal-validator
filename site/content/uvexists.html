@@ -27,6 +27,8 @@ a value of another field such as the specimen ID on the collection form.</p>
 <tr><td><code>match</code></td><td>Look only at saved entries whose target field equals a field of
     this record, e.g. <code>{"site_code":"[site]"}</code>; up to 5 pairs</td></tr>
 <tr><td><code>surveys</code></td><td><code>true</code> to check on surveys too (off by default)</td></tr>
+<tr><td><code>project</code></td><td>Look in another project on the same server, by project id or by an
+    alias set in this project's module settings; that project must agree (see below)</td></tr>
 <tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
     <code>caseSensitive</code></td><td>As for the other tags</td></tr>
 </tbody>
@@ -71,6 +73,34 @@ nor a time, because the comparison is exact on the stored values.</p>
     <code>"surveys": true</code>, and the answer is found or not found, never a record.
     The opt-in is refused when any field the lookup touches is an Identifier. Survey
     lookups may cause at most 60 reads of a whole searched field a minute per project.</li>
+</ul>
+
+<h2>Looking in another project</h2>
+
+<pre><code>@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"}}</code></pre>
+
+<ul>
+<li>An administrator turns on <strong>@UVEXISTS in other projects</strong> in the Control
+    Center. It is off by default.</li>
+<li>The searched project enables the module and lists the asking project under
+    <strong>Projects that may look up values here</strong>, with the fields it may search
+    (<code>record</code> for its record ID) and who gets an answer: only users with rights to
+    those fields there (the default; a user in a Data Access Group there is answered from
+    their group only), or any signed-in user of the asking project, with found or not found
+    only and no Identifier searched. Survey respondents are answered only under the second
+    choice, when the searched project also allows it and the rule says
+    <code>"surveys": true</code>.</li>
+<li>Until that agreement passes, every problem shows the same setup error, and nothing of
+    the searched project is read. Field errors come after.</li>
+<li>The record found there is never shown. Every lookup, answered or refused, is written to
+    the searched project's module log, with the value as a keyed hash under that project's
+    key, or left out when that project logs no values.</li>
+<li>At most 30 lookups a minute per session into one project, and 1,200 a minute answered
+    by one project; both are Control Center settings. Over either, the answer is "could not
+    check".</li>
+<li>The audit asks as the user who saved. The Validation scan reads the searched project
+    once per searched field and request, and reports the rule as not evaluated for a user
+    who would not be answered there or who is in a Data Access Group there.</li>
 </ul>
 
 <h2>Audit</h2>

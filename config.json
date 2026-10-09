@@ -75,7 +75,7 @@
     },
     {
       "tag": "@UVEXISTS",
-      "description": "VALUE MUST ALREADY EXIST: the value typed or chosen must already be saved elsewhere in the project - a record ID, or a value of another field such as a specimen ID registered on another form. As the value is entered the module asks the server (a CSRF-protected module AJAX call) and shows found / not found / could not check; enforcement modes are the usual message/confirm/block, and \"could not check\" never blocks. Forms: <code>@UVEXISTS=record</code>, <code>@UVEXISTS=[specimen_id]</code>, or JSON <code>@UVEXISTS={\"in\":\"[specimen_id]\",\"event\":\"enrolment_arm_1\",\"scope\":\"dag\",\"match\":{\"site_code\":\"[site]\"},\"message\":\"...\",\"blockSave\":\"hard\",\"when\":\"...\",\"surveys\":true}</code>. <code>event</code> looks in one event; <code>scope</code> is project (default), dag (the record's own Data Access Group) or event (the event of the entry being checked); <code>match</code> looks only at saved entries whose target field equals a field of this record (up to 5 pairs). The comparison is exact and case-sensitive on stored values (dates as Y-M-D). <code>surveys</code> is an explicit OPT-IN, refused when any field the lookup touches is an Identifier; surveys get found / not found only, never a record id. Staff are answered only with rights to the forms searched, and a user in a Data Access Group only on records of their group; staff in no group see the record where the value was found, staff in a group only when it is in their group. Works on Text, dropdown, radio and SQL fields. A blank value, or a blank <code>match</code> field on the same page, checks nothing; a blank <code>match</code> field on another form shows could not check. Clicking Save re-checks the field and waits for an answer still on its way. The post-save audit logs a violation as type 'exists' (reason not-found) and the Validation scan reports it; a lookup that could not be completed is reported as a rule problem, never as a pass. A malformed tag shows a configuration error under the field."
+      "description": "VALUE MUST ALREADY EXIST: the value typed or chosen must already be saved elsewhere in the project - a record ID, or a value of another field such as a specimen ID registered on another form. As the value is entered the module asks the server (a CSRF-protected module AJAX call) and shows found / not found / could not check; enforcement modes are the usual message/confirm/block, and \"could not check\" never blocks. Forms: <code>@UVEXISTS=record</code>, <code>@UVEXISTS=[specimen_id]</code>, or JSON <code>@UVEXISTS={\"in\":\"[specimen_id]\",\"event\":\"enrolment_arm_1\",\"scope\":\"dag\",\"match\":{\"site_code\":\"[site]\"},\"message\":\"...\",\"blockSave\":\"hard\",\"when\":\"...\",\"surveys\":true}</code>. <code>event</code> looks in one event; <code>scope</code> is project (default), dag (the record's own Data Access Group) or event (the event of the entry being checked); <code>match</code> looks only at saved entries whose target field equals a field of this record (up to 5 pairs). The comparison is exact and case-sensitive on stored values (dates as Y-M-D). <code>surveys</code> is an explicit OPT-IN, refused when any field the lookup touches is an Identifier; surveys get found / not found only, never a record id. Staff are answered only with rights to the forms searched, and a user in a Data Access Group only on records of their group; staff in no group see the record where the value was found, staff in a group only when it is in their group. <code>\"project\"</code> (a project id, or an alias set in this project's module settings) looks in another project on the same server instead; an administrator must allow it in the Control Center, and that project must list this project and the fields it may search under \"Projects that may look up values here\". The record found there is never shown, and each lookup is written to that project's module log. Works on Text, dropdown, radio and SQL fields. A blank value, or a blank <code>match</code> field on the same page, checks nothing; a blank <code>match</code> field on another form shows could not check. Clicking Save re-checks the field and waits for an answer still on its way. The post-save audit logs a violation as type 'exists' (reason not-found) and the Validation scan reports it; a lookup that could not be completed is reported as a rule problem, never as a pass. A malformed tag shows a configuration error under the field."
     }
   ],
 
@@ -119,6 +119,21 @@
       "key": "scan-system-record-attempts",
       "name": "<b>Validation scan</b> \u2014 how many times a record that cannot be read, or cannot be held still long enough to read, is retried before the run records it as unread and reports itself incomplete. Default 3.",
       "type": "text"
+    },
+    {
+      "key": "exists-system-cross-project",
+      "name": "<b>@UVEXISTS in other projects</b> — allow a lookup to search another project on this server (\"project\" in @UVEXISTS). <b>Off by default.</b> Each searched project must also agree in its own module settings: name the project that may ask and the fields it may search, and say whether only users with rights there get an answer. While this is off, a lookup that names another project shows a setup error and checks nothing.",
+      "type": "checkbox"
+    },
+    {
+      "key": "exists-system-cross-user-per-minute",
+      "name": "<b>@UVEXISTS in other projects</b> — lookups one signed-in session may make in one searched project per minute. Default 30. Over the limit the lookup answers \"could not check\", which never blocks a save.",
+      "type": "text"
+    },
+    {
+      "key": "exists-system-cross-project-per-minute",
+      "name": "<b>@UVEXISTS in other projects</b> — lookups one searched project answers per minute, from every project and user together. Default 1200. Over the limit, or when the counter cannot be kept, the lookup answers \"could not check\".",
+      "type": "text"
     }
   ],
 
@@ -132,6 +147,56 @@
       "key": "window-timezone",
       "name": "Time zone for @UVWINDOW \"notFuture\" (today and now), as a name such as Africa/Douala. Blank uses the server's time zone. Set it when the sites entering data are ahead of the server's time zone: otherwise a date or time entered there as today or now counts as in the future.",
       "type": "text"
+    },
+    {
+      "key": "exists-project-aliases",
+      "name": "<b>@UVEXISTS project aliases</b> — a name a lookup can use for another project (\"project\":\"lab\"), so the data dictionary stays the same on a test and a production server; only this setting differs.",
+      "type": "sub_settings",
+      "repeatable": true,
+      "sub_settings": [
+        {
+          "key": "exists-alias",
+          "name": "Alias (letters, digits, _ and -, starting with a letter)",
+          "type": "text"
+        },
+        {
+          "key": "exists-alias-project",
+          "name": "Project the alias stands for",
+          "type": "project-id"
+        }
+      ]
+    },
+    {
+      "key": "exists-consumers",
+      "name": "<b>Projects that may look up values here</b> (@UVEXISTS \"project\") — a lookup from another project is answered only when that project is listed here with the fields it may search. Every answer, and every refusal, is written to this project's module log.",
+      "type": "sub_settings",
+      "repeatable": true,
+      "sub_settings": [
+        {
+          "key": "exists-consumer-project",
+          "name": "Project that may ask",
+          "type": "project-id"
+        },
+        {
+          "key": "exists-consumer-targets",
+          "name": "Fields of this project it may search, separated by commas (\"record\" for the record ID)",
+          "type": "text"
+        },
+        {
+          "key": "exists-consumer-mode",
+          "name": "Who gets an answer",
+          "type": "radio",
+          "choices": [
+            { "value": "rights", "name": "Only users who have rights to those fields in this project (default)" },
+            { "value": "answer", "name": "Any signed-in user of the asking project, who gets found / not found only. Any value typed there can then be tested against this project." }
+          ]
+        },
+        {
+          "key": "exists-consumer-surveys",
+          "name": "Also answer survey respondents of the asking project (needs \"Any signed-in user\", and no searched field may be an Identifier)",
+          "type": "checkbox"
+        }
+      ]
     },
     {
       "key": "qualified-audit-max-contexts",

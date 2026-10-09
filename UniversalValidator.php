@@ -596,17 +596,50 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Whether an exists rule looks only inside the record's own DAG. A branched
-     * rule does so only when every branch does (each branch carries its own keys).
+     * Whether an exists rule looks only inside the record's own DAG, or in
+     * another project, where this project's groups mean nothing: either way a
+     * scan confined to one group of this project can check it. A branched rule
+     * qualifies only when every branch does (each branch carries its own keys).
      */
     private static function existsConfinedToDag(array $rule)
     {
-        $parts = (isset($rule['branches']) && is_array($rule['branches']) && $rule['branches'])
-            ? $rule['branches'] : [$rule];
-        foreach ($parts as $p) {
-            if (!is_array($p) || (isset($p['existsScope']) ? $p['existsScope'] : 'project') !== 'dag') return false;
+        foreach (self::existsParts($rule) as $p) {
+            if (!empty($p['existsPid'])) continue;
+            if ((isset($p['existsScope']) ? $p['existsScope'] : 'project') !== 'dag') return false;
         }
         return true;
+    }
+
+    /** The rule itself, or each of its branches: the parts that carry lookup keys. */
+    private static function existsParts(array $rule)
+    {
+        $parts = (isset($rule['branches']) && is_array($rule['branches']) && $rule['branches'])
+            ? $rule['branches'] : [$rule];
+        return array_values(array_filter($parts, 'is_array'));
+    }
+
+    /**
+     * Why the person running a scan cannot have a rule's lookups in another
+     * project answered, or null when they can (or the rule searches no other
+     * project). The scan answers every record from one read of that project,
+     * so a read confined to a group there is refused too: it would make values
+     * of the other groups read as not found.
+     */
+    private function crossScanProblem($pid, array $rule)
+    {
+        foreach (self::existsParts($rule) as $p) {
+            if (empty($p['existsPid'])) continue;
+            $b = (int) $p['existsPid'];
+            $c = $this->crossGate($pid, $p);
+            if ($c === null) return 'project ' . $b . ' does not answer this lookup from this project';
+            $why = $this->crossCaller($b, $p, $c, $this->currentUsername() === null, $confine, $callerDag);
+            if ($why !== null) return $why . ' (project ' . $b . ')';
+            if ($confine !== null || $callerDag !== null) {
+                return 'your account is in a Data Access Group of project ' . $b . ', so the one read the scan makes '
+                    . 'there could miss values saved in the other groups';
+            }
+        }
+        return null;
     }
 
     /** How REDCap stores a field's value, in words, from its validation. */
@@ -626,7 +659,8 @@ class UniversalValidator extends AbstractExternalModule
     private static function existsSourceName(array $rule)
     {
         $in = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
-        return $in === 'record' ? 'the record IDs' : '[' . $in . ']';
+        $name = $in === 'record' ? 'the record IDs' : '[' . $in . ']';
+        return !empty($rule['existsPid']) ? $name . ' of project ' . (int) $rule['existsPid'] : $name;
     }
 
     /**
@@ -636,11 +670,12 @@ class UniversalValidator extends AbstractExternalModule
      * @var array lookup key (project included) => index, or false for one that could not be built
      */
     private $existsIndexes = [];
-    /** @var array pid => callerDag => whether a read from that group sees other groups' records */
+    /** @var array pid => the Data Access Groups this request's read of the project showed, or false */
     private $groupVisibility = [];
 
     /**
      * One @UVEXISTS lookup: ['state' => found|not-found|unknown, 'record' => ?, 'dag' => ?, 'why' => ?].
+     * A rule that searches another project goes through crossLookup().
      * $meta['dag'] is the DAG of the record being checked when the caller knows
      * it (a scan does); otherwise it is read here, and only for "scope":"dag".
      * $meta['callerGroup'] is the group id of the user whose request this is
@@ -649,6 +684,9 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function existsLookup($pid, array $rule, $value, array $locals, $eventId, $record, array $meta = [])
     {
+        if (!empty($rule['existsPid'])) {
+            return $this->crossLookup($pid, $rule, $value, $locals, !empty($meta['existsIndex']) ? 'scan' : 'audit');
+        }
         $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
         $dag = false;
         if ($scope === 'dag') {
@@ -717,7 +755,7 @@ class UniversalValidator extends AbstractExternalModule
                     if ($scope === 'dag' && $rdag !== $dag) continue;
                     return ['state' => 'found', 'record' => (string) $rec, 'dag' => $rdag];
                 }
-                return $this->existsMiss($pid, $scope, $opts);
+                return $this->existsMiss($pid, $scope, $opts, $dag);
             }
             $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => array_keys($spec['target']),
                        'exportDataAccessGroups' => true];
@@ -740,56 +778,75 @@ class UniversalValidator extends AbstractExternalModule
             $data = \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
             $hit = self::existsMatchIn($data, $spec, $scope, $dag);
-            return $hit !== null ? ['state' => 'found'] + $hit : $this->existsMiss($pid, $scope, $opts);
+            return $hit !== null ? ['state' => 'found'] + $hit : $this->existsMiss($pid, $scope, $opts, $dag);
         } catch (\Throwable $e) {
             return $unknown;
         }
     }
 
     /**
-     * "Not found", or unknown when the read may not have seen every group: the
-     * caller is in a Data Access Group, the rule looks across groups, and no
-     * record outside the caller's group was visible to this request.
+     * "Not found", or unknown when the read may not have seen everything the
+     * rule searches:
+     *   - the caller is in a Data Access Group, the rule looks across groups,
+     *     and no record outside the caller's group was visible to this request;
+     *   - a lookup in another project ($opts['foreign']) whose reads showed no
+     *     record at all (or, confined to the caller's group there, none of that
+     *     group): REDCap may have applied this project's restrictions to the
+     *     other project's read, and an empty read proves nothing.
      */
-    private function existsMiss($pid, $scope, array $opts)
+    private function existsMiss($pid, $scope, array $opts, $dag = null)
     {
+        $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         $callerDag = isset($opts['callerDag']) ? $opts['callerDag'] : null;
-        if ($callerDag === null || $scope === 'dag' || $this->groupReadSeesOthers($pid, $callerDag)) {
-            return ['state' => 'not-found', 'record' => null, 'dag' => null];
+        $foreign = !empty($opts['foreign']);
+        if ($scope === 'dag') {
+            if (!$foreign || $this->readShows($pid, function ($g) use ($dag) { return $g === $dag; })) return $notFound;
+            return ['state' => 'unknown', 'record' => null, 'dag' => null,
+                    'why' => 'the other project showed no record of your Data Access Group there to this lookup'];
         }
+        if ($callerDag === null && !$foreign) return $notFound;
+        $seen = $this->readShows($pid, function ($g) use ($callerDag, $foreign) {
+            return ($foreign && $callerDag === null) || $g !== $callerDag;
+        });
+        if ($seen) return $notFound;
         return ['state' => 'unknown', 'record' => null, 'dag' => null,
-                'why' => 'a value saved in another Data Access Group may not be visible from yours'];
+                'why' => $callerDag === null ? 'the other project showed no records to this lookup'
+                       : 'a value saved in another Data Access Group may not be visible from yours'];
     }
 
     /**
-     * Whether reads made by this request see records outside $callerDag. One
-     * read of the record-ID field, kept for the request. A failed read, or one
-     * that shows only the caller's group, answers false: there is then no
-     * evidence the lookup saw the other groups.
+     * Whether a read made by this request shows a record whose Data Access
+     * Group (null = none) passes $want. One read of the record-ID field per
+     * project, kept for the request. A failed read answers false: there is
+     * then no evidence of what the lookup saw.
      */
-    private function groupReadSeesOthers($pid, $callerDag)
+    private function readShows($pid, callable $want)
     {
-        $k = (string) $callerDag;
-        if (isset($this->groupVisibility[$pid]) && array_key_exists($k, $this->groupVisibility[$pid])) {
-            return $this->groupVisibility[$pid][$k];
-        }
-        $seen = false;
-        try {
-            $pk = $this->recordIdFieldOf($pid);
-            if ($pk !== null) {
-                $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
-                                          'exportDataAccessGroups' => true]);
-                if (is_array($data)) {
-                    foreach ($data as $node) {
-                        if (is_array($node) && self::dagOfRecordNode($node) !== $callerDag) { $seen = true; break; }
+        if (!array_key_exists($pid, $this->groupVisibility)) {
+            $seen = false;
+            try {
+                $pk = $this->recordIdFieldOf($pid);
+                if ($pk !== null) {
+                    $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
+                                              'exportDataAccessGroups' => true]);
+                    if (is_array($data)) {
+                        $seen = [];
+                        foreach ($data as $node) {
+                            if (!is_array($node)) continue;
+                            $g = self::dagOfRecordNode($node);
+                            $seen[$g === null ? '' : 'g' . $g] = $g;
+                        }
                     }
                 }
+            } catch (\Throwable $e) {
+                $seen = false;
             }
-        } catch (\Throwable $e) {
-            $seen = false;
+            $this->groupVisibility[$pid] = $seen;
         }
-        $this->groupVisibility[$pid][$k] = $seen;
-        return $seen;
+        $seen = $this->groupVisibility[$pid];
+        if ($seen === false) return false;
+        foreach ($seen as $g) if ($want($g)) return true;
+        return false;
     }
 
     /**
@@ -811,7 +868,8 @@ class UniversalValidator extends AbstractExternalModule
         }
         $event = null;
         if (!empty($rule['existsEvent'])) {
-            $event = $this->eventIdOf($pid, $rule['existsEvent']);
+            $event = !empty($rule['existsPid']) ? $this->eventIdIn($pid, $rule['existsEvent'])
+                                                : $this->eventIdOf($pid, $rule['existsEvent']);
             if ($event === null) return null;
         } elseif ((isset($rule['existsScope']) ? $rule['existsScope'] : 'project') === 'event') {
             if ($eventId === null || $eventId === '') return null;
@@ -856,19 +914,31 @@ class UniversalValidator extends AbstractExternalModule
         if ($scope === 'dag' && $dag === false) return $unknown;
         $fields = array_keys($spec['target']);
         $key = json_encode([(int) $pid, $spec['in'], $fields, isset($rule['existsEvent']) ? $rule['existsEvent'] : null]);
+        $foreign = !empty($rule['existsPid']);
         if (!array_key_exists($key, $this->existsIndexes)) {
-            $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
-                !empty($rule['existsEvent']) ? $spec['event'] : null);
+            // Another project's index costs one read there per request: it is
+            // counted against that project's budget and leaves one line in its
+            // module log.
+            if ($foreign && $this->crossRateLimited($pid, false)) {
+                $this->existsIndexes[$key] = false;
+                $this->logCrossIndexRead($pid, $fields, 'throttled');
+            } else {
+                $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
+                    !empty($rule['existsEvent']) ? $spec['event'] : null);
+                if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
+            }
         }
         $idx = $this->existsIndexes[$key];
         if ($idx === false) return $unknown;
         $k = implode("\x1f", array_values($spec['target']));
         if ($spec['in'] === 'record') $k = (string) $value;
-        if (!isset($idx[$k])) return ['state' => 'not-found', 'record' => null, 'dag' => null];
-        foreach ($idx[$k] as $hit) {
+        foreach (isset($idx[$k]) ? $idx[$k] : [] as $hit) {
             if ($scope === 'dag' && $hit[1] !== $dag) continue;
             if ($scope === 'event' && (string) $hit[2] !== (string) $spec['event']) continue;
             return ['state' => 'found', 'record' => $hit[0], 'dag' => $hit[1]];
+        }
+        if ($foreign && !$this->readShows($pid, function ($g) { return true; })) {
+            return $unknown + ['why' => 'the other project showed no records to this scan'];
         }
         return ['state' => 'not-found', 'record' => null, 'dag' => null];
     }
@@ -949,6 +1019,494 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
         }
         return null;
+    }
+
+    // -- @UVEXISTS in another project ----------------------------------------
+
+    /** Default budgets of the cross-project lookups (system settings override them). */
+    const CROSS_USER_PER_MINUTE = 30;
+    const CROSS_PROJECT_PER_MINUTE = 1200;
+
+    /**
+     * The one message for every reason another project cannot be searched:
+     * not a project, the module not enabled there, no consent for this
+     * project, a field it did not list. One text for all of them, so a
+     * designer here cannot use the error to learn anything about that project.
+     */
+    const CROSS_UNAVAILABLE = 'project %d cannot be searched from this project. It must have this module enabled and '
+        . 'list this project, with every field this lookup searches, under "Projects that may look up values here" '
+        . 'in its module settings.';
+
+    /** @var array "a|b" => consent row or null, per request */
+    private $crossConsents = [];
+    /** @var array pid => \Project or null, per request */
+    private $projectObjects = [];
+    /** @var array pid => userRightsIn() answer, per request */
+    private $rightsIn = [];
+
+    /** Whether an administrator allowed lookups in other projects on this server. */
+    private function crossProjectOn()
+    {
+        try {
+            return in_array($this->getSystemSetting('exists-system-cross-project'), [true, 1, '1', 'true'], true);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /** A whole-number system setting above zero, or $default when blank or not one. */
+    private function systemCount($key, $default)
+    {
+        try {
+            $v = $this->getSystemSetting($key);
+        } catch (\Throwable $e) {
+            return $default;
+        }
+        $v = is_int($v) ? (string) $v : trim((string) $v);
+        return preg_match('/^[1-9][0-9]{0,6}$/', $v) ? (int) $v : $default;
+    }
+
+    /**
+     * The project id an @UVEXISTS "project" names: the id itself, or the
+     * project this project's "exists-project-aliases" maps the alias to. Null
+     * for an alias that is not set up here.
+     */
+    private function existsProjectPid($pid, $ref)
+    {
+        $ref = strtolower(trim((string) $ref));
+        if (preg_match('/^[1-9][0-9]{0,9}$/', $ref)) return (int) $ref;
+        try {
+            $rows = $this->getSubSettings('exists-project-aliases', $pid);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            if (!is_array($row)) continue;
+            $alias = isset($row['exists-alias']) ? strtolower(trim((string) $row['exists-alias'])) : '';
+            $target = isset($row['exists-alias-project']) ? trim((string) $row['exists-alias-project']) : '';
+            if ($alias === $ref && preg_match('/^[1-9][0-9]{0,9}$/', $target)) return (int) $target;
+        }
+        return null;
+    }
+
+    /** Whether this module is enabled in project $pid. Fails closed. */
+    private function moduleEnabledIn($pid)
+    {
+        try {
+            if (!is_callable([$this, 'isModuleEnabled'])) return false;
+            $prefix = isset($this->PREFIX) ? $this->PREFIX : null;
+            if (!is_string($prefix) || $prefix === '') return false;
+            if (!$this->isModuleEnabled($prefix, (int) $pid)) return false;
+            // A deleted project keeps its module settings; it is not a project to search.
+            if (is_callable([$this, 'getProjectStatus']) && $this->getProjectStatus((int) $pid) === null) return false;
+            return true;
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * What project $b agreed to answer for project $a: ['mode' => rights|answer,
+     * 'targets' => field => true ("record" = the record ID), 'surveys' => bool],
+     * or null. Null covers every reason alike - the server switch off, $b the
+     * same project or not one, the module not enabled there, no row naming $a,
+     * two rows naming it - and callers answer them all the same way. Read once
+     * per request.
+     */
+    private function crossConsent($a, $b)
+    {
+        $a = (int) $a;
+        $b = (int) $b;
+        $k = $a . '|' . $b;
+        if (array_key_exists($k, $this->crossConsents)) return $this->crossConsents[$k];
+        $this->crossConsents[$k] = null;
+        if ($a <= 0 || $b <= 0 || $a === $b || !$this->crossProjectOn() || !$this->moduleEnabledIn($b)) return null;
+        try {
+            $rows = $this->getSubSettings('exists-consumers', $b);
+        } catch (\Throwable $e) {
+            return null;
+        }
+        $found = null;
+        foreach (is_array($rows) ? $rows : [] as $row) {
+            $c = self::consumerRow($row);
+            if ($c === null || $c['project'] !== $a) continue;
+            if ($found !== null) return null;   // two rows for one project: neither is the agreement
+            $found = $c;
+        }
+        if ($found === null) return null;
+        unset($found['project']);
+        return $this->crossConsents[$k] = $found;
+    }
+
+    /**
+     * One "exists-consumers" row read strictly, or null when it is incomplete:
+     * a project id, at least one field, a known mode (blank = rights). Survey
+     * answers count only with the "answer" mode.
+     */
+    private static function consumerRow($row)
+    {
+        if (!is_array($row)) return null;
+        $p = isset($row['exists-consumer-project']) ? trim((string) $row['exists-consumer-project']) : '';
+        if (!preg_match('/^[1-9][0-9]{0,9}$/', $p)) return null;
+        $targets = self::consumerTargets(isset($row['exists-consumer-targets']) ? $row['exists-consumer-targets'] : '');
+        if (!$targets) return null;
+        $mode = isset($row['exists-consumer-mode']) ? trim((string) $row['exists-consumer-mode']) : '';
+        if ($mode === '') $mode = 'rights';
+        if ($mode !== 'rights' && $mode !== 'answer') return null;
+        $surveys = in_array(isset($row['exists-consumer-surveys']) ? $row['exists-consumer-surveys'] : false, [true, 1, '1', 'true'], true);
+        return ['project' => (int) $p, 'mode' => $mode, 'targets' => $targets, 'surveys' => $surveys && $mode === 'answer'];
+    }
+
+    /** "a, b record" as [a => true, b => true, record => true]; [] when any name is not a field name. */
+    private static function consumerTargets($text)
+    {
+        $out = [];
+        foreach (preg_split('/[\s,]+/', strtolower(trim((string) $text)), -1, PREG_SPLIT_NO_EMPTY) as $t) {
+            if (!preg_match('/^[a-z][a-z0-9_]*$/', $t)) return [];
+            $out[$t] = true;
+        }
+        return $out;
+    }
+
+    /** The fields of the other project a rule searches; "record" for a record-ID lookup. */
+    private static function crossFields(array $rule)
+    {
+        $out = (isset($rule['existsRemoteTargets']) && is_array($rule['existsRemoteTargets'])) ? $rule['existsRemoteTargets'] : [];
+        if ((isset($rule['existsIn']) ? $rule['existsIn'] : null) === 'record') $out[] = 'record';
+        return array_values(array_unique(array_map('strval', $out)));
+    }
+
+    /**
+     * The other project's agreement when it covers every field the rule
+     * searches, or null (one answer for every reason).
+     */
+    private function crossGate($pid, array $rule)
+    {
+        $c = $this->crossConsent($pid, isset($rule['existsPid']) ? (int) $rule['existsPid'] : 0);
+        if ($c === null) return null;
+        foreach (self::crossFields($rule) as $f) {
+            if (!isset($c['targets'][$f])) return null;
+        }
+        return $c;
+    }
+
+    /**
+     * The signed-in user's rights in project $pid from the framework's
+     * project-scoped read ONLY: ['forms' => form => level, or true for every
+     * form (an administrator), 'group' => group id or null], or null when
+     * there is no user, no rights row, or the row has expired.
+     *
+     * Never \REDCap::getUserRights(): it answers for the project of the
+     * request whatever project is meant, so a fallback to it would grant this
+     * project's rights in the other one.
+     */
+    private function userRightsIn($pid)
+    {
+        $pid = (int) $pid;
+        if (array_key_exists($pid, $this->rightsIn)) return $this->rightsIn[$pid];
+        $out = null;
+        try {
+            $u = is_callable([$this, 'getUser']) ? $this->getUser() : null;
+            if ($u && ScanPageView::isAdministrator($u)) {
+                $out = ['forms' => true, 'group' => null];
+            } elseif ($u && is_callable([$u, 'getRights'])) {
+                $r = $u->getRights($pid);
+                if (is_array($r) && isset($r[$pid]) && is_array($r[$pid])) $r = $r[$pid];
+                if (is_array($r) && isset($r['forms']) && is_array($r['forms'])) {
+                    $exp = isset($r['expiration']) ? trim((string) $r['expiration']) : '';
+                    // REDCap ends access ON the expiration date.
+                    if ($exp === '' || $exp > date('Y-m-d')) {
+                        $g = (isset($r['group_id']) && $r['group_id'] !== null && $r['group_id'] !== '') ? (int) $r['group_id'] : null;
+                        $out = ['forms' => $r['forms'], 'group' => $g];
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        return $this->rightsIn[$pid] = $out;
+    }
+
+    /** REDCap's \Project for $pid, once per request, or null. */
+    private function projectObject($pid)
+    {
+        $pid = (int) $pid;
+        if (!array_key_exists($pid, $this->projectObjects)) {
+            $this->projectObjects[$pid] = null;
+            try {
+                if ($pid > 0 && class_exists('\Project')) $this->projectObjects[$pid] = new \Project($pid);
+            } catch (\Throwable $e) {
+            }
+        }
+        return $this->projectObjects[$pid];
+    }
+
+    /** The event id of a unique event name in ANOTHER project, or null. */
+    private function eventIdIn($pid, $name)
+    {
+        try {
+            $p = $this->projectObject($pid);
+            if ($p && is_callable([$p, 'getUniqueEventNames'])) {
+                $names = $p->getUniqueEventNames();
+                foreach (is_array($names) ? $names : [] as $id => $unique) {
+                    if ((string) $unique === (string) $name) return $id;
+                }
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+
+    /** The unique name of a Data Access Group of ANOTHER project, or null. */
+    private function groupNameIn($pid, $groupId)
+    {
+        try {
+            $p = $this->projectObject($pid);
+            if ($p && is_callable([$p, 'getUniqueGroupNames'])) {
+                $names = $p->getUniqueGroupNames();
+                if (is_array($names) && isset($names[$groupId]) && (string) $names[$groupId] !== '') return (string) $names[$groupId];
+            }
+        } catch (\Throwable $e) {
+        }
+        return null;
+    }
+
+    /**
+     * The first field of the other project, among those the rule searches,
+     * that is an Identifier there (the record-ID field standing for "record"),
+     * or null. Flags that cannot be read count as one (fail closed).
+     */
+    private function crossIdentifier($b, array $rule)
+    {
+        $k = (int) $b . '|' . implode(',', self::crossFields($rule));
+        if (!array_key_exists($k, $this->crossIds)) $this->crossIds[$k] = $this->crossIdentifierRead($b, $rule);
+        return $this->crossIds[$k];
+    }
+
+    /** @var array crossIdentifier() answers, per request */
+    private $crossIds = [];
+
+    private function crossIdentifierRead($b, array $rule)
+    {
+        $ids = $this->projectIdentifierFields($b);
+        $touch = [];
+        foreach (self::crossFields($rule) as $f) {
+            if ($f === 'record') {
+                $pk = $this->recordIdFieldOf($b);
+                if ($pk === null) return 'record';
+                $f = $pk;
+            }
+            $touch[] = $f;
+        }
+        if ($ids === null) return $touch ? $touch[0] : 'record';
+        return self::firstIdentifier($ids, $touch);
+    }
+
+    /**
+     * The first field the rule searches whose form, in the other project, the
+     * user may not open; null when they may open them all. A record-ID lookup
+     * needs no form. Fields the dictionary cannot place count as closed.
+     */
+    private function crossUnreadable($b, array $rule, $forms)
+    {
+        $dd = $this->dataDictionary($b);
+        foreach (self::crossFields($rule) as $f) {
+            if ($f === 'record') continue;
+            $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
+            if ($form === '' || !self::mayReadForm($forms, $form)) return $f;
+        }
+        return null;
+    }
+
+    /**
+     * Whether a lookup into project $b is over its budget. Two windows: one per
+     * signed-in session and searched project ($perSession; a session its
+     * holder cannot shed without signing out), and one per searched project
+     * for every caller together (tier 3 of the rate buckets). FAILS CLOSED,
+     * unlike the survey throttle: a read of another project that cannot be
+     * counted is not made, and "could not check" never blocks a save.
+     */
+    private function crossRateLimited($b, $perSession)
+    {
+        try {
+            $now = time();
+            if ($perSession && function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+                $key = 'uvalidate_cross_hits_' . (int) $b;
+                $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
+                $hits = array_values(array_filter($hits, function ($t) use ($now) {
+                    return is_int($t) && ($now - $t) < 60;
+                }));
+                if (count($hits) >= $this->systemCount('exists-system-cross-user-per-minute', self::CROSS_USER_PER_MINUTE)) {
+                    $_SESSION[$key] = $hits;
+                    return true;
+                }
+                $hits[] = $now;
+                $_SESSION[$key] = $hits;
+            }
+            $db = new Scan\ModuleDb($this);
+            $bucket = ((int) floor($now / 60)) * self::RATE_TIERS + 3;
+            $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
+                (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
+                ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
+                [(int) $b, $bucket]);
+            $r = $db->select('SELECT LAST_INSERT_ID()', []);
+            if (!isset($r[0][0]) || $r[0][0] === null) return true;
+            $hits = (int) $r[0][0];
+            if ($hits === 1) {
+                $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
+                    . ' WHERE project_id = ? AND bucket < ?', [(int) $b, $bucket - 2 * self::RATE_TIERS]);
+            }
+            return $hits > $this->systemCount('exists-system-cross-project-per-minute', self::CROSS_PROJECT_PER_MINUTE);
+        } catch (\Throwable $e) {
+            return true;
+        }
+    }
+
+    /**
+     * One line in the searched project's module log for a lookup into it from
+     * another project, answered or refused: the asking project, the channel
+     * (staff, survey, audit), the user ("survey" for a respondent), the field
+     * searched, the value as a keyed hash under the searched project's key
+     * (left out when that project logs no values: "none" or "off"), and the
+     * result. A cross-project value is never logged raw.
+     */
+    private function logCrossProbe($b, $a, $channel, array $rule, $value, $result)
+    {
+        try {
+            $mode = $this->logMode($b);
+            $user = $this->currentUsername();
+            $entry = [
+                'project_id'     => (int) $b,
+                'source_project' => (string) (int) $a,
+                'channel'        => (string) $channel,
+                'user'           => $user !== null ? $user : 'survey',
+                'field'          => implode(',', self::crossFields($rule)),
+                'result'         => (string) $result,
+            ];
+            if ($mode !== 'none' && $mode !== 'off' && $value !== null && trim((string) $value) !== '') {
+                $h = $this->hashedIdentifier($b, trim((string) $value));
+                if ($h !== null) $entry['value_hash'] = $h;
+            }
+            $this->log('uv-exists-probe', $entry);
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /** One line in the searched project's module log for a scan's one read of it. */
+    private function logCrossIndexRead($b, array $fields, $result)
+    {
+        try {
+            $user = $this->currentUsername();
+            $this->log('uv-exists-index-read', [
+                'project_id'     => (int) $b,
+                'source_project' => (string) (int) $this->crossSource,
+                'user'           => $user !== null ? $user : '',
+                'field'          => implode(',', $fields),
+                'result'         => (string) $result,
+            ]);
+        } catch (\Throwable $e) {
+        }
+    }
+
+    /** @var int the project whose scan is reading another one (logCrossIndexRead) */
+    private $crossSource = 0;
+
+    /**
+     * Who may ask the other project, under its agreement $c, for this caller:
+     * null when they may, else the reason. $asSurvey: a survey respondent, or
+     * a save with no signed-in user.
+     *   rights  the user has an unexpired rights row there (or is an
+     *           administrator) and may open the form of every field searched.
+     *   answer  any signed-in user of this project; the searched fields must not
+     *           be Identifiers there.
+     *   surveys only under "answer", when the other project also allows survey
+     *           answers.
+     * On success $confine holds the user's Data Access Group there under
+     * "rights" (the lookup stays inside it), and $callerDag their group under
+     * "answer" (a "not found" is then kept only when the read shows records of
+     * other groups).
+     */
+    private function crossCaller($b, array $rule, array $c, $asSurvey, &$confine, &$callerDag)
+    {
+        $confine = null;
+        $callerDag = null;
+        if ($asSurvey) {
+            // consumerRow() grants survey answers only with the answer mode.
+            if (empty($c['surveys'])) return 'the other project does not answer survey respondents of this project';
+            return $this->crossIdentifier($b, $rule) !== null ? 'a field searched is an Identifier in the other project' : null;
+        }
+        if ($this->currentUsername() === null) return 'no signed-in user';
+        $rights = $this->userRightsIn($b);
+        if ($c['mode'] === 'rights') {
+            if ($rights === null) return 'you do not have rights in the project this lookup searches';
+            if ($this->crossUnreadable($b, $rule, $rights['forms']) !== null) {
+                return 'you do not have access to every form this lookup reads in the other project';
+            }
+            if ($rights['group'] !== null) {
+                $confine = $this->groupNameIn($b, $rights['group']);
+                if ($confine === null) return 'your Data Access Group in the other project could not be read';
+            }
+            return null;
+        }
+        if ($this->crossIdentifier($b, $rule) !== null) return 'a field searched is an Identifier in the other project';
+        if ($rights !== null && $rights['group'] !== null) {
+            $callerDag = $this->groupNameIn($b, $rights['group']);
+            if ($callerDag === null) return 'your Data Access Group in the other project could not be read';
+        }
+        return null;
+    }
+
+    /**
+     * One @UVEXISTS lookup in another project, for the live endpoint ($channel
+     * staff or survey), the post-save audit (audit) and the scan (scan, from
+     * its one read per request). In order: the other project's agreement (one
+     * refusal for every reason), who may ask under it, the budget, then the
+     * read. Every refusal or failure answers unknown; the record found there
+     * is never returned. Each lookup, refused or answered, leaves one line in
+     * the other project's module log; the scan logs its one read instead.
+     * $opts: findExisting options from the caller (mayFullRead for surveys).
+     */
+    private function crossLookup($pid, array $rule, $value, array $locals, $channel, array $opts = [])
+    {
+        $b = isset($rule['existsPid']) ? (int) $rule['existsPid'] : 0;
+        $unknown = function ($why) { return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => $why]; };
+        $scan = $channel === 'scan';
+        $c = $this->crossGate($pid, $rule);
+        if ($c === null) {
+            if (!$scan && $b > 0 && $this->crossProjectOn() && $this->moduleEnabledIn($b)) {
+                $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'refused');
+            }
+            return $unknown('the other project does not answer this lookup');
+        }
+        $asSurvey = $channel === 'survey' || ($channel === 'audit' && $this->currentUsername() === null);
+        $why = $this->crossCaller($b, $rule, $c, $asSurvey, $confine, $callerDag);
+        if ($why !== null) {
+            if (!$scan) $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'refused');
+            return $unknown($why);
+        }
+        $ruleB = $rule;
+        $dag = null;
+        if ($confine !== null) {
+            $ruleB['existsScope'] = 'dag';
+            $dag = $confine;
+        }
+        if ($scan) {
+            // The scan's plan already refused a user confined there (scanPlan).
+            if ($confine !== null || $callerDag !== null) return $unknown('your account is in a Data Access Group of the other project');
+            $this->crossSource = (int) $pid;
+            $r = $this->existsIndexLookup($b, $ruleB, $value, $locals, null, null);
+        } else {
+            if ($this->crossRateLimited($b, true)) {
+                $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'throttled');
+                return $unknown('too many lookups in the other project in the last minute');
+            }
+            $r = $this->findExisting($b, $ruleB, $value, $locals, null, $dag, true,
+                ['foreign' => true, 'callerDag' => $callerDag] + $opts);
+            $this->logCrossProbe($b, $pid, $channel, $rule, $value, $r['state']);
+        }
+        $r['record'] = null;
+        $r['dag'] = null;
+        return $r;
     }
 
     /**
@@ -2031,8 +2589,13 @@ class UniversalValidator extends AbstractExternalModule
         }
 
         // 2. Fallback: the static, called with NO arguments so the parameter
-        //    order cannot be got wrong, then keyed by username.
+        //    order cannot be got wrong, then keyed by username. It answers for
+        //    the project of the REQUEST whatever $pid is, so it is not asked
+        //    about any other project (rights elsewhere: userRightsIn()).
         try {
+            $current = null;
+            try { $current = $this->getProjectId(); } catch (\Throwable $e) {}
+            if ($current !== null && $current !== '' && (int) $current !== (int) $pid) return null;
             if (is_callable(['\REDCap', 'getUserRights'])) {
                 $all = \REDCap::getUserRights();
                 if (is_array($all) && isset($all[$user]) && is_array($all[$user])
@@ -2561,6 +3124,7 @@ class UniversalValidator extends AbstractExternalModule
             // Turning the dialect off preserves its authored rules for reactivation.
             $parseExtended = $enabled || $wasEnabled;
             $errors = ($enabled && !$wasEnabled) ? $this->temporalActivationProblems($pid) : [];
+            $errors = array_merge($errors, self::crossSettingsProblems($settings, $pid, $known, $identifiers));
             $zone = (isset($settings['window-timezone']) && is_string($settings['window-timezone']))
                 ? trim($settings['window-timezone']) : '';
             if ($zone !== '' && !self::isClockZone($zone)) {
@@ -2602,6 +3166,89 @@ class UniversalValidator extends AbstractExternalModule
      * Reassemble per-rule rows from the flat key => [per-instance values] shape
      * validateSettings() receives for repeatable sub-settings.
      */
+    /**
+     * The problems in the @UVEXISTS cross-project rows of a Configure dialog
+     * save: the aliases this project uses, and the projects it answers. A
+     * blank row is ignored. $known and $identifiers are this project's field
+     * names and Identifier flags (null when unreadable: field checks are then
+     * left to the runtime, which refuses what it cannot read).
+     * @return string[]
+     */
+    private static function crossSettingsProblems(array $settings, $pid, $known, $identifiers)
+    {
+        $col = function ($k) use ($settings) {
+            return (isset($settings[$k]) && is_array($settings[$k])) ? array_values($settings[$k]) : [];
+        };
+        $isPid = function ($v) { return preg_match('/^[1-9][0-9]{0,9}$/', trim((string) $v)) === 1; };
+        $errors = [];
+        $aliases = $col('exists-alias');
+        $aliasPids = $col('exists-alias-project');
+        $seen = [];
+        for ($i = 0, $n = max(count($aliases), count($aliasPids)); $i < $n; $i++) {
+            $alias = isset($aliases[$i]) ? strtolower(trim((string) $aliases[$i])) : '';
+            $target = isset($aliasPids[$i]) ? trim((string) $aliasPids[$i]) : '';
+            if ($alias === '' && $target === '') continue;
+            $where = '@UVEXISTS project alias ' . ($i + 1) . ': ';
+            if (!preg_match('/^[a-z][a-z0-9_-]{0,39}$/', $alias)) {
+                $errors[] = $where . 'the alias must start with a letter and hold only letters, digits, _ and - (at most 40).';
+            } elseif (isset($seen[$alias])) {
+                $errors[] = $where . 'the alias "' . $alias . '" is set up twice.';
+            }
+            $seen[$alias] = true;
+            if (!$isPid($target)) {
+                $errors[] = $where . 'choose the project the alias stands for.';
+            } elseif ($pid && (int) $target === (int) $pid) {
+                $errors[] = $where . 'the alias stands for this project — a lookup without "project" already looks here.';
+            }
+        }
+        $projects = $col('exists-consumer-project');
+        $targets = $col('exists-consumer-targets');
+        $modes = $col('exists-consumer-mode');
+        $surveys = $col('exists-consumer-surveys');
+        $seen = [];
+        for ($i = 0, $n = max(count($projects), count($targets), count($modes), count($surveys)); $i < $n; $i++) {
+            $p = isset($projects[$i]) ? trim((string) $projects[$i]) : '';
+            $t = isset($targets[$i]) ? trim((string) $targets[$i]) : '';
+            if ($p === '' && $t === '') continue;
+            $where = 'Projects that may look up values here, row ' . ($i + 1) . ': ';
+            if (!$isPid($p)) {
+                $errors[] = $where . 'choose the project that may ask.';
+            } elseif ($pid && (int) $p === (int) $pid) {
+                $errors[] = $where . 'this project does not need to be listed — its own lookups are always answered.';
+            } elseif (isset($seen[(int) $p])) {
+                $errors[] = $where . 'project ' . (int) $p . ' is listed twice; keep one row for it.';
+            }
+            if ($isPid($p)) $seen[(int) $p] = true;
+            $fields = self::consumerTargets($t);
+            if (!$fields) {
+                $errors[] = $where . 'list the fields that project may search, separated by commas ("record" for the record ID).';
+                continue;
+            }
+            foreach (array_keys($fields) as $f) {
+                if ($f !== 'record' && is_array($known) && !in_array($f, $known, true)) {
+                    $errors[] = $where . '"' . $f . '" is not a field in this project — check the spelling.';
+                }
+            }
+            $mode = isset($modes[$i]) ? trim((string) $modes[$i]) : '';
+            if ($mode !== '' && $mode !== 'rights' && $mode !== 'answer') $errors[] = $where . 'choose who gets an answer.';
+            $sv = in_array(isset($surveys[$i]) ? $surveys[$i] : false, [true, 1, '1', 'true'], true);
+            if ($sv && $mode !== 'answer') {
+                $errors[] = $where . 'survey respondents can be answered only when any signed-in user is answered ("Who gets an answer").';
+            }
+            if ($mode === 'answer' && is_array($identifiers)) {
+                foreach (array_keys($fields) as $f) {
+                    // "record" is the record-ID field, the first field of the dictionary.
+                    $name = $f === 'record' ? ((is_array($known) && $known) ? $known[0] : null) : $f;
+                    if ($name !== null && isset($identifiers[$name])) {
+                        $errors[] = $where . '"' . $f . '" is an Identifier, so it can be searched only by users with rights in '
+                            . 'this project — choose "Only users who have rights" or remove the field.';
+                    }
+                }
+            }
+        }
+        return $errors;
+    }
+
     private static function rowsFromFlatSettings(array $settings)
     {
         $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
@@ -2743,7 +3390,9 @@ class UniversalValidator extends AbstractExternalModule
         $touch = array_merge([$name],
             (isset($frag['existsLocal']) && is_array($frag['existsLocal'])) ? $frag['existsLocal'] : [],
             (isset($frag['existsTargets']) && is_array($frag['existsTargets'])) ? $frag['existsTargets'] : []);
-        if (($frag['existsIn'] ?? null) === 'record') {
+        // The searched fields of another project are checked there
+        // (annotateExistsRemote).
+        if (($frag['existsIn'] ?? null) === 'record' && !isset($frag['existsProject'])) {
             $pk = $this->recordIdFieldOf($pid);
             if ($pk !== null) $touch[] = $pk;
         }
@@ -2767,10 +3416,11 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function annotateExistsDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
+        if (isset($frag['existsProject'])) return $this->annotateExistsRemote($frag, $name, $types, $pid);
         $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS]; };
         $dd = $this->dataDictionary($pid);
         if (!is_array($dd) || !is_array($types)) return $refuse('the data dictionary could not be read, so "in" cannot be checked.');
-        $scalar = ['text', 'notes', 'dropdown', 'radio', 'yesno', 'truefalse', 'sql', 'slider', 'calc'];
+        $scalar = self::EXISTS_SCALAR_TYPES;
         // The comparison is on stored text, so two fields match only when REDCap
         // stores them the same way: a datetime to the minute never equals one
         // to the second, nor a time to the minute one to the second.
@@ -2808,6 +3458,91 @@ class UniversalValidator extends AbstractExternalModule
         if (isset($frag['existsEvent'])) {
             if ($this->eventIdOf($pid, $frag['existsEvent']) === null) {
                 return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
+            }
+        }
+        return $frag;
+    }
+
+    /** Field types whose saved value is one comparable value. */
+    const EXISTS_SCALAR_TYPES = ['text', 'notes', 'dropdown', 'radio', 'yesno', 'truefalse', 'sql', 'slider', 'calc'];
+
+    /**
+     * The @UVEXISTS "dictionary" hook for a rule that searches another project,
+     * in this order: the server switch, the alias, the other project's
+     * agreement (one message for every reason, CROSS_UNAVAILABLE), and only
+     * then that project's dictionary: its searched fields exist and hold one
+     * value, each compared pair holds the same kind of date, "event" is one of
+     * its events, "surveys" is allowed there, and under the "answer" agreement
+     * no searched field is an Identifier there. The resolved project id is
+     * kept on the rule as existsPid.
+     */
+    private function annotateExistsRemote(array $frag, $name, $types, $pid)
+    {
+        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS]; };
+        if (!$this->crossProjectOn()) {
+            return $refuse('looking in another project ("project") is turned off on this REDCap server — an '
+                . 'administrator can turn it on in the module\'s Control Center settings.');
+        }
+        $b = $this->existsProjectPid($pid, $frag['existsProject']);
+        if ($b === null) {
+            return $refuse('"project":"' . $frag['existsProject'] . '" is not an alias set up in this project — add it '
+                . 'under "@UVEXISTS project aliases" in the module\'s project settings, or use the project id.');
+        }
+        if ((int) $b === (int) $pid) return $refuse('"project" names this project — leave "project" out to look in this project.');
+        $frag['existsPid'] = $b;
+        $c = $this->crossGate($pid, $frag);
+        if ($c === null) return $refuse(sprintf(self::CROSS_UNAVAILABLE, $b));
+        $ddB = $this->dataDictionary($b);
+        $ddA = $this->dataDictionary($pid);
+        if (!is_array($ddB) || !is_array($ddA) || !is_array($types)) {
+            return $refuse('the data dictionary of project ' . $b . ' or of this project could not be read, so the lookup cannot be checked.');
+        }
+        $remote = function ($f, $role) use ($ddB, $b) {
+            if (!isset($ddB[$f])) return $role . ' "' . $f . '" is not a field of project ' . $b . ' — check the spelling.';
+            $t = isset($ddB[$f]['field_type']) ? (string) $ddB[$f]['field_type'] : '';
+            if (!in_array($t, self::EXISTS_SCALAR_TYPES, true)) {
+                return $role . ' "' . $f . '" of project ' . $b . ' is a ' . $t . ' field — the lookup needs one value per field.';
+            }
+            return null;
+        };
+        $kindB = function ($f) use ($ddB) { return self::storedKindOf(isset($ddB[$f]) ? self::validationOf($ddB[$f]) : ''); };
+        $kindA = function ($f) use ($ddA) { return self::storedKindOf(isset($ddA[$f]) ? self::validationOf($ddA[$f]) : ''); };
+        $pairs = [];
+        $in = isset($frag['existsIn']) ? $frag['existsIn'] : '';
+        if ($in !== 'record') {
+            $why = $remote($in, '"in" field');
+            if ($why !== null) return $refuse($why);
+            $pairs[] = [$in, $name];
+        }
+        foreach ((isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [] as $t => $l) {
+            $why = $remote((string) $t, '"match" target');
+            if ($why !== null) return $refuse($why);
+            if (!isset($types[$l])) return $refuse('"match" field "' . $l . '" is not a field in this project — check the spelling.');
+            if (!in_array($types[$l], self::EXISTS_SCALAR_TYPES, true)) {
+                return $refuse('"match" field "' . $l . '" is a ' . $types[$l] . ' field — the lookup needs one value per field.');
+            }
+            if ($l === $name) return $refuse('"match" uses this field itself for "' . $t . '" — it is already the value looked up.');
+            $pairs[] = [(string) $t, $l];
+        }
+        foreach ($pairs as list($there, $here)) {
+            if ($kindB($there) !== $kindA($here)) {
+                return $refuse('"' . $there . '" of project ' . $b . ' holds ' . $kindB($there) . ' and "' . $here . '" holds '
+                    . $kindA($here) . ' — values are compared exactly, so both must be the same kind.');
+            }
+        }
+        if (isset($frag['existsEvent']) && $this->eventIdIn($b, $frag['existsEvent']) === null) {
+            return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of project ' . $b . ' — use its unique event name.');
+        }
+        if (!empty($frag['existsSurveys']) && empty($c['surveys'])) {
+            return $refuse('project ' . $b . ' does not answer survey respondents of this project — drop "surveys", or ask '
+                . 'that project to allow survey answers for this project.');
+        }
+        if ($c['mode'] === 'answer') {
+            $hit = $this->crossIdentifier($b, $frag);
+            if ($hit !== null) {
+                return $refuse('field "' . $hit . '" of project ' . $b . ' is an Identifier there. That project answers any '
+                    . 'signed-in user of this project, so its identifying fields cannot be searched; it can answer only '
+                    . 'users with rights there instead ("Who gets an answer").');
             }
         }
         return $frag;
@@ -4707,6 +5442,26 @@ class UniversalValidator extends AbstractExternalModule
             $out['unconf'] = $unconf;
         }
 
+        // A rule that searches another project is checked only when that project
+        // answers the person running the scan (crossScanProblem); otherwise it is
+        // reported, never silently passed.
+        $crossProjects = [];
+        foreach ($live as $i => $r) {
+            if (isset($out['skip'][$i]) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
+            $why = $this->crossScanProblem($pid, $r);
+            if ($why === null) {
+                foreach (self::existsParts($r) as $p) if (!empty($p['existsPid'])) $crossProjects[(int) $p['existsPid']] = true;
+                continue;
+            }
+            $out['skip'][$i] = true;
+            $unconf[$i . '|cross-project-exists'] = [
+                'rule'   => $i + 1,
+                'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                'why'    => 'this rule looks the value up in another project, but ' . $why . ', so the rule was NOT evaluated.',
+            ];
+            $out['unconf'] = $unconf;
+        }
+
         $out['readSet'] = $readSet;
 
         // A @UVEXISTS verdict depends on OTHER records. The change fence and the
@@ -4725,6 +5480,10 @@ class UniversalValidator extends AbstractExternalModule
             $out['policy']['maxCompletion'] = 'manifest-complete';
             $out['policy']['limits'][] = '@UVEXISTS rules were checked against the values saved when each part of '
                 . 'the scan ran; a value saved or removed in another record during the scan was not re-checked';
+            if ($crossProjects) {
+                $out['policy']['limits'][] = '@UVEXISTS rules that search project ' . implode(', ', array_keys($crossProjects))
+                    . ' read it as it stood when each part of the scan ran; changes saved there do not re-open this scan';
+            }
         }
 
         // WHICH INSTRUMENT OWNS EACH FIELD THE RUN WILL READ - derived from the
@@ -5568,9 +6327,12 @@ class UniversalValidator extends AbstractExternalModule
      *   3. a signed-in caller is throttled per session and answered only when
      *      they may open every form the lookup reads;
      *   4. "match" fields the page did not send are read from the saved record;
-     *   5. the reply is found / not-found / unknown. A survey never gets a reason
+     *   5. a rule that searches another project then meets crossLookup(): that
+     *      project's agreement, the caller's standing there, its budget;
+     *   6. the reply is found / not-found / unknown. A survey never gets a reason
      *      or a record; staff in a DAG get the record only when it is in their
-     *      own group, staff in none get it always.
+     *      own group, staff in none get it always. A record of another project
+     *      is never returned.
      * The branch of a branched rule is the one the page is enforcing: chosen
      * from the values the page sent for its "when" fields ("cond"), and from
      * saved values for every other field (activeRuleFor).
@@ -5607,7 +6369,8 @@ class UniversalValidator extends AbstractExternalModule
             if (!$isAuthenticated) {
                 if (empty($rule['existsSurveys'])) return ['error' => 'not enabled on surveys'];
                 $touch = array_merge([$field], $locals, $targets);
-                if (($rule['existsIn'] ?? null) === 'record') {
+                // Another project's fields are checked there (crossCaller).
+                if (($rule['existsIn'] ?? null) === 'record' && empty($rule['existsPid'])) {
                     $pk = $this->recordIdFieldOf($project_id);
                     if ($pk === null) return ['error' => 'not enabled on surveys'];
                     $touch[] = $pk;
@@ -5678,16 +6441,21 @@ class UniversalValidator extends AbstractExternalModule
                 // the whole searched field: a budget per project keeps that
                 // read from being a lever.
                 $opts['mayFullRead'] = function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
-            } elseif ($group_id !== null && $group_id !== '') {
+            } elseif ($group_id !== null && $group_id !== '' && empty($rule['existsPid'])) {
                 $opts['callerDag'] = ScanPageView::dagNameOf($group_id);
                 if ($opts['callerDag'] === null) return $unknown('your Data Access Group could not be read');
             }
-            $r = $this->findExisting($project_id, $rule, $value, $lv, $event_id, $dag, true, $opts);
+            // Another project: its agreement, the caller's standing there and its
+            // budget decide; the group that matters is the caller's group THERE.
+            $r = !empty($rule['existsPid'])
+                ? $this->crossLookup($project_id, $rule, $value, $lv, $isAuthenticated ? 'staff' : 'survey', $opts)
+                : $this->findExisting($project_id, $rule, $value, $lv, $event_id, $dag, true, $opts);
             if ($r['state'] === 'unknown') {
                 return $unknown(isset($r['why']) && $r['why'] !== null ? $r['why'] : 'the saved values could not be read just now');
             }
             $recOut = null;
-            if ($r['state'] === 'found' && $isAuthenticated && !$isSurvey && ($rule['existsIn'] ?? null) !== 'record') {
+            if ($r['state'] === 'found' && $isAuthenticated && !$isSurvey && ($rule['existsIn'] ?? null) !== 'record'
+                    && empty($rule['existsPid'])) {
                 $recOut = $r['record'];
                 if ($group_id !== null && $group_id !== '') {
                     $userDag = ScanPageView::dagNameOf($group_id);

@@ -185,6 +185,8 @@ jobs:
           php tests/window_module_php.php
       - name: PHP @UVEXISTS grammar, hooks, endpoint (rights, throttle, surveys), audit and scan index
         run: php tests/exists_php.php
+      - name: PHP @UVEXISTS in another project (consent, rights there, probe log, budgets, audit, scan)
+        run: php tests/exists_cross_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)

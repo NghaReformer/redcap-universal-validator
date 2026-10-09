@@ -154,6 +154,50 @@ On the data entry form, each field shows a visible error and asks nothing:
 | H10 | [only if the project has DAGs] As a user in one group, open a record of that group and enter in `ux_spec` a specimen ID saved only in a record of another group | Found, or amber "a value saved in another Data Access Group may not be visible from yours". Never red. Record which answer came, because it shows whether this REDCap confines a group user's reads |
 | H11 | [only if the project has DAGs] Same user, in the console: `uv.ajax('exists-check',{field:'ux_spec',values:{ux_spec:'S-003'}})` sent from a form URL whose `id=` names a record of another group | `{"state":"unknown", ..., "why":"this record is not in your Data Access Group"}` |
 
+## Section I: another project (`"project"`)
+
+This section needs a second project on the same server, the source project.
+Its outcome is also the pilot gate for the framework calls the module makes
+about a project other than the one of the request.
+
+Fixtures: [`uvexists_cross_fields.csv`](uvexists_cross_fields.csv) (10 rows,
+instrument `uv_exists_cross`, appended to pid 149),
+[`uvexists_cross_source.csv`](uvexists_cross_source.csv) (the source project's
+dictionary, instrument `lab`) and
+[`uvexists_cross_source_data.csv`](uvexists_cross_source_data.csv) (records L-1
+and L-2). Every expectation below was run offline through the module first,
+with pid 500 standing for the source project.
+
+Setup:
+
+1. Create the source project (classic, no surveys), upload its dictionary and
+   import its two records. Note its project id; the steps write it as SRC.
+2. Enable the module in the source project. Give the test account rights to the
+   `lab` form there. Keep a second account with rights in pid 149 only.
+3. Append the 10 rows to pid 149's dictionary and designate `uv_exists_cross`
+   on `event_1_arm_1`.
+4. In pid 149's module settings, add the alias `lab` for SRC.
+
+| # | Action | Expect |
+|---|---|---|
+| I1 | Control Center: "@UVEXISTS in other projects" off. Open `uv_exists_cross` on XE-1 | Every `uxc_*` rule except `uxc_bad_alias` shows "looking in another project ("project") is turned off on this REDCap server". `uxc_bad_alias` names the alias setting |
+| I2 | Turn the switch on; the source project lists nothing yet. Reload | Every `uxc_*` rule except `uxc_bad_alias` shows "project SRC cannot be searched from this project", word for word the same |
+| I3 | Source project settings, "Projects that may look up values here": add 149, fields `lab_spec, lab_site, lab_date, record, lab_donor, lab_ghost`, "Only users who have rights" (default). Save, reload the form | `uxc_spec`, `uxc_rec`, `uxc_m`, `uxc_date`, `uxc_donor` set up. `uxc_bad_secret` still shows the same "cannot be searched" text. `uxc_bad_ghost`: "lab_ghost" is not a field of project SRC. `uxc_survey`: "does not answer survey respondents" |
+| I4 | Read the config rules for `uxc_spec` | No `existsProject`, `existsPid`, `existsRemoteTargets` or `existsIn` key; SRC and `lab_spec` appear nowhere |
+| I5 | `uxc_spec` = LS-001, then LS-999 and press Save | Green "Found." with no record named; then red "Register this specimen in the lab project first." and the save is blocked |
+| I6 | `uxc_rec` = L-2, then L-9 | Found, then not found |
+| I7 | `uxc_site` = South, `uxc_m` = LS-002; then `uxc_site` = North | Found, then not found |
+| I8 | `uxc_date` = 01-02-2026, then 02-02-2026 | Found (stored 2026-02-01), then not found |
+| I9 | Source project module log | One `uv-exists-probe` line per lookup in I5 to I8: `source_project` 149, channel `staff`, the user, the field, the result, and `value_hash` (64 hex characters). No value appears raw |
+| I10 | Second account (rights in 149 only): `uxc_spec` = LS-001 | Amber "Could not check ... (you do not have rights in the project this lookup searches)"; a `refused` line in the source project's log |
+| I11 | Source project: switch the row to "Any signed-in user of the asking project". Second account: `uxc_spec` = LS-001 | Found. `uxc_donor` now shows "field "lab_donor" of project SRC is an Identifier there" |
+| I12 | Source project: also tick "Also answer survey respondents". Enable `uv_exists_cross` as a survey, open it, `uxc_survey` = LS-001, then LS-999 | Found, then not found, no record named; the source project's log shows channel `survey`, user `survey` |
+| I13 | Source project settings: try to save a second row for 149, a row with field `nope`, and a row with surveys ticked under "Only users who have rights" | The dialog refuses each and names the row |
+| I14 | Back to "Only users who have rights". Import `uxc_spec` = LS-999 for XE-1 with the Data Import Tool (the form itself blocks that save) | Module log of pid 149: `invalid-id-saved`, `type: exists`, reason `not-found`; source project log: channel `audit` |
+| I15 | Run the Validation scan in pid 149 | XE-1 `uxc_spec` with "Not found in its source"; one `uv-exists-index-read` line per searched field in the source project's log, none per record |
+| I16 | [optional] Control Center: set "lookups one searched project answers per minute" to 2, then enter three values in `uxc_spec` within a minute | The third answers "could not check (too many lookups in the other project in the last minute)"; the log shows `throttled`. Clear the setting after |
+| I17 | [only if the source project has DAGs] Put the test account in a group there; `uxc_spec` = a specimen of another group | Not found (the lookup stays in the account's group there). A scan then lists the rule as not evaluated, "Data Access Group of project SRC" |
+
 ---
 
 ## Sign-off
@@ -167,10 +211,13 @@ On the data entry form, each field shows a visible error and asks nothing:
 | 5 | Section E: audit and scan agree with the browser | ☐ |
 | 6 | Section G: composition and the `unique-check` gate | ☐ |
 | 7 | Section H: choice fields, reset, autocomplete, branches, groups | ☐ |
+| 8 | Section I: another project. Agreement, rights there, probe log, surveys, audit, scan. This is also the pilot gate for `getProjectSetting`/`getSubSettings` with another project id, `log()` with `project_id`, the `project-id` setting type, `isModuleEnabled`, `getProjectStatus`, `\Project` event and group names, and `User::getRights` for another project | ☐ |
 
 ## Cleanup
 
 Delete the `uv_exists_test` instrument, or restore the dictionary downloaded in
 setup step 2. Delete the record C2 created (and any record H9 saved). Remove the
 survey setting if D1 enabled it, and the one-section-per-page setting if D5
-changed it.
+changed it. After section I, delete the `uv_exists_cross` instrument and the alias
+row, delete the source project, and turn "@UVEXISTS in other projects" off
+again unless it stays in use.

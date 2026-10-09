@@ -302,7 +302,7 @@ namespace {
     check('"surveys":false is the default, not stored', !isset($r['existsSurveys']) && !isset($r['error']));
     check('blank value refused', strpos($err('@UVEXISTS='), 'needs to know where to look') !== false);
     check('two fields refused', strpos($err('@UVEXISTS=[a][b]'), 'is not a place to look') !== false);
-    check('unknown key refused', strpos($err('@UVEXISTS={"in":"record","project":5}'), 'unknown @UVEXISTS option(s): project') !== false);
+    check('unknown key refused', strpos($err('@UVEXISTS={"in":"record","site":5}'), 'unknown @UVEXISTS option(s): site') !== false);
     check('"in" missing refused', strpos($err('@UVEXISTS={"scope":"dag"}'), 'needs "in"') !== false);
     check('bad scope refused', strpos($err('@UVEXISTS={"in":"[a]","scope":"site"}'), '"scope" must be project, dag or event') !== false);
     check('bad event name refused', strpos($err('@UVEXISTS={"in":"[a]","event":"Visit 1"}'), 'unique event name') !== false);

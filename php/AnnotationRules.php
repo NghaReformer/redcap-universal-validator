@@ -50,6 +50,12 @@ class AnnotationRules
     /** Cap on @UVEXISTS "match" pairs, so a lookup stays one narrow read. */
     const MAX_EXISTS_MATCH = 5;
 
+    /**
+     * An @UVEXISTS "project": a project id, or an alias the project's own
+     * settings map to one (so a data dictionary moves between servers unchanged).
+     */
+    const EXISTS_PROJECT_RE = '/^(?:[1-9][0-9]{0,9}|[a-z][a-z0-9_-]{0,39})$/';
+
     /** Largest window bound, in units either side of the anchor. */
     const MAX_WINDOW_BOUND = 36500;
 
@@ -591,6 +597,9 @@ class AnnotationRules
      * same value as a field of this record (target field => [local field]).
      * "surveys" is an opt-in, as for @UVUNIQUE: a found / not found answer is
      * record-derived information.
+     * "project" (a project id or alias) looks in another project instead. The
+     * searched fields are then that project's ("existsRemoteTargets"), so they
+     * never enter this project's field checks, read set or reverse dependencies.
      */
     private static function parseExistsValue($val, array $opts = [])
     {
@@ -615,7 +624,7 @@ class AnnotationRules
             return ['error' => self::TAG_EXISTS . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['in', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
+        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_EXISTS . ' option(s): ' . implode(', ', $unknown)
@@ -631,6 +640,14 @@ class AnnotationRules
                 . json_encode($cfg['in']) . '. To look in one event, add "event".'];
         }
         $out = ['type' => 'exists', 'existsIn' => $in];
+        if (isset($cfg['project'])) {
+            $p = $cfg['project'];
+            if (is_int($p) || (is_string($p) && trim($p) !== '')) {
+                $out['existsProject'] = strtolower(trim((string) $p));
+            } else {
+                return ['error' => '"project" must be a project id such as 123, or a project alias such as "lab".'];
+            }
+        }
         if (isset($cfg['event'])) {
             if (!is_string($cfg['event'])) return ['error' => '"event" must be a unique event name such as "enrolment_arm_1".'];
             $out['existsEvent'] = strtolower(trim($cfg['event']));
@@ -672,7 +689,7 @@ class AnnotationRules
         if (isset($out['existsMatch'])) $out['existsLocal'] = array_values(array_unique(array_values($out['existsMatch'])));
         $targets = $in === 'record' ? [] : [$in];
         foreach (array_keys(isset($out['existsMatch']) ? $out['existsMatch'] : []) as $t) $targets[] = (string) $t;
-        if ($targets) $out['existsTargets'] = array_values(array_unique($targets));
+        if ($targets) $out[isset($out['existsProject']) ? 'existsRemoteTargets' : 'existsTargets'] = array_values(array_unique($targets));
         $errs = self::checkFragment($out, $opts);
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
@@ -1563,6 +1580,18 @@ class AnnotationRules
         }
         if (isset($frag['existsSurveys']) && $frag['existsSurveys'] !== true) {
             $errors[] = '"surveys" must be true or false (unquoted).';
+        }
+        if (isset($frag['existsProject'])) {
+            if (!is_string($frag['existsProject']) || !preg_match(self::EXISTS_PROJECT_RE, $frag['existsProject'])) {
+                $errors[] = '"project" must be a project id such as 123, or a project alias such as "lab" '
+                    . '(letters, digits, _ and -, starting with a letter).';
+            }
+            // Groups and events belong to one project: this record's group or
+            // event means nothing in another one.
+            if ($scope === 'dag' || $scope === 'event') {
+                $errors[] = '"scope":"' . $scope . '" cannot be used with "project" — Data Access Groups and events '
+                    . 'are not shared between projects. Use "event" to name one event of the other project.';
+            }
         }
         // The lookup reads saved values of one project through one read; an
         // event/instance reference in "when" would need the extended pipeline,

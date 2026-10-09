@@ -71,6 +71,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
     // 2.3.0 @UVEXISTS
     'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
+    // 2.4.0 @UVEXISTS in another project
+    'existsProject', 'existsPid', 'existsRemoteTargets',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.

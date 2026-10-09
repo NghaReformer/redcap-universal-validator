@@ -193,10 +193,11 @@
         {"key": "existsTargets", "kind": "fieldList", "role": "lookup"}
       ],
       "branchKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsSurveys", "existsLocal",
-                     "existsTargets"],
+                     "existsTargets", "existsProject", "existsPid", "existsRemoteTargets"],
       "clientKeys": ["existsLocal", "existsSurveys",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
-      "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets"],
+      "serverKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsTargets",
+                     "existsProject", "existsPid", "existsRemoteTargets"],
       "needs": ["transport"],
       "dialog": false,
       "js": {"factories": {"exists": "QRIDExistsInit"}},

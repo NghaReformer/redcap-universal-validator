@@ -932,6 +932,20 @@ touches an Identifier field.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
+**Can the specimen be checked against a separate lab project?**
+Yes, when both projects agree. Write
+`@UVEXISTS={"in":"[specimen_id]","project":"lab"}`, and map the alias `lab` to
+the lab project under "@UVEXISTS project aliases" in this project's module
+settings (or write the project id). An administrator must turn on "@UVEXISTS in
+other projects" in the Control Center, and the lab project must enable the
+module and list this project, with `specimen_id`, under "Projects that may look
+up values here". By default only users with rights to that field in the lab
+project get an answer. The lab project can instead answer any signed-in user of
+this project with found / not found only, and only then also survey
+respondents. The lab project's module log records every lookup, answered or
+refused. Until the lab project agrees, the rule shows one setup error that does
+not say what is missing.
+
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
 In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as
 shown (`31-12-2024`) while REDCap stores `2024-12-31`, so the live check never

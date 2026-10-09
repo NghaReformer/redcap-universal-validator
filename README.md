@@ -628,6 +628,22 @@ the specimen ID on the collection form.
   and says so. A durable scan with `@UVEXISTS` rules claims coverage through its
   change fence only when no record changed during the run: an answer depends on
   other records, which the catch-up does not re-check.
+- **Another project.** `"project":412`, or an alias such as `"project":"lab"`
+  that this project's settings map to a project id, looks in another project on
+  the same server. `in`, `event` and the `match` targets then name that
+  project's fields and events. Three parties must agree. An administrator turns
+  on "@UVEXISTS in other projects". The searched project enables the module and
+  lists this project under "Projects that may look up values here", with the
+  fields it may search and who gets an answer (only users with rights to those
+  fields there, confined to their group there; or any signed-in user of this
+  project, found / not found only, with no Identifier searched). Surveys are
+  answered only when that project also allows it. Until its agreement
+  passes, every problem shows one setup error and nothing of that project is
+  read. Its record is never shown. Each lookup, answered or refused, leaves a
+  `uv-exists-probe` line in that project's module log, with the value as a
+  keyed hash under its key. At most 30 lookups a minute per session into one
+  project and 1,200 a minute answered by one project (Control Center settings);
+  over either, the answer is *could not check*.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.
@@ -815,6 +831,10 @@ check-character primitive, but the full runtime path the module actually uses:
   the audit, the one-read scan index and group-confined scans.
   `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur
   only, never blocks on *could not check*, the cache and stale replies.
+  `tests/exists_cross_php.php` covers lookups in another project: the server
+  switch, the alias, the searched project's agreement (one refusal for every
+  reason, nothing read before it passes), rights there, the probe log, the
+  budgets, the audit and the scan.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -857,6 +877,7 @@ php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
