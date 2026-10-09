@@ -213,6 +213,26 @@ namespace {
     check('audit: below hard', ($by['weight']['reason'] ?? null) === 'hard-low');
     check('audit: misconfigured rules log nothing as data',
         !isset($by['bad_email']) && !isset($by['bad_date']) && !isset($by['bad_order']));
+    // Saving enrol_form re-checks hb, whose limits follow sex (saved there);
+    // the other labs values, all outside their ranges, belong to the save of
+    // labs_form and are left alone.
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'enrol_form', 351, null, null, null, 1);
+    $fields = array_map(function ($e) { return $e['field']; },
+        array_filter(findings($m), function ($e) { return ($e['type'] ?? '') === 'range'; }));
+    check('audit: a save of the selector form re-checks only the rule it selects (got ' . json_encode(array_values($fields)) . ')',
+        array_values($fields) === ['hb']);
+    // Identical tags on two forms are one rule with two fields; a save audits
+    // only the field of the form saved.
+    $D2 = $DICT + ['enrol_num' => f('enrol_form', '@UVRANGE={"hard":[0,100]}', '')];
+    $V2 = $DATA; $V2['2'][351]['enrol_num'] = '150';
+    $m = mod($D2, $V2, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'enrol_form', 351, null, null, null, 1);
+    $fields = array_map(function ($e) { return $e['field']; },
+        array_filter(findings($m), function ($e) { return ($e['type'] ?? '') === 'range'; }));
+    sort($fields);
+    check('audit: one rule on two forms audits the saved form only (got ' . json_encode($fields) . ')',
+        $fields === ['enrol_num', 'hb']);
 
     $f2 = $DATA; $f2['2'][351]['sex'] = '2';
     $m = mod($DICT, $f2, $FULL, 'nurse');

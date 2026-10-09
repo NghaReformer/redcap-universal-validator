@@ -206,6 +206,15 @@ const HB = { type: 'range', fields: ['hb'], rangeSoftLo: '12', rangeSoftHi: '17.
   hb.value = '300';
   check('save without leaving: the recheck holds it', save(env) === 'held');
   check('...and the note is back', /above the plausible range/.test(msg.innerHTML));
+  // Typed away and back to the value the field had when entered: the browser
+  // fires no change event on leaving, only blur. The note must come back.
+  env.doc.activeElement = hb;
+  hb.value = '3001'; hb.fire('input');
+  hb.value = '300'; hb.fire('input');
+  check('typing back to the same value clears the note', !shown(msg));
+  env.doc.activeElement = null;
+  hb.fire('blur');
+  check('leaving without a change event: judged again', /above the plausible range/.test(msg.innerHTML));
 }
 
 // ---- 4) comma decimals ---------------------------------------------------------
