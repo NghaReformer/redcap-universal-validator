@@ -459,7 +459,12 @@ class UniversalValidator extends AbstractExternalModule
                 'type'   => isset($rule['type']) ? $rule['type'] : 'single',
                 'fields' => $rule['fields'],
             ], $branch);
-            return $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
+            $r = $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
+            // Each finding names the branch that judged it, so a report can show
+            // that branch's message and limits (ScanDimensions keeps one
+            // snapshot per branch), not the first branch's or none.
+            foreach ($r['invalid'] as $k => $v) $r['invalid'][$k]['branch'] = $pick;
+            return $r;
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';
@@ -5878,7 +5883,7 @@ class UniversalValidator extends AbstractExternalModule
                             // repeating-EVENT context (:2320), which between them
                             // is most projects.
                             'instrument' => $hostForm, 'dag' => $recDag,
-                        ]);
+                        ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : []));
                     }
                     foreach ($f['unconfigurable'] as $u) {
                         $key = $i . '|' . $u['why'];

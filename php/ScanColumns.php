@@ -147,7 +147,7 @@ final class ScanColumns
                 'key' => 'rule_label', 'label' => 'Rule name', 'group' => 'problem',
                 'visible' => function () { return true; },
                 'render' => function (array $f, ScanDimensions $d) {
-                    $r = $d->rule($f['rule']);
+                    $r = $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null);
                     return $r['label'];
                 },
             ],
@@ -155,7 +155,7 @@ final class ScanColumns
                 'key' => 'problem', 'label' => 'What is wrong', 'group' => 'problem',
                 'visible' => function () { return true; },
                 'render' => function (array $f, ScanDimensions $d) {
-                    $r = $d->rule($f['rule']);
+                    $r = $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null);
                     $e = MessageCatalog::explain($f, $r, 'staff');
                     $detail = MessageCatalog::detail($f, $r);
                     return $detail === '' ? $e['text'] : $e['text'] . ' ' . $detail;
@@ -167,7 +167,7 @@ final class ScanColumns
                 // Which tier answered. A designer scanning this column sees at a
                 // glance which rules still have no authored message.
                 'render' => function (array $f, ScanDimensions $d) {
-                    $e = MessageCatalog::explain($f, $d->rule($f['rule']), 'staff');
+                    $e = MessageCatalog::explain($f, $d->rule($f['rule'], isset($f['branch']) ? $f['branch'] : null), 'staff');
                     return $e['source'];
                 },
             ],

@@ -731,7 +731,7 @@ class AnnotationRules
             return ['error' => '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" (off or confirm) '
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
-        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive', 'references'];
+        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)

@@ -269,6 +269,22 @@ namespace {
         === ['text' => 'The value is lower than usual for this field.', 'source' => 'catalog']
         && $C::explain(['type' => 'range', 'reason' => 'not-a-number', 'rule' => 1], $dims->rule(1))
         === ['text' => 'The value is not a number.', 'source' => 'catalog']);
+    // A branched rule (hb: limits per sex) speaks with the branch that judged
+    // the value: the men's limits for record 2 (sex 1), not the women's, not none.
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $res = $m->scanProject(149);
+    $hb = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'hb'; }));
+    check('scan: a branched finding names its branch', count($hb) === 1 && ($hb[0]['branch'] ?? null) === 1);
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+    $row = \INSPIRE\UniversalValidator\ScanColumns::row($hb[0], $dims, $cols);
+    check('report: the branch\'s limits in the detail sentence (got ' . json_encode($row['problem'] ?? null) . ')',
+        ($row['problem'] ?? '') === 'The value is higher than usual for this field. Expected 13.5 to 17.5 g/dL.');
+    $wt = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'weight'; }));
+    check('scan: an unbranched finding names no branch', count($wt) === 1 && !array_key_exists('branch', $wt[0]));
+    $row = \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, $cols);
+    check('report: an unbranched rule keeps its own message', ($row['problem'] ?? '') === 'Check the scale. Allowed 0.5 to 250.');
+
     check('scan labels per tier', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'soft-high') === 'Unusual value'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'hard-low') === 'Implausible value'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number');

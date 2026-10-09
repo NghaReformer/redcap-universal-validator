@@ -164,22 +164,45 @@ final class ScanDimensions
         // Rules, keyed by the ordinal a finding cites. This is what makes
         // "Rule 12" mean something to a reader a week later.
         foreach ($rules as $i => $r) {
-            // The keys a mode lists under scan.detailKeys (php/modes.json), for
-            // the catalog's "detail" sentence. Scalars only: a snapshot is text.
-            $detail = [];
-            foreach (ModeRegistry::detailKeys(isset($r['type']) ? $r['type'] : '') as $k) {
-                if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
-            }
+            $type = isset($r['type']) ? (string) $r['type'] : '';
+            $t = self::ruleText($r, $type);
             $d->rules[$i + 1] = [
-                'type'    => isset($r['type']) ? (string) $r['type'] : '',
-                'label'   => isset($r['note']) ? (string) $r['note'] : '',
-                'message' => isset($r['message']) ? (string) $r['message'] : '',
-                'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
+                'type'    => $type,
+                'label'   => $t['label'],
+                'message' => $t['message'],
+                'assert'  => $t['assert'],
                 'fields'  => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                'detail'  => $detail,
+                'detail'  => $t['detail'],
             ];
+            // A branched rule carries its wording and limits per branch; a
+            // finding names the branch that judged it (rule()).
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                foreach ($r['branches'] as $bi => $b) {
+                    if (is_array($b)) $d->rules[$i + 1]['branches'][$bi] = self::ruleText($b, $type);
+                }
+            }
         }
         return $d;
+    }
+
+    /**
+     * The text of one rule (or one branch) a report shows: its label, message,
+     * assert and the keys its mode lists under scan.detailKeys
+     * (php/modes.json), for the catalog's "detail" sentence. Scalars only: a
+     * snapshot is text.
+     */
+    private static function ruleText(array $r, $type)
+    {
+        $detail = [];
+        foreach (ModeRegistry::detailKeys($type) as $k) {
+            if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
+        }
+        return [
+            'label'   => isset($r['note']) ? (string) $r['note'] : '',
+            'message' => isset($r['message']) ? (string) $r['message'] : '',
+            'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
+            'detail'  => $detail,
+        ];
     }
 
     /**
@@ -252,11 +275,21 @@ final class ScanDimensions
     }
 
     /** One rule's snapshot, or an empty shape — never a missing-index warning. */
-    public function rule($ordinal)
+    public function rule($ordinal, $branch = null)
     {
-        return isset($this->rules[$ordinal])
-            ? $this->rules[$ordinal]
-            : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => []];
+        if (!isset($this->rules[$ordinal])) {
+            return ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => []];
+        }
+        $r = $this->rules[$ordinal];
+        // The branch that judged a finding speaks for it: its message and its
+        // limits, never another branch's. A label only the rule has stays.
+        if ($branch !== null && isset($r['branches'][$branch])) {
+            $b = $r['branches'][$branch];
+            if ($b['label'] === '') $b['label'] = $r['label'];
+            $r = array_merge($r, $b);
+        }
+        unset($r['branches']);
+        return $r;
     }
 
     /** True when any label source could not be read. */

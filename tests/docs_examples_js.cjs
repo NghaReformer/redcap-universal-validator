@@ -6,8 +6,9 @@
  * checks the documented result against the server verdict and records the
  * case in tests/docs_expect_fixture.json. This replays those cases through
  * js/engine.js, booted the way the server injects it: a single-ID rule must
- * accept or refuse the value exactly as the server did, and a pooled rule must
- * split it into the same members and junk, with the same alternate credited.
+ * accept or refuse the value exactly as the server did, a pooled rule must
+ * split it into the same members and junk, with the same alternate credited,
+ * and a @UVRANGE rule must reach the same tier and reason.
  *
  * Run:  node tests/docs_examples_js.cjs
  */
@@ -81,9 +82,29 @@ function canon(segs) {
     : ['junk', s.text]));
 }
 
+// The @UVRANGE verdict, from an engine booted with no rules.
+function rangeLogic() {
+  const enginePath = path.join(__dirname, '..', 'js', 'engine.js');
+  delete require.cache[require.resolve(enginePath)];
+  global.window = {};
+  global.document = { addEventListener() {}, getElementsByName() { return []; }, readyState: 'complete', body: { addEventListener() {} } };
+  require(enginePath);
+  return global.window.INSPIREUniversalValidator.rangeLogic;
+}
+
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'docs_expect_fixture.json'), 'utf8'));
 let fail = 0;
+let range = null;
 for (const c of fx.cases) {
+  if (c.kind === 'range') {
+    range = range || rangeLogic();
+    const r = range.verdict(c.spec, c.input);
+    if (r.tier !== c.tier || r.reason !== c.reason) {
+      fail++;
+      console.error(`MISMATCH ${c.where} ${JSON.stringify(c.input)}: server ${c.tier}/${c.reason}, browser ${r.tier}/${r.reason}`);
+    }
+    continue;
+  }
   const v = boot(c.rule);
   const label = `${c.where} ${JSON.stringify(c.input)}`;
   if (!v) { fail++; console.error(`NO VALIDATOR ${label}`); continue; }

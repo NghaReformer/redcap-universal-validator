@@ -14,7 +14,7 @@
  * cannot pass by being refused for some other mistake.
  *
  * A block whose info string contains "expect" (```text expect) tests the LAST
- * @UVALIDATE tag of the fenced block just before it. Each line reads
+ * @UVALIDATE or @UVRANGE tag of the fenced block just before it. Each line reads
  *
  *     <input>  =>  <result>
  *
@@ -24,6 +24,14 @@
  *     valid                            single-ID rule accepted the value
  *     valid: ID1, ID2, ...             pooled rule accepted; the members in order
  *     refused: reason1, reason2        the verdict's reason codes, in order
+ *
+ * and for @UVRANGE one of
+ *
+ *     ok                               inside every limit
+ *     blank                            nothing to check
+ *     soft-low, soft-high              outside "soft" (unusual)
+ *     hard-low, hard-high              outside "hard" (implausible)
+ *     not-a-number                     not a plain decimal number
  *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which
@@ -37,6 +45,7 @@ namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/../php/AnnotationRules.php';
 require_once __DIR__ . '/../php/CheckCharacter.php';
+require_once __DIR__ . '/../php/Logic.php';
 
 $docs = [
     'docs/action_tag_validation_examples.md',
@@ -109,6 +118,15 @@ $verdict = function (array $frag, $value) {
     return [!empty($res['ok']) ? 'valid' : 'refused: ' . $res['reason'], !empty($res['ok']), null];
 };
 
+/** The limits the @UVRANGE verdict reads (UniversalValidator::findingsRange). */
+$rangeSpec = function (array $frag) {
+    $spec = ['decimalComma' => false];
+    foreach (['softLo' => 'rangeSoftLo', 'softHi' => 'rangeSoftHi', 'hardLo' => 'rangeHardLo', 'hardHi' => 'rangeHardHi'] as $k => $rk) {
+        if (isset($frag[$rk])) $spec[$k] = $frag[$rk];
+    }
+    return $spec;
+};
+
 $norm = function ($s) { return preg_replace('/\s+/', ' ', trim($s)); };
 
 foreach ($docs as $doc) {
@@ -138,7 +156,7 @@ foreach ($docs as $doc) {
         list($kind, $start, $body) = $block;
         if ($kind === 'expect') {
             if (!$previous || $previous[0] !== 'plain' || !$previous[1]) {
-                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE tag";
+                $failures[] = "$doc:$start expect block does not follow a block ending in a valid @UVALIDATE or @UVRANGE tag";
                 $previous = null;
                 continue;
             }
@@ -151,6 +169,18 @@ foreach ($docs as $doc) {
                 if ($cut === false) { $failures[] = "$doc:$lineNo expect line has no \"=>\": $t"; continue; }
                 $input = str_replace('\n', "\n", trim(substr($t, 0, $cut)));
                 $want = $norm(substr($t, $cut + 2));
+                if (($frag['type'] ?? null) === 'range') {
+                    $spec = $rangeSpec($frag);
+                    $r = Logic::rangeVerdict($spec, $input);
+                    $got = $r['tier'] === 'ok' ? 'ok' : ($r['tier'] === 'inert' ? 'blank' : $r['reason']);
+                    $checks++;
+                    if ($norm($got) !== $want) {
+                        $failures[] = "$doc:$lineNo " . json_encode($input) . " expected \"$want\" but got \"$got\"";
+                    }
+                    $fixture[] = ['where' => "$doc:$lineNo", 'tagLine' => $tagLine, 'kind' => 'range', 'spec' => $spec,
+                                  'input' => $input, 'tier' => $r['tier'], 'reason' => $r['reason']];
+                    continue;
+                }
                 list($got, $ok, $segs) = $verdict($frag, $input);
                 $checks++;
                 if ($norm($got) !== $want) {
@@ -180,7 +210,7 @@ foreach ($docs as $doc) {
                 continue;
             }
             if ($errors) { $failures[] = "$doc:$lineNo " . implode(' | ', $errors) . ' :: ' . substr($tagText, 0, 90); continue; }
-            if (count($frags) === 1 && strncmp($tagText, '@UVALIDATE', 10) === 0) {
+            if (count($frags) === 1 && (strncmp($tagText, '@UVALIDATE', 10) === 0 || strncmp($tagText, '@UVRANGE', 8) === 0)) {
                 $last = $frags[0];
                 $lastLine = $lineNo;
             }

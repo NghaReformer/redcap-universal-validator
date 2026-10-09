@@ -222,7 +222,7 @@
       "refKeys": [],
       "branchKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
-                     "caseSensitive", "message", "references"],
+                     "caseSensitive", "message"],
       "clientKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
                      "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],

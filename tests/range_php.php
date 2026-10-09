@@ -135,7 +135,7 @@ $refusals = [
     'when does not parse'     => ['@UVRANGE={"hard":[1,2],"when":"[sex]=="}', 'the "when" condition'],
     'when blank'              => ['@UVRANGE={"hard":[1,2],"when":"  "}', 'the "when" condition must be a non-empty'],
     'caseSensitive quoted'    => ['@UVRANGE={"hard":[1,2],"caseSensitive":"yes"}', '"caseSensitive" must be true or false'],
-    'references off'          => ['@UVRANGE={"hard":[1,2],"references":{"b":{"field":"x"}}}', 'Enable event and instance references'],
+    'references'              => ['@UVRANGE={"hard":[1,2],"references":{"b":{"field":"x"}}}', 'unknown @UVRANGE option(s): references'],
 ];
 foreach ($refusals as $label => $pair) {
     $e = errOf($pair[0]);
@@ -154,6 +154,9 @@ $q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"when":"[baseline_arm
 check('qualified "when": refused', isset($q[0]['error']) && strpos($q[0]['error'], 'does not support event or instance references') !== false);
 $q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"when":"[sex]=\'1\'"}', ['qualified' => true]);
 check('plain "when" with references on: fine', !isset($q[0]['error']));
+// "references" names bindings for "when", which reads only this entry here: refused, never carried unused.
+$q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"references":{"b":{"field":"x"}}}', ['qualified' => true]);
+check('"references" with references on: refused', isset($q[0]['error']) && strpos($q[0]['error'], 'unknown @UVRANGE option(s): references') !== false);
 
 // checkFragment (the shared gate) refuses what the parser would never produce.
 $cf = function (array $frag) { return AnnotationRules::checkFragment(array_merge(['type' => 'range'], $frag)); };
