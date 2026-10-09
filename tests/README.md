@@ -20,6 +20,7 @@ php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
@@ -198,6 +199,19 @@ Save waits for an answer still on its way, *could not check* never blocks and
 is not asked again by Save, unknown answers are not cached, a late reply for an
 older value is dropped, the message follows an autocomplete widget, surveys are
 opt-in and never see a reason.
+
+`exists_cross_php.php` covers `"project"`, a lookup in another project. Its
+mocks keep settings, dictionaries, data, rights and `\Project` per project id,
+and `REDCap::getUserRights()` is a trap: it answers with the rights of the
+project of the request, including the form of the other project, and no check
+may read it as rights there. It covers the grammar, the order of the annotation
+checks (server switch, alias, the other project's agreement with one message
+for every reason and no read of that project before it passes, then the field
+checks there), the endpoint under both agreements (rights there, expiry,
+administrators, confinement to a group there, Identifiers, surveys), the
+record never echoed, an empty read never "not found", the probe log in the
+other project, the two budgets, the audit, the scan, and the Configure dialog
+checks of the alias and agreement rows.
 
 ## `hook_php.php` — the audit-path contract
 
