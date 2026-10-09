@@ -31,7 +31,7 @@ Git tags identify release snapshots. Release candidates are intended for develop
 
 ### Upgrade note
 
-- A binding whose `events` list names the same event twice now shows a configuration notice and is not evaluated until the repeat is removed. Removing it does not change the rule's result: members were already counted once.
+- A binding whose `events` list names the same event twice now shows a configuration notice and is not evaluated until the repeat is removed. Removing it does not change the rule's result, because members were already counted once.
 
 ### Documentation
 
@@ -39,6 +39,8 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - Each recipe carries a block of tested values (`input => result`). CI runs every line through the server verdict (`tests/docs_examples_php.php`) and the browser engine (`tests/docs_examples_js.cjs`), and each refused example must be refused for the reason printed beside it.
 - Phase 2 example patterns use site digits `[1-9]` (`SK[1-9]`, `DT[1-9]`, `ST[1-9]`), matching the studies' current ID registry.
 - The save check compares the characters kept by each entry of a one-ID `alternates` rule as well as a pooled one, so a one-ID rule mixing `-` and `/` separators needs `keepChars`. This is now documented.
+- `@UVWINDOW` is documented in the README, the user guide FAQ, `docs/action_tag_validation_examples.md` (five levels, recipes, key and limit tables, cheat sheet, and twelve refused examples that CI checks), and `tests/README.md`. The examples page no longer says "five tags".
+- `docs/testbed/WINDOW_LIVE_ACCEPTANCE.md` is the live run sheet for pid 149, with its fixture `docs/testbed/uvwindow_test_fields.csv` (18 fields on one new instrument). It also covers the `@UVUNIQUE` D-M-Y fix.
 
 ## 2.1.0-rc.2 — 2026-10-07
 

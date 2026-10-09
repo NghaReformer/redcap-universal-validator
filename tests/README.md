@@ -15,6 +15,10 @@ php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
 php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
 php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
 php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, coverage, bad file
+node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
+php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
+node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, durable clock
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
@@ -145,6 +149,30 @@ validator, the keys a rule carries, and the scan labels.
 - `mode_samples.json` holds one working sample per mode. `annotation_php.php`
   and `deferral_dom_js.cjs` loop over it, so a new mode is covered by their
   every-mode checks without editing them.
+
+## `window_fixture.json` — the date-window contract
+
+`window_php.php` runs every case through `TemporalLogic::windowVerdict` and
+`window_js.cjs` through `QRID_windowVerdict`; both must return the same verdict
+and the same earliest and latest bounds. Each case gives the rule, the value and
+its display format, the `from` date and its format, and the clock. Cases cover
+D-M-Y, M-D-Y and Y-M-D input, leap days and year ends, open and negative bounds,
+every unit, a blank value or `from` date, half-typed and impossible dates, a
+date against a datetime, and `notFuture` exactly at today, at the next minute
+and one second ahead of now. The clock is an input, so no case depends on the
+day the tests run. `window_js.cjs` also checks `QRID_clockNow`: the page clock
+moves forward with `Date.now()`, never backwards, and is null without a valid
+server clock.
+
+- `window_dom_js.cjs` boots the browser rule on a stub page: the message names
+  the bounds in the field's format, the survey message leaves out the `from`
+  field, a snapshot `from` date never blocks, and the save-time recheck of a
+  page left open past the server's midnight uses the new day.
+- `window_module_php.php` covers the server side: field and dictionary checks,
+  the four outcomes of the page fold for a `from` date (live, snapshot,
+  withheld, unresolved), `config.clock`, the audit reasons, re-auditing on a
+  save of the `from` form, scan labels and detail lines, and the durable scan
+  clock taken from the run's start time.
 
 ## `hook_php.php` — the audit-path contract
 

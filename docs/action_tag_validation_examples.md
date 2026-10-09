@@ -1,6 +1,6 @@
 # Action Tag Validation Examples
 
-A worked, parameter-by-parameter guide to the five action tags of the **Universal
+A worked, parameter-by-parameter guide to the action tags of the **Universal
 Field Validator** module (current implementation). Every tag is shown from its
 simplest form to its most complete, with the meaning of each option and what the
 person entering data will see.
@@ -8,20 +8,21 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog — the tags and the dialog are the same rules through
-different doors, and they mix freely.
+in the module's Configure dialog, except `@UVCHOICES` and `@UVWINDOW`. The tags and
+the dialog are the same rules through different doors, and they mix freely.
 
 ---
 
 ## Contents
 
-- [The five tags at a glance](#the-five-tags-at-a-glance)
+- [The tags at a glance](#the-tags-at-a-glance)
 - [Rules that apply to every tag](#rules-that-apply-to-every-tag)
 - [`@UVALIDATE` — check characters and format](#uvalidate--check-characters-and-format)
 - [`@UVASSERT` — cross-field constraints](#uvassert--cross-field-constraints)
 - [`@UVREQUIRED` — conditional required](#uvrequired--conditional-required)
 - [`@UVUNIQUE` — no duplicates across records](#uvunique--no-duplicates-across-records)
 - [`@UVCHOICES` — dropdowns and autocomplete](#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices)
+- [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -32,6 +33,7 @@ different doors, and they mix freely.
   - [`@UVASSERT` recipes](#uvassert-recipes)
   - [`@UVREQUIRED` recipes](#uvrequired-recipes)
   - [`@UVUNIQUE` recipes](#uvunique-recipes)
+  - [`@UVWINDOW` recipes](#uvwindow-recipes)
   - [Combination recipes](#combination-recipes)
 - [Tags the module refuses](#tags-the-module-refuses)
 - [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
@@ -40,7 +42,7 @@ different doors, and they mix freely.
 
 ---
 
-## The five tags at a glance
+## The tags at a glance
 
 | Tag             | What it checks                                                                  | Field types it may sit on                                      |
 | --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -49,6 +51,7 @@ different doors, and they mix freely.
 | `@UVREQUIRED` | The field is**not blank**, optionally only while a condition is true      | Same as above,**minus calc**                             |
 | `@UVUNIQUE`   | The value is**not used by another record**                                | Same as above,**minus calc**                             |
 | `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
+| `@UVWINDOW`   | A date falls **within a window** around another date, or is not after today | Text with date, datetime or datetime-with-seconds validation   |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -58,7 +61,7 @@ by condition). Both are covered below.
 
 ## Rules that apply to every tag
 
-Learn these once and all five tags behave predictably.
+Learn these once and every tag behaves predictably.
 
 **Three value forms.** Every tag accepts a bare form, a short form, and a JSON form:
 
@@ -78,7 +81,7 @@ quotes *inside* a JSON string, which is exactly why the outer quoting must be do
 non-compiling regex — each shows a configuration error on the tagged field and names
 the problem. The module never fails silently.
 
-**`blockSave` is how strongly you enforce.** Available on all five tags:
+**`blockSave` is how strongly you enforce.** Available on every tag:
 
 | Value                 | Behavior                                         | Dialog label  |
 | --------------------- | ------------------------------------------------ | ------------- |
@@ -1227,6 +1230,180 @@ tag can also create a branch configuration error. Save the dictionary change and
 reload the data-entry/survey page before testing. The Online Designer defines the
 rule; test its live filtering on the actual data-entry form or survey.
 
+## `@UVWINDOW` — dates within a window
+
+REDCap's date validation takes a fixed minimum and maximum date, and only warns.
+It cannot say "21 to 35 days after this participant's baseline visit", and it has
+no idea what today is. `@UVWINDOW` checks a date against a window counted from
+another date, and/or that the date is not after today. JSON form only.
+
+### Level 1 — not in the future
+
+```text
+# on: visit_date — a visit cannot be recorded before it happens
+@UVWINDOW={"notFuture":true}
+```
+
+"Today" is the server's date, never the date on the user's computer, so a
+laptop whose clock runs a day ahead cannot accept tomorrow's date. The page gets
+the server's clock when it opens and moves it forward while it stays open, so a
+form left open across midnight moves to the next day. On a datetime field the
+limit is the current time, not the end of the day.
+
+### Level 2 — a window after another date
+
+```text
+# on: visit_date_wk4 — the week-4 visit falls 21 to 35 days after baseline
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}
+```
+
+`window` is `[earliest, latest]`, counted from the `from` date in whole units,
+**both ends included**. The unit is days unless you say otherwise. With a baseline
+of 2026-01-01 the rule accepts 2026-01-22 to 2026-02-05, and the message names
+those dates in the field's own format:
+
+> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days from [visit_date_bl])
+
+The part in brackets is shown to staff only; a survey respondent sees the dates
+without the other field's name. The example assumes a D-M-Y field.
+
+### Level 3 — open ends, negative bounds, other units
+
+```text
+# on: diagnosis_date — not before birth, no upper limit
+@UVWINDOW={"from":"[dob]","window":[0,null]}
+
+# on: screening_date — at most 28 days BEFORE enrolment, and not after it
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}
+
+# on: followup_date — weeks 10 to 14 after randomisation
+@UVWINDOW={"from":"[rand_date]","window":[10,14],"unit":"weeks"}
+
+# on: sample_taken_at (datetime) — within 6 hours after the dose
+@UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours"}
+```
+
+`null` leaves that end open; one end must be a number. A negative bound counts
+back from the `from` date. `unit` is `days` or `weeks` on a date field, and also
+`minutes` or `hours` on a datetime field. Bounds are whole numbers up to 36,500
+either way.
+
+### Level 4 — both checks, message and enforcement
+
+```text
+# on: screening_date — within a week of enrolment, never in the future, hard block
+@UVWINDOW={"from":"[enrol_date]","window":[-7,7],"notFuture":true,
+           "message":"Screening must be within a week of enrolment, and not in the future.",
+           "blockSave":"hard"}
+```
+
+When both checks fail, the page shows the "future" message, because a date in the
+future is the more likely typing slip.
+
+### Level 5 — gated, or counted from another event
+
+```text
+# on: visit_date — the window applies to scheduled visits only
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"when":"[visit_type]='1'"}
+
+# on: visit_date in the week-4 event — counted from the baseline event's date
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
+```
+
+The second form, a `from` date in another event or instance, needs **event and
+instance references** enabled in the project settings (see
+[Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)).
+Without the feature, `from` must be a field of the same event.
+
+### Semantics worth knowing
+
+- **Eligible fields:** Text fields with date, datetime or datetime-with-seconds
+  validation, in any display format (Y-M-D, M-D-Y or D-M-Y). Any other field shows a
+  configuration error.
+- **The `from` field must be the same kind of date.** A date window counts from a
+  date field, a datetime window from a datetime field. A `from` field that does
+  not exist, is not a date field, or is the tagged field itself is a configuration
+  error.
+- **Blank means nothing to check.** A blank field checks nothing, and so does a
+  blank `from` date: the visit that anchors the window may not have happened yet.
+  `notFuture` still applies while `from` is blank.
+- **A date still being typed shows no verdict.** REDCap's own date check covers
+  half-typed values.
+- **A `from` date on another form is read when the page opens.** If the user may
+  read that form, its saved value is used and the check is **advisory**: it shows
+  the verdict but never blocks the save, because that form could change while
+  this one is open. On a survey, or without rights to that form, the value is not
+  sent to the page at all and the browser does not check the rule.
+- **The server checks every save.** The post-save audit logs a violation as
+  `type: window` with reason `window-early`, `window-late` or `future`. Saving
+  only the form that holds the `from` date re-checks the windows counted from it.
+- **The Validation scan** reports the same findings, with "Date outside allowed
+  window" or "Date in the future" in the Issue column and the missed bound in the
+  detail line. A scan judges "future" against the day it runs, so it flags only
+  dates that are still in the future on that day. A durable scan uses the day the
+  run started for every record.
+- **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
+
+### `@UVWINDOW` JSON keys
+
+`from`, `window`, `unit`, `notFuture`, `when`, `message`, `blockSave`,
+`caseSensitive`. A rule needs `from` with `window`, or `"notFuture":true`, or
+both. Any other key is a configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Shorthand. The tag takes JSON only.
+# refused: needs its settings as JSON
+@UVWINDOW=21
+
+# A window with nothing to count from.
+# refused: "window" needs a "from" date
+@UVWINDOW={"window":[21,35]}
+
+# A "from" date with nothing to check.
+# refused: "from" needs a "window"
+@UVWINDOW={"from":"[visit_date_bl]"}
+
+# Both ends open.
+# refused: needs at least one bound
+@UVWINDOW={"from":"[visit_date_bl]","window":[null,null]}
+
+# Earliest after latest. Swap the numbers.
+# refused: is after its latest bound
+@UVWINDOW={"from":"[visit_date_bl]","window":[35,21]}
+
+# Fractions. Use a smaller unit.
+# refused: must be a whole number
+@UVWINDOW={"from":"[visit_date_bl]","window":[0,1.5]}
+
+# More than 100 years either way.
+# refused: limited to 36500 units
+@UVWINDOW={"from":"[dob]","window":[0,40000]}
+
+# Months and years vary in length. Use days or weeks.
+# refused: "unit" must be minutes, hours, days or weeks
+@UVWINDOW={"from":"[visit_date_bl]","window":[1,3],"unit":"months"}
+
+# A quoted boolean.
+# refused: "notFuture" must be true or false
+@UVWINDOW={"notFuture":"true"}
+
+# Two dates in "from". A window counts from one date.
+# refused: exactly one date field reference
+@UVWINDOW={"from":"[visit_date_bl] [enrol_date]","window":[0,7]}
+
+# A checkbox option is not a date.
+# refused: exactly one date field reference
+@UVWINDOW={"from":"[symptoms(1)]","window":[0,7]}
+
+# Neither check.
+# refused: needs a "from" date with a "window", or "notFuture": true
+@UVWINDOW={"message":"Check the date"}
+```
+
+---
+
 ## Combining tags on one field
 
 Different kinds of tag on one field **compose**: all must pass, and each keeps an
@@ -1299,7 +1476,7 @@ A three-way branch:
 
 ## The `when` condition language
 
-The same dialect powers `when` on all five tags and `assert` on `@UVASSERT`. It is a
+The same dialect powers `when` on every tag and `assert` on `@UVASSERT`. It is a
 **REDCap-style subset — not byte-for-byte REDCap logic**.
 
 | Supported                                                                                        | Rejected when the rule is saved                      |
@@ -2163,6 +2340,61 @@ counts as the same value), `scope` narrows the **search** (which records are com
 @UVUNIQUE={"surveys":true,"with":["dob"],"message":"A response already exists for this ID and date of birth"}
 ```
 
+### `@UVWINDOW` recipes
+
+#### Dates that cannot be in the future
+
+```text
+# on: consent_date
+@UVWINDOW={"notFuture":true,"blockSave":"hard"}
+
+# on: specimen_collected_at (datetime) — a collection time cannot be later than now
+@UVWINDOW={"notFuture":true,"message":"The collection time is in the future - check the clock"}
+```
+
+#### Protocol visit windows
+
+```text
+# on: visit_date_wk4 — target day 28, window -7/+7 days
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"confirm"}
+
+# on: visit_date_m6 — month 6 as weeks 24 to 28 after enrolment
+@UVWINDOW={"from":"[enrol_date]","window":[24,28],"unit":"weeks"}
+
+# on: visit_date in each follow-up event — counted from the baseline event (references enabled)
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
+```
+
+#### Order of events in one participant's history
+
+```text
+# on: diagnosis_date — on or after birth
+@UVWINDOW={"from":"[dob]","window":[0,null],"notFuture":true}
+
+# on: treatment_start — no earlier than diagnosis, at most 90 days after it
+@UVWINDOW={"from":"[diagnosis_date]","window":[0,90]}
+
+# on: screening_date — up to 28 days before enrolment
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}
+```
+
+#### Timed samples (datetime fields)
+
+```text
+# on: pk_sample_2h — between 90 minutes and 150 minutes after the dose
+@UVWINDOW={"from":"[dose_given_at]","window":[90,150],"unit":"minutes"}
+
+# on: result_reported_at — within 48 hours of collection
+@UVWINDOW={"from":"[specimen_collected_at]","window":[0,48],"unit":"hours"}
+```
+
+#### Only for some records
+
+```text
+# on: visit_date — scheduled visits only; unscheduled visits may fall anywhere
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"when":"[visit_type]='1'"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -2286,8 +2518,8 @@ you can recognise the mistake; the fix is on the right.
 
 Everything a tag can say, the module's **Configure** dialog can say too. Use the
 dialog when one rule covers many fields, when you want a rule that is not tied to the
-data dictionary, or when a designer should not edit annotations. `@UVCHOICES` is the
-one mode that exists only as a tag.
+data dictionary, or when a designer should not edit annotations. `@UVCHOICES` and
+`@UVWINDOW` exist only as tags.
 
 **Step 1 — open it.** Control Center or the project's *External Modules* page →
 **Universal Field Validator** → **Configure**.
@@ -2440,6 +2672,19 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`                                         |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
+### `@UVWINDOW`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `from`          | string          | *(none)*     | One date field reference, e.g. `[visit_date_bl]`; another event needs event and instance references enabled |
+| `window`        | list of two     | *(none)*     | `[earliest, latest]` whole units from `from`, both included; `null` leaves an end open |
+| `unit`          | string          | `days`       | `days`, `weeks`; on datetime fields also `minutes`, `hours`. Needs `from` |
+| `notFuture`     | boolean         | `false`      | The date may not be after today (a datetime: after now), by the server's clock |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string          | generic line   | Replaces the line that names the allowed dates                         |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `from` date on another form never blocks |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -2495,6 +2740,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Composite `with` fields | 5 |
 | `keepChars` length | 64 |
 | Entries in one `alternates` list | 8 |
+| `@UVWINDOW` bound, either side of `from` | 36,500 units |
 
 ### Algorithms
 
@@ -2580,6 +2826,13 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVCHOICES={"when":"[country]='1' and [region]='101'","show":["s01","s02"]}
 @UVCHOICES={"when":"[pilot(1)]='1'","show":["s01"],"message":"Pilot sites only","blockSave":"hard"}
 
+# ── @UVWINDOW — dates within a window ────────────────────────────────────────
+@UVWINDOW={"notFuture":true}                           not after today
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}  21 to 35 days after baseline
+@UVWINDOW={"from":"[dob]","window":[0,null]}           not before birth
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}     up to 28 days before enrolment
+@UVWINDOW={"from":"[rand_date]","window":[10,14],"unit":"weeks","blockSave":"hard"}
+
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}
 @UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'"}
@@ -2589,6 +2842,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVASSERT={"assert":"[result]>={t}","references":{"t":{"field":"threshold","event":"collection_arm_1","match":{"specimen_id":"[result_specimen_id]"}}}}
 @UVASSERT={"assert":"{h}>=0 and {h}<=48","references":{"h":{"field":"result_time","type":"datetime","elapsedFrom":"[collected_at]","unit":"hours"}}}
 @UVUNIQUE=record                                      no duplicate inside one record
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}

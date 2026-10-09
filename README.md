@@ -510,6 +510,41 @@ field instead of one near-duplicate field per country:
   import, a race) is logged by the post-save audit as `type: choices`,
   `reason: hidden-choice`, and the Validation scan reports it retrospectively.
 
+## Dates within a window — the `@UVWINDOW` tag
+
+REDCap's date validation takes a fixed minimum and maximum and only warns.
+`@UVWINDOW` checks a date against a window counted from another date of the same
+record, and/or that it is not after today:
+
+```text
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}
+@UVWINDOW={"from":"[dob]","window":[0,null],"notFuture":true}
+@UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours","blockSave":"hard"}
+@UVWINDOW={"notFuture":true}
+```
+
+- **JSON form only.** `window` is `[earliest, latest]` in whole units from the
+  `from` date, both ends included; `null` leaves an end open and negative bounds
+  count back. `unit` is `days` (default) or `weeks`, and also `minutes` or
+  `hours` on datetime fields. Optional `when`, `message`, `blockSave`.
+- **Date fields only:** Text fields with date, datetime or datetime-with-seconds
+  validation, in any display format. The `from` field must be the same kind of
+  date. The message names the allowed dates in the field's own format.
+- **Today is the server's date.** The page gets the server clock and moves it
+  forward while it stays open, so a wrong computer clock cannot accept tomorrow's
+  date and a form left open past midnight moves to the next day.
+- **Blank checks nothing.** A blank field, or a blank `from` date, is not
+  checked; a date still being typed shows no verdict.
+- **Other forms and events.** A `from` date on another form is read when the page
+  opens and the check is advisory (it never blocks). On a survey, or without
+  rights to that form, the value never reaches the page and the browser skips
+  the rule. With event and instance references enabled, `from` may name another
+  event: `[baseline_arm_1][visit_date]`.
+- **Audited.** The post-save audit logs `type: window` with reason
+  `window-early`, `window-late` or `future`, and saving the `from` date's form
+  re-checks the windows counted from it. The Validation scan reports the same
+  findings. Configure via field annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -679,6 +714,13 @@ check-character primitive, but the full runtime path the module actually uses:
   privacy modes on success AND exception paths, event/instrument scoping,
   repeat instances, duplicate-field skips, per-rule isolation, keyed hashing,
   and the save-time `validateSettings` gate.
+- `tests/window_js.cjs` / `tests/window_php.php` — the `@UVWINDOW` verdict
+  (window bounds, units, `notFuture` against a given clock, date formats, leap
+  days, year limits) in both runtimes from one fixture,
+  `tests/window_fixture.json`. `tests/window_dom_js.cjs` drives the browser rule
+  and `tests/window_module_php.php` the server side: annotation checks, the
+  page fold of an off-page `from` date, the audit, reverse dependencies, the
+  scan and the durable-scan clock.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -716,6 +758,10 @@ node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/co
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
 node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fail-open, cache)
+node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
+php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
+node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, durable clock
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

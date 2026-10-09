@@ -879,7 +879,9 @@ Not yet — messages are English only in this version.
 Check-character and format rules: Text and Notes fields only. Constraint
 rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
 Required and Unique rules: the same minus calc. Choice-filter rules
-(`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields).
+(`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
+rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
+validation.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -897,6 +899,22 @@ in the Configure dialog) checks the value against every other record as it is
 typed, with optional composite keys (`with`), project/DAG/event scopes, and a
 real save block. Two saves at the same instant can both pass the live check —
 the post-save audit logs such a collision to the module log.
+
+**Can a visit date be checked against the protocol window?**
+Yes. The `@UVWINDOW` tag checks a date against a window counted from another
+date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit
+21 to 35 days after baseline, both days included, and the message names the
+allowed dates. `"notFuture":true` refuses a date after today, where "today" is
+the server's date, not the computer's. A blank `from` date checks nothing. A
+`from` date on another form only advises, because that form could change while
+this one is open. Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
+In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as
+shown (`31-12-2024`) while REDCap stores `2024-12-31`, so the live check never
+matched. The post-save audit and the Validation scan compare stored values and
+did catch it. The release after 2.1.0 fixes the live check.
 
 ---
 
