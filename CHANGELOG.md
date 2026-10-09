@@ -27,9 +27,29 @@ Git tags identify release snapshots. Release candidates are intended for develop
   - The post-save audit logs `type: exists`, reason `not-found`; a lookup that cannot finish is logged as a rule problem. The Validation scan reads the searched field once per rule and request into an index and checks every record against it, with "Not found in its source" in the Issue column. A scan confined to one Data Access Group reports a rule that looks across groups as not evaluated.
   - The browser state for "could not check" is a new amber outline (`warn` in `QRID_setModeState`), which sets no `aria-invalid`. The AJAX transport helper is now `QRID_ajaxTransport`; `QRID_uniqueTransport` stays as an alias.
   - `ruleFindings` takes the record's DAG from the scan, so a `"scope":"dag"` rule reads no extra data per record.
+  - Clicking Save re-checks the field and holds the save while an answer is on its way, so a value typed and saved at once is checked before the save is decided. After 10 seconds without an answer the value counts as could not check. Save does not ask again for a value that got no answer.
+  - A branched rule is answered from the branch the page is enforcing: the page sends the values its `when` conditions read (`cond`), and the server picks the branch from them for fields of the form, from saved values for the others. A new record is answered too.
+  - A user in a Data Access Group is answered only on records of their own group. A "not found" from a rule that looks across groups is kept only when the module sees other groups' records in the same request; otherwise it is could not check, and the audit reports a rule problem rather than a violation.
+  - The searched field and the field must be stored the same way: a datetime to the minute and one to the second, or two times of different precision, are refused when the rule is saved.
+  - Survey lookups may cause at most 60 reads of a whole searched field a minute per project (a new rate-bucket tier); past that, and when the counter cannot be kept, a miss answers could not check.
+  - On a survey page, a misconfigured `@UVEXISTS` rule carries a general error text, and the "no access" reason staff see names no form or field.
+  - Match fields the page does not carry (another form, another page of a multi-page survey) are left out of the request and read from the saved record. Saving the form that holds a match field re-checks the lookup.
+  - The scan index keeps one hit per (group, event) under each value, so a searched field with few distinct values no longer slows the index down. Scan mode is passed per call (`$meta['existsIndex']`) and the index key names the project. A group-confined scan no longer reports findings for a rule it lists as not evaluated.
+  - A durable scan with `@UVEXISTS` rules claims coverage through its change fence only when the change log lists no record inside the window (new `window-changes` count in the catch-up); otherwise it finishes as manifest-complete and says why.
+  - Typing in a text field that a `when` condition reads asks nothing until the field is left. The answer cache keeps 16 answers keyed by value, match values and branch values. An autocomplete dropdown keeps its message after the visible widget, and the widget gets the outline.
+
+### Fixed
+
+- **`@UVUNIQUE` on a branched rule asked the server about another branch.** The server chose the branch from the saved record while the page used the values on the form, so a selector changed and not saved yet, or a new record, got an answer for the wrong branch or none. The page now sends its branch values, as for `@UVEXISTS`.
+- **A late `@UVUNIQUE` answer could paint over the current one.** A cached answer now supersedes any request still in flight.
+- **A `@UVUNIQUE` or `@UVEXISTS` value typed and saved at once was decided before its answer arrived.** Save now re-checks and waits for it.
+- **A branch conflict in `@UVWINDOW` or `@UVEXISTS` lifted an `@UVALIDATE` block on the same field.** The conflict notice now clears only the guard of its own mode.
+- **`@UVUNIQUE` on an autocomplete dropdown put its message between the dropdown and REDCap's widget.** It now sits after the widget, which gets the outline.
+- **`@UVUNIQUE` `with` fields on another page of a multi-page survey were compared as blank.** The page leaves them out and the server reads the saved values.
 
 ### Security
 
+- **`unique-check` and `exists-check` refuse a record outside the caller's Data Access Group.** Both read saved values of the record the request names; a group user naming another group's record could learn about its values. Such requests are refused, and so is a record whose group cannot be read.
 - **`unique-check` now checks the signed-in caller's form rights and rate.** A signed-in user who could not open the form holding a `@UVUNIQUE` field (or one of its `with` fields) could still ask whether a value was used there. The endpoint now answers only about forms the user may open, and refuses when the rights cannot be read. Signed-in lookups are limited to 60 a minute per session, one budget shared with `exists-check`; the survey limits are unchanged.
 
 ### Changed

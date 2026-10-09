@@ -190,7 +190,7 @@
       "evaluator": "findingsExists",
       "refKeys": [
         {"key": "existsLocal", "kind": "fieldList", "role": "test"},
-        {"key": "existsTargets", "kind": "fieldList", "role": "test"}
+        {"key": "existsTargets", "kind": "fieldList", "role": "lookup"}
       ],
       "branchKeys": ["existsIn", "existsEvent", "existsScope", "existsMatch", "existsSurveys", "existsLocal",
                      "existsTargets"],

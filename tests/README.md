@@ -187,13 +187,17 @@ the lookup target never reaches the page config, the `exists-check` endpoint
 read; trimmed, case-sensitive comparison of stored values; dates typed as shown;
 `match` fields on and off the page; events, scopes and branches; the form-rights
 gate and the per-session throttle, both shared with `unique-check`; the survey
-opt-in and its Identifier refusal; the DAG-masked record), the audit, the scan
-index read once per rule, and the group-confined scan.
+opt-in, its Identifier refusal and its whole-field read budget; the DAG-masked
+record; a record outside the caller's group; a group caller whose read may not
+see other groups; `when` values sent from the page), the audit, the scan index
+read once per rule, and the group-confined scan.
 
 `exists_dom_js.cjs` drives the browser rule with fake timers and a stub
 transport: typing clears the answer and asks nothing, change and blur ask once,
-*could not check* never blocks, unknown answers are not cached, a late reply for
-an older value is dropped, surveys are opt-in and never see a reason.
+Save waits for an answer still on its way, *could not check* never blocks and
+is not asked again by Save, unknown answers are not cached, a late reply for an
+older value is dropped, the message follows an autocomplete widget, surveys are
+opt-in and never see a reason.
 
 ## `hook_php.php` — the audit-path contract
 

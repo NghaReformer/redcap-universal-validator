@@ -128,6 +128,8 @@ final class ScanPromotion
      *   policyRevisionNow:  ?int
      *   maxFindings:        ?int
      *   maxBytes:           ?int
+     *   crossRecordLookups: bool  a rule's verdict depends on OTHER records (@UVEXISTS)
+     *   windowChanges:      int   records the change log listed inside the window
      * }
      * @return array{ready:bool, facts:array, why:?string}
      */
@@ -186,12 +188,19 @@ final class ScanPromotion
         $truncated = (($maxR !== null && $maxR > 0 && $rows >= (int) $maxR)
                    || ($maxB !== null && $maxB > 0 && $bytes >= (int) $maxB));
 
+        $lookupsMoved = (bool) $g('crossRecordLookups', false) && (int) $g('windowChanges', 0) > 0;
+
         $facts = [
             // A proved window, and a proved window only. `fence_target` is
             // written by catch-up when the change log covered the whole run;
             // when it could not, the field stays empty and the run keeps
             // `manifest-complete`, which says exactly what it did.
-            'fenced' => !empty($run['fence_target']),
+            // A proved fence covers records that changed; it does not cover a
+            // @UVEXISTS verdict of an unchanged record whose lookup a change
+            // ELSEWHERE moved. With such rules and any change in the window,
+            // the run claims the list it read and no more.
+            'fenced' => !empty($run['fence_target']) && !$lookupsMoved,
+            'lookupsMoved' => $lookupsMoved,
             'manifestDone' => ($pending === 0),
             // Beside manifestDone deliberately: `pending === 0` over an empty
             // census is exactly what made manifestDone true, and the reader

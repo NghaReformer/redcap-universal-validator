@@ -313,6 +313,10 @@ final class ScanService
             'rollupDone'     => ($r['phase'] === ScanPhase::ROLLUP && !empty($r['done'])),
             'maxFindings'    => $policy['maxFindings'],
             'maxBytes'       => $policy['maxBytes'],
+            // A @UVEXISTS verdict depends on other records, which the catch-up
+            // does not re-check when one of them changes (ScanPromotion::facts).
+            'crossRecordLookups' => !empty($ctx['plan']['crossRecordLookups']),
+            'windowChanges'  => $this->aggregateTotal($store, $runId, CatchUp::K_WINDOW),
         ]);
         return array_merge($r, ['status' => $this->status($pid, $runId)]);
     }

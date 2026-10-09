@@ -2414,8 +2414,8 @@ namespace {
     //
     // THE BUCKET NUMBER IS DOUBLED and carries the tier in its low bit, because
     // sessioned and sessionless traffic are counted separately - see
-    // surveyRateLimited(). CLI has no session, so this is the even slot.
-    $anonSlot = ((int) floor(time() / 60)) * 2;
+    // surveyRateLimited(). CLI has no session, so this is tier 0 (RATE_TIERS).
+    $anonSlot = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS;
     $m->rateBuckets['149|' . $anonSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
@@ -2546,7 +2546,7 @@ namespace {
     @session_start();
     if (session_status() === PHP_SESSION_ACTIVE) {
         $slotOf = function ($sessioned) {
-            return ((int) floor(time() / 60)) * 2 + ($sessioned ? 1 : 0);
+            return ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + ($sessioned ? 1 : 0);
         };
         $call = function ($m, $tok) {
             return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $tok]],

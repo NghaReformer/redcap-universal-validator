@@ -923,9 +923,12 @@ Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
 `"event"` to look in one event, and `"scope":"dag"` to stay inside the record's
 Data Access Group. The page asks the server when the value is entered or
 changed, not on every keystroke, and answers found, not found, or could not
-check. "Could not check" never blocks a save; the post-save audit checks the
-value again. Users are answered only about forms they may open. Surveys need
-`"surveys":true`, which is refused when the lookup touches an Identifier field.
+check. Clicking Save re-checks the field and waits for an answer still on its
+way. "Could not check" never blocks a save; the post-save audit checks the
+value again unless a `match` field is still blank. Users are answered only
+about forms they may open, and a user in a Data Access Group only on records
+of their group. Surveys need `"surveys":true`, which is refused when the lookup
+touches an Identifier field.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 

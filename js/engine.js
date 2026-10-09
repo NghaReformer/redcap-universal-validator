@@ -1982,6 +1982,16 @@ var QRID_WHEN = (function(){
     if(el) return el.value == null ? "" : String(el.value);
     return "";
   }
+  /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
+     only values the page really has (QRID_condValues). */
+  function has(f, code){
+    if(code !== null && code !== undefined){
+      var nm = "__chk__" + f + "_RC_" + code;
+      if(document.getElementsByName && document.getElementsByName(nm).length) return true;
+      return !!(document.getElementById && document.getElementById("id-" + nm));
+    }
+    return !!findValueEl(f);
+  }
   function fire(f){
     var cbs = hooks[f];
     if(!cbs) return;
@@ -2107,6 +2117,7 @@ var QRID_WHEN = (function(){
     var refs = QRID_whenRefs(ast);
     var unknown = false;
     return {
+      refs: function(){ return refs; },
       unresolved: function(){ return unknown; },
       active: function(){
         try { var verdict = QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); unknown = verdict === null; return verdict === true; }
@@ -2125,8 +2136,45 @@ var QRID_WHEN = (function(){
       }
     };
   }
-  return { gateFor: gateFor, readRef: readRef };
+  return { gateFor: gateFor, readRef: readRef, has: has };
 })();
+/* The values this page reads for the fields its branch conditions test, sent
+   with a live lookup (unique-check, exists-check) so the server answers from
+   the branch the page is enforcing (activeRuleFor), not from the one the SAVED
+   record would select. Only fields present on the page are sent; the server
+   keeps the saved value for any other. Checkbox options go as code -> "1"/"0". */
+function QRID_condValues(variants){
+  var out = {};
+  for(var i = 0; i < variants.length; i++){
+    var g = variants[i].gate;
+    if(!g || typeof g.refs !== "function") continue;
+    var refs = g.refs();
+    for(var j = 0; j < refs.length; j++){
+      var f = refs[j][0], code = refs[j][1];
+      if(typeof f !== "string" || !QRID_WHEN.has(f, code)) continue;
+      if(code === null || code === undefined){ out[f] = QRID_WHEN.readRef(f, null); continue; }
+      if(typeof out[f] !== "object" || out[f] === null) out[f] = {};
+      out[f][code] = QRID_readCheckbox(f, code);
+    }
+  }
+  return out;
+}
+/* A small answer cache for the live lookups: the payload (value, match or
+   "with" values, branch values) -> the server's answer. Several entries, so
+   flipping a selector back and forth or retyping a value asks once. */
+function QRID_answerCache(max){
+  var map = Object.create(null), order = [];
+  return {
+    get: function(k){ return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
+    put: function(k, v){
+      if(!Object.prototype.hasOwnProperty.call(map, k)){ order.push(k); if(order.length > max) delete map[order.shift()]; }
+      map[k] = v;
+    }
+  };
+}
+/* How long a save waits on a lookup still in flight before the lookup counts
+   as unanswered (QRID_registerBlocker holds the save meanwhile). */
+var QRID_PENDING_MS = 10000;
 /* ---- optional save blocking (shared by both factories) ---------------------
    blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
@@ -2163,14 +2211,22 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
     var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
-    if(!bad.length) return;
-    var names = bad.map(function(el){ return el.__qridFieldLabel || el.__qridFieldName; }).join(", ");
-    var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
+    /* A lookup still in flight holds the save. Clicking Save blurs the field,
+       and the blur is when a lookup asks: letting the save through would
+       decide it before the answer that may block it arrives. Only items whose
+       active rule can block set __qridPending, and they drop it when the
+       answer comes or after QRID_PENDING_MS. */
+    var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
+    if(!bad.length && !pend.length) return;
+    var label = function(el){ return el.__qridFieldLabel || el.__qridFieldName; };
+    var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; })).join(", ");
+    var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
       e.preventDefault();
       if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      window.alert("Cannot save yet — please fix the flagged field(s): " + names);
-      try { bad[0].focus(); } catch(_f){}
+      window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s): " + names
+                              : "Cannot save yet — please wait a moment and save again: " + names);
+      try { (bad[0] || pend[0]).focus(); } catch(_f){}
       return;
     }
     if(window.confirm("Validation FAILED for: " + names + "\n\nSave anyway?")){
@@ -2259,6 +2315,36 @@ function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "warn" | "inf
                      : info ? QRID_OUTLINE.info
                      : ok   ? QRID_OUTLINE.ok : "";
   QRID_setInvalidState(input, bad ? true : (ok ? false : null));
+  /* An autocomplete dropdown's <select> is hidden; what the user sees is its
+     companion text input (QRID_followWidget). */
+  var comp = input.__qridCompanion;
+  if(comp && comp.style){
+    comp.style.outline = input.style.outline;
+    QRID_setInvalidState(comp, bad ? true : (ok ? false : null));
+  }
+}
+/* Autocomplete dropdowns: REDCap pairs the hidden <select> with a companion
+   text input (id rc-ac-input_<field>) that its widget finds right NEXT TO the
+   select, so a message region left after the select sits between the two
+   (reports/choices-dropdown-review-2026-09-17.md; @UVCHOICES does the same).
+   Move the region after the companion's wrapper, describe the companion, and
+   have QRID_setModeState paint the companion. The companion can render after
+   the field binds, so callers run this on every check; it does nothing once
+   done or when the field has no companion. */
+function QRID_followWidget(input, msg, fieldName){
+  if(!document.getElementById) return;
+  var ac = document.getElementById("rc-ac-input_" + fieldName);
+  if(!ac || msg.__qridBeside === ac) return;
+  msg.__qridBeside = ac;
+  input.__qridCompanion = ac;
+  var host = ac.parentNode;
+  if(host && host.parentNode) host.parentNode.insertBefore(msg, host.nextSibling);
+  if(ac.setAttribute && ac.getAttribute){
+    var desc = ac.getAttribute("aria-describedby") || "";
+    if((" " + desc + " ").indexOf(" " + msg.id + " ") < 0)
+      ac.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+  }
+  if(ac.style) ac.style.outline = input.style.outline;
 }
 function QRID_setInvalidState(input, state){  /* true | false | null (empty field) */
   if(!input.setAttribute) return;
@@ -2394,7 +2480,10 @@ function QRID_renderConflict(msg, input, act, mode){
     : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
       QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
       '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-  input.__qridInvalid = false;
+  /* The input IS the guard item of the check mode only. Every other mode keeps
+     its own guard item and releases it itself; clearing the input here lifted
+     an @UVALIDATE block that had nothing to do with this rule. */
+  if((mode || "check") === "check") input.__qridInvalid = false;
   QRID_setModeState(input, mode || "check", null);
 }
 /* NO variant is active AND the server deferred the whole rule. That is not the
@@ -3948,6 +4037,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(input.getAttribute && input.getAttribute("data-qrid-bound-q")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "q");
+    QRID_followWidget(input, msg, fieldName);
     var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
@@ -3958,13 +4048,18 @@ function QRIDUniqueInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); }
+    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); setPending(false); QRID_setModeState(input, "q", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* candidate key already asked, awaiting an answer */
-    var lastResp = null;    /* {key, resp} — one-deep answer cache. The direct input
-      listeners and the when-registry self-watch BOTH recheck on a change; the
-      cache turns the second pass (and a gate re-flip over the same value) into
-      a synchronous render instead of a duplicate server request. */
+    /* Answer cache. The direct input listeners and the when-registry self-watch
+       BOTH recheck on a change; the cache turns the second pass (and a gate
+       re-flip over the same values) into a synchronous render instead of a
+       duplicate server request. */
+    var answers = QRID_answerCache(16);
+    /* The last payload that got no usable answer: Save does not ask it again
+       (a server that cannot answer would hold every click). */
+    var failedKey = null;
     function renderResp(resp, V){
       if(resp.used){
         styleMsg(msg, false);
@@ -3983,10 +4078,11 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
     }
     var activeVariant = null;
-    function check(){
+    function check(saving){
+      QRID_followWidget(input, msg, fieldName);
       var act = QRID_activeVariants(VS);
       var nextVariant = act.length === 1 ? act[0] : null;
-      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; lastResp = null; activeVariant = nextVariant; }
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; setPending(false); activeVariant = nextVariant; }
       if(!act.length){
         /* inert — unless no branch could be CHOSEN at all (M-01). */
         if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "q")){ setGuard(false); QRID_setModeState(input, "q", null); return; }
@@ -4019,15 +4115,25 @@ function QRIDUniqueInit(QRID_CONFIG){
         }
         return;
       }
-      var payload = { field: fieldName, values: {} };
+      var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
       for(var wi = 0; wi < V.uniqueWith.length; wi++){
         var w = V.uniqueWith[wi];
+        /* A "with" field this page does not carry is left out: the server
+           reads its saved value (another form, or another survey page). */
+        if(!QRID_WHEN.has(w, null)) continue;
         payload.values[w] = String(QRID_WHEN.readRef(w, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
       }
-      var key = JSON.stringify(payload.values);
-      if(lastResp && lastResp.key === key){ renderResp(lastResp.resp, V); return; }  /* cached answer */
+      var key = JSON.stringify([payload.values, payload.cond]);
+      var cached = answers.get(key);
+      if(cached){
+        /* A cached answer is the latest word: an older request still in
+           flight must not paint over it when it lands. */
+        ++seq; pendingKey = null; setPending(false);
+        renderResp(cached, V); return;
+      }
       if(pendingKey === key) return;                    /* already asked; the answer will render */
+      if(saving === true && failedKey === key){ ++seq; pendingKey = null; inert(); return; }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
@@ -4035,20 +4141,25 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var my = ++seq;
       pendingKey = key;
-      /* pending: informative, never blocking (fail open if no answer comes) */
+      /* pending: informative, and it holds a save click until the answer
+         comes (fail open if none comes within QRID_PENDING_MS) */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking whether this value is already recorded&hellip;";
       QRID_setModeState(input, "q", "info");
       setGuard(false);
+      setPending(V.blockSave !== "off");
       QRID_setModeState(input, "q", null);
+      setTimeout(function(){ if(my === seq && pendingKey === key){ ++seq; pendingKey = null; failedKey = key; inert(); } }, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
+        setPending(false);
         if(err || !resp || resp.error || typeof resp.used === "undefined"){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          failedKey = key;
           inert(); return;       /* fail open; the server audit is the net */
         }
-        lastResp = { key: key, resp: resp };
+        answers.put(key, resp);
         renderResp(resp, V);
       }
       try {
@@ -4066,6 +4177,9 @@ function QRIDUniqueInit(QRID_CONFIG){
       input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
       input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
     }
+    /* Save re-judges the field first: a change no event reported (REDCap's
+       radio "reset" link) must not leave a stale verdict deciding the save. */
+    if(GITEM) GITEM.__qridRecheck = function(){ if(debounced.cancel) debounced.cancel(); check(true); };
     /* watch the field itself and every composite member through the shared
        when-registry (same trick as QRIDRequiredInit — wiring only) */
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
@@ -4156,6 +4270,7 @@ function QRIDExistsInit(QRID_CONFIG){
     if(input.getAttribute && input.getAttribute("data-qrid-bound-x")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-x", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "x");
+    QRID_followWidget(input, msg, fieldName);
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
@@ -4165,19 +4280,27 @@ function QRIDExistsInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "x", null); }
+    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* payload already asked, awaiting an answer */
-    var lastResp = null;    /* {key, resp}: one-deep cache of found / not-found answers */
+    var answers = QRID_answerCache(16);   /* found / not-found answers only */
+    /* The last payload that got no usable answer (unknown, an error, or none
+       in time), and why. Save does not ask it again: a server that cannot
+       answer would otherwise hold every click for another QRID_PENDING_MS. */
+    var unanswered = { key: null, why: null };
     var dirty = {};         /* field name => typed since its last change/blur */
     function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
+    /* No promise about later: when the reason is a blank "match" field the
+       save has nothing to check either. */
     function unknown(V, why){
       if(QRID_IS_SURVEY){ inert(); return; }
       styleMsg(msg, "warn");
       QRID_setModeState(input, "x", "warn");
       setGuard(false);
+      setPending(false);
       msg.innerHTML = "&#9888; Could not check this value just now" +
-        (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ". It is checked again after saving.";
+        (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
     }
     function renderResp(resp, V){
       if(resp.state === "found"){
@@ -4197,20 +4320,21 @@ function QRIDExistsInit(QRID_CONFIG){
       }
     }
     var activeVariant = null;
-    function check(){
+    function check(saving){
+      QRID_followWidget(input, msg, fieldName);
       var act = QRID_activeVariants(VS);
       var nextVariant = act.length === 1 ? act[0] : null;
-      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; lastResp = null; activeVariant = nextVariant; }
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; setPending(false); activeVariant = nextVariant; }
       if(!act.length){
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "x")){ setGuard(false); QRID_setModeState(input, "x", null); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "x")){ setGuard(false); setPending(false); QRID_setModeState(input, "x", null); return; }
         inert(); return;
       }
-      if(act.length > 1){ QRID_renderConflict(msg, input, act, "x"); setGuard(false); return; }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "x"); setGuard(false); setPending(false); return; }
       var V = act[0];
       if(V.deferred){
         if(V.deferredWhy && !QRID_IS_SURVEY){
           QRID_renderDeferralNotice(msg, input, V.deferredWhy, "x");
-          setGuard(false); QRID_setModeState(input, "x", null);
+          setGuard(false); setPending(false); QRID_setModeState(input, "x", null);
           return;
         }
         inert(); return;
@@ -4219,19 +4343,28 @@ function QRIDExistsInit(QRID_CONFIG){
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = trim(QRID_WHEN.readRef(fieldName, null));
       if(val === ""){ ++seq; pendingKey = null; inert(); return; }
-      var payload = { field: fieldName, values: {} };
+      var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
       for(var li = 0; li < V.locals.length; li++){
         var lf = V.locals[li];
-        var onPage = !!QRID_findAnchor(lf);
+        /* A match field this page does not carry (another form, another
+           survey page) is left out: the server reads its saved value. */
+        if(!QRID_WHEN.has(lf, null)) continue;
         var lv = trim(QRID_WHEN.readRef(lf, null));
         /* A match field on this page that is blank: nothing to narrow by yet. */
-        if(onPage && lv === ""){ ++seq; pendingKey = null; inert(); return; }
-        payload.values[lf] = onPage ? lv : "";
+        if(lv === ""){ ++seq; pendingKey = null; inert(); return; }
+        payload.values[lf] = lv;
       }
-      var key = JSON.stringify(payload.values);
-      if(lastResp && lastResp.key === key){ renderResp(lastResp.resp, V); return; }
+      var key = JSON.stringify([payload.values, payload.cond]);
+      var cached = answers.get(key);
+      if(cached){
+        /* A cached answer is the latest word: an older request still in
+           flight must not paint over it when it lands. */
+        ++seq; pendingKey = null; setPending(false);
+        renderResp(cached, V); return;
+      }
       if(pendingKey === key) return;
+      if(saving === true && unanswered.key === key){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
@@ -4239,19 +4372,31 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       var my = ++seq;
       pendingKey = key;
-      /* pending: informative, never blocking */
+      /* pending: informative, and it holds a save click until the answer
+         comes; no answer within QRID_PENDING_MS counts as "could not check" */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
+      setPending(V.blockSave !== "off");
+      setTimeout(function(){
+        if(my === seq && pendingKey === key){
+          ++seq; pendingKey = null;
+          unanswered = { key: key, why: "no answer from the server" };
+          unknown(V, unanswered.why);
+        }
+      }, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;
         pendingKey = null;
+        setPending(false);
         if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          unanswered = { key: key, why: null };
           unknown(V, null); return;
         }
-        if(resp.state !== "unknown") lastResp = { key: key, resp: resp };
+        if(resp.state !== "unknown") answers.put(key, resp);
+        else unanswered = { key: key, why: resp.why || null };
         renderResp(resp, V);
       }
       try {
@@ -4275,6 +4420,11 @@ function QRIDExistsInit(QRID_CONFIG){
       el.addEventListener("blur", settleNow);
     }
     watchTyping(fieldName, input);
+    /* Save re-judges the field first, typing or not: the click ends the
+       typing, and a change no event reported (REDCap's radio "reset" link)
+       must not leave a stale verdict deciding the save. A value with no
+       answer yet is asked now, and the guard holds the save until it lands. */
+    if(GITEM) GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
     /* Anything else that changes (REDCap's date picker or autocomplete without
        a native event, a "match" field, a "when" field) reaches the shared
        when-registry. Asked after a pause, and only when nobody is typing. */
@@ -4282,7 +4432,21 @@ function QRIDExistsInit(QRID_CONFIG){
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
     if(selfWatch) selfWatch.onChange(settle);
     for(var vi = 0; vi < VS.all.length; vi++){
-      if(VS.all[vi].gate) VS.all[vi].gate.onChange(settle);
+      if(VS.all[vi].gate){
+        VS.all[vi].gate.onChange(settle);
+        /* Typing in a text field a "when" condition reads is typing too. */
+        var grefs = VS.all[vi].gate.refs ? VS.all[vi].gate.refs() : [];
+        for(var gr = 0; gr < grefs.length; gr++){
+          var gname = grefs[gr][0];
+          if(grefs[gr][1] !== null || typeof gname !== "string" || Object.prototype.hasOwnProperty.call(dirty, gname)) continue;
+          var gel = QRID_findAnchor(gname);
+          var gtag = gel ? (gel.tagName || "").toLowerCase() : "";
+          var gty = gel ? (gel.type || "").toLowerCase() : "";
+          if(gtag === "textarea" || (gtag === "input" && gty !== "hidden" && gty !== "radio" && gty !== "checkbox")){
+            dirty[gname] = false; watchTyping(gname, gel);
+          }
+        }
+      }
       for(var lj = 0; lj < VS.all[vi].locals.length; lj++){
         var lname = VS.all[vi].locals[lj];
         if(!Object.prototype.hasOwnProperty.call(dirty, lname)){ dirty[lname] = false; watchTyping(lname, QRID_findAnchor(lname)); }

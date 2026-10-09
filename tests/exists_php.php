@@ -14,6 +14,12 @@
  *     lookup reported as a rule problem and never as a pass,
  *   - the scan: one read of the searched field per rule and request, and a
  *     group-confined scan reporting a cross-group rule as not evaluated.
+ *   - the 2.3.0 review fixes: the page's branch values pick the branch, a
+ *     DAG-confined read never answers "not found", exact storage kinds, the
+ *     durable scan's coverage, the index's size, the caller's record must be
+ *     in their group, the survey whole-field read budget, survey-safe errors,
+ *     scan mode carried per call, fields the page leaves out read as saved,
+ *     and the reverse dependencies of "match" fields.
  *
  * Run:  php tests/exists_php.php
  */
@@ -41,6 +47,21 @@ namespace ExternalModules {
         public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
+        /** The rate-bucket table only, as in hook_php.php. */
+        public $rateBuckets = [];
+        public $lastInsertId = 0;
+        public $queryThrows = false;
+        public function query($sql, $params = []) {
+            if ($this->queryThrows) throw new \RuntimeException('no table');
+            if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
+            if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
+            if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0) {
+                $k = (int) $params[0] . '|' . (int) $params[1];
+                $this->rateBuckets[$k] = isset($this->rateBuckets[$k]) ? $this->rateBuckets[$k] + 1 : 1;
+                $this->lastInsertId = $this->rateBuckets[$k];
+            }
+            return [];
+        }
         public function getUser() {
             $u = isset($GLOBALS['__TEST_USER']) ? $GLOBALS['__TEST_USER'] : null;
             return $u === null ? null : new TestUser($u);
@@ -77,9 +98,18 @@ namespace {
         public static $failAll = false;
         /** A build that hands back every event although one was asked for. */
         public static $ignoreEvents = false;
+        /** Reads confined to one Data Access Group, as for a user in that group. */
+        public static $confineTo = null;
         public static function reset() {
             self::$calls = [];
             self::$narrowLies = self::$failFull = self::$failAll = self::$ignoreEvents = false;
+            self::$confineTo = null;
+        }
+        private static function dagOf(array $node) {
+            foreach ($node as $k => $v) {
+                if ($k !== 'repeat_instances' && is_array($v) && isset($v['redcap_data_access_group'])) return $v['redcap_data_access_group'];
+            }
+            return '';
         }
         public static function getData($p) {
             self::$calls[] = $p;
@@ -90,6 +120,7 @@ namespace {
             if (!$filtered && self::$failFull && empty($p['records'])) throw new \RuntimeException('simulated full-read failure');
             $out = [];
             foreach (self::$data as $rec => $node) {
+                if (self::$confineTo !== null && self::dagOf($node) !== self::$confineTo) continue;
                 if (!empty($p['records']) && !in_array((string) $rec, array_map('strval', $p['records']), true)) continue;
                 if (!empty($p['events']) && !self::$ignoreEvents) {
                     $keep = array_map('strval', $p['events']);
@@ -190,6 +221,16 @@ namespace {
         'res_both'    => f('result', '@UVEXISTS=[specimen_id] @UVUNIQUE'),
         'res_rec_dag' => f('result', '@UVEXISTS={"in":"record","scope":"dag"}'),
         'lab_uniq'    => f('lab_reg', '@UVUNIQUE'),
+        'spec_dt'     => f('lab_reg', '', 'datetime_seconds_ymd'),
+        'spec_tm'     => f('lab_reg', '', 'time_hh_mm_ss'),
+        'bad_dt'      => f('result', '@UVEXISTS=[spec_dt]', 'datetime_ymd'),
+        'bad_tm'      => f('result', '@UVEXISTS=[spec_tm]', 'time'),
+        'res_dt'      => f('result', '@UVEXISTS=[spec_dt]', 'datetime_seconds_mdy'),
+        'res_br2'     => f('result', '@UVEXISTS={"in":"[specimen_id]","when":"[home_site]=\'A\'"} '
+                                   . '@UVEXISTS={"in":"[site_code]","when":"[home_site]=\'B\'"}'),
+        'res_ubr'     => f('result', '@UVUNIQUE={"when":"[res_site]=\'A\'","blockSave":"hard"} '
+                                   . '@UVUNIQUE={"when":"[res_site]=\'B\'"}'),
+        'res_uw'      => f('result', '@UVUNIQUE={"with":["res_site"]}'),
     ];
     $DATA = [
         '1' => [351 => ['record_id' => '1', 'home_site' => 'A', 'specimen_id' => ' SP-1 ', 'site_code' => 'A',
@@ -286,7 +327,12 @@ namespace {
     check('"in" itself refused', strpos($cerr('bad_self'), '"in" names this field itself') !== false);
     check('unknown "in" field refused', strpos($cerr('bad_nofield'), '"in" field "nope" is not a field') !== false);
     check('checkbox "in" field refused', strpos($cerr('bad_multi'), 'is a checkbox field') !== false);
-    check('date searched from a plain text field refused', strpos($cerr('bad_family'), '"spec_date" holds dates and "bad_family" holds no date') !== false);
+    check('date searched from a plain text field refused', strpos($cerr('bad_family'), '"spec_date" holds dates and "bad_family" holds no date or time') !== false);
+    check('datetime to the second searched from one to the minute: refused (never equal as stored)',
+        strpos($cerr('bad_dt'), '"spec_dt" holds dates with a time to the second and "bad_dt" holds dates with a time to the minute') !== false);
+    check('time to the second searched from one to the minute: refused',
+        strpos($cerr('bad_tm'), '"spec_tm" holds times to the second and "bad_tm" holds times to the minute') !== false);
+    check('same storage kind in another display order: allowed', $cerr('res_dt') === '');
     check('unknown event refused', strpos($cerr('bad_event'), '"event" "nowhere_arm_1" is not an event') !== false);
     check('match by the field itself refused', strpos($cerr('bad_local'), 'uses this field itself') !== false);
     check('notes field refused by eligibility', strpos($cerr('bad_notes'), 'does not support "notes" fields') !== false);
@@ -417,16 +463,18 @@ namespace {
     check('findExisting: ...and a set one answers', $fe->invoke($m, 149, $rule, 'SP-2', ['res_site' => 'B'], 351, null, true)['state'] === 'found');
     $r = ask(mod(), 'res_spec', ['res_spec' => 'SP-2'], '1', 7);
     check('a user in another group gets found, without the record', $r === ['state' => 'found', 'record' => null]);
-    $r = ask(mod(), 'res_spec', ['res_spec' => 'SP-2'], '1', 8);
+    $r = ask(mod(), 'res_spec', ['res_spec' => 'SP-2'], '2', 8);
     check('a user in the record\'s group gets the record', $r === ['state' => 'found', 'record' => '2']);
 
     $m = mod('nurse', $NOLAB);
     $r = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
     check('no rights to the searched form: unknown, nothing read', ($r['state'] ?? null) === 'unknown'
-        && strpos($r['why'], '[specimen_id]') !== false && \REDCap::$calls === []);
+        && strpos($r['why'], 'every form this lookup reads') !== false && \REDCap::$calls === []);
+    check('...and the reason does not name the searched field', strpos($r['why'], 'specimen') === false);
     $m = mod('nurse', ['nurse' => ['forms' => ['enrol' => '0', 'lab_reg' => '1', 'result' => '1']]]);
     $r = ask($m, 'res_off', ['res_off' => 'SP-1']);
-    check('no rights to an off-page match field: unknown', ($r['state'] ?? null) === 'unknown' && strpos($r['why'], '[home_site]') !== false);
+    check('no rights to an off-page match field: unknown', ($r['state'] ?? null) === 'unknown'
+        && strpos($r['why'], 'every form this lookup reads') !== false && strpos($r['why'], 'home_site') === false);
     $m = mod('nurse', []);
     $r = ask($m, 'res_spec', ['res_spec' => 'SP-2']);
     check('rights that cannot be read: unknown (fail closed)', ($r['state'] ?? null) === 'unknown');
@@ -557,6 +605,171 @@ namespace {
     $own = $plan->invoke($m, 149, [])['ownership'];
     check('scan entitlement: the searched and match fields are owned by their form',
         ($own['specimen_id'] ?? null) === 'lab_reg' && ($own['site_code'] ?? null) === 'lab_reg' && ($own['home_site'] ?? null) === 'enrol');
+
+    // ---- 7) review fixes (2.3.0) --------------------------------------------------------
+    /** Any live call, with an optional "cond" part. */
+    $call = function ($m, $action, $field, array $values, array $extra = [], $record = '1', $group = null, $user = 'nurse', $hash = null) {
+        return $m->redcap_module_ajax($action, ['field' => $field, 'values' => $values] + $extra,
+            149, $record, 'result', 351, 1, $hash, null, null, '', '', $user, $group);
+    };
+    $BR = $DATA; $BR['1'][351]['res_site'] = 'A'; $BR['2'][351]['res_site'] = 'B';
+
+    // S1: the branch the page enforces is the branch the server answers from.
+    $m = mod(); \REDCap::$data = $BR;
+    $r = $call($m, 'exists-check', 'res_br', ['res_br' => 'B'], ['cond' => ['res_site' => 'B']]);
+    check('cond: an unsaved selector change picks the branch (B looks in site_code)', ($r['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $BR;
+    $r = $call($m, 'exists-check', 'res_br', ['res_br' => 'SP-2'], ['cond' => ['res_site' => 'A']], '');
+    check('cond: a new record is answered from the page\'s branch', ($r['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $BR;
+    check('no cond on a new record: no branch, nothing to answer', isset($call($m, 'exists-check', 'res_br', ['res_br' => 'SP-2'], [], '')['error']));
+    $m = mod(); \REDCap::$data = $BR;
+    $r = $call($m, 'exists-check', 'res_br2', ['res_br2' => 'SP-1'], ['cond' => ['home_site' => 'B']]);
+    check('cond: a field of another form keeps its saved value (branch A, specimen_id)', ($r['state'] ?? null) === 'found');
+    foreach ([['cond' => 'x'], ['cond' => array_fill_keys(array_map(function ($i) { return 'f' . $i; }, range(1, 41)), 'x')],
+              ['cond' => ['Bad-Key' => 'x']], ['cond' => ['res_site' => ['1' => ['deep']]]], ['cond' => ['res_site' => str_repeat('x', 1025)]]] as $i => $bad) {
+        check('cond: malformed part ' . $i . ' refused', ($call(mod(), 'exists-check', 'res_spec', ['res_spec' => 'SP-2'], $bad)['error'] ?? null) === 'malformed request');
+    }
+    $lc = new \ReflectionMethod(mod(), 'liveCondValues'); $lc->setAccessible(true);
+    $mm = mod();
+    check('cond: a checkbox arrives as code => 1/0, other fields of the form are dropped',
+        $lc->invoke($mm, ['cond' => ['res_site' => ['1' => '1', '2' => 'x'], 'specimen_id' => 'SP-1']], 149, 'result') === ['res_site' => ['1' => '1', '2' => '0']]);
+    $m = mod(); \REDCap::$data = $BR;
+    check('unique-check: no cond on a new record, no branch', ($call($m, 'unique-check', 'res_ubr', ['res_ubr' => 'U-1'], [], '')['error'] ?? null) === 'not a checkable field');
+    $m = mod(); \REDCap::$data = $BR;
+    check('unique-check: the page\'s branch values are honoured too', isset($call($m, 'unique-check', 'res_ubr', ['res_ubr' => 'U-1'], ['cond' => ['res_site' => 'A']], '')['used']));
+
+    // S2: a DAG-confined read never turns into "not found".
+    $m = mod(); \REDCap::$confineTo = 'north';
+    $r = ask($m, 'res_spec', ['res_spec' => 'SP-2'], '1', 7);
+    check('dag read: a value saved only in another group is unknown, not not-found', ($r['state'] ?? null) === 'unknown'
+        && strpos($r['why'], 'another Data Access Group') !== false);
+    $m = mod(); \REDCap::$confineTo = 'north';
+    check('dag read: a value in the caller\'s own group is still found', (ask($m, 'res_spec', ['res_spec' => 'SP-1'], '1', 7)['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$confineTo = 'north';
+    check('dag read: a record ID of another group is unknown too', (ask($m, 'res_rec', ['res_rec' => '2'], '1', 7)['state'] ?? null) === 'unknown');
+    $m = mod(); \REDCap::$confineTo = 'north';
+    check('dag read: "scope":"dag" never needed the other groups', (ask($m, 'res_dag', ['res_dag' => 'SP-404'], '1', 7)['state'] ?? null) === 'not-found');
+    check('dag read: reads that see the other groups keep "not found"', (ask(mod(), 'res_spec', ['res_spec' => 'SP-404'], '1', 7)['state'] ?? null) === 'not-found');
+    check('dag read: a caller in no group keeps "not found"', (ask(mod(), 'res_spec', ['res_spec' => 'SP-404'], '1', null)['state'] ?? null) === 'not-found');
+    $AG = $DATA; $AG['1'][351] += ['res_spec' => 'SP-2'];
+    $m = mod(); \REDCap::$data = $AG; \REDCap::$confineTo = 'north';
+    $m->redcap_save_record(149, '1', 'result', 351, 7, null, null, 1);
+    check('dag audit: no violation from a confined read', !array_filter(findings($m), function ($e) { return $e['field'] === 'res_spec'; }));
+    check('dag audit: ...a rule problem that says why', (bool) array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) {
+        return strpos($e['fields'], 'res_spec') !== false && strpos($e['why'], 'another Data Access Group') !== false; }));
+
+    // S5: the index keeps one hit per (group, event) under a key.
+    $IX = $DATA;
+    for ($i = 4; $i <= 60; $i++) $IX[(string) $i] = [351 => ['record_id' => (string) $i, 'site_code' => 'B', 'redcap_data_access_group' => 'south']];
+    $IX['1'][351]['res_drop'] = 'B';   // one lookup builds the index
+    $m = mod(); \REDCap::$data = $IX;
+    $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $ip = new \ReflectionProperty($m, 'existsIndexes'); $ip->setAccessible(true);
+    $siteIdx = null;
+    foreach ($ip->getValue($m) as $k => $idx) if (is_array($idx) && strpos($k, '"site_code"') !== false) $siteIdx = $idx;
+    check('index: 58 records sharing a value cost one entry per (group, event)', $siteIdx !== null && count($siteIdx['B']) === 2);
+    check('index: the key names the project', (bool) array_filter(array_keys($ip->getValue($m)), function ($k) { return strpos($k, '[149,') === 0; }));
+
+    // S6 + S4: a group-confined scan does not evaluate what it says it cannot.
+    $SG = $SC; $SG['1'][351]['res_spec'] = 'SP-404';
+    $m = mod(); \REDCap::$data = $SG;
+    $res = $m->scanProject(149, 7, 200, null, ['valueCeiling' => 'raw']);
+    check('group scan: no findings from a rule reported as not evaluated',
+        !array_filter($res['violations'], function ($v) { return in_array($v['field'], ['res_spec', 'res_m', 'res_rec'], true); }));
+    $planOf = function ($m, $dag = null) { $p = new \ReflectionMethod($m, 'scanPlan'); $p->setAccessible(true); return $p->invoke($m, 149, [], $dag); };
+    check('plan: a project with @UVEXISTS rules has cross-record lookups', $planOf(mod())['crossRecordLookups'] === true);
+    check('plan: so does a group scan that still evaluates a "scope":"dag" rule', $planOf(mod(), 7)['crossRecordLookups'] === true);
+    $D5 = array_filter($DICT, function ($f) { return strpos($f['field_annotation'], '@UVEXISTS') === false; });
+    check('plan: a project without them has none', $planOf(mod('nurse', null, $D5))['crossRecordLookups'] === false);
+    $P = \INSPIRE\UniversalValidator\Scan\ScanPromotion::class; $O = \INSPIRE\UniversalValidator\Scan\ScanOutcome::class;
+    $run = ['fence_target' => '500', 'manifest_total' => 3, 'detail_rows' => 0, 'detail_bytes' => 0];
+    $ok = ['uniqueDone' => true, 'rollupDone' => true];
+    $f = $P::facts($run, [\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE => 3], $ok + ['crossRecordLookups' => true, 'windowChanges' => 2]);
+    $o = $O::derive($f['facts']);
+    check('promotion: lookups + changes in the window cap the run at manifest-complete', $o['coverage'] === $O::MANIFEST
+        && strpos($o['why'], '@UVEXISTS') !== false);
+    $f = $P::facts($run, [\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE => 3], $ok + ['crossRecordLookups' => true, 'windowChanges' => 0]);
+    check('promotion: lookups with no change in the window keep the fence', $O::derive($f['facts'])['coverage'] === $O::FENCED);
+    $f = $P::facts($run, [\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE => 3], $ok + ['windowChanges' => 5]);
+    check('promotion: changes without lookups keep the fence', $O::derive($f['facts'])['coverage'] === $O::FENCED);
+    // Wiring pin: the durable worker hands both facts to promotion (the path
+    // needs a database, so the matrix runs it; this keeps the hand-off honest).
+    $svcSrc = file_get_contents(__DIR__ . '/../php/Scan/ScanService.php');
+    check('durable scan: promotion is told about cross-record lookups and window changes',
+        strpos($svcSrc, "'crossRecordLookups' => !empty(\$ctx['plan']['crossRecordLookups'])") !== false
+        && strpos($svcSrc, "'windowChanges'  => \$this->aggregateTotal(\$store, \$runId, CatchUp::K_WINDOW)") !== false);
+
+    // S7: the record a DAG user names must be in their group.
+    $m = mod();
+    $r = ask($m, 'res_off', ['res_off' => 'SP-1'], '2', 7);
+    check('record of another group: unknown', ($r['state'] ?? null) === 'unknown' && strpos($r['why'], 'not in your Data Access Group') !== false);
+    check('...and none of its values was read', !array_filter(\REDCap::$calls, function ($c) {
+        return ($c['records'] ?? null) === ['2'] && ($c['fields'] ?? null) !== ['record_id']; }));
+    check('record of another group: unique-check refuses', ($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '2', 7)['error'] ?? null) === 'record not available');
+    check('a record of an unreadable group name: refused', ($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '1', 99)['error'] ?? null) === 'record not available');
+    check('a record not saved yet: answered', isset($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], 'NEW-1', 7)['used']));
+    check('a caller in no group: never refused', isset($call(mod(), 'unique-check', 'res_uniq', ['res_uniq' => 'U-1'], [], '2', null)['used']));
+
+    // S8: an unauthenticated miss costs a whole-field read, within a budget.
+    $m = mod(null);
+    $r = askSurvey($m, 'res_s', ['res_s' => 'SP-404']);
+    check('survey budget: a miss within the budget is answered', $r === ['state' => 'not-found', 'record' => null]);
+    $tier2 = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + 2;
+    $m->rateBuckets['149|' . $tier2] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    \REDCap::$calls = [];
+    $r = askSurvey($m, 'res_s', ['res_s' => 'SP-405']);
+    check('survey budget: past it, a miss is unknown and nothing more is read', ($r['state'] ?? null) === 'unknown' && fullReads() === 0);
+    check('survey budget: a hit needs no whole-field read and is still answered', (askSurvey($m, 'res_s', ['res_s' => 'SP-2'])['state'] ?? null) === 'found');
+    $m = mod(null); $m->queryThrows = true;
+    check('survey budget: a counter that cannot be kept refuses the read (fail closed)', (askSurvey($m, 'res_s', ['res_s' => 'SP-404'])['state'] ?? null) === 'unknown');
+    $m = mod(); $m->rateBuckets['149|' . $tier2] = 10000;
+    check('survey budget: staff are not on it', (ask($m, 'res_spec', ['res_spec' => 'SP-404'])['state'] ?? null) === 'not-found');
+
+    // S9: a survey page never learns where a misconfigured rule looks.
+    $ps = page(mod(null), 'survey', '1', 'result');
+    $leaks = array_filter(['nat_id', 'nowhere_arm_1', 'spec_date', 'specimen_id', 'spec_tick', 'spec_dt'], function ($w) use ($ps) { return strpos($ps['html'], $w) !== false; });
+    check('survey page: no configuration error names a field or event the lookup reads', !$leaks);
+    if ($leaks) { foreach ($leaks as $w) { $at = strpos($ps['html'], $w); fwrite(STDERR, "LEAK $w: " . substr($ps['html'], max(0, $at - 200), 300) . "
+"); } }
+    $rb = ruleFor($ps, 'bad_ident');
+    check('survey page: the rule still says it is misconfigured', $rb && !empty($rb['configError']));
+    check('data entry page: staff still get the detail', strpos(ruleFor(page(mod(), 'form', '1', 'result'), 'bad_event')['configError'], 'nowhere_arm_1') !== false);
+
+    // S10: a scan's index never answers a later call in the same instance.
+    $m = mod(); \REDCap::$data = $SC;
+    $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $later = $SC; $later['3']['repeat_instances'][351]['lab_reg'][2] = ['specimen_id' => 'SP-77', 'site_code' => 'C'];
+    $later['1'][351]['res_spec'] = 'SP-77';
+    \REDCap::$data = $later; $m->logCalls = [];
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    check('after a scan, the audit reads what is saved now', !array_filter(findings($m), function ($e) { return $e['field'] === 'res_spec'; }));
+
+    // J6: a field the page leaves out is read as saved.
+    $m = mod(); \REDCap::$data = $BR;
+    check('match field of this form left out (another survey page): its saved value is used',
+        (ask($m, 'res_m', ['res_m' => 'SP-2'], '2')['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $BR;
+    check('match field of this form sent blank: nothing to match yet', (ask($m, 'res_m', ['res_m' => 'SP-2', 'res_site' => ''], '2')['state'] ?? null) === 'unknown');
+    $UW = $BR; $UW['2'][351]['res_uw'] = 'U-9';
+    $m = mod(); \REDCap::$data = $UW;
+    check('unique "with" field left out: its saved value decides (used with B)',
+        ($call($m, 'unique-check', 'res_uw', ['res_uw' => 'U-9'], [], '3')['used'] ?? null) === false);
+    $UW['3'][351]['res_site'] = 'B';
+    $m = mod(); \REDCap::$data = $UW;
+    check('unique "with" field left out: ...the same saved B collides', ($call($m, 'unique-check', 'res_uw', ['res_uw' => 'U-9'], [], '3')['used'] ?? null) === true);
+
+    // J7: saving the form of a "match" field re-audits the lookup; saving the
+    // form it searches does not (a value there moves other records, not this one).
+    $RD = $DATA; $RD['1'][351] += ['res_off' => 'SP-1', 'res_spec' => 'SP-404']; $RD['1'][351]['home_site'] = 'B';
+    $m = mod(); \REDCap::$data = $RD;
+    $m->redcap_save_record(149, '1', 'enrol', 351, null, null, null, 1);
+    check('reverse dependency: saving the "match" field\'s form re-audits the lookup',
+        (bool) array_filter(findings($m), function ($e) { return $e['field'] === 'res_off' && $e['reason'] === 'not-found'; }));
+    $m = mod(); \REDCap::$data = $RD;
+    $m->redcap_save_record(149, '1', 'lab_reg', 351, null, null, null, 1);
+    check('reverse dependency: saving the searched form does not re-audit this record\'s lookups',
+        !array_filter(findings($m), function ($e) { return $e['field'] === 'res_spec'; }));
 
     echo "exists_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

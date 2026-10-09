@@ -1167,6 +1167,16 @@ namespace INSPIRE\UniversalValidator\Scan {
     $r = $cu->step(800, $runId, $epoch, 100);
     check('catchup: a change already inside the reading we have is not re-read',
         $r['requeued'] === 0);
+    // ...but it is still a change in the window, and a verdict that reads OTHER
+    // records (@UVEXISTS) may have moved with it: counted once, round 1 only.
+    $windowChanges = function ($store, $runId) {
+        $c = 0;
+        foreach ($store->aggregates($runId) as $a) if ($a['kind'] === CatchUp::K_WINDOW) $c += (int) $a['cnt'];
+        return $c;
+    };
+    check('catchup: every change in the window is counted, settled ones included', $windowChanges($store, $runId) === 2);
+    $cu->step(800, $runId, $epoch, 100);
+    check('catchup: walking to the end of the round adds nothing', $windowChanges($store, $runId) === 2);
 
     // CREATED DURING THE RUN -> added. This is C3: without it the run certifies
     // a project containing a record it provably never examined.

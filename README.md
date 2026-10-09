@@ -577,30 +577,57 @@ the specimen ID on the collection form.
   `blockSave`, `surveys`.
 - **Exact comparison of stored values.** Trimmed and case-sensitive. A date is
   compared as REDCap stores it (Y-M-D), whatever format the field shows, so the
-  searched field and the field itself must hold the same kind of date (or both
-  none). Dropdown and radio values are compared by code.
+  searched field and the field itself must be stored the same way: both dates,
+  both datetimes to the minute, both datetimes to the second, both times of the
+  same precision, or neither a date nor a time. Dropdown and radio values are
+  compared by code.
 - **Asked on change, not per keystroke.** The page asks the server when the value
   is entered or changed, and once when the form opens. Typing clears the
-  previous answer. The answer is *found* (green), *not found* (red, enforced per
-  `blockSave`) or *could not check* (amber, never blocks): a failed read, a
-  `match` field that is blank on another form, or a busy server all answer
-  *could not check*. Where the rule looks is never sent to the page.
+  previous answer, typing in a text field a `when` condition reads included.
+  The answer is *found* (green), *not found* (red, enforced per `blockSave`) or
+  *could not check* (amber, never blocks): a failed read, a `match` field that is
+  blank on another form, or a busy server all answer *could not check*.
+- **Save waits for the answer.** Clicking Save re-checks the field first. A value
+  typed and saved at once is asked before the save is decided, and while an
+  answer is on its way the save is held ("still being checked"). After 10
+  seconds without an answer the value counts as *could not check* and the save
+  goes through.
+- **Branches.** With several `when` branches, the page sends the values its
+  conditions read, so the server answers from the branch the page is enforcing,
+  also on a record not saved yet.
+- **The page config never says where the rule looks.** `in`, `event`, `scope`
+  and `match` stay on the server, which reads them from the stored rule. On a
+  survey a misconfigured rule shows only a general notice, and the "no access"
+  reason staff see does not name a form or field.
 - **Who gets an answer.** Signed-in users are answered only when they may open
   every form the lookup reads (the searched field and the `match` fields; a
   record-ID lookup needs no extra form), and at most 60 lookups a minute per
-  session, shared with `@UVUNIQUE`. Staff see the record the value was found in
-  unless they are in a Data Access Group and the record is not; a record-ID
-  lookup never echoes a record.
+  session, shared with `@UVUNIQUE`. A user in a Data Access Group is answered
+  only on records of their own group. Staff in no group see the record the value
+  was found in; staff in a group see it only when it is in their group. A
+  record-ID lookup never names a record.
+- **Data Access Groups.** REDCap may confine a group user's reads to their own
+  group. A *not found* from a rule that looks across groups is therefore kept
+  only when the module sees records of other groups in the same request;
+  otherwise the answer is *could not check*, and the post-save audit reports a
+  rule problem instead of a violation.
 - **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
   check on surveys, answered as found / not found only, under the survey
   throttle. It is refused when any field the lookup touches is an Identifier
   (the field, the `match` fields, the searched field, or the record-ID field for
-  a record-ID lookup), and when the Identifier flags cannot be read.
-- **Audited.** The post-save audit logs `type: exists`, reason `not-found`. The
-  Validation scan reads the searched field once per rule and checks every record
-  against it. A lookup that cannot be completed is reported as a rule problem,
-  never as a pass. A scan confined to one Data Access Group does not evaluate a
-  rule that looks across groups (`scope` other than `dag`) and says so.
+  a record-ID lookup), and when the Identifier flags cannot be read. A *not
+  found* costs a read of the whole searched field, so survey lookups may cause
+  at most 60 such reads a minute per project; past that they answer *could not
+  check*, which a survey shows as nothing.
+- **Audited.** The post-save audit logs `type: exists`, reason `not-found`.
+  Saving the form that holds a `match` field checks the lookup again. The
+  Validation scan reads the searched field once per rule per scan request and
+  checks every record against it. A lookup that cannot be completed is reported
+  as a rule problem, never as a pass. A scan confined to one Data Access Group
+  does not evaluate a rule that looks across groups (`scope` other than `dag`)
+  and says so. A durable scan with `@UVEXISTS` rules claims coverage through its
+  change fence only when no record changed during the run: an answer depends on
+  other records, which the catch-up does not re-check.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.

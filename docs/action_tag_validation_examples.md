@@ -1495,37 +1495,57 @@ searched value: one event row, or one repeat instance together with its event ro
   descriptive field).
 - **The comparison is exact.** Values are trimmed and compared letter for letter,
   case included. A date is compared as REDCap stores it (Y-M-D), whatever format
-  the field shows, so the field and the field searched must hold the same kind of
-  date: two dates, two datetimes, or neither. Dropdown and radio values are
-  compared by code, so the two fields need the same codes.
+  the field shows, so the field and the field searched must be stored the same
+  way: two dates, two datetimes to the minute, two datetimes to the second, two
+  times of the same precision, or neither a date nor a time. Dropdown and radio
+  values are compared by code, so the two fields need the same codes.
 - **Asked when the value is entered, not per keystroke.** The page asks when the
   field is changed or left, and once when the form opens. Typing clears the last
-  answer, so a half-typed value never reads "not found".
+  answer, so a half-typed value never reads "not found"; typing in a text field
+  a `when` condition reads counts too.
+- **Save waits for the answer.** Clicking Save re-checks the field first: a value
+  typed and saved at once is asked before the save is decided, and the save is
+  held while the answer is on its way. After 10 seconds without one, the value
+  counts as *could not check*.
 - **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
   and *could not check* (amber; never blocks). A failed read, a `match` field that
   is blank on another form, a busy server and missing rights all answer *could not
-  check*, and staff see the reason. The post-save audit checks the value again.
+  check*, and staff see the reason. The post-save audit checks the value again,
+  except when a `match` field is still blank: then there is nothing to check
+  until that field is saved, and saving its form checks the lookup again.
 - **Blank checks nothing.** A blank value is not looked up. A blank `match` field
   on the same page means there is nothing to narrow by yet, so nothing is asked.
-- **Where the rule looks stays on the server.** The page holds the rule's
+- **Branches.** With several `when` branches the page sends the values its
+  conditions read, and the server answers from that branch, also on a new record.
+- **Where the rule looks stays on the server.** The page config holds the rule's
   message and enforcement but not `in`, `event`, `scope` or `match`; the server
-  reads them from the stored rule.
+  reads them from the stored rule. On a survey, a configuration error shows as a
+  general notice, and the "no access" reason does not name a form or field.
 - **Rights.** A signed-in user is answered only when they may open the forms that
   hold the searched field and the `match` fields. A record-ID lookup needs no extra
-  form. At most 60 lookups a minute per user session, shared with `@UVUNIQUE`.
+  form. At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
+  user in a Data Access Group is answered only on records of their own group.
+- **Data Access Groups.** A group user's reads may be confined to their group. A
+  *not found* from a rule that looks across groups is kept only when the module
+  sees other groups' records in the same request; otherwise it is *could not
+  check*, and the audit reports a rule problem rather than a violation.
 - **Surveys: opt-in.** `"surveys":true` turns the check on for surveys, with a
   found / not found answer only and the survey rate limit. It is refused when any
   field the lookup touches is an Identifier, including the record-ID field for
   `@UVEXISTS=record`, because a "found" answer would let anyone holding the survey
-  link test whether a value is in the study.
+  link test whether a value is in the study. A *not found* costs a read of the
+  whole searched field, so survey lookups may cause at most 60 such reads a
+  minute per project; past that they answer *could not check* (shown as nothing).
 - **The server checks every save.** The post-save audit logs a violation as
   `type: exists` with reason `not-found`. A lookup that cannot be completed is
   logged as a rule problem, never as a pass.
-- **The Validation scan** reads the searched field once for each rule and checks
-  every record against it, with "Not found in its source" in the Issue column. A
-  scan confined to one Data Access Group skips rules whose `scope` is not `dag`,
-  and reports them as not evaluated, because a value saved only in another group
-  would read as not found.
+- **The Validation scan** reads the searched field once per rule per scan request
+  and checks every record against it, with "Not found in its source" in the Issue
+  column. A scan confined to one Data Access Group skips rules whose `scope` is
+  not `dag`, and reports them as not evaluated, because a value saved only in
+  another group would read as not found. A durable scan with `@UVEXISTS` rules
+  claims coverage through its change fence only when no record changed during
+  the run.
 - **Configure dialog:** none. `@UVEXISTS` exists only as an action tag.
 
 ### `@UVEXISTS` JSON keys

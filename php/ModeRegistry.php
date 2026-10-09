@@ -200,9 +200,26 @@ final class ModeRegistry
         });
     }
 
-    /** A rule as the page may see it: every server key removed, on the rule and on each branch. */
-    public static function clientShape(array $r)
+    /**
+     * A rule as the page may see it: every server key removed, on the rule and
+     * on each branch. On a survey page ($survey) the configuration error of a
+     * mode that has server keys is replaced by a generic one: its text names
+     * the fields the rule reads, which the page must not learn.
+     */
+    public static function clientShape(array $r, $survey = false)
     {
+        if ($survey && isset($r['configError']) && is_string($r['configError']) && $r['configError'] !== '') {
+            // A refused tag carries no mode of its own (it falls back to the
+            // default type), so its error is recognised by the tag it starts with.
+            foreach (self::all() as $def) {
+                if (empty($def['serverKeys'])) continue;
+                $m = self::modeOfType(isset($r['type']) ? $r['type'] : '');
+                if ($m === $def['mode'] || strpos($r['configError'], $def['tag'] . ' ') === 0) {
+                    $r['configError'] = 'this check is not set up correctly; the study team can see the details on the data entry form.';
+                    break;
+                }
+            }
+        }
         foreach (self::serverKeys() as $k) unset($r[$k]);
         if (isset($r['branches']) && is_array($r['branches'])) {
             foreach ($r['branches'] as $i => $b) {
@@ -348,7 +365,7 @@ final class ModeRegistry
      * Every field named in a fieldList key ("with" of @UVUNIQUE, ...), on the
      * rule and on its branches.
      */
-    public static function fieldListRefs(array $r)
+    public static function fieldListRefs(array $r, array $skipRoles = [])
     {
         $out = [];
         $nodes = [$r];
@@ -356,6 +373,7 @@ final class ModeRegistry
             foreach ($r['branches'] as $b) if (is_array($b)) $nodes[] = $b;
         }
         foreach (self::refKeys('fieldList') as $rk) {
+            if ($skipRoles && in_array(isset($rk['role']) ? $rk['role'] : null, $skipRoles, true)) continue;
             foreach ($nodes as $n) {
                 if (!isset($n[$rk['key']]) || !is_array($n[$rk['key']])) continue;
                 foreach ($n[$rk['key']] as $w) { if (is_string($w) && $w !== '') $out[] = $w; }
@@ -423,7 +441,7 @@ final class ModeRegistry
      *
      * @return string[] field names, de-duplicated, in discovery order
      */
-    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList'])
+    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList'], array $skipRoles = [])
     {
         $out = [];
         if (in_array('cond', $kinds, true)) {
@@ -440,7 +458,7 @@ final class ModeRegistry
             }
         }
         if (in_array('fieldList', $kinds, true)) {
-            foreach (self::fieldListRefs($r) as $w) $out[(string) $w] = true;
+            foreach (self::fieldListRefs($r, $skipRoles) as $w) $out[(string) $w] = true;
         }
         return array_keys($out);
     }

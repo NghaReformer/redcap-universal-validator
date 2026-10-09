@@ -36,8 +36,9 @@ a value of another field such as the specimen ID on the collection form.</p>
 <h2>Field types</h2>
 
 <p>Text, dropdown, radio and SQL fields. The field searched in, and each pair of
-<code>match</code> fields, must hold the same kind of value: two dates, two datetimes, or
-neither, because the comparison is exact on the stored values.</p>
+<code>match</code> fields, must be stored the same way: two dates, two datetimes to the
+minute, two datetimes to the second, two times of the same precision, or neither a date
+nor a time, because the comparison is exact on the stored values.</p>
 
 <h2>What is checked, and when</h2>
 
@@ -45,25 +46,40 @@ neither, because the comparison is exact on the stored values.</p>
 <li>The check runs when the value is entered or changed, not on every keystroke. It
     shows <strong>found</strong>, <strong>not found</strong>, or <strong>could not check</strong>.
     "Could not check" never blocks a save.</li>
+<li>Clicking Save re-checks the field first and waits for an answer still on its way, up
+    to 10 seconds. A value typed and saved at once is therefore checked before the save.</li>
+<li>With several <code>when</code> branches, the page sends the values its conditions
+    read, so the server answers from the branch the page is enforcing.</li>
 <li>The comparison is exact and case-sensitive. Dates are compared as REDCap stores them
     (Y-M-D), whatever format the field shows.</li>
-<li>A blank value checks nothing, and so does a blank <code>match</code> field.</li>
+<li>A blank value checks nothing, and so does a blank <code>match</code> field on the
+    same page. A <code>match</code> field on another form that is still blank shows
+    "could not check" to staff.</li>
 <li>Signed-in users are answered only when they may open the forms the lookup reads, and
-    at most 60 times a minute. Staff see the record the value was found in, unless they
-    are in a Data Access Group and the record is not. A record-ID lookup never names a
+    at most 60 times a minute. A user in a Data Access Group is answered only on records
+    of their own group. Staff in no group see the record the value was found in; staff in
+    a group see it only when it is in their group. A record-ID lookup never names a
     record.</li>
-<li>Where the rule looks (<code>in</code>, <code>event</code>, <code>scope</code>,
-    <code>match</code>) is never sent to the page.</li>
+<li>REDCap may confine a group user's reads to their own group. A "not found" from a rule
+    that looks across groups is kept only when the module sees other groups' records in
+    the same request; otherwise it is "could not check".</li>
+<li>The page config never carries where the rule looks (<code>in</code>,
+    <code>event</code>, <code>scope</code>, <code>match</code>). On a survey a
+    misconfigured rule shows a general notice, and the "no access" reason staff see
+    names no form or field.</li>
 <li>On a <strong>survey</strong> the check runs only when the rule says
     <code>"surveys": true</code>, and the answer is found or not found, never a record.
-    The opt-in is refused when any field the lookup touches is an Identifier.</li>
+    The opt-in is refused when any field the lookup touches is an Identifier. Survey
+    lookups may cause at most 60 reads of a whole searched field a minute per project.</li>
 </ul>
 
 <h2>Audit</h2>
 
 <p>The post-save audit logs a violation as <code>type: exists</code> with reason
-<code>not-found</code>, and the Validation scan reports it. The scan reads the searched field
-once and checks every record against it. A lookup that could not be completed is reported as
-a rule problem, never as a pass. A scan confined to one Data Access Group reports a rule
-that looks across groups as not evaluated, because a value saved only in another group
-would read as not found.</p>
+<code>not-found</code>, and the Validation scan reports it. Saving the form that holds a
+<code>match</code> field checks the lookup again. The scan reads the searched field once per
+rule per scan request and checks every record against it. A lookup that could not be
+completed is reported as a rule problem, never as a pass. A scan confined to one Data Access
+Group reports a rule that looks across groups as not evaluated, because a value saved only in
+another group would read as not found. A durable scan with <code>@UVEXISTS</code> rules claims
+coverage through its change fence only when no record changed during the run.</p>
