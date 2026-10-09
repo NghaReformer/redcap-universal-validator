@@ -48,7 +48,17 @@ final class TemporalRules
             if(isset($b['match'])&&!is_array($b['match']))$errors[]='Binding '.$alias.' match must be an object.';
             if(isset($b['excludeCurrent'])&&!is_bool($b['excludeCurrent']))$errors[]='excludeCurrent must be Boolean.';
             if(isset($b['event']) && is_string($b['event']) && !preg_match('/^[a-z][a-z0-9_-]*$/D',(string)$b['event']))$errors[]='Binding '.$alias.' has an invalid event.';
-            if(isset($b['events']) && is_array($b['events']))foreach($b['events'] as $event)if(!is_string($event)||!preg_match('/^[a-z][a-z0-9_-]*$/D',$event)){$errors[]='Binding '.$alias.' has an invalid event list.';break;}
+            if(isset($b['events']) && is_array($b['events'])){
+                $listed=[];
+                foreach($b['events'] as $event){
+                    if(!is_string($event)||!preg_match('/^[a-z][a-z0-9_-]*$/D',$event)){$errors[]='Binding '.$alias.' has an invalid event list.';break;}
+                    // A repeat adds no member (members are de-duplicated) but was walked
+                    // again for every host context: a 64 KB list of one relative token
+                    // made a save's audit run for minutes (wargame P2).
+                    if(isset($listed[$event])){$errors[]='Binding '.$alias.' lists event '.$event.' more than once.';break;}
+                    $listed[$event]=true;
+                }
+            }
             if(isset($b['arm']) && (!is_scalar($b['arm']) || !preg_match('/^[1-9][0-9]*$/D',(string)$b['arm'])))$errors[]='Binding '.$alias.' needs a positive arm number.';
             if(isset($b['instance']) && ((!is_int($b['instance'])&&!is_string($b['instance'])) ||
                 (!preg_match('/^[1-9][0-9]*$/D',(string)$b['instance'])&&!in_array($b['instance'],['current-instance','previous-instance','next-instance','first-instance','last-instance','any-instance','all-instances'],true))))$errors[]='Binding '.$alias.' has an invalid instance selector.';
@@ -198,20 +208,22 @@ final class TemporalRules
             if($ast[0]==='not')return ['not',$walk($ast[1])];
             if($ast[0]==='and'||$ast[0]==='or')return [$ast[0],array_map($walk,$ast[1])];return $ast;
         };
+        // Long exact arithmetic spends the same budget as the reads that fed it.
+        $charge=function($units)use($resolver){return $resolver->charge($units);};
         $compiled=$rule;
         foreach(['when','assert'] as $key)if(isset($rule[$key])){
             if(!$browser && $key==='assert' && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
             $tree=$walk($p['ast']);
             // The browser evaluates its own tree; only saved-data callers need the verdict here.
-            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']));
-            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]='unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']),$charge);
+            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
         }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){
             if($live)$problems[]='unauthorized';
-            else foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},$key==='assert',!empty($rule['caseSensitive']));$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]='unresolved';}
+            else foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},$key==='assert',!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser)foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];

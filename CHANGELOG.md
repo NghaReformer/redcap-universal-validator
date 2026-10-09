@@ -12,6 +12,17 @@ Git tags identify release snapshots. Release candidates are intended for develop
 - Phase 2 example patterns use site digits `[1-9]` (`SK[1-9]`, `DT[1-9]`, `ST[1-9]`), matching the studies' current ID registry.
 - The save check compares the characters kept by each entry of a one-ID `alternates` rule as well as a pooled one, so a one-ID rule mixing `-` and `/` separators needs `keepChars`. This is now documented.
 
+## Unreleased
+
+### Fixed
+
+- **Long numbers no longer stall a save or a scan.** A data-entry user could type a number of up to 4,096 digits into a field read by an average, sum or minimum/maximum. Each member was then scaled and re-summed for every entry of the record, one digit at a time, and none of that work counted against the evaluation budget. With 160 repeat entries of 4,000 digits one audit took 166 seconds and one scan 260 seconds. Multiplication and addition now work in machine-integer blocks, and decimal arithmetic on values of 64 or more characters is charged to the record's budget each time it runs. The same record now finishes in about 0.2 seconds; entries past the budget are reported as unchecked ("context limit or evaluation budget reached") instead of being decided. Values shorter than 64 characters cost nothing extra, so ordinary data is checked exactly as before. (Wargame 2026-09-23, P1.)
+- **A long `events` list no longer stalls a save.** A binding's `events` list accepted repeated entries, an entry for an event with no saved row cost no budget, and every relative entry re-scanned all of the project's events for every entry of the record. A 64 KB annotation repeating `previous-event-name` 2,900 times made one save take 70 seconds at 50 entries. An event listed twice is now refused when the rule is configured ("lists event … more than once"), event names are resolved once per request, and an event with no saved row costs one unit like any other read. The largest list still accepted, every event once plus the relative selectors, takes about 30 ms for that record. (Wargame 2026-09-23, P2.)
+
+### Upgrade note
+
+- A binding whose `events` list names the same event twice now shows a configuration notice and is not evaluated until the repeat is removed. Removing it does not change the rule's result: members were already counted once.
+
 ## 2.1.0-rc.2 — 2026-10-07
 
 **Same-length families with and without a check character.** A pooled rule with `alternates` can now mix a format-only family and a check-bearing family of the same length when their patterns cannot match the same value. Real projects need this. The HIV viral-load field takes `C`–`Z` codes that carry a check character and legacy `A`/`B` codes that do not, all six characters long. Until now that rule was refused when saved.

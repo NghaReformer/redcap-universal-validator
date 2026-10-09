@@ -1631,8 +1631,8 @@ Choosing where the collection comes from:
 @UVASSERT={"assert":"{r}='0'","references":{"r":{"field":"result","event":"followup_arm_1","instance":"all-instances"}}}
 ```
 
-A binding takes `event` or `events`, never both. `events:"arm"` needs `arm`, and the
-arm must contain an event that collects the instrument. Up to 20 bindings per rule;
+A binding takes `event` or `events`, never both. Each event appears in `events` once.
+`events:"arm"` needs `arm`, and the arm must contain an event that collects the instrument. Up to 20 bindings per rule;
 alias names are lowercase letters, digits and `_`, starting with a letter.
 
 Only one collection operand is allowed per comparison. Counts on an empty
@@ -2271,6 +2271,7 @@ you can recognise the mistake; the fix is on the right.
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","aggregate":"median"}}}                                unknown aggregate
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","event":"a_arm_1","events":["b_arm_1"],"aggregate":"sum"}}}    event and events together
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","events":"arm","aggregate":"sum"}}}                   events "arm" needs arm
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","events":["b_arm_1","b_arm_1"],"aggregate":"sum"}}}   an event listed twice
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0]"}}}                    elapsedFrom needs unit
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0][any-instance]","unit":"days"}}}   elapsedFrom is one scalar reference
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","aggregate":"minimum"}}}                   typed dates cannot be aggregated
@@ -2452,7 +2453,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | ------------------ | ----------------- | --------------------------------------------------------------------------------------------- |
 | `field`          | string            | Required. The field to read                                                                   |
 | `event`          | string            | One unique event name. Not with `events`                                                    |
-| `events`         | list or `"arm"` | Several unique event names, or `"arm"` together with `arm`                                |
+| `events`         | list or `"arm"` | Several unique event names, each listed once, or `"arm"` together with `arm`              |
 | `arm`            | integer           | Arm number for `events:"arm"`; must contain an event that collects the instrument           |
 | `instance`       | integer or string | A number, or `current-`, `previous-`, `next-`, `first-`, `last-instance`, `any-instance`, `all-instances`. Not with `match` |
 | `match`          | object            | `{"target_key_field":"[source_field]"}`; several keys mean all must match                   |

@@ -185,5 +185,135 @@ $t = microtime(true); $r = ExactDecimal::sum(array_fill(0, 200, $big)); $elapsed
 check('200 four-thousand-digit values still sum exactly', $r['state'] === 'ok' && $r['value'] === '19' . str_repeat('9', 3998) . '800');
 check('and do so in linear time per addition', $elapsed < 2.0);
 
+// ---- Part 3: wargame 2026-09-23 P1 and P2 ------------------------------------
+// Independent digit-at-a-time references for the limb arithmetic.
+function ref_mul($a, $b) {
+    $neg = ($a[0] === '-') !== ($b[0] === '-'); $a = ltrim($a, '-'); $b = ltrim($b, '-');
+    $out = array_fill(0, strlen($a) + strlen($b), 0);
+    for ($i = strlen($a) - 1; $i >= 0; $i--) for ($j = strlen($b) - 1; $j >= 0; $j--) {
+        $v = $out[$i + $j + 1] + (int)$a[$i] * (int)$b[$j]; $out[$i + $j + 1] = $v % 10; $out[$i + $j] += intdiv($v, 10);
+    }
+    $r = ltrim(implode('', $out), '0'); if ($r === '') return '0';
+    return ($neg ? '-' : '') . $r;
+}
+function ref_abs_add($a, $b) {
+    $out = ''; $c = 0; $i = strlen($a) - 1; $j = strlen($b) - 1;
+    while ($i >= 0 || $j >= 0 || $c) { $v = ($i >= 0 ? (int)$a[$i--] : 0) + ($j >= 0 ? (int)$b[$j--] : 0) + $c; $out .= $v % 10; $c = intdiv($v, 10); }
+    $r = ltrim(strrev($out), '0'); return $r === '' ? '0' : $r;
+}
+function ref_abs_sub($a, $b) {   // |a| >= |b|
+    $out = ''; $c = 0; $i = strlen($a) - 1; $j = strlen($b) - 1;
+    while ($i >= 0) { $v = (int)$a[$i--] - ($j >= 0 ? (int)$b[$j--] : 0) - $c; $c = $v < 0 ? 1 : 0; if ($v < 0) $v += 10; $out .= $v; }
+    $r = ltrim(strrev($out), '0'); return $r === '' ? '0' : $r;
+}
+function ref_add($a, $b) {
+    $sa = $a[0] === '-'; $sb = $b[0] === '-'; $a = ltrim($a, '-'); $b = ltrim($b, '-');
+    if ($sa === $sb) { $r = ref_abs_add($a, $b); return ($sa && $r !== '0' ? '-' : '') . $r; }
+    $cmp = strlen($a) === strlen($b) ? strcmp($a, $b) : (strlen($a) < strlen($b) ? -1 : 1);
+    if ($cmp === 0) return '0';
+    if ($cmp > 0) { $r = ref_abs_sub($a, $b); return ($sa ? '-' : '') . $r; }
+    $r = ref_abs_sub($b, $a); return ($sb ? '-' : '') . $r;
+}
+$int = function ($max) { $len = 1 + rnd($max); $s = (string)(1 + rnd(9)); for ($k = 1; $k < $len; $k++) $s .= (string)rnd(10); return (rnd(2) ? '-' : '') . $s; };
+$bad = 0;
+for ($i = 0; $i < 3000; $i++) {
+    $a = $int($i % 100 === 0 ? 2000 : 60); $b = $int($i % 100 === 1 ? 2000 : ($i % 3 ? 7 : 40));
+    if (ExactDecimal::multiply($a, $b) !== ref_mul($a, $b)) { $bad++; if ($bad < 4) fwrite(STDERR, "multiply($a,$b)\n"); }
+}
+foreach (['9999999', '10000000', '99999999999999', '100000000000000', str_repeat('9', 2048)] as $a) foreach (['9999999', '10000000', '-1', str_repeat('9', 2048)] as $b) {
+    if (ExactDecimal::multiply($a, $b) !== ref_mul($a, $b)) { $bad++; fwrite(STDERR, "multiply edge $a,$b\n"); }
+}
+check('P1: limb multiplication equals digit-at-a-time multiplication on 3,020 pairs', $bad === 0);
+check('P1: multiplication keeps decimal scale and sign', ExactDecimal::multiply('-0.25', '0.4') === '-0.1' && ExactDecimal::multiply('12.50', '8') === '100');
+$bad = 0;
+for ($i = 0; $i < 3000; $i++) {
+    $vals = []; $want = '0'; $k = 1 + rnd(6);
+    for ($m = 0; $m < $k; $m++) { $v = $int(rnd(4) ? 40 : 700); $vals[] = $v; $want = ref_add($want, $v); }
+    $got = ExactDecimal::sum($vals);
+    if ($got['state'] !== 'ok' || $got['value'] !== $want) { $bad++; if ($bad < 4) fwrite(STDERR, 'sum ' . json_encode($vals) . "\n"); }
+}
+check('P1: limb summation equals digit-at-a-time summation on 3,000 lists', $bad === 0);
+check('P1: values under 64 bytes cost no budget', ExactDecimal::sumCost(['123', str_repeat('9', 63)]) === 0 && ExactDecimal::multiplyCost(str_repeat('9', 63), '40') === 0);
+check('P1: long values cost one unit per 64 bytes', ExactDecimal::sumCost([str_repeat('9', 4000)]) === 62 && ExactDecimal::multiplyCost(str_repeat('9', 4000), '40') === 62);
+
+// Every member scaled against an average is charged when it is long, and only then.
+require_once __DIR__ . '/../php/TemporalRules.php';
+use INSPIRE\UniversalValidator\TemporalLogic;
+use INSPIRE\UniversalValidator\TemporalRules;
+$avgTree = function ($value, $count) {
+    $members = array_fill(0, $count, ['lit', $value]);
+    $sum = ExactDecimal::sum(array_fill(0, $count, $value))['value'];
+    return ['cmp', '<=', ['set', 'all', $members], ['value', ['numerator'=>$sum, 'denominator'=>(string)$count]]];
+};
+$spent = 0; $calls = 0;
+$counter = function ($u) use (&$spent, &$calls) { $spent += $u; $calls++; return true; };
+$short = TemporalLogic::evaluate($avgTree('12345', 40), function () { return ''; }, true, false, $counter);
+check('P1: short members are never charged', $short === true && $calls === 0);
+$long = TemporalLogic::evaluate($avgTree('7' . str_repeat('3', 3999), 40), function () { return ''; }, true, false, $counter);
+check('P1: each long member scaled against an average is charged', $long === true && $spent >= 40 * 62);
+check('P1: a refused charge makes the comparison unknown',
+    TemporalLogic::evaluate($avgTree('7' . str_repeat('3', 3999), 40), function () { return ''; }, true, false, function () { return false; }) === null);
+check('P1: without a charge callback the verdict is unchanged',
+    TemporalLogic::evaluate($avgTree('7' . str_repeat('3', 3999), 40), function () { return ''; }) === true);
+
+// A sum over long values re-run per host context (excludeCurrent) is charged.
+$bigShape = new ProjectShape([1=>['name'=>'visit_arm_1','arm'=>1,'order'=>1,'forms'=>['fa'],'repeats'=>['fa'],'eventRepeats'=>false]],
+    ['a_val'=>['form'=>'fa','type'=>'text']]);
+$bigRecord = function ($n, $value) { $rows = []; for ($i = 1; $i <= $n; $i++) $rows[$i] = ['a_val'=>$value]; return ['repeat_instances'=>[1=>['fa'=>$rows]]]; };
+$ctx = ['event'=>1,'instrument'=>'fa','instance'=>1];
+$avg = ['field'=>'a_val','aggregate'=>'average','excludeCurrent'=>true];
+$r = new AddressResolver($bigShape, $bigRecord(4, str_repeat('9', 4000)), 10000, new ReferenceBudget(300));
+check('P1: summing long values spends budget beyond the reads', $r->resolveBinding($avg, $ctx)['state'] === 'limit');
+$r = new AddressResolver($bigShape, $bigRecord(4, '9999'), 10000, new ReferenceBudget(300));
+check('P1: the same budget sums short values', $r->resolveBinding($avg, $ctx)['state'] === 'ok');
+
+// End to end: [a][all-instances] <= average, from every host context of one record.
+$rule = ['assert'=>'[a_val][all-instances]<={x}', 'references'=>['x'=>['field'=>'a_val','aggregate'=>'average']]];
+$run = function ($n, $value) use ($bigShape, $bigRecord, $rule) {
+    $node = $bigRecord($n, $value);
+    $resolver = (new AddressResolver($bigShape, $node, 10000, new ReferenceBudget()))->shareAcrossContexts();
+    $out = ['limit'=>0, 'pass'=>0, 'other'=>0];
+    for ($i = 1; $i <= $n; $i++) {
+        $p = TemporalRules::compile($rule, $resolver, $bigShape, ['event'=>1,'instrument'=>'fa','instance'=>$i,'values'=>$node['repeat_instances'][1]['fa'][$i]]);
+        if (in_array('limit', $p['problems'], true)) $out['limit']++;
+        elseif (!$p['problems'] && $p['rule']['assert'] === '1=1') $out['pass']++;
+        else $out['other']++;
+    }
+    return $out;
+};
+$t = microtime(true); $big = $run(160, '7' . str_repeat('3', 3999)); $elapsed = microtime(true) - $t;
+check('P1: 160 four-thousand-digit members end in seconds, not minutes', $elapsed < 15.0);
+check('P1: and the contexts past the budget say so', $big['limit'] > 0 && $big['other'] === 0);
+check('P1: short values give every context its verdict', $run(160, '12345') === ['limit'=>0, 'pass'=>160, 'other'=>0]);
+
+// P2: a repeated `events` entry is refused when the rule is configured.
+$list = function (array $events) { return ['references'=>['x'=>['field'=>'c_val','events'=>$events,'aggregate'=>'count']]]; };
+$errors = TemporalRules::validate($list(['previous-event-name', 'base_arm_1', 'previous-event-name']));
+check('P2: a repeated events entry is refused', (bool)preg_grep('/lists event previous-event-name more than once/', $errors));
+check('P2: a list naming each event once is accepted', TemporalRules::validate($list(['previous-event-name', 'base_arm_1', 'follow_arm_1'])) === []);
+
+// P2: an event without a row costs budget like an event with one.
+$events = []; $fields = ['c_val'=>['form'=>'fc','type'=>'text']];
+for ($e = 1; $e <= 30; $e++) $events[$e] = ['name'=>"ev{$e}_arm_1",'arm'=>1,'order'=>$e,'forms'=>['fc'],'repeats'=>[],'eventRepeats'=>false];
+$rowless = new ProjectShape($events, $fields);
+$names = []; for ($e = 1; $e <= 30; $e++) $names[] = "ev{$e}_arm_1";
+$r = new AddressResolver($rowless, [], 10000, new ReferenceBudget(10));
+check('P2: thirty row-less events spend more than a budget of ten', $r->resolveBinding(['field'=>'c_val','events'=>$names,'aggregate'=>'count'], ['event'=>30,'instrument'=>'fc','instance'=>1])['state'] === 'limit');
+$r = new AddressResolver($rowless, [], 10000, new ReferenceBudget(100));
+check('P2: and a budget that covers them still counts zero', $r->resolveBinding(['field'=>'c_val','events'=>$names,'aggregate'=>'count'], ['event'=>30,'instrument'=>'fc','instance'=>1])['value'] === '0');
+
+// P2: event tokens resolve once per shape, with the same answers.
+$events = [];
+for ($e = 1; $e <= 500; $e++) $events[$e] = ['name'=>"ev{$e}_arm_1",'arm'=>1,'order'=>$e,'forms'=>['fc'],'repeats'=>[],'eventRepeats'=>false];
+$wide = new ProjectShape($events, $fields);
+check('P2: relative and named tokens answer as before',
+    $wide->eventId('previous-event-name', 41, 'fc') === ['state'=>'ok','event'=>40] && $wide->eventId('previous-event-name', '41', 'fc') === ['state'=>'ok','event'=>40]
+    && $wide->eventId('first-event-name', 41, 'fc') === ['state'=>'ok','event'=>1] && $wide->eventId('ev500_arm_1', 41, 'fc') === ['state'=>'ok','event'=>500]
+    && $wide->eventId('event-name', '41', 'fc') === ['state'=>'ok','event'=>41] && $wide->eventId('no_such_arm_1', 41, 'fc') === ['state'=>'invalid']
+    && $wide->eventId('previous-event-name', 1, 'fc') === ['state'=>'absent'] && $wide->eventId('previous-event-name', 999, 'fc') === ['state'=>'unreadable']);
+$t = microtime(true);
+for ($i = 0; $i < 100000; $i++) $wide->eventId($i % 2 ? 'last-event-name' : 'ev500_arm_1', 250, 'fc');
+check('P2: 100,000 lookups over 500 events do not walk the events each time', microtime(true) - $t < 2.0);
+
 echo "temporal_adversarial_php: $n checks, $fail failures\n";
 exit($fail ? 1 : 0);
