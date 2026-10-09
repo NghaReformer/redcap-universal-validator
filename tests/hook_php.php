@@ -1371,6 +1371,11 @@ namespace {
     $cDictBad['mx'] = ['field_type' => 'radio', 'form_name' => 'cf', 'matrix_group_name' => 'grid1',
         'select_choices_or_calculations' => '1, A | 2, B',
         'field_annotation' => '@UVCHOICES={"hide":["1"]}'];
+    // a "when" naming a field the project does not have: the error must be
+    // attributed to @UVCHOICES, not to @UVALIDATE
+    $cDictBad['badref'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[no_such_field]=\'1\'","hide":["1"]}'];
     $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
         'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
     ob_start();
@@ -1390,6 +1395,8 @@ namespace {
         && strpos($cfgErrs['site2'], '"999"') !== false && strpos($cfgErrs['site2'], '1, 2') !== false);
     check('matrix field -> configError', isset($cfgErrs['mx'])
         && strpos($cfgErrs['mx'], 'matrix') !== false);
+    check('bad "when" reference on @UVCHOICES -> error names @UVCHOICES',
+        isset($cfgErrs['badref']) && strpos($cfgErrs['badref'], '@UVCHOICES on "badref"') === 0);
     $m->logCalls = [];
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('config-error choices rules produce no detections',

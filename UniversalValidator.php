@@ -2367,6 +2367,7 @@ class UniversalValidator extends AbstractExternalModule
         if ($type === 'constraint') return AnnotationRules::TAG_ASSERT;
         if ($type === 'required')   return AnnotationRules::TAG_REQUIRED;
         if ($type === 'unique')     return AnnotationRules::TAG_UNIQUE;
+        if ($type === 'choices')    return AnnotationRules::TAG_CHOICES;
         return AnnotationRules::TAG;
     }
 
