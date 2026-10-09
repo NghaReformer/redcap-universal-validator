@@ -11,6 +11,7 @@
     }
   ],
   "framework-version": 14,
+  "enable-no-auth-logging": true,
 
   "auth-ajax-actions": ["unique-check", "exists-check", "scan-start", "scan-work", "scan-status", "scan-cancel"],
   "no-auth-ajax-actions": ["unique-check", "exists-check"],
@@ -127,12 +128,12 @@
     },
     {
       "key": "exists-system-cross-user-per-minute",
-      "name": "<b>@UVEXISTS in other projects</b> — lookups one signed-in session may make in one searched project per minute. Default 30. Over the limit the lookup answers \"could not check\", which never blocks a save.",
+      "name": "<b>@UVEXISTS in other projects</b> — lookups one browser session (a signed-in user, or a survey respondent) may make in one searched project per minute. Default 30. Over the limit the lookup answers \"could not check\", which never blocks a save.",
       "type": "text"
     },
     {
       "key": "exists-system-cross-project-per-minute",
-      "name": "<b>@UVEXISTS in other projects</b> — lookups one searched project answers per minute, from every project and user together. Default 1200. Over the limit, or when the counter cannot be kept, the lookup answers \"could not check\".",
+      "name": "<b>@UVEXISTS in other projects</b> — lookups one searched project answers per minute for signed-in data entry, from every project and user together. Default 1200. Post-save checks and Validation scans have their own count of the same size, and survey respondents share a fixed 120 a minute, so no kind of caller uses up another's. Over the limit, or when the counter cannot be kept, the lookup answers \"could not check\", and the searched project's log gets one \"throttled\" line per minute.",
       "type": "text"
     }
   ],

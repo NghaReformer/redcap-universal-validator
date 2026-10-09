@@ -188,15 +188,17 @@ Setup:
 | I6 | `uxc_rec` = L-2, then L-9 | Found, then not found |
 | I7 | `uxc_site` = South, `uxc_m` = LS-002; then `uxc_site` = North | Found, then not found |
 | I8 | `uxc_date` = 01-02-2026, then 02-02-2026 | Found (stored 2026-02-01), then not found |
-| I9 | Source project module log | One `uv-exists-probe` line per lookup in I5 to I8: `source_project` 149, channel `staff`, the user, the field, the result, and `value_hash` (64 hex characters). No value appears raw |
+| I9 | Source project module log | One `uv-exists-probe` line per lookup in I5 to I8: `source_project` 149, channel `staff`, the user, the field, the result, and `value_hash` (64 hex characters). No value appears raw. The not-found line for `uxc_rec` = L-9 also carries `extra_read` `record ids` (the lookup read the record IDs there to make sure the miss was real); no other line does |
 | I10 | Second account (rights in 149 only): `uxc_spec` = LS-001 | Amber "Could not check ... (you do not have rights in the project this lookup searches)"; a `refused` line in the source project's log |
 | I11 | Source project: switch the row to "Any signed-in user of the asking project". Second account: `uxc_spec` = LS-001 | Found. `uxc_donor` now shows "field "lab_donor" of project SRC is an Identifier there" |
 | I12 | Source project: also tick "Also answer survey respondents". Enable `uv_exists_cross` as a survey, open it, `uxc_survey` = LS-001, then LS-999 | Found, then not found, no record named; the source project's log shows channel `survey`, user `survey` |
 | I13 | Source project settings: try to save a second row for 149, a row with field `nope`, and a row with surveys ticked under "Only users who have rights" | The dialog refuses each and names the row |
 | I14 | Back to "Only users who have rights". Import `uxc_spec` = LS-999 for XE-1 with the Data Import Tool (the form itself blocks that save) | Module log of pid 149: `invalid-id-saved`, `type: exists`, reason `not-found`; source project log: channel `audit` |
 | I15 | Run the Validation scan in pid 149 | XE-1 `uxc_spec` with "Not found in its source"; one `uv-exists-index-read` line per searched field in the source project's log, none per record |
-| I16 | [optional] Control Center: set "lookups one searched project answers per minute" to 2, then enter three values in `uxc_spec` within a minute | The third answers "could not check (too many lookups in the other project in the last minute)"; the log shows `throttled`. Clear the setting after |
+| I16 | [optional] Control Center: set "lookups one searched project answers per minute" to 2, then enter four values in `uxc_spec` within a minute | The third and fourth answer "could not check (too many lookups in the other project in the last minute)". The source project's log shows two `found` lines and one `throttled` line, not two. Clear the setting after |
 | I17 | [only if the source project has DAGs] Put the test account in a group there; `uxc_spec` = a specimen of another group | Not found (the lookup stays in the account's group there). A scan then lists the rule as not evaluated, "Data Access Group of project SRC" |
+| I18 | [only if I17 ran] Same account, still in the group there: import `uxc_spec` = LS-001 for XE-1 | Module log of pid 149: `uvalidate-unconfigurable` for `uxc_spec`, "your account is in a Data Access Group of the other project, so the check after saving cannot see values saved in its other groups". Source project log: channel `audit`, result `refused`. Take the account out of the group after |
+| I19 | Second account (rights in 149 only, and to the Validation scan): open the scan report from I15 | The report is not shown: "this scan looks values up in project SRC, which does not answer your lookups, so its results are not shown to you" |
 
 ---
 

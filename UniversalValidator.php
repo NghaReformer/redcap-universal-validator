@@ -564,12 +564,19 @@ class UniversalValidator extends AbstractExternalModule
     private function findingsExists(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution, array $meta = [])
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
+        // A branch the scan's plan found another project will not answer for
+        // this person (scanPlan): reported for every value it would have checked.
+        $refused = (isset($rule['existsScanRefused']) && is_string($rule['existsScanRefused'])) ? $rule['existsScanRefused'] : null;
         $locals = (isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [];
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+            if ($refused !== null) {
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $refused];
+                continue;
+            }
             $lv = [];
             foreach ($locals as $lf) {
                 $state = isset($resolution[$lf]) ? $resolution[$lf] : 'ok';
@@ -670,8 +677,10 @@ class UniversalValidator extends AbstractExternalModule
      * @var array lookup key (project included) => index, or false for one that could not be built
      */
     private $existsIndexes = [];
-    /** @var array pid => the Data Access Groups this request's read of the project showed, or false */
+    /** @var array pid => the Data Access Groups this request's reads of the project showed (noteGroupsSeen) */
     private $groupVisibility = [];
+    /** @var array pid => true once this request has read (or tried to read) every record ID of the project */
+    private $groupVisibilityRead = [];
 
     /**
      * One @UVEXISTS lookup: ['state' => found|not-found|unknown, 'record' => ?, 'dag' => ?, 'why' => ?].
@@ -730,9 +739,14 @@ class UniversalValidator extends AbstractExternalModule
      *                group reads as missing. A "not found" from a rule that looks
      *                across groups is therefore kept only when this request is
      *                shown to see records outside the caller's group; otherwise
-     *                it is unknown (groupReadSeesOthers).
-     *   mayFullRead  a callable asked before the confirming full read; false
-     *                answers unknown (the unauthenticated read budget).
+     *                it is unknown (existsMiss, readShows).
+     *   mayFullRead  a callable asked before the confirming full read, and
+     *                before any read of another project's record IDs that
+     *                existsMiss needs; false answers unknown (the
+     *                unauthenticated read budget).
+     *   foreign      the lookup searches another project (crossLookup): an
+     *                empty read proves nothing there, so a "not found" needs
+     *                a read that showed records (existsMiss).
      */
     private function findExisting($pid, array $rule, $value, array $locals, $eventId, $dag, $narrow = false, array $opts = [])
     {
@@ -778,7 +792,11 @@ class UniversalValidator extends AbstractExternalModule
             $data = \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
             $hit = self::existsMatchIn($data, $spec, $scope, $dag);
-            return $hit !== null ? ['state' => 'found'] + $hit : $this->existsMiss($pid, $scope, $opts, $dag);
+            if ($hit !== null) return ['state' => 'found'] + $hit;
+            // The read just made is the evidence of what this request can see
+            // there; it spares existsMiss a second read of that project.
+            if (!empty($opts['foreign'])) $this->noteGroupsSeen($pid, $data, false);
+            return $this->existsMiss($pid, $scope, $opts, $dag);
         } catch (\Throwable $e) {
             return $unknown;
         }
@@ -799,15 +817,25 @@ class UniversalValidator extends AbstractExternalModule
         $notFound = ['state' => 'not-found', 'record' => null, 'dag' => null];
         $callerDag = isset($opts['callerDag']) ? $opts['callerDag'] : null;
         $foreign = !empty($opts['foreign']);
+        // Another project's record IDs are read only within the caller's read
+        // budget, and the read is named in that project's probe log line.
+        $gate = null;
+        if ($foreign) {
+            $gate = function () use ($opts, $pid) {
+                if (isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) return false;
+                $this->crossExtraRead[(int) $pid] = true;
+                return true;
+            };
+        }
         if ($scope === 'dag') {
-            if (!$foreign || $this->readShows($pid, function ($g) use ($dag) { return $g === $dag; })) return $notFound;
+            if (!$foreign || $this->readShows($pid, function ($g) use ($dag) { return $g === $dag; }, $gate)) return $notFound;
             return ['state' => 'unknown', 'record' => null, 'dag' => null,
                     'why' => 'the other project showed no record of your Data Access Group there to this lookup'];
         }
         if ($callerDag === null && !$foreign) return $notFound;
         $seen = $this->readShows($pid, function ($g) use ($callerDag, $foreign) {
             return ($foreign && $callerDag === null) || $g !== $callerDag;
-        });
+        }, $gate);
         if ($seen) return $notFound;
         return ['state' => 'unknown', 'record' => null, 'dag' => null,
                 'why' => $callerDag === null ? 'the other project showed no records to this lookup'
@@ -816,37 +844,50 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * Whether a read made by this request shows a record whose Data Access
-     * Group (null = none) passes $want. One read of the record-ID field per
-     * project, kept for the request. A failed read answers false: there is
-     * then no evidence of what the lookup saw.
+     * Group (null = none) passes $want. Reads already made count
+     * (noteGroupsSeen); when none of them answers, the record-ID field of the
+     * project is read once per request, but only when $gate (if given)
+     * allows it. A failed or refused read answers false: there is then no
+     * evidence of what the lookup saw.
      */
-    private function readShows($pid, callable $want)
+    private function readShows($pid, callable $want, ?callable $gate = null)
     {
-        if (!array_key_exists($pid, $this->groupVisibility)) {
-            $seen = false;
-            try {
-                $pk = $this->recordIdFieldOf($pid);
-                if ($pk !== null) {
-                    $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
-                                              'exportDataAccessGroups' => true]);
-                    if (is_array($data)) {
-                        $seen = [];
-                        foreach ($data as $node) {
-                            if (!is_array($node)) continue;
-                            $g = self::dagOfRecordNode($node);
-                            $seen[$g === null ? '' : 'g' . $g] = $g;
-                        }
-                    }
-                }
-            } catch (\Throwable $e) {
-                $seen = false;
-            }
-            $this->groupVisibility[$pid] = $seen;
+        foreach (isset($this->groupVisibility[$pid]) ? $this->groupVisibility[$pid] : [] as $g) {
+            if ($want($g)) return true;
         }
-        $seen = $this->groupVisibility[$pid];
-        if ($seen === false) return false;
-        foreach ($seen as $g) if ($want($g)) return true;
+        if (!empty($this->groupVisibilityRead[$pid])) return false;   // every record ID is already in hand
+        if ($gate !== null && !call_user_func($gate)) return false;
+        $this->groupVisibilityRead[$pid] = true;
+        try {
+            $pk = $this->recordIdFieldOf($pid);
+            if ($pk === null) return false;
+            $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
+                                      'exportDataAccessGroups' => true]);
+            if (!is_array($data)) return false;
+            $this->noteGroupsSeen($pid, $data, true);
+        } catch (\Throwable $e) {
+            return false;
+        }
+        foreach ($this->groupVisibility[$pid] as $g) {
+            if ($want($g)) return true;
+        }
         return false;
+    }
+
+    /**
+     * Remember the Data Access Groups (null = none) of the records one read of
+     * project $pid returned. $all: the read was every record ID, so readShows
+     * has nothing more to read.
+     */
+    private function noteGroupsSeen($pid, array $data, $all)
+    {
+        if (!isset($this->groupVisibility[$pid])) $this->groupVisibility[$pid] = [];
+        foreach ($data as $node) {
+            if (!is_array($node)) continue;
+            $g = self::dagOfRecordNode($node);
+            $this->groupVisibility[$pid][$g === null ? '' : 'g' . $g] = $g;
+        }
+        if ($all) $this->groupVisibilityRead[$pid] = true;
     }
 
     /**
@@ -919,12 +960,13 @@ class UniversalValidator extends AbstractExternalModule
             // Another project's index costs one read there per request: it is
             // counted against that project's budget and leaves one line in its
             // module log.
-            if ($foreign && $this->crossRateLimited($pid, false)) {
+            $over = $foreign ? $this->crossRateLimited($pid, 'scan') : null;
+            if ($over !== null) {
                 $this->existsIndexes[$key] = false;
-                $this->logCrossIndexRead($pid, $fields, 'throttled');
+                if ($over === 'log') $this->logCrossIndexRead($pid, $fields, 'throttled');
             } else {
                 $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
-                    !empty($rule['existsEvent']) ? $spec['event'] : null);
+                    !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign);
                 if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
             }
         }
@@ -937,7 +979,9 @@ class UniversalValidator extends AbstractExternalModule
             if ($scope === 'event' && (string) $hit[2] !== (string) $spec['event']) continue;
             return ['state' => 'found', 'record' => $hit[0], 'dag' => $hit[1]];
         }
-        if ($foreign && !$this->readShows($pid, function ($g) { return true; })) {
+        // The index read is the evidence (buildExistsIndex noted what it
+        // showed); the scan never makes a second, uncounted read there.
+        if ($foreign && !$this->readShows($pid, function ($g) { return true; }, function () { return false; })) {
             return $unknown + ['why' => 'the other project showed no records to this scan'];
         }
         return ['state' => 'not-found', 'record' => null, 'dag' => null];
@@ -950,8 +994,10 @@ class UniversalValidator extends AbstractExternalModule
      * One hit is kept per (DAG, event) under a key - all a lookup ever asks -
      * so a value repeated in many records costs one entry, not a list that
      * every later record has to be compared against.
+     * $foreign: the project is another one; what the read showed is noted for
+     * readShows, the evidence that a "not found" there is real.
      */
-    private function buildExistsIndex($pid, $in, array $fields, $event)
+    private function buildExistsIndex($pid, $in, array $fields, $event, $foreign = false)
     {
         try {
             $limit = self::memoryLimitBytes();
@@ -961,6 +1007,7 @@ class UniversalValidator extends AbstractExternalModule
                 $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
                                           'exportDataAccessGroups' => true]);
                 if (!is_array($data)) return false;
+                if ($foreign) $this->noteGroupsSeen($pid, $data, true);
                 $idx = [];
                 foreach ($data as $rec => $node) {
                     if (is_array($node)) $idx[(string) $rec] = [[(string) $rec, self::dagOfRecordNode($node), null]];
@@ -971,6 +1018,7 @@ class UniversalValidator extends AbstractExternalModule
             if ($event !== null) $params['events'] = [$event];
             $data = \REDCap::getData($params);
             if (!is_array($data)) return false;
+            if ($foreign) $this->noteGroupsSeen($pid, $data, false);
             $idx = [];
             foreach ($data as $rec => $node) {
                 if (!is_array($node)) continue;
@@ -1035,7 +1083,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     const CROSS_UNAVAILABLE = 'project %d cannot be searched from this project. It must have this module enabled and '
         . 'list this project, with every field this lookup searches, under "Projects that may look up values here" '
-        . 'in its module settings.';
+        . 'in its module settings, and an "event" must be one of its unique event names.';
 
     /** @var array "a|b" => consent row or null, per request */
     private $crossConsents = [];
@@ -1097,9 +1145,26 @@ class UniversalValidator extends AbstractExternalModule
             $prefix = isset($this->PREFIX) ? $this->PREFIX : null;
             if (!is_string($prefix) || $prefix === '') return false;
             if (!$this->isModuleEnabled($prefix, (int) $pid)) return false;
-            // A deleted project keeps its module settings; it is not a project to search.
             if (is_callable([$this, 'getProjectStatus']) && $this->getProjectStatus((int) $pid) === null) return false;
-            return true;
+            return $this->projectNotDeleted($pid);
+        } catch (\Throwable $e) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether project $pid exists and is not deleted. A deleted project keeps
+     * its row, its settings and its data until REDCap purges it, and the
+     * framework still reports a status for it, so only date_deleted tells.
+     * Fails closed: no row, or a read that fails, is a deleted project.
+     */
+    private function projectNotDeleted($pid)
+    {
+        try {
+            $rows = (new Scan\ModuleDb($this))->select(
+                'SELECT date_deleted FROM redcap_projects WHERE project_id = ?', [(int) $pid]);
+            return is_array($rows) && count($rows) === 1 && is_array($rows[0])
+                && array_key_exists(0, $rows[0]) && $rows[0][0] === null;
         } catch (\Throwable $e) {
             return false;
         }
@@ -1319,59 +1384,94 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Whether a lookup into project $b is over its budget. Two windows: one per
-     * signed-in session and searched project ($perSession; a session its
-     * holder cannot shed without signing out), and one per searched project
-     * for every caller together (tier 3 of the rate buckets). FAILS CLOSED,
-     * unlike the survey throttle: a read of another project that cannot be
-     * counted is not made, and "could not check" never blocks a save.
+     * Whether a lookup into project $b is over its budget: null when it may go
+     * ahead, else 'log' (refused; the first refusal of its window, worth one
+     * "throttled" line in that project's log) or 'quiet' (refused; already
+     * said). Without the quiet answer a flood of refused lookups would become
+     * a flood of log lines in the other project.
+     *
+     * Three counters per searched project, one per kind of caller, so no kind
+     * can spend another's budget (tiers of the rate buckets, RATE_TIERS):
+     *   staff   tier 3, exists-system-cross-project-per-minute, plus a window
+     *           per signed-in session (exists-system-cross-user-per-minute);
+     *   survey  tier 4, THROTTLE_CROSS_SURVEY. Anyone can be a survey caller
+     *           and a session is shed by dropping a cookie, so the count that
+     *           matters is the shared one, and it is smaller;
+     *   audit and scan  tier 5, the same setting as staff. A save or a scan
+     *           never spends what live data entry needs, and anonymous traffic
+     *           cannot switch the post-save check off.
+     * FAILS CLOSED, unlike the survey throttle: a read of another project that
+     * cannot be counted is not made, and "could not check" never blocks a save.
      */
-    private function crossRateLimited($b, $perSession)
+    private function crossRateLimited($b, $channel)
     {
+        $b = (int) $b;
+        $tier = $channel === 'survey' ? 4 : ($channel === 'staff' ? 3 : 5);
         try {
             $now = time();
-            if ($perSession && function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
-                $key = 'uvalidate_cross_hits_' . (int) $b;
+            if (($channel === 'staff' || $channel === 'survey')
+                    && function_exists('session_status') && session_status() === PHP_SESSION_ACTIVE) {
+                $key = 'uvalidate_cross_hits_' . $b;
                 $hits = (isset($_SESSION[$key]) && is_array($_SESSION[$key])) ? $_SESSION[$key] : [];
                 $hits = array_values(array_filter($hits, function ($t) use ($now) {
                     return is_int($t) && ($now - $t) < 60;
                 }));
                 if (count($hits) >= $this->systemCount('exists-system-cross-user-per-minute', self::CROSS_USER_PER_MINUTE)) {
                     $_SESSION[$key] = $hits;
-                    return true;
+                    // One line per session and minute: the refusal that opens the run.
+                    $said = isset($_SESSION[$key . '_said']) && is_int($_SESSION[$key . '_said']) && ($now - $_SESSION[$key . '_said']) < 60;
+                    if (!$said) $_SESSION[$key . '_said'] = $now;
+                    return $said ? 'quiet' : 'log';
                 }
                 $hits[] = $now;
                 $_SESSION[$key] = $hits;
             }
             $db = new Scan\ModuleDb($this);
-            $bucket = ((int) floor($now / 60)) * self::RATE_TIERS + 3;
+            $bucket = ((int) floor($now / 60)) * self::RATE_TIERS + $tier;
             $db->exec('INSERT INTO ' . Scan\Schema::table('rate_bucket') . '
                 (project_id, bucket, hits) VALUES (?, ?, LAST_INSERT_ID(1))
                 ON DUPLICATE KEY UPDATE hits = LAST_INSERT_ID(hits + 1)',
-                [(int) $b, $bucket]);
+                [$b, $bucket]);
             $r = $db->select('SELECT LAST_INSERT_ID()', []);
-            if (!isset($r[0][0]) || $r[0][0] === null) return true;
+            if (!isset($r[0][0]) || $r[0][0] === null) throw new \RuntimeException('the counter did not report a value');
             $hits = (int) $r[0][0];
             if ($hits === 1) {
                 $db->exec('DELETE FROM ' . Scan\Schema::table('rate_bucket')
-                    . ' WHERE project_id = ? AND bucket < ?', [(int) $b, $bucket - 2 * self::RATE_TIERS]);
+                    . ' WHERE project_id = ? AND bucket < ?', [$b, $bucket - 2 * self::RATE_TIERS]);
             }
-            return $hits > $this->systemCount('exists-system-cross-project-per-minute', self::CROSS_PROJECT_PER_MINUTE);
+            $limit = $channel === 'survey' ? self::THROTTLE_CROSS_SURVEY
+                   : $this->systemCount('exists-system-cross-project-per-minute', self::CROSS_PROJECT_PER_MINUTE);
+            if ($hits <= $limit) return null;
+            return $hits === $limit + 1 ? 'log' : 'quiet';
         } catch (\Throwable $e) {
-            return true;
+            // A counter that cannot be kept: refused, and said once per request.
+            $k = $b . '|' . $tier;
+            if (isset($this->crossBudgetFailSaid[$k])) return 'quiet';
+            $this->crossBudgetFailSaid[$k] = true;
+            return 'log';
         }
     }
 
+    /** @var array "pid|tier" => true once a failed counter has been logged in this request */
+    private $crossBudgetFailSaid = [];
+
     /**
      * One line in the searched project's module log for a lookup into it from
-     * another project, answered or refused: the asking project, the channel
-     * (staff, survey, audit), the user ("survey" for a respondent), the field
-     * searched, the value as a keyed hash under the searched project's key
-     * (left out when that project logs no values: "none" or "off"), and the
-     * result. A cross-project value is never logged raw.
+     * another project, answered or refused once that project's agreement
+     * could be read (with the server switch off, or the module not enabled
+     * there, nothing is written there): the asking project, the channel
+     * (staff, survey, audit), the user ("survey" for a respondent, "(no user)"
+     * for a save nobody was signed in for, such as an import or a scheduled
+     * job), the field searched, the value as a keyed hash under the searched
+     * project's key (left out when that project logs no values: "none" or
+     * "off"), and the result. When the lookup also read that project's record
+     * IDs to make sure a "not found" was real, "extra_read" says so. A
+     * cross-project value is never logged raw.
      */
     private function logCrossProbe($b, $a, $channel, array $rule, $value, $result)
     {
+        $extra = !empty($this->crossExtraRead[(int) $b]);
+        unset($this->crossExtraRead[(int) $b]);
         try {
             $mode = $this->logMode($b);
             $user = $this->currentUsername();
@@ -1379,10 +1479,11 @@ class UniversalValidator extends AbstractExternalModule
                 'project_id'     => (int) $b,
                 'source_project' => (string) (int) $a,
                 'channel'        => (string) $channel,
-                'user'           => $user !== null ? $user : 'survey',
+                'user'           => $user !== null ? $user : ($channel === 'survey' ? 'survey' : '(no user)'),
                 'field'          => implode(',', self::crossFields($rule)),
                 'result'         => (string) $result,
             ];
+            if ($extra) $entry['extra_read'] = 'record ids';
             if ($mode !== 'none' && $mode !== 'off' && $value !== null && trim((string) $value) !== '') {
                 $h = $this->hashedIdentifier($b, trim((string) $value));
                 if ($h !== null) $entry['value_hash'] = $h;
@@ -1391,6 +1492,9 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
         }
     }
+
+    /** @var array pid => true while a lookup there has made a read of its record IDs not yet logged */
+    private $crossExtraRead = [];
 
     /** One line in the searched project's module log for a scan's one read of it. */
     private function logCrossIndexRead($b, array $fields, $result)
@@ -1487,6 +1591,15 @@ class UniversalValidator extends AbstractExternalModule
         $ruleB = $rule;
         $dag = null;
         if ($confine !== null) {
+            // The post-save audit judges the record, not the person who saved
+            // it: a lookup confined to the saver's group there would log a
+            // value saved in another group as missing, and the same save by
+            // someone else as clean. Live, the confinement is the point.
+            if ($channel === 'audit') {
+                $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'refused');
+                return $unknown('your account is in a Data Access Group of the other project, so the check after saving '
+                    . 'cannot see values saved in its other groups');
+            }
             $ruleB['existsScope'] = 'dag';
             $dag = $confine;
         }
@@ -1496,8 +1609,9 @@ class UniversalValidator extends AbstractExternalModule
             $this->crossSource = (int) $pid;
             $r = $this->existsIndexLookup($b, $ruleB, $value, $locals, null, null);
         } else {
-            if ($this->crossRateLimited($b, true)) {
-                $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'throttled');
+            $over = $this->crossRateLimited($b, $channel);
+            if ($over !== null) {
+                if ($over === 'log') $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'throttled');
                 return $unknown('too many lookups in the other project in the last minute');
             }
             $r = $this->findExisting($b, $ruleB, $value, $locals, null, $dag, true,
@@ -3163,10 +3277,6 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Reassemble per-rule rows from the flat key => [per-instance values] shape
-     * validateSettings() receives for repeatable sub-settings.
-     */
-    /**
      * The problems in the @UVEXISTS cross-project rows of a Configure dialog
      * save: the aliases this project uses, and the projects it answers. A
      * blank row is ignored. $known and $identifiers are this project's field
@@ -3176,15 +3286,25 @@ class UniversalValidator extends AbstractExternalModule
      */
     private static function crossSettingsProblems(array $settings, $pid, $known, $identifiers)
     {
+        // Each column is read by instance index, as rowsFromFlatSettings reads
+        // the rule rows: a column with a gap must not shift its values into
+        // the row above.
         $col = function ($k) use ($settings) {
-            return (isset($settings[$k]) && is_array($settings[$k])) ? array_values($settings[$k]) : [];
+            return (isset($settings[$k]) && is_array($settings[$k])) ? $settings[$k] : [];
+        };
+        $rows = function () use ($col) {
+            $n = 0;
+            foreach (func_get_args() as $k) {
+                foreach (array_keys($col($k)) as $i) if (is_int($i) && $i >= $n) $n = $i + 1;
+            }
+            return $n;
         };
         $isPid = function ($v) { return preg_match('/^[1-9][0-9]{0,9}$/', trim((string) $v)) === 1; };
         $errors = [];
         $aliases = $col('exists-alias');
         $aliasPids = $col('exists-alias-project');
         $seen = [];
-        for ($i = 0, $n = max(count($aliases), count($aliasPids)); $i < $n; $i++) {
+        for ($i = 0, $n = $rows('exists-alias', 'exists-alias-project'); $i < $n; $i++) {
             $alias = isset($aliases[$i]) ? strtolower(trim((string) $aliases[$i])) : '';
             $target = isset($aliasPids[$i]) ? trim((string) $aliasPids[$i]) : '';
             if ($alias === '' && $target === '') continue;
@@ -3206,7 +3326,7 @@ class UniversalValidator extends AbstractExternalModule
         $modes = $col('exists-consumer-mode');
         $surveys = $col('exists-consumer-surveys');
         $seen = [];
-        for ($i = 0, $n = max(count($projects), count($targets), count($modes), count($surveys)); $i < $n; $i++) {
+        for ($i = 0, $n = $rows('exists-consumer-project', 'exists-consumer-targets', 'exists-consumer-mode', 'exists-consumer-surveys'); $i < $n; $i++) {
             $p = isset($projects[$i]) ? trim((string) $projects[$i]) : '';
             $t = isset($targets[$i]) ? trim((string) $targets[$i]) : '';
             if ($p === '' && $t === '') continue;
@@ -3249,6 +3369,10 @@ class UniversalValidator extends AbstractExternalModule
         return $errors;
     }
 
+    /**
+     * Reassemble per-rule rows from the flat key => [per-instance values] shape
+     * validateSettings() receives for repeatable sub-settings.
+     */
     private static function rowsFromFlatSettings(array $settings)
     {
         $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
@@ -3530,8 +3654,11 @@ class UniversalValidator extends AbstractExternalModule
                     . $kindA($here) . ' — values are compared exactly, so both must be the same kind.');
             }
         }
+        // The agreement lists fields, not events: whether a name is an event
+        // there gets the same one answer as every other refusal, so a designer
+        // here cannot use the setup error to list that project's events.
         if (isset($frag['existsEvent']) && $this->eventIdIn($b, $frag['existsEvent']) === null) {
-            return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of project ' . $b . ' — use its unique event name.');
+            return $refuse(sprintf(self::CROSS_UNAVAILABLE, $b));
         }
         if (!empty($frag['existsSurveys']) && empty($c['surveys'])) {
             return $refuse('project ' . $b . ' does not answer survey respondents of this project — drop "surveys", or ask '
@@ -5444,23 +5571,49 @@ class UniversalValidator extends AbstractExternalModule
 
         // A rule that searches another project is checked only when that project
         // answers the person running the scan (crossScanProblem); otherwise it is
-        // reported, never silently passed.
+        // reported, never silently passed. A branched rule is judged per branch:
+        // a refused branch is marked (existsScanRefused, read by findingsExists)
+        // and the branches that search this project, or a project that answers,
+        // are still checked. crossRefused lists the projects that do not answer
+        // this person: ScanService refuses them a stored run's results, which
+        // may hold answers those projects gave someone else.
         $crossProjects = [];
+        $out['crossRefused'] = [];
         foreach ($live as $i => $r) {
             if (isset($out['skip'][$i]) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
-            $why = $this->crossScanProblem($pid, $r);
-            if ($why === null) {
-                foreach (self::existsParts($r) as $p) if (!empty($p['existsPid'])) $crossProjects[(int) $p['existsPid']] = true;
-                continue;
+            $branched = isset($r['branches']) && is_array($r['branches']) && $r['branches'];
+            $refused = [];
+            $kept = 0;
+            foreach (self::existsParts($r) as $bi => $p) {
+                if (empty($p['existsPid'])) { $kept++; continue; }
+                $why = $this->crossScanProblem($pid, $p);
+                if ($why === null) {
+                    $crossProjects[(int) $p['existsPid']] = true;
+                    $kept++;
+                    continue;
+                }
+                $refused[$bi] = $why;
+                $out['crossRefused'][(int) $p['existsPid']] = true;
             }
-            $out['skip'][$i] = true;
-            $unconf[$i . '|cross-project-exists'] = [
-                'rule'   => $i + 1,
-                'fields' => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
-                'why'    => 'this rule looks the value up in another project, but ' . $why . ', so the rule was NOT evaluated.',
-            ];
+            if (!$refused) continue;
+            $fields = (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [];
+            if (!$branched || $kept === 0) {
+                $out['skip'][$i] = true;
+                $unconf[$i . '|cross-project-exists'] = [
+                    'rule' => $i + 1, 'fields' => $fields,
+                    'why'  => 'this rule looks the value up in another project, but ' . reset($refused) . ', so the rule was NOT evaluated.',
+                ];
+            } else {
+                // Kept beside the rule, not written into it: the rule identities
+                // were derived from $live above and must not move.
+                foreach ($refused as $bi => $why) {
+                    $out['existsScanRefused'][$i][$bi] = 'this branch looks the value up in another project, but '
+                        . $why . ', so it was NOT evaluated for the entries it applies to.';
+                }
+            }
             $out['unconf'] = $unconf;
         }
+        $out['crossRefused'] = array_keys($out['crossRefused']);
 
         $out['readSet'] = $readSet;
 
@@ -5480,10 +5633,12 @@ class UniversalValidator extends AbstractExternalModule
             $out['policy']['maxCompletion'] = 'manifest-complete';
             $out['policy']['limits'][] = '@UVEXISTS rules were checked against the values saved when each part of '
                 . 'the scan ran; a value saved or removed in another record during the scan was not re-checked';
-            if ($crossProjects) {
-                $out['policy']['limits'][] = '@UVEXISTS rules that search project ' . implode(', ', array_keys($crossProjects))
-                    . ' read it as it stood when each part of the scan ran; changes saved there do not re-open this scan';
-            }
+        }
+        // Whatever the run can vouch for here, nothing re-opens it for a change
+        // in the other project, so the report says so whatever its coverage.
+        if ($crossProjects && isset($out['policy']) && is_array($out['policy'])) {
+            $out['policy']['limits'][] = '@UVEXISTS rules that search project ' . implode(', ', array_keys($crossProjects))
+                . ' read it as it stood when each part of the scan ran; changes saved there do not re-open this scan';
         }
 
         // WHICH INSTRUMENT OWNS EACH FIELD THE RUN WILL READ - derived from the
@@ -5616,6 +5771,13 @@ class UniversalValidator extends AbstractExternalModule
                     if ($evaluatedMode === 'unique' && !isset($evaluatedRule['uniqueRecordResults'])) {
                         self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
                         continue;
+                    }
+                    // Branches scanPlan found another project will not answer for
+                    // this person: findingsExists reports them instead of asking.
+                    if (isset($plan['existsScanRefused'][$i]) && isset($evaluatedRule['branches'])) {
+                        foreach ($plan['existsScanRefused'][$i] as $bi => $why) {
+                            if (isset($evaluatedRule['branches'][$bi])) $evaluatedRule['branches'][$bi]['existsScanRefused'] = $why;
+                        }
                     }
                     // A scan request answers @UVEXISTS from one index per rule, not one
                     // whole-project read per record (findingsExists).
@@ -6641,9 +6803,18 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * Rate-bucket tiers, interleaved in one bucket column: minute * RATE_TIERS
      * + tier. 0 = survey callers with no session, 1 = with a session, 2 =
-     * whole-field reads for survey lookups, 3 = kept for cross-project lookups.
+     * whole-field reads for survey lookups; lookups in another project, counted
+     * under that project's id: 3 = staff, 4 = survey callers, 5 = post-save
+     * audits and scans (crossRateLimited). Raising the count moves every new
+     * bucket number above every old one, so an upgrade never mixes the two.
      */
-    const RATE_TIERS = 4;
+    const RATE_TIERS = 6;
+    /**
+     * Lookups in one project that survey callers of every project together may
+     * make per minute (tier 4). Not a setting, for the reason
+     * surveyRateLimited gives: a mistyped limit would switch off a control.
+     */
+    const THROTTLE_CROSS_SURVEY = 120;
 
     /**
      * Throttle for the UNAUTHENTICATED (survey) uniqueness path.
@@ -6751,8 +6922,8 @@ class UniversalValidator extends AbstractExternalModule
             // (project_id, bucket) and a third dimension would mean an ALTER on
             // a table that is now created with IF NOT EXISTS on every
             // installation - so the tier rides in the low bits instead
-            // (RATE_TIERS). INT UNSIGNED holds a quadrupled minute-counter
-            // until the year 4000.
+            // (RATE_TIERS). INT UNSIGNED holds the minute-counter times six
+            // until the year 3300.
             $bucket = ((int) floor($now / $window)) * self::RATE_TIERS + ($sessioned ? 1 : 0);
             // LAST_INSERT_ID(expr) on both paths, so the fresh-bucket INSERT and
             // the existing-bucket UPDATE both answer with the number they wrote.

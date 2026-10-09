@@ -641,9 +641,12 @@ the specimen ID on the collection form.
   passes, every problem shows one setup error and nothing of that project is
   read. Its record is never shown. Each lookup, answered or refused, leaves a
   `uv-exists-probe` line in that project's module log, with the value as a
-  keyed hash under its key. At most 30 lookups a minute per session into one
-  project and 1,200 a minute answered by one project (Control Center settings);
-  over either, the answer is *could not check*.
+  keyed hash under its key. At most 30 lookups a minute per browser session
+  into one project. One project answers at most 1,200 a minute for signed-in
+  data entry, another 1,200 for post-save checks and scans, and 120 for survey
+  respondents (the first two are Control Center settings), so one kind of
+  caller cannot use up another's. Over any of them the answer is *could not
+  check*, and the searched project's log gets one "throttled" line a minute.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.

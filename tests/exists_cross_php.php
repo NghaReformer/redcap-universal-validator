@@ -55,18 +55,37 @@ namespace ExternalModules {
         public function isModuleEnabled($prefix, $pid = null) {
             return $prefix === $this->PREFIX && in_array((int) $pid, $this->enabledIn, true);
         }
-        public function getProjectStatus($pid = null) { return in_array((int) $pid, $this->deleted, true) ? null : 'DEV'; }
+        // As the framework: a status for every project that has a row, a deleted
+        // one included (only redcap_projects.date_deleted says it is deleted).
+        public $projectsWithRows = [149, 150, 300, 301, 302];
+        public function getProjectStatus($pid = null) { return in_array((int) $pid, $this->projectsWithRows, true) ? 'DEV' : null; }
         public function getUrl($p) { return '/x/' . $p; }
-        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        /** As framework 11+: log() throws with no signed-in user unless config.json enables no-auth logging. */
+        public function log($m, $p = []) {
+            if ($this->getUser() === null) {
+                $cfg = json_decode(file_get_contents(__DIR__ . '/../config.json'), true);
+                if (empty($cfg['enable-no-auth-logging'])) throw new \Exception('log() needs a user unless enable-no-auth-logging is set');
+            }
+            $this->logCalls[] = [$m, $p];
+            return count($this->logCalls);
+        }
         public function initializeJavascriptModuleObject() { return '<script></script>'; }
         public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
         public $rateBuckets = [];
+        public $projectReads = [];
         public $lastInsertId = 0;
-        public $queryThrows = false;
+        public $queryThrows = false;      // the rate-bucket table only
+        public $queryThrowsAll = false;
         public function query($sql, $params = []) {
-            if ($this->queryThrows) throw new \RuntimeException('no table');
+            if ($this->queryThrows && strpos($sql, 'uv_rate_bucket') !== false) throw new \RuntimeException('no table');
+            if ($this->queryThrowsAll) throw new \RuntimeException('no database');
             if (strpos($sql, 'SELECT LAST_INSERT_ID()') !== false) return [[$this->lastInsertId]];
             if (strpos($sql, 'SELECT ROW_COUNT()') !== false) return [[1]];
+            if (strpos($sql, 'FROM redcap_projects') !== false) {
+                $this->projectReads[] = (int) $params[0];
+                if (!in_array((int) $params[0], $this->projectsWithRows, true)) return [];
+                return [[in_array((int) $params[0], $this->deleted, true) ? '2026-10-01 09:00:00' : null]];
+            }
             if (strpos($sql, 'uv_rate_bucket') !== false && strpos($sql, 'INSERT') === 0) {
                 $k = (int) $params[0] . '|' . (int) $params[1];
                 $this->rateBuckets[$k] = isset($this->rateBuckets[$k]) ? $this->rateBuckets[$k] + 1 : 1;
@@ -338,7 +357,8 @@ namespace {
     check('alias: this project is refused', strpos(errOf($cfg, 'bad_self'), 'names this project') !== false);
     check('after the agreement: a field missing there is named', strpos(errOf($cfg, 'bad_ghost'), '"ghost" is not a field of project 300') !== false);
     check('after the agreement: date kinds are compared across projects', strpos(errOf($cfg, 'bad_family'), 'holds dates and "bad_family" holds no date or time') !== false);
-    check('after the agreement: "event" is an event of the other project', strpos(errOf($cfg, 'bad_event'), 'not an event of project 300') !== false);
+    check('"event": an unknown event there gets the one message, not a list of its events',
+        strpos(errOf($cfg, 'bad_event'), $UNAVAILABLE(300)) !== false && strpos(errOf($cfg, 'bad_event'), 'nowhere') === false);
     check('after the agreement: the match field here must exist', strpos(errOf($cfg, 'bad_local'), '"nope" is not a field in this project') !== false);
     check('rights agreement: "surveys" is refused', strpos(errOf($cfg, 'x_s'), 'does not answer survey respondents') !== false);
     check('rights agreement: an Identifier there may be searched', errOf($cfg, 'x_donor') === '');
@@ -525,7 +545,8 @@ namespace {
     $p = logsOf($m, 'uv-exists-probe');
     check('budget: an over-budget lookup is logged as throttled', end($p)['result'] === 'throttled');
     check('budget: it is counted in tier 3 for the other project', (bool) array_filter(array_keys($m->rateBuckets), function ($k) {
-        list($pid, $b) = explode('|', $k); return $pid === '300' && ((int) $b) % 4 === 3; }));
+        list($pid, $b) = explode('|', $k);
+        return $pid === '300' && ((int) $b) % \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS === 3; }));
     foreach (['abc', '0', '-5', ''] as $bad) {
         $m = mod(); $m->systemSettings['exists-system-cross-project-per-minute'] = $bad;
         check('budget: a setting of ' . json_encode($bad) . ' keeps the default', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'found');
@@ -607,6 +628,7 @@ namespace {
         return in_array('x_spec', $u['fields'], true) && strpos($u['why'], 'lookup-unavailable') !== false; }); };
     check('scan: an empty read there is never "not found"', !array_filter($res['violations'], function ($v) { return $v['type'] === 'exists'; })
         && $unavailable($res));
+    check('scan: ...and is not followed by a second, uncounted read of the record IDs there', count(readsOf(300)) === 1);
     $m = mod(); $m->systemSettings['exists-system-cross-project-per-minute'] = '1';
     \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404', 'x_rec' => 'L1'];
     $res = $scan($m);
@@ -614,10 +636,11 @@ namespace {
     check('scan: a read over the budget there is not made, and says so', (bool) array_filter($ir, function ($l) { return $l['result'] === 'throttled'; })
         // The first index (specimen_id) spends the budget of 1; the record-ID
         // index is then refused: x_rec is reported, and only the first index
-        // and the read behind its "not found" reached the other project.
+        // reached the other project. Its "not found" rests on that same read:
+        // the scan makes no second, uncounted read there.
         && (bool) array_filter($res['unconfigurable'], function ($u) {
             return in_array('x_rec', $u['fields'], true) && strpos($u['why'], 'lookup-unavailable') !== false; })
-        && count(readsOf(300)) === 2);
+        && count(readsOf(300)) === 1);
     $m = mod();
     \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404', 'redcap_data_access_group' => 'north'];
     $res = $scan($m, 7);
@@ -667,6 +690,209 @@ namespace {
     $uf = new \ReflectionMethod($m, 'userFormRights'); $uf->setAccessible(true);
     check('userFormRights: never answers for another project from getUserRights()', $uf->invoke($m, 300) === null);
     check('userFormRights: still answers for this project', is_array($uf->invoke($m, 149)));
+
+    // ---- 12) review fixes (2026-10-10) ----------------------------------------------------------
+    $RT = \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS;
+    $slot = function ($tier) use ($RT) { return ((int) floor(time() / 60)) * $RT + $tier; };
+    $tiersOf = function ($m, $pid) use ($RT) {
+        $t = [];
+        foreach (array_keys($m->rateBuckets) as $k) {
+            list($p, $b) = explode('|', $k);
+            if ((int) $p === $pid) $t[((int) $b) % $RT] = true;
+        }
+        ksort($t);
+        return array_keys($t);
+    };
+
+    // M1: survey lookups and survey saves are logged there. The framework's
+    // log() throws with no signed-in user unless config.json allows it (the
+    // stub above does the same), and logCrossProbe swallows that.
+    $cfgJson = json_decode(file_get_contents(__DIR__ . '/../config.json'), true);
+    check('M1: config.json enables logging with no signed-in user', ($cfgJson['enable-no-auth-logging'] ?? null) === true);
+    $m = mod(null, $SV);
+    \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404'];
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    $p = array_values(array_filter(logsOf($m, 'uv-exists-probe'), function ($l) { return $l['channel'] === 'audit'; }));
+    check('M1: a save with no user is logged there, as "(no user)", not "survey"', count($p) >= 1 && $p[0]['user'] === '(no user)');
+
+    // M3: each kind of caller has its own counter there; the audit is not one of the live ones.
+    $m = mod('nurse', [consent('answer', 'specimen_id, site_code, record', true)]);
+    ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    askSurvey($m, 'x_s', ['x_s' => 'SP-1']);
+    \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404'];
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    check('M3: staff, survey and audit lookups are counted in tiers 3, 4 and 5', $tiersOf($m, 300) === [3, 4, 5]);
+    $m = mod('nurse', [consent('answer', 'specimen_id, site_code, record', true)]);
+    $m->rateBuckets['300|' . $slot(4)] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_CROSS_SURVEY;
+    $r = askSurvey($m, 'x_s', ['x_s' => 'SP-1']);
+    check('M3: a spent survey budget there refuses survey callers', ($r['state'] ?? null) === 'unknown');
+    check('M3: ...and staff are still answered', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'found');
+    \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404'];
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    check('M3: ...and so is the post-save audit', (bool) array_filter(logsOf($m, 'invalid-id-saved'),
+        function ($e) { return $e['field'] === 'x_spec' && $e['reason'] === 'not-found'; }));
+    $m = mod(); $m->systemSettings['exists-system-cross-project-per-minute'] = '2';
+    $m->rateBuckets['300|' . $slot(3)] = 2;
+    \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404'];
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    check('M3: a spent staff budget does not switch the audit off', (bool) array_filter(logsOf($m, 'invalid-id-saved'),
+        function ($e) { return $e['field'] === 'x_spec' && $e['reason'] === 'not-found'; }));
+    $m = mod(); $m->systemSettings['exists-system-cross-project-per-minute'] = '2';
+    for ($i = 0; $i < 6; $i++) ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    $res = array_map(function ($l) { return $l['result']; }, logsOf($m, 'uv-exists-probe'));
+    check('M3: one "throttled" line per budget and minute, not one per refusal', $res === ['found', 'found', 'throttled']);
+    $m = mod(); $m->queryThrows = true;
+    for ($i = 0; $i < 3; $i++) ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+    check('M3: a counter that cannot be kept is logged once per request',
+        array_map(function ($l) { return $l['result']; }, logsOf($m, 'uv-exists-probe')) === ['throttled']);
+
+    // Correctness 1: the audit never confines the lookup to the saver's group there.
+    $m = mod('grouped');
+    \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-2'];   // saved there, in lab_south
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    check('C1: a saver in a group there: no "not found" for a value of another group',
+        !array_filter(logsOf($m, 'invalid-id-saved'), function ($e) { return $e['field'] === 'x_spec'; }));
+    check('C1: ...it is a rule problem instead', (bool) array_filter(logsOf($m, 'uvalidate-unconfigurable'), function ($e) {
+        return strpos($e['fields'], 'x_spec') !== false && strpos($e['why'], 'Data Access Group of the other project') !== false; }));
+    check('C1: ...logged there as refused, and that project is not read', !readsOf(300)
+        && array_map(function ($l) { return $l['result']; }, logsOf($m, 'uv-exists-probe')) === ['refused']);
+    check('C1: live, the same user is still confined to their group', (ask(mod('grouped'), 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'found');
+
+    // Correctness 2: the audit does not spend the per-session window.
+    if (session_status() === PHP_SESSION_ACTIVE) {
+        $_SESSION = [];
+        $m = mod(); $m->systemSettings['exists-system-cross-user-per-minute'] = '2';
+        ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+        ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+        check('C2: the session window is spent', (ask($m, 'x_spec', ['x_spec' => 'SP-1'])['state'] ?? null) === 'unknown');
+        \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404'];
+        $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+        check('C2: ...and the audit still checks the save', (bool) array_filter(logsOf($m, 'invalid-id-saved'),
+            function ($e) { return $e['field'] === 'x_spec' && $e['reason'] === 'not-found'; }));
+        $_SESSION = [];
+        $m = mod(); $m->systemSettings['exists-system-cross-user-per-minute'] = '2';
+        for ($i = 0; $i < 5; $i++) ask($m, 'x_spec', ['x_spec' => 'SP-1']);
+        check('C2: a spent session window is logged there once a minute, not once per refusal',
+            array_map(function ($l) { return $l['result']; }, logsOf($m, 'uv-exists-probe')) === ['found', 'found', 'throttled']);
+        $_SESSION = [];
+        $m = mod('nurse', [consent('answer', 'specimen_id, site_code, record', true)]);
+        $m->systemSettings['exists-system-cross-user-per-minute'] = '2';
+        $r = [];
+        for ($i = 0; $i < 3; $i++) $r[] = askSurvey($m, 'x_s', ['x_s' => 'SP-1'])['state'] ?? null;
+        check('M3: a survey respondent\'s session has the same window, below the shared survey count', $r === ['found', 'found', 'unknown']
+            && ($m->rateBuckets['300|' . $slot(4)] ?? 0) === 2);
+        $_SESSION = [];
+    } else {
+        check('C2: a session could be started in this runtime', false);
+    }
+
+    // Correctness 3: another project's record IDs are read only within the budget, and the read is logged.
+    $SVR = [consent('answer', 'specimen_id, record', true)];
+    $m = mod(null, $SVR);
+    $m->rateBuckets['149|' . $slot(2)] = 60;   // the survey full-read budget of this project, spent
+    $r = askSurvey($m, 'x_srec', ['x_srec' => 'L9']);
+    $pk = array_filter(readsOf(300), function ($c) { return empty($c['records']) && ($c['fields'] ?? null) === ['record_id']; });
+    check('C3: a spent survey read budget: no read of the record IDs there', !$pk && ($r['state'] ?? null) === 'unknown');
+    $m = mod();
+    ask($m, 'x_rec', ['x_rec' => 'L9']);
+    $p = logsOf($m, 'uv-exists-probe');
+    check('C3: a staff record-ID miss reads the record IDs there, and says so', count($p) === 1 && $p[0]['result'] === 'not-found'
+        && ($p[0]['extra_read'] ?? null) === 'record ids');
+    $m = mod();
+    ask($m, 'x_spec', ['x_spec' => 'SP-404']);
+    $p = logsOf($m, 'uv-exists-probe');
+    check('C3: a field miss rests on its own full read: no extra read there', !isset($p[0]['extra_read'])
+        && !array_filter(readsOf(300), function ($c) { return ($c['fields'] ?? null) === ['record_id']; }));
+    $m = mod();
+    ask($m, 'x_rec', ['x_rec' => 'L1']);
+    check('C3: a record-ID hit makes no extra read', !isset(logsOf($m, 'uv-exists-probe')[0]['extra_read']));
+
+    // Correctness 4: a branched rule is skipped only in its refused branches.
+    $m = mod('outsider');
+    \REDCap::$dictionaries[149]['x_br'] = f('result', ux('{"in":"[site]","when":"[site]=\'A\'"}') . ' '
+        . ux('{"in":"[specimen_id]","project":300,"when":"[site]=\'B\'"}'));
+    \REDCap::$data[149]['1'][351] += ['x_br' => '77'];
+    \REDCap::$data[149]['2'] = [351 => ['record_id' => '2', 'site' => 'B', 'x_br' => 'SP-1']];
+    $res = $scan($m);
+    check('C4: the branch that searches this project is still checked', (bool) array_filter($res['violations'],
+        function ($v) { return $v['field'] === 'x_br' && $v['record'] === '1'; }));
+    check('C4: the refused branch is reported, not checked', (bool) array_filter($res['unconfigurable'], function ($u) {
+        return in_array('x_br', $u['fields'], true) && strpos($u['why'], 'this branch looks the value up in another project') !== false; })
+        && !array_filter($res['violations'], function ($v) { return $v['field'] === 'x_br' && $v['record'] === '2'; }));
+    check('C4: and the other project is not read', !readsOf(300));
+    $m = mod('outsider');
+    \REDCap::$dictionaries[149]['x_br'] = f('result', ux('{"in":"[specimen_id]","project":300,"when":"[site]=\'A\'"}') . ' '
+        . ux('{"in":"record","project":300,"when":"[site]=\'B\'"}'));
+    \REDCap::$data[149]['1'][351] += ['x_br' => 'SP-404'];
+    $res = $scan($m);
+    $un = array_filter($res['unconfigurable'], function ($u) { return in_array('x_br', $u['fields'], true); });
+    check('C4: a rule with every branch refused is reported once, as a whole', count($un) === 1
+        && strpos(reset($un)['why'], 'this rule looks the value up in another project') !== false
+        && !array_filter($res['violations'], function ($v) { return $v['field'] === 'x_br'; }) && !readsOf(300));
+
+    // Correctness 5: the scan says that changes there do not re-open it, whatever its coverage.
+    $m = mod();
+    $plan = new \ReflectionMethod($m, 'scanPlan'); $plan->setAccessible(true);
+    $p = $plan->invoke($m, 149, []);
+    check('C5: the limit names the other project on a ' . ($p['policy']['maxCompletion'] ?? '?') . ' scan',
+        (bool) array_filter($p['policy']['limits'] ?? [], function ($l) { return strpos($l, 'search project 300') !== false
+            && strpos($l, 'do not re-open this scan') !== false; }));
+
+    // Correctness 8: the dialog reads each column by instance, so a gap cannot shift rows.
+    $e = $v(['exists-consumer-project' => [0 => '150', 2 => '151'], 'exists-consumer-targets' => [0 => 'specimen_id', 2 => 'nope'],
+             'exists-consumer-mode' => [0 => 'rights', 2 => 'rights'], 'exists-consumer-surveys' => [0 => false, 2 => false]]);
+    check('C8: a problem in row 3 is reported as row 3', strpos($e, 'row 3: "nope" is not a field') !== false
+        && strpos($e, 'row 2') === false && strpos($e, 'row 1') === false);
+
+    // L1: "record" is the record ID; a field of that name cannot be searched or matched.
+    foreach (['@UVEXISTS=[record]', ux('{"in":"[record]","project":300}'), ux('{"in":"[specimen_id]","match":{"record":"[site]"}}'),
+              ux('{"in":"[specimen_id]","match":{"site_code":"[record]"}}')] as $tag) {
+        $e = $parse($tag);
+        check('L1: refused: ' . $tag, isset($e['error']) && strpos($e['error'], 'a field named "record" cannot be used') !== false);
+    }
+    check('L1: checkFragment refuses a "record" match target too', (bool) array_filter(AnnotationRules::checkFragment(
+        ['type' => 'exists', 'existsIn' => 'specimen_id', 'existsMatch' => ['record' => 'site']]),
+        function ($x) { return strpos($x, 'a field named "record"') !== false; }));
+    check('L1: record (no brackets) still means the record ID', ($parse('@UVEXISTS=record')['existsIn'] ?? null) === 'record');
+
+    // L2: a deleted project has a status, and a row with date_deleted: only the row tells.
+    $m = mod();
+    $cfg = page($m);
+    check('L2: a deleted project is refused although it reports a status', $m->getProjectStatus(302) === 'DEV'
+        && strpos(errOf($cfg, 'bad_gone'), $UNAVAILABLE(302)) !== false && in_array(302, $m->projectReads, true));
+    $m = mod(); $m->queryThrowsAll = true;
+    $mn = new \ReflectionMethod($m, 'moduleEnabledIn'); $mn->setAccessible(true);
+    check('L2: a project table that cannot be read refuses (fails closed)', $mn->invoke($m, 300) === false);
+    $m = mod();
+    check('L2: a live project with the module passes', $mn->invoke($m, 300) === true);
+
+    // M2: a stored run is not shown to a reader the other project would not answer.
+    class CrossRunModule extends \INSPIRE\UniversalValidator\UniversalValidator {
+        public $runRow = null;
+        public function query($sql, $params = []) {
+            if (strpos($sql, 'FROM ' . \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run')) !== false
+                    && strpos($sql, 'WHERE run_id = ?') !== false) {
+                return $this->runRow === null ? [] : [$this->runRow];
+            }
+            return parent::query($sql, $params);
+        }
+    }
+    $runFor = function ($user) {
+        $base = mod($user);
+        $m = new CrossRunModule();
+        foreach (['projectIdReturn', 'settingsBy', 'subSettingsBy', 'systemSettings'] as $k) $m->$k = $base->$k;
+        foreach (['nurse', 'outsider'] as $u) {
+            \REDCap::$rightsBy[149][$u] = ['design' => '1', 'data_export_tool' => '1'] + \REDCap::$rightsBy[149][$u];
+        }
+        $m->runRow = ['77', '149', null, 'scanning', null, 'partial', 'complete', 'none', '1', 'fp', '10', '3', '3', '1',
+                      '1', '1', 'nurse', '2', '400', '9', '9', null];
+        return (new \INSPIRE\UniversalValidator\Scan\ScanService($m))->status(149, 77);
+    };
+    $st = $runFor('outsider');
+    check('M2: a reader with no rights there is refused the run', empty($st['ok'])
+        && strpos((string) $st['why'], 'project 300, which does not answer your lookups') !== false);
+    $st = $runFor('nurse');
+    check('M2: a reader the other project answers sees it', !empty($st['ok']));
 
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

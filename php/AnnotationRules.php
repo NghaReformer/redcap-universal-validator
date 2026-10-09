@@ -610,6 +610,7 @@ class AnnotationRules
         }
         if ($val[0] !== '{') {
             $in = self::existsSource($val);
+            if ($in === false) return ['error' => self::EXISTS_RECORD_FIELD];
             if ($in === null) {
                 return ['error' => self::TAG_EXISTS . '=' . $val . ' is not a place to look — use record, one field '
                     . 'reference such as [specimen_id], or the JSON form for other options.'];
@@ -635,6 +636,7 @@ class AnnotationRules
         }
         if (!is_string($cfg['in'])) return ['error' => '"in" must be a string.'];
         $in = self::existsSource($cfg['in']);
+        if ($in === false) return ['error' => self::EXISTS_RECORD_FIELD];
         if ($in === null) {
             return ['error' => '"in" must be "record" or one field reference such as "[specimen_id]" — got '
                 . json_encode($cfg['in']) . '. To look in one event, add "event".'];
@@ -663,8 +665,9 @@ class AnnotationRules
             }
             $match = [];
             foreach ($cfg['match'] as $target => $local) {
-                $t = strtolower(trim((string) $target));
+                $t = strtolower(trim((string) $target));   // a target named "record": refused by checkExists
                 $l = is_string($local) ? self::existsSource($local) : null;
+                if ($l === false) return ['error' => self::EXISTS_RECORD_FIELD];
                 if ($l === null || $l === 'record') {
                     return ['error' => '"match" value for "' . $t . '" must be one field reference of this record, such as "[site]".'];
                 }
@@ -694,13 +697,24 @@ class AnnotationRules
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
-    /** "record", or the field one plain [field] reference names, or null. */
+    /**
+     * "record", or the field one plain [field] reference names, or null; false
+     * for [record]. "record" is the record ID everywhere a lookup is described
+     * (here, the other project's agreement, its rights and Identifier checks),
+     * so a field that happens to be called "record" cannot be searched: it
+     * would be checked as the record ID and read as the field.
+     */
     private static function existsSource($text)
     {
         $t = trim((string) $text);
         if (strtolower($t) === 'record') return 'record';
-        return preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)\]$/', $t, $m) ? strtolower($m[1]) : null;
+        if (!preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)\]$/', $t, $m)) return null;
+        $f = strtolower($m[1]);
+        return $f === 'record' ? false : $f;
     }
+
+    const EXISTS_RECORD_FIELD = 'a field named "record" cannot be used by ' . self::TAG_EXISTS
+        . ': "record" stands for the record ID. Write record (without brackets) to look up record IDs.';
 
     /** Parse one raw tag value into a fragment (see parseField). */
     private static function parseValue($val, array $opts = [])
@@ -1565,6 +1579,10 @@ class AnnotationRules
                 foreach ($match as $t => $l) {
                     if (!is_string($t) || !preg_match('/^[a-z][a-z0-9_]*$/', $t)) {
                         $errors[] = '"match" target ' . json_encode($t) . ' is not a valid REDCap field name.';
+                        break;
+                    }
+                    if ($t === 'record' || $l === 'record') {
+                        $errors[] = self::EXISTS_RECORD_FIELD;
                         break;
                     }
                     if (!is_string($l) || !preg_match('/^[a-z][a-z0-9_]*$/', $l)) {

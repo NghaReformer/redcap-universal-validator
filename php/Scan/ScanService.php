@@ -339,6 +339,18 @@ final class ScanService
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
+        // A run can hold answers another project gave the person who ran it.
+        // A reader that project would not answer is refused the whole run, by
+        // the same rule as an instrument they cannot read (ScanAuthorization:
+        // whole-report denial, never filtered rows). The plan is re-derived
+        // for THIS reader, so the list is theirs. Cancel does not ask: a run
+        // must stay stoppable.
+        $refused = (isset($ent['ctx']['plan']['crossRefused']) && is_array($ent['ctx']['plan']['crossRefused']))
+                 ? $ent['ctx']['plan']['crossRefused'] : [];
+        if ($refused) {
+            return ['ok' => false, 'why' => 'this scan looks values up in project ' . implode(', ', $refused)
+                . ', which does not answer your lookups, so its results are not shown to you'];
+        }
 
         $done = 0;
         foreach ($store->recordStates($runId) as $st => $n) {

@@ -95,12 +95,19 @@ nor a time, because the comparison is exact on the stored values.</p>
 <li>The record found there is never shown. Every lookup, answered or refused, is written to
     the searched project's module log, with the value as a keyed hash under that project's
     key, or left out when that project logs no values.</li>
-<li>At most 30 lookups a minute per session into one project, and 1,200 a minute answered
-    by one project; both are Control Center settings. Over either, the answer is "could not
-    check".</li>
-<li>The audit asks as the user who saved. The Validation scan reads the searched project
-    once per searched field and request, and reports the rule as not evaluated for a user
-    who would not be answered there or who is in a Data Access Group there.</li>
+<li>At most 30 lookups a minute per browser session into one project. One project answers
+    at most 1,200 a minute for signed-in data entry, another 1,200 for post-save checks and
+    scans, and 120 for survey respondents; the first two are Control Center settings. Over
+    any of them the answer is "could not check", and the searched project's log gets one
+    "throttled" line a minute.</li>
+<li>The audit asks as the user who saved. A user in a Data Access Group of the searched
+    project gets "could not check" after saving: a check confined to that group would log a
+    value saved in another group as missing, and the same save by someone else as clean.</li>
+<li>The Validation scan reads the searched project once per searched field and request.
+    Each branch of the rule is judged on its own. A branch the scanning user would not be
+    answered for, or that needs a project where that user is in a Data Access Group, is
+    reported as not evaluated. A stored scan that looked up values in a project the reader
+    would not be answered by is not shown to that reader.</li>
 </ul>
 
 <h2>Audit</h2>

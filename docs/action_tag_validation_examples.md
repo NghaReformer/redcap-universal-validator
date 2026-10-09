@@ -1588,36 +1588,58 @@ stay fields of this record. Three switches must all be on:
 
 - **One refusal for every reason.** Until the searched project's agreement
   passes, every problem shows the same setup error: the project does not exist,
-  does not have the module, does not list this project, or does not list a
-  searched field. Neither its dictionary nor its data is read before then, so
-  the error tells a designer nothing about that project. Field errors (a field
-  missing there, a different kind of date, an unknown event) come only after.
+  is deleted, does not have the module, does not list this project, or does not
+  list a searched field. Neither its dictionary nor its data is read before
+  then, so the error tells a designer nothing about that project. An `event`
+  that is not one of its events gets the same error, because the agreement
+  lists fields, not events. Field errors (a field missing there, a different
+  kind of date) come only after the agreement passes. A withdrawn agreement
+  shows up the same way on the form, and a survey shows its generic notice.
 - **The record found there is never shown.** Staff get found / not found and,
   for *could not check*, a reason.
-- **Every lookup is logged in the searched project.** Its module log gets one
-  `uv-exists-probe` line per lookup, answered or refused: the asking project,
-  the channel (staff, survey, audit), the user, the field, the result, and the
+- **Lookups are logged in the searched project.** Once the module can read that
+  project's agreement, its module log gets one `uv-exists-probe` line per
+  lookup, answered or refused: the asking project, the channel (staff, survey,
+  audit), the user ("survey" for a respondent, "(no user)" for a save nobody
+  was signed in for, such as a data import), the field, the result, and the
   value as a keyed hash under that project's key. The value is left out when
   that project's "How to log invalid values" is "none" or "off", and is never
-  logged raw.
-- **Budgets.** At most 30 lookups a minute per signed-in session into one
-  project, and 1,200 a minute answered by one project from every caller
-  together. Administrators can change both in the Control Center settings. Over
-  either, or when the counter cannot be kept, the lookup answers *could not
+  logged raw. When a *not found* needed a read of that project's record IDs,
+  the line says `extra_read: record ids`. Nothing is written there while the
+  Control Center switch is off or the module is not enabled in that project.
+  Over a budget, only the first refused lookup of the minute is logged, so a
+  flood of refused lookups is not a flood of log lines.
+- **Budgets.** Each searched project keeps three counters, so no kind of caller
+  can use up another's: staff lookups (1,200 a minute from every project
+  together, plus 30 a minute per signed-in session), survey lookups (120 a
+  minute from every project together, plus the session window), and post-save
+  audits with scans (1,200 a minute). Administrators can change the 1,200 and
+  the 30 in the Control Center settings; the survey limit is fixed. Over a
+  limit, or when the counter cannot be kept, the lookup answers *could not
   check*.
 - **An empty read is not "not found".** When the searched project returns no
   records at all to the lookup (or, for a user confined to a group there, none
-  of that group), the answer is *could not check*.
+  of that group), the answer is *could not check*. A record-ID lookup that
+  finds nothing reads that project's record IDs to tell the two apart; a survey
+  lookup does so only within the survey read budget.
 - **The audit** asks as the user who saved. A save with no signed-in user (a
   survey) is checked only when the searched project answers survey respondents.
-  Anything else is logged as a rule problem.
+  A saver who is in a Data Access Group of the searched project, under "Only
+  users who have rights", is not checked after the save: their lookups see only
+  their group there, and a value saved in another group would be logged as
+  missing. Anything else is logged as a rule problem.
 - **The Validation scan** reads the searched project once per searched field per
-  scan request and leaves one `uv-exists-index-read` line in its log. The rule
-  is reported as not evaluated when the person running the scan would not be
-  answered, or is in a Data Access Group of the searched project. Changes saved
-  in the searched project do not re-open a durable scan of this one. A scan
-  confined to one group of this project still checks these rules: this
-  project's groups mean nothing in the other one.
+  scan request and leaves one `uv-exists-index-read` line in its log. A rule is
+  reported as not evaluated when the person running the scan would not be
+  answered, or is in a Data Access Group of the searched project; in a rule
+  with several branches only those branches are reported, and the others are
+  checked. A stored scan that searched another project is shown only to people
+  that project would answer. Changes saved in the searched project do not
+  re-open a scan of this one, and the report says so. A scan confined to one
+  group of this project still checks these rules: this project's groups mean
+  nothing in the other one.
+- **A field named `record`** cannot be searched or matched: `record` stands for
+  the record ID, in this tag and in the other project's agreement.
 
 ### `@UVEXISTS` JSON keys
 
@@ -1646,6 +1668,14 @@ These are refused when the rule is saved:
 # Groups and events of this record mean nothing in another project.
 # refused: not shared between projects
 @UVEXISTS={"in":"[specimen_id]","project":"lab","scope":"dag"}
+
+# "record" is the record ID. A field of that name cannot be searched.
+# refused: a field named "record" cannot be used
+@UVEXISTS=[record]
+
+# Nor matched.
+# refused: a field named "record" cannot be used
+@UVEXISTS={"in":"[specimen_id]","match":{"record":"[site]"}}
 
 # Scopes are project, dag and event.
 # refused: "scope" must be project, dag or event
@@ -3089,8 +3119,10 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `@UVWINDOW` bound, either side of `from` | 36,500 units |
 | `@UVEXISTS` `match` pairs | 5 |
 | `@UVEXISTS` lookups per user session | 60 a minute, shared with `@UVUNIQUE` |
-| `@UVEXISTS` lookups into one other project, per user session | 30 a minute (Control Center setting) |
-| `@UVEXISTS` lookups one project answers for other projects | 1,200 a minute (Control Center setting) |
+| `@UVEXISTS` lookups into one other project, per browser session | 30 a minute (Control Center setting) |
+| `@UVEXISTS` lookups one project answers for signed-in data entry in other projects | 1,200 a minute (Control Center setting) |
+| `@UVEXISTS` lookups one project answers for post-save checks and scans of other projects | 1,200 a minute (same setting, its own count) |
+| `@UVEXISTS` lookups one project answers for survey respondents of other projects | 120 a minute |
 
 ### Algorithms
 
