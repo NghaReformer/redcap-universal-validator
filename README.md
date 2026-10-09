@@ -651,6 +651,41 @@ the specimen ID on the collection form.
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.
 
+## Numbers within plausible limits — the `@UVRANGE` tag
+
+REDCap's number validation takes one minimum and one maximum and only warns.
+`@UVRANGE` checks a number against two levels of limits: a usual range, outside
+which the value is unusual, and a plausible range, outside which it is a typing
+slip:
+
+```text
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+```
+
+- **JSON form only.** `soft` and `hard` are `[low, high]`, both ends included;
+  `null` leaves an end open, and the soft limits must lie inside the hard ones.
+  Outside `soft`, the note is amber and `softBlock` decides (`off` or `confirm`,
+  default `confirm`). Outside `hard`, or not a number, the note is red and
+  `hardBlock` decides (`confirm` or `hard`, default `hard`). `blockSave` is
+  refused. Optional `unit`, `when`, `message`.
+- **Number fields:** Text fields with no, integer or number validation
+  (including comma decimals), calc fields and sliders. A calc field and a
+  read-only field never block a save.
+- **Exact.** Limits and values are compared as decimals, digit by digit, so
+  `17.50` equals `17.5`. Exponents, thousands separators and units typed into
+  the box are not numbers. Blank checks nothing.
+- **Branch by group.** Several `@UVRANGE` tags with `when` give different
+  limits by sex, age group or anything else on the form.
+- **The note waits.** It appears when the field is left, not while a number is
+  being typed.
+- **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
+  `soft-high`, `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock`
+  says. The Validation scan reports "Unusual value", "Implausible value" or "Not
+  a number", with the limits in the detail line. Configure via field annotation
+  only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -838,6 +873,13 @@ check-character primitive, but the full runtime path the module actually uses:
   switch, the alias, the searched project's agreement (one refusal for every
   reason, nothing read before it passes), rights there, the probe log, the
   budgets, the audit and the scan.
+- `tests/range_js.cjs` / `tests/range_php.php` — the `@UVRANGE` verdict
+  (edges, exact decimals past 2^53, comma decimals, what is not a number) in
+  both runtimes from one fixture, `tests/range_fixture.json`, plus the grammar.
+  `tests/range_dom_js.cjs` drives the browser rule (the note waits for the
+  field to be left, each level's block, calc and read-only fields never block)
+  and `tests/range_module_php.php` the server side: eligible fields, the audit,
+  the scan and its per-branch detail line.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -882,6 +924,10 @@ php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clo
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
+node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
+php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
+node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
+php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

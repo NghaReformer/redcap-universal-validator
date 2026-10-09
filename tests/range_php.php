@@ -91,6 +91,17 @@ check('when, message and caseSensitive carried', !isset($f['error']) && $f['when
     && $f['message'] === 'Check the units.' && $f['caseSensitive'] === true);
 $f = frag('@UVRANGE={"hard":[0,10],"unit":"  mmHg "}');
 check('unit trimmed', ($f['rangeUnit'] ?? null) === 'mmHg');
+// PHP writes a small double with an exponent; the limit keeps the digits as typed.
+$f = frag('@UVRANGE={"hard":[0.0000001,0.00025]}');
+check('a small limit typed plainly is kept (got ' . json_encode($f) . ')', !isset($f['error'])
+    && $f['rangeHardLo'] === '0.0000001' && $f['rangeHardHi'] === '0.00025');
+$f = frag('@UVRANGE={"hard":[-2.5e-5,1e3],"soft":[-1.25E-5,0.000125]}');
+check('a JSON number with an exponent is that number', !isset($f['error']) && $f['rangeHardLo'] === '-0.000025'
+    && $f['rangeHardHi'] === '1000' && $f['rangeSoftLo'] === '-0.0000125' && $f['rangeSoftHi'] === '0.000125');
+$f = frag('@UVRANGE={"hard":[0,1e15]}');
+check('a large whole double below 2^53 is spelled out', !isset($f['error']) && $f['rangeHardHi'] === '1000000000000000');
+$f = frag('@UVRANGE={"hard":[0,1.0e16]}');
+check('a double at or past 2^53 is refused', isset($f['error']) && strpos($f['error'], 'the "hard" high limit must be a number') !== false);
 
 // serialize_precision 17 (old php.ini) must not change the digits kept.
 $old = ini_get('serialize_precision');

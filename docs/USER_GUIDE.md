@@ -882,6 +882,8 @@ Required and Unique rules: the same minus calc. Choice-filter rules
 (`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
 rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
 validation. Lookup rules (`@UVEXISTS`): Text, dropdown, radio and SQL fields.
+Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
+validation (including comma decimals), calc fields and sliders.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -945,6 +947,19 @@ this project with found / not found only, and only then also survey
 respondents. The lab project's module log records every lookup, answered or
 refused. Until the lab project agrees, the rule shows one setup error that does
 not say what is missing.
+
+**Can a lab value get a gentle warning when unusual and a block when impossible?**
+Yes. The `@UVRANGE` tag takes two ranges.
+`@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}` shows an amber note
+and asks "save anyway?" for a haemoglobin outside 12 to 17.5, and a red note
+that blocks the save outside 3 to 25 or for text that is not a number. Set
+`"softBlock":"off"` for a note only, or `"hardBlock":"confirm"` to ask instead
+of blocking. Write one tag per group with `when` for limits by sex or age
+group. The note appears when the user leaves the field, not while typing. A
+calc field never blocks. The post-save audit logs every value outside either
+range, and the Validation scan lists them as "Unusual value" or "Implausible
+value". Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
 In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as

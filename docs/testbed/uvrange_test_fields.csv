@@ -1,0 +1,20 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+ur_sex,uv_range_test,Plausible numbers (UVRANGE),radio,Sex (picks the haemoglobin limits),"1, Male | 2, Female",Blank: the haemoglobin field checks nothing.,,,,,,,,,,,
+ur_hb,uv_range_test,,text,"Haemoglobin (g/dL), limits by sex",,"Male: 13 is lower than usual (13.5 to 17.5). Female: 13 is usual, 16 is higher than usual (12 to 15.5). 2 is below the plausible range for both and blocks the save.",number_1dp,,,,,,,,,,"@UVRANGE={""soft"":[12,15.5],""hard"":[3,25],""unit"":""g/dL"",""when"":""[ur_sex]='2'""} @UVRANGE={""soft"":[13.5,17.5],""hard"":[3,25],""unit"":""g/dL"",""when"":""[ur_sex]='1'""}"
+ur_sbp,uv_range_test,,text,Systolic pressure (mmHg): a note only above 140,,"150: amber note, the save goes through without a question. 30: red, blocked.",integer,,,,,,,,,,"@UVRANGE={""soft"":[null,140],""softBlock"":""off"",""hard"":[40,250],""unit"":""mmHg""}"
+ur_wt,uv_range_test,,text,Weight (kg): asks instead of blocking,,"160: amber, asks. 400: red, asks (hardBlock confirm), never blocks outright.",number,,,,,,,,,,"@UVRANGE={""soft"":[30,150],""hard"":[2,300],""hardBlock"":""confirm"",""unit"":""kg""}"
+ur_ht,uv_range_test,,text,"Height (cm), feeds the BMI calc",,No rule here.,number,,,,,,,,,,
+ur_bmi,uv_range_test,,calc,"BMI (calc): noted, never blocks","round([ur_wt]/(([ur_ht]/100)^2),1)","Weight 160 and height 150 make 71.1: red note, and the save still goes through.",,,,,,,,,,,"@UVRANGE={""soft"":[16,35],""hard"":[10,60],""unit"":""kg/m²""}"
+ur_temp_c,uv_range_test,,text,"Temperature (°C), comma decimals",,"Comma field: 37,5 is usual; 37,6 is higher than usual (expected 36 to 37,5 °C). 98,6 is above the plausible range.",number_1dp_comma_decimal,,,,,,,,,,"@UVRANGE={""soft"":[36,37.5],""hard"":[30,43],""unit"":""°C""}"
+ur_pain,uv_range_test,,slider,Pain score (slider): unusual above 7,0 | 5 | 10,"Move the slider to 9: amber note, the save asks first.",number,,,,,,,,,,"@UVRANGE={""soft"":[0,7]}"
+ur_free,uv_range_test,,text,A number in a Text field with no validation,,"n/a: ""This is not a number."" and blocked. 1,200: not a number. 42: nothing shown.",,,,,,,,,,,"@UVRANGE={""hard"":[0,100]}"
+ur_msg,uv_range_test,,text,Weight with your own message,,"0.4: shows ""Check the scale."" and blocks.",number,,,,,,,,,,"@UVRANGE={""hard"":[0.5,250],""message"":""Check the scale.""}"
+ur_big,uv_range_test,,text,"A very large limit, kept exactly",,9007199254740992 is fine; 9007199254740993 is above the plausible range (floating point would call them equal).,,,,,,,,,,,"@UVRANGE={""hard"":[""0"",""9007199254740992""]}"
+ur_small,uv_range_test,,text,A very small limit typed as a plain decimal,,0.0000001 is fine; 0.00000009 is below the plausible range.,number,,,,,,,,,,"@UVRANGE={""hard"":[0.0000001,0.00025]}"
+ur_snap,uv_range_test,,text,Limits chosen by the enrolment site (another form),,Every seed record is site 1 (North): 120 shows a red note naming xe_site and does not block.,number,,,,,,,,,,"@UVRANGE={""hard"":[0,100],""when"":""[xe_site]='1'""}"
+ur_bad_email,uv_range_test,Configuration errors (each must show an error and check nothing),text,Bad: email validation,,,email,,,,,,,,,,"@UVRANGE={""hard"":[0,1]}"
+ur_bad_radio,uv_range_test,,radio,Bad: radio field,"1, One | 2, Two",,,,,,,,,,,,"@UVRANGE={""hard"":[0,1]}"
+ur_bad_block,uv_range_test,,text,Bad: blockSave,,,number,,,,,,,,,,"@UVRANGE={""hard"":[3,25],""blockSave"":""hard""}"
+ur_bad_order,uv_range_test,,text,Bad: low above high,,,number,,,,,,,,,,"@UVRANGE={""hard"":[25,3]}"
+ur_bad_inside,uv_range_test,,text,Bad: soft outside hard,,,number,,,,,,,,,,"@UVRANGE={""soft"":[2,17.5],""hard"":[3,25]}"
+ur_bad_refs,uv_range_test,,text,Bad: references,,,number,,,,,,,,,,"@UVRANGE={""hard"":[0,1],""references"":{""b"":{""field"":""ur_sex""}}}"

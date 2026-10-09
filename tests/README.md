@@ -22,6 +22,10 @@ php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clo
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
+node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
+php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
+node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
+php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
@@ -210,8 +214,32 @@ for every reason and no read of that project before it passes, then the field
 checks there), the endpoint under both agreements (rights there, expiry,
 administrators, confinement to a group there, Identifiers, surveys), the
 record never echoed, an empty read never "not found", the probe log in the
-other project, the two budgets, the audit, the scan, and the Configure dialog
-checks of the alias and agreement rows.
+other project, the budgets (one count per kind of caller there, a session
+window, one "throttled" line a minute), the audit (including a saver in a group
+there), the scan judged branch by branch, a stored scan refused to a reader the
+other project would not answer, a deleted project, a field named `record`, and
+the Configure dialog checks of the alias and agreement rows.
+
+## `range_*` — the plausibility contract
+
+`range_fixture.json` holds number cases that `range_php.php` runs through
+`Logic::rangeVerdict` and `range_js.cjs` through `QRID_rangeVerdict`; both must
+give the same level (ok, soft, hard, inert) and reason. Cases cover values on
+and next to each limit, `17.50` against `17.5`, numbers past 2^53 and long
+fractions, open limits, a rule with only one level, comma decimals on comma
+fields and commas on point fields, and text that is not a number (`1e1`, `-`,
+`.`, `1,200`). `range_php.php` also covers the grammar: exact limit strings
+from JSON integers, floats (including the exponent form PHP prints for a small
+double) and quoted decimals, and every refusal.
+
+- `range_dom_js.cjs` boots the browser rule on a stub page: the note waits for
+  the field to be left, typing clears it, each level blocks per `softBlock` and
+  `hardBlock`, the save-time recheck catches a value never left, a calc and a
+  read-only field never block, branches pick their limits from `when`.
+- `range_module_php.php` covers the server side: which fields may carry the
+  tag, comma-decimal fields, the notes' limit texts, the audit reasons, the
+  scan, its labels and detail lines, and the detail line of a branched rule,
+  taken from the branch that judged the value.
 
 ## `hook_php.php` — the audit-path contract
 

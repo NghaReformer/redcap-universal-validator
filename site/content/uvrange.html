@@ -65,6 +65,10 @@ accepts anything, so a value that is not a number is reported as implausible.</p
     <code>when</code>. When no <code>when</code> is true the field is not checked; add one
     tag without <code>when</code> to cover everyone else. A selector on another form is
     read when the page opens, so that check is advisory and never blocks.</li>
+<li><code>when</code> reads fields of this entry only: event and instance references,
+    and the <code>references</code> key, are not supported by this tag yet.</li>
+<li>Exponents (<code>1e3</code>), thousands separators (<code>1,200</code>) and a unit
+    typed into the box are not numbers.</li>
 </ul>
 
 <h2>Audit</h2>

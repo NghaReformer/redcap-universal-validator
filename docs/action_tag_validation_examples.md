@@ -8,7 +8,7 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW` and `@UVEXISTS`. The tags and
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS` and `@UVRANGE`. The tags and
 the dialog are the same rules through different doors, and they mix freely.
 
 ---
@@ -24,6 +24,7 @@ the dialog are the same rules through different doors, and they mix freely.
 - [`@UVCHOICES` — dropdowns and autocomplete](#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices)
 - [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
 - [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
+- [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -36,6 +37,7 @@ the dialog are the same rules through different doors, and they mix freely.
   - [`@UVUNIQUE` recipes](#uvunique-recipes)
   - [`@UVWINDOW` recipes](#uvwindow-recipes)
   - [`@UVEXISTS` recipes](#uvexists-recipes)
+  - [`@UVRANGE` recipes](#uvrange-recipes)
   - [Combination recipes](#combination-recipes)
 - [Tags the module refuses](#tags-the-module-refuses)
 - [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
@@ -55,6 +57,7 @@ the dialog are the same rules through different doors, and they mix freely.
 | `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
 | `@UVWINDOW`   | A date falls **within a window** around another date, or is not after today | Text with date, datetime or datetime-with-seconds validation   |
 | `@UVEXISTS`   | The value is **already saved** in the project: a record ID, or a value of another field | Text, dropdown, radio, SQL                                     |
+| `@UVRANGE`    | A number lies **within usual and plausible limits** (two levels of warning) | Text with no, integer or number validation, calc, slider       |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -84,7 +87,8 @@ quotes *inside* a JSON string, which is exactly why the outer quoting must be do
 non-compiling regex — each shows a configuration error on the tagged field and names
 the problem. The module never fails silently.
 
-**`blockSave` is how strongly you enforce.** Available on every tag:
+**`blockSave` is how strongly you enforce.** Available on every tag except
+`@UVRANGE`, which sets each of its two levels with `softBlock` and `hardBlock`:
 
 | Value                 | Behavior                                         | Dialog label  |
 | --------------------- | ------------------------------------------------ | ------------- |
@@ -1714,6 +1718,185 @@ These are refused when the rule is saved:
 @UVEXISTS={"in":"[voucher_issued]","surveys":"true"}
 ```
 
+## `@UVRANGE` — numbers within plausible limits
+
+REDCap's number validation takes one minimum and one maximum, and only warns.
+Lab and clinical numbers need two levels. A value outside the usual range is
+worth a second look before saving; a value outside what is physically possible
+is a typing slip. `@UVRANGE` checks a number against both levels. JSON form only.
+
+### Level 1 — usual and plausible limits
+
+```text
+# on: hb — haemoglobin, a number field
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+```
+
+```text expect
+14.2   => ok
+12     => ok
+17.50  => ok
+11.4   => soft-low
+19     => soft-high
+2.5    => hard-low
+31     => hard-high
+1e1    => not-a-number
+```
+
+`soft` is the usual range. A value outside it is unusual. Its note is amber,
+and the save asks "save anyway?" first. `hard` is the plausible range. A value
+outside it, or text that is not a number, is implausible. Its note is red,
+and the save is blocked until the value is fixed. Both ends of each range are
+included. The notes name the limits:
+
+> ⚠ This value is lower than usual (expected 12 to 17.5 g/dL).
+>
+> ✗ This value is above the plausible range (allowed 3 to 25 g/dL).
+
+The note appears when the user leaves the field, not while a number is being
+typed, so "1" on the way to "12" is never flagged.
+
+### Level 2 — how strongly each level enforces
+
+```text
+# on: sbp — systolic pressure, no usual minimum, and only a note above 140
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+
+# on: weight_kg — ask before saving an implausible weight instead of refusing it
+@UVRANGE={"soft":[30,150],"hard":[2,300],"hardBlock":"confirm","unit":"kg"}
+```
+
+| Key           | Values               | Default     | Applies to                               |
+| ------------- | -------------------- | ----------- | ---------------------------------------- |
+| `softBlock` | `off`, `confirm`  | `confirm` | A value outside `soft`                 |
+| `hardBlock` | `confirm`, `hard` | `hard`    | A value outside `hard`, or not a number |
+
+`blockSave` does not apply to this tag and is refused; these two keys take its
+place. `null` leaves one end of a range open. A rule may have only `soft`, only
+`hard`, or both. With both, the soft limits must lie inside the hard ones.
+
+### Level 3 — limits by sex, age group or anything else
+
+```text
+# on: hb — different usual limits for women and men
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}
+```
+
+Several `@UVRANGE` tags on one field branch, and the one whose `when` is true
+applies (see [Branching](#branching--several-tags-of-the-same-kind)). One of
+them may leave out `when` to give the limits for everyone else. While `sex` is
+blank, neither branch above applies and nothing is checked.
+
+### Level 4 — your own message
+
+```text
+# on: temp_c
+@UVRANGE={"soft":[36,37.5],"hard":[30,43],"unit":"°C","message":"Check the temperature and the unit (°C, not °F)."}
+```
+
+`message` replaces the generated note for both levels and for a value that is
+not a number.
+
+### Semantics worth knowing
+
+- **Eligible fields.** Text fields with no validation, integer validation or
+  number validation (any number of decimal places, with a point or a comma),
+  calc fields and sliders. A Text field with any other validation, such as a
+  date or an email, shows a configuration error.
+- **What counts as a number.** Digits with at most one decimal point and an
+  optional sign, such as `12`, `-0.5`, `.5` or `+14`. Exponents (`1e3`),
+  thousands separators (`1,200`) and a unit typed into the box (`12 g/dL`) are
+  not numbers and count as implausible, even on a rule with only `soft`
+  limits. REDCap's own validation stops most of these on a number field; on a
+  Text field with no validation, `@UVRANGE` is the only check.
+- **Exact comparison.** Limits and values are compared as decimals, digit by
+  digit, so `17.50` equals `17.5` and very long numbers keep every digit. A
+  limit too long or too precise for a JSON number can be written in quotes,
+  such as `"hard":["0","9007199254740993"]`.
+- **Comma decimals.** On a field with comma-decimal validation
+  (`number_1dp_comma_decimal` and the like), `17,5` is read as 17.5 and the
+  notes write the limits with a comma. Limits in the tag are always written
+  with a point.
+- **Blank checks nothing.**
+- **A calc field never blocks a save**, because nobody typed its value. It still
+  shows the note, and the post-save audit and the scan still report it. A
+  read-only field never holds a save either.
+- **A `when` that reads a field on another form** works as on the other tags.
+  The page reads that field's saved value when it opens, the note says which
+  values chose the limits, and the rule does not block on the page. The
+  post-save audit checks it with the saved values.
+- **No event or instance references yet.** `when` reads fields of this entry
+  only. A `when` with an event or instance reference, and the `references`
+  key, are refused.
+- **The server checks every save.** The post-save audit logs a value outside
+  either range as `type: range`, with reason `soft-low`, `soft-high`,
+  `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock` says. A
+  rule that only shows notes still leaves a record of each unusual value.
+- **The Validation scan** reports "Unusual value", "Implausible value" or "Not
+  a number" in the Issue column, and the limits in the detail line ("Expected
+  12 to 17.5 g/dL." or "Allowed 3 to 25 g/dL."). On a branched rule the
+  detail line names the limits of the branch that judged the value.
+- **Configure dialog:** none. `@UVRANGE` exists only as an action tag.
+
+### `@UVRANGE` JSON keys
+
+`soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
+`caseSensitive`. A rule needs `soft` or `hard` limits. Any other key is a
+configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Shorthand. The tag takes JSON only.
+# refused: needs its settings as JSON
+@UVRANGE=12-17.5
+
+# No limits at all.
+# refused: needs "soft" or "hard" limits
+@UVRANGE={"unit":"g/dL"}
+
+# A range is a list of two limits.
+# refused: must be a list of two limits
+@UVRANGE={"hard":[3,25,40]}
+
+# Both ends open checks nothing.
+# refused: needs at least one limit
+@UVRANGE={"soft":[null,null],"hard":[3,25]}
+
+# Low above high. Swap the numbers.
+# refused: is above its high limit
+@UVRANGE={"hard":[25,3]}
+
+# The usual range must lie inside the plausible one.
+# refused: is outside the "hard" range
+@UVRANGE={"soft":[2,17.5],"hard":[3,25]}
+
+# A limit must be a number.
+# refused: must be a number such as 12
+@UVRANGE={"hard":["three",25]}
+
+# A quoted limit is a plain decimal: no exponent, no comma.
+# refused: must be a number such as 12
+@UVRANGE={"hard":["0","1e3"]}
+
+# blockSave is replaced by softBlock and hardBlock.
+# refused: "blockSave" does not apply
+@UVRANGE={"hard":[3,25],"blockSave":"hard"}
+
+# softBlock has no hard block, because an unusual value may be right.
+# refused: "softBlock" must be off or confirm
+@UVRANGE={"soft":[12,17.5],"softBlock":"hard"}
+
+# hardBlock cannot be off. Use "soft" alone for notes only.
+# refused: "hardBlock" must be confirm or hard
+@UVRANGE={"hard":[3,25],"hardBlock":"off"}
+
+# A unit is a short label.
+# refused: "unit" must be a short label
+@UVRANGE={"hard":[3,25],"unit":"grams per decilitre of blood"}
+```
+
 ---
 
 ## Combining tags on one field
@@ -2756,6 +2939,46 @@ counts as the same value), `scope` narrows the **search** (which records are com
 @UVEXISTS={"in":"[screening_id]","project":"screening","event":"screening_arm_1"}
 ```
 
+### `@UVRANGE` recipes
+
+#### Laboratory results
+
+```text
+# on: hb (g/dL) — usual range by sex, plausible range for everyone
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}
+
+# on: creatinine (µmol/L) — a note only for unusual values, a block for impossible ones
+@UVRANGE={"soft":[45,110],"softBlock":"off","hard":[10,2000],"unit":"µmol/L"}
+
+# on: viral_load_log — a value in log10 copies/mL, never below zero
+@UVRANGE={"soft":[null,7],"hard":[0,9],"unit":"log10 copies/mL"}
+```
+
+#### Vital signs
+
+```text
+# on: temp_c — catches a temperature typed in °F
+@UVRANGE={"soft":[36,37.5],"hard":[30,43],"unit":"°C","message":"Check the temperature and the unit (°C, not °F)."}
+
+# on: sbp — no usual minimum
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+
+# on: resp_rate — by age group
+@UVRANGE={"soft":[20,40],"hard":[5,100],"unit":"/min","when":"[age_years]<5"}
+@UVRANGE={"soft":[12,24],"hard":[5,70],"unit":"/min"}
+```
+
+#### Anthropometry
+
+```text
+# on: weight_kg — ask before saving an implausible weight instead of refusing it
+@UVRANGE={"soft":[30,150],"hard":[2,300],"hardBlock":"confirm","unit":"kg"}
+
+# on: bmi (calc) — a calc never blocks; the note and the scan still flag it
+@UVRANGE={"soft":[16,35],"hard":[10,60],"unit":"kg/m²"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -3061,6 +3284,22 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when` (the lookup itself is always exact)        |
 
+### `@UVRANGE`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `soft`          | list of two     | *(none)*     | `[low, high]` usual range, both included; `null` leaves an end open; inside `hard` |
+| `hard`          | list of two     | *(none)*     | `[low, high]` plausible range, both included; `null` leaves an end open |
+| `softBlock`     | string          | `confirm`    | `off`, `confirm`: for a value outside `soft`                       |
+| `hardBlock`     | string          | `hard`       | `confirm`, `hard`: for a value outside `hard` or not a number; a calc never blocks |
+| `unit`          | string          | *(none)*     | Label shown after the limits in the notes, up to 20 characters         |
+| `when`          | string          | *(none)*     | Check only while true; fields of this entry only                       |
+| `message`       | string          | generic line   | Replaces the generated note for both levels                            |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
+A limit is a JSON number, or a decimal in quotes for more digits than a JSON
+number keeps. `blockSave` is refused.
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -3123,6 +3362,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `@UVEXISTS` lookups one project answers for signed-in data entry in other projects | 1,200 a minute (Control Center setting) |
 | `@UVEXISTS` lookups one project answers for post-save checks and scans of other projects | 1,200 a minute (same setting, its own count) |
 | `@UVEXISTS` lookups one project answers for survey respondents of other projects | 120 a minute |
+| `@UVRANGE` `unit` label | 20 characters |
 
 ### Algorithms
 
@@ -3222,6 +3462,12 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"hard"}
 @UVEXISTS={"in":"[referral_id]","scope":"dag"}
 @UVEXISTS={"in":"[specimen_id]","project":"lab"}       saved in another project (both must agree)
+
+# ── @UVRANGE — numbers within plausible limits ──────────────────────────────
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}            usual and plausible limits
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250]}     note only for unusual values
+@UVRANGE={"hard":[2,300],"hardBlock":"confirm"}                    ask instead of blocking
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"when":"[sex]='2'"}       limits for one group
 
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}

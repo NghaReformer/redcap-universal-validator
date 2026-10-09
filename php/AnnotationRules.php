@@ -772,9 +772,9 @@ class AnnotationRules
     /**
      * One @UVRANGE limit as an exact decimal string, or null. A whole number
      * is kept as written; a fraction is written back the shortest way that
-     * reads as the same double (17.5, 0.1); a string must already be a plain
-     * decimal. Exponents are refused: "1e3" is not how a lab range is written,
-     * and a double past 2^53 has already lost digits.
+     * reads as the same double (17.5, 0.1, 0.0000001); a string must already
+     * be a plain decimal. A double at or past 2^53 is refused: it has already
+     * lost digits, and the string form keeps them.
      */
     private static function rangeBound($b)
     {
@@ -786,7 +786,11 @@ class AnnotationRules
             $old = function_exists('ini_set') ? ini_set('serialize_precision', '-1') : false;
             $s = json_encode($b);
             if ($old !== false) ini_set('serialize_precision', $old);
-            if (!is_string($s) || !preg_match(Logic::NUM_RE, $s)) return null;
+            if (!is_string($s)) return null;
+            // PHP writes a small or large double with an exponent (1.0e-7 for
+            // 0.0000001 as typed); spell it out, digit for digit.
+            if (stripos($s, 'e') !== false) $s = self::plainDecimal($s);
+            if ($s === null || !preg_match(Logic::NUM_RE, $s)) return null;
             return preg_replace('/\.0$/', '', $s);
         }
         if (is_string($b)) {
@@ -794,6 +798,27 @@ class AnnotationRules
             return preg_match(Logic::NUM_RE, $t) ? $t : null;
         }
         return null;
+    }
+
+    /** "1.5e-7" as "0.00000015", "1.0e+15" as "1000000000000000.0"; null if not that shape. */
+    private static function plainDecimal($s)
+    {
+        if (!preg_match('/^(-?)([0-9]+)(?:\.([0-9]+))?e([+-]?[0-9]{1,3})$/i', $s, $m)) return null;
+        $digits = $m[2] . (isset($m[3]) ? $m[3] : '');
+        $point = strlen($m[2]) + (int) $m[4];   // digits before the decimal point
+        if ($point <= 0) {
+            $int = '0';
+            $frac = str_repeat('0', -$point) . $digits;
+        } elseif ($point >= strlen($digits)) {
+            $int = $digits . str_repeat('0', $point - strlen($digits));
+            $frac = '0';
+        } else {
+            $int = substr($digits, 0, $point);
+            $frac = substr($digits, $point);
+        }
+        $int = ltrim($int, '0');
+        $frac = rtrim($frac, '0');
+        return $m[1] . ($int === '' ? '0' : $int) . '.' . ($frac === '' ? '0' : $frac);
     }
 
     /**
