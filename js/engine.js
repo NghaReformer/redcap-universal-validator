@@ -1402,6 +1402,77 @@ function QRID_temporalEvaluate(ast,read,blank,cs){
   return null;
 }
 
+/* ---- @UVWINDOW date helpers. Twins of TemporalValue::family / canonical /
+   format and TemporalLogic::windowVerdict; tests/window_fixture.json drives both
+   runtimes (tests/window_php.php, tests/window_js.cjs). */
+var QRID_WINDOW_UNITS=Object.create(null);   /* no inherited keys: "constructor" is not a unit */
+QRID_WINDOW_UNITS.minutes=60;QRID_WINDOW_UNITS.hours=3600;QRID_WINDOW_UNITS.days=86400;QRID_WINDOW_UNITS.weeks=604800;
+function QRID_temporalFamily(type){ return type==='date'?'date':'datetime'; }
+/* Seconds of UTC wall-clock time back to the canonical form QRID_temporalDate
+   produces; null outside the years 1-9999, which no date field can hold. */
+function QRID_temporalCanonical(seconds,type){
+  var d=new Date(seconds*1000),y=d.getUTCFullYear();
+  if(!isFinite(y)||y<1||y>9999)return null;
+  var iso=d.toISOString();
+  return type==='date'?iso.slice(0,10):iso.slice(0,19).replace('T',' ');
+}
+/* A canonical value written the way a field of this type and format shows it. */
+function QRID_temporalFormat(canonical,type,format){
+  var m=typeof canonical==='string'?/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(canonical):null;
+  if(!m)return '';
+  var date=format==='dmy'?m[3]+'-'+m[2]+'-'+m[1]:(format==='mdy'?m[2]+'-'+m[3]+'-'+m[1]:m[1]+'-'+m[2]+'-'+m[3]);
+  if(type==='date')return date;
+  var time=(m[4]!==undefined?m[4]:'00')+':'+(m[5]!==undefined?m[5]:'00');
+  if(type==='datetime_seconds')time+=':'+(m[6]!==undefined&&m[6]!==''?m[6]:'00');
+  return date+' '+time;
+}
+/* The @UVWINDOW verdict: inert (blank, or nothing applied) | unknown | future | window-early | window-late | ok,
+   with the window's earliest / latest bound (canonical, null when open). Pure:
+   the caller passes the clock. See TemporalLogic::windowVerdict. */
+function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
+  var out={verdict:'ok',earliest:null,latest:null};
+  if(typeof value!=='string'||QRID_whenTrim(value)===''){out.verdict='inert';return out;}
+  var type=spec.type==null?null:spec.type;
+  var v=QRID_temporalDate(QRID_whenTrim(value),type,valueFormat);
+  if(!v){out.verdict='unknown';return out;}
+  var lo=spec.lo==null?null:spec.lo,hi=spec.hi==null?null:spec.hi,windowReason=null,checked=false;
+  if((lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
+    checked=true;
+    var fromType=spec.fromType==null?null:spec.fromType,unit=spec.unit==null?'days':spec.unit;
+    var a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
+    if(!a||QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||typeof unit!=='string'||QRID_WINDOW_UNITS[unit]===undefined
+       ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks')){out.verdict='unknown';return out;}
+    var u=QRID_WINDOW_UNITS[unit],diff=v.seconds-a.seconds;
+    if(lo!==null)out.earliest=QRID_temporalCanonical(a.seconds+(lo|0)*u,v.date);
+    if(hi!==null)out.latest=QRID_temporalCanonical(a.seconds+(hi|0)*u,v.date);
+    if(lo!==null&&diff<(lo|0)*u)windowReason='window-early';
+    else if(hi!==null&&diff>(hi|0)*u)windowReason='window-late';
+  }
+  if(spec.notFuture){
+    var today=clock&&typeof clock==='object'&&clock.today!=null?clock.today:null;
+    var now=clock&&typeof clock==='object'&&clock.now!=null?QRID_temporalDate(String(clock.now),'datetime_seconds','ymd'):null;
+    if(typeof today!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(today)||!now){out.verdict='unknown';return out;}
+    checked=true;
+    if(v.date==='date'?v.value>today:v.seconds>now.seconds){out.verdict='future';return out;}
+  }
+  if(windowReason!==null)out.verdict=windowReason;
+  else if(!checked)out.verdict='inert';   /* a blank anchor and no notFuture: nothing was checked */
+  return out;
+}
+/* The server's wall-clock time now: config.clock, stamped when the page was
+   built, advanced by how long the page has been open. A page left open across
+   midnight therefore moves to the next day. The elapsed time never goes
+   backwards, so setting the computer's clock back cannot undo a day. null
+   without a usable server clock. */
+var QRID_CLOCK_T0=Date.now(),QRID_CLOCK_ELAPSED=0;
+function QRID_clockNow(base){
+  if(!base||typeof base!=='object'||typeof base.now!=='string')return null;
+  var b=QRID_temporalDate(base.now,'datetime_seconds','ymd');if(!b)return null;
+  var e=Date.now()-QRID_CLOCK_T0;if(e>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=e;
+  var now=QRID_temporalCanonical(b.seconds+Math.floor(QRID_CLOCK_ELAPSED/1000),'datetime');
+  return now===null?null:{today:now.slice(0,10),now:now};
+}
+
 /* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
 function QRID_whenRefKey(ref){
   if(ref[0] === "binding") return "{" + ref[1] + "}";
@@ -2979,6 +3050,208 @@ function QRIDConstraintInit(QRID_CONFIG){
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
+/* ---- window validator (@UVWINDOW) -----------------------------------------
+   A date must fall inside a window around another date ("from"), and/or not
+   after today ("notFuture"). The verdict is QRID_windowVerdict, the twin of
+   TemporalLogic::windowVerdict (tests/window_fixture.json drives both), and
+   UniversalValidator::findingsWindow is the server side of this factory.
+   The "from" date arrives FOLDED (UniversalValidator::foldRuleConditions):
+   ["ref", field, null] when it is on this page and read as typed, or
+   ["lit", Y-M-D] when it is another form's saved value this user may read —
+   a snapshot, so the rule never blocks. Anything else arrives deferred.
+   "Today" is the SERVER's (config.clock, advanced by QRID_clockNow), so a
+   computer whose clock is a day ahead cannot accept tomorrow's date.
+   A value that is not yet a whole date (being typed, or 31-02) shows no
+   verdict: REDCap's own date check speaks to that. tests/window_dom_js.cjs
+   locks this factory. */
+function QRIDWindowInit(QRID_CONFIG){
+  function styleMsg(el, ok){
+    var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+               : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function bound(v){ return (typeof v === "number" && isFinite(v) && Math.floor(v) === v) ? v : null; }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var lo = bound(cfg.windowLo), hi = bound(cfg.windowHi);
+    var hasWindow = lo !== null || hi !== null;
+    var notFuture = cfg.windowNotFuture === true;
+    if(!configError && !hasWindow && !notFuture){
+      configError = '@UVWINDOW has nothing to check — set a "from" date with a "window", or "notFuture": true.';
+    }
+    if(!configError && (cfg.dateType !== "date" && cfg.dateType !== "datetime" && cfg.dateType !== "datetime_seconds")){
+      configError = "@UVWINDOW needs a date field — this field's date type is unknown.";
+    }
+    /* The anchor. A rule the server built always carries windowFromOp unless it
+       is deferred; the plain-text fallback serves hand-written configs and the
+       test harnesses, and reads only a plain [field] of this page. */
+    var fromOp = null;
+    if(!configError && hasWindow){
+      var op = cfg.windowFromOp;
+      if(op && op.length && (op[0] === "ref" || op[0] === "lit")) fromOp = op;
+      else if(typeof cfg.windowFrom === "string" && cfg.windowFrom !== ""){
+        var p = QRID_whenParse(cfg.windowFrom + "=''");
+        if(p.ok && p.ast[0] === "cmp" && p.ast[2][0] === "ref" && p.ast[2][2] === null) fromOp = ["ref", p.ast[2][1], null];
+      }
+      if(!fromOp && !cfg.deferred) configError = '@UVWINDOW cannot read its "from" date.';
+    }
+    var DEFERRED = !configError && !!cfg.deferred;
+    if(DEFERRED) BLOCK = "off";
+    /* Advisory-only cross-form, as for @UVASSERT (QRIDConstraintInit): a "from"
+       date read when the page was built can go stale, so it never blocks. */
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
+    if(SNAPSHOT) BLOCK = "off";
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);   /* applicability */
+    /* A "from" field on this page re-checks the window when it changes. */
+    var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
+    return { configError: configError, gate: GATE, fromWatch: FROM_WATCH, blockSave: BLOCK,
+             deferred: DEFERRED, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             spec: { lo: lo, hi: hi, unit: (typeof cfg.windowUnit === "string" && cfg.windowUnit !== "") ? cfg.windowUnit : "days",
+                     notFuture: notFuture, type: cfg.dateType, fromType: cfg.fromType == null ? null : cfg.fromType },
+             fromOp: fromOp,
+             fromFormat: (fromOp && fromOp[0] === "ref") ? (cfg.fromFormat || "ymd") : "ymd",
+             fromName: (typeof cfg.windowFrom === "string") ? cfg.windowFrom : "",
+             dateFormat: cfg.dateFormat || "ymd",
+             mode: { window: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+
+  /* One variant's verdict for the field's current value. */
+  function verdictOf(V, fieldName){
+    var val = QRID_WHEN.readRef(fieldName, null);
+    var anchor = V.fromOp ? (V.fromOp[0] === "ref" ? QRID_WHEN.readRef(V.fromOp[1], null) : String(V.fromOp[1])) : null;
+    var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
+    var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, clock);
+    r.clock = clock;
+    return r;
+  }
+  /* The default wording names the allowed dates the way the field shows them.
+     Survey respondents are not told which field the window counts from. */
+  function describe(V, r){
+    var t = V.spec.type, f = V.dateFormat;
+    if(r.verdict === "future"){
+      if(t !== "date") return "This date and time is in the future.";
+      return "This date is after today" + (r.clock ? " (" + QRID_escapeHtml(QRID_temporalFormat(r.clock.today, "date", f)) + ")" : "") + ".";
+    }
+    var e = r.earliest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.earliest, t, f)) : null;
+    var l = r.latest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.latest, t, f)) : null;
+    var text = (e && l) ? "This date must be between " + e + " and " + l + "."
+             : e ? "This date must be on or after " + e + "."
+             : l ? "This date must be on or before " + l + "."
+             : "This date is outside its allowed window.";
+    if(!QRID_IS_SURVEY && V.fromName){
+      var lo = V.spec.lo, hi = V.spec.hi, u = V.spec.unit;
+      var range = (lo !== null && hi !== null) ? lo + " to " + hi : (lo !== null ? "at least " + lo : "at most " + hi);
+      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(range + " " + u + " from " + V.fromName) + ")</span>";
+    }
+    return text;
+  }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-w")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-w", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "w");
+    /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
+       time, so a page left open past midnight is checked against the day it
+       is saved on, not the day the value was typed. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} },
+                __qridRecheck: function(){ check(); } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; setGuard(false); QRID_setModeState(input, "w", null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "w")){ setGuard(false); QRID_setModeState(input, "w", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "w"); setGuard(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "w");
+          setGuard(false); QRID_setModeState(input, "w", null);
+          return;
+        }
+        inert(); return;
+      }
+      var r;
+      try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
+      if(r.verdict !== "ok" && r.verdict !== "future" && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
+      var ok = r.verdict === "ok";
+      styleMsg(msg, ok);
+      QRID_setModeState(input, "w", ok ? "ok" : "bad");
+      setGuard(!ok, V.blockSave);
+      var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
+      if(!ok && V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(counted from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
+      }
+      msg.innerHTML = ok ? "&#10003; OK." : "&#10007; " + base;
+    }
+    var debounced = QRID_debounced(function(){ check(); });
+    if(input.addEventListener){
+      input.addEventListener("input", debounced);
+      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    }
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      if(VS.all[gi].fromWatch) VS.all[gi].fromWatch.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "window", mode: { window: true, configError: configError },
+      test: function(){
+        var a = QRID_activeVariants(VS);
+        if(a.length !== 1 || a[0].deferred) return null;
+        var v = verdictOf(a[0], f).verdict;
+        return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
+      } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
 /* ---- required validator (@UVREQUIRED) -------------------------------------
    The INVERSE emptiness rule: a BLANK field is the violation (every other mode
    is inert on blank). Optional "when" makes the requirement conditional —
@@ -4402,14 +4675,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
                       "message", "deferred", "deferredWhy", "snapshotFields", "uniqueWith",
                       "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
-                      "choicesHide", "choicesAll"];
+                      "choicesHide", "choicesAll", "windowFrom", "windowFromOp", "windowLo",
+                      "windowHi", "windowUnit", "windowNotFuture", "dateType", "dateFormat",
+                      "fromType", "fromFormat"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
     "constraint": "constraint",
     "required": "required",
     "unique": "unique",
-    "choices": "choices"
+    "choices": "choices",
+    "window": "window"
   };
   var FACTORY_OF_TYPE = {
     "single": "QRIDSingleInit",
@@ -4417,9 +4693,10 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "constraint": "QRIDConstraintInit",
     "required": "QRIDRequiredInit",
     "unique": "QRIDUniqueInit",
-    "choices": "QRIDChoiceFilterInit"
+    "choices": "QRIDChoiceFilterInit",
+    "window": "QRIDWindowInit"
   };
-  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\" or \"choices\"";
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\" or \"window\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
      data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
@@ -4430,7 +4707,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     QRIDConstraintInit: QRIDConstraintInit,
     QRIDRequiredInit: QRIDRequiredInit,
     QRIDUniqueInit: QRIDUniqueInit,
-    QRIDChoiceFilterInit: QRIDChoiceFilterInit
+    QRIDChoiceFilterInit: QRIDChoiceFilterInit,
+    QRIDWindowInit: QRIDWindowInit
   };
   function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
@@ -4571,12 +4849,17 @@ window.INSPIREUniversalValidator = {
     BLANK_INERT: QRID_BLANK_INERT,
     caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
   },
+  windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
+    verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
+    family: QRID_temporalFamily, clockNow: QRID_clockNow, units: QRID_WINDOW_UNITS
+  },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
   constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
   requiredInit: QRIDRequiredInit,       /* @UVREQUIRED — locked by tests/required_dom_js.cjs */
   uniqueInit: QRIDUniqueInit,           /* @UVUNIQUE — locked by tests/unique_dom_js.cjs */
   choiceFilterInit: QRIDChoiceFilterInit, /* @UVCHOICES — locked by tests/choices_dom_js.cjs */
+  windowInit: QRIDWindowInit,           /* @UVWINDOW — locked by tests/window_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

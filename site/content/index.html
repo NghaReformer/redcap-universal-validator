@@ -5,7 +5,7 @@ field — no page reload, no batch Data Quality run afterwards.</p>
 <p>Rules are configured through REDCap's own settings screen or as field
 annotations. There is no code to paste and no JavaScript Injector dependency.</p>
 
-<h2>The five action tags</h2>
+<h2>The action tags</h2>
 
 <p>Each tag is one kind of rule. They <strong>compose</strong> — a single field may
 carry several, and all must pass, each with its own independent save-block state.</p>
@@ -29,6 +29,9 @@ carry several, and all must pass, each with its own independent save-block state
 <tr><td><a href="uvchoices/"><code>@UVCHOICES</code></a></td>
     <td>Which choices of a field are visible</td>
     <td><code>@HIDECHOICE</code> hides options statically</td></tr>
+<tr><td><a href="uvwindow/"><code>@UVWINDOW</code></a></td>
+    <td>A date within a window around another date, or not after today</td>
+    <td>Date min/max limits are fixed dates and only warn</td></tr>
 </tbody>
 </table>
 </div>

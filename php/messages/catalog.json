@@ -12,6 +12,10 @@
     "{placeholders} are substituted from the finding. A placeholder with no value",
     "is dropped along with the sentence fragment around it, never printed raw.",
     "",
+    "'detail' is an optional second sentence for staff, filled from the RULE: the",
+    "keys a mode lists under scan.detailKeys in php/modes.json are copied into the",
+    "report's rule snapshot. A detail whose placeholders are not all set is left out.",
+    "",
     "'staff' is what a data manager reads. 'survey' is what a respondent reads:",
     "shorter, no field names, no rule numbers. A report renders staff wording, but",
     "shows the survey line too where it differs, because a designer needs to know",
@@ -29,6 +33,24 @@
   "choices/hidden-choice": {
     "staff":  "The saved answer is no longer one of the available choices for this field.",
     "survey": "The selected choice is no longer available."
+  },
+  "window/window-early": {
+    "staff":  "The date is earlier than its allowed window.",
+    "survey": "This date is too early.",
+    "detail": "The window opens {windowLo} {windowUnit} from {windowFrom}."
+  },
+  "window/window-late": {
+    "staff":  "The date is later than its allowed window.",
+    "survey": "This date is too late.",
+    "detail": "The window closes {windowHi} {windowUnit} from {windowFrom}."
+  },
+  "window/future": {
+    "staff":  "The date is in the future.",
+    "survey": "This date cannot be in the future."
+  },
+  "window/*": {
+    "staff":  "The date is outside its allowed window.",
+    "survey": "This date is not allowed here."
   },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",

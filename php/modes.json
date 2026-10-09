@@ -6,7 +6,9 @@
     "methods it names; tests/registry_php.php lists the hand-written places that must also name the new tag.",
     "Order matters: tags are read in this order, and branchKeys/clientKeys are unions in this order.",
     "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
-    "the verdict itself); fieldList = a list of field names the rule reads."
+    "the verdict itself); fieldList = a list of field names the rule reads; operand = one field reference whose",
+    "value the verdict reads (op = the key the browser gets the folded operand under, value = the key the",
+    "server's extended compile writes the resolved value to)."
   ],
   "common": {
     "refKeys": [
@@ -139,6 +141,35 @@
       "dialog": false,
       "js": {"factories": {"choices": "QRIDChoiceFilterInit"}},
       "scan": {"issueLabels": {"*": "No longer an allowed choice"}}
+    },
+    {
+      "mode": "window",
+      "tag": "@UVWINDOW",
+      "types": ["window"],
+      "defaultType": "window",
+      "parser": "parseWindowValue",
+      "checker": "checkWindow",
+      "hasAlgorithm": false,
+      "eligibility": {
+        "fieldTypes": ["text"],
+        "annotationWhy": "@UVWINDOW does not support \"{type}\" fields — it checks a date typed into a Text field with date or datetime validation.",
+        "dialogWhy": "a Window rule supports Text fields with date or datetime validation"
+      },
+      "hooks": {"field": "annotateWindowField", "dictionary": "annotateWindowDictionary"},
+      "evaluator": "findingsWindow",
+      "refKeys": [
+        {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue"}
+      ],
+      "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
+                     "dateType", "dateFormat", "fromType", "fromFormat"],
+      "clientKeys": ["windowFrom", "windowFromOp", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
+                     "dateType", "dateFormat", "fromType", "fromFormat",
+                     "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
+      "needs": ["clock"],
+      "dialog": false,
+      "js": {"factories": {"window": "QRIDWindowInit"}},
+      "scan": {"issueLabels": {"future": "Date in the future", "*": "Date outside allowed window"},
+               "detailKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit"]}
     }
   ]
 }

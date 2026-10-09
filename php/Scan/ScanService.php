@@ -582,6 +582,8 @@ final class ScanService
             'generation'   => (int) $run['generation_id'],
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
+            // "Today" for the whole run is the day it started (UTC, as stored).
+            'clockAt'      => $this->store()->runStartedAt($pid, isset($run['run_id']) ? $run['run_id'] : null),
         ], $run['scope_dag']);
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why']];
 

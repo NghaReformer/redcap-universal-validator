@@ -142,7 +142,15 @@ final class MessageCatalog
         return $out;
     }
 
-    /** The second sentence, when the rule carries detail worth showing. Staff only. */
+    /**
+     * The second sentence, when the rule carries detail worth showing. Staff only.
+     *
+     * Besides the assert expression, a catalog entry may carry a "detail"
+     * template filled from the rule snapshot's 'detail' map (the keys its mode
+     * lists under scan.detailKeys in php/modes.json). A template with any
+     * placeholder the rule does not set is left out whole: half a sentence
+     * about a window bound that does not exist would be wrong, not short.
+     */
     public static function detail(array $finding, array $rule)
     {
         $reason = isset($finding['reason']) ? (string) $finding['reason'] : '';
@@ -150,6 +158,24 @@ final class MessageCatalog
             $expr = isset($rule['assert']) && $rule['assert'] !== ''
                   ? $rule['assert'] : substr($reason, 7);
             return 'The rule requires: ' . $expr;
+        }
+        $type = isset($finding['type']) ? (string) $finding['type'] : '';
+        $code = $reason;
+        $colon = strpos($reason, ':');
+        if ($colon !== false) $code = substr($reason, 0, $colon);
+        $vals = (isset($rule['detail']) && is_array($rule['detail'])) ? $rule['detail'] : [];
+        $cat = self::catalog();
+        foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
+            if (!isset($cat[$ck]['detail']) || !is_string($cat[$ck]['detail']) || $cat[$ck]['detail'] === '') continue;
+            $missing = false;
+            $text = preg_replace_callback('/\{(\w+)\}/', function ($m) use ($vals, &$missing) {
+                if (!isset($vals[$m[1]]) || !is_scalar($vals[$m[1]]) || (string) $vals[$m[1]] === '') {
+                    $missing = true;
+                    return '';
+                }
+                return (string) $vals[$m[1]];
+            }, $cat[$ck]['detail']);
+            return $missing ? '' : $text;
         }
         return '';
     }

@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ModeRegistry.php';
+
 /**
  * Every LABEL a scan report needs, read once per scan.
  *
@@ -33,7 +35,7 @@ final class ScanDimensions
     public $fieldLabels = [];
     /** @var array field name => form name */
     public $fieldForms = [];
-    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>] */
+    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>, 'fields'=>, 'detail'=>] */
     public $rules = [];
     /** @var bool whether this project uses Data Access Groups at all */
     public $hasDags = false;
@@ -162,12 +164,19 @@ final class ScanDimensions
         // Rules, keyed by the ordinal a finding cites. This is what makes
         // "Rule 12" mean something to a reader a week later.
         foreach ($rules as $i => $r) {
+            // The keys a mode lists under scan.detailKeys (php/modes.json), for
+            // the catalog's "detail" sentence. Scalars only: a snapshot is text.
+            $detail = [];
+            foreach (ModeRegistry::detailKeys(isset($r['type']) ? $r['type'] : '') as $k) {
+                if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
+            }
             $d->rules[$i + 1] = [
                 'type'    => isset($r['type']) ? (string) $r['type'] : '',
                 'label'   => isset($r['note']) ? (string) $r['note'] : '',
                 'message' => isset($r['message']) ? (string) $r['message'] : '',
                 'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
                 'fields'  => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                'detail'  => $detail,
             ];
         }
         return $d;
@@ -247,7 +256,7 @@ final class ScanDimensions
     {
         return isset($this->rules[$ordinal])
             ? $this->rules[$ordinal]
-            : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+            : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => []];
     }
 
     /** True when any label source could not be read. */

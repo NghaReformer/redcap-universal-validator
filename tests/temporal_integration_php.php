@@ -357,6 +357,43 @@ namespace {
     $res=$m->scanProject(PID);
     check('and never a confident count of zero',!$res['violations']&&count($res['unconfigurable'])>=1);
 
+    // @UVWINDOW counted from a date in another event (2.2.0): the "from" operand
+    // goes through the same resolver, entitlement and snapshot rules as a condition.
+    $win=function($ann='@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"blockSave":"hard"}'){
+        $m=temporal('[a_val]>0');
+        REDCap::$dictionary['a_val']['field_annotation']=$ann;
+        foreach(['a_val','b_open'] as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_ymd';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-01-01';
+        REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';   // 4 days: early
+        REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2026-01-25';   // 24 days: inside
+        REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-03-01';   // 59 days: late
+        return $m;
+    };
+    $m=$win();$p=render($m,'fa');$r=ruleOf($p,'a_val');
+    check('window from another event: no configuration error, not deferred',$r&&empty($r['configError'])&&empty($r['deferred']));
+    check('window from another event: the saved anchor is a snapshot literal',($r['windowFromOp']??null)===['lit','2026-01-01']);
+    check('window from another event: advisory in the browser',($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
+    $res=$m->scanProject(PID);
+    $reasons=array_column($res['violations'],'reason');sort($reasons);
+    check('window from another event: the scan finds the early and the late entry',$reasons===['window-early','window-late']&&!$res['unconfigurable']);
+    $m=$win();$m->redcap_save_record(PID,'1','fb',1,null);
+    check('window from another event: saving the anchor form re-audits every host entry',count(invalid($m))===2);
+    $m=$win();$m->projectSettings['enable-event-instance-refs']=false;
+    check('window from another event needs the feature',strpos(ruleOf(render($m,'fa'),'a_val')['configError']??'','event and instance references')!==false);
+    $m=$win();REDCap::$rights['nurse']['forms']['fb']='0';$p=render($m,'fa');
+    check('window anchor on a form the viewer cannot read: deferred, nothing shipped',!empty(ruleOf($p,'a_val')['deferred'])&&strpos($p['raw'],'2026-01-01')===false);
+    $m=$win();$fold=new ReflectionMethod($m,'foldTemporalRules');$fold->setAccessible(true);
+    $rule=['type'=>'window','fields'=>['a_val'],'windowFrom'=>'[baseline_arm_1][b_open][2]','windowLo'=>21,'windowHi'=>35,
+           'windowUnit'=>'days','dateType'=>'date','dateFormat'=>'ymd','fromType'=>'date','fromFormat'=>'ymd'];
+    $survey=$fold->invoke($m,[$rule],PID,'1','fa',1,1,'survey');
+    check('window anchor on a survey: deferred, no operand',!empty($survey[0]['deferred'])&&!isset($survey[0]['windowFromOp'])&&strpos(json_encode($survey),'2026-01-01')===false);
+    $m=$win();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
+    $res=$m->scanProject(PID);
+    check('window from a blank anchor in another event: inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);
+    $res=$m->scanProject(PID);
+    check('window from an anchor entry that does not exist: never a verdict',!$res['violations']);
+
     $goldenPath=__DIR__.'/temporal_golden.json';
     if(in_array('--update-golden',$argv,true))file_put_contents($goldenPath,json_encode($golden,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");
     check('deterministic payload audit reads findings and identities',$golden===json_decode(file_get_contents($goldenPath),true));

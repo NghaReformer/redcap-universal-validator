@@ -78,7 +78,9 @@ final class ModeRegistry
                 $seenTypes[$t] = true;
             }
             foreach ($m['refKeys'] as $rk) {
-                if (!isset($rk['key'], $rk['kind']) || !in_array($rk['kind'], ['cond', 'fieldList'], true)) {
+                if (!isset($rk['key'], $rk['kind']) || !in_array($rk['kind'], ['cond', 'fieldList', 'operand'], true)
+                    || ($rk['kind'] === 'operand' && (!isset($rk['op'], $rk['value'])
+                        || !is_string($rk['op']) || !is_string($rk['value'])))) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a malformed refKeys entry');
                 }
             }
@@ -247,6 +249,16 @@ final class ModeRegistry
     }
 
     /**
+     * Rule keys the scan report copies into its rule snapshot, for the
+     * catalog's "detail" sentence (scan.detailKeys of the type's mode).
+     */
+    public static function detailKeys($type)
+    {
+        $scan = self::mode(self::modeOfType($type))['scan'] ?? [];
+        return (isset($scan['detailKeys']) && is_array($scan['detailKeys'])) ? $scan['detailKeys'] : [];
+    }
+
+    /**
      * Every refKeys entry across common and all modes, de-duplicated by key,
      * common first. Optionally only one kind and/or role.
      */
@@ -320,21 +332,83 @@ final class ModeRegistry
     }
 
     /**
+     * The operand keys ("from" of @UVWINDOW, ...): one field reference whose
+     * VALUE the verdict reads, as opposed to a condition. Each entry names the
+     * key the browser receives the folded operand under ("op") and the key the
+     * server's extended compile writes the resolved value to ("value").
+     */
+    public static function operandKeys()
+    {
+        return self::refKeys('operand');
+    }
+
+    /**
+     * The one reference an operand string names, as a parsed operand node
+     * (['ref', field, null], or with $opts['qualified'] also ['qref', ...]),
+     * or null when the text is not exactly one scalar field reference. A
+     * checkbox code, a binding, a collection and anything with an operator are
+     * all null.
+     */
+    public static function operandRef($text, array $opts = [])
+    {
+        if (!is_string($text) || trim($text) === '') return null;
+        $p = Logic::parse($text . "=''", $opts);
+        if (empty($p['ok'])) return null;
+        $ast = $p['ast'];
+        if ($ast[0] !== 'cmp' || $ast[1] !== '=' || $ast[3] !== ['lit', '']) return null;
+        $op = $ast[2];
+        if ($op[0] === 'ref') return $op[2] === null ? $op : null;
+        if ($op[0] === 'qref') {
+            if ($op[2] !== null || in_array($op[4], ['any-instance', 'all-instances'], true)) return null;
+            return $op;
+        }
+        return null;
+    }
+
+    /** Every non-empty operand string a rule carries: its own, and its branches'. */
+    public static function operandTexts(array $r)
+    {
+        $out = [];
+        $nodes = [$r];
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $b) if (is_array($b)) $nodes[] = $b;
+        }
+        foreach (self::operandKeys() as $rk) {
+            foreach ($nodes as $n) {
+                if (isset($n[$rk['key']]) && is_string($n[$rk['key']]) && $n[$rk['key']] !== '') $out[] = $n[$rk['key']];
+            }
+        }
+        return $out;
+    }
+
+    /**
      * Every field a rule's own configuration reads besides its validated
-     * fields: the operands of all its conditions and its field lists. Strings
-     * that do not parse contribute nothing (they are config errors already).
+     * fields: the operands of all its conditions, its operand keys and its
+     * field lists. Strings that do not parse contribute nothing (they are
+     * config errors already). $kinds narrows the sources: the save hook's
+     * reverse dependencies follow conditions and operands only.
      *
      * @return string[] field names, de-duplicated, in discovery order
      */
-    public static function refFields(array $r)
+    public static function refFields(array $r, array $kinds = ['cond', 'operand', 'fieldList'])
     {
         $out = [];
-        foreach (self::conditionTexts($r) as $cond) {
-            $p = Logic::parse($cond);
-            if (empty($p['ok'])) continue;
-            foreach (Logic::referencedFields($p['ast']) as $ref) $out[(string) $ref[0]] = true;
+        if (in_array('cond', $kinds, true)) {
+            foreach (self::conditionTexts($r) as $cond) {
+                $p = Logic::parse($cond);
+                if (empty($p['ok'])) continue;
+                foreach (Logic::referencedFields($p['ast']) as $ref) $out[(string) $ref[0]] = true;
+            }
         }
-        foreach (self::fieldListRefs($r) as $w) $out[(string) $w] = true;
+        if (in_array('operand', $kinds, true)) {
+            foreach (self::operandTexts($r) as $text) {
+                $op = self::operandRef($text);
+                if ($op !== null) $out[(string) $op[1]] = true;
+            }
+        }
+        if (in_array('fieldList', $kinds, true)) {
+            foreach (self::fieldListRefs($r) as $w) $out[(string) $w] = true;
+        }
         return array_keys($out);
     }
 }

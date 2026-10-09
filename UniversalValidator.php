@@ -191,13 +191,11 @@ class UniversalValidator extends AbstractExternalModule
                         if (isset($onForm[$f])) { $ownFieldOnForm = true; break; }
                     }
                     if ($ownFieldOnForm) continue;      // already audited by the normal scope
+                    // Conditions AND operands: saving the form that holds a
+                    // @UVWINDOW "from" date moves every window counted from it.
                     $touches = false;
-                    foreach (ModeRegistry::conditionTexts($r) as $cond) {
-                        $p = Logic::parse($cond);
-                        if (empty($p['ok'])) continue;
-                        foreach (Logic::referencedFields($p['ast']) as $ref) {
-                            if (isset($onForm[$ref[0]])) { $touches = true; break 2; }
-                        }
+                    foreach (ModeRegistry::refFields($r, ['cond', 'operand']) as $rf) {
+                        if (isset($onForm[$rf])) { $touches = true; break; }
                     }
                     if (!$touches) continue;
                     $dependents[$ruleIndex] = true;
@@ -682,6 +680,125 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * Window mode (@UVWINDOW): each saved date must fall inside its window
+     * around the "from" date, and with "notFuture" not after today. Saved
+     * dates are always Y-M-D, whatever the field displays. The verdict is
+     * TemporalLogic::windowVerdict, the twin of the browser's.
+     *
+     * A blank value, and a blank "from" date, check nothing: the visit that
+     * anchors the window has not happened yet. A "from" date this context
+     * could not resolve is reported, never read as blank, for the same reason
+     * the assert above is (M-01). A saved value that does not read as a date
+     * at all is reported too: REDCap validates dates on entry, so one that
+     * fails here came in through a path that skipped that check.
+     */
+    private function findingsWindow(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
+    {
+        $out = ['invalid' => [], 'unconfigurable' => []];
+        $anchor = null;
+        if (isset($rule['windowFrom']) && is_string($rule['windowFrom']) && $rule['windowFrom'] !== '') {
+            if (array_key_exists('windowFromValue', $rule)) {
+                // Compiled on the extended (event/instance) path, which resolved it.
+                $anchor = $rule['windowFromValue'];
+                if (!is_string($anchor)) {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'the "from" date ' . $rule['windowFrom'] . ' could not be resolved — field skipped'];
+                    return $out;
+                }
+            } else {
+                $op = ModeRegistry::operandRef($rule['windowFrom']);
+                if ($op === null) {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "from" date cannot be evaluated — field skipped'];
+                    return $out;
+                }
+                $state = isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok';
+                if ($state !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'the "from" date ' . self::resolutionProblem($state, $op[1])];
+                    return $out;
+                }
+                $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
+                $anchor = is_array($v) ? '' : (string) $v;
+            }
+        }
+        $spec = [
+            'lo' => isset($rule['windowLo']) ? $rule['windowLo'] : null,
+            'hi' => isset($rule['windowHi']) ? $rule['windowHi'] : null,
+            'unit' => isset($rule['windowUnit']) ? $rule['windowUnit'] : 'days',
+            'notFuture' => !empty($rule['windowNotFuture']),
+            'type' => isset($rule['dateType']) ? $rule['dateType'] : null,
+            'fromType' => isset($rule['fromType']) ? $rule['fromType'] : null,
+        ];
+        $clock = $spec['notFuture'] ? $this->evaluationClock() : null;
+        foreach ($rule['fields'] as $field) {
+            if (isset($dupes[$field])) continue;
+            if ($onForm !== null && !isset($onForm[$field])) continue;
+            $value = isset($values[$field]) ? $values[$field] : null;
+            if ($value === null || is_array($value)) continue;
+            $r = TemporalLogic::windowVerdict($spec, (string) $value, 'ymd', $anchor, 'ymd', $clock);
+            if ($r['verdict'] === 'unknown') {
+                $out['unconfigurable'][] = ['fields' => [$field],
+                    'why' => 'the saved date or its "from" date is not a date this rule can read — field skipped'];
+                continue;
+            }
+            if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
+            $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'window', 'type' => 'window',
+                                 'reason' => $r['verdict']];
+        }
+        return $out;
+    }
+
+    /** @var array|null the clock this request evaluates "today" against; see evaluationClock() */
+    private $clockOverride = null;
+    /** @var array|null the server clock, read once per request */
+    private $clockMemo = null;
+
+    /**
+     * Today and now on the server, as REDCap itself sees them (the server's
+     * timezone, which is the timezone REDCap stamps its own dates in), read
+     * once per request so every field of one save or one scan is judged
+     * against the same instant.
+     *
+     * @return array{today:string, now:string}  'Y-m-d' and 'Y-m-d H:i:s'
+     */
+    private function serverClock()
+    {
+        if ($this->clockMemo === null) {
+            $now = new \DateTimeImmutable('now');
+            $this->clockMemo = ['today' => $now->format('Y-m-d'), 'now' => $now->format('Y-m-d H:i:s')];
+        }
+        return $this->clockMemo;
+    }
+
+    /**
+     * The clock "notFuture" is judged against: the server clock, unless the
+     * caller pinned another one (the durable scan pins its run's start, so a
+     * run that spans midnight judges every record against one day).
+     */
+    private function evaluationClock()
+    {
+        return $this->clockOverride !== null ? $this->clockOverride : $this->serverClock();
+    }
+
+    /**
+     * The server clock at a stored UTC instant ('Y-m-d H:i:s', the scan
+     * tables' format), in the server's timezone as serverClock() reads it. An
+     * absent or unreadable instant is "now".
+     */
+    private function clockAt($utc)
+    {
+        if (!is_string($utc) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/D', $utc)) return $this->serverClock();
+        try {
+            $at = \DateTimeImmutable::createFromFormat('!Y-m-d H:i:s', $utc, new \DateTimeZone('UTC'));
+            if ($at === false) return $this->serverClock();
+            $at = $at->setTimezone(new \DateTimeZone(date_default_timezone_get()));
+            return ['today' => $at->format('Y-m-d'), 'now' => $at->format('Y-m-d H:i:s')];
+        } catch (\Throwable $e) {
+            return $this->serverClock();
+        }
+    }
+
+    /**
      * Check mode (@UVALIDATE, single|pooled): the check character and/or
      * format of each value, through the same verdict functions the browser
      * twins.
@@ -1044,6 +1161,10 @@ class UniversalValidator extends AbstractExternalModule
             if (is_array($r) && array_key_exists('_origin', $r)) unset($config['rules'][$i]['_origin']);
         }
         $config['rules'] = self::hoistChoicesAll($config['rules']);
+        // "Today" for @UVWINDOW notFuture is the SERVER's today, not the
+        // computer's: a browser clock set a day ahead must not accept tomorrow's
+        // date. Sent only when a rule on this page reads it.
+        if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock();
         return $config;
     }
 
@@ -1069,6 +1190,7 @@ class UniversalValidator extends AbstractExternalModule
         // condition text => parsed AST, for every live rule/branch on the page
         $asts = [];
         $refs = [];
+        $hasOperands = false;
         foreach ($rules as $r) {
             if (!empty($r['configError'])) continue;
             // Both the "when" gate and the "assert" test (constraint mode) are
@@ -1081,8 +1203,17 @@ class UniversalValidator extends AbstractExternalModule
                 $asts[$w] = $p['ast'];
                 foreach (Logic::referencedFields($p['ast']) as $ref) $refs[$ref[0]] = true;
             }
+            // An operand ("from" of @UVWINDOW) is a VALUE the verdict reads, not
+            // a comparison, so it cannot be settled to a boolean here; see
+            // $foldOperand below.
+            foreach (ModeRegistry::operandTexts($r) as $text) {
+                $op = ModeRegistry::operandRef($text);
+                if ($op === null) continue;
+                $refs[$op[1]] = true;
+                $hasOperands = true;
+            }
         }
-        if (!$asts) return $rules;
+        if (!$asts && !$hasOperands) return $rules;
 
         // Fields the browser can read on this page. An UNKNOWN instrument means
         // the dictionary is unavailable, so we cannot tell what is on the page:
@@ -1186,6 +1317,39 @@ class UniversalValidator extends AbstractExternalModule
                 $notes[$i][$field . '|' . $state] = self::resolutionProblem($state, $field);
             }
         };
+        // An OPERAND cannot fold to a boolean: the verdict compares it with
+        // what the user types. Five outcomes, in this order:
+        //   unresolved         deferred, with the reason
+        //   form unknown       deferred (the reason is added at the end)
+        //   on this page       live ['ref', field, null], read as typed
+        //   entitled off-page  its saved value as ['lit', Y-M-D] plus a
+        //                      snapshot note, so the client never blocks on it
+        //   anything else      deferred with no reason: a survey respondent or
+        //                      a user without rights to that form must not see
+        //                      the value, and a window built from it would show it
+        $foldOperand = function ($text) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
+            $out = ['op' => null, 'deferred' => true, 'why' => [], 'snapshot' => []];
+            $op = ModeRegistry::operandRef($text);
+            if ($op === null) return $out;
+            $f = (string) $op[1];
+            if (isset($unresolved[$f])) {
+                $out['why'][$f . '|' . $unresolved[$f]] = self::resolutionProblem($unresolved[$f], $f);
+                return $out;
+            }
+            if ($unknownForm) return $out;
+            if (isset($live[$f])) {
+                $out['op'] = ['ref', $f, null];
+                $out['deferred'] = false;
+                return $out;
+            }
+            if (isset($disclosable[$f])) {
+                $v = isset($values[$f]) ? $values[$f] : '';
+                $out['op'] = ['lit', is_array($v) ? '' : (string) $v];
+                $out['deferred'] = false;
+                $out['snapshot'][$f] = true;
+            }
+            return $out;
+        };
         foreach ($rules as $i => $r) {
             if (!empty($r['configError'])) continue;
             // Off-page operands are read ONCE, when the page is built. If someone
@@ -1219,6 +1383,14 @@ class UniversalValidator extends AbstractExternalModule
                 if (!empty($frozen[$r[$tk]])) $rules[$i]['deferred'] = true;
                 if (!empty($blocked[$r[$tk]])) $noteFor($i, $r[$tk]);
                 foreach (isset($snapshot[$r[$tk]]) ? $snapshot[$r[$tk]] : [] as $sf => $_) $snapFields[$sf] = true;
+            }
+            foreach (ModeRegistry::operandKeys() as $rk) {
+                if (!isset($r[$rk['key']])) continue;
+                $fo = $foldOperand($r[$rk['key']]);
+                if ($fo['op'] !== null) $rules[$i][$rk['op']] = $fo['op'];
+                if ($fo['deferred']) $rules[$i]['deferred'] = true;
+                foreach ($fo['why'] as $wk => $wt) $notes[$i][$wk] = $wt;
+                foreach ($fo['snapshot'] as $sf => $_) $snapFields[$sf] = true;
             }
             if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
             if (isset($r['branches']) && is_array($r['branches'])) {
@@ -1262,6 +1434,14 @@ class UniversalValidator extends AbstractExternalModule
                             foreach ($blocked[$b[$tk]] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                         }
                         foreach (isset($snapshot[$b[$tk]]) ? $snapshot[$b[$tk]] : [] as $sf => $_) $bSnap[$sf] = true;
+                    }
+                    foreach (ModeRegistry::operandKeys() as $rk) {
+                        if (!isset($b[$rk['key']])) continue;
+                        $fo = $foldOperand($b[$rk['key']]);
+                        if ($fo['op'] !== null) $rules[$i]['branches'][$bi][$rk['op']] = $fo['op'];
+                        if ($fo['deferred']) $rules[$i]['branches'][$bi]['deferred'] = true;
+                        foreach ($fo['why'] as $wk => $wt) { $bWhy[$wk] = $wt; $notes[$i][$wk] = $wt; }
+                        foreach ($fo['snapshot'] as $sf => $_) $bSnap[$sf] = true;
                     }
                     // M-01: branch configs never inherit rule-level keys on the
                     // client, so a branch's snapshot/deferral diagnostics have to
@@ -2071,7 +2251,7 @@ class UniversalValidator extends AbstractExternalModule
                     $types = $this->projectFieldTypes($pid);
                     $choices = $this->projectFieldChoices($pid);
                 }
-                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices);
+                $perField[$name][$k] = $this->$hook($frag, $name, $types, $choices, $pid);
             }
         }
         return AnnotationRules::groupMulti($perField);
@@ -2098,7 +2278,7 @@ class UniversalValidator extends AbstractExternalModule
      * comparable value), and "with" naming the field itself is a tautology,
      * not a composite.
      */
-    private function annotateUniqueDictionary(array $frag, $name, $types, $choices)
+    private function annotateUniqueDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
         if (!isset($frag['uniqueWith'])) return $frag;
         $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
@@ -2127,7 +2307,7 @@ class UniversalValidator extends AbstractExternalModule
      * choicesAll is part of groupMulti's canonical key, so two fields with
      * identical tags but different choice lists never share a rule.
      */
-    private function annotateChoicesDictionary(array $frag, $name, $types, $choices)
+    private function annotateChoicesDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
         $all = (is_array($choices) && isset($choices[$name]))
             ? array_map('strval', $choices[$name]) : [];
@@ -2146,6 +2326,76 @@ class UniversalValidator extends AbstractExternalModule
                 '_tag' => AnnotationRules::TAG_CHOICES];
         }
         $frag['choicesAll'] = $all;
+        return $frag;
+    }
+
+    /**
+     * @UVWINDOW "field" hook: the field must hold a date, which in REDCap is a
+     * Text field with date, datetime or datetime-with-seconds validation. Its
+     * type and display format travel on the rule: the browser reads the value
+     * as typed, the server reads it as saved (always Y-M-D), and the message
+     * shows the bounds the way the field shows dates. Both keys are part of
+     * groupMulti's canonical key, so fields with different formats never share
+     * a rule.
+     */
+    private function annotateWindowField(array $frag, $name, array $meta, $pid)
+    {
+        $validation = isset($meta['text_validation_type_or_show_slider_number'])
+            ? trim((string) $meta['text_validation_type_or_show_slider_number']) : '';
+        $tv = TemporalValue::fromValidation($validation);
+        if ($tv === null) {
+            return ['error' => AnnotationRules::TAG_WINDOW . ' needs a date field — give this Text field date, datetime '
+                . 'or datetime-with-seconds validation' . ($validation !== '' ? ' (it has "' . $validation . '")' : '') . '.',
+                '_tag' => AnnotationRules::TAG_WINDOW];
+        }
+        $unit = isset($frag['windowUnit']) ? $frag['windowUnit'] : null;
+        if ($tv['type'] === 'date' && ($unit === 'minutes' || $unit === 'hours')) {
+            return ['error' => '"unit" "' . $unit . '" needs a datetime field — this field holds dates without a time, '
+                . 'so use days or weeks.', '_tag' => AnnotationRules::TAG_WINDOW];
+        }
+        $frag['dateType'] = $tv['type'];
+        $frag['dateFormat'] = $tv['format'];
+        return $frag;
+    }
+
+    /**
+     * @UVWINDOW "dictionary" hook: the "from" field must exist, must be a date
+     * field of the same kind (a date window counts from a date, a datetime
+     * window from a datetime), and must not be the field itself unless it is
+     * read in another event or instance. Its type and format travel on the
+     * rule the same way the field's own do.
+     */
+    private function annotateWindowDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        if (!isset($frag['windowFrom'])) return $frag;
+        $op = ModeRegistry::operandRef($frag['windowFrom'], $this->temporalOptions($pid));
+        if ($op === null) return $frag;   // refused already by AnnotationRules::checkWindow
+        $from = (string) $op[1];
+        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_WINDOW]; };
+        $dd = $this->dataDictionary($pid);
+        if (!$dd || !isset($dd[$from])) {
+            return $refuse('"from" names "[' . $from . ']", which is not a field in this project.');
+        }
+        if ($from === $name && $op[0] === 'ref') {
+            return $refuse('"from" names this field itself — a window needs another date to count from.');
+        }
+        $meta = $dd[$from];
+        $tv = (isset($meta['field_type']) && $meta['field_type'] === 'text')
+            ? TemporalValue::fromValidation(isset($meta['text_validation_type_or_show_slider_number'])
+                ? trim((string) $meta['text_validation_type_or_show_slider_number']) : '')
+            : null;
+        if ($tv === null) {
+            return $refuse('"from" field "' . $from . '" is not a date field — it needs date, datetime or '
+                . 'datetime-with-seconds validation.');
+        }
+        $own = isset($frag['dateType']) ? $frag['dateType'] : null;
+        if (TemporalValue::family($tv['type']) !== TemporalValue::family($own)) {
+            return $refuse('"from" field "' . $from . '" holds ' . ($tv['type'] === 'date' ? 'dates' : 'dates with a time')
+                . ' and this field holds ' . ($own === 'date' ? 'dates' : 'dates with a time')
+                . ' — a window counts a date from a date, or a datetime from a datetime.');
+        }
+        $frag['fromType'] = $tv['type'];
+        $frag['fromFormat'] = $tv['format'];
         return $frag;
     }
 
@@ -3618,7 +3868,11 @@ class UniversalValidator extends AbstractExternalModule
                 // 'none' is the log mode for sites where the RECORD ID is itself
                 // identifying. The report is a new surface and must not
                 // contradict the posture the audit already applies.
-                'hashRecordIds' => ($this->logMode($pid) === 'none')];
+                'hashRecordIds' => ($this->logMode($pid) === 'none'),
+                // The instant "today" means for every record of this scan
+                // (@UVWINDOW notFuture). A durable run passes the moment it
+                // started, so its later requests agree with its first.
+                'clock' => $this->clockAt(isset($opts['clockAt']) ? $opts['clockAt'] : null)];
 
         // What this installation can actually support, and therefore what a run
         // on it is ALLOWED TO CLAIM. ScanCapabilities computed this cap from the
@@ -3962,6 +4216,20 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function scanRecord(array $plan, $pid, $rec, array $node, FindingSink $sink,
                                 array &$uniqueSeen, array &$unconf)
+    {
+        // Every rule of this record judges "today" against the plan's clock.
+        $held = $this->clockOverride;
+        $this->clockOverride = isset($plan['clock']) && is_array($plan['clock']) ? $plan['clock'] : null;
+        try {
+            return $this->scanRecordAt($plan, $pid, $rec, $node, $sink, $uniqueSeen, $unconf);
+        } finally {
+            $this->clockOverride = $held;
+        }
+    }
+
+    /** scanRecord() under the plan's clock. */
+    private function scanRecordAt(array $plan, $pid, $rec, array $node, FindingSink $sink,
+                                  array &$uniqueSeen, array &$unconf)
     {
         $this->temporalBegin($pid);
         $ctxAll = self::recordContexts($node);

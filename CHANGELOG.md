@@ -5,8 +5,19 @@ Git tags identify release snapshots. Release candidates are intended for develop
 
 ## Unreleased
 
+### Added
+
+- **`@UVWINDOW`: date windows.** A date must fall inside a window around another date, and/or must not be after today. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit 21 to 35 days after baseline, both ends included; `"window":[0,null]` leaves the latest end open; `"unit"` is `days` (default) or `weeks`, and also `minutes` or `hours` on datetime fields; `{"notFuture":true}` refuses a date after today. Works on Text fields with date, datetime or datetime-with-seconds validation in any display format, and the `from` field must be the same kind of date. The message shows the allowed dates the way the field shows them.
+  - "Today" is the server's date. The page gets the server clock and advances it by how long the page has been open, so a computer whose clock is wrong cannot accept tomorrow's date and a page left open past midnight moves to the next day. The save-time recheck uses the current clock.
+  - A blank value, or a blank `from` date, checks nothing; a date still being typed shows no verdict.
+  - A `from` date on another form is read when the page opens: its saved value is used if the user may read that form, so the check is advisory and never blocks. On a survey, or without rights to that form, the value is never sent and the browser does not check the rule; the post-save audit still does.
+  - With event and instance references enabled, `from` may name another event: `[baseline_arm_1][visit_date]`.
+  - The post-save audit logs `type: window` with reason `window-early`, `window-late` or `future`. Saving only the form that holds the `from` date re-checks the windows counted from it. The Validation scan reports the same findings, with "Date outside allowed window" or "Date in the future" in the Issue column and the missed bound in the detail line. A durable scan judges "today" against the day the run started, so a run that spans midnight does not change its answer halfway through.
+  - `tests/window_fixture.json` drives the server verdict (`TemporalLogic::windowVerdict`) and the browser one (`QRID_windowVerdict`), so the two cannot disagree about a date.
+
 ### Changed
 
+- `@UVREQUIRED`, `@UVUNIQUE` and `@UVCHOICES` share one check of the `when`, `blockSave` and `message` keys (`AnnotationRules::checkCommon`), with the same messages as before.
 - The validation modes (one per action tag) are now listed in one file, `php/modes.json`: the tag, its rule types, the field types it accepts, its parser, validator and findings method, the keys its rules carry, and its scan labels. The server reads it through `php/ModeRegistry.php`. `tests/gen_mode_registry.cjs` writes the browser's copy into `js/engine.js`, and CI fails when that copy is stale. Before, each of these lists was kept by hand in about a dozen places. Behaviour is unchanged: `tests/registry_php.php` holds copies of the replaced lists and fails if the registry stops reproducing them.
 
 ### Fixed

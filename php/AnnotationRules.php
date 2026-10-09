@@ -31,6 +31,7 @@ namespace INSPIRE\UniversalValidator;
 require_once __DIR__ . '/CheckCharacter.php';
 require_once __DIR__ . '/Logic.php';
 require_once __DIR__ . '/ModeRegistry.php';
+require_once __DIR__ . '/TemporalLogic.php';
 
 class AnnotationRules
 {
@@ -39,6 +40,10 @@ class AnnotationRules
     const TAG_REQUIRED = '@UVREQUIRED';
     const TAG_UNIQUE = '@UVUNIQUE';
     const TAG_CHOICES = '@UVCHOICES';
+    const TAG_WINDOW = '@UVWINDOW';
+
+    /** Largest window bound, in units either side of the anchor. */
+    const MAX_WINDOW_BOUND = 36500;
 
     /*
      * Which tag configures which validation MODE, the field types each mode
@@ -487,6 +492,75 @@ class AnnotationRules
         }
         $out = ['type' => 'constraint'];
         foreach ($strings as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        self::takeCaseSensitive($cfg, $out);
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVWINDOW value into a window fragment (a date must fall in a
+     * window around another date, and/or not after today). JSON form only:
+     *   @UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"unit":"days"}
+     *   @UVWINDOW={"from":"[dob]","window":[0,null]}          not before the anchor
+     *   @UVWINDOW={"notFuture":true}                          not after today
+     * "window" is [earliest, latest] in whole units from the "from" date,
+     * inclusive; null leaves that side open. "from" may name another event
+     * ([baseline_arm_1][visit_date]) once event and instance references are
+     * enabled. Whether the field and its "from" field are date fields of the
+     * same kind is checked with the data dictionary in hand
+     * (UniversalValidator::annotateWindowField / annotateWindowDictionary).
+     */
+    private static function parseWindowValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_WINDOW . ' needs its settings as JSON, e.g. '
+                . self::TAG_WINDOW . '={"from":"[visit_date_bl]","window":[21,35]} or '
+                . self::TAG_WINDOW . '={"notFuture":true}.'];
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_WINDOW . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['from', 'window', 'unit', 'notFuture', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_WINDOW . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'window'];
+        if (array_key_exists('from', $cfg)) {
+            if (!is_string($cfg['from'])) return ['error' => '"from" must be a field reference such as "[visit_date]".'];
+            $out['windowFrom'] = trim($cfg['from']);
+        }
+        if (array_key_exists('window', $cfg)) {
+            $w = $cfg['window'];
+            if (!is_array($w) || array_keys($w) !== [0, 1]) {
+                return ['error' => '"window" must be a list of two bounds, [earliest, latest] — e.g. [21,35], or [0,null] for an open end.'];
+            }
+            if ($w[0] === null && $w[1] === null) {
+                return ['error' => '"window" needs at least one bound — [null,null] would check nothing.'];
+            }
+            // An open side is simply absent from the rule, so two rules that
+            // differ only in how they spelled "open" still group as one.
+            if ($w[0] !== null) $out['windowLo'] = $w[0];
+            if ($w[1] !== null) $out['windowHi'] = $w[1];
+        }
+        if (array_key_exists('unit', $cfg)) {
+            if (!is_string($cfg['unit'])) return ['error' => '"unit" must be a string.'];
+            $out['windowUnit'] = strtolower(trim($cfg['unit']));
+        } elseif (isset($out['windowFrom'])) {
+            $out['windowUnit'] = 'days';
+        }
+        // An explicit false IS the default, so it is dropped, as caseSensitive is.
+        if (array_key_exists('notFuture', $cfg) && $cfg['notFuture'] !== false) $out['windowNotFuture'] = $cfg['notFuture'];
+        foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
                 $out[$k] = $cfg[$k];
@@ -1230,6 +1304,16 @@ class AnnotationRules
      */
     public static function checkRequired(array $frag, array $opts = [])
     {
+        return self::checkCommon($frag, $opts);
+    }
+
+    /**
+     * The keys most modes share: an optional "when" gate (normative dialect
+     * in php/Logic.php), "blockSave" and "message". "caseSensitive" is checked
+     * once for every mode in checkFragment.
+     */
+    private static function checkCommon(array $frag, array $opts = [])
+    {
         $errors = [];
         if (isset($frag['when'])) {
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
@@ -1247,6 +1331,63 @@ class AnnotationRules
             $errors[] = '"message" must be a string.';
         }
         return $errors;
+    }
+
+    /**
+     * Semantic validation for a window (@UVWINDOW) fragment: a "from" that is
+     * exactly one field reference, whole-number bounds within
+     * MAX_WINDOW_BOUND with earliest <= latest, a known unit, a strict-boolean
+     * notFuture, and at least one of window / notFuture. Field types (is the
+     * field a date, is the "from" field the same kind of date) are checked in
+     * the channel glue, where the data dictionary is in hand.
+     */
+    public static function checkWindow(array $frag, array $opts = [])
+    {
+        $errors = [];
+        $hasFrom = isset($frag['windowFrom']);
+        $hasBound = array_key_exists('windowLo', $frag) || array_key_exists('windowHi', $frag);
+        $notFuture = array_key_exists('windowNotFuture', $frag);
+        if ($hasFrom) {
+            $from = $frag['windowFrom'];
+            if (ModeRegistry::operandRef($from, $opts) === null) {
+                $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($from, ['qualified' => true]) !== null)
+                    ? 'a "from" date in another event or instance needs event and instance references — enable them in project settings first.'
+                    : '"from" must be exactly one date field reference, e.g. "[visit_date]" or "[baseline_arm_1][visit_date]" '
+                      . '(not a checkbox code, a {binding} or a list of instances).';
+            }
+            if (!$hasBound) $errors[] = '"from" needs a "window" to check against, e.g. "window":[21,35].';
+        } elseif ($hasBound) {
+            $errors[] = '"window" needs a "from" date to count from.';
+        }
+        if (isset($frag['windowUnit']) && !$hasFrom) {
+            $errors[] = '"unit" only applies to a "window" — add a "from" date.';
+        }
+        if (!$hasFrom && !$hasBound && !$notFuture) {
+            $errors[] = self::TAG_WINDOW . ' needs a "from" date with a "window", or "notFuture": true.';
+        }
+        foreach (['windowLo' => 'earliest', 'windowHi' => 'latest'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            $b = $frag[$k];
+            if (!is_int($b)) {
+                $errors[] = 'the "window" ' . $label . ' bound must be a whole number or null — got ' . json_encode($b) . '.';
+            } elseif (abs($b) > self::MAX_WINDOW_BOUND) {
+                $errors[] = 'the "window" ' . $label . ' bound is limited to ' . self::MAX_WINDOW_BOUND . ' units either side of the "from" date.';
+            }
+        }
+        if (isset($frag['windowLo'], $frag['windowHi']) && is_int($frag['windowLo']) && is_int($frag['windowHi'])
+                && $frag['windowLo'] > $frag['windowHi']) {
+            $errors[] = 'the "window" earliest bound (' . $frag['windowLo'] . ') is after its latest bound ('
+                . $frag['windowHi'] . ').';
+        }
+        if (isset($frag['windowUnit'])
+                && (!is_string($frag['windowUnit']) || !isset(TemporalLogic::WINDOW_UNITS[$frag['windowUnit']]))) {
+            $units = array_keys(TemporalLogic::WINDOW_UNITS);
+            $errors[] = '"unit" must be ' . implode(', ', array_slice($units, 0, -1)) . ' or ' . end($units) . '.';
+        }
+        if ($notFuture && $frag['windowNotFuture'] !== true) {
+            $errors[] = '"notFuture" must be true or false (unquoted).';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**
@@ -1285,22 +1426,7 @@ class AnnotationRules
         if (isset($frag['uniqueSurveys']) && !is_bool($frag['uniqueSurveys'])) {
             $errors[] = '"surveys" must be true or false (unquoted).';
         }
-        if (isset($frag['when'])) {
-            if (!is_string($frag['when']) || trim($frag['when']) === '') {
-                $errors[] = 'the "when" condition must be a non-empty condition string.';
-            } else {
-                $w = Logic::parse($frag['when'], $opts);
-                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
-            }
-        }
-        if (isset($frag['blockSave'])
-            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
-            $errors[] = '"blockSave" must be off, confirm or hard.';
-        }
-        if (isset($frag['message']) && !is_string($frag['message'])) {
-            $errors[] = '"message" must be a string.';
-        }
-        return $errors;
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**
@@ -1341,22 +1467,7 @@ class AnnotationRules
                 $seen[$c] = true;
             }
         }
-        if (isset($frag['when'])) {
-            if (!is_string($frag['when']) || trim($frag['when']) === '') {
-                $errors[] = 'the "when" condition must be a non-empty condition string.';
-            } else {
-                $w = Logic::parse($frag['when'], $opts);
-                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
-            }
-        }
-        if (isset($frag['blockSave'])
-            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
-            $errors[] = '"blockSave" must be off, confirm or hard.';
-        }
-        if (isset($frag['message']) && !is_string($frag['message'])) {
-            $errors[] = '"message" must be a string.';
-        }
-        return $errors;
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     public static function posInt($v)

@@ -27,6 +27,59 @@ final class TemporalValue
             'value'=>$type==='date'?substr($canonical,0,10):$canonical,'seconds'=>$date->getTimestamp()];
     }
 
+    /**
+     * The temporal type and display format a REDCap validation name implies:
+     * date_dmy -> date/dmy, datetime_mdy -> datetime/mdy, datetime_seconds_ymd
+     * -> datetime_seconds/ymd. null for any other validation (or none).
+     */
+    public static function fromValidation($validation)
+    {
+        $v = is_string($validation) ? $validation : '';
+        if (strpos($v, 'datetime_seconds_') === 0) $type = 'datetime_seconds';
+        elseif (strpos($v, 'datetime_') === 0) $type = 'datetime';
+        elseif (strpos($v, 'date_') === 0) $type = 'date';
+        else return null;
+        $format = substr($v, -3);
+        if (!in_array($format, ['ymd', 'dmy', 'mdy'], true)) return null;
+        return ['type' => $type, 'format' => $format];
+    }
+
+    /** date | datetime: the class a temporal type compares within. */
+    public static function family($type)
+    {
+        return $type === 'date' ? 'date' : 'datetime';
+    }
+
+    /**
+     * Seconds since the epoch, read as UTC wall-clock time (no timezone
+     * conversion), back to the canonical form parse() produces for $type.
+     * null outside the years 1-9999, which parse() cannot read back either.
+     */
+    public static function canonical($seconds, $type)
+    {
+        $d = (new \DateTimeImmutable('@' . (int) $seconds))->setTimezone(new \DateTimeZone('UTC'));
+        $year = (int) $d->format('Y');
+        if ($year < 1 || $year > 9999) return null;
+        if ($type === 'date') return $d->format('Y-m-d');
+        return $d->format('Y-m-d H:i:s');
+    }
+
+    /**
+     * A canonical value written the way a REDCap field of this type and format
+     * displays it: dmy -> 31-12-2026, mdy -> 12-31-2026, a datetime without
+     * seconds drops them. Twin of QRID_temporalFormat (js/engine.js).
+     */
+    public static function format($canonical, $type, $format)
+    {
+        if (!is_string($canonical) || !preg_match('/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/D', $canonical, $m)) return '';
+        $date = $format === 'dmy' ? $m[3] . '-' . $m[2] . '-' . $m[1]
+              : ($format === 'mdy' ? $m[2] . '-' . $m[3] . '-' . $m[1] : $m[1] . '-' . $m[2] . '-' . $m[3]);
+        if ($type === 'date') return $date;
+        $time = (isset($m[4]) ? $m[4] : '00') . ':' . (isset($m[5]) ? $m[5] : '00');
+        if ($type === 'datetime_seconds') $time .= ':' . (isset($m[6]) && $m[6] !== '' ? $m[6] : '00');
+        return $date . ' ' . $time;
+    }
+
     /** Exact signed elapsed result, represented as numerator/denominator. */
     public static function elapsed(array $from, array $to, $unit)
     {

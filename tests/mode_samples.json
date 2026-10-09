@@ -31,6 +31,11 @@
       "tagForm": "@UVCHOICES={\"when\":\"[a]='x'\",\"hide\":[\"9\"],%s}",
       "fragment": {"choicesHide": ["9"]},
       "client": {"choicesHide": ["bad"], "choicesAll": ["bad", "good"]}
+    },
+    "window": {
+      "tagForm": "@UVWINDOW={\"notFuture\":true,\"when\":\"[a]='x'\",%s}",
+      "fragment": {"windowNotFuture": true},
+      "client": {"windowNotFuture": true, "dateType": "date", "dateFormat": "ymd"}
     }
   }
 }

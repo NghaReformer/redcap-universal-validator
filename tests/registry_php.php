@@ -41,37 +41,45 @@ $root = dirname(__DIR__);
 // ---- 1. frozen maps ---------------------------------------------------------
 
 // AnnotationRules::TAGS (tag => mode), in reading order.
-check('tag map equals the old AnnotationRules::TAGS, in order', ModeRegistry::tagMap() === [
+// Modes added since then are appended, so the old entries keep their order.
+check('tag map equals the old AnnotationRules::TAGS, in order, then the new tags', ModeRegistry::tagMap() === [
     '@UVALIDATE'  => 'check',
     '@UVASSERT'   => 'constraint',
     '@UVREQUIRED' => 'required',
     '@UVUNIQUE'   => 'unique',
     '@UVCHOICES'  => 'choices',
+    '@UVWINDOW'   => 'window',      // 2.2.0
 ]);
 foreach (['TAG' => 'check', 'TAG_ASSERT' => 'constraint', 'TAG_REQUIRED' => 'required',
-          'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices'] as $const => $mode) {
+          'TAG_UNIQUE' => 'unique', 'TAG_CHOICES' => 'choices', 'TAG_WINDOW' => 'window'] as $const => $mode) {
     check('AnnotationRules::' . $const . ' is the ' . $mode . ' tag',
         constant(AnnotationRules::class . '::' . $const) === ModeRegistry::tag($mode));
 }
 
 // Branching::BRANCH_KEYS, in order (branchOf copies in this order).
-check('branch keys equal the old Branching::BRANCH_KEYS, in order', ModeRegistry::branchKeys() === [
+check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new modes keys', ModeRegistry::branchKeys() === [
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'keepChars',
     'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'suggestFix', 'note',
     'assert', 'caseSensitive', 'message', 'references',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys',
     'choicesShow', 'choicesHide', 'choicesAll',
+    // 2.2.0 @UVWINDOW
+    'windowFrom', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
+    'dateType', 'dateFormat', 'fromType', 'fromFormat',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
-check('client keys equal the old engine DEFAULT_KEYS, in order', ModeRegistry::clientKeys() === [
+check('client keys equal the old engine DEFAULT_KEYS, in order, then the new modes keys', ModeRegistry::clientKeys() === [
     'algorithm', 'idPattern', 'alternates', 'source', 'strip', 'suggestFix',
     'keepChars', 'idLengths', 'idMinLen', 'idMaxLen', 'expectedIds',
     'blockSave', 'when', 'whenAst',
     'assert', 'assertAst', 'caseSensitive', 'message', 'deferred', 'deferredWhy', 'snapshotFields',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',
     'choicesShow', 'choicesHide', 'choicesAll',
+    // 2.2.0 @UVWINDOW
+    'windowFrom', 'windowFromOp', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
+    'dateType', 'dateFormat', 'fromType', 'fromFormat',
 ]);
 
 // Branching::modeOfType.
@@ -160,6 +168,51 @@ check('refFields: every operand and field list, once', ModeRegistry::refFields($
 check('refFields skips a condition that does not parse',
     ModeRegistry::refFields(['when' => '[a]=', 'assert' => '[b]=1']) === ['b']);
 
+// Operand keys (2.2.0): one field reference whose VALUE the verdict reads.
+check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], $rk['value']]; }, ModeRegistry::operandKeys())
+    === [['windowFrom', 'windowFromOp', 'windowFromValue']]);
+check('an operand is not a condition key', !in_array('windowFrom', ModeRegistry::condKeys(), true));
+foreach ([
+    '[visit_date]' => ['ref', 'visit_date', null],
+    ' [visit_date] ' => ['ref', 'visit_date', null],
+    '[v(1)]' => null,                       // a checkbox code is not a date
+    "[v]='x'" => null,
+    '[v] or [w]' => null,
+    "'2026-01-01'" => null,
+    '' => null,
+    '[ev_arm_1][v]' => null,               // qualified needs the option
+] as $text => $want) {
+    check('operandRef(' . json_encode($text) . ')', ModeRegistry::operandRef($text) === $want);
+}
+check('operandRef of a non-string', ModeRegistry::operandRef(['[v]']) === null && ModeRegistry::operandRef(null) === null);
+check('operandRef qualified: another event', ModeRegistry::operandRef('[ev_arm_1][v]', ['qualified' => true])
+    === ['qref', 'v', null, 'ev_arm_1', null]);
+check('operandRef qualified: a list of instances is refused',
+    ModeRegistry::operandRef('[v][any-instance]', ['qualified' => true]) === null
+    && ModeRegistry::operandRef('[ev_arm_1][v][all-instances]', ['qualified' => true]) === null);
+check('operandRef qualified: a binding is refused', ModeRegistry::operandRef('{b}', ['qualified' => true]) === null);
+$w = ['type' => 'window', 'fields' => ['f'], 'when' => "[g]='1'", 'windowFrom' => '[a]',
+      'branches' => [['when' => "[k]='2'", 'windowFrom' => '[b]'], ['windowFrom' => '[v(1)]']]];
+check('operandTexts: own then branches', ModeRegistry::operandTexts($w) === ['[a]', '[b]', '[v(1)]']);
+check('refFields follows operands', ModeRegistry::refFields($w) === ['g', 'k', 'a', 'b']);
+check('refFields narrowed to conditions', ModeRegistry::refFields($w, ['cond']) === ['g', 'k']);
+check('refFields narrowed to operands', ModeRegistry::refFields($w, ['operand']) === ['a', 'b']);
+check('refFields narrowed to conditions and operands leaves field lists out',
+    ModeRegistry::refFields($r, ['cond', 'operand']) === ['g', 'f', 'h', 'k', 'm']);
+
+// The window mode (2.2.0).
+check('window type is the window mode', ModeRegistry::modeOfType('window') === 'window');
+check('window field types', ModeRegistry::eligibility('window')['fieldTypes'] === ['text']);
+check('window needs the clock, not the transport', ModeRegistry::needs('window', 'clock') && !ModeRegistry::needs('window', 'transport'));
+check('only window needs the clock', !ModeRegistry::needs('constraint', 'clock') && !ModeRegistry::needs('unique', 'clock'));
+check('window has no algorithm', !ModeRegistry::hasAlgorithm('window'));
+check('window is annotation-only', !ModeRegistry::inDialog('window'));
+check('window issue label: future', ModeRegistry::issueLabel('window', 'future') === 'Date in the future');
+check('window issue label: outside the window', ModeRegistry::issueLabel('window', 'window-early') === 'Date outside allowed window'
+    && ModeRegistry::issueLabel('window', 'window-late') === 'Date outside allowed window');
+check('window refusal wording', ModeRegistry::ineligibleWhy('window', 'notes')
+    === '@UVWINDOW does not support "notes" fields — it checks a date typed into a Text field with date or datetime validation.');
+
 // ---- 2. coverage ------------------------------------------------------------
 
 $config = json_decode(file_get_contents($root . '/config.json'), true);
@@ -218,6 +271,8 @@ $cases = [
     'no check mode'       => (function ($g) { array_shift($g['modes']); return json_encode($g); })($good),
     'default not a type'  => (function ($g) { $g['modes'][2]['defaultType'] = 'x'; return json_encode($g); })($good),
     'bad refKeys kind'    => (function ($g) { $g['modes'][1]['refKeys'][0]['kind'] = 'operand?'; return json_encode($g); })($good),
+    'operand without op'  => (function ($g) { $g['modes'][1]['refKeys'][0] = ['key' => 'x', 'kind' => 'operand', 'value' => 'xValue']; return json_encode($g); })($good),
+    'operand without value' => (function ($g) { $g['modes'][1]['refKeys'][0] = ['key' => 'x', 'kind' => 'operand', 'op' => 'xOp']; return json_encode($g); })($good),
     'no field types'      => (function ($g) { unset($g['modes'][3]['eligibility']['fieldTypes']); return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {

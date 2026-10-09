@@ -1,0 +1,74 @@
+<p>REDCap's date validation can set a fixed minimum and maximum date, and it only warns.
+It cannot say "21 to 35 days after this participant's baseline visit", and it has no
+notion of today. <code>@UVWINDOW</code> checks a date against a <strong>window around
+another date</strong>, and/or that it is <strong>not in the future</strong>, live as the
+date is entered.</p>
+
+<h2>Syntax</h2>
+
+<p><strong>JSON form only.</strong> A <code>from</code> date with a <code>window</code>,
+or <code>"notFuture": true</code>, or both.</p>
+
+<pre><code>@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"unit":"days"}
+
+@UVWINDOW={"from":"[dob]","window":[0,null]}
+
+@UVWINDOW={"notFuture":true}
+
+@UVWINDOW={"from":"[enrol_date]","window":[-7,7],"unit":"days","notFuture":true,
+           "message":"The screening visit must be within a week of enrolment.",
+           "blockSave":"hard"}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>from</code></td><td>The date the window counts from: one field reference such as
+    <code>[visit_date_bl]</code></td></tr>
+<tr><td><code>window</code></td><td><code>[earliest, latest]</code> in whole units from the
+    <code>from</code> date, both ends included. <code>null</code> leaves an end open;
+    negative numbers count back</td></tr>
+<tr><td><code>unit</code></td><td><code>days</code> (default) or <code>weeks</code>; on datetime
+    fields also <code>minutes</code> or <code>hours</code></td></tr>
+<tr><td><code>notFuture</code></td><td><code>true</code>: the date may not be after today
+    (a datetime: after now)</td></tr>
+<tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
+    <code>caseSensitive</code></td><td>As for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Field types</h2>
+
+<p>Text fields with <strong>date, datetime or datetime-with-seconds</strong> validation,
+in any display format (Y-M-D, M-D-Y or D-M-Y). The <code>from</code> field must be the
+same kind: a date window counts from a date, a datetime window from a datetime. The
+message shows the allowed dates the way the field shows them.</p>
+
+<h2>What is checked, and when</h2>
+
+<ul>
+<li>A <strong>blank</strong> field, or a blank <code>from</code> date, checks nothing:
+    the visit that anchors the window may not have happened yet.</li>
+<li>A date that is still being typed shows no verdict. REDCap's own date check
+    covers that.</li>
+<li><strong>Today is the server's date</strong>, never the computer's, so a laptop
+    whose clock is a day ahead cannot accept tomorrow's date. A page left open
+    across midnight moves to the next day.</li>
+<li>A <code>from</code> date on <strong>another form</strong> is read when the page
+    opens. That check is advisory: it shows the verdict but never blocks the save,
+    because the other form could change while this one is open.</li>
+</ul>
+
+<div class="note">
+<p>With event and instance references enabled in the project settings,
+<code>from</code> may name another event, e.g.
+<code>[baseline_arm_1][visit_date]</code>: the classic longitudinal visit window.</p>
+</div>
+
+<h2>Audit</h2>
+
+<p>The post-save audit logs a violation as <code>type: window</code> with reason
+<code>window-early</code>, <code>window-late</code> or <code>future</code>, and the
+Validation scan reports it retrospectively. A scan judges "future" against the day it
+runs, so it only flags a date that is still in the future on that day.</p>

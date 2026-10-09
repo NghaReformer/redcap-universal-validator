@@ -103,6 +103,81 @@ final class TemporalLogic
         }
         return Logic::evaluate(['cmp',$op,['lit',(string)$a],['lit',(string)$b]],[],$blank,$case);
     }
+    /** Seconds in one window unit. */
+    const WINDOW_UNITS = ['minutes' => 60, 'hours' => 3600, 'days' => 86400, 'weeks' => 604800];
+
+    /**
+     * The @UVWINDOW verdict for one value. Pure: no clock is read here, the
+     * caller passes the server's wall-clock time. Twin of QRID_windowVerdict
+     * (js/engine.js); tests/window_fixture.json drives both.
+     *
+     * $spec: lo / hi (whole numbers or null = open), unit (minutes, hours,
+     * days, weeks), notFuture (bool), type (the field's temporal type) and
+     * fromType (the anchor's; null when the rule has no anchor).
+     * $value and $anchor are written in $valueFormat / $anchorFormat (ymd for
+     * saved data, the field's own format for what the browser reads). $anchor
+     * is null when the rule has no anchor. $clock is ['today' => 'Y-m-d',
+     * 'now' => 'Y-m-d H:i:s'], only read for notFuture.
+     *
+     * Arithmetic is in whole seconds of UTC wall-clock time, so a daylight
+     * saving change never moves a bound. verdict:
+     *   inert          the field is blank, or nothing applied: the anchor is
+     *                  blank and there is no notFuture (a green "OK" would claim
+     *                  a check that never ran)
+     *   unknown        a value cannot be read as a date (partly typed, 31-02,
+     *                  a type mismatch, no usable clock)
+     *   future         after today (date) or now (datetime)
+     *   window-early   before anchor + lo units
+     *   window-late    after anchor + hi units
+     *   ok             none of the above
+     * earliest / latest: the bounds in canonical form, null when open or when
+     * the anchor is blank (a blank anchor switches the window off).
+     */
+    public static function windowVerdict(array $spec, $value, $valueFormat, $anchor, $anchorFormat, $clock)
+    {
+        $out = ['verdict' => 'ok', 'earliest' => null, 'latest' => null];
+        if (!is_string($value) || self::blank($value)) { $out['verdict'] = 'inert'; return $out; }
+        $type = isset($spec['type']) ? $spec['type'] : null;
+        $v = TemporalValue::parse(trim($value, " \t\r\n"), $type, $valueFormat);
+        if ($v['state'] !== 'ok') { $out['verdict'] = 'unknown'; return $out; }
+        $lo = isset($spec['lo']) ? $spec['lo'] : null;
+        $hi = isset($spec['hi']) ? $spec['hi'] : null;
+        $windowReason = null;
+        $checked = false;
+        if (($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
+            $checked = true;
+            $fromType = isset($spec['fromType']) ? $spec['fromType'] : null;
+            $a = TemporalValue::parse(trim($anchor, " \t\r\n"), $fromType, $anchorFormat);
+            $unit = isset($spec['unit']) ? $spec['unit'] : 'days';
+            if ($a['state'] !== 'ok' || TemporalValue::family($type) !== TemporalValue::family($fromType)
+                || !is_string($unit) || !isset(self::WINDOW_UNITS[$unit])
+                || (TemporalValue::family($type) === 'date' && !in_array($unit, ['days', 'weeks'], true))) {
+                $out['verdict'] = 'unknown';
+                return $out;
+            }
+            $u = self::WINDOW_UNITS[$unit];
+            $diff = $v['seconds'] - $a['seconds'];
+            if ($lo !== null) $out['earliest'] = TemporalValue::canonical($a['seconds'] + (int) $lo * $u, $v['type']);
+            if ($hi !== null) $out['latest'] = TemporalValue::canonical($a['seconds'] + (int) $hi * $u, $v['type']);
+            if ($lo !== null && $diff < (int) $lo * $u) $windowReason = 'window-early';
+            elseif ($hi !== null && $diff > (int) $hi * $u) $windowReason = 'window-late';
+        }
+        if (!empty($spec['notFuture'])) {
+            $today = is_array($clock) && isset($clock['today']) ? $clock['today'] : null;
+            $now = is_array($clock) && isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
+            if (!is_string($today) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $today) || !$now || $now['state'] !== 'ok') {
+                $out['verdict'] = 'unknown';
+                return $out;
+            }
+            $checked = true;
+            $future = $v['type'] === 'date' ? strcmp($v['value'], $today) > 0 : $v['seconds'] > $now['seconds'];
+            if ($future) { $out['verdict'] = 'future'; return $out; }
+        }
+        if ($windowReason !== null) $out['verdict'] = $windowReason;
+        elseif (!$checked) $out['verdict'] = 'inert';
+        return $out;
+    }
+
     /** What scaled() spends: nothing when it multiplies by 1, which it skips. */
     private static function scaleCost($numerator,$denominator)
     {

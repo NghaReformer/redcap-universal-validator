@@ -69,7 +69,8 @@ trait TemporalIntegration
             $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;
             foreach($rule['branches'] as $i=>$branch){
                 $flat=array_merge($rule,$branch);unset($flat['branches']);
-                $gate=$flat;unset($gate['assert']);
+                // The selector alone: a test or an operand that cannot be resolved belongs to its branch, not to the choice of branch.
+                $gate=$flat;foreach(ModeRegistry::condKeys('test') as $k)unset($gate[$k]);foreach(ModeRegistry::operandKeys() as $rk)unset($gate[$rk['key']]);
                 $g=TemporalRules::compile($gate,$resolver,$shape,$ctx,$browser,$mayRead);
                 if($browser){
                     $b=$this->temporalPrepared($flat,$shape,$node,$ctx,true,$mayRead);
@@ -234,8 +235,10 @@ trait TemporalIntegration
                 // Do not ship complete record-local uniqueness tuples unless every component is disclosable.
                 $p=$this->temporalPrepared($r,$shape,$node,$ctx,true,$mayRead);$out[$i]=$p['rule'];
                 if($p['problems']){$out[$i]['deferred']=true;$out[$i]['deferredWhy']=['Extended validation unavailable: '.implode(', ',$p['problems']).'.'];
-                    foreach(['whenAst','assertAst','uniqueRecordAsts'] as $k)unset($out[$i][$k]);unset($out[$i]['references']);
-                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;unset($b['whenAst'],$b['assertAst'],$b['uniqueRecordAsts'],$b['references']);}unset($b);
+                    // Every folded key the browser could act on: condition trees, record tuples, operands.
+                    $folded=['whenAst','uniqueRecordAsts','references'];foreach(ModeRegistry::refKeys('cond','test') as $rk)$folded[]=$rk['ast'];foreach(ModeRegistry::operandKeys() as $rk)$folded[]=$rk['op'];
+                    foreach($folded as $k)unset($out[$i][$k]);
+                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;foreach($folded as $k)unset($b[$k]);}unset($b);
                 }
             }
         }catch(\Throwable $e){foreach($extended as $i=>$r){$out[$i]=['type'=>$r['type'],'fields'=>$r['fields'],'deferred'=>true,'deferredWhy'=>['Extended source data unavailable.'],'blockSave'=>'off'];}}

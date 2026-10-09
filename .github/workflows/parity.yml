@@ -57,6 +57,10 @@ jobs:
         run: node tests/unique_dom_js.cjs
       - name: JS choices (@UVCHOICES) DOM contract (filter, stale-kept, fixture)
         run: node tests/choices_dom_js.cjs
+      - name: JS window (@UVWINDOW) verdict vs fixture, and its DOM contract (server clock, snapshot, midnight)
+        run: |
+          node tests/window_js.cjs
+          node tests/window_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
         run: node tests/alternates_dom_js.cjs
       - name: JS documented outcomes (expect blocks in the example docs)
@@ -173,6 +177,10 @@ jobs:
         run: php tests/annotation_php.php
       - name: PHP @UVCHOICES choices parser + branching
         run: php tests/choices_php.php
+      - name: PHP @UVWINDOW verdict vs fixture, hooks, fold, audit and scan clock
+        run: |
+          php tests/window_php.php
+          php tests/window_module_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)

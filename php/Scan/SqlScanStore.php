@@ -1479,6 +1479,17 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
+    public function runStartedAt($pid, $runId)
+    {
+        try {
+            $r = $this->db->select('SELECT created_at FROM ' . Schema::table('scan_run')
+                . ' WHERE run_id = ? AND project_id = ?', [$runId, $pid]);
+            return (isset($r[0][0]) && is_string($r[0][0]) && $r[0][0] !== '') ? $r[0][0] : null;
+        } catch (\Throwable $e) {
+            return null;   // the clock falls back to now; a scan never fails for it
+        }
+    }
+
     public function progressState($runId)
     {
         $r = $this->db->select('SELECT catchup_cursor, catchup_round, catchup_dirty,

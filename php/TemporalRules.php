@@ -12,8 +12,16 @@ final class TemporalRules
     {
         if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return true;
         foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){$p=Logic::parse($rule[$key],['qualified'=>true]);if(!empty($p['ok'])&&Logic::qualifiedRefs($p['ast']))return true;}
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')return true;
         foreach($rule['branches']??[] as $b)if(self::extended($b))return true;
         return false;
+    }
+    /** The operand references ("from" of @UVWINDOW, ...) of one rule node: [registry entry, parsed ref or qref] pairs. */
+    private static function operands(array $rule)
+    {
+        $out=[];
+        foreach(ModeRegistry::operandKeys() as $rk)if(isset($rule[$rk['key']])){$op=ModeRegistry::operandRef($rule[$rk['key']],['qualified'=>true]);if($op!==null)$out[]=[$rk,$op];}
+        return $out;
     }
     public static function fields(array $rule)
     {
@@ -23,6 +31,7 @@ final class TemporalRules
             foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];
             foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];
         }
+        foreach(self::operands($rule) as list(,$op))$out[]=$op[1];
         foreach($rule['references']??[] as $b)if(is_array($b)){
             if(isset($b['field'])&&is_string($b['field']))$out[]=$b['field'];
             foreach(is_array($b['match']??null)?$b['match']:[] as $target=>$source){$out[]=$target;if(is_string($source)&&preg_match('/^\[([a-z][a-z0-9_]*)\]$/D',(string)$source,$m))$out[]=$m[1];}
@@ -105,6 +114,7 @@ final class TemporalRules
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$add($ref[1],$ref[3]);
         }
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$add($op[1],$op[3]);
         foreach($rule['references']??[] as $binding){
             if(!is_array($binding)||!isset($binding['field']))continue;
             if(($binding['events']??null)==='arm'){
@@ -135,12 +145,13 @@ final class TemporalRules
             $p=Logic::parse($rule[$key],['qualified'=>true]);
             if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$references[]=[$ref[1],$ref[3],$ref[4]];
         }
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$references[]=[$op[1],$op[3],$op[4]];
         foreach($rule['references']??[] as $alias=>$binding)if(is_array($binding)&&is_string($binding['field']??null)){
             $field=$binding['field'];$meta=$shape->field($field);
             if(($meta['type']??null)==='checkbox')$errors[]='Binding '.$alias.' needs a scalar field; use a qualified checkbox-code reference for checkbox values.';
             if(isset($binding['type'])&&$meta){
                 $validation=$meta['validation']??'';
-                $expected=strpos($validation,'datetime_seconds_')===0?'datetime_seconds':(strpos($validation,'datetime_')===0?'datetime':(strpos($validation,'date_')===0?'date':null));
+                $tv=TemporalValue::fromValidation($validation);$expected=$tv?$tv['type']:null;
                 if($expected!==$binding['type'])$errors[]='Binding '.$alias.' date type must match the field validation type.';
             }
             foreach(is_array($binding['match']??null)?$binding['match']:[] as $target=>$source){
@@ -179,7 +190,7 @@ final class TemporalRules
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
             if($onPage){$live=true;$node=['ref',$loc['field'],$loc['code']];}
             else{$snapshot=$snapshot||$browser;if($browser&&$mayRead&&!$mayRead($loc['instrument']))$denied=true;$node=['lit',$r['value']];}
-            if($typed){$format='ymd';if($onPage){$v=$shape->field($loc['field'])['validation']??'';if(substr($v,-3)==='dmy')$format='dmy';elseif(substr($v,-3)==='mdy')$format='mdy';}$node=['date',$typed,$format,$node];}
+            if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
         $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$live,&$denied,&$problems){
@@ -221,12 +232,23 @@ final class TemporalRules
             if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
         }
+        // An operand is a VALUE the verdict reads, not a comparison, so it never folds to a
+        // Boolean: the browser gets a live ref or a permitted snapshot, saved-data callers the
+        // value itself. One the viewer may not read is refused outright, since any window built
+        // from it would show it.
+        foreach(self::operands($rule) as list($rk,$op)){
+            if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
+            $r=$resolver->resolve($op,$context);
+            if(isset($r['members'])){$problems[]='invalid';$node=['unknown'];}
+            else{$was=$denied;$denied=false;$node=$member($r);if($browser&&$denied)$problems[]='unauthorized';$denied=$was;}
+            if($browser)$compiled[$rk['op']]=$node;else $compiled[$rk['value']]=$node[0]==='lit'?(string)$node[1]:null;
+        }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){
             if($live)$problems[]='unauthorized';
             else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
-        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser)foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];}
+        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         if($browser){unset($compiled['references']);$compiled['blockSave']='off';}
         return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];

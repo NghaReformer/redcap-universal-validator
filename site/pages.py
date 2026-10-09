@@ -50,7 +50,7 @@ class Page:
 # --- pages -----------------------------------------------------------------
 # Ordered as they appear in the nav.
 
-TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices")
+TAG_SLUGS = ("uvalidate", "uvassert", "uvrequired", "uvunique", "uvchoices", "uvwindow")
 
 PAGES = [
     Page(
@@ -138,6 +138,19 @@ PAGES = [
         keywords=("@UVCHOICES", "REDCap action tag", "dynamic choices", "cascading dropdown",
                   "HIDECHOICE", "choice filtering"),
         related=("uvrequired", "uvunique", "index"),
+    ),
+    Page(
+        slug="uvwindow",
+        title="@UVWINDOW — visit windows and no-future-date checks for REDCap date fields",
+        heading="@UVWINDOW",
+        description=(
+            "@UVWINDOW is a REDCap action tag that checks a date lies in a window around "
+            "another date, such as a visit 21 to 35 days after baseline, or is not in the future."
+        ),
+        nav_label="@UVWINDOW",
+        keywords=("@UVWINDOW", "REDCap action tag", "visit window", "date validation",
+                  "future date", "longitudinal study"),
+        related=("uvassert", "uvrequired", "index"),
     ),
     Page(
         slug="install",
