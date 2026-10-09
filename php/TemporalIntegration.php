@@ -119,12 +119,14 @@ trait TemporalIntegration
                     $holders=$index['holders'][self::temporalTupleKey($current,$parts)]??[];
                     unset($holders[$own]);$results[$field]=!$holders;continue;
                 }
+                // A live date reads as the field shows it (31-12-2026), saved ones as Y-M-D.
+                $shown=[];foreach($parts as $f)$shown[$f]=$currentOps[$f][0]==='ref'?TemporalValue::fromValidation($shape->field($f)['validation']??''):null;
                 $clauses=[];$sent=[];
                 foreach($index['tuples'] as $id=>$tuple){
                     if((string)$id===$own)continue;
                     // Entries holding the same tuple are one clause: the page asks "is my value taken", not "by how many".
                     $key=self::temporalTupleKey($tuple,$parts);if(isset($sent[$key]))continue;$sent[$key]=true;
-                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',$tuple[$f]]];$clauses[]=['not',['and',$eq]];
+                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',self::temporalShown($tuple[$f],$shown[$f])]];$clauses[]=['not',['and',$eq]];
                 }
                 $tests[$field]=['and',$clauses];
             }
@@ -183,6 +185,14 @@ trait TemporalIntegration
             $held=$this->temporalResolver=['shape'=>$shape,'budget'=>$this->temporalBudget,'browser'=>(bool)$browser,'node'=>$node,'resolver'=>$resolver];
         }
         return $held['resolver'];
+    }
+
+    /** A saved date or datetime written the way its field shows it; any other value as saved. */
+    private static function temporalShown($value,$tv)
+    {
+        if($tv===null)return $value;
+        $shown=TemporalValue::format(trim((string)$value),$tv['type'],$tv['format']);
+        return $shown!==''?$shown:$value;
     }
 
     /** Components compare as TemporalLogic's "identical" does: exact strings after PHP's default trim. */

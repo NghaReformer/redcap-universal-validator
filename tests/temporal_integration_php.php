@@ -227,6 +227,19 @@ namespace {
     check('repeat uniqueness preserves leading zeros',$eval($r,['a_val'=>'012'])===true);
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
     $res=$m->scanProject(PID);check('record duplicates both contexts reported',count($res['violations'])===2);
+    // The page reads a D-M-Y date as typed, the other entries come from saved
+    // Y-M-D data: the page must get them the way the field shows them.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['text_validation_type_or_show_slider_number']='date_dmy';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2026-01-07';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-01-09';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('D-M-Y record uniqueness: a typed duplicate is caught',$eval($r,['a_val'=>'07-01-2026'])===false);
+    check('D-M-Y record uniqueness: a duplicate in another event is caught',$eval($r,['a_val'=>'09-01-2026'])===false);
+    check('D-M-Y record uniqueness: a free date passes',$eval($r,['a_val'=>'08-01-2026'])===true);
+    check('D-M-Y record uniqueness: this entry\'s own saved date passes',$eval($r,['a_val'=>'05-01-2026'])===true);
+    $res=$m->scanProject(PID);check('D-M-Y record uniqueness: the scan finds no duplicate',!$res['violations']);
 
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
     $m->projectSettings['qualified-audit-max-contexts']=1;$m->redcap_save_record(PID,'1','fb',1,null);

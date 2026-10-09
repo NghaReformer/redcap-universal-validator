@@ -1646,6 +1646,45 @@ namespace {
     check('ajax: bad field name refused', isset(ajaxCall($m, ['field' => 'pid; DROP', 'values' => []])['error']));
     check('ajax: unknown action refused', isset($m->redcap_module_ajax('other', [], 149, '3', 'uf', 351, 1, null, null, null, '', '', 'u', null)['error']));
 
+    // Date fields: the browser sends the value as the field shows it (31-12-2024
+    // on a D-M-Y field), REDCap stores Y-M-D. The endpoint compares stored
+    // values, so it must rewrite the typed value first or it never finds a
+    // duplicate on a D-M-Y or M-D-Y field.
+    $dtDict = $uqDict + [
+        'vdate' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'date_dmy'],
+        'vtime' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'datetime_mdy'],
+        'vsec'  => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'datetime_seconds_dmy'],
+        'kit'   => ['field_type' => 'text', 'form_name' => 'uf',
+                    'field_annotation' => '@UVUNIQUE={"with":["kdate"]}'],
+        'kdate' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '',
+                    'text_validation_type_or_show_slider_number' => 'date_mdy'],
+    ];
+    $dtData = $uqData;
+    $dtData['1'][351] += ['vdate' => '2024-12-31', 'vtime' => '2024-12-31 14:30',
+                          'vsec' => '2024-12-31 14:30:05', 'kit' => 'K-1', 'kdate' => '2024-01-05'];
+    $m = newModule([], $dtDict, $dtData, 149);
+    \REDCap::$lastGetDataParams = null;
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '31-12-2024']]);
+    check('ajax: a D-M-Y date typed as shown finds the stored Y-M-D duplicate',
+        isset($r['used']) && $r['used'] === true && $r['record'] === '1');
+    check('ajax: the narrowed query asks for the stored form of the date',
+        isset(\REDCap::$lastGetDataParams['filterLogic'])
+        && strpos(\REDCap::$lastGetDataParams['filterLogic'], "'2024-12-31'") !== false);
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '30-12-2024']]);
+    check('ajax: another D-M-Y date is free', isset($r['used']) && $r['used'] === false);
+    $r = ajaxCall($m, ['field' => 'vtime', 'values' => ['vtime' => '12-31-2024 14:30']]);
+    check('ajax: an M-D-Y datetime finds the stored duplicate', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'vsec', 'values' => ['vsec' => '31-12-2024 14:30:05']]);
+    check('ajax: a datetime with seconds finds the stored duplicate', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'kit', 'values' => ['kit' => 'K-1', 'kdate' => '01-05-2024']]);
+    check('ajax: a composite "with" date is rewritten too', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '31-12-20']]);
+    check('ajax: a half-typed date is compared as typed (free, no error)',
+        isset($r['used']) && $r['used'] === false);
+
     // Branch selectors on the live endpoint and in the scan's unique collector
     // follow each branch's own "caseSensitive". The saved record says "NORTH".
     foreach ([false => 'default', true => 'caseSensitive:true'] as $cs => $label) {

@@ -2340,8 +2340,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function annotateWindowField(array $frag, $name, array $meta, $pid)
     {
-        $validation = isset($meta['text_validation_type_or_show_slider_number'])
-            ? trim((string) $meta['text_validation_type_or_show_slider_number']) : '';
+        $validation = self::validationOf($meta);
         $tv = TemporalValue::fromValidation($validation);
         if ($tv === null) {
             return ['error' => AnnotationRules::TAG_WINDOW . ' needs a date field — give this Text field date, datetime '
@@ -2381,9 +2380,7 @@ class UniversalValidator extends AbstractExternalModule
         }
         $meta = $dd[$from];
         $tv = (isset($meta['field_type']) && $meta['field_type'] === 'text')
-            ? TemporalValue::fromValidation(isset($meta['text_validation_type_or_show_slider_number'])
-                ? trim((string) $meta['text_validation_type_or_show_slider_number']) : '')
-            : null;
+            ? TemporalValue::fromValidation(self::validationOf($meta)) : null;
         if ($tv === null) {
             return $refuse('"from" field "' . $from . '" is not a date field — it needs date, datetime or '
                 . 'datetime-with-seconds validation.');
@@ -2481,6 +2478,35 @@ class UniversalValidator extends AbstractExternalModule
             $types[$name] = isset($meta['field_type']) ? $meta['field_type'] : '';
         }
         return $types;
+    }
+
+    /** The trimmed validation name of one dictionary row ('' for none). */
+    private static function validationOf(array $meta)
+    {
+        return isset($meta['text_validation_type_or_show_slider_number'])
+            ? trim((string) $meta['text_validation_type_or_show_slider_number']) : '';
+    }
+
+    /**
+     * Values typed on a page, rewritten into the form REDCap stores. A date or
+     * datetime input holds the value the way the field displays it (31-12-2024
+     * on a D-M-Y field), while getData returns Y-M-D, so an exact comparison of
+     * the two never matches. A value that is not a complete date in the field's
+     * format stays as typed, and so does every value when the dictionary cannot
+     * be read.
+     */
+    private function storedFormOf($pid, array $values)
+    {
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return $values;
+        foreach ($values as $f => $v) {
+            if (!isset($dd[$f]) || !is_array($dd[$f])) continue;
+            $tv = TemporalValue::fromValidation(self::validationOf($dd[$f]));
+            if ($tv === null) continue;
+            $p = TemporalValue::parse(trim((string) $v), $tv['type'], $tv['format']);
+            if ($p['state'] === 'ok') $values[$f] = TemporalValue::format($p['value'], $tv['type'], 'ymd');
+        }
+        return $values;
     }
 
     /**
@@ -4896,6 +4922,8 @@ class UniversalValidator extends AbstractExternalModule
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
+            // A date arrives as the field shows it; the comparison is on stored values.
+            $values = $this->storedFormOf($project_id, $values);
 
             // Resolve composite "with" values the browser could not read (H-03). A
             // field that is not on the rendered instrument is sent as "" by the
