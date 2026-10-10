@@ -3670,7 +3670,6 @@ function QRIDRangeInit(QRID_CONFIG){
              softBlock: SOFT, hardBlock: HARD,
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
-             deferredOnSave: cfg.deferredOnSave === true,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: spec,
@@ -3795,7 +3794,9 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     /* A rule the page could not carry (the growth table cap) is still checked
        when the record is saved, so it does not get the "not checked at all"
-       notice of QRID_renderDeferralNotice. */
+       notice of QRID_renderDeferralNotice. The server marks the whole rule,
+       which leaves no active variant (QRID_activeVariants), so the mark is
+       read from the rule's own config, a branched rule's too (cfgFor). */
     function onSaveNotice(why){
       if(QRID_IS_SURVEY || !why || !why.length){ inert(); return; }
       infoNote("Not checked on this page: " + QRID_escapeHtml(why.join(" ")));
@@ -3810,7 +3811,6 @@ function QRIDRangeInit(QRID_CONFIG){
       if(act.length > 1){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
       var V = act[0];
       if(V.deferred){
-        if(V.deferredOnSave){ onSaveNotice(V.deferredWhy || QRID_CONFIG.deferredWhy); return; }
         if(V.deferredWhy && !QRID_IS_SURVEY){
           QRID_renderDeferralNotice(msg, input, V.deferredWhy, "n");
           setGuard(false); QRID_setModeState(input, "n", null);

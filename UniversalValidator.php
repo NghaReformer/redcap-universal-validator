@@ -2558,9 +2558,7 @@ class UniversalValidator extends AbstractExternalModule
                 // a branch is built on its own in the browser, so it is marked too
                 if (isset($r['branches']) && is_array($r['branches'])) {
                     foreach ($r['branches'] as $bi => $b) {
-                        if (!is_array($b)) continue;
-                        $config['rules'][$i]['branches'][$bi]['deferred'] = true;
-                        $config['rules'][$i]['branches'][$bi]['deferredOnSave'] = true;
+                        if (is_array($b)) $config['rules'][$i]['branches'][$bi]['deferred'] = true;
                     }
                 }
                 continue;

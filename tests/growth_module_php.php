@@ -222,6 +222,12 @@ namespace {
         $e = errOf($pair[0]);
         check('refused: ' . $label . ' (got ' . json_encode($e) . ')', $e !== '' && strpos($e, $pair[1]) !== false);
     }
+    // The parser builds "dob" and "at" only as a pair; checkRange, which also
+    // sees fragments built elsewhere, refuses one without the other.
+    $half = AnnotationRules::checkRange(['type' => 'range', 'fields' => ['w'], 'rangeReference' => 'who-wfa',
+        'rangeSex' => '[sex]', 'rangeMale' => '1', 'rangeFemale' => '2', 'rangeAgeDob' => '[dob]',
+        'rangeHardLo' => '-5', 'rangeHardHi' => '5']);
+    check('checkRange: "dob" without "at" (got ' . json_encode($half) . ')', in_array('"age" needs both "dob" and "at".', $half, true));
     check('dob in another event with references on: accepted',
         errOf(tag('who-wfa', '"age":{"dob":"[enrol_arm_1][dob]","at":"[visit_date]"}'), ['qualified' => true]) === '');
     check('a list of instances is refused even with references on',
@@ -340,7 +346,8 @@ namespace {
     list($by) = audit($DICT, $girl);
     check('audit: 7.5 kg is usual for a girl (z -1.46), not for a boy (z -2.28)', !isset($by['weight']));
     $weird = $DATA;
-    $weird['2'][351] = array_merge($ROW, ['weight' => 'abc', 'wt_h' => '0', 'hc' => '-1', 'bmi' => '', 'wt_c' => '0,0']);
+    // bmi holds only spaces: a blank measurement (a plain '' never reaches the rule, getData leaves it out)
+    $weird['2'][351] = array_merge($ROW, ['weight' => 'abc', 'wt_h' => '0', 'hc' => '-1', 'bmi' => '  ', 'wt_c' => '0,0']);
     list($by, $un) = audit($DICT, $weird);
     check('audit: not a number, 0 and below (got ' . json_encode($by) . ')', $by === ['weight' => 'not-a-number',
         'wt_h' => 'not-positive', 'hc' => 'not-positive', 'wt_c' => 'not-positive']);

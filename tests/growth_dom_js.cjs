@@ -312,9 +312,14 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   // A rule with branches: no branch applies, the rule-level note is the same.
   const els2 = inputs('', '16');
   const env2 = boot(els2, { rules: [{ type: 'range', fields: ['weight'], deferred: true, deferredOnSave: true, deferredWhy: CAP,
-    branches: [rule(Object.assign({ when: "[sex]='1'", deferred: true, deferredOnSave: true }, LIVE))] }] });
+    branches: [rule(Object.assign({ when: "[sex]='1'", deferred: true }, LIVE))] }] });
   check('deferred for the cap, branches, none active: the same grey note (got ' + nMsg(env2, 'weight').innerHTML + ')',
     /^&#8505; Not checked on this page: this form already carries 4/.test(nMsg(env2, 'weight').innerHTML));
+  // The branch applies: the rule-level mark still decides (a deferred rule has no active variant).
+  const env2b = boot(inputs('1', '16'), { rules: [{ type: 'range', fields: ['weight'], deferred: true, deferredOnSave: true, deferredWhy: CAP,
+    branches: [rule(Object.assign({ when: "[sex]='1'", deferred: true }, LIVE))] }] });
+  check('deferred for the cap, the branch applies: the same grey note (got ' + nMsg(env2b, 'weight').innerHTML + ')',
+    /^&#8505; Not checked on this page: this form already carries 4/.test(nMsg(env2b, 'weight').innerHTML) && save(env2b) === 'saved');
   // Any other deferral keeps its own notice.
   const env3 = boot(inputs('1', '16'), { rules: [rule(Object.assign({ deferred: true, deferredWhy: ['Extended reference unavailable: x.'] }, LIVE))] });
   check('another deferral: the "not checked after saving either" notice', /not checked after saving either/.test(nMsg(env3, 'weight').innerHTML));
