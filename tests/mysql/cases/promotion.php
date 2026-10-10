@@ -492,3 +492,57 @@ if (!class_exists('UvBudgetModule')) {
             'detail' => 'truncated', 'clean' => null, 'rule_problem_count' => '1', 'not_examined' => '1',
             'gap_count' => '2'));
 }
+
+// R3U-5, ON A REAL SERVER. Two tabs press Stop together, on two connections:
+// A bumps, B bumps, B finishes, and A's finish then changes nothing. A was
+// answered ok:true stopped:false over a run that had ended, and its page said
+// "Stopping the scan." beside the finished panel. A asks again now.
+if (!class_exists('UvFinishHookDb')) {
+    /** A ScanDb that runs $beforeFinish once, just before the first terminal write. */
+    final class UvFinishHookDb implements \INSPIRE\UniversalValidator\Scan\ScanDb {
+        public $inner; public $beforeFinish;
+        public function __construct($inner) { $this->inner = $inner; }
+        public function select($sql, array $params = []) { return $this->inner->select($sql, $params); }
+        public function exec($sql, array $params = []) {
+            if ($this->beforeFinish && strpos($sql, 'SET phase = ?, terminal = ?') !== false) {
+                $h = $this->beforeFinish; $this->beforeFinish = null; $h();
+            }
+            return $this->inner->exec($sql, $params);
+        }
+        public function execNoCount($sql, array $params = []) { return $this->inner->execNoCount($sql, $params); }
+        public function affected() { return $this->inner->affected(); }
+        public function begin() { $this->inner->begin(); }
+        public function commit() { $this->inner->commit(); }
+        public function rollback() { $this->inner->rollback(); }
+    }
+}
+{
+    $storeB = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbB);
+    $hook = new UvFinishHookDb(new MysqliDb($A));
+    $storeA = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($hook);
+    $stopRun = new \ReflectionMethod('INSPIRE\\UniversalValidator\\Scan\\ScanService', 'stopRun');
+    $stopRun->setAccessible(true);
+    $svc = new \INSPIRE\UniversalValidator\Scan\ScanService(new \stdClass());
+    $T = Schema::table('scan_run');
+    $r = $storeB->startRun(974, array('created_by' => 'alice', 'fence_open' => '10'));
+    $rid = (int) $r['run']['run_id'];
+    $storeB->writeManifest($rid, array(array('id_bin' => 'T1', 'hash' => hash('sha256', 'T1', true), 'dag' => null)));
+    $beforeOf = function () use ($storeB, $B, $T, $rid) {
+        $run = $storeB->run(974, $rid);
+        $run['lease_expires_at'] = $B->query('SELECT lease_expires_at FROM ' . $T
+            . ' WHERE run_id = ' . (int) $rid)->fetch_row()[0];
+        return $run;
+    };
+    $resB = null;
+    $hook->beforeFinish = function () use (&$resB, $stopRun, $svc, $storeB, $rid, $beforeOf) {
+        $resB = $stopRun->invoke($svc, $storeB, 974, $rid, 'tab-B', $beforeOf(), time());
+    };
+    $resA = $stopRun->invoke($svc, $storeA, 974, $rid, 'tab-A', $beforeOf(), time());
+    $end = $storeB->run(974, $rid);
+    check('R3U-5: tab B, which finished the run, is told it stopped',
+        is_array($resB) && $resB['ok'] === true && $resB['stopped'] === true);
+    check('R3U-5: tab A, whose finish found it already ended, is told it stopped too',
+        $resA['ok'] === true && $resA['stopped'] === true && $resA['why'] === null);
+    check('R3U-5: and the run did end, cancelled, once',
+        $end['phase'] === 'terminal' && $end['terminal'] === 'cancelled');
+}

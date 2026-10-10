@@ -269,6 +269,7 @@
         watchChain: 0,          // the same, for a tab that is only watching
         watchWait: 0,           // the watching ladder, 0 until the first poll is queued
         watchNote: null,        // the refusal a watch last wrote into the note, if any
+        stopNote: null,         // the "stopping" sentence Stop wrote, until the run is over
         seen: false,            // has any status arrived on this chain yet
         lastDone: -1, lastPhase: null, lastPct: null, lastFindings: null
     };
@@ -671,6 +672,7 @@
                     text(note, '');
                 }
                 UV.state.watchNote = null;
+                if (st.terminal) settleStopNote(st);
             }
             keepWatching(st, mine);
         }, function (e) {
@@ -682,6 +684,26 @@
             // ask again, on the same ladder, and never at once.
             keepWatching(null, mine);
         });
+    }
+
+    /**
+     * Take "Stopping the scan." down once the run is over (review R3U-5).
+     *
+     * Stop answers stopped:false when it could only ASK - commonly because
+     * this tab's own work request was in flight and held the run - and that
+     * request then ends it. The note was written once and never revisited, so
+     * the finished panel sat under "Stopping the scan." for as long as the
+     * page was open. The first terminal status replaces it with what happened.
+     * Only Stop's own sentence: a note something else has written since is not
+     * this one's to change.
+     */
+    function settleStopNote(st) {
+        var note = el('uv-scan-note');
+        if (UV.state.stopNote !== null && note && note.textContent === UV.state.stopNote) {
+            text(note, st.terminal === 'cancelled' ? 'The scan was stopped.'
+                : 'The scan ended before it could be stopped.');
+        }
+        UV.state.stopNote = null;
     }
 
     function keepWatching(st, mine) {
@@ -704,6 +726,7 @@
         UV.state.starting = true;
         UV.state.chain++;
         UV.state.watchChain++;               // a tab that drives is no longer watching
+        UV.state.stopNote = null;
         text(el('uv-scan-note'), '');
         busy(true);
         // .then(onOk, onErr), NOT .then(onOk)['catch'](onErr). With the catch
@@ -755,6 +778,7 @@
         if (UV.state.running) return;        // a second Continue is not a second driver
         UV.state.chain++;
         UV.state.watchChain++;               // a tab that drives is no longer watching
+        UV.state.stopNote = null;            // a driver writes its own notes
         UV.state.running = true;
         UV.state.wait = NET_MIN;
         UV.state.idle = 0;
@@ -772,9 +796,13 @@
         call('scan-cancel', { run_id: UV.state.runId }).then(function (r) {
             // `stopped` is the server saying the run has ENDED, which it now
             // does at once for a run nobody was working (review R2O-5).
-            // "Stopping" over a finished run would be the one stale word.
+            // "Stopping" over a finished run would be the one stale word, so
+            // when that is what has to be said, the watch below replaces it
+            // once a status comes back terminal (settleStopNote, R3U-5).
+            var asked = !(r && r.why) && !(r && r.stopped);
             text(el('uv-scan-note'), (r && r.why) ? r.why
                 : ((r && r.stopped) ? 'The scan was stopped.' : 'Stopping the scan.'));
+            UV.state.stopNote = asked ? 'Stopping the scan.' : null;
             refresh();
         }, function () {
             text(el('uv-scan-note'), 'The scan could not be stopped; try again.');

@@ -48,6 +48,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/ScanWorker.php';
     require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
     require_once __DIR__ . '/../php/Scan/ScanService.php';
+    require_once __DIR__ . '/scan_fault_support.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -469,6 +470,27 @@ namespace {
             $n = 0;
             foreach ($this->log as $s) if (strpos($s, $needle) !== false) $n++;
             return $n;
+        }
+    }
+
+    /**
+     * FaultyStore, plus one thing to happen just before the first finish():
+     * another tab's Stop landing between this one's bump and its finish
+     * (review R3U-5).
+     */
+    class RacingStore extends \INSPIRE\UniversalValidator\Scan\FaultyStore
+    {
+        /** @var ?callable */
+        public $beforeFinish = null;
+
+        public function finish($runId, array $outcome)
+        {
+            if ($this->beforeFinish !== null) {
+                $h = $this->beforeFinish;
+                $this->beforeFinish = null;
+                $h();
+            }
+            return parent::finish($runId, $outcome);
         }
     }
 
@@ -2018,6 +2040,90 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $cols($ts, 874, $tr) === $want && $ts->run(874, $tr)['terminal_reason'] === $tWhy);
 }
 
+/* =====================================================================
+ * R3U-5  A STOP SOMEBODY ELSE FINISHED IS STILL A STOP
+ * R3U-6  A FINISH THAT THROWS LEAVES THE STOP STANDING
+ *
+ * finish() changes only a run that still holds its slot. Two tabs pressing
+ * Stop together - A bumps, B bumps, B finishes, A finishes - left A told
+ * ok:true stopped:false over a run that had ended, and its page said
+ * "Stopping the scan." beside the finished panel. A asks again now, and a run
+ * that is cancelled has stopped; one that ended some other way is for the
+ * status to describe.
+ *
+ * And the catch around that finish was unpinned: narrowing it kept the suite
+ * green. A finish that throws must leave the stop as it stands - the run
+ * `cancelling`, its slot held for the next Continue or Start to finish - and
+ * answer ok:true, stopped:false, never an exception.
+ * ===================================================================== */
+{
+    $stopRun = new \ReflectionMethod(ScanService::class, 'stopRun');
+    $stopRun->setAccessible(true);
+    $svc = new ScanService(new \NoDbModule());
+    $NOW = time();
+    $open = function (ArrayScanStore $inner, $pid) {
+        $runId = (int) $inner->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $inner->writeManifest($runId, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true), 'dag' => null]]);
+        return $runId;
+    };
+    // Nobody drives it: no lease.
+    $undriven = function (ScanStore $store, $pid, $runId) {
+        $r = $store->run($pid, $runId);
+        $r['lease_expires_at'] = null;
+        return $r;
+    };
+
+    // Two tabs, one run.
+    $inner = new ArrayScanStore();
+    $rid = $open($inner, 880);
+    $tabA = new \RacingStore($inner);
+    $resB = null;
+    $tabA->beforeFinish = function () use (&$resB, $stopRun, $svc, $inner, $rid, $undriven, $NOW) {
+        $resB = $stopRun->invoke($svc, $inner, 880, $rid, 'tab-B', $undriven($inner, 880, $rid), $NOW);
+    };
+    $resA = $stopRun->invoke($svc, $tabA, 880, $rid, 'tab-A', $undriven($inner, 880, $rid), $NOW);
+    check('R3U-5: the tab whose finish landed first is told the run stopped',
+        is_array($resB) && $resB['ok'] === true && $resB['stopped'] === true);
+    check('R3U-5: and so is the tab whose finish then found it ended',
+        $resA['ok'] === true && $resA['stopped'] === true && $resA['why'] === null);
+    check('R3U-5: the run ended once, cancelled',
+        $inner->run(880, $rid)['terminal'] === ScanOutcome::CANCELLED);
+
+    // The run ended some other way between the bump and the finish: not a stop.
+    $inner = new ArrayScanStore();
+    $rid = $open($inner, 881);
+    $tabA = new \RacingStore($inner);
+    $tabA->beforeFinish = function () use ($inner, $rid) {
+        $inner->finish($rid, ScanOutcome::derive(['failed' => true]));
+    };
+    $resA = $stopRun->invoke($svc, $tabA, 881, $rid, 'tab-A', $undriven($inner, 881, $rid), $NOW);
+    check('R3U-5: a run another request ended some other way is not reported as stopped',
+        $resA['ok'] === true && $resA['stopped'] === false
+        && $inner->run(881, $rid)['terminal'] === ScanOutcome::FAILED);
+
+    // R3U-6: finish() throws.
+    $inner = new ArrayScanStore();
+    $rid = $open($inner, 882);
+    $broken = (new \INSPIRE\UniversalValidator\Scan\FaultyStore($inner))->failFrom('finish');
+    $threw = null;
+    try {
+        $res6 = $stopRun->invoke($svc, $broken, 882, $rid, 'alice', $undriven($inner, 882, $rid), $NOW);
+    } catch (\Throwable $e) {
+        $threw = get_class($e);
+        $res6 = null;
+    }
+    check('R3U-6: a finish that throws is not an exception out of Stop' . ($threw ? ' (' . $threw . ')' : ''),
+        $threw === null);
+    check('R3U-6: the stop stands - ok, not stopped',
+        is_array($res6) && $res6['ok'] === true && $res6['stopped'] === false && $res6['why'] === null);
+    $left = $inner->run(882, $rid);
+    check('R3U-6: the run is left cancelling, holding its slot for the next Continue or Start',
+        $left['phase'] === ScanPhase::CANCELLING && $left['terminal'] === null
+        && !empty($left['cancel_requested_at']) && $inner->startRun(882, [])['ok'] === false);
+    check('R3U-6: and the next stop, with a finish that works, ends it',
+        $stopRun->invoke($svc, $inner, 882, $rid, 'alice', $undriven($inner, 882, $rid), $NOW)['stopped'] === true
+        && $inner->run(882, $rid)['terminal'] === ScanOutcome::CANCELLED);
+}
 
 /* =====================================================================
  * R3G-4  THE EVALUATOR'S REVISION IS IN EVERY RUN'S FINGERPRINT

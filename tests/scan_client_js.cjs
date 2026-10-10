@@ -183,6 +183,7 @@ function reset(s) {
   UV.state.lastFindings = null;
   UV.state.watchChain++;               // a watch from an earlier test dies quietly
   UV.state.watchWait = 0;
+  UV.state.stopNote = null;
   Object.keys(els).forEach((k) => {
     els[k].textContent = ''; els[k].style = {}; els[k]._attrs = {}; els[k].disabled = false;
   });
@@ -649,6 +650,41 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: R2O-5 and the panel shows it finished, with no stopping sentence and nothing more asked',
     els['uv-scan-done'].style.display === '' && els['uv-scan-stalled'].style.display === 'none'
     && els['uv-scan-start'].style.display === '' && sent.length === askedR5);
+
+  // R3U-5. The commonest Stop is pressed while this tab's own work request is
+  // in flight: the server sees the run held, can only ASK, and answers
+  // stopped:false - and that request then ends it. "Stopping the scan." was
+  // written once and stayed under the finished panel for as long as the page
+  // was open. The first terminal status the watch gets replaces it.
+  const stoppingSt = Object.assign(running(1, 10), { phase: 'cancelling', stopping: true, idleSeconds: 2 });
+  const cancelledSt = Object.assign(finished('partial'), { terminal: 'cancelled' });
+  const stopThen = async (ending, meddle) => {
+    reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
+    UV.start();
+    await ticks(6);
+    sent.length = 0;
+    script = [{ ok: true, why: null, stopped: false }, stoppingSt, ending];
+    UV.cancel();
+    await ticks(6);
+    const asked = els['uv-scan-note'].textContent;
+    if (meddle) els['uv-scan-note'].textContent = meddle;
+    const delays = await drive(4);
+    return { asked, delays, note: els['uv-scan-note'].textContent };
+  };
+  let r5 = await stopThen(cancelledSt);
+  check('client: R3U-5 a stop the server could only ask for says it is stopping',
+    r5.asked === 'Stopping the scan.');
+  check('client: R3U-5 and once the run is over the note says it was stopped',
+    r5.note === 'The scan was stopped.' && els['uv-scan-done'].style.display === '');
+  check('client: R3U-5 and the watch asked again on its ladder, never at 0 ms',
+    r5.delays.length > 0 && r5.delays.every((ms) => ms > 0)
+    && !sent.some((s) => s.action === 'scan-work'));
+  r5 = await stopThen(finished('complete-through-fence'));
+  check('client: R3U-5 a run that ended some other way says so, not that it was stopped',
+    r5.note === 'The scan ended before it could be stopped.');
+  r5 = await stopThen(cancelledSt, 'A sentence somebody else wrote.');
+  check('client: R3U-5 a note written since the Stop is not Stop\'s to replace',
+    r5.note === 'A sentence somebody else wrote.');
 
   // -- attaching to a run that is already going ---------------------------
   //

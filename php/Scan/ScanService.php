@@ -819,6 +819,20 @@ final class ScanService
         if (!self::workerHolds($before, $now, self::STALL_SECONDS)) {
             try {
                 $stopped = ScanPromotion::finishCancelled($store, $pid, $runId, $this->limits($pid));
+                if (!$stopped) {
+                    // ENDED BY SOMEBODY ELSE IS STILL ENDED (review R3U-5).
+                    // finish() changes only a run that holds its slot, so a
+                    // second Stop pressed with this one, or the worker's own
+                    // request, can end the run between the bump above and the
+                    // finish here - and this tab was told stopped:false, and
+                    // said "Stopping the scan." beside a finished panel. Asked
+                    // again: a run now cancelled has stopped. One that ended
+                    // any other way is left to the status, which says how.
+                    $after = $store->run($pid, $runId);
+                    $stopped = $after !== null && isset($after['phase'])
+                        && $after['phase'] === ScanPhase::TERMINAL
+                        && isset($after['terminal']) && $after['terminal'] === ScanOutcome::CANCELLED;
+                }
             } catch (\Throwable $e) {
                 // The stop itself stands; the run stays `cancelling`, and the
                 // next Continue or Start finishes it, as before this existed.
