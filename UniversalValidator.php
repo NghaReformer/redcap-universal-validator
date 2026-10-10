@@ -481,6 +481,18 @@ class UniversalValidator extends AbstractExternalModule
                       . ' No branch can be chosen, so the field is not checked here.'];
                 return $out;
             }
+            // A branch conflict leaves the whole field unchecked, so it is
+            // reported alone, before any group set aside says the rest of
+            // the field is checked.
+            foreach ($active as $g => $list) {
+                if (isset($broken[$g])) continue;
+                if (count($list) > 1) {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
+                        . $rule['branches'][$list[0]]['when'] . '" | "' . $rule['branches'][$list[1]]['when'] . '"'];
+                    return $out;
+                }
+            }
             $groupName = ModeRegistry::branchGroupName($groupMode) ?: 'group';
             // Every group set aside: no part of the field is checked, and each
             // message says so. Otherwise each names the part it leaves out.
@@ -494,15 +506,6 @@ class UniversalValidator extends AbstractExternalModule
                     : 'a branch "when" condition for ' . $which . ' ' . self::resolutionProblem($bk[0], $bk[1])
                       . ($none ? ' No branch can be chosen, so the field is not checked here.'
                                : ' No branch of it can be chosen, so ' . $part . ' not checked here; the rest of the field is.')];
-            }
-            foreach ($active as $g => $list) {
-                if (isset($broken[$g])) continue;
-                if (count($list) > 1) {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                        'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
-                        . $rule['branches'][$list[0]]['when'] . '" | "' . $rule['branches'][$list[1]]['when'] . '"'];
-                    return $out;
-                }
             }
             // A rule with several groups names the group on each finding (its
             // "locus"), so the findings of two references on one field keep

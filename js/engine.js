@@ -3019,10 +3019,12 @@ function QRID_activeVariants(vs){
     for(gi = 0; gi < vs.groups.length; gi++){
       gk = vs.groups[gi];
       var list = byGroup[gk];
-      /* A group set aside (blocked, or a gate that answers "unknown") defers
-         as a whole: its conditions choose nothing, so two of them true is not
-         a conflict, as the server skips it too (ruleFindings). */
-      if(list && list.length > 1 && !blocked[gk] && !unknown[gk]){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
+      /* A group the server set aside (blocked) defers as a whole: its
+         conditions choose nothing, so two of them true is not a conflict, and
+         the server skips it too (ruleFindings). A group with a gate that
+         answers "unknown" here is different: when two of its other gates are
+         true, the server, which reads the unknown one, sees a conflict too. */
+      if(list && list.length > 1 && !blocked[gk]){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
     }
     act = [];
     for(gi = 0; gi < vs.groups.length; gi++){
@@ -3079,16 +3081,17 @@ var QRID_DYNAMIC_DEFERRAL = "Current values cannot resolve this comparison. Save
    audit does not do for an unresolved reference — so there is exactly one copy.
    checkedOnSave: only this page could not resolve it (a match key typed here);
    the post-save audit reads the saved values and does check it. */
-function QRID_renderDeferralNotice(msg, input, why, mode, checkedOnSave){
+function QRID_renderDeferralNotice(msg, input, why, mode, checkedOnSave, subject){
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
-  msg.innerHTML = "&#9888; " + QRID_deferralText(why, checkedOnSave);
+  msg.innerHTML = "&#9888; " + QRID_deferralText(why, checkedOnSave, subject);
   QRID_setModeState(input, mode || "check", null);
 }
 /* The notice's text, escaped, without its icon: also one line of a note with
-   several (@UVRANGE with several references). */
-function QRID_deferralText(why, checkedOnSave){
-  return "This rule is not being checked — " + QRID_escapeHtml(why.join(" ")) +
+   several (@UVRANGE with several references). subject, escaped HTML, names
+   what is not checked when it is one part of a field ('Reference "x" is'). */
+function QRID_deferralText(why, checkedOnSave, subject){
+  return (subject ? subject + " not being checked — " : "This rule is not being checked — ") + QRID_escapeHtml(why.join(" ")) +
     (checkedOnSave ? " It is checked after the record is saved."
                    : " It is not checked after saving either; the study team needs to correct the rule.");
 }
@@ -4400,7 +4403,8 @@ function QRIDRangeInit(QRID_CONFIG){
         var mo = measureOnly(V, typed);
         if(mo) return { kind: "bad", html: describe(V, mo), block: blockFor(V, mo.tier, mo.reason) };
         return (V.deferredWhy && !QRID_IS_SURVEY)
-          ? { kind: "info", html: "Not checked on this page: " + QRID_escapeHtml(V.deferredWhy.join(" ")) } : { kind: "none" };
+          ? { kind: "info", html: (VS.grouped ? refSubject(V) + " not checked on this page: " : "Not checked on this page: ")
+              + QRID_escapeHtml(V.deferredWhy.join(" ")) } : { kind: "none" };
       }
       if(V.deferred){
         return (V.deferredWhy && !QRID_IS_SURVEY)
@@ -4433,9 +4437,9 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     var ICON = { warn: "&#9888; ", bad: "&#10007; ", info: "&#8505; ", deferral: "&#9888; " };
     /* With several references, a line that is not a verdict says which
-       reference it is about; a verdict names its table already. */
-    function refLabel(V){
-      return QRID_escapeHtml(V.group === "" ? "Limits without a reference: " : 'Reference "' + V.group + '": ');
+       reference it is about (a verdict names its table already). */
+    function refSubject(V){
+      return QRID_escapeHtml(V.group === "" ? "The limits without a reference are" : 'Reference "' + V.group + '" is');
     }
     var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
     function check(){
@@ -4453,7 +4457,7 @@ function QRIDRangeInit(QRID_CONFIG){
       if(act.length === 1){
         var j = (act[0].deferred || !QRID_isMissingCode(typed)) ? judge(act[0], typed) : { kind: "none" };
         if(j.kind === "deferral"){
-          QRID_renderDeferralNotice(msg, input, j.why, "n", j.checkedOnSave);
+          QRID_renderDeferralNotice(msg, input, j.why, "n", j.checkedOnSave, VS.grouped ? refSubject(act[0]) : "");
           setGuard(false); QRID_setModeState(input, "n", null);
           return;
         }
@@ -4475,9 +4479,8 @@ function QRIDRangeInit(QRID_CONFIG){
       for(var ai = 0; ai < act.length; ai++){
         var one = (act[ai].deferred || !missing) ? judge(act[ai], typed) : { kind: "none" };
         if(one.kind === "none") continue;
-        var named = one.kind === "deferral" || (act[ai].onSave && one.kind === "info");
-        var line = ICON[one.kind] + (named ? refLabel(act[ai]) : "")
-          + (one.kind === "deferral" ? QRID_deferralText(one.why, one.checkedOnSave) : one.html);
+        var line = ICON[one.kind]
+          + (one.kind === "deferral" ? QRID_deferralText(one.why, one.checkedOnSave, refSubject(act[ai])) : one.html);
         if(!seen[line]){ seen[line] = true; lines.push(line); }
         if(one.kind === "deferral") deferral = true;
         if(one.kind === "bad") worst = "bad";

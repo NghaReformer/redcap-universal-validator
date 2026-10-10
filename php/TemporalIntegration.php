@@ -91,7 +91,7 @@ trait TemporalIntegration
                         if(isset($g['rule']['whenAst']))$b['rule']['whenAst']=$g['rule']['whenAst'];
                     }
                     $out['branches'][$i]=$b['rule'];
-                    if($b['problems']||!empty($b['offPage']))$offGroup[$group[$i]]=true;
+                    if($b['problems']||!empty($b['offPage'])||TemporalRules::extended($flat))$offGroup[$group[$i]]=true;
                     if($g['problems']){$selectorUnknown=true;$unknownGroup[$group[$i]]=true;}
                     if(!empty($g['stale'])){$selectorStale=true;$staleGroup[$group[$i]]=true;}
                 }else{
@@ -112,14 +112,17 @@ trait TemporalIntegration
                     foreach($out['branches'] as $i=>$_){
                         if(isset($unknownGroup[$group[$i]])){
                             $out['branches'][$i]['deferred']=true;$out['branches'][$i]['selectorBlocked']=true;
-                            $out['branches'][$i]['deferredWhy']=['Extended validation unavailable for '.$label($group[$i]).': unresolved branch selector.'];
+                            // The page names the reference on this line (QRIDRangeInit).
+                            $out['branches'][$i]['deferredWhy']=['Extended validation unavailable: unresolved branch selector.'];
                         }
                         if(isset($staleGroup[$group[$i]])){
                             $out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;
                             if(empty($out['branches'][$i]['snapshotFields']))$out['branches'][$i]['snapshotFields']=['saved event/instance values'];
                         }
-                        // compile makes every branch of an event/instance rule advisory. A group that reads
-                        // nothing off this page is judged as any rule on this page is, and blocks as it says.
+                        // compile makes every branch of an event/instance rule advisory. A group that names no
+                        // other event or instance and reads nothing off this page is judged as any rule on this
+                        // page is, and blocks as it says; one that names one never blocks, even where that is
+                        // this entry, as a rule alone does.
                         if(!isset($offGroup[$group[$i]])&&!isset($unknownGroup[$group[$i]])&&!isset($staleGroup[$group[$i]])){
                             unset($out['branches'][$i]['extendedAdvisory']);
                             $own=array_merge($rule,$rule['branches'][$i]);
@@ -127,7 +130,9 @@ trait TemporalIntegration
                         }
                     }
                 }elseif($selectorStale){
-                    foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
+                    // Branches do not inherit rule-level keys on the page, so each carries the mark its note reads.
+                    foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;
+                        if(empty($out['branches'][$i]['snapshotFields']))$out['branches'][$i]['snapshotFields']=['saved event/instance values'];}
                     $out['snapshotFields']=['saved event/instance values'];
                 }
                 $out['blockSave']='off';return ['rule'=>$out,'problems'=>[]];}
@@ -205,6 +210,7 @@ trait TemporalIntegration
                 $prepared['rule']['uniqueRecordAsts']=[];
                 foreach($tests as $field=>$tree)$prepared['rule']['uniqueRecordAsts'][$field]=['temporal',$tree];
                 $prepared['rule']['snapshotFields']=['other entries in this record'];
+                $prepared['offPage']=true;
             }else{
                 $prepared['rule']['uniqueRecordResults']=$results;
             }

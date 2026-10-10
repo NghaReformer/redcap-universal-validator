@@ -315,5 +315,23 @@ $t = microtime(true);
 for ($i = 0; $i < 100000; $i++) $wide->eventId($i % 2 ? 'last-event-name' : 'ev500_arm_1', 250, 'fc');
 check('P2: 100,000 lookups over 500 events do not walk the events each time', microtime(true) - $t < 2.0);
 
+// offPage: the row a "match" chooses was found among the saved entries, so the rule
+// reads off this page even when that row is this one (live, guarded by its key).
+$mShape = new ProjectShape([1=>['name'=>'visit_arm_1','arm'=>1,'order'=>1,'forms'=>['fa'],'repeats'=>['fa'],'eventRepeats'=>false]],
+    ['a_val'=>['form'=>'fa','type'=>'text'],'b_val'=>['form'=>'fa','type'=>'text'],'k'=>['form'=>'fa','type'=>'text']]);
+$mNode = ['repeat_instances'=>[1=>['fa'=>[1=>['a_val'=>'5','b_val'=>'7','k'=>'A'],2=>['a_val'=>'9','b_val'=>'3','k'=>'B']]]]];
+$p = TemporalRules::compile(['assert'=>'[a_val]<={x}','references'=>['x'=>['field'=>'b_val','match'=>['k'=>'[k]']]]],
+    new AddressResolver($mShape, $mNode, 10000, new ReferenceBudget()), $mShape,
+    ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>$mNode['repeat_instances'][1]['fa'][1]], true);
+check('offPage: a matched row that is this entry still read the saved entries (got ' . json_encode([$p['offPage'], $p['rule']['assertAst'] ?? null]) . ')',
+    $p['offPage'] === true && ($p['rule']['assertAst'][1][3][0] ?? null) === 'guard');
+$p = TemporalRules::compile(['assert'=>'[a_val]<=[visit_arm_1][b_val][1]'], new AddressResolver($mShape, $mNode, 10000, new ReferenceBudget()), $mShape,
+    ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>$mNode['repeat_instances'][1]['fa'][1]], true);
+check('offPage: ... and a plain reference to this entry does not (got ' . json_encode($p['offPage']) . ')', $p['offPage'] === false);
+$p = TemporalRules::compile(['assert'=>'[a_val]<=[visit_arm_1][b_val][2]'], new AddressResolver($mShape, $mNode, 10000, new ReferenceBudget()), $mShape,
+    ['event'=>1,'instrument'=>'fa','instance'=>1,'values'=>$mNode['repeat_instances'][1]['fa'][1]], true);
+check('offPage: ... while one to another instance does (got ' . json_encode([$p['offPage'], $p['rule']['assertAst'] ?? null]) . ')',
+    $p['offPage'] === true && ($p['rule']['assertAst'][1][3] ?? null) === ['lit', '3']);
+
 echo "temporal_adversarial_php: $n checks, $fail failures\n";
 exit($fail ? 1 : 0);

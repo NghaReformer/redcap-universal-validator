@@ -470,9 +470,12 @@ namespace {
         'wt_lim' => f('anthro_form', '@UVRANGE={"hard":[1,40],"when":"[grp_r]=\'2\'"} ' . tag('who-wfa', $AGE), 'number_1dp'),
         'wt_all' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} '
             . '@UVRANGE={"hard":[1,40],"when":"[grp_r]=\'1\'"}', 'number_1dp'),
+        // one reference set aside, and a branch conflict in the fixed limits
+        'wt_cf' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} '
+            . '@UVRANGE={"hard":[1,40],"when":"[sex]=\'1\'"} @UVRANGE={"hard":[1,30],"when":"[sex]<>\'2\'"}', 'number_1dp'),
     ];
     $blk = $DATA;
-    $blk['2'][351]['wt_blk'] = '6.6'; $blk['2'][351]['wt_blk1'] = '6.6'; $blk['2'][351]['wt_lim'] = '6.6'; $blk['2'][351]['wt_all'] = '6.6';
+    $blk['2'][351]['wt_blk'] = '6.6'; $blk['2'][351]['wt_blk1'] = '6.6'; $blk['2'][351]['wt_lim'] = '6.6'; $blk['2'][351]['wt_all'] = '6.6'; $blk['2'][351]['wt_cf'] = '6.6';
     $blk['2']['repeat_instances'] = [351 => ['visit_rep' => [1 => ['grp_r' => '2'], 2 => ['grp_r' => '1']]]];
     $pb = page(mod($BLK, $blk, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     $rb = ruleFor($pb, 'wt_blk');
@@ -495,6 +498,9 @@ namespace {
         count($ul) === 1 && ($by['wt_lim'] ?? null) === 'soft-low'
         && strpos($ul[0], 'a branch "when" condition for the limits without a reference references "[grp_r]"') !== false
         && strpos($ul[0], 'No branch of it can be chosen, so those limits are not checked here; the rest of the field is.') !== false);
+    $uc = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_cf: ') === 0; }));
+    check('audit: a conflict beside a group set aside is reported alone (got ' . json_encode($uc) . ')',
+        count($uc) === 1 && !isset($by['wt_cf']) && strpos($uc[0], '(branch conflict) — field skipped') !== false);
     $ua = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_all: ') === 0; }));
     check('audit: every group set aside: each says the field is not checked (got ' . json_encode($ua) . ')',
         count($ua) === 2 && !isset($by['wt_all'])

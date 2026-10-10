@@ -189,7 +189,7 @@ final class TemporalRules
     /** Compile operands to plain live refs or permitted snapshots. $browser=false emits literals only. */
     public static function compile(array $rule,AddressResolver $resolver,ProjectShape $shape,array $context,$browser=false,?callable $mayRead=null)
     {
-        $snapshot=false;$problems=[];$live=false;$denied=false;
+        $snapshot=false;$problems=[];$live=false;$denied=false;$matched=false;
         $member=function(array $r,$typed=null)use($context,$browser,$mayRead,$shape,&$snapshot,&$live,&$denied,&$problems){
             if(($r['state']??null)!=='ok'){$problems[]=$r['state']??'unreadable';return ['unknown'];}
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
@@ -198,7 +198,7 @@ final class TemporalRules
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
-        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems){
+        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems,&$matched){
             if($op[0]==='lit')return $op;
             if($op[0]==='binding'){
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
@@ -216,6 +216,8 @@ final class TemporalRules
                 elseif(isset($r['members'])){$members=[];foreach($r['members'] as $m)$members[]=$member($m);$node=['set',$r['quantifier'],$members];}
                 else $node=$member($r,$type);
                 if($from!==null){$p=Logic::parse($from."=''",['qualified'=>true]);if(empty($p['ok'])||!in_array($p['ast'][2][0],['ref','qref'],true)){$problems[]='invalid';return ['unknown'];}$node=['elapsed',$unit,$member($resolver->resolve($p['ast'][2],$context),$type),$node];}
+                // The row a "match" chooses was found among the saved entries, even when it is this one.
+                if($browser&&!empty($b['match']))$matched=true;
                 $guards=[];foreach($b['match']??[] as $source){preg_match('/^\[([a-z][a-z0-9_]*)\]$/D',$source,$m);if(isset($m[1])){$v=$resolver->resolve(['ref',$m[1],null],$context);if($browser && empty($v['self']) && $mayRead && isset($v['location']) && !$mayRead($v['location']['instrument']))$denied=true;if($browser&&!empty($v['self'])){$live=true;$guards[]=[$m[1],$v['value']];}}}
                 return $guards?['guard',$guards,$node]:$node;
             }
@@ -282,9 +284,10 @@ final class TemporalRules
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         // Whether this rule reads anything that is not live on this page: a saved value, a set, a
-        // value withheld from this viewer, or one that could not be resolved.
-        $offPage=$browser&&($snapshot||$denied||$problems);
-        if($browser&&!$offPage)foreach(ModeRegistry::operandKeys() as $rk)if(($compiled[$rk['op']]??null)===['withheld']){$offPage=true;break;}
+        // row a "match" chose, a condition on a form this viewer may not read, or a value that could
+        // not be resolved. An operand withheld from this viewer is not read at all: the page judges
+        // without it, as it does a rule with no event or instance reference.
+        $offPage=$browser&&($snapshot||$denied||$problems||$matched);
         // extendedAdvisory: the same "never blocks here" for a mode with no blockSave of its own (@UVRANGE).
         // A mode whose page turns only its snapshot parts advisory (ModeRegistry::snapshotAdvisory:
         // @UVWINDOW, whose "notFuture" reads the live field alone) keeps its blockSave when no

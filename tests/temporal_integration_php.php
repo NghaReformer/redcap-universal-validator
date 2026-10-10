@@ -311,6 +311,9 @@ namespace {
     $rule=['type'=>'unique','fields'=>['a_val','key_a'],'uniqueScope'=>'record'];
     $pr=$prep->invoke($m,$rule,$shape,REDCap::$data[1],['event'=>1,'instrument'=>'fa','instance'=>3,'values'=>REDCap::$data[1]['repeat_instances'][1]['fa'][3]]);
     check('multi-field uniqueness isolates results',$pr['rule']['uniqueRecordResults']===['a_val'=>false,'key_a'=>true]);
+    $pr=$prep->invoke($m,$rule,$shape,REDCap::$data[1],['event'=>1,'instrument'=>'fa','instance'=>3,'values'=>REDCap::$data[1]['repeat_instances'][1]['fa'][3]],true,function(){return true;});
+    check('record uniqueness on the page reads the other entries, so it is off the page (got '.json_encode([$pr['offPage']??null,isset($pr['rule']['uniqueRecordAsts'])]).')',
+        ($pr['offPage']??null)===true&&isset($pr['rule']['uniqueRecordAsts']));
     // Record scope compares as @UVEXISTS does: letter case ignored unless the
     // rule is caseSensitive, numbers by value in a field that holds them.
     $m=temporal('',null,'UVUNIQUE');
@@ -686,6 +689,18 @@ namespace {
     $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['deferred']),!empty($b['selectorBlocked'])];},$r['branches']??[]):[];
     check('... on the page: that group deferred and named, the other not (got '.json_encode([$marks,$r['deferred']??null]).')',
         $r&&empty($r['deferred'])&&$marks===[['who-wfa',true,true],['',false,false]]);
+    check('... its line\'s reason does not name the reference, which the page puts in front (got '.json_encode($r['branches'][0]['deferredWhy']??null).')',
+        ($r['branches'][0]['deferredWhy']??null)===['Extended validation unavailable: unresolved branch selector.']);
+    // A group that names an event, even one that is this entry, never blocks, as a rule alone does.
+    $r=ruleOf(render($withHt($wfa.'} @UVRANGE={"hard":[5,40],"when":"[baseline_arm_1][visit][1]<>\'\'"}'),'fa'),'a_val');
+    $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null,$b['whenAst'][1][2]??null];},$r['branches']??[]):[];
+    check('a group naming this entry\'s event: live, and still advisory (got '.json_encode($adv).')',
+        $adv===[['',true,'off',['ref','visit',null]],['who-wfa',true,'off',null]]);
+    // Without groups, a stale selector marks every branch, which the page reads (branches do not inherit).
+    $r=ruleOf(render($withHt('@UVRANGE={"hard":[0,10],"when":"[baseline_arm_1][key_b][2]=\'B\'"} @UVRANGE={"hard":[0,5]}'),'fa'),'a_val');
+    $marks=$r?array_map(function($b){return [$b['snapshotFields']??null,!empty($b['snapshotGate'])];},$r['branches']??[]):[];
+    check('one group, a stale selector: each branch carries its snapshot fields (got '.json_encode($marks).')',
+        count($marks)===2&&$marks[0]===[['saved event/instance values'],true]&&$marks[1]===[['saved event/instance values'],true]);
     // A selector read when the page was built makes only its own group advisory.
     $r=ruleOf(render($withHt($wfa.',"when":"[baseline_arm_1][key_b][2]=\'A\'"} @UVRANGE={"hard":[5,40]}'),'fa'),'a_val');
     $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['snapshotGate']),$b['snapshotFields']??null];},$r['branches']??[]):[];
@@ -699,7 +714,7 @@ namespace {
     $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null];},$r['branches']??[]):[];
     check('two references, one reading event/instance values: only that one is advisory (got '.json_encode($adv).')',
         $adv===[['who-wfa',true,'off'],['',false,null]]);
-    // ... and one whose inputs are withheld from this viewer, read nowhere on this page, is advisory too
+    // ... and with its inputs withheld from this viewer: it still names another event, so it stays advisory
     $m=$withHt($wfa.'} @UVRANGE={"hard":[5,40]}');REDCap::$rights['nurse']['forms']['fb']='0';$r=ruleOf(render($m,'fa'),'a_val');REDCap::$rights['nurse']['forms']['fb']='1';
     $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null,$b['rangeSexOp']??null];},$r['branches']??[]):[];
     check('... inputs withheld from this viewer: that reference is advisory, the fixed limits are not (got '.json_encode($adv).')',
