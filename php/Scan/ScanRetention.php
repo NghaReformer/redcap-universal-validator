@@ -370,8 +370,12 @@ final class ScanRetention
         $runs = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_run')
             . ' WHERE project_id = ? AND active_slot IS NULL AND updated_at < ?',
             [$pid, self::daysAgo(isset($policy['runDays']) ? $policy['runDays'] : 90)]);
-        return ['values_to_clear' => isset($vals[0][0]) ? (int) $vals[0][0] : 0,
-                'runs_to_purge'   => isset($runs[0][0]) ? (int) $runs[0][0] : 0];
+        // COUNT(*) always answers one row. No row is a read that did not work,
+        // and showing it as 0 would tell the administrator nothing is affected.
+        if (!isset($vals[0][0], $runs[0][0])) {
+            throw new \RuntimeException('the retention preview could not be counted');
+        }
+        return ['values_to_clear' => (int) $vals[0][0], 'runs_to_purge' => (int) $runs[0][0]];
     }
 
     // -- the pieces ----------------------------------------------------------

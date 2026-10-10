@@ -1142,6 +1142,18 @@ namespace INSPIRE\UniversalValidator\Scan {
     $r = outcomeOf(function () use ($rdb) { return (new ScanRetention($rdb))->expireValuesPage(0, 0); });
     check('expire: a project scope of 0 is refused rather than read as "the leftovers"',
         $r['kind'] === 'other' && $r['class'] === 'InvalidArgumentException');
+    $pdb = $paramDb();
+    $pdb->rows = ['FROM ' . Schema::table('scan_run') => [[2]]];      // the findings count answers nothing
+    $r = outcomeOf(function () use ($pdb) { return (new ScanRetention($pdb))->preview(70, []); });
+    check('preview: a count that could not be read is not shown as nothing to clear',
+        $r['kind'] === 'other' && $r['class'] === 'RuntimeException');
+    $pdb = $paramDb();
+    $pdb->rows = ['FROM ' . Schema::table('finding') => [[4]], 'FROM ' . Schema::table('scan_run') => [[2]]];
+    $pv = (new ScanRetention($pdb))->preview(70, ['runDays' => 30]);
+    $pq = $pdb->with(['FROM ' . Schema::table('finding')]);
+    check('preview: counts this project\'s share only',
+        $pv === ['values_to_clear' => 4, 'runs_to_purge' => 2]
+        && count($pq) === 1 && strpos($pq[0][0], 'project_id = ?') !== false && $pq[0][1][0] === 70);
 
     // purgeRuns: the run row goes last, and only after every child answered short.
     $udb = $paramDb();
