@@ -915,6 +915,23 @@ that already holds both spellings gets duplicate findings in the post-save
 audit and the Validation scan. Correct the records, or add
 `"caseSensitive":true` to the rule if the two spellings are different IDs.
 
+**The ID is scanned into one field, or typed into another when the scan fails. Can a typed ID be stopped when it was already scanned?**
+Yes. List the other field in `also`, and the value is looked for there too. Put
+`@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`: an ID typed there is
+refused when another record holds it in `study_id_typed` or in `study_id_scan`,
+and staff are told which field and record hold it. `also` takes up to 5 fields.
+The check runs one way, so put `@UVUNIQUE={"also":["study_id_typed"]}` on
+`study_id_scan` too if a scanned ID must not repeat a typed one. A record is
+never compared with itself: to allow typing only when nothing was scanned, add
+`@UVASSERT={"assert":"[study_id_scan]=''","message":"An ID was scanned; leave this blank"}`
+to `study_id_typed`. The fields must store values the same way (both text, both
+dates of the same kind, or both numbers with the same decimal mark), and staff
+get an answer only when they may open the forms that hold them. A Unique rule
+in the Configure dialog has the same option ("other fields to look for the
+value in"). The post-save audit and the
+Validation scan look in the `also` fields as well; the scan reports the field
+whose rule found the value, never the `also` field itself.
+
 **Can a visit date be checked against the protocol window?**
 Yes. The `@UVWINDOW` tag checks a date against a window counted from another
 date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit

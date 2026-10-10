@@ -1089,6 +1089,44 @@ Respondents always receive a **boolean** — never a record id.
 @UVUNIQUE={"with":["site"],"scope":"dag","when":"[specimen_collected]='1'","message":"Specimen barcode already registered in this DAG","blockSave":"hard","surveys":false}
 ```
 
+### Level 7 — look in other fields too (`also`)
+
+```text
+# on: study_id_typed — typed only when the scan fails
+@UVUNIQUE={"also":["study_id_scan"],"message":"This ID is already registered","blockSave":"hard"}
+# on: study_id_scan — the other direction
+@UVUNIQUE={"also":["study_id_typed"]}
+```
+
+`also` lists other fields the value is looked for in. On `study_id_typed`, an ID
+counts as used when another record holds it in `study_id_typed` or in
+`study_id_scan`. Each tag checks one direction, so tag both fields when neither may
+repeat the other. Without a `message`, staff see which field and record hold the
+value: "This value is already recorded in field **study_id_scan** (record **12**)."
+
+- Up to **5** fields, each listed once, none also in `with`. Each must exist, hold one
+  value (not a checkbox, file or descriptive field), and store values the way the
+  tagged field does: both text, both dates of the same kind, or both numbers with the
+  same decimal mark. Validate both fields the same way.
+- The scope and `with` apply to a match in an `also` field: under `"scope":"event"`
+  only the same event is searched, and the `with` values must match in the same entry
+  as the field the value was found in.
+- The record being checked is never compared with itself. To allow typing only when
+  nothing was scanned in the same record, add an assertion:
+
+```text
+# on: study_id_typed
+@UVUNIQUE={"also":["study_id_scan"]} @UVASSERT={"assert":"[study_id_scan]=''","message":"An ID was scanned; leave this blank"}
+```
+
+- Every `@UVUNIQUE` tag on one field must list the same `also` fields, and `also`
+  cannot be used with `"scope":"record"`.
+- Staff get an answer only when they may open the forms that hold the `also` fields.
+  With `"surveys":true`, no `also` field may be an Identifier. The list of `also`
+  fields is never sent to the page.
+- The post-save audit and the Validation scan look in the `also` fields too. The scan
+  reports the tagged field whose value was found elsewhere, never the `also` field.
+
 ### Semantics worth knowing
 
 - Sits on Text, Notes, dropdown, radio, yes/no, true/false and slider fields — not calc
@@ -1119,9 +1157,9 @@ Respondents always receive a **boolean** — never a record id.
 
 ### `@UVUNIQUE` JSON keys
 
-`with`, `scope`, `when`, `message`, `blockSave`, `surveys`, `caseSensitive`. Any other
-key is a configuration error. `caseSensitive` governs the `when` and the duplicate check
-alike.
+`with`, `also`, `scope`, `when`, `message`, `blockSave`, `surveys`, `caseSensitive`. Any
+other key is a configuration error. `caseSensitive` governs the `when` and the duplicate
+check alike, in the tagged field and in the `also` fields.
 
 ---
 
@@ -2777,7 +2815,8 @@ numbers (an integer or number validation), where `007` and `7` are the same valu
 
 Choose one of these alternatives. Record scope excludes only the exact current
 entry. It differs from `scope:"event"`, which checks other records within the event;
-project/DAG/event scopes retain their existing cross-record behavior.
+project/DAG/event scopes retain their existing cross-record behavior. A record-scope
+rule takes no `also`: to compare two fields of one record, use `@UVASSERT`.
 
 ## Examples cookbook
 
@@ -3203,6 +3242,19 @@ instruments:
 @UVUNIQUE={"message":"This aliquot ID has already been assigned"}
 ```
 
+#### One ID, several fields (`also`)
+
+```text
+# on: study_id_typed — typed when the scan fails; must not repeat a scanned ID
+@UVUNIQUE={"also":["study_id_scan"],"message":"This ID is already registered","blockSave":"hard"}
+
+# on: study_id_scan — must not repeat a typed ID either
+@UVUNIQUE={"also":["study_id_typed"],"blockSave":"hard"}
+
+# on: screening_id — also not a legacy ID, nor an ID from the old paper form
+@UVUNIQUE={"also":["legacy_id","paper_id"],"message":"This ID is already in use"}
+```
+
 #### Site-scoped (a composite key, or DAG scope)
 
 ```text
@@ -3521,6 +3573,9 @@ you can recognise the mistake; the fix is on the right.
 @UVASSERT="weight > 0"                                           field references are written [weight]
 @UVUNIQUE=site                                                   scope is project, dag, event or record
 @UVUNIQUE={"with":["a","b","c","d","e","f"]}                     at most 5 composite fields
+@UVUNIQUE={"also":["a","b","c","d","e","f"]}                     at most 5 "also" fields
+@UVUNIQUE={"also":"study_id_scan"}                               also is a list: ["study_id_scan"]
+@UVUNIQUE={"with":["site"],"also":["site"]}                      a field is in with or in also, not both
 @UVCHOICES={"show":["1"],"hide":["2"]}                           show or hide, not both
 @UVCHOICES={"when":"[x]='1'"}                                    one of show/hide is required
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","aggregate":"median"}}}                                unknown aggregate
@@ -3575,6 +3630,7 @@ top to bottom. The right-hand column is the tag key that means the same thing.
 | Constraint condition | Constraint | `assert` |
 | Message | Constraint, Required, Unique | `message` |
 | Composite-key fields | Unique | `with` |
+| Other fields to look for the value in | Unique | `also` |
 | Where the value must be unique | Unique | `scope`: `project`, `dag`, `event`, `record` |
 | Also check live on survey pages | Unique | `surveys` |
 | Check-character method | Single, Pooled | `algorithm` |
@@ -3677,6 +3733,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Key               | Type            | Default      | Notes                                                          |
 | ----------------- | --------------- | ------------ | -------------------------------------------------------------- |
 | `with`          | list of strings | *(none)*   | Composite key fields; max 5, no duplicates, must exist         |
+| `also`          | list of strings | *(none)*   | Other fields the value is looked for in; max 5, not in `with`, stored the way the field is; not with `record` scope; the same on every tag of one field |
 | `scope`         | string          | `project`  | `project`, `dag`, `event`, `record` (record needs event and instance references enabled); the bare short form sets this |
 | `surveys`       | boolean         | `false`    | Opt in to the check on surveys; boolean answer only            |
 | `when`          | string          | *(none)*   | Check only while true                                          |
@@ -3792,6 +3849,7 @@ number keeps. `blockSave` is refused.
 | Evaluation budget per record | 100,000 units |
 | Codes in one `show`/`hide` list | 200 |
 | Composite `with` fields | 5 |
+| `@UVUNIQUE` `also` fields | 5 |
 | `keepChars` length | 64 |
 | Entries in one `alternates` list | 8 |
 | `@UVWINDOW` bound, either side of `from` | 36,500 units |
@@ -3880,6 +3938,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVUNIQUE=event                                       unique within the same event
 @UVUNIQUE={"with":["site"],"message":"Specimen already registered","blockSave":"hard"}
 @UVUNIQUE={"surveys":true,"blockSave":"hard"}         also check on surveys (opt-in)
+@UVUNIQUE={"also":["study_id_scan"]}                  not in this field nor in study_id_scan of another record
 
 # ── @UVCHOICES — dynamic choice filtering ────────────────────────────────────
 @UVCHOICES={"when":"[legacy_entry]<>'1'","hide":["9"]}

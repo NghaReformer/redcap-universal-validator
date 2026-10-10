@@ -10,7 +10,9 @@ AJAX call, no page reload — with the usual message / confirm / block enforceme
 
 @UVUNIQUE={"with":["site"],
            "message":"Specimen already registered",
-           "blockSave":"hard"}</code></pre>
+           "blockSave":"hard"}
+
+@UVUNIQUE={"also":["typed_id"]}  also look in another field</code></pre>
 
 <h2>Scopes and composite keys</h2>
 
@@ -20,6 +22,14 @@ AJAX call, no page reload — with the usual message / confirm / block enforceme
 <li><code>event</code> — unique within the same event of a longitudinal project.</li>
 <li><code>with</code> makes the key <strong>composite</strong>: the value plus those
 fields together must be unique, such as a specimen ID within its site.</li>
+<li><code>also</code> lists up to 5 more fields to look for the value in. On a
+scanned <code>scan_id</code>, <code>{"also":["typed_id"]}</code> refuses an ID that
+another record holds in <code>scan_id</code> or in <code>typed_id</code>. The search
+runs one way, so tag <code>typed_id</code> with <code>{"also":["scan_id"]}</code> as
+well to stop a typed ID that was scanned earlier. The record being saved is never
+compared with itself; use <code>@UVASSERT</code> to keep two fields of one record
+apart. Each field must store the same kind of value as the tagged field, and
+<code>also</code> cannot be combined with <code>"scope":"record"</code>.</li>
 </ul>
 
 <div class="note">

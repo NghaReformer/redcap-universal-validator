@@ -431,12 +431,30 @@ call — no page reload), with the usual message/confirm/block enforcement:
 @UVUNIQUE                                                unique across the project
 @UVUNIQUE=event                                          scope: project | dag | event
 @UVUNIQUE={"with":["site"],"message":"Specimen already registered","blockSave":"hard"}
+@UVUNIQUE={"also":["study_id_scan"]}                     also look in other fields
 ```
 
 - `with` makes the key **composite** — the value plus those fields together
   must be unique (a specimen ID within its site). Scopes: `project` (default),
   `dag` (unique within each Data Access Group), `event` (within the same
   event of a longitudinal project).
+- `also` looks for the value in up to 5 other fields too. With
+  `@UVUNIQUE={"also":["study_id_scan"]}` on `study_id_typed`, an ID typed there
+  counts as used when another record holds it in `study_id_typed` or in
+  `study_id_scan`. Scope and `with` apply to a match in an `also` field the same
+  way: the `with` values must match in the same entry as that field. The check
+  runs one way: to stop a scanned ID that was already typed in another record,
+  put `@UVUNIQUE={"also":["study_id_typed"]}` on `study_id_scan` as well. The
+  record being checked is never compared with itself, so a value typed in both
+  fields of one record is not a duplicate; use `@UVASSERT` for that
+  (`{"assert":"[study_id_scan]=''"}` on the typed field allows typing only when
+  nothing was scanned). Each `also` field must exist, hold one value, and store
+  values the way the field does: both text, both dates of the same kind, or both
+  numbers with the same decimal mark. Every `@UVUNIQUE` tag on one field must list
+  the same `also` fields, and `also` cannot be used with `"scope":"record"`.
+  Staff are told which field the value was found in; they get an answer only when
+  they may open the forms that hold the `also` fields. The list of `also` fields
+  is not sent to the page.
 - **Under `dag`, records in no group form one group of their own.** They are
   compared against each other, not exempted: "no DAG" is a scope like any other,
   and the alternative reading — that an ungrouped record has nothing to be
@@ -458,7 +476,8 @@ call — no page reload), with the usual message/confirm/block enforcement:
   rate-limited, and **refused outright on any field REDCap flags as an
   Identifier** — there it would let a stranger test whether a named person is
   enrolled, so the module makes that a configuration error rather than trusting
-  a warning to be read. Reasonable use: a non-identifying response token, to
+  a warning to be read. The same refusal applies when a `with` or `also` field
+  is an Identifier. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
 - **The race is audited, not denied.** Two near-simultaneous saves can both
@@ -990,6 +1009,7 @@ node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/co
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
 node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fail-open, cache)
+php  tests/unique_also_scan_php.php  # @UVUNIQUE "also" in the durable scan: also values are never findings
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
