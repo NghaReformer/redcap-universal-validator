@@ -692,6 +692,18 @@ const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
   Date.now = realNow;
 }
 
+{
+  // notPast keeps the rule's block when only the window part is advisory (a
+  // "from" read when the page was opened).
+  const v = dateEl('appt', '2026-10-08');
+  const env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['appt'], windowFrom: '[enrol_date]',
+    windowFromOp: ['lit', '2026-10-01'], windowLo: 0, windowHi: 30, windowUnit: 'days', windowNotPast: true,
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard', snapshotFields: ['enrol_date'] }] });
+  check('notPast with a snapshot "from": yesterday flagged', /before today/.test(wMsg(env, 'appt').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('notPast with a snapshot "from": still blocks', ev._prevented === true);
+}
+
 // ---- 20) periods -----------------------------------------------------------------
 {
   const v = dateEl('paid', '15-10-2026');

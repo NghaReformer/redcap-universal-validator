@@ -474,6 +474,7 @@ namespace {
     // ---- 7) today, now, written dates, periods and notPast ------------------------
     $P9 = $DICT + [
         'w_today'     => f('visit_form', '@UVWINDOW={"from":"today","window":[-30,0]}', 'date_ymd'),
+        'w_today_nf'  => f('visit_form', '@UVWINDOW={"from":"today","window":[-30,0],"notFuture":true}', 'date_ymd'),
         'w_past'      => f('visit_form', '@UVWINDOW={"notPast":true}', 'date_ymd'),
         'w_month'     => f('visit_form', '@UVWINDOW={"period":"month","offset":-1}', 'date_ymd'),
         'w_week'      => f('visit_form', '@UVWINDOW={"period":"week"}', 'date_ymd'),
@@ -488,7 +489,7 @@ namespace {
         'bad_lit_fam' => f('visit_form', '@UVWINDOW={"from":"2026-01-01 08:00","window":[0,1]}', 'date_ymd'),
     ];
     $D9 = $DATA;
-    $D9['2'][351] += ['w_today' => '2026-09-01', 'w_past' => '2026-10-01', 'w_month' => '2026-09-15', 'w_week' => '',
+    $D9['2'][351] += ['w_today' => '2026-09-01', 'w_today_nf' => '2026-09-01', 'w_past' => '2026-10-01', 'w_month' => '2026-09-15', 'w_week' => '',
         'w_week_mon' => '', 'w_lit' => '2025-12-31', 'w_now' => '2026-10-09 12:27', 'w_of_field' => '2026-01-31',
         'w_lit_dt_p' => '', 'w_today_dtp' => ''];
     $p = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
@@ -517,6 +518,9 @@ namespace {
     check('windowSaved: a window counted from a field or a written date is not listed',
         !array_key_exists('w_lit', $ws ?? []) && !array_key_exists('w_of_field', $ws ?? []) && !array_key_exists('visit_date_2', $ws ?? []));
     check('windowSaved: notFuture alone is not listed', !array_key_exists('collected', $ws ?? []));
+    $pu = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '9', 'visit_form');
+    check('windowSaved: a saved value that could not be read is null, so nothing is judged against today',
+        is_array($pu['cfg']['windowSaved'] ?? null) && array_key_exists('w_today', $pu['cfg']['windowSaved']) && $pu['cfg']['windowSaved']['w_today'] === null);
     $pn = page(mod($P9, $D9, $FULL, 'nurse'), 'form', null, 'visit_form');
     check('windowSaved: a record not saved yet sends an empty object', strpos($pn['raw'] ?? $pn['html'], '"windowSaved":{}') !== false);
     $pw = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form');
@@ -589,6 +593,9 @@ namespace {
     list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:27'")]));
     check('audit: now [-2,0] hours, 2 h 3 min before the save is early', ($by['w_now']['reason'] ?? null) === 'window-early'
         && ($by['w_now']['as_of'] ?? null) === '2026-10-09 14:30');
+    $DW = $D9; $DW['2'][351]['w_now'] = '2026-10-09 14:32';
+    list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 14:32'")]));
+    check('audit: now [-2,0] hours, 2 minutes after the save is inside the margin', !isset($by['w_now']));
     $DW = $D9; $DW['2'][351]['w_now'] = '2026-10-09 12:29';
     list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:29'")]));
     check('audit: ...2 h 1 min before is inside the margin', !isset($by['w_now']));
@@ -599,6 +606,9 @@ namespace {
     check('scan: a value the log shows another value for is not checked', !isset($sv['w_today'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_today', $u['fields'], true)
             && strpos($u['why'], 'the project log shows another value for it') !== false; }));
+    $wtn = array_values(array_filter($res['unconfigurable'], function ($u) { return in_array('w_today_nf', $u['fields'], true); }));
+    check('scan: a window from today with an unknown save day is not judged against today, notFuture still is (got ' . json_encode($wtn) . ')',
+        !isset($sv['w_today_nf']) && count($wtn) === 1 && strpos($wtn[0]['why'], 'the day this value was saved is not known') !== false);
     check('scan: a value whose save day is not known is not checked, and the report says why', !isset($sv['w_month'])
         && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_month', $u['fields'], true)
             && strpos($u['why'], 'the day this value was saved is not known (the project log does not show when it was saved)') !== false; }));
