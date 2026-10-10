@@ -781,7 +781,9 @@ $SWEPT = 795;
             return $out;
         }
     };
-    $s = new SqlScanStore($probe);
+    // A still clock: these count windows and rows read, and a loaded server
+    // must not end a call on SWEEP_SECONDS first.
+    $s = new SqlScanStore($probe, function () { return 0.0; });
     $rid = (int) $s->startRun($SWEPT, ['created_by' => 'alice'])['run']['run_id'];
     $recs = [];
     for ($i = 1; $i <= 3000; $i++) {

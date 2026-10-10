@@ -819,7 +819,13 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
     // the limit, windows of two: two windows are all retired, the third
     // retires one and hands out the first live row - which in a window is the
     // unit both stores answer in.
-    $s13 = $newStore();
+    // A STILL CLOCK for the two cases that count windows: under load a real
+    // clock ends the call on SWEEP_SECONDS first, and these assert the window
+    // bound, not the time one (that is the clocked case further down).
+    $still = function () use ($newStore, $clocked) {
+        return $clocked === null ? $newStore() : $clocked(function () { return 0.0; });
+    };
+    $s13 = $still();
     $rid13 = (int) $s13->startRun(741, [])['run']['run_id'];
     $recs13 = [];
     for ($i = 1; $i <= 7; $i++) $recs13[] = $mk5('N' . $i);
@@ -838,7 +844,7 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
     // run row's lock for a bounded number of statements. Past the bound the
     // call answers [] with $retired > 0, which a caller must read as "ask
     // again" - and asking again carries on from where it stopped.
-    $s14 = $newStore();
+    $s14 = $still();
     $rid14 = (int) $s14->startRun(742, [])['run']['run_id'];
     $dead14 = ScanStore::SWEEP_WINDOWS + 2;
     $recs14 = [];
