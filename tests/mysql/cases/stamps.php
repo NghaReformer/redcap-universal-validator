@@ -68,12 +68,15 @@ $r = $vs->savedAt('P-1', 41, 1, 'w_past', '2026-09-01');
 check('stamps: found on the second page, by the log_event_id cursor (got ' . json_encode($r) . ')',
     $r === ['state' => 'logged', 'at' => '2026-09-01 08:00:00']);
 
-// An installation at version 2 (no as_of, no version-3 row) gains the column.
+// An installation at version 2 (no as_of, no row for any later version, and
+// none of the later versions' columns) gains the column on the way up.
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN as_of');
-$A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version = 3');
+$A->query('ALTER TABLE ' . Schema::table('unique_candidate') . ' DROP COLUMN lookup');
+$A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version > 2');
 $mig = Schema::migrate($ca);
-check('stamps: an installation at version 2 migrates to 3 (got ' . json_encode($mig) . ')',
-    $mig['ok'] === true && $mig['from'] === 2 && $mig['to'] === 3 && $mig['applied'] === 1);
+check('stamps: an installation at version 2 migrates to 3 and on (got ' . json_encode($mig) . ')',
+    $mig['ok'] === true && $mig['from'] === 2 && $mig['to'] === Schema::VERSION
+    && $mig['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)));
 check('stamps: and health says so', Schema::health($ca)['ok'] === true);
 
 // A durable finding keeps the day it was judged against.
