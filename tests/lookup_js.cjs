@@ -57,6 +57,24 @@ check('the trim takes a long run of space and no-break spaces off each end', L.t
 check('the trim keeps a long run of space inside a value', L.trim('A' + sp + 'B') === 'A' + sp + 'B');
 check('the trim leaves nothing of a value that is all space', L.trim(sp + nb) === '');
 check('the trim keeps an em space, as the server does', L.trim('\u2003x\u2003') === '\u2003x\u2003');
+// A long run of zeros inside a typed number is passed over once, as the trim
+// passes over space (an index scan, not /0+$/).
+{
+  const zeros = '0'.repeat(400000);
+  let t0 = Date.now();
+  check('a number key passes over a long run of zeros in linear time',
+    L.number('1.' + zeros + '1', 'point') === '1.' + zeros + '1' && Date.now() - t0 < 200);
+  t0 = Date.now();
+  check('a number key drops a long run of trailing zeros in linear time',
+    L.number('1.5' + zeros, 'point') === '1.5' && Date.now() - t0 < 200);
+  const R = global.window.INSPIREUniversalValidator.rangeLogic;
+  t0 = Date.now();
+  check('a range check passes over a long run of zeros in linear time',
+    R.verdict({ hardLo: '1', hardHi: '2' }, '1.' + zeros + '1').tier === 'ok' && Date.now() - t0 < 200);
+  t0 = Date.now();
+  check('a number with an exponent passes over a long run of zeros in linear time',
+    R.plainDecimal('1' + zeros + '1e0') === null && Date.now() - t0 < 200);
+}
 // No regex: a long run of space inside a value is passed over once, not once
 // per position (a saved value like this reaches every page that reads it).
 {

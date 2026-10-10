@@ -7176,11 +7176,13 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             // $narrow = true: this is the live endpoint, the amplification vector —
-            // let REDCap filter to candidate matches instead of exporting the whole
-            // project (F4). The post-save audit's findCollision call keeps the full,
-            // authoritative scan.
-            // A narrowed miss is confirmed by a full read, which a survey
-            // makes only within its read budget (findCollision).
+            // let REDCap filter to candidate matches first (F4). Only a hit spares
+            // the export of the tagged fields: a miss ("not used") is confirmed by
+            // a full read, which a survey makes only within its read budget
+            // (findCollision), shared with @UVEXISTS at THROTTLE_SURVEY_FULL_READS
+            // a minute. A busy survey therefore answers "not known" sooner, and a
+            // signed-in user's every miss is one export of those fields. The
+            // post-save audit's findCollision call keeps the full, authoritative scan.
             $mayFullRead = $isAuthenticated ? null
                 : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
             $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,

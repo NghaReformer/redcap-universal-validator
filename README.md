@@ -464,8 +464,10 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - **The race is audited, not denied.** Two near-simultaneous saves can both
   pass the live check; the post-save audit re-checks the saved value against
   every other record and logs a collision (`type: unique`,
-  `reason: duplicate-value`) — review the module log for races. Any transport
-  failure fails **open** (a network error never traps a save).
+  `reason: duplicate-value`) — review the module log for races. A failed check
+  fails **open**, so a network error on a first check never traps a save. When
+  Save asks again about an "already used" the page has held for 30 seconds or
+  more and gets no answer, that earlier answer stands and is enforced.
 - Works on Text, Notes, dropdown, radio, yes/no, true/false and slider fields;
   composes with the other modes on the same field.
 
@@ -601,7 +603,9 @@ the specimen ID on the collection form.
   typed and saved at once is asked before the save is decided, and while an
   answer is on its way the save is held ("still being checked"). After 10
   seconds without an answer the value counts as *could not check* and the save
-  goes through.
+  goes through. The exception is a *not found* the page has held for 30 seconds
+  or more, which Save asks about again: if that second question gets no answer,
+  the earlier *not found* stands and is enforced.
 - **Branches.** With several `when` branches, the page sends the values its
   conditions read, so the server answers from the branch the page is enforcing,
   also on a record not saved yet.

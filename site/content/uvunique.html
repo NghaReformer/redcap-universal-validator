@@ -75,8 +75,9 @@ covered by the post-save audit and the Validation scan.</p>
 <p>Two near-simultaneous saves can both pass the live check. The post-save audit
 re-checks the saved value against every other record and logs a collision as
 <code>type: unique</code>, <code>reason: duplicate-value</code> — review the module log
-for races. Any transport failure fails <strong>open</strong>: a network error never
-traps a save.</p>
+for races. A failed check fails <strong>open</strong>, so a network error on a first check
+never traps a save. When Save asks again about an "already used" the page has held for
+30 seconds or more and gets no answer, that earlier answer stands and is enforced.</p>
 
 <h2>Field types</h2>
 

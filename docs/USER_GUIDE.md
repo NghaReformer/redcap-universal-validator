@@ -939,7 +939,9 @@ Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
 Data Access Group. The page asks the server when the value is entered or
 changed, not on every keystroke, and answers found, not found, or could not
 check. Clicking Save re-checks the field and waits for an answer still on its
-way. "Could not check" never blocks a save; the post-save audit checks the
+way. "Could not check" never blocks a save, but a "not found" held for 30
+seconds or more is asked again at Save and stands if that second question gets
+no answer. The post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open, and a user in a Data Access Group only on records
 of their group. Surveys need `"surveys":true`, which is refused when the lookup

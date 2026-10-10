@@ -2437,7 +2437,7 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('lookup case: "p-1" is used when "P-1" is saved', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '1');
-    // A value with no letters gets the same answer from the filter alone.
+    // A value with no letters: its narrowed miss is confirmed by a full read as well.
     $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => '11-1']]], 149);
     \REDCap::$getDataCalls = [];
     $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '11-2']],
@@ -2460,7 +2460,7 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('lookup padding: "007" is used when "7" with a no-break space is saved', ($r['used'] ?? null) === true);
     \REDCap::$exactFilter = false;
-    // An exact rule keeps every narrowed miss final.
+    // An exact rule compares the letters as typed.
     $csDict = $f4Dict;
     $csDict['pid_f']['field_annotation'] = '@UVUNIQUE={"caseSensitive":true}';
     $m = newModule([], $csDict, ['1' => [351 => ['record_id' => '1', 'pid_f' => 'P-1']]], 149);
@@ -2574,6 +2574,23 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('survey budget: spent, the answer is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
     check('survey budget: ...and nothing was read', \REDCap::$getDataCalls === []);
+    // A narrowed miss on a survey asks the budget before its confirming full
+    // read: free budget, the read is counted; spent, the answer is "not known".
+    $m = newModule([], $foldDict, $f5Data, 149);
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: a narrowed miss is confirmed by a counted full read',
+        $r === ['used' => false, 'record' => null] && count(\REDCap::$getDataCalls) === 2
+        && ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 1);
+    $m = newModule([], $foldDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: spent, a narrowed miss is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
+    check('survey budget: ...after the narrowed read alone',
+        count(\REDCap::$getDataCalls) === 1 && isset(\REDCap::$getDataCalls[0]['filterLogic']));
     // A Data Access Group rule never narrows, so its read is budgeted too.
     $dagDict = $foldDict;
     $dagDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true,"scope":"dag"}';

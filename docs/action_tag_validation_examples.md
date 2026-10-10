@@ -1113,7 +1113,9 @@ Respondents always receive a **boolean** — never a record id.
   live check. The post-save audit re-checks the saved value against every other record
   and logs a collision (`type: unique`, `reason: duplicate-value`) — review the module
   log for races.
-- **Transport failures fail open.** A network error never traps a save.
+- **Transport failures fail open.** A network error on a first check never traps a
+  save. A failed answer to Save's second question leaves the earlier "already used"
+  in force (see *Save asks again* above).
 
 ### `@UVUNIQUE` JSON keys
 

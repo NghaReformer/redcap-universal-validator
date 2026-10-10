@@ -1295,6 +1295,13 @@ function QRID_findAnchor(name){
    ships the result as a prebuilt AST, so no record value reaches the page. */
 var QRID_WHEN_MAX_LEN = 500, QRID_WHEN_MAX_REFS = 20, QRID_WHEN_MAX_DEPTH = 10;
 var QRID_WHEN_NUM_RE = /^[+-]?([0-9]+(\.[0-9]*)?|\.[0-9]+)$/;
+/* s without its trailing zeros. An index scan: /0+$/ is retried from every
+   zero of a long run inside a typed number, which is quadratic. */
+function QRID_trimZerosRight(s){
+  var j = s.length;
+  while(j > 0 && s.charCodeAt(j - 1) === 48) j--;
+  return j === s.length ? s : s.slice(0, j);
+}
 /* The verdict an ORDERED comparison (< > <= >=) yields when it has NO ANSWER,
    i.e. an operand is blank so there is nothing to order. Twins of
    Logic::BLANK_PASSES / Logic::BLANK_INERT — see that docblock for why the two
@@ -1315,7 +1322,7 @@ function QRID_temporalMultiply(a,b){
   a=parts[0];b=parts[1];if(a.length+b.length>4096)return null;if(!a||!b)return '0';
   var out=new Array(a.length+b.length).fill(0);
   for(var i=a.length-1;i>=0;i--)for(var j=b.length-1;j>=0;j--){var n=out[i+j+1]+Number(a[i])*Number(b[j]);out[i+j+1]=n%10;out[i+j]+=Math.floor(n/10);}
-  var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=v.replace(/0+$/,'').replace(/\.$/,'');}
+  var v=out.join('').replace(/^0+/,'');if(scale){while(v.length<scale+1)v='0'+v;v=v.slice(0,-scale)+'.'+v.slice(-scale);v=QRID_trimZerosRight(v).replace(/\.$/,'');}
   return (negative?'-':'')+v;
 }
 /* x/1 against y/n needs one multiplication, not two. Twin of TemporalLogic::scaled. */
@@ -1340,7 +1347,7 @@ function QRID_temporalSum(values){
     var neg=v[0]==='-';v=v.replace(/^[+-]/,'');var p=v.split('.'),f=p[1]||'',d=(p[0]+f).replace(/^0+/,'')||'0';if(neg&&d!=='0')d='-'+d;
     var target=Math.max(scale,f.length);sum=add(sum+'0'.repeat(target-scale),d+'0'.repeat(target-f.length));if(sum.length>4096)return null;scale=target;
   }
-  var negative=sum[0]==='-';sum=sum.replace(/^-/,'');if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=sum.replace(/0+$/,'').replace(/\.$/,'');}
+  var negative=sum[0]==='-';sum=sum.replace(/^-/,'');if(scale){while(sum.length<scale+1)sum='0'+sum;sum=sum.slice(0,-scale)+'.'+sum.slice(-scale);sum=QRID_trimZerosRight(sum).replace(/\.$/,'');}
   sum=sum.replace(/^0+/,'');if(!sum||sum[0]==='.')sum='0'+sum;return (negative&&sum!=='0'?'-':'')+sum;
 }
 function QRID_temporalDate(value,type,format){
@@ -1826,8 +1833,8 @@ function QRID_whenDecCmp(a, b){
   if(b.length && (b.charAt(0) === "-" || b.charAt(0) === "+")){ sb = b.charAt(0) === "-" ? -1 : 1; b = b.slice(1); }
   var da = a.split("."), db = b.split(".");
   var ia = da[0].replace(/^0+/, ""), ib = db[0].replace(/^0+/, "");
-  var fa = (da.length > 1 ? da[1] : "").replace(/0+$/, "");
-  var fb = (db.length > 1 ? db[1] : "").replace(/0+$/, "");
+  var fa = QRID_trimZerosRight(da.length > 1 ? da[1] : "");
+  var fb = QRID_trimZerosRight(db.length > 1 ? db[1] : "");
   var za = (ia === "" && fa === ""), zb = (ib === "" && fb === "");
   if(za && zb) return 0;                     /* zero is unsigned: -0 === 0 */
   if(za) return sb > 0 ? -1 : 1;
@@ -1884,7 +1891,7 @@ function QRID_exponentParts(s){
   var lead = all.length - digits.length;
   var e = m[5].replace(/^0+/, "");
   e = e.length > 9 ? 1000000000 : (e === "" ? 0 : parseInt(e, 10));
-  return { sign: m[1] === "-" ? "-" : "", digits: digits.replace(/0+$/, ""),
+  return { sign: m[1] === "-" ? "-" : "", digits: QRID_trimZerosRight(digits),
            point: m[2].length - lead + (m[4] === "-" ? -e : e) };
 }
 function QRID_partsLength(p){
@@ -1919,7 +1926,7 @@ function QRID_numberKey(s, mark){
   if(!QRID_WHEN_NUM_RE.test(v)){ v = QRID_plainDecimal(v); if(v === null) return null; }
   var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?$/.exec(v);
   if(!m || (m[2] === "" && !m[3])) return null;
-  var whole = m[2].replace(/^0+/, "") || "0", frac = (m[3] || "").replace(/0+$/, "");
+  var whole = m[2].replace(/^0+/, "") || "0", frac = QRID_trimZerosRight(m[3] || "");
   if(whole === "0" && frac === "") return "0";
   return (m[1] === "-" ? "-" : "") + whole + (frac === "" ? "" : "." + frac);
 }

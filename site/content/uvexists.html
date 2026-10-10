@@ -49,7 +49,8 @@ same decimal mark.</p>
 <ul>
 <li>The check runs when the value is entered or changed, not on every keystroke. It
     shows <strong>found</strong>, <strong>not found</strong>, or <strong>could not check</strong>.
-    "Could not check" never blocks a save.</li>
+    "Could not check" never blocks a save. A failed answer to Save's second question
+    about a held "not found" (below) leaves that "not found" in force.</li>
 <li>Clicking Save re-checks the field first and waits for an answer still on its way, up
     to 10 seconds. A value typed and saved at once is therefore checked before the save.</li>
 <li>With several <code>when</code> branches, the page sends the values its conditions
@@ -65,7 +66,8 @@ same decimal mark.</p>
     number.</li>
 <li>Save asks again about a "not found" the page has held for 30 seconds or more: the
     value may have been saved elsewhere since. That click waits for the answer, and the
-    next click is decided by it.</li>
+    next click is decided by it. When the server cannot answer, the earlier "not found"
+    stands.</li>
 <li>A blank value checks nothing, and so does a blank <code>match</code> field on the
     same page. A <code>match</code> field on another form that is still blank shows
     "could not check" to staff.</li>
