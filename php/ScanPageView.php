@@ -335,18 +335,6 @@ class ScanPageView
                    . 'finish stopping it.';
 
     /**
-     * Shown for a run still in `planning` past the planning window (review
-     * R2O-3). The request that was listing its records has died, nothing will
-     * ever move it, and Continue cannot: no work request touches a run whose
-     * manifest never froze. So it names the one button that helps, and
-     * js/scan.js hides Continue beside it.
-     */
-    const PLANNING_STOPPED = 'This scan stopped while it was listing the records to check. Nothing '
-                           . 'has happened for {minutes} minutes, and a list that stopped part way '
-                           . 'cannot be continued. Press Stop, then start a new scan; if there is no '
-                           . 'Stop button, ask your REDCap administrator to stop it.';
-
-    /**
      * The progress line, in the three parts it can have. The first stands alone
      * whenever nothing was excluded or removed, which is nearly always - and the
      * line is then exactly what it was before these existed.
@@ -392,7 +380,6 @@ class ScanPageView
             'stalled'         => self::STALLED,
             'paused'          => self::PAUSED,
             'stopping'        => self::STOPPING,
-            'planningStopped' => self::PLANNING_STOPPED,
             'plain'           => self::COUNT_PLAIN,
             'checked'         => self::COUNT_CHECKED,
             'excluded'        => self::COUNT_EXCLUDED,
@@ -512,8 +499,8 @@ class ScanPageView
     /**
      * The sentence for somebody watching a run that is not moving, or null.
      *
-     * Named for the node it fills (uv-scan-stalled). STOPPING, PLANNING_STOPPED,
-     * STALLED or PAUSED, in that order, each only when the server said so: the
+     * Named for the node it fills (uv-scan-stalled). STOPPING, STALLED or
+     * PAUSED, in that order, each only when the server said so: the
      * decision is ScanService::progressOf()'s, and this only words it.
      */
     public static function stalledText($status)
@@ -523,9 +510,7 @@ class ScanPageView
             return null;
         }
         if (!empty($status['stopping'])) return self::STOPPING;
-        if (!empty($status['planningStopped'])) {
-            $tpl = self::PLANNING_STOPPED;
-        } elseif (!empty($status['stalled'])) {
+        if (!empty($status['stalled'])) {
             $tpl = self::STALLED;
         } elseif (!empty($status['paused'])) {
             $tpl = self::PAUSED;

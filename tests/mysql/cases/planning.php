@@ -571,8 +571,7 @@ $NEIGHBOUR = uv_neighbour($PID);
             $seen['rows'] = (int) $B->query('SELECT COUNT(*) FROM ' . $T('scan_record')
                 . ' WHERE run_id = ' . $rid)->fetch_row()[0];
             $seen['progress'] = \INSPIRE\UniversalValidator\Scan\ScanService::progressOf($run,
-                $storeB->recordStates($rid), time(), 120,
-                \INSPIRE\UniversalValidator\Scan\ScanPolicy::planningSeconds(null, '0'));
+                $storeB->recordStates($rid), time(), 120);
             $seen['stop'] = $stopRun->invoke($svc, $storeB, $LIVE, $rid, 'bob', $run, time());
             $seen['phaseAfterStop'] = $storeB->run($LIVE, $rid)['phase'];
             $hook->stopped = true;
@@ -584,8 +583,8 @@ $NEIGHBOUR = uv_neighbour($PID);
             ->plan($LIVE, uv_plan_request(array('source' => $src['source'], 'pageSize' => 1000,
                 'budget' => false)));
         $p = $seen['progress'];
-        check('R3U-2 ' . $how . ': a planner two pages in, on a run sixteen minutes old, is not told it stopped',
-            $p['planningStopped'] === false && $p['stalled'] === false && $p['paused'] === false);
+        check('R3U-2 ' . $how . ': a planner two pages in, on a run sixteen minutes old, is neither stalled nor paused',
+            !array_key_exists('planningStopped', $p) && $p['stalled'] === false && $p['paused'] === false);
         check('R3U-2 ' . $how . ': Stop is honoured: '
             . ($withLease ? 'left for the planner to finish' : 'ended at once'),
             $seen['stop']['ok'] === true

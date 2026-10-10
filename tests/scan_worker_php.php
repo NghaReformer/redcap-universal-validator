@@ -2778,6 +2778,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     $pol = ScanPromotion::facts($run, $all, array_merge($ok, ['policyRevisionNow' => 4]));
     check('promote: so does a privacy policy that tightened mid-run',
         ScanOutcome::derive($pol['facts'])['terminal'] === ScanOutcome::FAILED);
+    check('promote: and facts() says which moved, for the stored reason (W7-N11)',
+        $fp['configChanged'] === 'rules' && $pol['configChanged'] === 'privacy' && $nf['configChanged'] === null);
 
     // A cancelled or failed run ends WHATEVER is outstanding. Waiting for a
     // finalizer on a run nobody wants is how a cancelled scan keeps its slot.

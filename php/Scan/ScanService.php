@@ -579,8 +579,7 @@ final class ScanService
         }
         $census = (isset($known['census']) && is_array($known['census']))
                 ? $known['census'] : $store->recordStates($runId);
-        $progress = self::progressOf($run, $census, time(),
-            self::STALL_SECONDS, $this->planningSeconds());
+        $progress = self::progressOf($run, $census, time(), self::STALL_SECONDS);
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
         $cancel = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
@@ -606,7 +605,6 @@ final class ScanService
             'stalled'   => $progress['stalled'],
             'paused'    => $progress['paused'],
             'stopping'  => $progress['stopping'],
-            'planningStopped' => $progress['planningStopped'],
             'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run),
             'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
@@ -697,25 +695,22 @@ final class ScanService
      * takes the same lease claim() does. So a planning run is stalled, paused
      * or neither by the same rule as a scanning one, on the same clock.
      *
-     *   planningStopped  no page appended for the planning window (review
-     *             R2O-3, keyed on the last append since R3U-2 rather than on
-     *             when the run was created). No slice runs for longer than its
-     *             budget, a few seconds, so a run that has listed nothing for
-     *             ScanPolicy::planningSeconds() is not being listed by anybody,
-     *             and the sentence is the R2O-3 one: press Stop and start
-     *             again. It outranks stalled and paused, as it did.
+     * THERE IS NO "PLANNING STOPPED" READING ANY MORE. R2O-3 added one for a
+     * planner that had listed nothing for 15 minutes, with the advice to press
+     * Stop and start again, because a list that died part way could not be
+     * resumed. Since B10 the cursor and the carry are committed with every
+     * page, so Continue carries on listing from where it stopped, and that
+     * advice - with Continue hidden beside it - threw away a resumable list.
+     * A quiet planning run is paused or stalled, and says so.
      *
      * @param array $run    a ScanStore::run() row, plus `lease_expires_at` when
      *                      the caller has it; absent or unreadable is no lease
      * @param array $states ScanStore::recordStates(): state => count
      * @param int   $now    unix time
-     * @param ?int  $planningSeconds the planning window; null is the default
-     *                      window, ScanPolicy::planningSeconds(null, null)
      * @return array{done:int, excluded:int, removed:int, settled:int, stalled:bool,
-     *               paused:bool, stopping:bool, planningStopped:bool, idleSeconds:int}
+     *               paused:bool, stopping:bool, idleSeconds:int}
      */
-    public static function progressOf(array $run, array $states, $now, $stallSeconds = self::STALL_SECONDS,
-                                      $planningSeconds = null)
+    public static function progressOf(array $run, array $states, $now, $stallSeconds = self::STALL_SECONDS)
     {
         $n = function ($state) use ($states) {
             return isset($states[$state]) ? max(0, (int) $states[$state]) : 0;
@@ -740,15 +735,10 @@ final class ScanService
         $threshold = max(1, (int) $stallSeconds);
 
         $stopping = $active && $phase === ScanPhase::CANCELLING;
-        // THE PLANNING CLOCK IS THE LAST APPEND (review R3U-2): progress_at,
+        // A planning run's clock is its last append (review R3U-2): progress_at,
         // which every appended page moves, and created_at only until the first
-        // page. No readable clock is still not the alarming reading.
-        $window = $planningSeconds === null
-            ? ScanPolicy::planningSeconds(null, null) : max(1, (int) $planningSeconds);
-        $planningStopped = $active && $phase === ScanPhase::PLANNING
-                           && $clock !== null && $idle >= $window;
-        $quiet = $active && !$stopping && !$planningStopped
-                 && $clock !== null && $idle >= $threshold;
+        // page.
+        $quiet = $active && !$stopping && $clock !== null && $idle >= $threshold;
         // An unreadable lease is no lease, and an unreadable touch is no touch:
         // both fail toward `paused`, the reading that does not tell anybody to
         // throw the run away.
@@ -759,7 +749,6 @@ final class ScanService
                 'stalled' => $quiet && $driven,
                 'paused' => $quiet && !$driven,
                 'stopping' => $stopping,
-                'planningStopped' => $planningStopped,
                 'idleSeconds' => $idle];
     }
 
@@ -1470,22 +1459,6 @@ final class ScanService
             $prj[$k] = $this->setting($k, $pid);
         }
         return ScanPolicy::resolve($sys, $prj);
-    }
-
-    /** The system setting that overrides ScanPolicy::D_PLANNING_MINUTES. */
-    const PLANNING_SETTING = 'scan-system-planning-minutes';
-
-    /**
-     * How long a run may plan before the page says planning stopped, read
-     * where it is used - see ScanPolicy::planningSeconds() for why it is not
-     * part of the frozen policy. THIS request's time limit stands in for the
-     * planning request's: both are the installation's PHP setting, and
-     * openRun() does not change it.
-     */
-    private function planningSeconds()
-    {
-        return ScanPolicy::planningSeconds($this->setting(self::PLANNING_SETTING, null),
-                                           ini_get('max_execution_time'));
     }
 
     /**

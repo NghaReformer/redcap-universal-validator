@@ -1159,7 +1159,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         'lease_expires_at' => $held(299)], [ScanStore::REC_PENDING => 400000], $NOW);
     check('CL-3: a run still listing its records for two and a half minutes is not stalled',
         $plan['stalled'] === false && $plan['paused'] === false && $plan['stopping'] === false
-        && $plan['planningStopped'] === false);
+        && !array_key_exists('planningStopped', $plan));
     // AND IT IS READ AS SCANNING IS. A planner holding its lease that has
     // appended nothing for the stall threshold is stalled; one nobody holds is
     // paused, because Continue now lists the rest.
@@ -1167,14 +1167,12 @@ namespace INSPIRE\UniversalValidator\Scan {
         'created_at' => $ago(400), 'updated_at' => $ago(1), 'progress_at' => $ago(150),
         'lease_expires_at' => $held(299)], [], $NOW);
     check('B10: a planner holding its lease with no page appended for the threshold is stalled',
-        $planWedged['stalled'] === true && $planWedged['paused'] === false
-        && $planWedged['planningStopped'] === false);
+        $planWedged['stalled'] === true && $planWedged['paused'] === false);
     $planLeft = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
         'created_at' => $ago(400), 'updated_at' => $ago(150), 'progress_at' => $ago(150),
         'lease_expires_at' => null], [], $NOW);
     check('B10: and a planning run nobody holds is paused, which Continue now resumes',
-        $planLeft['paused'] === true && $planLeft['stalled'] === false
-        && $planLeft['planningStopped'] === false);
+        $planLeft['paused'] === true && $planLeft['stalled'] === false);
     // R3U-2: THE PLANNING CLOCK IS THE LAST APPEND, NOT THE RUN'S AGE. A run
     // created three hours ago whose planner appended a page a second ago is a
     // big project being listed, and the Stop "stopped" sent people to would
@@ -1183,67 +1181,32 @@ namespace INSPIRE\UniversalValidator\Scan {
         'created_at' => $ago(3 * 3600), 'updated_at' => $ago(1), 'progress_at' => $ago(1),
         'lease_expires_at' => $held(299)], [], $NOW);
     check('R3U-2: a live planner on a run three hours old is never told it stopped',
-        $planLive['planningStopped'] === false && $planLive['stalled'] === false
-        && $planLive['paused'] === false && $planLive['idleSeconds'] === 1);
+        $planLive['stalled'] === false && $planLive['paused'] === false && $planLive['idleSeconds'] === 1);
 
-    // R2O-3. BUT ONLY FOR A WINDOW. When the request that was planning dies,
-    // the run sits in `planning` holding the project's slot until the stale
-    // reaper, Continue cannot move it, and CL-3's silence had no end.
-    $planRow = function ($createdAgo, array $over = []) use ($ago) {
+    // R2O-3, RETIRED. Round 2 gave a planning run quiet for 15 minutes its own
+    // sentence - press Stop and start again - and hid Continue, because a list
+    // that died part way could not be resumed. Since B10 it can: the cursor
+    // and the carry are committed with every page. A planning run left for
+    // three hours is paused, and Continue carries on listing.
+    $planRow = function ($idleFor, array $over = []) use ($ago) {
         return array_merge(['phase' => ScanPhase::PLANNING, 'terminal' => null,
-            'created_at' => $ago($createdAgo), 'updated_at' => $ago($createdAgo),
-            'progress_at' => null, 'lease_expires_at' => null], $over);
+            'created_at' => $ago($idleFor), 'updated_at' => $ago($idleFor),
+            'progress_at' => $ago($idleFor), 'lease_expires_at' => null], $over);
     };
     $dead = ScanService::progressOf($planRow(3 * 3600), [], $NOW);
-    check('R2O-3: a run planning for three hours has stopped planning - and is not stalled or paused',
-        $dead['planningStopped'] === true && $dead['stalled'] === false
-        && $dead['paused'] === false && $dead['stopping'] === false
-        && $dead['idleSeconds'] === 10800);
-    check('R2O-3: one planning for two and a half minutes is still told nothing',
-        $plan['planningStopped'] === false);
-    $win = ScanPolicy::planningSeconds(null, null);
-    check('R2O-3: the default window is the policy default of fifteen minutes',
-        $win === ScanPolicy::D_PLANNING_MINUTES * 60 && $win === 900);
-    check('R2O-3: a second inside the window is planning; at the window it has stopped',
-        ScanService::progressOf($planRow($win - 1), [], $NOW)['planningStopped'] === false
-        && ScanService::progressOf($planRow($win), [], $NOW)['planningStopped'] === true);
-    check('R2O-3: the window is the caller\'s, as the stall threshold is',
-        ScanService::progressOf($planRow(600), [], $NOW, ScanService::STALL_SECONDS, 300)['planningStopped'] === true
-        && ScanService::progressOf($planRow(600), [], $NOW, ScanService::STALL_SECONDS, 3600)['planningStopped'] === false);
-    check('R2O-3: only planning: a scanning run as old is paused, a finished one is neither',
-        ScanService::progressOf($planRow(10800, ['phase' => ScanPhase::SCANNING]), [], $NOW)['planningStopped'] === false
-        && ScanService::progressOf($planRow(10800, ['phase' => ScanPhase::TERMINAL, 'terminal' => 'complete']),
-            [], $NOW)['planningStopped'] === false);
-    check('R2O-3: a planning row with no readable clock is not given the alarming reading',
+    check('B10: a planning run nobody has listed for three hours is paused - Continue resumes it',
+        $dead['paused'] === true && $dead['stalled'] === false && $dead['stopping'] === false
+        && $dead['idleSeconds'] === 10800 && !array_key_exists('planningStopped', $dead));
+    check('B10: before the first page it is timed from its creation',
+        ScanService::progressOf($planRow(600, ['progress_at' => null]), [], $NOW)['paused'] === true);
+    check('B10: a planning row with no readable clock is not given a quiet reading',
         ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
-            'created_at' => 'not a date'], [], $NOW)['planningStopped'] === false);
-    // The window: minutes from the system setting, never shorter than the
-    // request time limit, and malformed is the default.
-    check('R2O-3 policy: the setting gives the minutes',
-        ScanPolicy::planningSeconds('30', '30') === 1800 && ScanPolicy::planningSeconds(20, false) === 1200);
-    check('R2O-3 policy: zero, negative or junk minutes are the default',
-        ScanPolicy::planningSeconds('0', null) === 900 && ScanPolicy::planningSeconds(-5, null) === 900
-        && ScanPolicy::planningSeconds('soon', '') === 900);
-    check('R2O-3 policy: never shorter than the request time limit, which a planner may still be inside',
-        ScanPolicy::planningSeconds('5', '3600') === 3600 && ScanPolicy::planningSeconds(null, 7200) === 7200);
-    check('R2O-3 policy: no limit at all leaves the minutes alone',
-        ScanPolicy::planningSeconds('20', '0') === 1200);
-    // R3U-4: minutes past PHP_INT_MAX / 60 made the window a float, which the
-    // (int) in progressOf() turned into 0 or PHP_INT_MIN, and max(1, ...) into
-    // one second: every planning run read "stopped" five seconds in.
-    foreach (['9999999999999999999', '153722867280912931', '999999999999999', PHP_INT_MAX] as $huge) {
-        $w = ScanPolicy::planningSeconds($huge, '0');
-        check('R3U-4: a huge planning setting (' . $huge . ') is held at a year, as an int',
-            $w === ScanPolicy::MAX_PLANNING_MINUTES * 60 && is_int($w));
-        check('R3U-4: and under it a run five seconds into planning is still planning (' . $huge . ')',
-            ScanService::progressOf($planRow(5), [], $NOW, ScanService::STALL_SECONDS, $w)['planningStopped'] === false);
-    }
-    check('R3U-4: the cap is a year, and a setting under it is untouched',
-        ScanPolicy::MAX_PLANNING_MINUTES === 525600
-        && ScanPolicy::planningSeconds('525599', '0') === 525599 * 60);
-    check('R2O-3 policy: a sentence threshold, so it is not frozen into the run\'s policy',
-        !array_key_exists('planningSeconds', ScanPolicy::resolve([], []))
-        && !array_key_exists('planningMinutes', ScanPolicy::resolve([], [])));
+            'created_at' => 'not a date'], [], $NOW)['paused'] === false);
+    check('B10: the planning window and its setting are gone',
+        !method_exists(ScanPolicy::class, 'planningSeconds')
+        && !defined(ScanPolicy::class . '::D_PLANNING_MINUTES')
+        && !defined(ScanPolicy::class . '::MAX_PLANNING_MINUTES')
+        && strpos((string) file_get_contents(__DIR__ . '/../config.json'), 'scan-system-planning-minutes') === false);
     check('stall: the list of those phases is the three finishing ones, and not scanning',
         count(ScanService::PHASES_ON_THE_UPDATE_CLOCK) === 3
         && !in_array(ScanPhase::SCANNING, ScanService::PHASES_ON_THE_UPDATE_CLOCK, true));
@@ -1463,53 +1426,40 @@ namespace INSPIRE\UniversalValidator\Scan {
 }
 
 /* =====================================================================
- * R2O-3  A RUN WHOSE PLANNING DIED IS TOLD SO, THROUGH status() ITSELF
+ * B10  A PLANNING RUN NOBODY IS LISTING IS PAUSED, THROUGH status() ITSELF
  *
- * progressOf() decides; status() is what the page is sent. Asked through the
- * real verb, past its entitlement, over a run row whose clock is hours old -
- * so dropping the flag from the answer, or not passing the window, is caught
- * here and not only in the helper.
+ * progressOf() decides; status() is what the page is sent. R2O-3 told a run
+ * whose planning had gone quiet for 15 minutes to stop and start again, and
+ * hid Continue; since B10 the list resumes from its cursor, so the verb is
+ * asked over run rows whose clock is a minute, five minutes and three hours
+ * old, and must never send the reader to Stop.
  * ===================================================================== */
 {
-    $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
+    $V = 'INSPIRE\UniversalValidator\ScanPageView';
     $pm = new \VerbModule();
     $pm->runRow = \VerbModule::row(['phase' => ScanPhase::PLANNING, 'manifest_total' => 0,
         'created_at' => gmdate('Y-m-d H:i:s', time() - 3 * 3600),
         'updated_at' => gmdate('Y-m-d H:i:s', time() - 3 * 3600)]);
     $pst = (new ScanService($pm))->status(149, 77);
-    check('R2O-3 status: a run planning for three hours reaches the page as planning stopped',
-        $pst['ok'] === true && $pst['active'] === true && $pst['planningStopped'] === true
-        && $pst['stalled'] === false && $pst['paused'] === false && $pst['stopping'] === false);
     $said = $V::stalledText($pst);
-    check('R2O-3 status: and the panel says planning stopped, how long ago, and to press Stop',
-        is_string($said) && strpos($said, 'This scan stopped while it was listing the records') === 0
-        && strpos($said, 'for 180 minutes') !== false && strpos($said, 'Press Stop') !== false
-        && strpos($said, 'Press Continue') === false);
+    check('B10 status: a planning run nobody has listed for three hours is paused, not stopped',
+        $pst['ok'] === true && $pst['active'] === true && $pst['paused'] === true
+        && $pst['stalled'] === false && !array_key_exists('planningStopped', $pst));
+    check('B10 status: and the panel says how long, and to press Continue',
+        is_string($said) && strpos($said, 'for 180 minutes') !== false
+        && strpos($said, 'Press Continue') !== false && strpos($said, 'start a new') === false);
     // A planner still inside the stall threshold is left alone, as CL-3
-    // intended. Past the threshold and inside the window, a planning run
-    // nobody holds is PAUSED since B10: Continue lists the rest, so the
-    // sentence is the one that names Continue, not silence and not Stop.
+    // intended.
     $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 60);
+    $pm->runRow['updated_at'] = $pm->runRow['created_at'];
     $fresh = (new ScanService($pm))->status(149, 77);
-    check('R2O-3 status: one planning for a minute is told nothing',
-        $fresh['planningStopped'] === false && $V::stalledText($fresh) === null);
+    check('B10 status: one planning for a minute is told nothing',
+        $fresh['paused'] === false && $V::stalledText($fresh) === null);
     $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 300);
+    $pm->runRow['updated_at'] = $pm->runRow['created_at'];
     $left = (new ScanService($pm))->status(149, 77);
     check('B10 status: one nobody has listed for five minutes is paused, and told to press Continue',
-        $left['planningStopped'] === false && $left['paused'] === true
-        && strpos((string) $V::stalledText($left), 'Press Continue') !== false);
-    // THE WINDOW IS THE SETTING'S, read by the verb.
-    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 40 * 60);
-    check('R2O-3 status: forty minutes is past the default window',
-        (new ScanService($pm))->status(149, 77)['planningStopped'] === true);
-    $pm->sys[ScanService::PLANNING_SETTING] = '60';
-    check('R2O-3 status: and inside a window the administrator set to an hour',
-        (new ScanService($pm))->status(149, 77)['planningStopped'] === false);
-    $win = new \ReflectionMethod(ScanService::class, 'planningSeconds');
-    $win->setAccessible(true);
-    $limit = (int) ini_get('max_execution_time');
-    check('R2O-3 status: the verb reads the setting and the time limit, the larger winning',
-        $win->invoke(new ScanService($pm)) === max(3600, $limit));
+        $left['paused'] === true && strpos((string) $V::stalledText($left), 'Press Continue') !== false);
 }
 
 /* =====================================================================
@@ -2623,6 +2573,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('M8: a read field given a validation between two requests ends the run failed, with the sentence',
         empty($w['ok']) && $w['why'] === ScanService::CONFIG_CHANGED && $w['phase'] === ScanPhase::TERMINAL
         && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    check('M8: and the stored reason says the configuration changed, not that the run broke',
+        strpos((string) $row['terminal_reason'], 'validation rules or design changed') !== false
+        && strpos((string) $row['terminal_reason'], 'unrecoverably') === false);
     list($row, $w) = $drive(172, function ($m) {
         $m->choices['missing'][] = 'NA';
     });

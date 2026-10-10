@@ -410,19 +410,16 @@
         // to stop it and start again, beside the Continue button that was the
         // right answer. ScanPageView::stalledText() picks in the same order.
         //
-        // AND A FOURTH, FOR A RUN WHOSE LISTING STOPPED (review R2O-3).
         // Planning is a slice per request since B10, driven by this pump like
         // any phase, so a quiet planning run is paused or stalled by the same
-        // rule as a scanning one and Continue resumes the list. Past the
-        // planning window with nothing listed, the server says planning
-        // stopped; that sentence sends the reader to Stop, so Continue is
-        // hidden beside it.
+        // rule as a scanning one, and Continue resumes the list from where it
+        // stopped. The fourth sentence R2O-3 added, which sent the reader to
+        // Stop and hid Continue, threw that list away and is gone.
         var stalledNode = el('uv-scan-stalled');
         if (stalledNode) {
             var L2 = labels(), quiet = null;
             if (!st.terminal && st.active && !UV.state.running) {
                 if (st.stopping) quiet = L2.stopping || '';
-                else if (st.planningStopped) quiet = L2.planningStopped || '';
                 else if (st.stalled) quiet = L2.stalled || '';
                 else if (st.paused) quiet = L2.paused || '';
             }
@@ -441,7 +438,7 @@
 
         toggle(el('uv-scan-start'), !st.active);
         toggle(el('uv-scan-cancel'), st.active && st.mayCancel);
-        toggle(el('uv-scan-resume'), st.active && !UV.state.running && !st.planningStopped);
+        toggle(el('uv-scan-resume'), st.active && !UV.state.running);
     }
 
     function toggle(node, on) {
@@ -566,15 +563,6 @@
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
             text(el('uv-scan-note'), '');
-            return;
-        }
-        // A RUN WHOSE LISTING STOPPED (review R2O-3): nothing has been listed
-        // for the whole planning window, and the server's advice is to stop it
-        // and start again. Driving it would keep asking on the ladder against
-        // that advice. Stop driving; the watch that stop() starts shows the
-        // sentence and hides Continue.
-        if (st && st.planningStopped) {
-            stop('');
             return;
         }
         if (moved) {

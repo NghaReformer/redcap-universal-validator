@@ -452,7 +452,9 @@ final class ScanPromotion
         }
 
         return ['ready' => $ready, 'facts' => $facts, 'why' => $why,
-                'notExamined' => $unread];
+                'notExamined' => $unread,
+                // Which configuration moved, for the stored reason (conclude()).
+                'configChanged' => $fpBad ? 'rules' : ($polBad ? 'privacy' : null)];
     }
 
     /**
@@ -578,6 +580,17 @@ final class ScanPromotion
         if ($cancel) $f['facts']['cancelled'] = true;
 
         $outcome = ScanOutcome::derive($f['facts']);
+        // A RUN THE CONFIGURATION MOVED UNDER SAYS SO (W7-N11). derive()'s
+        // sentence for `failed` is the store's - "failed unrecoverably, so it
+        // describes nothing" - and a project redesigned under a running scan
+        // read as a broken installation.
+        if ($outcome['terminal'] === ScanOutcome::FAILED && $f['configChanged'] !== null) {
+            $outcome['why'] = $f['configChanged'] === 'rules'
+                ? 'the project\'s validation rules or design changed while this scan was running, so its '
+                  . 'results would describe two different configurations; run it again'
+                : 'the project\'s privacy settings were tightened while this scan was running, so it was '
+                  . 'ended rather than finished under the settings it started with; run it again';
+        }
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
         // What finish() persists beside the terminal. `gaps` is already there.
         $outcome['ruleProblems'] = (int) $f['facts']['ruleProblems'];
