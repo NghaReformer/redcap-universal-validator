@@ -893,7 +893,17 @@ namespace {
             return parent::query($sql, $params);
         }
     }
-    $runFor = function ($user, $tweak = null) {
+    // The lookups the run's rules make, as start() stores them (R3U-N1, R4-1):
+    // the same list whoever builds the plan.
+    $lookupsOf = function ($user) {
+        $m = mod($user);
+        $pl = new \ReflectionMethod($m, 'scanPlan');
+        $pl->setAccessible(true);
+        return $pl->invoke($m, 149, [])['crossLookups'];
+    };
+    $runLookups = $lookupsOf('nurse');
+    $runFor = function ($user, $tweak = null, $policyJson = null) use ($runLookups) {
+        if ($policyJson === null) $policyJson = json_encode(['crossLookups' => $runLookups]);
         $base = mod($user);
         $m = new CrossRunModule();
         foreach (['projectIdReturn', 'settingsBy', 'subSettingsBy', 'systemSettings'] as $k) $m->$k = $base->$k;
@@ -906,7 +916,8 @@ namespace {
         $m->runRow = uv_run_row(['run_id' => '77', 'project_id' => '149', 'phase' => 'scanning',
             'fingerprint' => 'fp', 'manifest_total' => '10', 'manifest_done' => '3', 'cursor_ordinal' => '3',
             'lease_epoch' => '1', 'generation_id' => '1', 'run_seq' => '1', 'created_by' => 'nurse',
-            'detail_rows' => '2', 'detail_bytes' => '400', 'fence_open' => '9', 'fence_target' => '9']);
+            'detail_rows' => '2', 'detail_bytes' => '400', 'fence_open' => '9', 'fence_target' => '9',
+            'policy_json' => $policyJson]);
         return (new \INSPIRE\UniversalValidator\Scan\ScanService($m))->status(149, 77);
     };
     $st = $runFor('outsider');
@@ -1019,15 +1030,90 @@ namespace {
         }));
     check('R3U-1 plan: nothing is refused when nothing failed', $planOf('nurse')['crossRefused'] === []);
 
-    // R3U-N1: crossAnswered is what a started run keeps and what status()
-    // vouches a stored run's projects against. A revoked agreement makes the
-    // rule a configuration error, which crossRefused never names - so the
-    // stored run is refused because 300 is missing from crossAnswered.
-    check('R3U-N1 plan: a project that answers this reader is vouched for', $planOf('nurse')['crossAnswered'] === [300]);
-    check('R3U-N1 plan: one that refuses this reader is not', $pd['crossAnswered'] === []);
-    $pr = $planOf('nurse', function ($m) { $m->subSettingsBy[300] = ['exists-consumers' => []]; });
-    check('R3U-N1 plan: a revoked agreement is in neither list, so only crossAnswered can refuse the stored run',
-        $pr['crossRefused'] === [] && $pr['crossAnswered'] === []);
+    // R3U-N1, R4-1: crossLookups is what a started run keeps. It is the
+    // rules' list, not the reader's: the same for a reader 300 answers and
+    // one it refuses, because whoever presses Continue evaluates with their
+    // own plan and can write 300's answers into a run someone else started.
+    $ln = $planOf('nurse')['crossLookups'];
+    check('R4-1 plan: the lookups are the rules\', the same whoever asks', $ln === $pd['crossLookups']);
+    check('R4-1 plan: one entry per lookup, each project and its searched fields',
+        in_array(['pid' => 300, 'fields' => ['specimen_id']], $ln, true)
+        && in_array(['pid' => 300, 'fields' => ['record']], $ln, true)
+        && in_array(['pid' => 300, 'fields' => ['site_code', 'specimen_id']], $ln, true)
+        && count($ln) === count(array_unique(array_map('json_encode', $ln))));
+    // The module answers for the reader, lookup by lookup (crossLookupRefusals()).
+    $ask = function ($user, array $lookups, $tweak = null) {
+        $m = mod($user);
+        if ($tweak !== null) $tweak($m);
+        return $m->crossLookupRefusals(149, $lookups);
+    };
+    check('R4 refusals: a reader 300 answers is refused nothing', $ask('nurse', $ln) === []);
+    $ro = $ask('outsider', $ln);
+    check('R4 refusals: a reader with no rights there is refused every lookup, by decision',
+        count($ro) === count($ln) && !array_filter($ro, function ($r) { return $r['pid'] !== 300 || $r['unread'] !== false; }));
+    $rb = $ask('nurse', $ln, function ($m) { \REDCap::$rightsThrowFor[300] = true; });
+    \REDCap::$rightsThrowFor = [];
+    check('R4 refusals: a blip in the rights read is a refusal that is not a decision',
+        $rb && !array_filter($rb, function ($r) { return $r['unread'] !== true; }));
+    check('R4 refusals: a lookup not in the stored shape makes the list unreadable',
+        $ask('nurse', [['pid' => 300]]) === null && $ask('nurse', [['pid' => '300', 'fields' => ['specimen_id']]]) === null
+        && $ask('nurse', [['pid' => 300, 'fields' => []]]) === null && $ask('nurse', ['x']) === null);
+
+    // R4-2: under a "rights" agreement the forms a lookup reads decide who it
+    // answers. A run that looked in [secret_code] (300's form `secret`) stays
+    // refused to a nurse who may open only `lab`, whatever the rules read now.
+    global $DICT_A, $DICT_B, $RIGHTS_B;
+    $keepA = $DICT_A; $keepB = $DICT_B;
+    $DICT_B['secret_code'] = f('secret');
+    $secretRows = [consent('rights', 'specimen_id, site_code, spec_date, record, ghost, donor_name, secret_code')];
+    $formsRun = function ($user, $policyJson) use ($secretRows, $RIGHTS_B) {
+        $base = mod($user, $secretRows);
+        \REDCap::$rightsBy[300]['full'] = ['forms' => ['lab' => '1', 'secret' => '1']] + $RIGHTS_B;
+        \REDCap::$rightsBy[149]['full'] = \REDCap::$rightsBy[149]['nurse'];
+        $m = new CrossRunModule();
+        foreach (['projectIdReturn', 'settingsBy', 'subSettingsBy', 'systemSettings'] as $k) $m->$k = $base->$k;
+        foreach (['nurse', 'full'] as $u) {
+            \REDCap::$rightsBy[149][$u] = ['design' => '1', 'data_export_tool' => '1'] + \REDCap::$rightsBy[149][$u];
+        }
+        $m->runRow = uv_run_row(['run_id' => '77', 'project_id' => '149', 'phase' => 'terminal',
+            'terminal' => 'complete', 'manifest_total' => '1', 'manifest_done' => '1', 'created_by' => 'full',
+            'policy_json' => $policyJson]);
+        return (new \INSPIRE\UniversalValidator\Scan\ScanService($m))->status(149, 77);
+    };
+    $secretRun = json_encode(['crossLookups' => [['pid' => 300, 'fields' => ['secret_code']]]]);
+    $st = $formsRun('nurse', $secretRun);
+    check('R4-2: a run that read a form of 300 the nurse may not open is refused to her, for good',
+        $st['ok'] === false && $st['final'] === true && strpos($st['why'], 'project 300') !== false);
+    $st = $formsRun('full', $secretRun);
+    check('R4-2: and shown to a reader who may open it', $st['ok'] === true);
+    // The rules no longer read [secret_code] at all, and the nurse may open
+    // every form they do read: the stored lookup still decides.
+    $DICT_A = ['record_id' => f('enrol'), 'site' => f('enrol'),
+               'x_spec' => f('result', ux('{"in":"[specimen_id]","project":300}'))];
+    $st = $formsRun('nurse', $secretRun);
+    check('R4-2: editing the rule to read a form she may open does not open the stored answers',
+        $st['ok'] === false && strpos($st['why'], 'project 300') !== false);
+    // R4-3: the other way round. The rule that made the lookup is gone, the
+    // agreement stands and 300 still answers her: the run stays readable.
+    $st = $formsRun('nurse', json_encode(['crossLookups' => [['pid' => 300, 'fields' => ['specimen_id']]]]));
+    $DICT_A = ['record_id' => f('enrol'), 'site' => f('enrol'), 'loc' => f('result', ux('{"in":"[site]"}'))];
+    $st2 = $formsRun('nurse', json_encode(['crossLookups' => [['pid' => 300, 'fields' => ['specimen_id']]]]));
+    check('R4-3: a reader 300 answers keeps the run after the rule that looked there is removed',
+        $st['ok'] === true && $st2['ok'] === true);
+    // R3U-N1: and a revoked agreement refuses it, for good, although no rule
+    // names 300 any more.
+    $base = mod('nurse', []);
+    $DICT_B = $keepB;
+    $m = new CrossRunModule();
+    foreach (['projectIdReturn', 'settingsBy', 'subSettingsBy', 'systemSettings'] as $k) $m->$k = $base->$k;
+    \REDCap::$rightsBy[149]['nurse'] = ['design' => '1', 'data_export_tool' => '1'] + \REDCap::$rightsBy[149]['nurse'];
+    $m->runRow = uv_run_row(['run_id' => '77', 'project_id' => '149', 'phase' => 'terminal', 'terminal' => 'complete',
+        'policy_json' => json_encode(['crossLookups' => [['pid' => 300, 'fields' => ['specimen_id']]]])]);
+    $st = (new \INSPIRE\UniversalValidator\Scan\ScanService($m))->status(149, 77);
+    check('R3U-N1: a revoked agreement refuses the stored run, for good, with no rule naming 300',
+        $st['ok'] === false && $st['final'] === true
+        && strpos($st['why'], 'project 300, which does not answer your lookups') !== false);
+    $DICT_A = $keepA; $DICT_B = $keepB;
 
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

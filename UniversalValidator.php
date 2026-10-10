@@ -689,6 +689,54 @@ class UniversalValidator extends AbstractExternalModule
         return null;
     }
 
+    /**
+     * A lookup into another project as a stored run keeps it: the project and
+     * the fields searched there ('record' for its record IDs), sorted. These
+     * are all crossGate() and crossCaller() read of a rule part, so the
+     * refusal can be asked again later without the rule (crossLookupRefusals()).
+     */
+    private static function crossLookupOf(array $part)
+    {
+        $fields = self::crossFields($part);
+        sort($fields, SORT_STRING);
+        return ['pid' => (int) $part['existsPid'], 'fields' => $fields];
+    }
+
+    /**
+     * For a stored run: which of the lookups it made (crossLookupOf(), kept
+     * from the plan that started it) would the other project refuse the
+     * signed-in reader, asked as the scan asks (crossScanProblem()). One entry
+     * per refused lookup: ['pid', 'why', 'unread'], `unread` when the refusal
+     * rests on a read that failed (review R3U-1). [] when every lookup would
+     * be answered. null when a lookup is not in the stored shape: a list that
+     * cannot be read is not a list that names nothing.
+     *
+     * Asked of the lookups the run made, not of the rules as they stand
+     * (review R4-2): a rule edited to search a form the reader may open does
+     * not open the answers the run took from one they may not.
+     */
+    public function crossLookupRefusals($pid, array $lookups)
+    {
+        $out = [];
+        foreach ($lookups as $l) {
+            if (!is_array($l) || !isset($l['pid'], $l['fields']) || !is_int($l['pid']) || $l['pid'] <= 0
+                    || !is_array($l['fields']) || !$l['fields']) {
+                return null;
+            }
+            $remote = [];
+            $record = false;
+            foreach ($l['fields'] as $f) {
+                if (!is_string($f) || $f === '') return null;
+                if ($f === 'record') { $record = true; continue; }
+                $remote[] = $f;
+            }
+            $part = ['existsPid' => $l['pid'], 'existsIn' => $record ? 'record' : '', 'existsRemoteTargets' => $remote];
+            $why = $this->crossScanProblem((int) $pid, $part, $unread);
+            if ($why !== null) $out[] = ['pid' => $l['pid'], 'why' => $why, 'unread' => (bool) $unread];
+        }
+        return $out;
+    }
+
     /** How REDCap stores a field's value, in words, from its validation. */
     private static function storedKindOf($validation)
     {
@@ -5583,9 +5631,7 @@ class UniversalValidator extends AbstractExternalModule
                 // key that exists only on the success path is one a caller reads as
                 // "no forms" on the path where it should read as "no answer".
                 'ownership' => [],
-                // Empty on a refusal: nobody is vouched for, so status()
-                // refuses a stored run that looked in another project.
-                'crossRefused' => [], 'crossUnread' => [], 'crossAnswered' => [],
+                'crossRefused' => [], 'crossUnread' => [], 'crossLookups' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // A value that is a Missing Data Code is no candidate for a
                 // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
@@ -5946,12 +5992,28 @@ class UniversalValidator extends AbstractExternalModule
         }
         $out['crossRefused'] = array_keys($out['crossRefused']);
         $out['crossUnread'] = array_keys($out['crossUnread']);
-        // The projects a live rule searches AND that answer this person. A
-        // started run keeps this list; status() refuses a stored run any of
-        // whose projects is missing from the reader's list (review R3U-N1),
-        // because a rule whose agreement was revoked is a configuration error
-        // that never reaches the loop above, and crossRefused cannot name it.
-        $out['crossAnswered'] = array_keys($crossProjects);
+        // EVERY lookup into another project that a live rule makes, whoever
+        // asks (reviews R3U-N1, R4-1, R4-2). A started run keeps this list and
+        // status() asks the other project about each entry for the reader.
+        // Not only the lookups this person is answered for: whoever presses
+        // Continue evaluates with their own plan, so a run started by someone
+        // project 300 refuses can still hold 300's answers. The list is the
+        // rules', and every work pass is held to the rules by the fingerprint
+        // (rule revisions cover existsPid and the fields searched), so no pass
+        // can consult a lookup the list does not name. Per lookup, not per
+        // project: under a "rights" agreement the forms a lookup reads decide
+        // who it answers.
+        $lookups = [];
+        foreach ($live as $r) {
+            if (ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
+            foreach (self::existsParts($r) as $p) {
+                if (empty($p['existsPid'])) continue;
+                $l = self::crossLookupOf($p);
+                $lookups[json_encode($l)] = $l;
+            }
+        }
+        ksort($lookups);
+        $out['crossLookups'] = array_values($lookups);
 
         $out['readSet'] = $readSet;
 

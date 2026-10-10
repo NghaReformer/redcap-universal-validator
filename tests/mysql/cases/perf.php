@@ -125,7 +125,7 @@ if (!class_exists('UvPerfModule', false)) {
                 'ownership' => array('dob' => 'demographics'),
                 'structure' => array('longitudinal' => false),
                 'plan' => array('hostFields' => array(0 => array('demographics' => array('dob'))),
-                                'crossRefused' => array(), 'crossRecordLookups' => false),
+                                'crossRefused' => array(), 'crossLookups' => array(), 'crossRecordLookups' => false),
                 'read' => function ($ids) {
                     $out = array();
                     foreach ($ids as $id) $out[(string) $id] = array('1' => array('dob' => ''));

@@ -366,6 +366,16 @@ namespace {
             return $this->user;
         }
         public function durableScanContext($pid, array $opts = [], $dag = null) { return $this->ctx; }
+        /** @var mixed what crossLookupRefusals() answers, or 'throw' */
+        public $refusals = [];
+        /** @var array the lookups each crossLookupRefusals() call was asked about */
+        public $asked = [];
+        public function crossLookupRefusals($pid, array $lookups)
+        {
+            $this->asked[] = $lookups;
+            if ($this->refusals === 'throw') throw new \RuntimeException('rights table unreadable');
+            return $this->refusals;
+        }
         public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
         public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
         public function log($event, $context = []) {}
@@ -380,7 +390,7 @@ namespace {
                 'cursor_ordinal' => 3, 'lease_epoch' => 1, 'generation_id' => 5, 'run_seq' => 5,
                 'detail_rows' => 0, 'detail_bytes' => 0, 'policy_revision' => 1,
                 'values_state' => 'none', 'coverage' => 'partial', 'detail' => 'complete',
-                'policy_json' => '{}',
+                'policy_json' => '{"crossLookups":[]}',
                 'created_at' => gmdate('Y-m-d H:i:s'), 'updated_at' => gmdate('Y-m-d H:i:s')], $over);
         }
 
@@ -539,8 +549,10 @@ namespace {
         public $problems = [];
         /** @var bool whether the context asks the service to compare fingerprints */
         public $verifyFingerprint = true;
-        /** @var int[] the projects the plan says a rule searches and that answer this reader */
-        public $crossAnswered = [];
+        /** @var array the lookups into other projects the plan says the rules make */
+        public $crossLookups = [];
+        /** @var array pid => true: the other project refuses the reader, by decision */
+        public $refusedBy = [];
         /** @var ?string what the run's lease reads as, or null for no lease */
         public $lease = null;
         public $logs = [];
@@ -560,6 +572,16 @@ namespace {
         }
 
         public function getUser() { return $this->user; }
+        public function crossLookupRefusals($pid, array $lookups)
+        {
+            $out = [];
+            foreach ($lookups as $l) {
+                if (isset($this->refusedBy[$l['pid']])) {
+                    $out[] = ['pid' => $l['pid'], 'why' => 'no rights there', 'unread' => false];
+                }
+            }
+            return $out;
+        }
         public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
         public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
         public function log($event, $context = []) { $this->logs[] = [$event, $context]; return 1; }
@@ -576,7 +598,7 @@ namespace {
                 'problems' => $this->problems,
                 'verifyFingerprint' => $this->verifyFingerprint,
                 'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
-                           'crossAnswered' => $this->crossAnswered, 'crossRecordLookups' => false],
+                           'crossLookups' => $this->crossLookups, 'crossRecordLookups' => false],
                 'read' => function (array $ids) use ($self) {
                     $d = [];
                     foreach ($ids as $id) {
@@ -1435,79 +1457,79 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R2O-4: a rule list that could not be loaded is not final either',
         $noRules['ok'] === false && $noRules['final'] === false);
 
-    // R3U-1: the cross-project refusal was final whatever it rested on. It
-    // is final only when every refused project was READ and said no; a
-    // refusal that rests on a failed read, or a plan that does not say, is
-    // asked again. Refused either way.
-    $cross = function (array $plan) use ($ask) {
-        return $ask(function ($m) use ($plan) { $m->ctx['plan'] = $plan + $m->ctx['plan']; });
+    // R3U-1, R3U-N1, R4-1..3: status() asks the other project about the
+    // lookups the RUN made (its stored policy), for this reader, through the
+    // module. Final only when every refused lookup was refused by a decision.
+    $L300 = ['pid' => 300, 'fields' => ['specimen_id']];
+    $L400 = ['pid' => 400, 'fields' => ['record']];
+    $stored = function ($policyJson, $refusals) use ($ask) {
+        $seen = null;
+        $r = $ask(function ($m) use ($policyJson, $refusals, &$seen) {
+            $m->runRow['policy_json'] = $policyJson;
+            $m->refusals = $refusals;
+            $seen = $m;
+        });
+        return [$r, $seen];
     };
-    $dec = $cross(['crossRefused' => [300], 'crossUnread' => []]);
+    $two = json_encode(['crossLookups' => [$L300, $L400]]);
+    list($ok, $okm) = $stored($two, []);
+    check('R4 status: a run whose lookups the other projects all answer is shown', $ok['ok'] === true);
+    check('R4 status: and the module was asked about exactly the lookups the run stored',
+        $okm->asked === [[$L300, $L400]]);
+    list($dec) = $stored($two, [['pid' => 300, 'why' => 'no rights', 'unread' => false]]);
     check('R3U-1 status: a refusal project 300 decided is final and says it does not answer',
         $dec['ok'] === false && $dec['final'] === true
         && strpos($dec['why'], 'project 300, which does not answer your lookups') !== false);
-    $unr = $cross(['crossRefused' => [300], 'crossUnread' => [300]]);
+    list($unr) = $stored($two, [['pid' => 300, 'why' => 'blip', 'unread' => true]]);
     check('R3U-1 status: a refusal on a failed read is refused, not final, and says it could not be read',
         $unr['ok'] === false && $unr['final'] === false
         && strpos($unr['why'], 'project 300, and whether it answers your lookups could not be read just now') !== false);
-    $mix = $cross(['crossRefused' => [300, 400], 'crossUnread' => [400]]);
+    list($mix) = $stored($two, [['pid' => 300, 'why' => 'no rights', 'unread' => false],
+                                ['pid' => 400, 'why' => 'blip', 'unread' => true]]);
     check('R3U-1 status: one decided and one unread is not final, and names the decided one',
         $mix['ok'] === false && $mix['final'] === false
         && strpos($mix['why'], 'project 300, which does not answer') !== false && strpos($mix['why'], '400') === false);
-    $old = $cross(['crossRefused' => [300]]);
-    check('R3U-1 status: a plan that does not say what was unread is not called a decision',
-        $old['ok'] === false && $old['final'] === false);
-    $stray = $cross(['crossRefused' => [300], 'crossUnread' => [500]]);
-    check('R3U-1 status: an unread project that is not refused does not make a decision unread',
-        $stray['ok'] === false && $stray['final'] === true);
-
-    // R3U-N1: the refusal was built from the reader's plan alone, and a rule
-    // whose agreement was revoked is a configuration error that never reaches
-    // crossRefused - so revoking the agreement SHOWED the answers project 300
-    // had already given. The run keeps the projects it consulted.
-    $stored = function ($policyJson, array $plan) use ($ask) {
-        return $ask(function ($m) use ($policyJson, $plan) {
-            $m->runRow['policy_json'] = $policyJson;
-            $m->ctx['plan'] = $plan + $m->ctx['plan'];
-        });
-    };
-    $vouched = $stored('{"crossProjects":[300]}', ['crossAnswered' => [300]]);
-    check('R3U-N1 status: a run that looked in project 300 is shown to a reader 300 still answers',
-        $vouched['ok'] === true);
-    $revoked = $stored('{"crossProjects":[300]}', ['crossRefused' => [], 'crossUnread' => [], 'crossAnswered' => []]);
-    check('R3U-N1 status: once no rule vouches for project 300 the run is refused, not final, and says why',
-        $revoked['ok'] === false && $revoked['final'] === false
-        && strpos($revoked['why'], 'project 300, and this project\'s rules no longer show that it answers') !== false);
-    $noKey = $stored('{"crossProjects":[300]}', []);
-    check('R3U-N1 status: a plan that does not say who answers vouches for nobody',
-        $noKey['ok'] === false);
-    $other = $stored('{"crossProjects":[300,400]}', ['crossAnswered' => [300]]);
-    check('R3U-N1 status: every project the run looked in must be vouched for, not one of them',
-        $other['ok'] === false && strpos($other['why'], 'project 400') !== false
-        && strpos($other['why'], '300') === false);
-    $mixed = $stored('{"crossProjects":[400]}', ['crossRefused' => [300], 'crossUnread' => [], 'crossAnswered' => []]);
-    check('R3U-N1 status: a decided refusal beside an unvouched project is named, and is not final',
-        $mixed['ok'] === false && $mixed['final'] === false
-        && strpos($mixed['why'], 'project 300, which does not answer') !== false);
-    foreach (['not json' => '{crossProjects', 'a null column' => null, 'a scalar' => '"x"',
-              'a list that is not a list' => '{"crossProjects":300}',
-              'a project id that is not one' => '{"crossProjects":["300; DROP"]}',
-              'a zero id' => '{"crossProjects":[0]}'] as $what => $bad) {
-        $r = $stored($bad, ['crossAnswered' => [300]]);
-        check('R3U-N1 status: ' . $what . ' in the stored policy is refused, not final',
-            $r['ok'] === false && $r['final'] === false
-            && strpos($r['why'], 'could not be read') !== false);
+    list($vague) = $stored($two, [['pid' => 300, 'why' => 'no rights']]);
+    check('R3U-1 status: a refusal that does not say it was decided is not called one',
+        $vague['ok'] === false && $vague['final'] === false);
+    list($threw) = $stored($two, 'throw');
+    check('R4 status: a module that cannot answer refuses the run, not for good',
+        $threw['ok'] === false && $threw['final'] === false && strpos($threw['why'], 'could not be read') !== false);
+    list($odd) = $stored($two, null);
+    check('R4 status: and so does an answer that is not a list', $odd['ok'] === false && $odd['final'] === false);
+    list($none, $nonem) = $stored('{"crossLookups":[]}', 'throw');
+    check('R4 status: a run that looked nothing up in another project is shown without asking',
+        $none['ok'] === true && $nonem->asked === []);
+    foreach (['policy with no list' => '{"valueMode":"none"}', 'empty policy' => '{}', 'list policy' => '[]'] as $what => $legacy) {
+        list($r) = $stored($legacy, []);
+        check('R4 status: a ' . $what . ' never recorded its lookups, so the run is refused for good, with the remedy',
+            $r['ok'] === false && $r['final'] === true && strpos($r['why'], 'start a new scan') !== false);
     }
-    $none = $stored('[]', []);
-    check('R3U-N1 status: a run that looked in no other project needs no vouching',
-        $none['ok'] === true);
+    foreach (['not json' => '{crossLookups', 'a null column' => null, 'a scalar' => '"x"',
+              'a list that is not a list' => '{"crossLookups":300}'] as $what => $bad) {
+        list($r) = $stored($bad, []);
+        check('R4 status: ' . $what . ' in the stored policy is refused, not final',
+            $r['ok'] === false && $r['final'] === false && strpos($r['why'], 'could not be read') !== false);
+    }
+    // The reader's plan no longer decides: a plan that refuses 300 does not
+    // refuse a run that made no lookup there, and a plan that answers 300
+    // does not open a run whose stored lookup 300 refuses.
+    $planSays = $ask(function ($m) {
+        $m->ctx['plan'] = ['crossRefused' => [300], 'crossUnread' => []] + $m->ctx['plan'];
+    });
+    check('R4-3 status: the rules as they stand do not refuse a run that never looked in 300', $planSays['ok'] === true);
+
     $sp = \INSPIRE\UniversalValidator\Scan\ScanPlanner::storedPolicy(
-        ['policy' => ['valueMode' => 'none'], 'crossProjects' => ['400', 300, 400]]);
-    check('R3U-N1 planner: the stored policy keeps the settings and adds the projects once each, as ids, in order',
-        $sp === ['valueMode' => 'none', 'crossProjects' => [300, 400]]);
-    check('R3U-N1 planner: and adds nothing when the run looks in no other project',
-        \INSPIRE\UniversalValidator\Scan\ScanPlanner::storedPolicy(['policy' => ['valueMode' => 'none']])
-            === ['valueMode' => 'none']);
+        ['policy' => ['valueMode' => 'none'], 'crossLookups' => [$L400, $L300, $L400]]);
+    check('R4 planner: the stored policy keeps the settings and adds each lookup once, in one order',
+        $sp === ['valueMode' => 'none', 'crossLookups' => [$L300, $L400]]);
+    check('R4 planner: an empty list is stored as one, so status() can tell it from no list',
+        \INSPIRE\UniversalValidator\Scan\ScanPlanner::storedPolicy(['policy' => [], 'crossLookups' => []])
+            === ['crossLookups' => []]);
+    check('R4 planner: a request that does not say stores no list, which status() refuses',
+        !array_key_exists('crossLookups', \INSPIRE\UniversalValidator\Scan\ScanPlanner::storedPolicy(['policy' => []]))
+        && !array_key_exists('crossLookups', \INSPIRE\UniversalValidator\Scan\ScanPlanner::storedPolicy(
+            ['policy' => [], 'crossLookups' => null])));
 }
 
 /* =====================================================================
@@ -1530,7 +1552,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $h = function ($id) { return hash('sha256', $id, true); };
     $fresh = function ($pid) use ($h) {
         $store = new ArrayScanStore();
-        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice', 'policy_json' => '{"crossLookups":[]}'])['run']['run_id'];
         $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null],
                                        ['id_bin' => 'B', 'hash' => $h('B'), 'dag' => null]]);
         return [$store, $runId];
@@ -1802,7 +1824,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $h = function ($id) { return hash('sha256', $id, true); };
     $finished = function ($pid, array $aggs) use ($h) {
         $store = new ArrayScanStore();
-        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice', 'policy_json' => '{"crossLookups":[]}'])['run']['run_id'];
         $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null]]);
         $epoch = (int) $store->run($pid, $runId)['lease_epoch'];
         $c = $store->claim($runId, 'w1', $epoch, 1);
@@ -1930,22 +1952,32 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('E2E clean: the work request that finished it carries the same status',
         isset($last['status']['terminal']) && $last['status']['terminal'] === ScanOutcome::COMPLETE);
 
-    // -- a run that looked values up in project 300 (review R3U-N1) -------------
+    // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();
     $km = new \E2eModule($ks);
-    $km->crossAnswered = [300];
+    $kl = ['pid' => 300, 'fields' => ['specimen_id']];
+    $km->crossLookups = [$kl];
+    // The person who starts it is one project 300 refuses: the lookup is the
+    // rules', not the starter's, so it is recorded all the same.
+    $km->refusedBy = [300 => true];
     $k = $drive($km, $ks, 152);
     check('E2E cross: no verb threw' . ($k['threw'] ? ' (' . $k['threw'] . ')' : ''), $k['threw'] === null);
     $kp = is_array($k['row']) ? json_decode($k['row']['policy_json'], true) : null;
-    check('E2E cross: the run keeps the projects it looked in with its policy',
-        is_array($kp) && isset($kp['crossProjects']) && $kp['crossProjects'] === [300]);
+    check('E2E cross: the run keeps every lookup its rules make, whoever started it',
+        is_array($kp) && isset($kp['crossLookups']) && $kp['crossLookups'] === [$kl]);
     check('E2E cross: and they are not part of the fingerprint, so every pass matched it and the run finished',
         is_array($k['row']) && $k['row']['terminal'] === ScanOutcome::COMPLETE);
-    check('E2E cross: a reader project 300 still answers is shown the run', !empty($k['status']['ok']));
-    $km->crossAnswered = [];
+    check('E2E cross: a reader project 300 refuses is refused the run, for good',
+        $k['status']['ok'] === false && $k['status']['final'] === true
+        && strpos($k['status']['why'], 'project 300') !== false);
+    $km->refusedBy = [];
     $kr = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
-    check('E2E cross: once no rule vouches for project 300 - agreement revoked, rule gone - the run is refused',
-        $kr['ok'] === false && $kr['final'] === false && strpos($kr['why'], 'project 300') !== false);
+    check('E2E cross: a reader project 300 answers is shown it', !empty($kr['ok']));
+    $km->crossLookups = [];
+    $km->refusedBy = [300 => true];
+    $kr = (new ScanService($km, $ks))->status(152, (int) $k['start']['run_id']);
+    check('E2E cross: removing the rule does not open the stored answers to a reader 300 refuses',
+        $kr['ok'] === false && strpos($kr['why'], 'project 300') !== false);
 
     // -- a run with a finding ---------------------------------------------------
     $fs = new ArrayScanStore();
@@ -2041,7 +2073,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->proj['scan-max-detail-findings'] = '2';
         $key = $m->sys['log-hmac-key'];
         $hash = function ($id) use ($pid, $key) { return Hmac::raw(Hmac::P_RECORD, $pid, $id, $key); };
-        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice', 'policy_json' => '{"crossLookups":[]}'])['run']['run_id'];
         $store->writeManifest($runId, array_map(function ($id) use ($hash) {
             return ['id_bin' => $id, 'hash' => $hash($id), 'dag' => null];
         }, ['R001', 'R002', 'R003', 'R004']));
@@ -2175,7 +2207,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $svc = new ScanService(new \NoDbModule());
     $NOW = time();
     $open = function (ArrayScanStore $inner, $pid) {
-        $runId = (int) $inner->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $runId = (int) $inner->startRun($pid, ['created_by' => 'alice', 'policy_json' => '{"crossLookups":[]}'])['run']['run_id'];
         $inner->writeManifest($runId, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true), 'dag' => null]]);
         return $runId;
     };

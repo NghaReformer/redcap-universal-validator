@@ -609,6 +609,36 @@ final class ScanPlanner
         ]);
     }
 
+    /**
+     * The policy the run row keeps: the request's policy, plus every lookup
+     * into another project the run's rules make (reviews R3U-N1, R4-1, R4-2).
+     *
+     * NOT IN THE FINGERPRINT. A work request compares the fingerprint against
+     * one it builds from the settings policy alone, so a key added to the
+     * fingerprinted policy here would make every run fail its own first pass.
+     * The lookups are covered there already: a rule revision hashes the
+     * project and the fields a lookup searches.
+     *
+     * $req['crossLookups'] is the start plan's list (UniversalValidator::
+     * crossLookupOf() entries). A request without the key (or with null) stores none, and
+     * ScanService::status() refuses a run whose policy does not say, so a
+     * caller that forgets it fails closed; start() always passes it. Entries
+     * are kept as given, sorted and without repeats: status() refuses any it
+     * cannot read.
+     */
+    public static function storedPolicy(array $req)
+    {
+        $policy = (isset($req['policy']) && is_array($req['policy'])) ? $req['policy'] : [];
+        if (array_key_exists('crossLookups', $req) && $req['crossLookups'] !== null) {
+            $l = is_array($req['crossLookups']) ? $req['crossLookups'] : [false];
+            $keyed = [];
+            foreach ($l as $e) $keyed[json_encode($e)] = $e;
+            ksort($keyed, SORT_STRING);
+            $policy['crossLookups'] = array_values($keyed);
+        }
+        return $policy;
+    }
+
     // -- fingerprint ---------------------------------------------------------
 
     /**
@@ -625,30 +655,6 @@ final class ScanPlanner
      * available direction. Extra inputs are folded in rather than rejected,
      * because the safe direction for an unrecognised input is that it counts.
      */
-    /**
-     * The policy the run row keeps: the request's policy, plus the other
-     * projects the run will look values up in (review R3U-N1).
-     *
-     * NOT IN THE FINGERPRINT. A work request compares the fingerprint against
-     * one it builds from the settings policy alone, so a key added to the
-     * fingerprinted policy here would make every run fail its own first pass.
-     * The projects are already covered there: a rule that stops searching a
-     * project changes the rule list, and the rule list is fingerprinted.
-     *
-     * $req['crossProjects'] is the start plan's `crossAnswered`. A request
-     * without it stores none, so ScanService::start() always passes it.
-     */
-    public static function storedPolicy(array $req)
-    {
-        $policy = (isset($req['policy']) && is_array($req['policy'])) ? $req['policy'] : [];
-        if (isset($req['crossProjects']) && is_array($req['crossProjects']) && $req['crossProjects']) {
-            $ids = array_values(array_unique(array_map('intval', $req['crossProjects'])));
-            sort($ids);
-            $policy['crossProjects'] = $ids;
-        }
-        return $policy;
-    }
-
     public static function fingerprint(array $spec)
     {
         foreach (self::$required as $k) {
