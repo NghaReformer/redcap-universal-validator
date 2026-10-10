@@ -827,41 +827,61 @@ namespace {
             vcount($res) === 0 && $res['status'] === 'complete');
     }
     {
-        // A STATUS FIELD A RULE READS keeps its value. A temporal rule puts its
-        // forms' status fields in the read set as existence markers. The read
-        // asks REDCap for blanks so the gate can see a gray form; what a rule
-        // reads must still be the '0' REDCap reports without the key, and the
-        // gate must still read the blank.
-        $g = r2o2Private('grayStatusAsZero');
-        $node = [1 => ['record_id' => '1', 'fc_complete' => '', 'fb_complete' => '', 'c_req' => '',
-                       'fa_complete' => '2'],
-                 'repeat_instances' => [1 => ['fr' => [1 => ['fc_complete' => '', 'r_val' => 'x']]]]];
-        $out = $g ? $g->invoke(null, $node, ['fc_complete', 'fa_complete', 'fz_complete']) : null;
-        check('R2O-2: a referenced gray status reads \'0\' again, on base and repeat rows',
-            is_array($out) && $out[1]['fc_complete'] === '0'
-            && $out['repeat_instances'][1]['fr'][1]['fc_complete'] === '0');
-        check('R2O-2: and nothing else moves: other statuses, other blanks, saved values, absent keys',
-            is_array($out) && $out[1]['fb_complete'] === '' && $out[1]['c_req'] === ''
-            && $out[1]['fa_complete'] === '2' && !array_key_exists('fz_complete', $out[1]));
-
-        // Through the scan: a plan whose rules read fc_complete still gates fc
-        // on the blank as read, not on the '0' the rules are shown.
-        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'c_req' => ['fc', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'a_val' => 'X', 'fa_complete' => '2',
-                             'c_req' => '', 'fc_complete' => '']]];
-        $m = mkMod($D, $data);
-        $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
-        $plan = $ctx['plan'];
-        $plan['statusRefs'] = ['fc_complete'];
-        $got = $ctx['read'](['1']);
-        $ev = $m->durableEvaluateRecord($plan, PID, '1', $got['data'][1], 1, 'r2o2-test-key', $plan['ruleIds']);
-        check('R2O-2: a status the rules read does not start its form for the gate',
-            $ev['why'] === null && !$ev['findings']);
-        \REDCap::$data[1][1]['fc_complete'] = '0';
-        $got = $ctx['read'](['1']);
-        $ev = $m->durableEvaluateRecord($plan, PID, '1', $got['data'][1], 1, 'r2o2-test-key', $plan['ruleIds']);
-        check('R2O-2: while the same form saved blank is still checked',
-            $ev['why'] === null && count($ev['findings']) === 1);
+        // NO RULE CAN READ A STATUS VALUE (review R3G-3), which is why the read
+        // may ask REDCap for blanks without moving any verdict: a gray form's
+        // status comes back '' instead of the '0' the form path sees. Every way
+        // a rule names a field must name a data-dictionary field, and REDCap's
+        // dictionary has no <form>_complete row. Each refusal below is what
+        // makes that true; a rule kind that gets past one reads a different
+        // value in the scan than on save, and the scan has to give the '0'
+        // back before any rule sees the record.
+        $named = function (array $res) {
+            foreach ($res['unconfigurable'] as $u) {
+                if (strpos($u['why'], 'configuration error') === 0 && strpos($u['why'], 'fb_complete') !== false) return true;
+            }
+            return false;
+        };
+        $data = [1 => [1 => ['record_id' => '1', 'b_note' => 'x', 'fb_complete' => '2', 'c_req' => 'y',
+                             'c_date' => '2026-01-02', 'fc_complete' => '2']]];
+        $kinds = [
+            'a "when" condition'      => '@UVREQUIRED={"when":"[fb_complete]=\'2\'"}',
+            'an "assert" expression'  => '@UVASSERT={"assert":"[fb_complete]=\'2\'"}',
+            'a branch "when"'         => '@UVREQUIRED={"when":"[b_note]=\'x\'"} @UVREQUIRED={"when":"[fb_complete]=\'2\'"}',
+            'a @UVUNIQUE "with" field' => '@UVUNIQUE={"with":["fb_complete"]}',
+            'a @UVEXISTS "in" field'  => '@UVEXISTS={"in":"[fb_complete]"}',
+            'a @UVEXISTS "match" field' => '@UVEXISTS={"in":"[b_note]","match":{"b_site":"[fb_complete]"}}',
+        ];
+        foreach ($kinds as $what => $ann) {
+            $res = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'b_site' => ['fb'], 'c_req' => ['fc', $ann]]),
+                         $data)->scanProject(PID);
+            check('R3G-3: ' . $what . ' naming a status field is a configuration error, never evaluated',
+                $named($res) && !$res['violations']);
+        }
+        $DW = dict(['record_id' => ['fa'], 'b_note' => ['fb'],
+                    'c_date' => ['fc', '@UVWINDOW={"from":"[fb_complete]","window":[0,30]}']]);
+        $DW['c_date']['text_validation_type_or_show_slider_number'] = 'date_ymd';
+        $res = mkMod($DW, $data)->scanProject(PID);
+        check('R3G-3: a @UVWINDOW "from" naming a status field is a configuration error, never evaluated',
+            $named($res) && !$res['violations']);
+        $res = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'c_req' => ['fc']]), $data, null, null,
+                     [['fields' => ['c_req'], 'rule-type' => 'required', 'when' => "[fb_complete]='2'"]])->scanProject(PID);
+        check('R3G-3: a settings-dialog "when" naming a status field is a configuration error, never evaluated',
+            $named($res) && !$res['violations']);
+        // Event and instance references, on: a qualified reference and a binding.
+        $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => false,
+            'eventInfo' => [1 => ['unique_event_name' => 'event_1_arm_1', 'arm_num' => 1]],
+            'eventsForms' => [1 => ['fa', 'fb', 'fc']]];
+        foreach ([
+            'a qualified reference'   => '@UVREQUIRED={"when":"[event_1_arm_1][fb_complete]=\'2\'"}',
+            'a reference binding'     => '@UVASSERT={"assert":"{s}=\'2\'","references":{"s":{"field":"fb_complete","event":"event_1_arm_1"}}}',
+        ] as $what => $ann) {
+            $m = mkMod(dict(['record_id' => ['fa'], 'b_note' => ['fb'], 'c_req' => ['fc', $ann]]), $data, []);
+            $m->projectSettings['enable-event-instance-refs'] = true;
+            $res = $m->scanProject(PID);
+            check('R3G-3: ' . $what . ' naming a status field is a configuration error, never evaluated',
+                $named($res) && !$res['violations']);
+        }
+        unset($GLOBALS['Proj']);
     }
 
     /* =====================================================================
