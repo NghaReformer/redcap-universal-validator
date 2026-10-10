@@ -2201,6 +2201,8 @@ function QRID_rangeVerdict(spec, value){
 var QRID_GROWTH_DAYS_PER_MONTH = 30.4375, QRID_GROWTH_MAX_Z_TEXT = 999.99;
 /* The inputs a growth rule reads, as the suffix of its "range<Input>Op" keys. */
 var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"];
+/* What a growth rule can return to fields ("return"; AnnotationRules::RETURN_VALUES). */
+var QRID_RETURN_VALUES = ["z", "lower", "upper", "range"];
 /* Where on the reference's axis a measurement sits. `input` holds what the
    rule supplied: days or months (a number as text), dobDays and atDays (whole
    days since 1970-01-01, null for a blank date), or by (cm, as text); comma
@@ -2381,6 +2383,44 @@ function QRID_growthOutputs(ref, sex, x, y, limits, decimals, comma){
     }
   }
   return out;
+}
+/* A rule that returns values (@UVRANGE "return") writes them into other fields
+   of the form. QRID_returnDepth bounds how far one write may set off another
+   rule's write (a field one rule returns can be the measurement of another),
+   so a cycle of rules ends instead of looping. */
+var QRID_returnDepth = 0, QRID_RETURN_DEPTH_MAX = 4;
+/* Whether two texts are the same number: "7.70" and "7.7", "7,7" and "7.7". */
+function QRID_sameNumber(a, b){
+  a = QRID_whenTrim(a).replace(",", "."); b = QRID_whenTrim(b).replace(",", ".");
+  return QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b) && QRID_whenDecCmp(a, b) === 0;
+}
+/* Put a returned value into its field; true when the field changed. Nothing
+   is written when the page does not carry the field (another page of a
+   survey) or it already holds the value, or the same number spelled another
+   way. announce is false for the fill made when the page opens: it must not
+   mark the form as changed, and the save writes the value either way.
+   Otherwise REDCap hears an input and a change event, as from typing, and the
+   calculations and branching logic that read the field run. Server twin:
+   UniversalValidator::applyReturns. */
+function QRID_writeReturned(name, text, announce){
+  var el = QRID_findField(name);
+  if(!el || typeof el.value !== "string") return false;
+  var cur = el.value;
+  if(cur === text) return false;
+  if(text !== "" && cur !== "" && QRID_sameNumber(cur, text)) return false;
+  el.value = text;
+  if(announce && typeof el.dispatchEvent === "function" && typeof Event === "function"){
+    try {
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch(e){}
+  }
+  var w = typeof window !== "undefined" ? window : null;
+  if(w){
+    try { if(typeof w.calculate === "function") w.calculate(name); } catch(e){}
+    try { if(typeof w.doBranching === "function") w.doBranching(name); } catch(e){}
+  }
+  return true;
 }
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
@@ -4267,9 +4307,45 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       spec[k] = b; any = true;
     }
+    /* Values the rule writes to other fields of the form ("return"): value name
+       -> field name, which the server checked against the data dictionary
+       (UniversalValidator::returnTargetsProblem). A shape that is not
+       understood is a configuration error here, never a guess. A rule that
+       returns only the z-score judges no limits, so it needs none. */
+    var returns = null, retLimits = "soft", retDecimals = 1, retComma = {};
+    if(cfg.rangeReturn !== undefined && cfg.rangeReturn !== null){
+      var rr = cfg.rangeReturn, rkeys = (typeof rr === "object" && !rr.length) ? Object.keys(rr) : [];
+      returns = {};
+      for(var ri = 0; ri < rkeys.length; ri++){
+        var rv = rkeys[ri], rt = rr[rv];
+        if(QRID_RETURN_VALUES.indexOf(rv) < 0 || typeof rt !== "string" || rt === ""){
+          if(!configError) configError = '@UVRANGE "return" is not understood.';
+          continue;
+        }
+        returns[rv] = rt;
+      }
+      if(!rkeys.length && !configError) configError = '@UVRANGE "return" names no field.';
+      if(typeof cfg.rangeReference !== "string" || cfg.rangeReference === ""){
+        if(!configError) configError = '@UVRANGE "return" needs a growth "reference".';
+      }
+      if(cfg.rangeReturnLimits !== undefined && cfg.rangeReturnLimits !== "soft" && cfg.rangeReturnLimits !== "hard"){
+        if(!configError) configError = '@UVRANGE "returnLimits" must be "soft" or "hard".';
+      } else if(cfg.rangeReturnLimits === "hard") retLimits = "hard";
+      if(cfg.rangeDecimals !== undefined){
+        if(typeof cfg.rangeDecimals !== "number" || cfg.rangeDecimals % 1 !== 0 || cfg.rangeDecimals < 0 || cfg.rangeDecimals > 6){
+          if(!configError) configError = '@UVRANGE "decimals" must be a whole number from 0 to 6.';
+        } else retDecimals = cfg.rangeDecimals;
+      }
+      if(cfg.rangeReturnComma && typeof cfg.rangeReturnComma === "object"){
+        for(var rc in cfg.rangeReturnComma){
+          if(Object.prototype.hasOwnProperty.call(cfg.rangeReturnComma, rc)) retComma[rc] = cfg.rangeReturnComma[rc] === true;
+        }
+      }
+    }
+    var onlyZ = returns !== null && Object.keys(returns).length === 1 && returns.z !== undefined;
     /* A deferred stub (the page could not be given this rule) carries no limits:
        it reports its deferral, not a configuration error. */
-    if(!configError && !cfg.deferred && !any) configError = "@UVRANGE has no limits to check.";
+    if(!configError && !cfg.deferred && !any && !onlyZ) configError = "@UVRANGE has no limits to check.";
     /* growth only: "plausible" in the reference's unit, and "measureScale" */
     var opt = function(key){
       var v = cfg[key];
@@ -4339,6 +4415,7 @@ function QRIDRangeInit(QRID_CONFIG){
     var MEASURE_BLOCK = (cfg.rangeComputed === true || cfg.extendedAdvisory === true || cfg.snapshotGate === true
       || (DEFERRED && !ON_SAVE)) ? "off" : HARD;
     return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
+             returns: configError ? null : returns, returnLimits: retLimits, decimals: retDecimals, returnComma: retComma,
              blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.extendedAdvisory === true) ? "off" : HARD,
              measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
@@ -4360,6 +4437,20 @@ function QRIDRangeInit(QRID_CONFIG){
   var ANY_BLOCK = false;
   for(var abi = 0; abi < VS.all.length; abi++){
     if(VS.all[abi].blockSave !== "off" || VS.all[abi].measureBlock !== "off"){ ANY_BLOCK = true; break; }
+  }
+  /* The fields this rule returns values to ("return"), per branch group (one
+     group per reference: QRID_buildVariants). A group owns the fields of
+     every one of its branches: the ones its active branch does not fill are
+     emptied. The server refuses two groups that share a field
+     (UniversalValidator::markReturnClashes), since both apply at once. */
+  var OWNED = Object.create(null), OWNED_ANY = false;
+  for(var obi = 0; obi < VS.all.length; obi++){
+    var ret = VS.all[obi].returns, og = VS.all[obi].group || "";
+    if(!ret) continue;
+    var olist = OWNED[og] || (OWNED[og] = []);
+    for(var ork in ret){
+      if(Object.prototype.hasOwnProperty.call(ret, ork) && olist.indexOf(ret[ork]) < 0){ olist.push(ret[ork]); OWNED_ANY = true; }
+    }
   }
   function measureReason(r){ return r.reason === "not-a-number" || r.reason === "not-positive"; }
   function blockFor(V, tier, reason){
@@ -4422,6 +4513,50 @@ function QRIDRangeInit(QRID_CONFIG){
     var p = QRID_temporalDate(v, type, op[0] === "ref" ? format : "ymd");
     return p ? Math.floor(p.seconds / 86400) : undefined;
   }
+  /* Where a growth rule's inputs place the child: { state: "ok", sex, x },
+     { state: "withheld" } when an input was not sent to this page,
+     { state: "typing" } while a date on this page is not yet a whole date,
+     or { state: "inert", why } (a blank or unreadable input, a sex code that
+     is neither, outside the reference). Server twin:
+     GrowthReference::inputsFor. */
+  function growthPoint(V){
+    var g = V.growth;
+    var withheld = false, ins = {}, k;
+    for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
+      k = QRID_GROWTH_INPUTS[gi];
+      if(!g.ops[k]) continue;
+      ins[k] = growthInput(g.ops[k]);
+      if(ins[k] === null) withheld = true;
+    }
+    if(withheld) return { state: "withheld" };
+    var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
+    var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
+    if(sex === null){
+      return { state: "inert", why: ins.Sex === "" ? "the sex is blank"
+        : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };
+    }
+    var input = { comma: g.comma };
+    if(g.ops.AgeDob){
+      input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
+      input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
+      if(input.dobDays === undefined || input.atDays === undefined){
+        var dobBad = input.dobDays === undefined;
+        /* A date on this page is re-read at every keystroke: one still being
+           typed says nothing. A saved one the rule cannot read gets the
+           server's words (GrowthReference::inputsFor). */
+        if((dobBad ? g.ops.AgeDob : g.ops.AgeAt)[0] !== "lit") return { state: "typing" };
+        return { state: "inert", why: dobBad ? "the date of birth is not a date this rule can read"
+                                             : "the date of the measurement is not a date this rule can read" };
+      }
+    } else {
+      if(g.ops.AgeDays) input.days = ins.AgeDays;
+      if(g.ops.AgeMonths) input.months = ins.AgeMonths;
+      if(g.ops.By) input.by = ins.By;
+    }
+    var a = QRID_growthAxis(g.ref, input);
+    if(a.state !== "ok") return { state: "inert", why: a.why };
+    return { state: "ok", sex: sex, x: a.x };
+  }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
      when an input was not sent to this page. With no z-score (an input blank
@@ -4438,47 +4573,44 @@ function QRIDRangeInit(QRID_CONFIG){
     };
     if(m.state === "blank") return { tier: "inert", why: null };
     if(m.state !== "ok") return { tier: "hard", reason: m.state };
-    var withheld = false, ins = {}, k;
-    for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
-      k = QRID_GROWTH_INPUTS[gi];
-      if(!g.ops[k]) continue;
-      ins[k] = growthInput(g.ops[k]);
-      if(ins[k] === null) withheld = true;
-    }
-    if(withheld) return { tier: "withheld" };
-    var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
-    var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
-    if(sex === null){
-      return noZ(ins.Sex === "" ? "the sex is blank"
-        : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)");
-    }
-    var input = { comma: g.comma };
-    if(g.ops.AgeDob){
-      input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
-      input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
-      if(input.dobDays === undefined || input.atDays === undefined){
-        var dobBad = input.dobDays === undefined;
-        /* A date on this page is re-read at every keystroke: one still being
-           typed says nothing. A saved one the rule cannot read gets the
-           server's words (growthInputs). */
-        if((dobBad ? g.ops.AgeDob : g.ops.AgeAt)[0] !== "lit") return { tier: "inert", why: null };
-        return noZ(dobBad ? "the date of birth is not a date this rule can read"
-                          : "the date of the measurement is not a date this rule can read");
-      }
-    } else {
-      if(g.ops.AgeDays) input.days = ins.AgeDays;
-      if(g.ops.AgeMonths) input.months = ins.AgeMonths;
-      if(g.ops.By) input.by = ins.By;
-    }
-    var a = QRID_growthAxis(g.ref, input);
-    if(a.state !== "ok") return noZ(a.why);
-    var z = QRID_growthZScore(g.ref, sex, a.x, m.y);
+    var p = growthPoint(V);
+    if(p.state === "withheld") return { tier: "withheld" };
+    if(p.state === "typing") return { tier: "inert", why: null };
+    if(p.state !== "ok") return noZ(p.why);
+    var z = QRID_growthZScore(g.ref, p.sex, p.x, m.y);
     /* only "outside" (no row there): a server-sent table covers its "valid"
        range (GrowthReference::table), so this is a damaged reference */
     if(z.state !== "ok") return { tier: "inert", why: "the reference has no row at this " + (g.ref.axis === "age" ? "age" : g.ref.axis) };
     var r = QRID_rangeVerdict({ softLo: V.spec.softLo, softHi: V.spec.softHi, hardLo: V.spec.hardLo, hardHi: V.spec.hardHi }, z.z);
     r.z = z.z;
     return r;
+  }
+  /* What a growth rule returns (@UVRANGE "return") as field name -> text, where
+     "" means nothing to report: an input is blank or outside the reference, or
+     the value cannot be made (no measurement for the z-score, no limit).
+     null when an input is on a form this page does not carry: the fields keep
+     what they hold, and the save fills them. The bounds need no measurement.
+     Server twin: UniversalValidator::returnsRange. */
+  function returnValues(V, typed){
+    if(!V.growth || !V.growth.ref) return null;
+    var p = growthPoint(V);
+    if(p.state === "withheld") return null;
+    var o = null;
+    if(p.state === "ok"){
+      var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
+      var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
+      o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, m.state === "ok" ? m.y : null,
+        { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
+        V.decimals, V.returnComma.range === true);
+    }
+    var out = {};
+    for(var k in V.returns){
+      if(!Object.prototype.hasOwnProperty.call(V.returns, k)) continue;
+      var t = (o !== null && o[k] !== null) ? o[k] : "";
+      /* range was made in its field's decimal mark; a number is marked here */
+      out[V.returns[k]] = (k === "range" || t === "") ? t : QRID_growthMarkText(t, V.returnComma[k] === true);
+    }
+    return out;
   }
   function verdictOf(V, typed){
     return V.growth ? growthVerdict(V, typed) : QRID_rangeVerdict(V.spec, typed);
@@ -4509,6 +4641,48 @@ function QRIDRangeInit(QRID_CONFIG){
         "font-size:13px;font-family:inherit;border:1px solid #cfcfcf;background:#f5f5f5;color:#555";
       msg.innerHTML = "&#8505; " + html;
       setGuard(false); QRID_setModeState(input, "n", null);
+    }
+    /* The values the rule returns (@UVRANGE "return"), written after every
+       judgement of the field, whatever the verdict: a weight outside the limits
+       still has its z-score. Each reference (branch group) fills its own
+       fields. A group that cannot be told here (a deferral, a selector this
+       page cannot read, an input on a form this page does not carry) leaves
+       its fields as they are, and so does a branch conflict, for every group:
+       the save fills them. The first fill, made as the page opens, does not
+       mark the form as changed. */
+    var opening = true;
+    function publish(act){
+      if(!OWNED_ANY || QRID_returnDepth >= QRID_RETURN_DEPTH_MAX) return;
+      if(act.conflict || (act.length > 1 && !VS.grouped)) return;
+      /* nothing applies because the whole rule is deferred, or its selector
+         cannot be read on this page */
+      if(!act.length && (VS.unresolved || QRID_CONFIG.dynamicDeferred)) return;
+      var byGroup = Object.create(null);
+      for(var ai = 0; ai < act.length; ai++) byGroup[act[ai].group || ""] = act[ai];
+      var writes = [], typed = null;
+      for(var gk in OWNED){
+        if(!Object.prototype.hasOwnProperty.call(OWNED, gk)) continue;
+        var V = byGroup[gk], vals;
+        if(!V || !V.returns) vals = {};      /* no branch of it applies, or the one that does returns nothing */
+        else if(V.deferred) continue;
+        else {
+          if(typed === null){
+            typed = QRID_WHEN.readRef(fieldName, null);
+            if(QRID_isMissingCode(typed)) typed = "";
+          }
+          try { vals = returnValues(V, typed); } catch(e){ vals = null; }   /* fail open */
+          if(vals === null) continue;
+        }
+        for(var oi = 0; oi < OWNED[gk].length; oi++){
+          var of = OWNED[gk][oi];
+          writes.push([of, Object.prototype.hasOwnProperty.call(vals, of) ? vals[of] : ""]);
+        }
+      }
+      if(!writes.length) return;
+      QRID_returnDepth++;
+      try {
+        for(var wi = 0; wi < writes.length; wi++) QRID_writeReturned(writes[wi][0], writes[wi][1], !opening);
+      } finally { QRID_returnDepth--; }
     }
     /* What one active variant says about the typed value: { kind: "none" }
        (nothing to show), "deferral" (why), "info" (html, a grey note for
@@ -4562,6 +4736,7 @@ function QRIDRangeInit(QRID_CONFIG){
     var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
     function check(){
       var act = QRID_activeVariants(VS);
+      publish(act);
       if(!act.length){
         /* No branch applies. A rule left off for the table cap is checked on
            save only where it applies, so it has nothing to say here; any other
@@ -4635,6 +4810,7 @@ function QRIDRangeInit(QRID_CONFIG){
       for(var wi = 0; wi < VS.all[gi].watch.length; wi++) VS.all[gi].watch[wi].onChange(function(){ check(); });
     }
     check();
+    opening = false;
     return true;
   }
   (QRID_CONFIG.fields || []).forEach(function(f){
