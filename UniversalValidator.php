@@ -3146,7 +3146,6 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function growthPageNeed(array $n, array $entry, array $config)
     {
-        if (!isset($n['rangeMale'], $n['rangeFemale'])) return ['sexes' => ['male' => true, 'female' => true], 'xs' => null];
         $codes = isset($config['missingCodes']) && is_array($config['missingCodes']) ? $config['missingCodes'] : [];
         $lit = function ($key) use ($n, $codes) {
             $op = isset($n[$key]) ? $n[$key] : null;
@@ -3171,15 +3170,12 @@ class UniversalValidator extends AbstractExternalModule
                 $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
             }
         } else {
-            $one = null;
             foreach (['days' => 'rangeAgeDaysOp', 'months' => 'rangeAgeMonthsOp', 'by' => 'rangeByOp'] as $w => $k) {
                 if (!isset($n[$k])) continue;
-                $one = $w;
                 $v = $lit($k);
                 if ($v === null) return $out;
                 $in[$w] = $v;
             }
-            if ($one === null) return $out;
         }
         $a = GrowthReference::axisValue($entry, $in);
         $out['xs'] = $a['state'] === 'ok' ? [$a['x']] : [];
