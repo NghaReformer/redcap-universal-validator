@@ -47,6 +47,12 @@ foreach ($fx['plainDecimal'] as $pd) {
     check('plainDecimal(' . json_encode($pd[0]) . ') => ' . json_encode($pd[1]) . ', got ' . json_encode($got), $got === $pd[1]);
 }
 check('plainDecimal: a three-digit exponent', Logic::plainDecimal('1e999') === '1' . str_repeat('0', 999));
+check('plainDecimal: 4,096 characters written out', Logic::plainDecimal('1e4095') === '1' . str_repeat('0', 4095)
+    && Logic::plainDecimal('-1e4094') === '-1' . str_repeat('0', 4094) && Logic::plainDecimal('1e4096') === null
+    && Logic::plainDecimal('1e-4094') === '0.' . str_repeat('0', 4093) . '1' && Logic::plainDecimal('1e-4095') === null);
+check('normalizeNumber: past 70 places, judged as 10^70 or 10^-71 with its sign',
+    Logic::normalizeNumber('1e1000') === '1' . str_repeat('0', 70) && Logic::normalizeNumber('-1e-1000') === '-0.' . str_repeat('0', 70) . '1'
+    && Logic::normalizeNumber('2e70') === '2' . str_repeat('0', 70) && Logic::normalizeNumber('0e1000') === '0');
 foreach ([['+5', '5'], ['5.', '5'], ['.5', '0.5'], ['-0.0', '0.0'], ['-0', '0'], ['007.50', '7.50'], ['-12.30', '-12.30'], ['0', '0']] as $cd) {
     check('canonicalDecimal(' . $cd[0] . ') => ' . $cd[1], Logic::canonicalDecimal($cd[0]) === $cd[1]);
 }
@@ -131,6 +137,12 @@ $f = frag('@UVRANGE={"hard":[0,9007199254740993.5]}');
 check('a fraction past 2^53 is kept exactly', !isset($f['error']) && $f['rangeHardHi'] === '9007199254740993.5');
 $f = frag('@UVRANGE={"hard":["1e3","2.5E4"]}');
 check('a quoted exponent is that number too', !isset($f['error']) && $f['rangeHardLo'] === '1000' && $f['rangeHardHi'] === '25000');
+$f = frag('@UVRANGE={"hard":[0,1e0001],"soft":["1E-0000",5]}');
+check('an exponent with leading zeros', !isset($f['error']) && $f['rangeHardHi'] === '10' && $f['rangeSoftLo'] === '1');
+$f = frag('@UVRANGE={"hard":["1e-62",1]}');
+check('a tiny limit of exactly 64 characters is fine', !isset($f['error']) && $f['rangeHardLo'] === '0.' . str_repeat('0', 61) . '1');
+$f = frag('@UVRANGE={"hard":[0,"0e99999"]}');
+check('zero with any exponent is 0, then low equals high', !isset($f['error']) && $f['rangeHardHi'] === '0');
 $f = frag('@UVRANGE={"hard":[0,"' . str_repeat('9', 64) . '"]}');
 check('a limit of exactly 64 characters is fine', !isset($f['error']));
 
@@ -158,7 +170,10 @@ $refusals = [
     'limit a hex string'      => ['@UVRANGE={"hard":["0x10",10]}', 'the "hard" low limit must be a number'],
     'limit an exponent too long' => ['@UVRANGE={"hard":[0,1e300]}', 'the "hard" high limit is longer than 64 characters'],
     'limit 65 characters'     => ['@UVRANGE={"hard":[0,"' . str_repeat('9', 65) . '"]}', 'the "hard" high limit is longer than 64 characters'],
-    'limit a 4-digit exponent' => ['@UVRANGE={"hard":[0,"1e1000"]}', 'the "hard" high limit must be a number'],
+    'limit a 4-digit exponent' => ['@UVRANGE={"hard":[0,"1e1000"]}', 'the "hard" high limit is longer than 64 characters'],
+    'limit past a double'     => ['@UVRANGE={"hard":[0,1e1000]}', 'the "hard" high limit is longer than 64 characters'],
+    'limit a billion places'  => ['@UVRANGE={"hard":[0,"1e999999999"]}', 'the "hard" high limit is longer than 64 characters'],
+    'limit tiny, 65 characters' => ['@UVRANGE={"hard":["1e-63",1]}', 'the "hard" low limit is longer than 64 characters'],
     'limit true'              => ['@UVRANGE={"hard":[true,10]}', 'the "hard" low limit must be a number'],
     'limit a comma string'    => ['@UVRANGE={"hard":["17,5",20]}', 'the "hard" low limit must be a number'],
     'hard low above high'     => ['@UVRANGE={"hard":[25,3]}', 'the "hard" low limit (25) is above its high limit (3)'],

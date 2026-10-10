@@ -759,9 +759,10 @@ class AnnotationRules
                 $b = self::rangeBound($pair[$i], $typed);
                 $what = 'the "' . $k . '" ' . ($i === 0 ? 'low' : 'high') . ' limit';
                 if ($b === null) {
-                    return ['error' => $what . ' must be a number such as 12 or 17.5 — got ' . json_encode($pair[$i]) . '.'];
+                    return ['error' => $what . ' must be a number such as 12 or 17.5 — got '
+                        . ((is_int($pair[$i]) || is_float($pair[$i])) && $typed !== null ? $typed : json_encode($pair[$i])) . '.'];
                 }
-                if (strlen($b) > self::MAX_RANGE_BOUND) {
+                if ($b === false || strlen($b) > self::MAX_RANGE_BOUND) {
                     return ['error' => $what . ' is longer than ' . self::MAX_RANGE_BOUND . ' characters written out.'];
                 }
                 $out[$prefix . $side] = $b;
@@ -784,7 +785,8 @@ class AnnotationRules
      * 17.5, 3.0 and 9007199254740993 keep their digits; a string must be a
      * number too. An exponent is written out digit for digit (1e3 is 1000,
      * -2.5e-5 is -0.000025), the same way Logic::normalizeNumber reads one
-     * typed into the field.
+     * typed into the field. False when written out it would be longer than
+     * MAX_RANGE_BOUND characters.
      */
     private static function rangeBound($b, $typed)
     {
@@ -797,7 +799,11 @@ class AnnotationRules
             return null;
         }
         if (preg_match(Logic::NUM_RE, $t)) return Logic::canonicalDecimal($t);
-        return Logic::plainDecimal($t);
+        $p = Logic::exponentParts($t);
+        if ($p === null) return null;
+        // Too long is said as such, without writing out "1e1000".
+        if (Logic::partsLength($p) > self::MAX_RANGE_BOUND) return false;
+        return Logic::partsText($p);
     }
 
     /**

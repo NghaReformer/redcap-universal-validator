@@ -229,8 +229,9 @@ the Configure dialog checks of the alias and agreement rows.
 give the same level (ok, soft, hard, inert) and reason. Cases cover values on
 and next to each limit, `17.50` against `17.5`, numbers past 2^53 and long
 fractions, open limits, a rule with only one level, comma decimals on comma
-fields and commas on point fields, exponents written out (`2.5E1` is 25), and
-text that is not a number (`-`, `.`, `1,200`, `1e1000`). `range_php.php` also
+fields and commas on point fields, exponents written out (`2.5E1` is 25,
+`1.5E0001` is 15, and `1e1000` is past every limit), and text that is not a
+number (`-`, `.`, `1,200`, `1e1e1`). `range_php.php` also
 covers the grammar: limits kept exactly as typed, quoted or not (the JSON is
 read a second time with every number quoted), exponents written out, the
 64-character cap, and every refusal.

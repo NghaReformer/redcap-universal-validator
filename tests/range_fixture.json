@@ -29,7 +29,12 @@
     {"name": "an exponent on a comma decimal", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25", "decimalComma": true}, "value": "1,45e1", "tier": "ok", "reason": null},
     {"name": "an exponent with no digits before it", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "e5", "tier": "hard", "reason": "not-a-number"},
     {"name": "an exponent with no digits after it", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e", "tier": "hard", "reason": "not-a-number"},
-    {"name": "a four-digit exponent",        "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1000",    "tier": "hard",  "reason": "not-a-number"},
+    {"name": "a huge exponent is far above", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1000",    "tier": "hard",  "reason": "hard-high"},
+    {"name": "a huge negative number",       "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "-5", "hardHi": "25"}, "value": "-1e999999999999", "tier": "hard", "reason": "hard-low"},
+    {"name": "a tiny exponent is above 0",   "spec": {"hardLo": "0", "hardHi": "0.00025"},                          "value": "1e-1000",   "tier": "ok",    "reason": null},
+    {"name": "a tiny exponent under a small limit", "spec": {"hardLo": "0.0000001", "hardHi": "0.00025"},          "value": "1e-1000",   "tier": "hard",  "reason": "hard-low"},
+    {"name": "a tiny negative is below 0",   "spec": {"hardLo": "0", "hardHi": "0.00025"},                          "value": "-1e-1000",  "tier": "hard",  "reason": "hard-low"},
+    {"name": "an exponent with leading zeros", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1.5E0001", "tier": "ok", "reason": null},
     {"name": "two exponents",                "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1e1",     "tier": "hard",  "reason": "not-a-number"},
     {"name": "a trailing point is a number", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "12.",       "tier": "ok",    "reason": null},
     {"name": "a trailing point under the soft range", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "11.", "tier": "soft", "reason": "soft-low"},
@@ -64,7 +69,7 @@
   "plainDecimal": [
     ["1e3", "1000"], ["2.5E1", "25"], ["2.50e1", "25"], ["-1.5e-7", "-0.00000015"], ["+.125e2", "12.5"],
     ["5.e0", "5"], ["0.000e5", "0"], ["-0e5", "0"], ["1.23e-2", "0.0123"], ["123.45e1", "1234.5"],
-    ["123.45e-5", "0.0012345"], ["7e+2", "700"], ["00012e-1", "1.2"],
-    ["1e1000", null], ["e5", null], [".e5", null], ["1e", null], ["1e1e1", null], ["1.2.3e1", null], ["--1e1", null], ["1e1.5", null], ["12", null], ["", null], [" 1e3", null]
+    ["123.45e-5", "0.0012345"], ["7e+2", "700"], ["00012e-1", "1.2"], ["5E0001", "50"], ["1e-0002", "0.01"],
+    ["0e99999999999", "0"], ["0.05e1", "0.5"], ["1e0000000000001", "10"], ["1e5000", null], ["e5", null], [".e5", null], ["1e", null], ["1e1e1", null], ["1.2.3e1", null], ["--1e1", null], ["1e1.5", null], ["12", null], ["", null], [" 1e3", null]
   ]
 }

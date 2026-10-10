@@ -1841,35 +1841,57 @@ function QRID_whenDecCmp(a, b){
 }
 /* @UVRANGE: a typed or saved number as a NUM_RE string, "" for blank, or null
    when it is not a number. One comma is the decimal mark on a *_comma_decimal
-   field. Twin of Logic::normalizeNumber. */
+   field. A number with an exponent (2.5E1, which REDCap's number validation
+   accepts) is written out. Twin of Logic::normalizeNumber. */
 function QRID_rangeNumber(value, decimalComma){
   var v = QRID_whenTrim(value == null ? "" : String(value));
   if(v === "") return "";
   if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
   if(QRID_WHEN_NUM_RE.test(v)) return v;
-  /* REDCap's "number" validation accepts an exponent (2.5E1); written out it is
-     the same number. */
-  return QRID_plainDecimal(v);
+  var p = QRID_exponentParts(v);
+  if(p === null) return null;
+  /* Past 70 places a number is past every limit (at most 64 characters), so
+     it is judged as 10^70 or 10^-71 with its sign. */
+  if(p.digits !== "" && p.point > 71) p = { sign: p.sign, digits: "1", point: 71 };
+  else if(p.digits !== "" && p.point < -70) p = { sign: p.sign, digits: "1", point: -70 };
+  return QRID_partsText(p);
 }
+var QRID_MAX_PLAIN = 4096;
 /* A number with an exponent written out digit for digit ("2.5E1" is "25",
-   "-1.5e-7" is "-0.00000015"); null when not that shape or the exponent has more
-   than three digits. Zero carries no sign. Twin of Logic::plainDecimal. */
+   "5E0001" is "50"); null when not that shape or longer than QRID_MAX_PLAIN
+   characters written out. Zero carries no sign. Twin of Logic::plainDecimal. */
 function QRID_plainDecimal(s){
-  var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?[0-9]{1,3})$/.exec(String(s));
+  var p = QRID_exponentParts(s);
+  if(p === null || QRID_partsLength(p) > QRID_MAX_PLAIN) return null;
+  return QRID_partsText(p);
+}
+/* A number with an exponent as 0.DIGITS x 10^POINT, or null. Twin of
+   Logic::exponentParts. */
+function QRID_exponentParts(s){
+  var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?)([0-9]+)$/.exec(String(s));
   if(!m) return null;
-  var intDigits = m[2], fracDigits = m[3] === undefined ? "" : m[3];
-  if(intDigits === "" && fracDigits === "") return null;
-  var digits = intDigits + fracDigits;
-  var point = intDigits.length + parseInt(m[4], 10);
-  var intPart, frac;
-  if(point <= 0){ intPart = ""; frac = new Array(-point + 1).join("0") + digits; }
-  else if(point >= digits.length){ intPart = digits + new Array(point - digits.length + 1).join("0"); frac = ""; }
-  else { intPart = digits.slice(0, point); frac = digits.slice(point); }
-  intPart = intPart.replace(/^0+/, "");
-  frac = frac.replace(/0+$/, "");
-  if(intPart === "") intPart = "0";
-  var zero = intPart === "0" && frac === "";
-  return (m[1] === "-" && !zero ? "-" : "") + intPart + (frac === "" ? "" : "." + frac);
+  var all = m[2] + (m[3] === undefined ? "" : m[3]);
+  if(all === "") return null;
+  var digits = all.replace(/^0+/, "");
+  if(digits === "") return { sign: "", digits: "", point: 0 };
+  var lead = all.length - digits.length;
+  var e = m[5].replace(/^0+/, "");
+  e = e.length > 9 ? 1000000000 : (e === "" ? 0 : parseInt(e, 10));
+  return { sign: m[1] === "-" ? "-" : "", digits: digits.replace(/0+$/, ""),
+           point: m[2].length - lead + (m[4] === "-" ? -e : e) };
+}
+function QRID_partsLength(p){
+  var d = p.digits.length, pt = p.point;
+  if(d === 0) return 1;
+  return p.sign.length + (pt <= 0 ? 2 - pt + d : (pt >= d ? pt : d + 1));
+}
+function QRID_partsText(p){
+  var d = p.digits, pt = p.point, t;
+  if(d === "") return "0";
+  if(pt <= 0) t = "0." + new Array(-pt + 1).join("0") + d;
+  else if(pt >= d.length) t = d + new Array(pt - d.length + 1).join("0");
+  else t = d.slice(0, pt) + "." + d.slice(pt);
+  return p.sign + t;
 }
 /* The @UVRANGE verdict: { tier: ok|soft|hard|inert, reason }. Bounds inclusive,
    exact decimal comparison. Twin of Logic::rangeVerdict; tests/range_fixture.json
@@ -2945,7 +2967,8 @@ function QRIDSingleInit(QRID_CONFIG){
   (QRID_CONFIG.fields || []).forEach(function(f){
     if(IS_BRANCH){
       UV_validators[f] = { type: "single", branch: true,
-        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode, test: V.verdict }; }),
+        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode,
+          test: function(v, isFinal){ return QRID_isMissingCode(v) ? null : V.verdict(v, isFinal); } }; }),
         active: function(){ return QRID_activeVariants(VS); } };
       return;
     }
@@ -2953,7 +2976,7 @@ function QRIDSingleInit(QRID_CONFIG){
     UV_validators[f] = { type: "single",
       mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError,
               guidance: V0.mode.guidance, blockSave: V0.blockSave },
-      test: function(v, isFinal){ return configError ? null : V0.verdict(v, isFinal !== false); } };
+      test: function(v, isFinal){ return (configError || QRID_isMissingCode(v)) ? null : V0.verdict(v, isFinal !== false); } };
   });
   function boot(){
     if(configError){
@@ -4350,7 +4373,8 @@ function QRIDUniqueInit(QRID_CONFIG){
          information a respondent would not otherwise see (SEC-005 posture). */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
-      if(val === "" || QRID_isMissingCode(val)){ inert(); return; }
+      /* A reply still on its way is for a value this field no longer holds. */
+      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
       var localGate = localGates[VS.all.indexOf(V)];
       if(localGate){
         var valid = localGate.active();

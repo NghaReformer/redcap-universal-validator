@@ -36,6 +36,12 @@ for (const [input, want] of fx.plainDecimal) {
   check('plainDecimal(' + JSON.stringify(input) + ') => ' + JSON.stringify(want) + ', got ' + JSON.stringify(got), got === want);
 }
 check('plainDecimal: a three-digit exponent', R.plainDecimal('1e999') === '1' + '0'.repeat(999));
+check('plainDecimal: 4,096 characters written out', R.plainDecimal('1e4095') === '1' + '0'.repeat(4095)
+  && R.plainDecimal('-1e4094') === '-1' + '0'.repeat(4094) && R.plainDecimal('1e4096') === null
+  && R.plainDecimal('1e-4094') === '0.' + '0'.repeat(4093) + '1' && R.plainDecimal('1e-4095') === null);
+check('number: past 70 places, judged as 10^70 or 10^-71 with its sign',
+  R.number('1e1000', false) === '1' + '0'.repeat(70) && R.number('-1e-1000', false) === '-0.' + '0'.repeat(70) + '1'
+  && R.number('2e70', false) === '2' + '0'.repeat(70) && R.number('0e1000', false) === '0');
 
 console.log('range_js: ' + n + ' checks, ' + fails + ' failure(s)');
 process.exit(fails ? 1 : 0);

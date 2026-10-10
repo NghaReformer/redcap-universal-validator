@@ -213,6 +213,42 @@ for (const from of ['live', 'snapshot']) {
   check('unique: a code clears the answer and asks nothing', stub.calls.length === 1 && !noted(env, 'pid') && saves(env));
 }
 
+// @UVUNIQUE: an answer still on its way when the field turns to a code (or
+// blank) is for a value the field no longer holds, and says nothing.
+for (const after of ['UNK', '']) {
+  const pending = [];
+  const stub = { calls: [], obj: { ajax(action, payload) {
+    stub.calls.push({ action, payload });
+    return { then(res) { pending.push(() => res({ used: true, record: '7' })); } };
+  } } };
+  const el = input('pid', '');
+  const env = boot([el], Object.assign({ jsmoName: 'EMStub.UV', rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, CODES), stub);
+  el.value = 'P-001'; el.fire('change'); el.fire('blur');
+  el.value = after; el.fire('input'); el.fire('change'); el.fire('blur');
+  pending.forEach((answer) => answer()); flush();
+  check('unique: a late answer for P-001 says nothing once the field holds ' + JSON.stringify(after),
+    stub.calls.length === 1 && !noted(env, 'pid') && saves(env));
+}
+
+// The ID check's field test answers null for a code, plain or branched.
+{
+  const el = input('study_id', 'UNK');
+  const env = boot([el], Object.assign({ rules: [{ type: 'single', fields: ['study_id'], algorithm: 'iso7064_mod37_36', blockSave: 'hard' }] }, CODES));
+  const t = env.win.INSPIREUniversalValidator.validators.study_id;
+  check('check: the field test answers null for a code', t.test('UNK') === null && t.test(' NASK ') === null);
+  check('check: the field test still judges a bad ID', t.test('BAD-ID-1') !== null && t.test('BAD-ID-1').ok === false);
+}
+{
+  const sex = input('sex', '1');
+  const el = input('study_id', 'UNK');
+  const env = boot([sex, el], Object.assign({ rules: [{ type: 'single', fields: ['study_id'], branches: [
+    { when: "[sex]='1'", algorithm: 'iso7064_mod37_36', blockSave: 'hard' },
+    { when: "[sex]='2'", algorithm: 'iso7064_mod37_36', blockSave: 'hard' }] }] }, CODES));
+  const t = env.win.INSPIREUniversalValidator.validators.study_id;
+  check('check, branched: each branch test answers null for a code',
+    t.branch === true && t.branches.every((b) => b.test('UNK') === null && b.test('BAD-ID-1') !== null));
+}
+
 // @UVEXISTS: neither a code in the field nor a code in a "match" field is looked up.
 {
   const stub = makeTransportStub({ state: 'not-found', record: null });
