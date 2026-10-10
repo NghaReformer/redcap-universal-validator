@@ -687,7 +687,13 @@ class ScanPageView
                     'why' => null, 'valueCeiling' => $ceiling,
                     'mayExport' => $mayExport, 'rights' => $rights];
         } catch (\Throwable $e) {
-            return $no('Could not verify your rights — scan not run.');
+            // TRANSIENT, and the only refusal here that is (review R2O-4). Every
+            // other one is a decision about what the rights say; this one is a
+            // read that failed, and a watching page asks again rather than
+            // treating it as the last word.
+            $r = $no('Could not verify your rights — scan not run.');
+            $r['transient'] = true;
+            return $r;
         }
     }
 

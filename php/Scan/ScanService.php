@@ -369,18 +369,29 @@ final class ScanService
      * Independent dimensions, not a formatted sentence: collapsing them is what
      * produced a report that was true about the run and false about the project.
      * The caller decides how to say it; this decides what is true.
+     *
+     * A REFUSAL SAYS WHETHER ASKING AGAIN CAN HELP (review R2O-4). `final` is
+     * true when the next ask will get the same answer: there is no such run
+     * here, or this caller may not read it. Everything else - a read that
+     * threw, a rule list that could not be loaded, and the endpoint's own
+     * catch-all for a database blip, which never reaches this method to be
+     * marked - carries no `final`, and a watching page keeps asking on its
+     * ladder. It used to treat every refusal as the last word, so one blip
+     * left a tab that never learned the run had finished.
      */
     public function status($pid, $runId)
     {
         $store = $this->store();
         $run = $store->run($pid, $runId);
-        if ($run === null) return ['ok' => false, 'why' => self::NO_RUN];
+        if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
 
         $ent = $this->entitlement($pid, $run);
-        if (empty($ent['ok'])) return ['ok' => false, 'why' => $ent['why']];
+        if (empty($ent['ok'])) {
+            return ['ok' => false, 'why' => $ent['why'], 'final' => !empty($ent['final'])];
+        }
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
-        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
+        if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why'], 'final' => true];
         // A run can hold answers another project gave the person who ran it.
         // A reader that project would not answer is refused the whole run, by
         // the same rule as an instrument they cannot read (ScanAuthorization:
@@ -391,7 +402,10 @@ final class ScanService
                  ? $ent['ctx']['plan']['crossRefused'] : [];
         if ($refused) {
             return ['ok' => false, 'why' => 'this scan looks values up in project ' . implode(', ', $refused)
-                . ', which does not answer your lookups, so its results are not shown to you'];
+                . ', which does not answer your lookups, so its results are not shown to you',
+                    // As final as an instrument the reader cannot read: polling
+                    // again asks the same rights the same question.
+                    'final' => true];
         }
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
@@ -817,7 +831,10 @@ final class ScanService
     {
         $scope = ScanPageView::scanScope($this->module, $pid);
         if (empty($scope['ok'])) {
-            return ['ok' => false, 'why' => $scope['why']];
+            // FINAL unless the rights could not be READ (review R2O-4): a
+            // refusal on what they say is a decision, and one on a read that
+            // threw is a moment - see status().
+            return ['ok' => false, 'why' => $scope['why'], 'final' => empty($scope['transient'])];
         }
         $policy = $this->policy($pid);
         // The run is in hand, so the evaluator is bound to THIS run's
@@ -829,7 +846,9 @@ final class ScanService
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
         ], $run['scope_dag']);
-        if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why']];
+        // Never final: the commonest reason is a rule list or a dictionary that
+        // could not be read just now.
+        if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
 
         // NULL AND '' ARE "COULD NOT BE PLACED", AND THIS LOOP IS THE WHOLE
         // FAIL-CLOSED PROPERTY. A field the plan could not put on an instrument

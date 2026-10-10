@@ -682,11 +682,53 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await drive(5);
   check('watch: and nothing more is asked', sent.length === 2);
 
-  // A refused status ends it too: the server has said this tab may not look.
-  reset([{ ok: false, why: 'no scan with that reference is running for this project' }]);
+  // A refusal the server marks FINAL ends it too: there is no such run, or
+  // this tab may not look, and asking again gets the same answer.
+  reset([{ ok: false, why: 'no scan with that reference is running for this project', final: true }]);
   UV.attach({ runId: 42, autoResume: false });
   await ticks(4);
-  check('watch: a refused status is not asked again', pending.length === 0);
+  check('watch: a refused status the server calls final is not asked again', pending.length === 0);
+
+  // R2O-4. ANY OTHER REFUSAL IS A MOMENT. The endpoint's catch-all answers a
+  // database blip with ok:false; the watch ended on it, kept the paused
+  // sentence from the answer before, and never learned the run finished.
+  const blip = { ok: false, why: 'the validation scan could not be reached; ask an administrator to '
+                                 + 'check the module log' };
+  reset([Object.assign(running(5, 10), { paused: true, idleSeconds: 600 }), blip,
+         finished('complete-through-fence')]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  check('watch: R2O-4 the watcher is shown the paused sentence first',
+    els['uv-scan-stalled'].textContent.indexOf('This scan is paused') === 0);
+  await drive(1);
+  check('watch: R2O-4 a refusal that is not final is asked again, on the ladder, never at once',
+    pending.length === 1 && pending[0].ms === 3000);
+  check('watch: R2O-4 and the paused sentence does not outlive the answer that contradicted it',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-stalled'].textContent === ''
+    && els['uv-scan-note'].textContent === blip.why);
+  await drive(1);
+  check('watch: R2O-4 so the tab learns the run finished',
+    els['uv-scan-done'].style.display === '' && els['uv-scan-done'].textContent.indexOf('Every record') === 0
+    && pending.length === 0);
+  check('watch: R2O-4 and the refusal sentence comes down with the answer that ended it',
+    els['uv-scan-note'].textContent === '');
+  // A server that sends no `final` at all - an older build, or the shutdown
+  // handler - is treated the same way: asked again, never at 0 ms.
+  reset([blip]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  const bd = await drive(6);
+  check('watch: R2O-4 a refusal repeated for ever is asked on the climbing ladder, never at 0 ms',
+    bd.slice(0, 5).join(',') === '1500,3000,6000,12000,24000' && bd.every((ms) => ms > 0)
+    && !sent.some((s) => s.action === 'scan-work'));
+  // A note somebody else wrote after the refusal is not the watch's to clear.
+  reset([blip, running(5, 10)]);
+  UV.attach({ runId: 42, autoResume: false });
+  await ticks(4);
+  els['uv-scan-note'].textContent = 'Stopping the scan.';
+  await drive(1);
+  check('watch: R2O-4 it clears only its own sentence',
+    els['uv-scan-note'].textContent === 'Stopping the scan.');
 
   // A status that did not arrive is retried on the same ladder, never at once.
   reset([{ reject: true }, running(5, 10)]);

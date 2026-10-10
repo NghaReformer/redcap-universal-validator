@@ -224,6 +224,7 @@
         chain: 0,               // which driver owns the loop; a stale one dies quietly
         watchChain: 0,          // the same, for a tab that is only watching
         watchWait: 0,           // the watching ladder, 0 until the first poll is queued
+        watchNote: null,        // the refusal a watch last wrote into the note, if any
         seen: false,            // has any status arrived on this chain yet
         lastDone: -1, lastPhase: null, lastPct: null, lastFindings: null
     };
@@ -271,6 +272,15 @@
     function render(st) {
         if (!st || st.ok === false) {
             text(el('uv-scan-note'), st && st.why ? st.why : 'The scan could not be reached.');
+            // A REFUSAL SAYS NOTHING ABOUT WHETHER THE RUN IS QUIET (review
+            // R2O-4). This returned before the paused/stalled sentence below
+            // was reconsidered, so a sentence about the last status that DID
+            // arrive stayed under a refusal that contradicted it.
+            var quietNode = el('uv-scan-stalled');
+            if (quietNode) {
+                quietNode.style.display = 'none';
+                text(quietNode, '');
+            }
             return;
         }
         UV.state.runId = st.run_id;
@@ -570,8 +580,16 @@
      * being true was never taken down. While the run is active and this tab is
      * not driving it, the status is asked again on the no-progress ladder
      * (IDLE_MIN doubling to IDLE_MAX), never at 0 ms, and the asking stops when
-     * the run is terminal, when the server refuses, or when this tab starts
-     * driving - pump() renders every answer itself from then on.
+     * the run is terminal, when the server refuses FOR GOOD, or when this tab
+     * starts driving - pump() renders every answer itself from then on.
+     *
+     * NOT EVERY REFUSAL IS FOR GOOD (review R2O-4). The endpoint answers a
+     * database blip with ok:false too - its catch-all "could not be reached" -
+     * and the watch used to end on it, so the tab never learned that the run
+     * finished. The server marks the refusals that will not change (no such
+     * run, not yours to read) with `final`; any other refusal is asked again
+     * on the same ladder, and its sentence is taken down when an answer
+     * arrives.
      *
      * ONE WATCH PER TAB, by the same device as the driver: every refresh() is a
      * new chain, and a timer from an older one dies when it fires.
@@ -585,11 +603,22 @@
     function poll(mine) {
         call('scan-status', { run_id: UV.state.runId }).then(function (st) {
             if (mine !== UV.state.watchChain) return;
+            var note = el('uv-scan-note');
             try {
                 render(st);
             } catch (e) {
                 // As before: a bug in rendering is not a reason to stop
                 // watching a scan that is still on the server.
+            }
+            // The refusal sentence this watch wrote, and only that one: a note
+            // something else has written since is not this watch's to clear.
+            if (!st || st.ok === false) {
+                UV.state.watchNote = note ? note.textContent : null;
+            } else {
+                if (note && UV.state.watchNote !== null && note.textContent === UV.state.watchNote) {
+                    text(note, '');
+                }
+                UV.state.watchNote = null;
             }
             keepWatching(st, mine);
         }, function (e) {
@@ -605,7 +634,8 @@
 
     function keepWatching(st, mine) {
         if (UV.state.running || UV.state.starting) return;
-        if (st && (st.ok === false || st.terminal || !st.active)) {
+        var over = st ? (st.ok === false ? st.final === true : (st.terminal || !st.active)) : false;
+        if (over) {
             UV.state.watchWait = 0;
             return;
         }

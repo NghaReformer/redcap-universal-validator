@@ -1088,6 +1088,54 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R2O-3 status: the verb reads the setting and the time limit, the larger winning',
         $win->invoke(new ScanService($pm)) === max(3600, $limit));
 }
+
+/* =====================================================================
+ * R2O-4  A REFUSAL SAYS WHETHER ASKING AGAIN CAN HELP
+ *
+ * A watching page ended its watch on every ok:false, including the
+ * endpoint's catch-all for a database blip, and never learned the run had
+ * finished. status() now marks the refusals that will not change - no such
+ * run, not this caller's to read - as final, and leaves every other one
+ * unmarked so the page keeps asking. Driven through the real verb.
+ * ===================================================================== */
+{
+    $ask = function (callable $setUp) {
+        $m = new \VerbModule();
+        $m->runRow = \VerbModule::row([]);
+        $setUp($m);
+        return (new ScanService($m))->status(149, 77);
+    };
+    $ok = $ask(function ($m) {});
+    check('R2O-4: the fixture reaches a real answer, or nothing below proves anything',
+        $ok['ok'] === true && !array_key_exists('final', $ok));
+
+    $none = $ask(function ($m) { $m->runRow = null; });
+    check('R2O-4: no such run is final',
+        $none['ok'] === false && $none['why'] === ScanService::NO_RUN && $none['final'] === true);
+    $other = $ask(function ($m) { $m->runRow['project_id'] = 150; });
+    check('R2O-4: and so is another project\'s run, in the same words',
+        $other['why'] === ScanService::NO_RUN && $other['final'] === true);
+    $noDesign = $ask(function ($m) { $m->user->design = false; });
+    check('R2O-4: a user without design rights is refused for good',
+        $noDesign['ok'] === false && strpos($noDesign['why'], 'design rights') !== false
+        && $noDesign['final'] === true);
+    $barred = $ask(function ($m) { $m->user->rights['forms'] = ['fa' => '0']; });
+    check('R2O-4: a user barred from the run\'s instrument is refused for good',
+        $barred['ok'] === false && $barred['final'] === true);
+    $noRights = $ask(function ($m) { $m->user->rights = 'unreadable'; });
+    check('R2O-4: rights in a shape that cannot be read are a decision too, and final',
+        $noRights['ok'] === false && $noRights['final'] === true);
+
+    $threw = $ask(function ($m) { $m->user = 'throw'; });
+    check('R2O-4: rights that could not be READ - the read threw - are not final',
+        $threw['ok'] === false && strpos($threw['why'], 'Could not verify your rights') === 0
+        && $threw['final'] === false);
+    $noRules = $ask(function ($m) {
+        $m->ctx = ['ok' => false, 'why' => 'the rule list could not be read: RuntimeException'];
+    });
+    check('R2O-4: a rule list that could not be loaded is not final either',
+        $noRules['ok'] === false && $noRules['final'] === false);
+}
 }
 
 namespace {
