@@ -326,9 +326,10 @@ class ScanPageView
                  . 'lost. Press Continue to carry on from where it stopped.';
 
     /**
-     * Shown while a run sits in `cancelling`. Only a later work request
-     * finishes a stop, so nothing will move it until somebody asks - and it is
-     * never stalled, whatever its clock says.
+     * Shown while a run sits in `cancelling`. Stop finishes a run nobody holds
+     * at once (review R2O-5); one a worker held is finished by that worker's
+     * next request, or by Continue - and it is never stalled, whatever its
+     * clock says.
      */
     const STOPPING = 'This scan was asked to stop and has not finished stopping. Press Continue to '
                    . 'finish stopping it.';

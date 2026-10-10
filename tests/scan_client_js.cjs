@@ -626,6 +626,27 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('client: cancelling stops the local loop at once', UV.state.running === false);
   check('client: and asks the server to cancel', sent[0].action === 'scan-cancel');
   check('client: sending only the run id', sent[0].payload.run_id === 7);
+  check('client: a stop the server has only asked for says it is stopping',
+    els['uv-scan-note'].textContent === 'Stopping the scan.');
+
+  // R2O-5. A run nobody was working is ENDED by Stop, and the server says so;
+  // "Stopping" over the finished panel would be the one stale word on it.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: running(1, 10) }]);
+  UV.start();
+  await ticks(6);
+  sent.length = 0;
+  script = [{ ok: true, why: null, stopped: true },
+            Object.assign(finished('partial'), { terminal: 'cancelled' })];
+  UV.cancel();
+  await ticks(6);
+  check('client: R2O-5 a stop the server finished says the scan was stopped',
+    els['uv-scan-note'].textContent === 'The scan was stopped.');
+  // The driver's own queued pass is an orphan of the chain Stop superseded.
+  const askedR5 = sent.length;
+  await drive(3);
+  check('client: R2O-5 and the panel shows it finished, with no stopping sentence and nothing more asked',
+    els['uv-scan-done'].style.display === '' && els['uv-scan-stalled'].style.display === 'none'
+    && els['uv-scan-start'].style.display === '' && sent.length === askedR5);
 
   // -- attaching to a run that is already going ---------------------------
   //

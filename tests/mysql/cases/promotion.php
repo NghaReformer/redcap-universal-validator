@@ -330,3 +330,82 @@ $NEIGHBOUR = uv_neighbour($PID);
         && strpos((string) $raw[5], 'any findings it kept are on deleted records') !== false
         && $raw[5] === $p['outcome']['why']);
 }
+
+// R2O-5, ON A REAL SERVER. Stop on a run nobody is working ends it in the same
+// request and frees the slot; the worker whose batch was in flight is refused
+// when it comes back, and writes nothing. A run a worker does hold is left in
+// `cancelling` for that worker, as it was.
+{
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $stopRun = new \ReflectionMethod('INSPIRE\\UniversalValidator\\Scan\\ScanService', 'stopRun');
+    $stopRun->setAccessible(true);
+    // The body uses only the store it is handed.
+    $svc = new \INSPIRE\UniversalValidator\Scan\ScanService(new \stdClass());
+    $T = Schema::table('scan_run');
+    $open = function ($pid) use ($store) {
+        $r = $store->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $store->writeManifest($rid, array(
+            array('id_bin' => 'S1', 'hash' => hash('sha256', 'S1', true), 'dag' => null),
+            array('id_bin' => 'S2', 'hash' => hash('sha256', 'S2', true), 'dag' => null)));
+        return $rid;
+    };
+    $before = function ($pid, $rid) use ($store, $A, $T) {
+        $run = $store->run($pid, $rid);
+        $run['lease_expires_at'] = $A->query('SELECT lease_expires_at FROM ' . $T
+            . ' WHERE run_id = ' . (int) $rid)->fetch_row()[0];
+        return $run;
+    };
+
+    $rid = $open(960);
+    $epoch = (int) $store->run(960, $rid)['lease_epoch'];
+    $gen = (int) $store->run(960, $rid)['generation_id'];
+    $claimed = $store->claim($rid, 'w', $epoch, 1);
+    // The tab that took that batch was closed: its lease has run out.
+    $A->query('UPDATE ' . $T . " SET lease_expires_at = UTC_TIMESTAMP() - INTERVAL 5 SECOND,
+        updated_at = UTC_TIMESTAMP() - INTERVAL 10 MINUTE WHERE run_id = " . (int) $rid);
+    $res = $stopRun->invoke($svc, $store, 960, $rid, 'alice', $before(960, $rid), time());
+    $raw = $A->query('SELECT phase, terminal, active_slot FROM ' . $T . ' WHERE run_id = '
+        . (int) $rid)->fetch_row();
+    check('R2O-5: Stop on a run nobody holds ends it in the same request, as cancelled',
+        $res['ok'] === true && $res['stopped'] === true
+        && $raw[0] === 'terminal' && $raw[1] === 'cancelled' && $raw[2] === null);
+    check('R2O-5: and the project slot is free - a new scan starts',
+        $store->startRun(960, array('created_by' => 'bob'))['ok'] === true);
+    $batch = array('bytes' => 0, 'records' => array(), 'findings' => array());
+    foreach ($claimed as $c) {
+        $batch['records'][] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'],
+            'version' => '500', 'record_hash' => $c['hash'],
+            'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE);
+        $batch['findings'][] = array('ordinal' => $c['ordinal'], 'project_id' => 960,
+            'generation_id' => $gen, 'identity' => hash('sha256', 'late-' . $c['id_bin'], true),
+            'valid_from_seq' => uv_run_seq($dbA, $rid),
+            'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+            'event_id' => null, 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
+            'rule_source_id' => 'r1', 'rule_revision' => str_repeat('f', 64), 'rule_ord' => 1,
+            'check_type' => 'required', 'reason_code' => 'required-blank');
+    }
+    check('R2O-5: the worker that comes back with its batch is refused',
+        count($claimed) === 1 && $store->commitBatch($rid, 'w', $epoch, $batch) !== true);
+    check('R2O-5: and cannot claim more', $store->claim($rid, 'w', $epoch, 5) === false);
+    $late = (int) $A->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = 960 AND generation_id = ' . $gen)->fetch_row()[0];
+    $after = $store->run(960, $rid);
+    check('R2O-5: so the finished run holds nothing it wrote after the stop',
+        $late === 0 && (int) $after['detail_rows'] === 0 && $after['terminal'] === 'cancelled'
+        && !isset($store->recordStates($rid)[\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE]));
+
+    // A WORKER HOLDS IT: claimed a moment ago, lease live. Left for the worker.
+    $rid = $open(961);
+    $epoch = (int) $store->run(961, $rid)['lease_epoch'];
+    $store->claim($rid, 'w', $epoch, 1);
+    $res = $stopRun->invoke($svc, $store, 961, $rid, 'alice', $before(961, $rid), time());
+    $raw = $A->query('SELECT phase, terminal, active_slot FROM ' . $T . ' WHERE run_id = '
+        . (int) $rid)->fetch_row();
+    check('R2O-5: a run a worker holds is only asked to stop, and keeps its slot for that worker',
+        $res['ok'] === true && $res['stopped'] === false
+        && $raw[0] === 'cancelling' && $raw[1] === null && (int) $raw[2] === 1);
+    check('R2O-5: pressing Stop again ends it, since nothing holds a stopping run',
+        $stopRun->invoke($svc, $store, 961, $rid, 'alice', $before(961, $rid), time())['stopped'] === true
+        && $store->run(961, $rid)['terminal'] === 'cancelled');
+}

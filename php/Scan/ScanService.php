@@ -514,8 +514,10 @@ final class ScanService
      *             phases a quiet run cannot be told from an abandoned one, and
      *             this is the reading that sends somebody to Continue rather
      *             than to throw the run away.
-     *   stopping  Stop was pressed and nothing has finished it, which only a
-     *             later work request does. Never stalled: it is waiting for
+     *   stopping  Stop was pressed and nothing has finished it. cancel()
+     *             finishes a stop at once unless a worker held the run (review
+     *             R2O-5), so this is a run whose worker has not yet come back,
+     *             or one whose finish failed. Never stalled: it is waiting for
      *             exactly that request.
      *
      * A run still PLANNING is none of them (review CL-3). Planning is one
@@ -556,13 +558,7 @@ final class ScanService
         $removed = $n(ScanStore::REC_TOMBSTONE);
 
         $phase = isset($run['phase']) ? (string) $run['phase'] : '';
-        $at = function ($k) use ($run) {
-            if (!isset($run[$k]) || $run[$k] === null || $run[$k] === '') return null;
-            // The store writes UTC (gmdate); read it back as UTC whatever the
-            // server's own zone is, or every run looks hours idle or hours ahead.
-            $t = strtotime((string) $run[$k] . ' UTC');
-            return $t === false ? null : $t;
-        };
+        $at = function ($k) use ($run) { return self::clock($run, $k); };
         $clock = $at('progress_at');
         if ($clock === null) $clock = $at('created_at');
         if (in_array($phase, self::PHASES_ON_THE_UPDATE_CLOCK, true)) {
@@ -587,11 +583,7 @@ final class ScanService
         // An unreadable lease is no lease, and an unreadable touch is no touch:
         // both fail toward `paused`, the reading that does not tell anybody to
         // throw the run away.
-        $lease = $at('lease_expires_at');
-        $touched = $at('updated_at');
-        $driven = $phase === ScanPhase::SCANNING
-                  && $lease !== null && $lease > (int) $now
-                  && $touched !== null && ((int) $now - $touched) < $threshold;
+        $driven = self::workerHolds($run, $now, $threshold);
 
         return ['done' => $done, 'excluded' => $excluded, 'removed' => $removed,
                 'settled' => $done + $excluded + $removed,
@@ -600,6 +592,35 @@ final class ScanService
                 'stopping' => $stopping,
                 'planningStopped' => $planningStopped,
                 'idleSeconds' => $idle];
+    }
+
+    /**
+     * Is a worker there? `stalled` above and cancel() below ask the same
+     * question, so it is answered once.
+     *
+     * The proof is the lease claim() takes, LIVE AND TAKEN WITHIN THE
+     * THRESHOLD, in scanning: claim() writes the lease and `updated_at`
+     * together, a lease alone outlives its request by five minutes, and
+     * nothing outside scanning renews one. An unreadable lease or touch is no
+     * worker.
+     */
+    private static function workerHolds(array $run, $now, $threshold)
+    {
+        $lease = self::clock($run, 'lease_expires_at');
+        $touched = self::clock($run, 'updated_at');
+        return isset($run['phase']) && $run['phase'] === ScanPhase::SCANNING
+               && $lease !== null && $lease > (int) $now
+               && $touched !== null && ((int) $now - $touched) < max(1, (int) $threshold);
+    }
+
+    /** A stored time as unix seconds, or null when absent or unreadable. */
+    private static function clock(array $run, $k)
+    {
+        if (!isset($run[$k]) || $run[$k] === null || $run[$k] === '') return null;
+        // The store writes UTC (gmdate); read it back as UTC whatever the
+        // server's own zone is, or every run looks hours idle or hours ahead.
+        $t = strtotime((string) $run[$k] . ' UTC');
+        return $t === false ? null : $t;
     }
 
     /**
@@ -622,7 +643,11 @@ final class ScanService
         }
     }
 
-    /** Ask a run to stop. The epoch bump is what makes it beat a working worker. */
+    /**
+     * Ask a run to stop. The epoch bump is what makes it beat a working worker.
+     *
+     * `stopped` says whether the run has ENDED, not merely been asked to.
+     */
     public function cancel($pid, $runId)
     {
         $store = $this->store();
@@ -635,9 +660,74 @@ final class ScanService
         $auth = ScanAuthorization::mayCancel($ent['rights'], $ent['cancelForms'], $run['scope_dag']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
 
-        $ok = $store->cancel($pid, $runId, (string) $this->username());
-        return ['ok' => $ok,
-                'why' => $ok ? null : 'this scan had already finished, so there was nothing to stop'];
+        // Read as status() reads it, and BEFORE the stop: the stop writes
+        // updated_at itself, which would make every run look freshly worked.
+        if (!array_key_exists('lease_expires_at', $run)) {
+            $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
+        }
+        return $this->stopRun($store, $pid, $runId, (string) $this->username(), $run, time());
+    }
+
+    /**
+     * Bump the epoch, then finish the stop at once when no worker holds the run
+     * (review R2O-5).
+     *
+     * A STOP NOBODY FINISHES HELD THE PROJECT. Only a later work request, or
+     * the next Start, wrote the terminal state of a `cancelling` run - so Stop
+     * on a run nobody was driving answered "Press Continue to finish stopping
+     * it", and the run kept the project's only slot until somebody did. Now,
+     * when no worker holds it (workerHolds(), the test that tells `stalled`
+     * from `paused`), it is finished here, through the path reapCancelled()
+     * takes, and the slot is free when the button returns. A run a worker DOES
+     * hold is left as it was: that worker's own request finishes it - promote()
+     * ends a cancelled run whatever is outstanding - and the page says it is
+     * stopping until then.
+     *
+     * FENCED BY THE ORDER, as `cancelling` always was. The epoch is bumped
+     * first, so every write a worker sends against the run - claim,
+     * commitBatch, catch-up's re-states, the rollup page, advancePhase - names
+     * an epoch the run no longer has and is refused, and from `cancelling` the
+     * only transition left is to `terminal`, which is what finish() writes.
+     * finish() needs the slot still held, so a second finisher changes
+     * nothing. A worker that read the run before the stop and comes back after
+     * it is refused at its first fenced write, and the run it would have
+     * written into is already over. (The uniqueness finalizer writes against
+     * the generation, not the run, exactly as it did when a worker's own
+     * request finished the stop; nothing here changes that.)
+     *
+     * $before is the row as read before the stop, with `lease_expires_at`.
+     */
+    private function stopRun(ScanStore $store, $pid, $runId, $actor, array $before, $now)
+    {
+        if (!$store->cancel($pid, $runId, $actor)) {
+            return ['ok' => false, 'stopped' => false,
+                    'why' => 'this scan had already finished, so there was nothing to stop'];
+        }
+        $stopped = false;
+        if (!self::workerHolds($before, $now, self::STALL_SECONDS)) {
+            try {
+                $stopped = self::finishCancelled($store, $runId);
+            } catch (\Throwable $e) {
+                // The stop itself stands; the run stays `cancelling`, and the
+                // next Continue or Start finishes it, as before this existed.
+                $stopped = false;
+            }
+        }
+        return ['ok' => true, 'stopped' => $stopped, 'why' => null];
+    }
+
+    /**
+     * Write a cancelled run's terminal state. One body for cancel() and
+     * reapCancelled(), so the two cannot finish a stop differently.
+     *
+     * @return bool whether this call ended it
+     */
+    private static function finishCancelled(ScanStore $store, $runId)
+    {
+        return $store->finish($runId, ScanOutcome::derive([
+            'cancelled' => true,
+            'manifestDone' => $store->manifestComplete($runId),
+        ]));
     }
 
     /**
@@ -799,12 +889,9 @@ final class ScanService
                 . ' WHERE project_id = ? AND active_slot = 1 AND phase = ?',
                 [$pid, ScanPhase::CANCELLING]);
             $n = 0;
+            $store = $this->store();
             foreach ($rows as $row) {
-                $runId = (int) $row[0];
-                $this->store()->finish($runId, ScanOutcome::derive([
-                    'cancelled' => true,
-                    'manifestDone' => $this->store()->manifestComplete($runId),
-                ]));
+                self::finishCancelled($store, (int) $row[0]);
                 $n++;
             }
             return $n;

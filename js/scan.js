@@ -718,7 +718,11 @@
         UV.state.running = false;
         UV.state.chain++;
         call('scan-cancel', { run_id: UV.state.runId }).then(function (r) {
-            text(el('uv-scan-note'), (r && r.why) ? r.why : 'Stopping the scan.');
+            // `stopped` is the server saying the run has ENDED, which it now
+            // does at once for a run nobody was working (review R2O-5).
+            // "Stopping" over a finished run would be the one stale word.
+            text(el('uv-scan-note'), (r && r.why) ? r.why
+                : ((r && r.stopped) ? 'The scan was stopped.' : 'Stopping the scan.'));
             refresh();
         }, function () {
             text(el('uv-scan-note'), 'The scan could not be stopped; try again.');

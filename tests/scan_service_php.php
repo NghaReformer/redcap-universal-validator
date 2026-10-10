@@ -1136,6 +1136,167 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R2O-4: a rule list that could not be loaded is not final either',
         $noRules['ok'] === false && $noRules['final'] === false);
 }
+
+/* =====================================================================
+ * R2O-5  STOP ON A RUN NOBODY IS WORKING ENDS IT
+ *
+ * Stop bumped the epoch and left the run in `cancelling`, which only a later
+ * work request or the next Start finished - so a run nobody was driving read
+ * "Press Continue to finish stopping it" and kept the project's only slot.
+ * stopRun() is the body cancel() runs after its gates, driven here over the
+ * in-memory store so that the run, the slot and a worker that comes back are
+ * all real; cancel() itself is driven after it.
+ * ===================================================================== */
+{
+    $stopRun = new \ReflectionMethod(ScanService::class, 'stopRun');
+    $stopRun->setAccessible(true);
+    // The body uses only the store it is handed.
+    $svc = new ScanService(new \NoDbModule());
+    $NOW = time();
+    $t = function ($s) use ($NOW) { return gmdate('Y-m-d H:i:s', $NOW + $s); };
+    $h = function ($id) { return hash('sha256', $id, true); };
+    $fresh = function ($pid) use ($h) {
+        $store = new ArrayScanStore();
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null],
+                                       ['id_bin' => 'B', 'hash' => $h('B'), 'dag' => null]]);
+        return [$store, $runId];
+    };
+    $doneBatch = function (ScanStore $store, $pid, $runId, array $claimed) use ($h) {
+        $gen = (int) $store->run($pid, $runId)['generation_id'];
+        $b = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($claimed as $c) {
+            $b['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                               'version' => '100', 'claim' => $c['claim'], 'record_hash' => $c['hash']];
+            $b['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $pid,
+                'generation_id' => $gen, 'identity' => $h('f' . $c['id_bin']),
+                'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+                'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
+                'rule_revision' => str_repeat('0', 64), 'rule_ord' => 1,
+                'check_type' => 'required', 'reason_code' => 'required-blank',
+                'event_id' => 1, 'instance' => 1, 'dag_key' => null, 'valid_from_seq' => 1];
+        }
+        return $b;
+    };
+    $isOver = function (ScanStore $store, $pid, $runId) {
+        $r = $store->run($pid, $runId);
+        return $r['phase'] === ScanPhase::TERMINAL && $r['terminal'] === ScanOutcome::CANCELLED;
+    };
+
+    // NOBODY IS WORKING IT. A worker took a batch, then its tab was closed;
+    // the lease it took has run out.
+    list($store, $runId) = $fresh(820);
+    $epoch = (int) $store->run(820, $runId)['lease_epoch'];
+    $claimed = $store->claim($runId, 'w1', $epoch, 1);
+    $before = $store->run(820, $runId);
+    $before['lease_expires_at'] = $t(-5);
+    $r = $stopRun->invoke($svc, $store, 820, $runId, 'alice', $before, $NOW);
+    check('R2O-5: Stop on a run nobody holds ENDS it, at once, as a cancelled run',
+        $r['ok'] === true && $r['stopped'] === true && $isOver($store, 820, $runId));
+    check('R2O-5: and the project slot is free - a new scan starts without anyone pressing Continue',
+        $store->startRun(820, ['created_by' => 'bob'])['ok'] === true);
+    // THE WORKER COMES BACK with the batch it claimed before the stop.
+    check('R2O-5: a worker that comes back cannot commit into the finished run',
+        $store->commitBatch($runId, 'w1', $epoch, $doneBatch($store, 820, $runId, $claimed)) !== true);
+    check('R2O-5: nor claim any more of it', $store->claim($runId, 'w1', $epoch, 5) === false);
+    $end = $store->run(820, $runId);
+    check('R2O-5: and the run is exactly as the stop left it - nothing examined, nothing found',
+        $isOver($store, 820, $runId) && (int) $end['detail_rows'] === 0
+        && count($store->allFindings()) === 0
+        && !isset($store->recordStates($runId)[ScanStore::REC_DONE]));
+    check('R2O-5: a stop on a run that has ended is refused, as it always was',
+        $stopRun->invoke($svc, $store, 820, $runId, 'alice', $end, $NOW)['ok'] === false);
+
+    // A LEASE LEFT BEHIND is not a worker: live, but taken ten minutes ago.
+    list($store, $runId) = $fresh(822);
+    $before = $store->run(822, $runId);
+    $before['lease_expires_at'] = $t(120);
+    $before['updated_at'] = $t(-600);
+    check('R2O-5: a lease left by a closed tab does not hold the stop open',
+        $stopRun->invoke($svc, $store, 822, $runId, 'alice', $before, $NOW)['stopped'] === true
+        && $isOver($store, 822, $runId));
+
+    // A WORKER HOLDS IT: its lease is live and was taken a second ago. That is
+    // the case left as it was - the worker's own request ends it.
+    list($store, $runId) = $fresh(823);
+    $before = $store->run(823, $runId);
+    $before['lease_expires_at'] = $t(299);
+    $before['updated_at'] = $t(-1);
+    $r = $stopRun->invoke($svc, $store, 823, $runId, 'alice', $before, $NOW);
+    check('R2O-5: a run a worker holds is asked to stop and left for that worker to finish',
+        $r['ok'] === true && $r['stopped'] === false
+        && $store->run(823, $runId)['phase'] === ScanPhase::CANCELLING);
+    check('R2O-5: so it keeps the slot until then', $store->startRun(823, [])['ok'] === false);
+    (new ScanWorker($store, ['owner' => 'w1', 'attempts' => 3]))->work(823, $runId);
+    check('R2O-5: and the worker\'s next request finishes it, as before',
+        $isOver($store, 823, $runId) && $store->startRun(823, [])['ok'] === true);
+
+    // A SECOND STOP on a run left `cancelling` finishes it: nothing holds a
+    // run in that phase.
+    list($store, $runId) = $fresh(824);
+    $before = $store->run(824, $runId);
+    $before['lease_expires_at'] = $t(299);
+    $before['updated_at'] = $t(-1);
+    $stopRun->invoke($svc, $store, 824, $runId, 'alice', $before, $NOW);
+    $again = $store->run(824, $runId);
+    check('R2O-5: pressing Stop again on a run still stopping ends it',
+        $again['phase'] === ScanPhase::CANCELLING
+        && $stopRun->invoke($svc, $store, 824, $runId, 'alice', $again, $NOW)['stopped'] === true
+        && $isOver($store, 824, $runId));
+
+    // A FINISHING PHASE renews no lease, so a stop there ends the run, and
+    // catch-up's writes from the old epoch are refused.
+    list($store, $runId) = $fresh(825);
+    $epoch = (int) $store->run(825, $runId)['lease_epoch'];
+    $store->commitBatch($runId, 'w1', $epoch,
+        $doneBatch($store, 825, $runId, $store->claim($runId, 'w1', $epoch, 2)));
+    $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+    $before = $store->run(825, $runId);
+    $before['lease_expires_at'] = $t(200);
+    check('R2O-5: a stop in catch-up ends the run',
+        $stopRun->invoke($svc, $store, 825, $runId, 'alice', $before, $NOW)['stopped'] === true
+        && $isOver($store, 825, $runId));
+    check('R2O-5: and catch-up coming back cannot tombstone or requeue into it',
+        $store->tombstone($runId, $epoch, ['A']) === 0 && $store->requeue($runId, $epoch, ['B']) === 0
+        && $store->advancePhase($runId, $epoch, ScanPhase::UNIQUE) === false);
+
+    // R2O-3's run: planning died. Stop alone now ends it and frees the slot,
+    // and the dead planner's late write is refused.
+    $store = new ArrayScanStore();
+    $runId = (int) $store->startRun(826, ['created_by' => 'alice'])['run']['run_id'];
+    $before = $store->run(826, $runId);
+    $before['lease_expires_at'] = null;
+    check('R2O-5: a run whose planning died is ended by Stop alone',
+        $stopRun->invoke($svc, $store, 826, $runId, 'alice', $before, $NOW)['stopped'] === true
+        && $isOver($store, 826, $runId) && $store->startRun(826, [])['ok'] === true);
+    check('R2O-5: and a planner that wakes up cannot add to it',
+        $store->appendManifest($runId, [['id_bin' => 'Z', 'hash' => $h('Z'), 'dag' => null]]) === 0
+        && $store->freezeManifest($runId) === false);
+
+    // THROUGH cancel() ITSELF, past its gates, over the real SqlScanStore.
+    // The lease is the one cancel() reads; the order of the two writes is the
+    // fence.
+    $vm = new \VerbModule();
+    $vm->runRow = \VerbModule::row([]);
+    $r = (new ScanService($vm))->cancel(149, 77);
+    $order = array_map(function ($w) {
+        return strpos($w[0], 'SET cancel_requested_at') !== false ? 'cancel'
+            : (strpos($w[0], 'SET phase = ?, terminal = ?') !== false ? 'finish' : 'other');
+    }, $vm->writes);
+    $order = array_values(array_filter($order, function ($o) { return $o !== 'other'; }));
+    check('R2O-5 verb: cancel() on a run nobody holds says it has stopped, and it has',
+        $r['ok'] === true && $r['stopped'] === true && $r['why'] === null
+        && $vm->runRow['terminal'] === ScanOutcome::CANCELLED);
+    check('R2O-5 verb: the epoch is bumped BEFORE the terminal write, never after',
+        $order === ['cancel', 'finish']);
+    $vm2 = new \VerbModule();
+    $vm2->runRow = \VerbModule::row(['updated_at' => gmdate('Y-m-d H:i:s', time() - 1)]);
+    $vm2->lease = gmdate('Y-m-d H:i:s', time() + 299);
+    $r2 = (new ScanService($vm2))->cancel(149, 77);
+    check('R2O-5 verb: a run a worker holds is only asked to stop',
+        $r2['ok'] === true && $r2['stopped'] === false && $vm2->runRow['phase'] === 'cancelling'
+        && $vm2->runRow['terminal'] === null);
+}
 }
 
 namespace {
