@@ -572,7 +572,7 @@ namespace {
                 'ownership' => ['a_val' => 'fa'], 'structure' => [],
                 'problems' => $this->problems,
                 'verifyFingerprint' => $this->verifyFingerprint,
-                'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [],
+                'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
                            'crossRecordLookups' => false],
                 'read' => function (array $ids) use ($self) {
                     $d = [];
@@ -1431,6 +1431,32 @@ namespace INSPIRE\UniversalValidator\Scan {
     });
     check('R2O-4: a rule list that could not be loaded is not final either',
         $noRules['ok'] === false && $noRules['final'] === false);
+
+    // R3U-1: the cross-project refusal was final whatever it rested on. It
+    // is final only when every refused project was READ and said no; a
+    // refusal that rests on a failed read, or a plan that does not say, is
+    // asked again. Refused either way.
+    $cross = function (array $plan) use ($ask) {
+        return $ask(function ($m) use ($plan) { $m->ctx['plan'] = $plan + $m->ctx['plan']; });
+    };
+    $dec = $cross(['crossRefused' => [300], 'crossUnread' => []]);
+    check('R3U-1 status: a refusal project 300 decided is final and says it does not answer',
+        $dec['ok'] === false && $dec['final'] === true
+        && strpos($dec['why'], 'project 300, which does not answer your lookups') !== false);
+    $unr = $cross(['crossRefused' => [300], 'crossUnread' => [300]]);
+    check('R3U-1 status: a refusal on a failed read is refused, not final, and says it could not be read',
+        $unr['ok'] === false && $unr['final'] === false
+        && strpos($unr['why'], 'project 300, and whether it answers your lookups could not be read just now') !== false);
+    $mix = $cross(['crossRefused' => [300, 400], 'crossUnread' => [400]]);
+    check('R3U-1 status: one decided and one unread is not final, and names the decided one',
+        $mix['ok'] === false && $mix['final'] === false
+        && strpos($mix['why'], 'project 300, which does not answer') !== false && strpos($mix['why'], '400') === false);
+    $old = $cross(['crossRefused' => [300]]);
+    check('R3U-1 status: a plan that does not say what was unread is not called a decision',
+        $old['ok'] === false && $old['final'] === false);
+    $stray = $cross(['crossRefused' => [300], 'crossUnread' => [500]]);
+    check('R3U-1 status: an unread project that is not refused does not make a decision unread',
+        $stray['ok'] === false && $stray['final'] === true);
 }
 
 /* =====================================================================

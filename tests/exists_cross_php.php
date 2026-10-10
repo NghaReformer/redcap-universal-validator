@@ -39,8 +39,11 @@ namespace ExternalModules {
         public $enabledIn = [149, 300, 302];
         public $deleted = [302];
         public $settingReads = [];    // [pid, key]
+        public $subSettingsThrowFor = [];  // pid => true: that project's settings cannot be read just now
+        public $enabledThrowFor = [];      // pid => true: whether the module is enabled there cannot be read
         public function getSubSettings($k, $pid = null) {
             $p = ($pid !== null && $pid !== '') ? (int) $pid : (int) $this->projectIdReturn;
+            if (isset($this->subSettingsThrowFor[$p])) throw new \RuntimeException('settings unreadable just now');
             $this->settingReads[] = [$p, $k];
             return isset($this->subSettingsBy[$p][$k]) ? $this->subSettingsBy[$p][$k] : [];
         }
@@ -49,10 +52,15 @@ namespace ExternalModules {
             $this->settingReads[] = [$p, $k];
             return isset($this->settingsBy[$p][$k]) ? $this->settingsBy[$p][$k] : null;
         }
-        public function getSystemSetting($k) { return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null; }
+        public $systemThrows = false;      // true: the server's settings cannot be read just now
+        public function getSystemSetting($k) {
+            if ($this->systemThrows) throw new \RuntimeException('system settings unreadable just now');
+            return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null;
+        }
         public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
         public function getProjectId() { return $this->projectIdReturn; }
         public function isModuleEnabled($prefix, $pid = null) {
+            if (isset($this->enabledThrowFor[(int) $pid])) throw new \RuntimeException('module state unreadable just now');
             return $prefix === $this->PREFIX && in_array((int) $pid, $this->enabledIn, true);
         }
         // As the framework: a status for every project that has a row, a deleted
@@ -105,6 +113,8 @@ namespace ExternalModules {
         public function hasDesignRights() { return true; }
         public function isSuperUser() { return $this->n === 'admin'; }
         public function getRights($pid = null) {
+            // A database blip in the rights read of that project (R3U-1).
+            if (isset(\REDCap::$rightsThrowFor[(int) $pid])) throw new \RuntimeException('rights table unreadable just now');
             return isset(\REDCap::$rightsBy[(int) $pid][$this->n]) ? \REDCap::$rightsBy[(int) $pid][$this->n] : null;
         }
     }
@@ -120,9 +130,10 @@ namespace {
         public static $emptyFor = [];      // pids whose reads come back empty (a misapplied filter)
         public static $confineTo = [];     // pid => the one group a read shows
         public static $failFor = [];
+        public static $rightsThrowFor = [];  // pid => true: getRights() throws there
         public static function reset() {
             self::$calls = self::$ddCalls = [];
-            self::$emptyFor = self::$failFor = self::$confineTo = [];
+            self::$emptyFor = self::$failFor = self::$confineTo = self::$rightsThrowFor = [];
         }
         private static function dagOf(array $node) {
             foreach ($node as $k => $v) {
@@ -186,7 +197,11 @@ namespace {
         private $pid;
         public function __construct($pid) { $this->pid = (int) $pid; }
         public function getUniqueEventNames() { return self::$events[$this->pid] ?? []; }
-        public function getUniqueGroupNames() { return self::$groups[$this->pid] ?? []; }
+        public static $groupsThrow = false;   // true: the group list cannot be read just now
+        public function getUniqueGroupNames() {
+            if (self::$groupsThrow) throw new \RuntimeException('group list unreadable just now');
+            return self::$groups[$this->pid] ?? [];
+        }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -878,10 +893,11 @@ namespace {
             return parent::query($sql, $params);
         }
     }
-    $runFor = function ($user) {
+    $runFor = function ($user, $tweak = null) {
         $base = mod($user);
         $m = new CrossRunModule();
         foreach (['projectIdReturn', 'settingsBy', 'subSettingsBy', 'systemSettings'] as $k) $m->$k = $base->$k;
+        if ($tweak !== null) $tweak($m);
         foreach (['nurse', 'outsider'] as $u) {
             \REDCap::$rightsBy[149][$u] = ['design' => '1', 'data_export_tool' => '1'] + \REDCap::$rightsBy[149][$u];
         }
@@ -896,8 +912,112 @@ namespace {
     $st = $runFor('outsider');
     check('M2: a reader with no rights there is refused the run', empty($st['ok'])
         && strpos((string) $st['why'], 'project 300, which does not answer your lookups') !== false);
+    // R3U-1: that refusal is a DECISION - the rights were read and say no -
+    // so asking again cannot help, and the watching page may stop.
+    check('R3U-1: a refusal the other project decided is final', $st['final'] === true);
     $st = $runFor('nurse');
     check('M2: a reader the other project answers sees it', !empty($st['ok']));
+
+    // R3U-1: the same reader, when a read on the way FAILS. Each read fails
+    // closed - the run is refused - but the refusal is a moment, not a
+    // decision: final would end the watch for good, and the next ask (below,
+    // blip over) shows the run. A blip in the module state or the agreement
+    // there already turns every rule of 149 (all of them look in 300)
+    // unconfigurable while the plan is built, which refuses the run as one
+    // with no rules to show; the rights read is the one the stored run's
+    // cross-project refusal meets, so only it is held to the sentence.
+    $blips = [
+        'the rights read there' => function ($m) { \REDCap::$rightsThrowFor[300] = true; },
+        'whether the module is enabled there' => function ($m) { $m->enabledThrowFor[300] = true; },
+        'its agreement to answer' => function ($m) { $m->subSettingsThrowFor[300] = true; },
+    ];
+    foreach ($blips as $what => $blip) {
+        $st = $runFor('nurse', $blip);
+        \REDCap::$rightsThrowFor = [];
+        check('R3U-1: a blip in ' . $what . ' still refuses the run (fails closed)', empty($st['ok']));
+        check('R3U-1: but is not final, so a watching page asks again (' . $what . ')', $st['final'] === false);
+        if ($what === 'the rights read there') {
+            check('R3U-1: and says the answer could not be read, not that there is none (' . $what . ')',
+                strpos((string) $st['why'], 'could not be read just now') !== false
+                && strpos((string) $st['why'], 'does not answer your lookups') === false);
+        }
+        $st = $runFor('nurse');
+        check('R3U-1: the next ask, blip over, shows the run (' . $what . ')', !empty($st['ok']));
+    }
+
+    // Every read crossScanProblem() meets marks its own failure. Asked
+    // directly, with nothing memoized: each blip is refused (fails closed),
+    // flagged unread, and said as a read that failed; the same questions,
+    // read and answered no, are decisions.
+    $problemOf = function ($user, $tweak = null) {
+        $m = mod($user);
+        if ($tweak !== null) $tweak($m);
+        $cp = new \ReflectionMethod($m, 'crossScanProblem');
+        $cp->setAccessible(true);
+        $unread = null;
+        $args = [149, ['type' => 'exists', 'existsIn' => 'specimen_id', 'existsPid' => 300,
+                       'existsRemoteTargets' => ['specimen_id']], &$unread];
+        $why = $cp->invokeArgs($m, $args);
+        \REDCap::$rightsThrowFor = [];
+        \Project::$groupsThrow = false;
+        return [$why, $unread];
+    };
+    $noDictionary = function ($m) { unset(\REDCap::$dictionaries[300]); };
+    $direct = [
+        'the server switch' => ['nurse', function ($m) { $m->systemThrows = true; }],
+        'whether the module is enabled there' => ['nurse', function ($m) { $m->enabledThrowFor[300] = true; }],
+        'whether project 300 still exists' => ['nurse', function ($m) { $m->queryThrowsAll = true; }],
+        'its agreement to answer' => ['nurse', function ($m) { $m->subSettingsThrowFor[300] = true; }],
+        'the rights read there' => ['nurse', function ($m) { \REDCap::$rightsThrowFor[300] = true; }],
+        'its data dictionary, under "rights"' => ['nurse', $noDictionary],
+        'its data dictionary, under "answer"' => ['nurse', function ($m) use ($noDictionary) {
+            $m->subSettingsBy[300] = ['exists-consumers' => [consent('answer')]];
+            $noDictionary($m);
+        }],
+        'its group names' => ['grouped', function ($m) { \Project::$groupsThrow = true; }],
+    ];
+    foreach ($direct as $what => $d) {
+        list($why, $unread) = $problemOf($d[0], $d[1]);
+        check('R3U-1 direct: a blip in ' . $what . ' is refused, unread, and said so',
+            $why === 'whether project 300 answers your lookups could not be read just now' && $unread === true);
+    }
+    list($why, $unread) = $problemOf('nurse');
+    check('R3U-1 direct: nothing failed, nothing refused', $why === null && $unread === false);
+    $decided = [
+        'no rights there' => ['outsider', null],
+        'the server switch off' => ['nurse', function ($m) { $m->systemSettings['exists-system-cross-project'] = false; }],
+        'no agreement' => ['nurse', function ($m) { $m->subSettingsBy[300] = ['exists-consumers' => []]; }],
+        'the module not enabled there' => ['nurse', function ($m) { $m->enabledIn = [149, 302]; }],
+        'a group read there' => ['grouped', null],
+        'a group that is not in the list read there' => ['nogroup', null],
+    ];
+    foreach ($decided as $what => $d) {
+        list($why, $unread) = $problemOf($d[0], $d[1]);
+        check('R3U-1 direct: ' . $what . ' is a refusal and a decision',
+            is_string($why) && strpos($why, 'answers your lookups could not be read just now') === false && $unread === false);
+    }
+
+    // In the plan: crossUnread is the part of crossRefused that rests on a
+    // failed read, and the rule's own sentence says so.
+    $planOf = function ($user, $tweak = null) {
+        $m = mod($user);
+        if ($tweak !== null) $tweak($m);
+        $pl = new \ReflectionMethod($m, 'scanPlan');
+        $pl->setAccessible(true);
+        return $pl->invoke($m, 149, []);
+    };
+    $pd = $planOf('outsider');
+    check('R3U-1 plan: a decided refusal is refused and not unread',
+        $pd['crossRefused'] === [300] && $pd['crossUnread'] === []);
+    $pu = $planOf('nurse', function ($m) { \REDCap::$rightsThrowFor[300] = true; });
+    \REDCap::$rightsThrowFor = [];
+    check('R3U-1 plan: a refusal on a failed read is refused AND unread',
+        $pu['crossRefused'] === [300] && $pu['crossUnread'] === [300]);
+    check('R3U-1 plan: and the rule is reported as not evaluated because the answer could not be read',
+        (bool) array_filter($pu['unconf'] ?? [], function ($u) {
+            return strpos($u['why'], 'whether project 300 answers your lookups could not be read just now') !== false;
+        }));
+    check('R3U-1 plan: nothing is refused when nothing failed', $planOf('nurse')['crossRefused'] === []);
 
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

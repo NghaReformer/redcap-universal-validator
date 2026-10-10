@@ -654,20 +654,37 @@ class UniversalValidator extends AbstractExternalModule
      * project). The scan answers every record from one read of that project,
      * so a read confined to a group there is refused too: it would make values
      * of the other groups read as not found.
+     *
+     * $unread is set true when the refusal rests on a read that FAILED rather
+     * than on what was read (review R3U-1): refused all the same - failing
+     * closed - but said as what it is, and marked so that a stored run's
+     * status tells the reader to wait rather than that the answer is final.
      */
-    private function crossScanProblem($pid, array $rule)
+    private function crossScanProblem($pid, array $rule, &$unread = null)
     {
+        $unread = false;
         foreach (self::existsParts($rule) as $p) {
             if (empty($p['existsPid'])) continue;
             $b = (int) $p['existsPid'];
             $c = $this->crossGate($pid, $p);
-            if ($c === null) return 'project ' . $b . ' does not answer this lookup from this project';
-            $why = $this->crossCaller($b, $p, $c, $this->currentUsername() === null, $confine, $callerDag);
-            if ($why !== null) return $why . ' (project ' . $b . ')';
-            if ($confine !== null || $callerDag !== null) {
-                return 'your account is in a Data Access Group of project ' . $b . ', so the one read the scan makes '
-                    . 'there could miss values saved in the other groups';
+            $why = null;
+            if ($c === null) {
+                $why = 'project ' . $b . ' does not answer this lookup from this project';
+            } else {
+                $why = $this->crossCaller($b, $p, $c, $this->currentUsername() === null, $confine, $callerDag);
+                if ($why !== null) {
+                    $why .= ' (project ' . $b . ')';
+                } elseif ($confine !== null || $callerDag !== null) {
+                    $why = 'your account is in a Data Access Group of project ' . $b . ', so the one read the scan '
+                        . 'makes there could miss values saved in the other groups';
+                }
             }
+            if ($why === null) continue;
+            if ($this->crossUnread($b)) {
+                $unread = true;
+                return 'whether project ' . $b . ' answers your lookups could not be read just now';
+            }
+            return $why;
         }
         return null;
     }
@@ -1104,12 +1121,42 @@ class UniversalValidator extends AbstractExternalModule
     /** @var array pid => userRightsIn() answer, per request */
     private $rightsIn = [];
 
+    /**
+     * @var array other project id => true for every read about that project
+     * that FAILED this request, and 0 => true when the server switch could not
+     * be read (review R3U-1). See crossUnread().
+     */
+    private $crossReadFailed = [];
+
+    /**
+     * Whether a refusal of project $b may rest on a read that failed rather
+     * than on what was read (review R3U-1).
+     *
+     * Every read on the cross-project path fails closed - rights that cannot
+     * be read are no rights, a module state that cannot be read is "not
+     * enabled", an agreement that cannot be read is no agreement - and that
+     * stays: the lookup is refused either way. What changes is that a refusal
+     * can now say it was a moment and not a decision. ScanService marked every
+     * refusal of a stored run final, so one database blip in the rights read
+     * of the other project ended a watching tab's watch for good, while the
+     * next ask would have shown the run.
+     *
+     * Any failed read about $b this request counts, read or memoized, so a
+     * refusal is called a decision only when nothing about $b failed; a
+     * decision taken beside an unrelated failure is merely asked again.
+     */
+    private function crossUnread($b)
+    {
+        return isset($this->crossReadFailed[0]) || isset($this->crossReadFailed[(int) $b]);
+    }
+
     /** Whether an administrator allowed lookups in other projects on this server. */
     private function crossProjectOn()
     {
         try {
             return in_array($this->getSystemSetting('exists-system-cross-project'), [true, 1, '1', 'true'], true);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[0] = true;
             return false;
         }
     }
@@ -1160,6 +1207,7 @@ class UniversalValidator extends AbstractExternalModule
             if (is_callable([$this, 'getProjectStatus']) && $this->getProjectStatus((int) $pid) === null) return false;
             return $this->projectNotDeleted($pid);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[(int) $pid] = true;
             return false;
         }
     }
@@ -1178,6 +1226,7 @@ class UniversalValidator extends AbstractExternalModule
             return is_array($rows) && count($rows) === 1 && is_array($rows[0])
                 && array_key_exists(0, $rows[0]) && $rows[0][0] === null;
         } catch (\Throwable $e) {
+            $this->crossReadFailed[(int) $pid] = true;
             return false;
         }
     }
@@ -1201,6 +1250,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $rows = $this->getSubSettings('exists-consumers', $b);
         } catch (\Throwable $e) {
+            $this->crossReadFailed[$b] = true;
             return null;
         }
         $found = null;
@@ -1299,7 +1349,10 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
         } catch (\Throwable $e) {
+            // Still no rights - fail closed - but known to be a read that
+            // failed, not a row that says so (crossUnread()).
             $out = null;
+            $this->crossReadFailed[$pid] = true;
         }
         return $this->rightsIn[$pid] = $out;
     }
@@ -1392,9 +1445,13 @@ class UniversalValidator extends AbstractExternalModule
             if ($p && is_callable([$p, 'getUniqueGroupNames'])) {
                 $names = $p->getUniqueGroupNames();
                 if (is_array($names) && isset($names[$groupId]) && (string) $names[$groupId] !== '') return (string) $names[$groupId];
+                // A list that was read and lacks the group is what was read.
+                if (is_array($names)) return null;
             }
         } catch (\Throwable $e) {
         }
+        // No list at all: a read that failed (crossUnread()).
+        $this->crossReadFailed[(int) $pid] = true;
         return null;
     }
 
@@ -1416,6 +1473,7 @@ class UniversalValidator extends AbstractExternalModule
     private function crossIdentifierRead($b, array $rule)
     {
         $ids = $this->projectIdentifierFields($b);
+        if ($ids === null) $this->crossReadFailed[(int) $b] = true;
         $touch = [];
         foreach (self::crossFields($rule) as $f) {
             if ($f === 'record') {
@@ -1437,6 +1495,7 @@ class UniversalValidator extends AbstractExternalModule
     private function crossUnreadable($b, array $rule, $forms)
     {
         $dd = $this->dataDictionary($b);
+        if (!is_array($dd) || !$dd) $this->crossReadFailed[(int) $b] = true;
         foreach (self::crossFields($rule) as $f) {
             if ($f === 'record') continue;
             $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
@@ -5840,8 +5899,13 @@ class UniversalValidator extends AbstractExternalModule
         // are still checked. crossRefused lists the projects that do not answer
         // this person: ScanService refuses them a stored run's results, which
         // may hold answers those projects gave someone else.
+        // crossUnread is the part of crossRefused whose refusal rests on a
+        // read that failed (review R3U-1): refused all the same, but a
+        // moment rather than a decision, so ScanService does not call it
+        // final.
         $crossProjects = [];
         $out['crossRefused'] = [];
+        $out['crossUnread'] = [];
         foreach ($live as $i => $r) {
             if (isset($out['skip'][$i]) || ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '') !== 'exists') continue;
             $branched = isset($r['branches']) && is_array($r['branches']) && $r['branches'];
@@ -5849,7 +5913,7 @@ class UniversalValidator extends AbstractExternalModule
             $kept = 0;
             foreach (self::existsParts($r) as $bi => $p) {
                 if (empty($p['existsPid'])) { $kept++; continue; }
-                $why = $this->crossScanProblem($pid, $p);
+                $why = $this->crossScanProblem($pid, $p, $unread);
                 if ($why === null) {
                     $crossProjects[(int) $p['existsPid']] = true;
                     $kept++;
@@ -5857,6 +5921,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 $refused[$bi] = $why;
                 $out['crossRefused'][(int) $p['existsPid']] = true;
+                if ($unread) $out['crossUnread'][(int) $p['existsPid']] = true;
             }
             if (!$refused) continue;
             $fields = (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [];
@@ -5877,6 +5942,7 @@ class UniversalValidator extends AbstractExternalModule
             $out['unconf'] = $unconf;
         }
         $out['crossRefused'] = array_keys($out['crossRefused']);
+        $out['crossUnread'] = array_keys($out['crossUnread']);
 
         $out['readSet'] = $readSet;
 

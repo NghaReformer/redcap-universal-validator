@@ -506,14 +506,30 @@ final class ScanService
         // whole-report denial, never filtered rows). The plan is re-derived
         // for THIS reader, so the list is theirs. Cancel does not ask: a run
         // must stay stoppable.
-        $refused = (isset($ent['ctx']['plan']['crossRefused']) && is_array($ent['ctx']['plan']['crossRefused']))
-                 ? $ent['ctx']['plan']['crossRefused'] : [];
+        $plan = isset($ent['ctx']['plan']) && is_array($ent['ctx']['plan']) ? $ent['ctx']['plan'] : [];
+        $refused = (isset($plan['crossRefused']) && is_array($plan['crossRefused']))
+                 ? array_values(array_map('intval', $plan['crossRefused'])) : [];
         if ($refused) {
-            return ['ok' => false, 'why' => 'this scan looks values up in project ' . implode(', ', $refused)
-                . ', which does not answer your lookups, so its results are not shown to you',
-                    // As final as an instrument the reader cannot read: polling
-                    // again asks the same rights the same question.
-                    'final' => true];
+            // FINAL ONLY WHEN EVERY REFUSAL WAS A DECISION (review R3U-1). This
+            // was always final, but crossRefused also lists a project whose
+            // rights, module state or agreement could not be READ just now -
+            // the read fails closed, as it must - so one database blip ended a
+            // watching tab's watch for good while the next ask would have shown
+            // the run. crossUnread names those; a plan that does not say is
+            // not known to be a decision, and is asked again.
+            $unread = (isset($plan['crossUnread']) && is_array($plan['crossUnread']))
+                    ? array_values(array_intersect($refused, array_map('intval', $plan['crossUnread']))) : null;
+            $decided = $unread === null ? [] : array_values(array_diff($refused, $unread));
+            $why = $decided
+                ? 'this scan looks values up in project ' . implode(', ', $decided)
+                  . ', which does not answer your lookups, so its results are not shown to you'
+                : 'this scan looks values up in project ' . implode(', ', $refused)
+                  . ', and whether it answers your lookups could not be read just now, so its results '
+                  . 'are not shown to you yet';
+            return ['ok' => false, 'why' => $why,
+                    // A decision is as final as an instrument the reader cannot
+                    // read: polling again asks the same rights the same question.
+                    'final' => $unread !== null && count($decided) === count($refused)];
         }
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
