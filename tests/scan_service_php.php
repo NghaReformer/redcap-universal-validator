@@ -592,9 +592,27 @@ namespace INSPIRE\UniversalValidator\Scan {
     $ready->sys[ScanService::SYS_FLAG] = '1';
     $ready->proj[ScanService::PROJ_FLAG] = '1';
     $ready->version = Schema::VERSION;
-    $ready->tables = Schema::tables();
+    // The record index exists here as well as answering; until W8-N2 the probe
+    // took the COUNT(*) row [0] for a table, so this fixture passed without it.
+    $ready->tables = array_merge(Schema::tables(), ['redcap_record_list']);
     check('service: the fixture is otherwise healthy, so the next refusal is the fault',
         (new ScanService($ready))->available(1)['ok'] === true);
+
+    // W8-N2: a table is there when information_schema COUNTS it, not when the
+    // count comes back. COUNT(*) always returns a row, and [0] is a row.
+    $tex = new \ReflectionMethod(\INSPIRE\UniversalValidator\ScanCapabilities::class, 'tableExists');
+    $tex->setAccessible(true);
+    $absent = new \StorageFaultModule();
+    $absent->tables = [];
+    $present = new \StorageFaultModule();
+    $present->tables = ['redcap_record_list'];
+    check('W8-N2: a COUNT(*) of zero is no table',
+        $tex->invoke(null, $absent, 'redcap_record_list')['state'] === \INSPIRE\UniversalValidator\ScanCapabilities::NO);
+    check('W8-N2: a count of one is the table',
+        $tex->invoke(null, $present, 'redcap_record_list')['state'] === \INSPIRE\UniversalValidator\ScanCapabilities::OK);
+    check('W8-N2: so a record index information_schema does not list is not walked as one, however its probe answers',
+        \INSPIRE\UniversalValidator\ScanCapabilities::recordEnumeration($absent, 1)['via'] !== 'redcap_record_list (probed)'
+        && \INSPIRE\UniversalValidator\ScanCapabilities::recordEnumeration($present, 1)['via'] === 'redcap_record_list (probed)');
 
     $ready->failOn = 'FROM ' . Schema::table('scan_run');
     $svcF = new ScanService($ready);

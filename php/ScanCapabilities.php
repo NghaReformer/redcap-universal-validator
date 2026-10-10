@@ -332,7 +332,12 @@ final class ScanCapabilities
                 WHERE table_schema = DATABASE() AND table_name = ?', [$name]);
             if (!$q) return self::no($name . ' not found');
             $row = self::fetchRow($q);
-            return $row ? self::yes($name) : self::no($name . ' not found');
+            // THE COUNT, NOT THE ROW (W8-N2). COUNT(*) always returns a row,
+            // so asking whether one came back answered yes for a table that
+            // does not exist - [0] is a row. Only a count above zero is the
+            // table; a row this cannot read as a number is not.
+            $count = (is_array($row) && isset($row[0]) && is_numeric($row[0])) ? (int) $row[0] : 0;
+            return $count > 0 ? self::yes($name) : self::no($name . ' not found');
         } catch (\Throwable $e) {
             return self::no($name . ' could not be checked: ' . get_class($e));
         }
