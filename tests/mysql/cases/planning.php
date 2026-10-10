@@ -471,7 +471,10 @@ $NEIGHBOUR = uv_neighbour($PID);
             check('scale: the next ordinal is one dive on the primary key, not a scan of the manifest',
                 stripos($e['extra'], 'optimized away') !== false || $e['keys'] === array('PRIMARY'));
         } else {
-            check('scale: the ' . $kind . ' is found by its primary key', $e['keys'] === array('PRIMARY'));
+            // Every table by its primary key: the page's fence reads the run
+            // row and its plan row in one join (review R5-9).
+            check('scale: the ' . $kind . ' is found by its primary key',
+                $e['keys'] !== array() && array_values(array_unique($e['keys'])) === array('PRIMARY'));
         }
     }
     check('scale: a request\'s page statements were all captured and asserted',

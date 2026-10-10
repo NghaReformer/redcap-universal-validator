@@ -39,6 +39,10 @@ namespace {
         \INSPIRE\UniversalValidator\Scan\ageClaims($store, $runId, $seconds);
     }, function ($clock) {
         return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore($clock);
+    }, function ($store, $runId) {
+        // The stand-in for DELETE FROM uv_scan_plan WHERE run_id = ?.
+        $drop = function ($runId) { unset($this->plans[$runId]); };
+        \Closure::bind($drop, $store, \INSPIRE\UniversalValidator\Scan\ArrayScanStore::class)($runId);
     });
 
     // THE STORED ROW, which only this store can show whole. findings() returns

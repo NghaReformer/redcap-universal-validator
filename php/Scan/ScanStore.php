@@ -283,7 +283,10 @@ interface ScanStore
      * cursor committed without its page skips that page's records for good.
      *
      * $plan is ScanPlanner's, and is fenced: the run must still be planning,
-     * at `epoch`, not asked to stop, and leased to `owner` by claimPlan(). It
+     * at `epoch`, not asked to stop, and leased to `owner` by claimPlan(), and
+     * the plan row claimPlan() wrote must still be there. A missing row is
+     * refused, never written here: something other than the walk removed it,
+     * and the walk's position went with it (review R5-9). It
      * carries the walk's state as absolute values - `cursor`, `carry` (opaque
      * to the store), `listed`, `outOfScope` - and `done` when the source said
      * it had nothing past this page. `release` hands the lease back with the
@@ -327,7 +330,8 @@ interface ScanStore
      * @return array|false FALSE when the run is not planning, its epoch moved
      *         or it was asked to stop. Otherwise {state: 'ok'|'held'|'exhausted'|'done',
      *         cursor:?string, carry:?string, pages:int, listed:int, outOfScope:int,
-     *         attempts:int}. Only `ok` holds the lease.
+     *         attempts:int}. Only `ok` holds the lease, and only `ok` writes the
+     *         plan row when the run has none yet.
      */
     public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts);
 

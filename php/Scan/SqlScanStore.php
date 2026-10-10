@@ -385,10 +385,21 @@ final class SqlScanStore implements ScanStore
             // so a freeze cannot land between the phase check and the insert.
             // The rest of the fence is compared here in PHP, never by affected
             // rows: see the class note.
-            $r = $this->db->select('SELECT phase, lease_epoch, cancel_requested_at, lease_owner FROM '
-                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            //
+            // THE PLAN ROW IS PART OF THE FENCE, read in the same statement
+            // (review R5-9). claimPlan() writes it before it hands out a lease,
+            // so a leased append that finds none comes after something that
+            // deleted it, and the walk's state is then unknown. 2bd57cd wrote
+            // the row here instead and said ArrayScanStore did the same, while
+            // ArrayScanStore refused the page; both refuse it now. A join and
+            // not a second locking read, which is the round trip 2bd57cd took
+            // out: the plan row is locked after the run row, the order
+            // claimPlan() locks them in.
+            $r = $this->db->select('SELECT r.phase, r.lease_epoch, r.cancel_requested_at, r.lease_owner,
+                p.run_id FROM ' . Schema::table('scan_run') . ' r LEFT JOIN ' . Schema::table('scan_plan')
+                . ' p ON p.run_id = r.run_id WHERE r.run_id = ? FOR UPDATE', [$runId]);
             if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING
-                    || ($plan !== null && !self::planFence($r[0], $plan))) {
+                    || ($plan !== null && (!self::planFence($r[0], $plan) || $r[0][4] === null))) {
                 $this->db->rollback();
                 return false;
             }
@@ -418,30 +429,19 @@ final class SqlScanStore implements ScanStore
             if ($plan !== null) {
                 // WHERE THE WALK STANDS, IN THE PAGE'S TRANSACTION. The attempt
                 // count goes back to zero because this slice got a page in.
-                //
-                // ONE UPSERT, NOT A LOCKING READ AND AN UPDATE. The run row
-                // locked above already serialises every writer of this row
-                // (claimPlan() and this method lock it first), and the fence
-                // has just proved claimPlan() ran, which writes the row. The
-                // read only re-proved that, at a round trip per page: measured
-                // on MariaDB 10.11, 1.37 s of a 22.8 s 20,000-record plan.
-                // Should the row be missing all the same, it is written here,
-                // as ArrayScanStore writes it, rather than the cursor being
-                // dropped by an UPDATE that matched nothing.
+                // An UPDATE, uncounted: the fence above found the row and holds
+                // its lock, so this matches it.
                 $cursor = isset($plan['cursor']) ? (string) $plan['cursor'] : null;
                 $carry = isset($plan['carry']) ? (string) $plan['carry'] : null;
                 $listed = max(0, (int) (isset($plan['listed']) ? $plan['listed'] : 0));
                 $out = max(0, (int) (isset($plan['outOfScope']) ? $plan['outOfScope'] : 0));
                 $done = empty($plan['done']) ? 0 : 1;
-                $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_plan') . '
-                    (run_id, plan_cursor, plan_carry, plan_pages, plan_listed, plan_out_of_scope,
-                     plan_attempts, plan_done, updated_at)
-                    VALUES (?, ?, ?, 1, ?, ?, 0, ?, ?)
-                    ON DUPLICATE KEY UPDATE plan_cursor = ?, plan_carry = ?, plan_pages = plan_pages + 1,
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_plan') . '
+                    SET plan_cursor = ?, plan_carry = ?, plan_pages = plan_pages + 1,
                         plan_listed = ?, plan_out_of_scope = ?, plan_attempts = 0,
-                        plan_done = ?, updated_at = ?',
-                    [$runId, $cursor, $carry, $listed, $out, $done, $now,
-                     $cursor, $carry, $listed, $out, $done, $now]);
+                        plan_done = ?, updated_at = ?
+                    WHERE run_id = ?',
+                    [$cursor, $carry, $listed, $out, $done, $now, $runId]);
             }
             // THE HEARTBEAT. progress_at as well as updated_at: the page, the
             // stall rule and the abandoned-run sweep all read progress_at, and
@@ -469,7 +469,7 @@ final class SqlScanStore implements ScanStore
 
     /**
      * The planner's fence over a locked run row [phase, lease_epoch,
-     * cancel_requested_at, lease_owner]: same epoch, no stop asked for, and
+     * cancel_requested_at, lease_owner, ...]: same epoch, no stop asked for, and
      * the lease this planner was given. A planner whose lease ran out and was
      * taken over finds another owner there; one whose slice handed the lease
      * back finds none. Either way it is not the planner any more.

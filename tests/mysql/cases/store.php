@@ -1321,4 +1321,8 @@ $clocked = function ($clock) use ($fresh, $dbA) {
     $fresh();
     return new SqlScanStore($dbA, $clock);
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked);
+// What nothing in the module does while a run plans: its plan row deleted.
+$dropPlan = function ($store, $runId) use ($A) {
+    $A->query('DELETE FROM ' . Schema::table('scan_plan') . ' WHERE run_id = ' . (int) $runId);
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked, $dropPlan);

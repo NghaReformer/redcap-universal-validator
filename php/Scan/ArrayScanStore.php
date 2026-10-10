@@ -158,13 +158,14 @@ final class ArrayScanStore implements ScanStore
         return $n === false ? 0 : $n;
     }
 
+    /** A uv_scan_plan row as the schema defaults it. */
+    const NEW_PLAN = ['cursor' => null, 'carry' => null, 'pages' => 0, 'listed' => 0,
+                      'outOfScope' => 0, 'attempts' => 0, 'done' => 0];
+
     /** The stand-in for a uv_scan_plan row, created as claimPlan() creates it. */
     private function &plan($runId)
     {
-        if (!isset($this->plans[$runId])) {
-            $this->plans[$runId] = ['cursor' => null, 'carry' => null, 'pages' => 0, 'listed' => 0,
-                                    'outOfScope' => 0, 'attempts' => 0, 'done' => 0];
-        }
+        if (!isset($this->plans[$runId])) $this->plans[$runId] = self::NEW_PLAN;
         return $this->plans[$runId];
     }
 
@@ -175,7 +176,9 @@ final class ArrayScanStore implements ScanStore
         $r = $this->runs[$runId];
         if ($r['phase'] !== ScanPhase::PLANNING) return false;
         if ($plan !== null) {
-            // The SQL store's planFence(): epoch, no stop asked for, this owner's lease.
+            // The SQL store's planFence(): epoch, no stop asked for, this
+            // owner's lease - and the plan row, which a leased append that
+            // finds missing does not write (review R5-9).
             $owner = isset($plan['owner']) ? (string) $plan['owner'] : '';
             if ($owner === '' || !isset($plan['epoch']) || (int) $r['lease_epoch'] !== (int) $plan['epoch']
                     || $r['cancel_requested_at'] !== null
@@ -251,7 +254,11 @@ final class ArrayScanStore implements ScanStore
             return false;
         }
         $now = gmdate('Y-m-d H:i:s');
-        $p =& $this->plan($runId);
+        // READ WITHOUT WRITING. SqlScanStore writes the plan row only for a
+        // claim that takes the lease, and a stand-in written by a `held`
+        // answer would let a later leased append find a row the SQL store
+        // does not have (review R5-9).
+        $p = isset($this->plans[$runId]) ? $this->plans[$runId] : self::NEW_PLAN;
         $state = ['state' => 'ok', 'cursor' => $p['cursor'], 'carry' => $p['carry'],
                   'pages' => $p['pages'], 'listed' => $p['listed'],
                   'outOfScope' => $p['outOfScope'], 'attempts' => $p['attempts']];
@@ -265,6 +272,7 @@ final class ArrayScanStore implements ScanStore
             $state['state'] = 'exhausted';
         }
         if ($state['state'] !== 'ok') return $state;
+        $p =& $this->plan($runId);
         $p['attempts'] = min(254, $p['attempts'] + 1);
         $state['attempts'] = $p['attempts'];
         unset($p);

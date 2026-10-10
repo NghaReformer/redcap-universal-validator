@@ -31,8 +31,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            straggler sweep may hold the run row is a matter of
  *                            seconds (review R3S-1), and the contract steps a
  *                            clock rather than waiting. Null skips those cases.
+ * @param callable|null $dropPlan (ScanStore $store, int $runId) => void: delete
+ *                            the run's plan row, which nothing in the module
+ *                            does while a run plans (review R5-9). Null skips
+ *                            that case.
  */
-function storeContract(callable $newStore, $label, callable $age, callable $clocked = null)
+function storeContract(callable $newStore, $label, callable $age, callable $clocked = null,
+                       callable $dropPlan = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -1374,6 +1379,33 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
             'carry' => null, 'listed' => 1, 'outOfScope' => 0, 'done' => false]) === false
         && $sq->claimPlan($rq, 'p1', $epQ, 300, 3) === false
         && $sq->recordStates($rq) === []);
+
+    // A LEASED APPEND THAT FINDS NO PLAN ROW IS REFUSED (review R5-9).
+    // claimPlan() writes the row before it hands out a lease, so a missing one
+    // was removed by something other than the walk, and the walk's position
+    // went with it. The SQL store wrote the row with the page while the
+    // in-memory store refused the page, and commit 2bd57cd said they agreed.
+    // A claim answered `held` in between writes no row on either store: the
+    // in-memory one used to, and its append then went through.
+    if ($dropPlan !== null) {
+        $sz = $newStore();
+        $rz = (int) $sz->startRun(796, ['created_by' => 'alice'])['run']['run_id'];
+        $epZ = (int) $sz->run(796, $rz)['lease_epoch'];
+        $cz = $sz->claimPlan($rz, 'p1', $epZ, 300, 3);
+        $dropPlan($sz, $rz);
+        $held = $sz->claimPlan($rz, 'p2', $epZ, 300, 3);
+        $C('plan row: a lease is handed out, and another planner is then told it is held',
+            is_array($cz) && $cz['state'] === 'ok' && is_array($held) && $held['state'] === 'held');
+        $C('plan row: a leased append whose plan row is gone is refused, and writes no record',
+            $sz->appendManifest($rz, [$mk('A')], ['owner' => 'p1', 'epoch' => $epZ, 'cursor' => 'A',
+                'carry' => 'c', 'listed' => 1, 'outOfScope' => 0, 'done' => false, 'release' => false,
+                'leaseSeconds' => 300]) === false
+            && $sz->recordStates($rz) === []);
+        $again = $sz->claimPlan($rz, 'p1', $epZ, 300, 3);
+        $C('plan row: and wrote no plan row either: the holder\'s next claim finds the walk at its start',
+            is_array($again) && $again['state'] === 'ok' && $again['cursor'] === null
+            && $again['carry'] === null && $again['pages'] === 0 && $again['attempts'] === 1);
+    }
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
