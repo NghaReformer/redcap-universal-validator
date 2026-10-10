@@ -2309,9 +2309,35 @@ class UniversalValidator extends AbstractExternalModule
         $key = $zone === null ? '' : $zone->getName();
         if (!isset($this->clockMemo[$key])) {
             $now = $zone === null ? new \DateTimeImmutable('now') : new \DateTimeImmutable('now', $zone);
-            $this->clockMemo[$key] = ['today' => $now->format('Y-m-d'), 'now' => $now->format('Y-m-d H:i:s')];
+            $this->clockMemo[$key] = self::clockStamp($now);
         }
         return $this->clockMemo[$key];
+    }
+
+    /**
+     * The clock for one moment: its wall-clock day and time, plus what the page
+     * needs to keep that time right while it stays open (QRID_clockAt): the
+     * moment in UTC milliseconds, the zone's offset from UTC in seconds, and the
+     * zone's next offset change within a year, in UTC milliseconds, with the
+     * offset after it (both null when there is none).
+     */
+    public static function clockStamp(\DateTimeImmutable $now)
+    {
+        $ts = (int) $now->format('U');
+        $out = ['today' => $now->format('Y-m-d'), 'now' => $now->format('Y-m-d H:i:s'),
+                'utc' => $ts * 1000 + (int) $now->format('v'), 'offset' => (int) $now->getOffset(),
+                'next' => null, 'offsetAfter' => null];
+        $changes = $now->getTimezone()->getTransitions($ts, $ts + 366 * 86400);
+        if (is_array($changes)) {
+            foreach ($changes as $c) {
+                if ($c['ts'] > $ts && (int) $c['offset'] !== $out['offset']) {
+                    $out['next'] = $c['ts'] * 1000;
+                    $out['offsetAfter'] = (int) $c['offset'];
+                    break;
+                }
+            }
+        }
+        return $out;
     }
 
     /** The project's "window-timezone" setting as a zone; null for none or an unknown name. */
@@ -2709,7 +2735,25 @@ class UniversalValidator extends AbstractExternalModule
             $codes = $pid !== null ? $this->missingDataCodes($pid) : [];
             if ($codes) $config['missingCodes'] = array_map('strval', array_keys($codes));
         }
+        // The date fields of this form shown day- or month-first: a condition on
+        // the page compares the value REDCap stores (Y-M-D), as the server does.
+        if ($config['rules'] && $pid !== null && is_string($instrument) && $instrument !== '') {
+            $formats = $this->pageDateFormats($pid, $instrument);
+            if ($formats) $config['dateFormats'] = $formats;
+        }
         return $config;
+    }
+
+    /** field => [type, format] for the date and datetime fields of $instrument not shown as Y-M-D. */
+    private function pageDateFormats($pid, $instrument)
+    {
+        $out = [];
+        foreach (($this->dataDictionary($pid) ?: []) as $f => $meta) {
+            if (!is_array($meta) || !isset($meta['form_name']) || $meta['form_name'] !== $instrument) continue;
+            $tv = TemporalValue::fromValidation(self::validationOf($meta));
+            if ($tv !== null && $tv['format'] !== 'ymd') $out[(string) $f] = [$tv['type'], $tv['format']];
+        }
+        return $out;
     }
 
     /**

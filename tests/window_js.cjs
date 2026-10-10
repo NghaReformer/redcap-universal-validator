@@ -74,6 +74,40 @@ check('no server clock -> null', W.clockNow(undefined) === null && W.clockNow({}
   && W.clockNow({ now: '2026-02-30 00:00:00' }) === null && W.clockNow({ now: 5 }) === null);
 check('notFuture without a clock is unknown', W.verdict(spec, '2026-10-01', 'ymd', null, 'ymd', null).verdict === 'unknown');
 
+// clockAt: a page open across a daylight-saving change keeps the zone's local
+// time (Europe/London, 25 Oct 2026: 02:00 BST becomes 01:00 GMT).
+const dst = { today: '2026-10-25', now: '2026-10-25 01:58:00', utc: Date.UTC(2026, 9, 25, 0, 58, 0),
+  offset: 3600, next: Date.UTC(2026, 9, 25, 1, 0, 0), offsetAfter: 0 };
+check('clockAt: before the change, plain elapsed time', W.clockAt(dst, 60 * 1000).now === '2026-10-25 01:59:00');
+check('clockAt: at the change the clock goes back an hour', W.clockAt(dst, 120 * 1000).now === '2026-10-25 01:00:00');
+check('clockAt: and runs on from there', W.clockAt(dst, 30 * 60 * 1000).now === '2026-10-25 01:28:00');
+const spring = { today: '2027-03-28', now: '2027-03-28 00:59:30', utc: Date.UTC(2027, 2, 28, 0, 59, 30),
+  offset: 0, next: Date.UTC(2027, 2, 28, 1, 0, 0), offsetAfter: 3600 };
+check('clockAt: a spring change moves the clock forward', W.clockAt(spring, 45 * 1000).now === '2027-03-28 02:00:15');
+check('clockAt: a clock without zone fields counts elapsed time only',
+  W.clockAt({ today: '2026-10-25', now: '2026-10-25 01:58:00' }, 120 * 1000).now === '2026-10-25 02:00:00');
+check('clockAt: no next change counts elapsed time only',
+  W.clockAt(Object.assign({}, dst, { next: null, offsetAfter: null }), 120 * 1000).now === '2026-10-25 02:00:00');
+check('clockAt: a zone field that is not a number is ignored',
+  W.clockAt(Object.assign({}, dst, { offsetAfter: '0' }), 120 * 1000).now === '2026-10-25 02:00:00');
+
+// clockLenient: a date and time may run 120 s past "now", or past this
+// computer's local time when that is later, by up to 26 hours.
+const at = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13), +s.slice(14, 16), +(s.slice(17, 19) || 0)) / 1000;
+const srv = { today: '2026-10-09', now: '2026-10-09 14:30:00' };
+check('clockLenient: 120 s past the server clock', W.clockLenient(srv, null).now === '2026-10-09 14:32:00');
+check('clockLenient: a computer behind the server does not narrow it', W.clockLenient(srv, at('2026-10-09 14:00:00')).now === '2026-10-09 14:32:00');
+check('clockLenient: a computer 5 minutes fast widens it', W.clockLenient(srv, at('2026-10-09 14:35:00')).now === '2026-10-09 14:37:00');
+check('clockLenient: up to 26 hours ahead', W.clockLenient(srv, at('2026-10-10 16:30:00')).now === '2026-10-10 16:32:00');
+check('clockLenient: past 26 hours the computer is ignored', W.clockLenient(srv, at('2026-10-10 16:30:01')).now === '2026-10-09 14:32:00');
+check('clockLenient: keeps the server day', W.clockLenient(srv, at('2026-10-10 01:00:00')).today === '2026-10-09');
+check('clockLenient: no clock stays no clock', W.clockLenient(null, at('2026-10-10 01:00:00')) === null);
+const dtSpec = { type: 'datetime', notFuture: true };
+check('a time 2 minutes ahead passes with the margin',
+  W.verdict(dtSpec, '2026-10-09 14:32', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'ok');
+check('...3 minutes ahead does not',
+  W.verdict(dtSpec, '2026-10-09 14:33', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'future');
+
 Date.now = realNow;
 console.log(`window_js: ${n} checks, ${fails} failure(s)`);
 process.exit(fails ? 1 : 0);

@@ -12,7 +12,9 @@
  *     from the server, so no record value is ever in the page (SEC-005),
  *   - an unparseable condition fails OPEN (skips validation, never blocks),
  *   - the pooled factory honors the same gate,
- *   - a rule without "when" is untouched (regression).
+ *   - a rule without "when" is untouched (regression),
+ *   - a D-M-Y or M-D-Y date (config.dateFormats) is compared as its stored
+ *     Y-M-D, as the server compares it.
  *
  * The evaluator itself is parity-locked by tests/when_js.cjs + when_php.php;
  * this file only tests the DOM wiring around it.
@@ -346,6 +348,51 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   stype.fire('change');
   check('one flip re-checks BOTH rules sharing the ref',
     a.__qridInvalid === true && b.__qridInvalid === true);
+}
+
+// ---- 9) a date shown day- or month-first is compared as REDCap stores it ----
+{
+  const gated = (when, fields, formats) => {
+    const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+    const env = boot([sid].concat(fields), { singleFields: [], pooledFields: [], dateFormats: formats,
+      rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36', blockSave: 'hard', when: when }] });
+    return { sid, env };
+  };
+  const date = (name, value) => { const e = makeEl('input'); e.name = name; e.value = value; return e; };
+
+  let d = date('visit', '15-03-2026');
+  let t = gated("[visit]>'2026-03-01'", [d], { visit: ['date', 'dmy'] });
+  check('D-M-Y: a later date is later', t.sid.__qridInvalid === true);
+  d.value = '01-02-2026'; d.fire('change');
+  check('D-M-Y: an earlier date is earlier', t.sid.__qridInvalid === false);
+  d.value = '15-03-20'; d.fire('change');
+  check('D-M-Y: a partly typed date is compared as typed', t.sid.__qridInvalid === false);
+  d.value = '31-12-2025'; d.fire('change');
+  check('D-M-Y: day and month do not decide the order', t.sid.__qridInvalid === false);
+
+  d = date('visit', '15-03-2026');
+  t = gated("[visit]>'2026-03-01'", [d], undefined);
+  check('without its format the text is compared as shown (the old behaviour)', t.sid.__qridInvalid === false);
+
+  d = date('visit', '03-15-2026');
+  t = gated("[visit]='2026-03-15'", [d], { visit: ['date', 'mdy'] });
+  check('M-D-Y: equal to its Y-M-D', t.sid.__qridInvalid === true);
+
+  d = date('seen_at', '15-03-2026 14:30');
+  t = gated("[seen_at]>='2026-03-15 14:00'", [d], { seen_at: ['datetime', 'dmy'] });
+  check('D-M-Y datetime: compared as Y-M-D H:M', t.sid.__qridInvalid === true);
+  d.value = '15-03-2026 13:59'; d.fire('change');
+  check('D-M-Y datetime: a minute earlier is earlier', t.sid.__qridInvalid === false);
+
+  const a = date('adm', '20-03-2026'), b = date('dis', '03-10-2026');
+  t = gated("[dis]>=[adm]", [a, b], { adm: ['date', 'dmy'], dis: ['date', 'mdy'] });
+  check('two fields in two formats compare by date', t.sid.__qridInvalid === false);
+  b.value = '03-25-2026'; b.fire('change');
+  check('...and flip when the order does', t.sid.__qridInvalid === true);
+
+  d = date('visit', '15-03-2026');
+  t = gated("[visit]>'2026-03-01'", [d], { visit: ['date', 'xyz'] });
+  check('an unknown format is ignored', t.sid.__qridInvalid === false);
 }
 
 console.log(`when_dom_js: ${n} checks, ${fail} failure(s)`);

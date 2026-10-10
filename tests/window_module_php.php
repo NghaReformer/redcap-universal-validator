@@ -182,6 +182,26 @@ namespace {
     $r = ruleFor($p, 'v_end');
     check('"from" on this page: a live ref', $r && $r['windowFromOp'] === ['ref', 'v_start', null] && empty($r['snapshotFields']));
     check('the server clock reaches the page', isset($p['cfg']['clock']) && $p['cfg']['clock'] === $CLOCK);
+    check('the page lists its day- and month-first date fields', ($p['cfg']['dateFormats'] ?? null)
+        === ['visit_date_2' => ['date', 'dmy'], 'v_end' => ['date', 'mdy']]);
+    // The real clock carries what the page needs across a daylight-saving change.
+    $UV = '\INSPIRE\UniversalValidator\UniversalValidator';
+    $st = $UV::clockStamp(new \DateTimeImmutable('2026-10-20 12:00:00.250', new \DateTimeZone('Europe/London')));
+    check('clockStamp: wall-clock day and time', $st['today'] === '2026-10-20' && $st['now'] === '2026-10-20 12:00:00');
+    check('clockStamp: the moment in UTC milliseconds', $st['utc'] === gmmktime(11, 0, 0, 10, 20, 2026) * 1000 + 250);
+    check('clockStamp: the next change and the offsets around it', $st['offset'] === 3600
+        && $st['next'] === gmmktime(1, 0, 0, 10, 25, 2026) * 1000 && $st['offsetAfter'] === 0);
+    $st = $UV::clockStamp(new \DateTimeImmutable('2026-10-20 12:00:00', new \DateTimeZone('UTC')));
+    check('clockStamp: a zone with no change has none', $st['offset'] === 0 && $st['next'] === null && $st['offsetAfter'] === null);
+    $st = $UV::clockStamp(new \DateTimeImmutable('2026-10-20 12:00:00+02:00'));
+    check('clockStamp: a fixed offset has no change', $st['offset'] === 7200 && $st['next'] === null);
+    $mz = mod($DICT, $DATA, $FULL, 'nurse');
+    $rp = new \ReflectionProperty($UV, 'clockOverride'); $rp->setAccessible(true); $rp->setValue($mz, null);
+    $mz->projectSettings['window-timezone'] = 'Europe/London';
+    $pz = page($mz, 'form', '2', 'visit_form');
+    check('the page clock carries its UTC moment and zone offsets', isset($pz['cfg']['clock'])
+        && is_int($pz['cfg']['clock']['utc']) && is_int($pz['cfg']['clock']['offset'])
+        && array_key_exists('next', $pz['cfg']['clock']) && array_key_exists('offsetAfter', $pz['cfg']['clock']));
 
     $p = page(mod($DICT, $DATA, $PART, 'nurse'), 'form', '2', 'visit_form');
     $r = ruleFor($p, 'visit_date_2');

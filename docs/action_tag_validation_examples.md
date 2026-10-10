@@ -2702,14 +2702,13 @@ it looks: the tag validates the field it sits on, and that is where the message 
 
 #### Dates and temporal logic
 
-> **Use `date_ymd` fields for dates you compare.** The browser reads a date field's
-> value as the form holds it. Y-M-D text sorts correctly as a string, which is why the
-> module's own live test for `@UVASSERT` dates uses `date_ymd` fields
-> ([`docs/testbed/uvalidate_140_test_fields.csv`](testbed/uvalidate_140_test_fields.csv)).
-> A **D-M-Y or M-D-Y** field is displayed day- or month-first, so a live comparison on
-> it would order by day or month rather than by year — while the server audit, which
-> reads the Y-M-D stored value, would order correctly. Verify on your own instance
-> before relying on a date comparison over a non-Y-M-D field.
+> **Dates in any display format.** REDCap stores every date as Y-M-D. A condition
+> compares that stored form on the page, in the post-save audit and in the scan, so
+> `[discharge_date]>=[admission_date]` orders by year, month and day even when the
+> fields show D-M-Y or M-D-Y. Write a date in a condition as Y-M-D (`'2026-03-01'`),
+> as REDCap's own logic does. A date that is still being typed is compared as typed
+> until it is a whole date. Up to 2.1.0 the page compared the text as shown, so a
+> D-M-Y comparison could order by day on the page.
 
 ```text
 # on: discharge_date

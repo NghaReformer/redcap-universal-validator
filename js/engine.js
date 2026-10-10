@@ -676,6 +676,31 @@
     var t = String(value).replace(/^[ \t\r\n\0\x0B]+|[ \t\r\n\0\x0B]+$/g, "");
     return t !== "" && QRID_MISSING_CODES[t] === true;
   }
+  /* The date and datetime fields of this form shown day- or month-first
+     (config.dateFormats: field => [type, format]). REDCap stores every date as
+     Y-M-D, and the server compares that, so a condition on this page compares
+     the same: QRID_logicValue turns what the form shows into the stored form.
+     A value that is not a whole date yet is compared as typed. */
+  var QRID_DATE_FORMATS = (function(){
+    var out = Object.create(null);
+    var m = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.dateFormats;
+    if(m && typeof m === "object" && !Array.isArray(m)){
+      for(var k in m){
+        if(!Object.prototype.hasOwnProperty.call(m, k)) continue;
+        var fm = m[k];
+        if(Array.isArray(fm) && (fm[0] === "date" || fm[0] === "datetime" || fm[0] === "datetime_seconds")
+           && (fm[1] === "dmy" || fm[1] === "mdy")) out[k] = [fm[0], fm[1]];
+      }
+    }
+    return out;
+  })();
+  function QRID_logicValue(f, v){
+    var fm = QRID_DATE_FORMATS[f];
+    if(!fm || typeof v !== "string") return v;
+    var p = QRID_temporalDate(QRID_whenTrim(v), fm[0], fm[1]);
+    if(!p) return v;
+    return fm[0] === "datetime" ? p.value.slice(0, 16) : p.value;
+  }
 
   /* Shared per-load registries (were window globals; now namespace-only).
      Object.create(null): REDCap field names are attacker-ish input for a plain
@@ -1505,11 +1530,40 @@ function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
    without a usable server clock. */
 var QRID_CLOCK_T0=Date.now(),QRID_CLOCK_ELAPSED=0;
 function QRID_clockNow(base){
+  var e=Date.now()-QRID_CLOCK_T0;if(e>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=e;
+  return QRID_clockAt(base,QRID_CLOCK_ELAPSED);
+}
+/* config.clock advanced by elapsedMs. The clock also carries its moment in
+   UTC milliseconds (utc), the zone's offset in seconds (offset), and the
+   zone's next offset change (next, in UTC milliseconds, with offsetAfter):
+   a page left open across a daylight-saving change moves its local time by
+   the change, as the server's clock does. */
+function QRID_clockAt(base,elapsedMs){
   if(!base||typeof base!=='object'||typeof base.now!=='string')return null;
   var b=QRID_temporalDate(base.now,'datetime_seconds','ymd');if(!b)return null;
-  var e=Date.now()-QRID_CLOCK_T0;if(e>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=e;
-  var now=QRID_temporalCanonical(b.seconds+Math.floor(QRID_CLOCK_ELAPSED/1000),'datetime');
+  var secs=b.seconds+Math.floor(elapsedMs/1000);
+  if(QRID_finiteNumber(base.utc)&&QRID_finiteNumber(base.offset)&&QRID_finiteNumber(base.next)
+     &&QRID_finiteNumber(base.offsetAfter)&&base.utc+elapsedMs>=base.next)secs+=base.offsetAfter-base.offset;
+  var now=QRID_temporalCanonical(secs,'datetime');
   return now===null?null:{today:now.slice(0,10),now:now};
+}
+function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
+/* "Now" for a date and time typed on this page: the later of the server clock
+   and this computer's local time (REDCap's Now button and @NOW fill in the
+   computer's time), plus 120 seconds. A computer more than 26 hours ahead
+   (more than any two time zones differ) has a wrong clock and is ignored.
+   Dates, and the post-save audit, stay exact. */
+var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_LEAD_MAX_S=26*3600;
+function QRID_clockLenient(clock,deviceSeconds){
+  var b=clock?QRID_temporalDate(clock.now,'datetime_seconds','ymd'):null;if(!b)return clock;
+  var s=b.seconds;
+  if(QRID_finiteNumber(deviceSeconds)&&deviceSeconds>s&&deviceSeconds-s<=QRID_DEVICE_LEAD_MAX_S)s=deviceSeconds;
+  var now=QRID_temporalCanonical(s+QRID_CLOCK_SLACK_S,'datetime');
+  return now===null?clock:{today:clock.today,now:now};
+}
+/* This computer's local wall-clock time, in the seconds QRID_temporalDate uses. */
+function QRID_deviceLocalSeconds(){
+  var d=new Date(Date.now());return Math.floor(d.getTime()/1000)-d.getTimezoneOffset()*60;
 }
 
 /* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
@@ -1779,7 +1833,12 @@ function QRID_whenOperandVal(op, resolve){
     if(!resolve.extendedValues) throw new Error("Resolve extended references before browser evaluation.");
     return resolve(QRID_whenRefKey(op), null, true);
   }
-  return op[0] === "lit" ? op[1] : resolve(op[1], op[2]);
+  if(op[0] === "lit") return op[1];
+  /* A page resolver may say how a field's value is compared (resolve.logicValue:
+     a D-M-Y date as its stored Y-M-D). A temporal "date" node reads the value
+     raw, with the field's own format. */
+  var v = resolve(op[1], op[2]);
+  return (op[2] === null && typeof resolve.logicValue === "function") ? resolve.logicValue(op[1], v) : v;
 }
 /* Evaluate against a value map (field => string, or field => {code:'0'|'1'}
    for checkboxes). Missing fields resolve to '' (checkbox refs to '0'). */
@@ -2228,6 +2287,9 @@ var QRID_WHEN = (function(){
     if(el) return el.value == null ? "" : String(el.value);
     return "";
   }
+  /* readRef for a condition: a comparison sees a date as REDCap stores it. */
+  function readLogic(f, code){ return readRef(f, code); }
+  readLogic.logicValue = QRID_logicValue;
   /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
      only values the page really has (QRID_condValues). */
   function has(f, code){
@@ -2366,7 +2428,7 @@ var QRID_WHEN = (function(){
       refs: function(){ return refs; },
       unresolved: function(){ return unknown; },
       active: function(){
-        try { var verdict = QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); unknown = verdict === null; return verdict === true; }
+        try { var verdict = QRID_whenEvaluateWith(ast, readLogic, blank, caseSensitive); unknown = verdict === null; return verdict === true; }
         catch(e){ unknown = true; return false; } /* fail open: never trap a save on a gate bug */
       },
       onChange: function(cb){
@@ -2398,7 +2460,7 @@ function QRID_condValues(variants){
     for(var j = 0; j < refs.length; j++){
       var f = refs[j][0], code = refs[j][1];
       if(typeof f !== "string" || !QRID_WHEN.has(f, code)) continue;
-      if(code === null || code === undefined){ out[f] = QRID_WHEN.readRef(f, null); continue; }
+      if(code === null || code === undefined){ out[f] = QRID_logicValue(f, QRID_WHEN.readRef(f, null)); continue; }
       if(typeof out[f] !== "object" || out[f] === null) out[f] = {};
       out[f][code] = QRID_readCheckbox(f, code);
     }
@@ -3418,7 +3480,9 @@ function QRIDConstraintInit(QRID_CONFIG){
    ["lit", Y-M-D] when it is another form's saved value this user may read —
    a snapshot, so the rule never blocks. Anything else arrives deferred.
    "Today" is the SERVER's (config.clock, advanced by QRID_clockNow), so a
-   computer whose clock is a day ahead cannot accept tomorrow's date.
+   computer whose clock is a day ahead cannot accept tomorrow's date. A date
+   and time may run up to QRID_clockLenient's margin past the server's "now",
+   so the Now button on a computer whose clock is a little fast still passes.
    A value that is not yet a whole date (being typed, or 31-02) shows no
    verdict: REDCap's own date check speaks to that. tests/window_dom_js.cjs
    locks this factory. */
@@ -3509,7 +3573,8 @@ function QRIDWindowInit(QRID_CONFIG){
     /* A "from" date marked with a Missing Data Code was not entered. */
     if(anchor !== null && QRID_isMissingCode(anchor)) anchor = "";
     var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
-    var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, clock);
+    var judge = (clock && V.spec.type !== "date") ? QRID_clockLenient(clock, QRID_deviceLocalSeconds()) : clock;
+    var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, judge);
     r.clock = clock;
     return r;
   }
@@ -5918,7 +5983,8 @@ window.INSPIREUniversalValidator = {
   },
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
     verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
-    family: QRID_temporalFamily, clockNow: QRID_clockNow, units: QRID_WINDOW_UNITS
+    family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
+    clockLenient: QRID_clockLenient, units: QRID_WINDOW_UNITS
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal

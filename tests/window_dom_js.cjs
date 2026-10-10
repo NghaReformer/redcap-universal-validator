@@ -10,7 +10,9 @@
  *   - editing the "from" field re-checks live,
  *   - notFuture is judged against the SERVER clock (config.clock), advanced by
  *     how long the page has been open, and the save-time recheck moves past
- *     midnight with it; without a server clock there is no verdict,
+ *     midnight with it; without a server clock there is no verdict; a date and
+ *     time may run 120 s past it, or to a fast computer's local time (up to
+ *     26 hours ahead), so the Now button passes,
  *   - a snapshot "from" date (another form's saved value) never blocks and
  *     says what it was counted from; surveys never see a field name,
  *   - a deferred rule never blocks, and says why only on staff forms,
@@ -221,12 +223,41 @@ const realNow = Date.now;
   check('no server clock: never blocks', ev._prevented === false);
 }
 {
+  // This computer's local time agrees with the server's.
+  Date.now = () => new Date(2026, 9, 9, 14, 30, 0).getTime();
   const d = dateEl('seen_at', '2026-10-09 15:00');
   const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
-    rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd' }] });
+    rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
   check('datetime notFuture compares the time', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
   d.value = '2026-10-09 14:30'; d.fire('change');
   check('datetime now is not future', /OK/.test(wMsg(env, 'seen_at').innerHTML));
+  d.value = '2026-10-09 14:32'; d.fire('change');
+  check('datetime: 2 minutes ahead passes (clock margin)', /OK/.test(wMsg(env, 'seen_at').innerHTML));
+  d.value = '2026-10-09 14:33'; d.fire('change');
+  check('datetime: 3 minutes ahead is future', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
+  Date.now = realNow;
+}
+{
+  // The Now button on a computer 10 minutes fast: its time passes on the page.
+  Date.now = () => new Date(2026, 9, 9, 14, 40, 0).getTime();
+  const d = dateEl('seen_at', '2026-10-09 14:40');
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
+    rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  check('datetime: a fast computer\'s Now passes', /OK/.test(wMsg(env, 'seen_at').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('datetime: ...and saves', ev._prevented === false);
+  d.value = '2026-10-09 14:43'; d.fire('change');
+  check('datetime: past the computer\'s time plus the margin is future', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
+  Date.now = realNow;
+}
+{
+  // A computer clock days ahead is wrong: the server clock decides.
+  Date.now = () => new Date(2026, 9, 12, 14, 30, 0).getTime();
+  const d = dateEl('seen_at', '2026-10-10 09:00');
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
+    rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd' }] });
+  check('datetime: a computer days ahead is ignored', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
+  Date.now = realNow;
 }
 
 // ---- 4) snapshot "from" date: advisory, names its source ------------------

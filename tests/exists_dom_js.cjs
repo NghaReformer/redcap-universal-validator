@@ -517,6 +517,15 @@ function one(value, extra, cfgExtra) {
   code.fire('blur');
   check('when field typing: asked once it is left', stub.calls.length === 1 && stub.calls[0].payload.cond.code === 'YES');
 }
+{
+  // A D-M-Y date in a "when" travels as REDCap stores it (Y-M-D), as the server compares it.
+  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'SP-2';
+  const seen = makeEl('input'); seen.name = 'seen'; seen.value = '15-03-2026';
+  const stub = makeTransportStub(); stub.next = { state: 'found' };
+  boot([spec, seen], { jsmoName: JSMO, dateFormats: { seen: ['date', 'dmy'] }, rules: [{ type: 'exists', fields: ['spec'], branches: [
+    { when: "[seen]>'2026-03-01'", blockSave: 'hard' }] }] }, stub);
+  check('cond: a D-M-Y date travels as Y-M-D', stub.calls.length === 1 && stub.calls[0].payload.cond.seen === '2026-03-15');
+}
 
 // ---- 7c) a branch conflict leaves other modes' blocks alone -----------------------------------
 {
