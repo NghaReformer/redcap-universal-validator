@@ -1400,14 +1400,18 @@ namespace INSPIRE\UniversalValidator\Scan {
     $svc->status(149, 77);
     check('M12: another reader in the same service is a new entitlement - rights, ceiling and '
         . 'cross-project answers are theirs', $cm->plans === 2);
-    $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6]);
+    // One input at a time, so each part of the key is pinned on its own.
+    $cm->runRow = \VerbModule::row(['generation_id' => 6]);
     $svc->status(149, 77);
     check('M12: so is another generation of the run', $cm->plans === 3);
+    $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6]);
+    $svc->status(149, 77);
+    check('M12: and another run sequence, which the evaluator is bound to', $cm->plans === 4);
     $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6, 'scope_dag' => '7']);
     $cm->user->rights['group_id'] = 7;
     \REDCap::$groupNames = [7 => 'north'];
     $svc->status(149, 77);
-    check('M12: and another scope', $cm->plans === 4);
+    check('M12: and another scope', $cm->plans === 5);
     $cm->user->rights['group_id'] = null;
     \REDCap::$groupNames = [];
 
@@ -1418,7 +1422,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $fresh->available(149);
     $fresh->status(149, 77);
     check('P1: a new request asks every question again',
-        $cm->plans === 5 && $cm->sent('MAX(version)') === 2 && $cm->sent('SHOW GRANTS') === 2);
+        $cm->plans === 6 && $cm->sent('MAX(version)') === 2 && $cm->sent('SHOW GRANTS') === 2);
 
     // The change log, opened once however many parts of the request need it.
     $fence = new \ReflectionMethod(ScanService::class, 'fence');

@@ -641,12 +641,15 @@ namespace {
         $v->userReturn = new \UvNamedUser($full, 'bob');
         check('M12 plan: another reader gets a plan of their own - crossRefused and the rights are theirs',
             $ask()['ok'] === true && count($memo) === 2);
-        check('M12 plan: so does another value ceiling', $ask(['valueCeiling' => 'raw'])['ok'] === true);
+        check('M12 plan: so does another value ceiling',
+            $ask(['valueCeiling' => 'raw'])['ok'] === true && count($memo) === 3);
         check('M12 plan: and another rights gate',
             $ask(['enforceFormRights' => true])['ok'] === true && count($memo) === 4);
+        $ask([], '7');
+        check('M12 plan: and another DAG filter', count($memo) === 5);
         check('M12 plan: with no memo handed over, nothing is kept and every ask builds',
             $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations'])['ok']
-            === true && count($memo) === 4);
+            === true && count($memo) === 5);
         // THE CAPABILITY CENSUS a caller already took is the one the plan uses.
         $given = ['recordEnumeration' => ['state' => 'unavailable', 'via' => null, 'why' => 'GIVEN']];
         $capped = $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations',
