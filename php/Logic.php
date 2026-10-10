@@ -896,7 +896,7 @@ class Logic
         $c = self::canonicalDecimal($v);
         if ($c === null) return null;
         if (strpos($c, '.') !== false) $c = rtrim(rtrim($c, '0'), '.');
-        return $c === '-0' ? '0' : $c;
+        return $c;   // canonicalDecimal already writes every zero without a sign
     }
 
     /**

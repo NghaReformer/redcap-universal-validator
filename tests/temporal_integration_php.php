@@ -320,6 +320,17 @@ namespace {
     check('record uniqueness on an integer field compares numbers by value',count($res['violations'])===2);
     $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
     check('...and the page compares numbers too',strpos($ast,'"same:fold:point"')!==false);
+    // Two branches of one field, one folding and one exact: each keeps its own
+    // index of the record's entries, read once per record.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVUNIQUE={"scope":"record","when":"[key_a]=\'B\'","caseSensitive":true} '
+        .'@UVUNIQUE={"scope":"record","when":"[key_a]=\'A\'"}';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]=['a_val'=>'AB','key_a'=>'B','fa_complete'=>'2'];
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]=['a_val'=>'ab','key_a'=>'A','fa_complete'=>'2'];
+    unset(REDCap::$data[1]['repeat_instances'][2]);
+    $res=$m->scanProject(PID);
+    $v=array_map(function($x){return $x['instance'];},array_filter($res['violations'],function($x){return $x['field']==='a_val';}));
+    check('record uniqueness: the folding branch and the exact branch do not share an index',array_values($v)===[3]);
     // ---- adversarial review 2026-09-20 ----------------------------------------
     // One saved value that is not valid UTF-8 used to make json_encode() fail and
     // the page then carried NO rule at all, in silence.

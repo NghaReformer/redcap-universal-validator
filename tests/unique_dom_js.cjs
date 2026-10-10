@@ -155,6 +155,16 @@ const JSMO = 'EMStub.UV';
   pid.fire('change');
   check('empty: inert', msg.style.display === 'none');
   check('empty: no request sent', stub.calls.length === 4);
+
+  // The server trims the same characters, no more and no less.
+  pid.value = '\u00A0AB200\0';
+  pid.fire('change');
+  check('trim: no-break spaces and NUL are trimmed before asking',
+    stub.calls.length === 5 && stub.calls[4].payload.values.pid === 'AB200');
+  pid.value = '\u2003AB300';
+  pid.fire('change');
+  check('trim: an em space is kept, as the server keeps it',
+    stub.calls.length === 6 && stub.calls[5].payload.values.pid === '\u2003AB300');
 }
 
 // ---- 2) custom message wins; composite "with" values travel -----------------

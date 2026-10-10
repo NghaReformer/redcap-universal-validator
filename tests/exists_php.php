@@ -241,6 +241,9 @@ namespace {
         'bad_mark'    => f('result', '@UVEXISTS=[spec_cnum]', 'number'),
         'res_ucs'     => f('result', '@UVUNIQUE={"caseSensitive":true}'),
         'res_unum'    => f('result', '@UVUNIQUE', 'integer'),
+        'spec_calc'   => f('lab_reg', '', '', 'calc'),
+        'res_calc'    => f('result', '@UVEXISTS=[spec_calc]'),
+        'res_uslide'  => f('result', '@UVUNIQUE', '', 'slider'),
     ];
     $DATA = [
         '1' => [351 => ['record_id' => '1', 'home_site' => 'A', 'specimen_id' => ' SP-1 ', 'site_code' => 'A',
@@ -879,6 +882,39 @@ namespace {
     $m = mod(); \REDCap::$data = $NS;
     $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
     check('numbers: the scan index keys numbers by value', !array_filter($res['violations'], function ($v) { return $v['field'] === 'res_num'; }));
+    $NC = $DATA; $NC['2'][351]['spec_calc'] = '7';
+    $m = mod(); \REDCap::$data = $NC;
+    check('numbers: a calc field holds numbers ("7.0" finds a calculated 7)', (ask($m, 'res_calc', ['res_calc' => '7.0'])['state'] ?? null) === 'found');
+    $US = $DATA; $US['1'][351]['res_uslide'] = '50';
+    $m = mod(); \REDCap::$data = $US;
+    check('numbers: a slider holds numbers ("050" is used next to 50)',
+        ($call($m, 'unique-check', 'res_uslide', ['res_uslide' => '050'], [], '3')['used'] ?? null) === true);
+    // Record IDs: the exact spelling first, and an exact rule still finds the exact ID.
+    $rim = new \ReflectionMethod(mod(), 'recordIdMatch'); $rim->setAccessible(true);
+    check('record IDs: of two that differ only in case, the exact one is found',
+        ($rim->invoke(null, ['xe-7' => null, 'XE-7' => null], 'XE-7', true, 'project', null, null)['record'] ?? null) === 'XE-7');
+    check('record IDs: an exact rule finds the exact ID',
+        ($rim->invoke(null, ['xe-7' => null, 'XE-7' => null], 'XE-7', false, 'project', null, null)['record'] ?? null) === 'XE-7');
+    check('record IDs: an exact rule finds nothing in another case',
+        $rim->invoke(null, ['xe-7' => null], 'XE-7', false, 'project', null, null) === null);
+    // The scan never lets a record find its own ID.
+    $SS = $LR; $SS['XE-7'][351]['res_rec'] = 'xe-7'; $SS['1'][351]['res_rec'] = 'xe-7';
+    $m = mod(); \REDCap::$data = $SS;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $hits = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[] = $v['record'] . '/' . $v['field'];
+    check('scan: a record ID never finds the record that holds it', $hits === ['XE-7/res_rec']);
+    // The index's memory projection: what it has grown by so far, over the records left.
+    $ov = new \ReflectionMethod(mod(), 'indexOverrun'); $ov->setAccessible(true);
+    check('index memory: 100 bytes after 1 of 3 records projects to 300', $ov->invoke(null, 100, 0, 1, 3, 300) === true
+        && $ov->invoke(null, 100, 0, 1, 3, 301) === false);
+    check('index memory: growth is measured from the start, not from zero', $ov->invoke(null, 1100, 1000, 1, 3, 1300) === true
+        && $ov->invoke(null, 1100, 1000, 1, 3, 1301) === false);
+    check('index memory: the last chunk is judged as it stands', $ov->invoke(null, 500, 0, 3, 3, 500) === true
+        && $ov->invoke(null, 500, 0, 3, 3, 501) === false);
+    check('index memory: no cap, no stop', $ov->invoke(null, PHP_INT_MAX, 0, 1, 1000, 0) === false);
+    check('index memory: memory that shrank projects no growth', $ov->invoke(null, 900, 1000, 1, 3, 900) === true
+        && $ov->invoke(null, 900, 1000, 1, 3, 901) === false);
     check('decimal marks: a point field searching a comma field is refused',
         strpos($cerr('bad_mark'), '"spec_cnum" holds numbers with a decimal comma and "bad_mark" holds numbers with a decimal point') !== false);
     check('decimal marks: the same mark is allowed', $cerr('res_cnum') === '' && $cerr('res_num') === '' && $cerr('res_tnum') === '');

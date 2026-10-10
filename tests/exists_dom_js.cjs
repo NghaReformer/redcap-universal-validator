@@ -345,6 +345,13 @@ function one(value, extra, cfgExtra) {
   check('cache: unknown is asked again', t.stub.calls.length === 3);
   t.spec.value = '   '; t.spec.fire('change');
   check('blank: inert, nothing asked', xMsg(env, 'spec').style.display === 'none' && t.stub.calls.length === 3);
+  // The server trims the same characters: no-break spaces and NUL as well.
+  t.spec.value = '\u00A0\t'; t.spec.fire('change');
+  check('blank: no-break spaces alone are blank', xMsg(env, 'spec').style.display === 'none' && t.stub.calls.length === 3);
+  t.stub.next = { state: 'found' };
+  t.spec.value = '\u00A0SP-3\0'; t.spec.fire('change');
+  check('trim: no-break spaces and NUL are trimmed before asking',
+    t.stub.calls.length === 4 && t.stub.calls[3].payload.values.spec === 'SP-3');
 }
 {
   const t = one('FIRST', { blockSave: 'hard' });

@@ -516,6 +516,13 @@ namespace {
         && $p[0]['value_hash'] !== $hk->invoke($m, 149, 'sp-1'));
     check('probe log: a lookup that ignores letter case hashes the value in lower case, and says so',
         ($p[0]['case'] ?? null) === 'ignored');
+    // The record being edited belongs to this project: a record of that project
+    // with the same ID is still found.
+    $m = mod();
+    $r = $m->redcap_module_ajax('exists-check', ['field' => 'x_rec', 'values' => ['x_rec' => 'L1']],
+        149, 'L1', 'result', 351, 1, null, null, null, '', '', $GLOBALS['__TEST_USER'], null);
+    check('record lookup there: a record with the ID of the record being edited here is found',
+        ($r['state'] ?? null) === 'found');
     $m = mod('nurse', null, false);
     ask($m, 'x_spec', ['x_spec' => 'SP-1']);
     check('probe log: nothing is written with the switch off', !logsOf($m, 'uv-exists-probe'));

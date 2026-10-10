@@ -1076,7 +1076,7 @@ class UniversalValidator extends AbstractExternalModule
                     $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
                     if ($rv === $tv) continue;
                     $exact = false;
-                    if ($rv === '' || Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) continue 2;
+                    if (Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) continue 2;
                 }
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
                 if ($score > $bestScore) {
@@ -1194,15 +1194,23 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 unset($data);
                 $done += count($chunk);
-                if ($cap > 0) {
-                    $now = memory_get_usage();
-                    if ($now + max(0, $now - $start) / $done * ($total - $done) >= $cap) return false;
-                }
+                if (self::indexOverrun(memory_get_usage(), $start, $done, $total, $cap)) return false;
             }
             return $idx;
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /**
+     * Whether an index that used $start bytes before its first chunk and $now
+     * after $done of $total records will pass $cap (0 = no cap) by the time
+     * every record is read, growing as it has so far.
+     */
+    private static function indexOverrun($now, $start, $done, $total, $cap)
+    {
+        if ($cap <= 0) return false;
+        return $now + max(0, $now - $start) / max(1, $done) * max(0, $total - $done) >= $cap;
     }
 
     /** Records per read when the scan index reads a searched field (buildExistsIndex). */
@@ -7901,8 +7909,10 @@ class UniversalValidator extends AbstractExternalModule
                 $match = true;
                 foreach ($target as $f => $tv) {
                     $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
+                    // A blank component's key is '', which no lookupKey equals, so it
+                    // matches only a blank stored value (the line above).
                     if ($rv === $tv) continue;
-                    if ($tv === '' || $rv === '' || Logic::lookupKey($rv, $fold, $marks[$f]) !== $keys[$f]) { $match = false; break; }
+                    if (Logic::lookupKey($rv, $fold, $marks[$f]) !== $keys[$f]) { $match = false; break; }
                 }
                 if ($match) return ['record' => (string) $rec, 'dag' => $dag];
             }
