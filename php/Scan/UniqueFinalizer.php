@@ -34,6 +34,32 @@ interface DuplicateFinalizer
 }
 
 /**
+ * A finalizer that writes findings, and so has to be told which run it writes for.
+ *
+ * Every other writer stamps a finding valid_from_seq = the run's run_seq, and a
+ * closing one valid_to_seq = the run_seq of the run that closed it: that is the
+ * axis the report's "as of" questions are asked on. The duplicate finalizer
+ * stamped both with the group's candidate_epoch, a per-group counter that
+ * starts at 1 - so a duplicate looked opened by run 1 whatever run wrote it,
+ * and a republished one closed "at" 1 or 2 while its replacement opened
+ * there too (review R8-5).
+ *
+ * A second interface rather than a parameter on DuplicateFinalizer::step(),
+ * because the worker's test doubles write nothing and need no run; the worker
+ * binds any finalizer that implements this one before it steps it.
+ */
+interface SequencedFinalizer
+{
+    /**
+     * A copy of this finalizer that writes as the run with this run_seq.
+     *
+     * @param int $runSeq 1 or more
+     * @return DuplicateFinalizer
+     */
+    public function forRun($runSeq);
+}
+
+/**
  * Deciding which values are duplicates, on a project too large to hold.
  *
  * WHY UNIQUENESS IS THE HARD ONE. Every other check this module makes is a
@@ -77,8 +103,12 @@ interface DuplicateFinalizer
  *
  * PHP 7.4.
  */
-final class UniqueFinalizer implements DuplicateFinalizer
+final class UniqueFinalizer implements DuplicateFinalizer, SequencedFinalizer
 {
+    /** Why emit() wrote nothing: nobody said which run the findings belong to. */
+    const NO_SEQ = 'the duplicate check was not told which scan it is writing for, so it '
+                 . 'wrote no duplicate findings rather than date them to the wrong scan';
+
     /** Group phases. Ordered: a group moves forward through these and never back. */
     const G_NEW       = 'new';
     const G_VERIFYING = 'verifying';
@@ -118,10 +148,19 @@ final class UniqueFinalizer implements DuplicateFinalizer
     private $pid;
     /** @var array */
     private $deps;
+    /**
+     * The run_seq of the run these findings are written for: valid_from_seq of
+     * every duplicate emit() stages and valid_to_seq of every one publish()
+     * closes. Null until given, and emit() writes nothing while it is null.
+     *
+     * @var int|null
+     */
+    private $seq = null;
 
     /**
      * @param array $deps {
      *   pid:      int|string  REQUIRED; a project id of 1 or more
+     *   seq:      ?int  the writing run's run_seq; or bind one with forRun()
      *   read:     callable(array $locations): array{ok:bool, values:array, why:?string}
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
@@ -153,6 +192,26 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 . 'project; every query it makes would then span the whole installation');
         }
         $this->pid = (int) $pid;
+        if (isset($deps['seq'])) $this->seq = self::runSeq($deps['seq']);
+    }
+
+    /** {@inheritdoc} */
+    public function forRun($runSeq)
+    {
+        $c = clone $this;
+        $c->seq = self::runSeq($runSeq);
+        return $c;
+    }
+
+    /** A run_seq as the schema allocates them, or a refusal: never a guessed one. */
+    private static function runSeq($v)
+    {
+        $ok = is_int($v) ? $v >= 1 : (is_string($v) && ctype_digit($v) && (int) $v >= 1);
+        if (!$ok) {
+            throw new \InvalidArgumentException('a duplicate finalizer was given a run sequence '
+                . 'that is not a positive whole number');
+        }
+        return (int) $v;
     }
 
     /**
@@ -494,6 +553,14 @@ final class UniqueFinalizer implements DuplicateFinalizer
      */
     public function emit($generationId, array $g, $limit)
     {
+        // NO RUN, NO WRITE. Both writers below stamp the run's sequence, and
+        // there is no sequence to fall back to that would be true: the group's
+        // candidate_epoch was that fallback, and it dated every duplicate to
+        // run 1 (review R8-5). The group stays in `emitting`, so the step after
+        // a bound one picks it up where this one stopped.
+        if ($this->seq === null) {
+            return ['emitted' => 0, 'published' => false, 'why' => self::NO_SEQ];
+        }
         $rows = $this->db->select('SELECT candidate_id, record_hash, record_id_bin, event_id,
             instance, host_form, field, rule_source_id, rule_revision
             FROM ' . Schema::table('unique_candidate') . '
@@ -522,7 +589,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
                     'reason_code' => 'duplicate'];
             $marks[] = '(?,?,?,?,NULL,?,?,?,?,?,?,?,?,0,?,?,0,0,?,?)';
             foreach ([$this->pid, $generationId, Hmac::findingIdentity($this->pid, $loc, $key),
-                      $g['candidate_epoch'], $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
+                      $this->seq, $r[1], $r[2], $event, (int) $r[4], $r[5], $r[6],
                       $r[7], $r[8], 'unique', 'duplicate', $g['group_hmac'],
                       $g['candidate_epoch']] as $v) {
                 $flat[] = $v;
@@ -576,7 +643,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
         $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = NULL, valid_to_seq = ?
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND active_slot = 1
               AND stage_epoch <> ?',
-            [$g['candidate_epoch'], $this->pid, $generationId, $g['group_hmac'],
+            [$this->seq, $this->pid, $generationId, $g['group_hmac'],
              $g['candidate_epoch']]);
         $this->db->execNoCount('UPDATE ' . $t . ' SET active_slot = 1
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND stage_epoch = ?

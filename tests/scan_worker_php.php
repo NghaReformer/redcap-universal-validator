@@ -2154,6 +2154,47 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('squeezed: one step, with the ordinary first page of groups and one record to re-read',
         $sf->limits === [[25, 1]]);
 
+    // THE DUPLICATES A RUN WRITES ARE DATED TO THAT RUN (review R8-5). The
+    // worker is the one place with the run row, so it binds any finalizer that
+    // writes to the run's run_seq before stepping it. The project's third run,
+    // so its run_seq is 3 and not the 1 a per-group epoch starts at.
+    class SeqFinalizer implements DuplicateFinalizer, SequencedFinalizer
+    {
+        public $seq = null;
+        /** Shared by every bound copy, so the test sees what each one stepped as. */
+        public $log;
+        public function __construct() { $this->log = new \ArrayObject(); }
+        public function forRun($runSeq)
+        {
+            $c = clone $this;
+            $c->seq = (int) $runSeq;
+            return $c;
+        }
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            $this->log[] = $this->seq;
+            return ['done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                    'published' => 0, 'collisions' => 0, 'read' => 0, 'why' => null];
+        }
+    }
+    $seqStore = new ArrayScanStore();
+    for ($i = 0; $i < 2; $i++) {
+        $old = $seqStore->startRun(827, ['created_by' => 'alice']);
+        $seqStore->finish((int) $old['run']['run_id'], ScanOutcome::derive(['failed' => true]));
+    }
+    $third = $seqStore->startRun(827, ['created_by' => 'alice']);
+    $seqRun = (int) $third['run']['run_id'];
+    $seqStore->writeManifest($seqRun, [['id_bin' => 'A', 'hash' => hash('sha256', 'A', true), 'dag' => null]]);
+    $ep = (int) $seqStore->run(827, $seqRun)['lease_epoch'];
+    foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $p) $seqStore->advancePhase($seqRun, $ep, $p);
+    $seqFin = new SeqFinalizer();
+    (new ScanWorker($seqStore, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $seqFin]))
+        ->work(827, $seqRun);
+    check('unique: the worker binds the finalizer to the run it is working, before the first step',
+        (int) $seqStore->run(827, $seqRun)['run_seq'] === 3
+        && count($seqFin->log) >= 1 && $seqFin->log[0] === 3);
+
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
     /** Just enough of the database for one verify page of one group. */
@@ -2207,6 +2248,26 @@ namespace INSPIRE\UniversalValidator\Scan {
     $uf2->step(1, 4);
     check('finalizer: a caller that gives no read limit gets the old single limit',
         $vdb2->limits === [4]);
+
+    // A run sequence is a positive whole number or it is refused: a 0 or a
+    // fraction here would be written into every duplicate's validity interval.
+    $badSeq = [];
+    foreach (['zero' => 0, 'negative' => -3, 'fraction' => '2.5', 'word' => 'run'] as $what => $v) {
+        try { new UniqueFinalizer($vdb2, ['pid' => 800, 'seq' => $v]); }
+        catch (\InvalidArgumentException $e) { $badSeq[] = 'ctor-' . $what; }
+        try { $uf2->forRun($v); }
+        catch (\InvalidArgumentException $e) { $badSeq[] = 'bind-' . $what; }
+    }
+    check('finalizer: a run sequence that is not a positive whole number is refused, built or bound',
+        count($badSeq) === 8);
+    try {
+        $unboundWhy = $uf2->emit(1, ['group_hmac' => 'g1', 'emit_cursor' => 0, 'group_id' => 7,
+                                     'candidate_epoch' => 1], 10)['why'];
+    } catch (\Throwable $e) {
+        $unboundWhy = 'threw: ' . $e->getMessage();
+    }
+    check('finalizer: binding returns a copy and leaves the unbound one unbound, writing nothing',
+        $uf2->forRun('7') !== $uf2 && $unboundWhy === UniqueFinalizer::NO_SEQ);
 
     // -- the duplicate phase is entered, not skipped -------------------------
     //

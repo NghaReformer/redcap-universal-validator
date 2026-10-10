@@ -233,8 +233,12 @@ final class ScanWorker
                     return $slots->renew($slot['slot_no'], $this->owner(), $slot['epoch'], $ttl);
                 };
             }
+            // The run_seq is what a duplicate finding is stamped with, so the
+            // finalizer is bound to it below; a row without one binds nothing
+            // and the finalizer then writes nothing (review R8-5).
+            $seq = isset($run['run_seq']) ? (int) $run['run_seq'] : 0;
             return $this->loop($pid, $runId, $phase, $epoch,
-                (int) $run['generation_id'], $opts, $keep);
+                (int) $run['generation_id'], $seq, $opts, $keep);
         } catch (ScanStoreUnavailable $e) {
             // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
             //
@@ -291,7 +295,7 @@ final class ScanWorker
     }
 
     /** Claim, evaluate and commit until the budget says stop or the phase is empty. */
-    private function loop($pid, $runId, $phase, $epoch, $generationId, array $opts, $keep = null)
+    private function loop($pid, $runId, $phase, $epoch, $generationId, $runSeq, array $opts, $keep = null)
     {
         $budget = isset($this->deps['budget']) ? $this->deps['budget'] : new WorkBudget();
         $worked = 0; $requeued = 0; $blocked = 0; $found = 0; $stop = null; $why = null;
@@ -357,6 +361,13 @@ final class ScanWorker
                             'phase' => $phase, 'done' => false, 'stop' => 'unconfigured',
                             'why' => 'this scan has no way to decide duplicate values, so it '
                                    . 'stopped rather than reporting that it found none'];
+                }
+                // THE FINDINGS IT WRITES ARE THIS RUN'S. A finalizer that
+                // writes is bound to the run's sequence here, the one place
+                // that has the run row, so no caller can build one that dates
+                // duplicates to some other run (review R8-5).
+                if ($fin instanceof SequencedFinalizer && $runSeq >= 1) {
+                    $fin = $fin->forRun($runSeq);
                 }
                 // TWO CLAIMS, because a step is one of two different things
                 // and nobody knows which until it has run (review BU-1). A page
