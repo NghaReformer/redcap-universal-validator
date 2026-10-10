@@ -289,14 +289,16 @@ namespace INSPIRE\UniversalValidator\Scan {
      * VERSION 3  reaches an installation already at version 2
      * ===================================================================== */
     {
-        check('v3: the build is at version 3', Schema::VERSION === 3);
+        check('v3: the build is at version 3 or later, and version 3 carries as_of', Schema::VERSION >= 3
+            && strpos(implode(' ', array_map(function ($i) { return $i['sql']; }, Schema::statements(3))), 'as_of') !== false);
         check('v3: version 2 no longer carries as_of', strpos(implode(' ',
             array_map(function ($i) { return $i['sql']; }, Schema::statements(2))), 'as_of') === false);
         $m = new \FakeModule();
         $m->version = '2';
         $r = Schema::migrate($m);
         check('v3: an installation at version 2 applies the as_of column',
-            $r['ok'] === true && $r['from'] === 2 && $r['to'] === 3 && $r['applied'] === 1
+            $r['ok'] === true && $r['from'] === 2 && $r['to'] === Schema::VERSION
+            && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4))
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
         check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
             return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -304,7 +306,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->version = '2';
         $m->columns[] = 'uv_finding.as_of';
         $r = Schema::migrate($m);
-        check('v3: a column already there is not added twice', $r['ok'] === true && $r['applied'] === 0
+        check('v3: a column already there is not added twice', $r['ok'] === true
+            && $r['applied'] === count(Schema::statements(4))
             && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
         $m = new \FakeModule();
         $m->version = '2';
@@ -445,6 +448,46 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
+     * V4  uv_unique_candidate.lookup
+     *
+     * One column, so a @UVUNIQUE value a rule looks in (an "also" field, or a
+     * record its "when" does not check) can sit in a duplicate group without
+     * being reported. DEFAULT 0 keeps every earlier row a checked value.
+     * ===================================================================== */
+    {
+        $m = new \FakeModule();
+        $m->version = '3';
+        $r = Schema::migrate($m);
+        $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v4: an installation at version 3 moves to version 4',
+            $r['ok'] === true && $r['from'] === 3 && $r['to'] === 4 && Schema::VERSION === 4);
+        check('v4: by one ALTER that adds uv_unique_candidate.lookup, 0 for every existing row',
+            count($alters) === 1
+            && $alters[0] === 'ALTER TABLE uv_unique_candidate ADD COLUMN lookup TINYINT UNSIGNED NOT NULL DEFAULT 0');
+        check('v4: with no data step',
+            !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
+        check('v4: and records version 4',
+            (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+
+        $have = new \FakeModule();
+        $have->version = '3';
+        $have->columns = ['uv_unique_candidate.lookup'];
+        $rh = Schema::migrate($have);
+        check('v4: a column already there is not added again',
+            $rh['ok'] === true && $rh['applied'] === 0
+            && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $inert = new \FakeModule();
+        $inert->version = '3';
+        $inert->inertAlter = 'ADD COLUMN lookup';
+        $ri = Schema::migrate($inert);
+        check('v4: an ALTER that did not take is not recorded', $ri['ok'] === false
+            && strpos((string) $ri['why'], 'version 4 did not verify') !== false
+            && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('v4: a fresh install ends with the column',
+            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN lookup TINYINT') !== false);
+    }
+
+    /* =====================================================================
      * V2  a schema that already HAS DATA, migrating in place
      *
      * This repository has no analogue for it, and that absence is the finding.
@@ -465,7 +508,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: an installation at version 1 does NOT sit still',
             $r['ok'] === true && $r['from'] === 1 && $r['to'] === Schema::VERSION);
         check('v2: and applies only the versions after 1, not version 1 again',
-            $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3)));
+            $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3))
+                             + count(Schema::statements(4)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -510,7 +554,8 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: a migration interrupted part-way resumes rather than failing',
             $rh['ok'] === true);
         check('v2: and skips exactly the statements already applied',
-            $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3)));
+            $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3))
+                               + count(Schema::statements(4)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with

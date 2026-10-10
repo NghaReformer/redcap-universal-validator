@@ -266,7 +266,8 @@ trait TemporalIntegration
     {
         $extended=[];$dd=$this->dataDictionary($pid)?:[];
         foreach($rules as $i=>$r){if(!empty($r['configError'])||!TemporalRules::extended($r))continue;
-            foreach(TemporalRules::fields($r) as $f)if($instrument===null||($dd[$f]['form_name']??null)===$instrument){$extended[$i]=$r;break;}}
+            // A field the rule only searches ("also") does not re-check it when saved.
+            foreach(TemporalRules::fields($r,false) as $f)if($instrument===null||($dd[$f]['form_name']??null)===$instrument){$extended[$i]=$r;break;}}
         if(!$extended)return;
         $this->temporalBegin($pid);
         try {$node=$this->temporalReadRecord($pid,$record,$extended);$shape=$this->temporalShape($pid,$dd);$all=self::recordContexts($node);

@@ -244,6 +244,19 @@ namespace {
     check('D-M-Y record uniqueness: this entry\'s own saved date passes',$eval($r,['a_val'=>'2026-01-05'])===true);
     $res=$m->scanProject(PID);check('D-M-Y record uniqueness: the scan finds no duplicate',!$res['violations']);
 
+    // A field an extended @UVUNIQUE rule only searches ("also", refKeys role
+    // "lookup") does not re-check the rule when its form is saved: that save
+    // cannot change whether the rule's own value is a duplicate of another
+    // record's, and each re-check is a whole-project read.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVUNIQUE={"when":"[followup_arm_1][key_a][1]=\'A\'","also":["b_open"]}';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('extended unique with "also": configured',$r&&empty($r['configError']));
+    REDCap::$getDataCalls=0;$m->redcap_save_record(PID,'1','fb',1,2);
+    check('extended unique with "also": saving the "also" field\'s form reads nothing',REDCap::$getDataCalls===0);
+    $m->redcap_save_record(PID,'1','fa',1,1);
+    check('extended unique with "also": saving its own form still checks it',REDCap::$getDataCalls>0);
+
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
     $m->projectSettings['qualified-audit-max-contexts']=1;$m->redcap_save_record(PID,'1','fb',1,null);
     check('audit truncation explicit',saying(array_column(unconf($m),1),'why','context limit')===1);

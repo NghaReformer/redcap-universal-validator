@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 3;
+    const VERSION = 4;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -139,6 +139,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 4) return self::statementsV4();
         if ((int) $version === 3) return self::statementsV3();
         if ((int) $version === 2) return self::statementsV2();
         if ((int) $version !== 1) return [];
@@ -658,6 +659,29 @@ final class Schema
     }
 
     /**
+     * Version 4: uv_unique_candidate.lookup.
+     *
+     * A candidate with lookup = 1 is a value a @UVUNIQUE rule looks in - an
+     * "also" field, or a field of a record the rule's "when" does not check -
+     * rather than a value it checks. It counts towards its group's records and
+     * is re-read with them, and it is never reported. discover() settles a
+     * group with no checked value without verifying it, and emit() writes
+     * findings for checked values only.
+     *
+     * DEFAULT 0, so every row written before the column existed stays what it
+     * was: a checked value. One ALTER, skipped when the column is there, like
+     * every version-2 statement.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV4()
+    {
+        $uc = self::table('unique_candidate');
+        return [['sql' => 'ALTER TABLE ' . $uc . ' ADD COLUMN lookup TINYINT UNSIGNED NOT NULL DEFAULT 0',
+                 'skipIf' => ['column', $uc, 'lookup']]];
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -855,6 +879,11 @@ final class Schema
                 return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                         'why' => 'schema version 3 did not verify after it was applied: the finding table '
                                . 'has no as_of column. The version is NOT recorded and the scan stays disabled.'];
+            }
+            if ($v === 4 && !self::alreadyApplied($module, ['column', self::table('unique_candidate'), 'lookup'])) {
+                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                        'why' => 'schema version 4 did not verify after it was applied: the unique candidate table '
+                               . 'has no lookup column. The version is NOT recorded and the scan stays disabled.'];
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

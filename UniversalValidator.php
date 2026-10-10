@@ -3672,9 +3672,10 @@ class UniversalValidator extends AbstractExternalModule
         $choices = $this->projectFieldChoices($pid);
         $identifiers = $this->projectIdentifierFields($pid);
         $dd = $this->dataDictionary($pid);
+        $layout = $pid ? $this->eventLayout($pid) : null;
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd);
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd, $layout);
             if ($rule === null) continue;
             // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
             //
@@ -3739,7 +3740,7 @@ class UniversalValidator extends AbstractExternalModule
         return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
     }
 
-    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null)
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null, $layout = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
@@ -3900,6 +3901,13 @@ class UniversalValidator extends AbstractExternalModule
                 $alsoF = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
                 $idField = self::firstIdentifier($identifiers, array_merge($fields, $withF, $alsoF));
                 if ($idField !== null) $errors[] = 'field "' . $idField . '": ' . self::SURVEY_ON_IDENTIFIER;
+                // And every "also" field on each covered field's own instrument.
+                if ($idField === null && $alsoF && is_array($dd)) {
+                    foreach ($fields as $f) {
+                        $off = self::surveyAlsoProblem($dd, $f, $alsoF);
+                        if ($off !== null) { $errors[] = $off; break; }
+                    }
+                }
             }
             // Composite-key fields: exist, scalar, and not one of the covered
             // fields (a self-composite is a tautology).
@@ -3922,6 +3930,10 @@ class UniversalValidator extends AbstractExternalModule
                             continue;
                         }
                         foreach (self::checkUniqueAlso($rule['uniqueAlso'], $f, null, $dd) as $e) $errors[] = $e;
+                        $p = self::alsoPlacementProblem($rule['uniqueAlso'], $f,
+                            (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [],
+                            isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project', $dd, $layout);
+                        if ($p !== null) $errors[] = $p;
                     }
                 }
             }
@@ -4049,6 +4061,7 @@ class UniversalValidator extends AbstractExternalModule
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
             $identifiers = $pid ? $this->projectIdentifierFields($pid) : null;
             $dd = $pid ? $this->dataDictionary($pid) : null;
+            $layout = $pid ? $this->eventLayout($pid) : null;
             $wasEnabled = $this->temporalOptions($pid)['qualified'];
             $enabled = in_array($settings['enable-event-instance-refs'] ?? $wasEnabled, [true,1,'1','true'],true);
             // Turning the dialect off preserves its authored rules for reactivation.
@@ -4064,7 +4077,7 @@ class UniversalValidator extends AbstractExternalModule
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd, $layout);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -4301,10 +4314,37 @@ class UniversalValidator extends AbstractExternalModule
         $withF = (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [];
         $alsoF = (isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) ? $frag['uniqueAlso'] : [];
         $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF, $alsoF));
-        if ($idField === null) return $frag;
+        if ($idField === null) {
+            $off = self::surveyAlsoProblem($this->dataDictionary($pid), $name, $alsoF);
+            return $off === null ? $frag : ['error' => $off, '_tag' => AnnotationRules::TAG_UNIQUE];
+        }
         $role = $idField === $name ? '' : (in_array($idField, $withF, true) ? 'composite "with" field "' : '"also" field "');
         return ['error' => ($role === '' ? '' : $role . $idField . '": ')
             . self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
+    }
+
+    /**
+     * Why the survey opt-in cannot go with these "also" fields, or null.
+     *
+     * A respondent's "already used" says the value is saved in one of the
+     * searched fields. On the tagged field's own instrument those are fields
+     * of the survey the respondent is filling in; on any other instrument
+     * they may be fields no respondent ever sees, such as a staff-only note,
+     * so the opt-in is refused for them. A dictionary that cannot place the
+     * fields refuses too.
+     */
+    private static function surveyAlsoProblem($dd, $field, array $also)
+    {
+        if (!$also) return null;
+        $home = (is_array($dd) && isset($dd[$field]['form_name'])) ? (string) $dd[$field]['form_name'] : null;
+        foreach ($also as $a) {
+            $form = (is_array($dd) && isset($dd[$a]['form_name'])) ? (string) $dd[$a]['form_name'] : null;
+            if ($home !== null && $form === $home) continue;
+            return '"also" field "' . $a . '" is not on the instrument of "' . $field . '" ("'
+                . ($home === null ? '?' : $home) . '") — with "surveys": true every "also" field must be on that '
+                . 'instrument, so a respondent is only told about fields of the survey they are filling in.';
+        }
+        return null;
     }
 
     /**
@@ -4319,7 +4359,14 @@ class UniversalValidator extends AbstractExternalModule
         $errs = [];
         if (isset($frag['uniqueWith'])) $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
         if (!$errs && isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) {
-            $errs = self::checkUniqueAlso($frag['uniqueAlso'], $name, $types, $this->dataDictionary($pid));
+            $dd = $this->dataDictionary($pid);
+            $errs = self::checkUniqueAlso($frag['uniqueAlso'], $name, $types, $dd);
+            if (!$errs) {
+                $p = self::alsoPlacementProblem($frag['uniqueAlso'], $name,
+                    (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [],
+                    isset($frag['uniqueScope']) ? $frag['uniqueScope'] : 'project', $dd, $pid ? $this->eventLayout($pid) : null);
+                if ($p !== null) $errs[] = $p;
+            }
         }
         return $errs ? ['error' => implode(' ', $errs), '_tag' => AnnotationRules::TAG_UNIQUE] : $frag;
     }
@@ -5870,16 +5917,16 @@ class UniversalValidator extends AbstractExternalModule
 
         // Aggregate duplicate detection: a group is a violation when TWO OR
         // MORE DISTINCT RECORDS share the key (same-record repeats mirror the
-        // endpoint/audit, which only compare against OTHER records). An "also"
-        // value (a member) counts as one of those records but is not itself
-        // reported: the rule checks its own fields.
+        // endpoint/audit, which only compare against OTHER records). A lookup
+        // (collectUniqueLookups) counts as one of those records but is not
+        // itself reported: the rule checks its own fields where it applies.
         $emitted = [];
         foreach ($uniqueSeen as $entries) {
             $records = [];
             foreach ($entries as $e) $records[$e['record']] = true;
             if (count($records) < 2) continue;
             foreach ($entries as $e) {
-                if (!empty($e['member'])) continue;
+                if (!empty($e['lookup'])) continue;
                 // One row, one finding. Host scoping already stops a rule being
                 // collected from contexts it does not live in; this is the belt to
                 // that brace, so a row can never be listed twice for one rule
@@ -6385,6 +6432,8 @@ class UniversalValidator extends AbstractExternalModule
                     'instance' => $row['instance'],
                     'host_form' => (string) $row['instrument'],
                     'field' => (string) $row['field'],
+                    // Evidence for the group, never a finding (collectUniqueLookups).
+                    'lookup' => empty($row['lookup']) ? 0 : 1,
                 ];
             }
         }
@@ -6579,28 +6628,21 @@ class UniversalValidator extends AbstractExternalModule
             }
             $hostFields[$i] = $h['forms'];
         }
-        // WHERE each unique rule's "also" fields live: their values are
-        // collected from those forms' contexts as evidence for the rule's
-        // groups (collectUniqueMembers), never as findings. "also" is the same
-        // on every branch of a rule (Branching refuses otherwise).
-        $members = [];
+        // An "also" field the dictionary places on no instrument is left out
+        // of the rule's lookups (uniqueLookups, below), and the scan says so.
         foreach ($live as $i => $r) {
             if (($r['type'] ?? null) !== 'unique') continue;
-            $variants = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
             $also = [];
-            foreach ($variants as $b) {
+            foreach (self::uniqueVariants($r) as $b) {
                 foreach ((isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [] as $a) $also[(string) $a] = true;
             }
-            if (!$also) continue;
-            $h = $this->ruleHostForms(['fields' => array_keys($also)], $pid);
+            $h = $also ? $this->ruleHostForms(['fields' => array_keys($also)], $pid) : ['unknown' => []];
             if ($h['unknown']) {
                 $unconf[$i . '|also-unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
                     'why' => 'the instrument that owns this rule\'s "also" field(s) could not be determined from the '
                            . 'data dictionary, so values saved there are not looked at by the scan'];
             }
-            $members[$i] = $h['forms'];
         }
-        $out['uniqueMembers'] = $members;
         // A rule whose instrument is designated for NO event can never run.
         // hostContextsFor() drops every context for an unmapped form, so the
         // rule yields no violation - and, because nothing ever reached the
@@ -6739,6 +6781,7 @@ class UniversalValidator extends AbstractExternalModule
         // finding identity, the disagreement was silent and permanent. A second
         // derivation of the same thing is a second thing that can drift.
         $out['ruleIds'] = Scan\ScanPlanner::identifyAll($live);
+        $out['uniqueLookups'] = $this->uniqueLookupSpecs($live, $hostFields, $dupes, $pid);
         if (!$live) {
             // Every rule barred is not "nothing to scan": the rule problems above
             // are the report, and they must survive. nothingToScan short-circuits
@@ -7052,20 +7095,9 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
-            // The values of the rule's "also" fields in this record, wherever
-            // they live: what the rule's values are looked for in.
-            foreach ((isset($plan['uniqueMembers'][$i]) && is_array($plan['uniqueMembers'][$i])) ? $plan['uniqueMembers'][$i] : []
-                     as $memberForm => $memberFields) {
-                if (!isset($hostCache[$memberForm])) {
-                    $hostCache[$memberForm] = $this->hostContextsFor($ctxAll, $memberForm, $pid);
-                }
-                foreach ($hostCache[$memberForm] as $ck => $ctx) {
-                    if (!isset($resCache[$ck])) {
-                        $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
-                    }
-                    self::collectUniqueMembers($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, (array) $memberFields,
-                                               $resCache[$ck], $memberForm, $plan);
-                }
+            // What the rule's values are looked for in, from this record.
+            if (isset($plan['uniqueLookups'][$i])) {
+                self::collectUniqueLookups($uniqueSeen, $plan['uniqueLookups'][$i], $i, $ctxAll, $rec, $recDag, $plan);
             }
         }
         return ['contexts' => count($ctxAll), 'why' => null];
@@ -7438,9 +7470,13 @@ class UniversalValidator extends AbstractExternalModule
             // json_encode with JSON_INVALID_UTF8_SUBSTITUTE, which collapsed distinct
             // invalid-UTF8 values to U+FFFD. Each value is its Logic::lookupKey, as
             // findCollision compares them (keeps the scan and the audit in agreement).
+            //
+            // The key also names its shape (uniqueShape): two branches of one
+            // rule that build keys differently never share a group.
             $fold = empty($cfg['caseSensitive']);
             $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
-            $keyParts = [(string) $ruleIndex, $field, Logic::lookupKey($v, $fold, isset($marks[$field]) ? $marks[$field] : null)];
+            $keyParts = [(string) $ruleIndex, self::uniqueShape($with, $scope, $fold), $field,
+                         Logic::lookupKey($v, $fold, isset($marks[$field]) ? $marks[$field] : null)];
             foreach ($with as $w) {
                 $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? Logic::lookupTrim($ctx['values'][$w]) : '';
                 $keyParts[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
@@ -7463,84 +7499,138 @@ class UniversalValidator extends AbstractExternalModule
                              // @UVUNIQUE rule over a Notes field that was the most
                              // expensive thing in the scan.
                              'value' => self::reportValue(['field' => $field, 'value' => $v], $plan),
-                             'instrument' => $hostForm, 'dag' => $recDag]
+                             'instrument' => $hostForm, 'dag' => $recDag, 'scope' => (string) $scope]
                            + ($branch !== null ? ['branch' => (int) $branch] : []);
         }
     }
 
     /**
-     * Collect one context's "also" values for a unique rule into the
-     * aggregate map, under the same keys collectUniqueCandidates gives the
-     * rule's own values: one per host field of the rule (the value is looked
-     * for from each), with the composite "with" values of this context and
-     * the scope part. Marked 'member': a member is evidence that a host value
-     * is used elsewhere, never a finding of its own, because the rule checks
-     * its own fields and not the fields it searches.
-     *
-     * Not gated by "when" or by a branch: those decide whether a value is
-     * checked, and a member is not checked, only searched - as findCollision
-     * searches every other record's "also" fields. Where branches differ in
-     * "with", scope or letter case, the member is filed under each shape.
+     * The part of a @UVUNIQUE group key that says how the key was built: the
+     * composite "with" fields, the scope, and whether letter case counts. The
+     * branches of one rule can build keys differently, and a value keyed one
+     * way is no evidence about a value keyed another way: an exact "ABC" must
+     * not meet a case-folded "abc", as findCollision would never pair them.
      */
-    private static function collectUniqueMembers(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag,
-                                                 array $memberFields, array $resolution, $memberForm, array $plan)
+    private static function uniqueShape(array $with, $scope, $fold)
     {
-        $dupes = isset($plan['dupes']) && is_array($plan['dupes']) ? $plan['dupes'] : [];
-        $hosts = [];
-        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $f) {
-            if (!isset($dupes[$f])) $hosts[] = (string) $f;
+        return json_encode([array_map('strval', array_values($with)), (string) $scope, $fold ? 1 : 0]);
+    }
+
+    /** A unique rule's branches, or the rule itself when it has none. */
+    private static function uniqueVariants(array $r)
+    {
+        return (isset($r['branches']) && is_array($r['branches']) && $r['branches']) ? $r['branches'] : [$r];
+    }
+
+    /**
+     * rule index => what collectUniqueLookups files for a unique rule: its
+     * checked fields (hosts, the ones scanned on an instrument the reader may
+     * open and not claimed twice), its "also" fields, each field's
+     * instrument, the shapes its branches key values by, and whether its own
+     * fields are looked in too (hostSlots: a "when" or a branch decides which
+     * records are checked, and findCollision searches the others anyway).
+     * A rule with nothing to look in has no entry.
+     */
+    private function uniqueLookupSpecs(array $live, array $hostFields, array $dupes, $pid)
+    {
+        $dd = $this->dataDictionary($pid) ?: [];
+        $out = [];
+        foreach ($live as $i => $r) {
+            if (($r['type'] ?? null) !== 'unique' || empty($hostFields[$i])) continue;
+            $shapes = [];
+            $also = [];
+            foreach (self::uniqueVariants($r) as $b) {
+                $scope = isset($b['uniqueScope']) ? (string) $b['uniqueScope'] : 'project';
+                // Record scope compares the fields of one record, never another's.
+                if ($scope === 'record') continue;
+                $with = (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) ? array_values($b['uniqueWith']) : [];
+                $fold = empty($b['caseSensitive']);
+                $shapes[self::uniqueShape($with, $scope, $fold)] = [$with, $scope, $fold];
+                foreach ((isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [] as $a) {
+                    if (isset($dd[$a]['form_name']) && $dd[$a]['form_name'] !== '') $also[(string) $a] = (string) $dd[$a]['form_name'];
+                }
+            }
+            $gated = !empty($r['branches']) || (isset($r['when']) && is_string($r['when']) && $r['when'] !== '');
+            if (!$shapes || (!$also && !$gated)) continue;
+            $hosts = [];
+            $formOf = $also;
+            foreach ($hostFields[$i] as $form => $own) {
+                foreach ((array) $own as $f) {
+                    if (isset($dupes[$f])) continue;
+                    $hosts[] = (string) $f;
+                    $formOf[(string) $f] = (string) $form;
+                }
+            }
+            if (!$hosts) continue;
+            $out[$i] = ['hosts' => $hosts, 'also' => array_keys($also), 'formOf' => $formOf,
+                        'shapes' => array_values($shapes), 'hostSlots' => $gated];
         }
-        if (!$hosts) return;
+        return $out;
+    }
+
+    /**
+     * File one record's values for a unique rule's lookups: what the rule's
+     * values are looked for in, read the way findCollision reads another
+     * record. Every merged context (recordContexts, as collisionIn walks
+     * them), every "also" field, and the rule's own fields too when a "when"
+     * or a branch decides which records are checked ($spec['hostSlots']):
+     * findCollision searches every other record whatever its own "when" says.
+     * Filed under each shape the rule can build a key with, so a value only
+     * meets values keyed the same way.
+     *
+     * Marked 'lookup': counted as one of the records sharing a value, never
+     * reported itself, because the rule checks its own fields only where its
+     * "when" holds. One entry per group and record, and none where the record
+     * already holds a checked value of that group.
+     *
+     * $spec is scanPlan's uniqueLookups entry: hosts, also, formOf, shapes,
+     * hostSlots.
+     */
+    private static function collectUniqueLookups(array &$seen, array $spec, $ruleIndex, array $ctxAll, $rec, $recDag, array $plan)
+    {
         $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
         $codes = isset($plan['missingCodes']) ? $plan['missingCodes'] : [];
-        $shapes = [];
-        foreach ((isset($rule['branches']) && is_array($rule['branches'])) ? $rule['branches'] : [$rule] as $b) {
-            $also = (isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [];
-            if (!$also) continue;
-            $with = (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) ? $b['uniqueWith'] : [];
-            $scope = isset($b['uniqueScope']) ? $b['uniqueScope'] : 'project';
-            $fold = empty($b['caseSensitive']);
-            $shapes[serialize([$with, $scope, $fold, $also])] = [$with, $scope, $fold, $also];
-        }
-        foreach ($shapes as list($with, $scope, $fold, $also)) {
-            if ($scope === 'record') continue;   // refused with "also" (AnnotationRules::checkUnique)
+        $rec = (string) $rec;
+        $done = [];
+        foreach ($spec['shapes'] as list($with, $scope, $fold)) {
             // A record in no group has no group to share a value with.
             if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) continue;
-            $withKeys = [];
-            foreach ($with as $w) {
-                $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
-                if ($state !== 'ok') {
-                    $unconf[$ruleIndex . '|unique-also-with-unresolved'] = ['rule' => $ruleIndex + 1, 'fields' => $rule['fields'],
-                        'why' => 'next to an "also" field, the unique rule\'s composite key ' . self::resolutionProblem($state, $w)
-                               . ' Values saved in the "also" field there are not looked at.'];
-                    continue 2;
+            $shape = self::uniqueShape($with, $scope, $fold);
+            foreach ($ctxAll as $ctx) {
+                $row = $ctx['values'];
+                $tail = [];
+                foreach ($with as $w) {
+                    $wv = (isset($row[$w]) && !is_array($row[$w])) ? Logic::lookupTrim($row[$w]) : '';
+                    $tail[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
                 }
-                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? Logic::lookupTrim($ctx['values'][$w]) : '';
-                $withKeys[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
-            }
-            foreach ($memberFields as $a) {
-                if (!in_array($a, $also, true)) continue;
-                $state = isset($resolution[$a]) ? $resolution[$a] : 'ok';
-                if ($state !== 'ok') {
-                    $unconf[$ruleIndex . '|unique-also-unresolved'] = ['rule' => $ruleIndex + 1, 'fields' => $rule['fields'],
-                        'why' => 'the unique rule\'s "also" field ' . self::resolutionProblem($state, $a)
-                               . ' Values saved there are not looked at.'];
-                    continue;
-                }
-                $v = isset($ctx['values'][$a]) ? $ctx['values'][$a] : null;
-                if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
-                if (self::isMissingCode($v, $codes)) continue;
-                $vk = Logic::lookupKey($v, $fold, isset($marks[$a]) ? $marks[$a] : null);
-                foreach ($hosts as $h) {
-                    // The key collectUniqueCandidates builds for host $h, bin2hex-joined.
-                    $keyParts = array_merge([(string) $ruleIndex, $h, $vk], $withKeys);
-                    if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = (string) $ctx['event_id']; }
-                    elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
-                    $key = '';
-                    foreach ($keyParts as $kp) $key .= bin2hex($kp) . '.';
-                    $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
-                                     'instance' => $ctx['instance'], 'field' => (string) $a, 'rule' => $ruleIndex + 1,
-                                     'member' => true, 'instrument' => $memberForm, 'dag' => $recDag];
+                if ($scope === 'event') { $tail[] = 'evt'; $tail[] = (string) $ctx['event_id']; }
+                elseif ($scope === 'dag') { $tail[] = 'dag'; $tail[] = (string) $recDag; }
+                $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
+                foreach ($spec['hosts'] as $h) {
+                    foreach ($spec['hostSlots'] ? array_merge([$h], $spec['also']) : $spec['also'] as $s) {
+                        $v = isset($row[$s]) ? $row[$s] : null;
+                        if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
+                        if (self::isMissingCode($v, $codes)) continue;
+                        // The key collectUniqueCandidates builds for host $h, bin2hex-joined.
+                        $key = '';
+                        foreach (array_merge([(string) $ruleIndex, $shape, $h,
+                                              Logic::lookupKey($v, $fold, isset($marks[$s]) ? $marks[$s] : null)], $tail) as $kp) {
+                            $key .= bin2hex($kp) . '.';
+                        }
+                        if (isset($done[$key])) continue;
+                        $done[$key] = true;
+                        // This record's own checked value is in the group already.
+                        if (isset($seen[$key]) && $seen[$key][count($seen[$key]) - 1]['record'] === $rec) continue;
+                        // Where the value is stored, for the durable scan's re-read: a
+                        // base-row value merged into a repeat instance's context lives
+                        // in the base row.
+                        $form = isset($spec['formOf'][$s]) ? $spec['formOf'][$s] : null;
+                        $inst = ($rk === null || ($rk !== '' && $rk !== $form)) ? 1 : $ctx['instance'];
+                        $seen[$key][] = ['record' => $rec, 'event_id' => $ctx['event_id'],
+                                         'instance' => $inst, 'field' => (string) $s, 'rule' => $ruleIndex + 1,
+                                         'lookup' => true, 'instrument' => $form, 'dag' => $recDag,
+                                         'scope' => (string) $scope];
+                    }
                 }
             }
         }
@@ -7737,6 +7827,12 @@ class UniversalValidator extends AbstractExternalModule
                         || self::firstIdentifier($identifiers, array_merge([$field], $withFields, $alsoFields)) !== null) {
                     return ['error' => 'not enabled on surveys'];
                 }
+                // ...nor about a field off the survey's own instrument, which
+                // the respondent may never see (surveyAlsoProblem; the
+                // configuration channels refuse it, this holds the line).
+                if (self::surveyAlsoProblem($this->dataDictionary($project_id), $field, $alsoFields) !== null) {
+                    return ['error' => 'not enabled on surveys'];
+                }
                 // ...and never faster than the throttle allows.
                 if ($this->surveyRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
             } else {
@@ -7831,9 +7927,11 @@ class UniversalValidator extends AbstractExternalModule
                     $userDag = ScanPageView::dagNameOf($group_id);
                     if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
                 }
-                // Found in an "also" field: say which. The caller may open its
-                // form (checked above), and the name comes from the stored rule.
-                if (isset($col['field']) && $col['field'] !== $field) $fieldOut = $col['field'];
+                // Found in an "also" field: say which, beside a record the
+                // caller may be told about. The caller may open its form
+                // (checked above); a record of another group is named by
+                // neither its id nor the field that holds the value.
+                if ($recOut !== null && isset($col['field']) && $col['field'] !== $field) $fieldOut = $col['field'];
             }
             return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
         } catch (\Throwable $e) {
@@ -9219,6 +9317,142 @@ class UniversalValidator extends AbstractExternalModule
         }
         $this->formEventsCache[$ck] = $out;
         return $out;
+    }
+
+    /**
+     * The project's events as the @UVUNIQUE "also" placement check needs them:
+     * list of ['forms' => form => true, or null for every form,
+     *          'repeat' => form => true for the forms that repeat there, or
+     *                      null when that cannot be read,
+     *          'repeatEvent' => whether the event itself repeats].
+     * NULL when the events cannot be established, so nothing is claimed.
+     */
+    private $eventLayoutCache = [];
+    private function eventLayout($project_id)
+    {
+        $ck = (string) $project_id;
+        if (array_key_exists($ck, $this->eventLayoutCache)) return $this->eventLayoutCache[$ck];
+        $rep = null;
+        $names = null;
+        $longitudinal = null;
+        try {
+            if (is_callable(['\REDCap', 'getRepeatingFormsEvents'])) {
+                $r = \REDCap::getRepeatingFormsEvents($project_id);
+                if (is_array($r)) $rep = $r;
+            }
+            if (is_callable(['\REDCap', 'getEventNames'])) {
+                $n = \REDCap::getEventNames(true, false);
+                if (is_array($n)) $names = $n;
+            }
+            if (is_callable(['\REDCap', 'isLongitudinal'])) $longitudinal = (bool) \REDCap::isLongitudinal();
+        } catch (\Throwable $e) {
+            $rep = null;
+        }
+        $repeatOf = function ($eventId) use ($rep) {
+            if ($rep === null || $eventId === null) return [null, false];
+            if (!isset($rep[$eventId])) return [[], false];
+            $node = $rep[$eventId];
+            if (!is_array($node)) return [[], true];
+            $set = [];
+            foreach ($node as $form => $_) {
+                // '' or a bare list: the event itself repeats.
+                if (!is_string($form) || $form === '') return [[], true];
+                $set[$form] = true;
+            }
+            return [$set, false];
+        };
+        $out = null;
+        $byForm = $this->formEventSets($project_id);
+        if ($byForm !== null) {
+            $events = [];
+            foreach ($byForm as $form => $evs) {
+                foreach ($evs as $ev => $_) $events[$ev][$form] = true;
+            }
+            $out = [];
+            foreach ($events as $ev => $forms) {
+                $id = null;
+                if (strpos($ev, 'i:') === 0) $id = substr($ev, 2);
+                elseif ($names !== null) {
+                    $hit = array_search(substr($ev, 2), $names, true);
+                    if ($hit !== false) $id = (string) $hit;
+                }
+                list($repeat, $repeatEvent) = $repeatOf($id);
+                $out[] = ['forms' => $forms, 'repeat' => $repeat, 'repeatEvent' => $repeatEvent];
+            }
+        } elseif ($longitudinal === false && $rep !== null && count($rep) <= 1) {
+            // A classic project: one event holding every form.
+            list($repeat, $repeatEvent) = $repeatOf($rep ? (string) key($rep) : null);
+            if (!$rep) $repeat = [];
+            $out = [['forms' => null, 'repeat' => $repeat, 'repeatEvent' => $repeatEvent]];
+        }
+        $this->eventLayoutCache[$ck] = $out;
+        return $out;
+    }
+
+    /**
+     * Why a @UVUNIQUE "also" field can never hold a value the rule finds, or
+     * null.
+     *
+     * findCollision reads another record context by context
+     * (recordContexts): an event's base row, or one repeat instance merged
+     * over it. A value in "also" field A is found only beside the rule's
+     * "with" values in one context, and with "scope":"event" only in the
+     * event the checked field is saved in. So some event must hold A, every
+     * "with" field and, under event scope, the checked field; and in that
+     * event A and the "with" fields may sit on at most one repeating
+     * instrument, because two repeating instruments never share a context.
+     * $layout is eventLayout(); null claims nothing.
+     */
+    private static function alsoPlacementProblem(array $also, $field, array $with, $scope, $dd, $layout)
+    {
+        if (!is_array($layout) || !is_array($dd)) return null;
+        $formOf = function ($f) use ($dd) {
+            return isset($dd[$f]['form_name']) ? (string) $dd[$f]['form_name'] : null;
+        };
+        foreach ($also as $a) {
+            $fa = $formOf($a);
+            if ($fa === null) continue;
+            $need = [$a => $fa];
+            foreach ($with as $w) if ($formOf($w) !== null) $need[$w] = $formOf($w);
+            if ($scope === 'event' && $formOf($field) !== null) $need[$field] = $formOf($field);
+            $held = false;
+            $clash = null;      // a "with" field on another repeating instrument, in every event that holds them all
+            foreach ($layout as $ev) {
+                foreach ($need as $form) {
+                    if ($ev['forms'] !== null && !isset($ev['forms'][$form])) continue 2;
+                }
+                $held = true;
+                $hit = null;
+                if (!$ev['repeatEvent'] && $ev['repeat'] !== null && isset($ev['repeat'][$fa])) {
+                    foreach ($with as $w) {
+                        $fw = $formOf($w);
+                        if ($fw !== null && $fw !== $fa && isset($ev['repeat'][$fw])) { $hit = $w; break; }
+                    }
+                }
+                $clash = $hit;
+                if ($hit === null) break;
+            }
+            if (!$held) {
+                $others = array_keys($need);
+                array_shift($others);
+                if (!$others) {
+                    return '"also" field "' . $a . '" is on instrument "' . $fa . '", which no event collects, '
+                        . 'so it would never be searched.';
+                }
+                $where = [];
+                if ($with) $where[] = 'beside the "with" values';
+                if ($scope === 'event') $where[] = 'in the event "' . $field . '" is saved in';
+                return '"also" field "' . $a . '" is in no event together with "' . implode('", "', $others)
+                    . '" — the value is looked for only ' . implode(' and ', $where)
+                    . ', so "' . $a . '" would never be searched.';
+            }
+            if ($clash !== null) {
+                return '"also" field "' . $a . '" and "with" field "' . $clash
+                    . '" are on different repeating instruments, so no record holds them side by side and "'
+                    . $a . '" would never be searched.';
+            }
+        }
+        return null;
     }
 
     /**

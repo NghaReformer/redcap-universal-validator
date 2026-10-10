@@ -23,9 +23,14 @@ final class TemporalRules
         foreach(ModeRegistry::operandKeys() as $rk)if(isset($rule[$rk['key']])){$op=ModeRegistry::operandRef($rule[$rk['key']],['qualified'=>true]);if($op!==null)$out[]=[$rk,$op];}
         return $out;
     }
-    public static function fields(array $rule)
+    /**
+     * Every field one rule reads. $lookups false leaves out the field lists a
+     * rule only searches (refKeys role "lookup", such as @UVUNIQUE "also"):
+     * saving one of those does not re-check the rule.
+     */
+    public static function fields(array $rule, $lookups = true)
     {
-        $out=$rule['fields']??[];foreach(ModeRegistry::refKeys('fieldList') as $rk)$out=array_merge($out,is_array($rule[$rk['key']]??null)?$rule[$rk['key']]:[]);
+        $out=$rule['fields']??[];foreach(ModeRegistry::refKeys('fieldList') as $rk){if(!$lookups&&($rk['role']??null)==='lookup')continue;$out=array_merge($out,is_array($rule[$rk['key']]??null)?$rule[$rk['key']]:[]);}
         foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];
@@ -37,7 +42,7 @@ final class TemporalRules
             foreach(is_array($b['match']??null)?$b['match']:[] as $target=>$source){$out[]=$target;if(is_string($source)&&preg_match('/^\[([a-z][a-z0-9_]*)\]$/D',(string)$source,$m))$out[]=$m[1];}
             if(isset($b['elapsedFrom'])&&is_string($b['elapsedFrom'])){$p=Logic::parse($b['elapsedFrom']."=''",['qualified'=>true]);if(!empty($p['ok'])){foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];}}
         }
-        foreach($rule['branches']??[] as $b)$out=array_merge($out,self::fields($b));
+        foreach($rule['branches']??[] as $b)$out=array_merge($out,self::fields($b,$lookups));
         return array_values(array_unique($out));
     }
     public static function validate(array $rule)

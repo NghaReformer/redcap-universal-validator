@@ -115,11 +115,6 @@ final class UniqueFinalizer implements DuplicateFinalizer
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
      *   page:     int  candidates per bounded page
-     *   reportable: ?callable(string $ruleSourceId, string $field): bool
-     *             whether a candidate becomes a finding; a candidate from an
-     *             @UVUNIQUE "also" field counts towards its group's records
-     *             and is verified like the rest, but is not reported. Absent,
-     *             every candidate is reported.
      * }
      */
     public function __construct(ScanDb $db, array $deps = [])
@@ -229,7 +224,10 @@ final class UniqueFinalizer implements DuplicateFinalizer
             . ' WHERE project_id = ? AND generation_id = ?', [$this->pid, $generationId]);
         $after = (isset($c[0][0]) && $c[0][0] !== null) ? $c[0][0] : null;
 
-        $sql = 'SELECT group_hmac, COUNT(DISTINCT record_hash), MIN(candidate_id)
+        // MIN(lookup) is 0 when the group holds a value a rule checks. A group
+        // of lookups only (Schema::statementsV4) reports nothing whatever its
+        // records, so it is settled here rather than re-read and verified.
+        $sql = 'SELECT group_hmac, COUNT(DISTINCT record_hash), MIN(candidate_id), MIN(lookup)
                 FROM ' . Schema::table('unique_candidate')
                 . ' WHERE project_id = ? AND generation_id = ?';
         $params = [$this->pid, $generationId];
@@ -263,10 +261,11 @@ final class UniqueFinalizer implements DuplicateFinalizer
             foreach ($chunk as $r) {
                 $records = (int) $r[1];
                 // A group with one record in it is not a duplicate and never
-                // becomes one. It is still WRITTEN, so discovery has a cursor
+                // becomes one, and neither is a group of lookups only, which
+                // holds no value a rule checks. It is still WRITTEN, so discovery has a cursor
                 // past it and so "we looked and there was nothing" is a stored
                 // fact rather than an absence.
-                $phase = ($records > 1) ? self::G_NEW : self::G_SINGLETON;
+                $phase = ($records > 1 && (int) $r[3] === 0) ? self::G_NEW : self::G_SINGLETON;
                 $marks[] = '(?,?,?,1,0,0,?,?,0)';
                 $flat[] = $this->pid;
                 $flat[] = $generationId;
@@ -359,7 +358,7 @@ final class UniqueFinalizer implements DuplicateFinalizer
     public function verify($generationId, array $g, $limit)
     {
         $rows = $this->db->select('SELECT candidate_id, record_id_bin, event_id, instance, field,
-            version_scanned FROM ' . Schema::table('unique_candidate') . '
+            version_scanned, host_form FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
             ORDER BY candidate_id LIMIT ' . max(1, (int) $limit),
             [$this->pid, $generationId, $g['group_hmac'], $g['verify_cursor']]);
@@ -376,9 +375,12 @@ final class UniqueFinalizer implements DuplicateFinalizer
 
         $locs = [];
         foreach ($rows as $r) {
+            // 'form': the instrument the value is stored on, which says
+            // whether instance 1 is a base row or a repeat instance.
             $locs[] = ['record' => $r[1], 'event_id' => self::eventOrNull($r[2]),
                        'instance' => (int) $r[3], 'field' => $r[4],
-                       'candidate_id' => (int) $r[0], 'version' => $r[5]];
+                       'candidate_id' => (int) $r[0], 'version' => $r[5],
+                       'form' => isset($r[6]) ? (string) $r[6] : null];
         }
 
         $read = isset($this->deps['read']) ? $this->deps['read'] : null;
@@ -477,25 +479,21 @@ final class UniqueFinalizer implements DuplicateFinalizer
             instance, host_form, field, rule_source_id, rule_revision
             FROM ' . Schema::table('unique_candidate') . '
             WHERE project_id = ? AND generation_id = ? AND group_hmac = ? AND candidate_id > ?
+              AND lookup = 0
             ORDER BY candidate_id LIMIT ' . max(1, (int) $limit),
             [$this->pid, $generationId, $g['group_hmac'], $g['emit_cursor']]);
 
+        // Checked values only: a lookup was verified with the group and is
+        // not a finding (Schema::statementsV4).
         if (!$rows) {
             return ['emitted' => 0, 'published' => $this->publish($generationId, $g), 'why' => null];
         }
 
         $key = isset($this->deps['hmacKey']) ? $this->deps['hmacKey'] : null;
-        $reportable = (isset($this->deps['reportable']) && is_callable($this->deps['reportable']))
-            ? $this->deps['reportable'] : null;
         $cursor = $g['emit_cursor'];
         $flat = [];
         $marks = [];
         foreach ($rows as $r) {
-            // Past it either way: the cursor moves over an unreported row too.
-            if ($reportable !== null && !$reportable((string) $r[7], (string) $r[6])) {
-                $cursor = (int) $r[0];
-                continue;
-            }
             // The candidate's 0 sentinel is undone before the event reaches
             // either the identity or the finding row. uv_finding.event_id is
             // still nullable and the ordinary scan path writes null there on a
@@ -514,14 +512,6 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $flat[] = $v;
             }
             $cursor = (int) $r[0];
-        }
-        if (!$marks) {
-            // A page of "also" candidates only: nothing to write, the cursor moves on.
-            $this->db->exec('UPDATE ' . Schema::table('unique_group')
-                . ' SET emit_cursor = ?
-                   WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
-                [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
-            return ['emitted' => 0, 'published' => false, 'why' => null];
         }
         // ONE STATEMENT PER PAGE, not one per finding. A group holding every
         // record in the project would otherwise be one round trip per record,

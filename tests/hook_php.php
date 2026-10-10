@@ -140,11 +140,36 @@ namespace {
             // chunking was unfalsifiable: a caller that requested the wrong slice
             // still saw every record and produced identical findings. The record
             // list is read WITHOUT 'records', so the pre-read is unaffected.
-            if (self::$exactFilter && isset($params['filterLogic'])) return self::filtered($params['filterLogic']);
-            if (empty($params['records'])) return self::$data;
+            if (self::$exactFilter && isset($params['filterLogic'])) return self::onlyEvents(self::filtered($params['filterLogic']), $params);
+            if (empty($params['records'])) return self::onlyEvents(self::$data, $params);
             $out = [];
             foreach ($params['records'] as $r) {
                 if (array_key_exists($r, self::$data)) $out[$r] = self::$data[$r];
+            }
+            return self::onlyEvents($out, $params);
+        }
+        /**
+         * A read that names events gets only those events' rows, as REDCap's
+         * does; a record with none is left out. Without this an
+         * "event"-scoped @UVUNIQUE read saw every event and could not be pinned.
+         */
+        private static function onlyEvents($data, $params) {
+            if (empty($params['events']) || !is_array($data)) return $data;
+            $keep = array_flip(array_map('strval', $params['events']));
+            $out = [];
+            foreach ($data as $rec => $node) {
+                if (!is_array($node)) { $out[$rec] = $node; continue; }
+                $kept = [];
+                foreach ($node as $k => $v) {
+                    if ($k === 'repeat_instances') {
+                        $ri = [];
+                        foreach ((array) $v as $ev => $b) if (isset($keep[(string) $ev])) $ri[$ev] = $b;
+                        if ($ri) $kept['repeat_instances'] = $ri;
+                    } elseif (isset($keep[(string) $k])) {
+                        $kept[$k] = $v;
+                    }
+                }
+                if ($kept) $out[$rec] = $kept;
             }
             return $out;
         }
@@ -2970,10 +2995,14 @@ namespace {
     // surveys: the answer is a bare yes/no, never a record or a field name
     $r = alCall($m, 'surv_a', 'T-5', '9', 'shash', null);
     check('also: a survey answer names neither the record nor the field', $r === ['used' => true, 'record' => null]);
-    // DAG: a record outside the user's group stays unnamed; the field may be named
+    // DAG: a record outside the user's group stays unnamed, and so does the
+    // field it holds the value in
     \REDCap::$groupNames = [7 => 'south'];
     $r = alCall($m, 'typed_id', 'P-001', '9', null, 'staff1', 7);
-    check('also: DAG masking still applies to the record id', $r['used'] === true && $r['record'] === null && $r['field'] === 'scan_id');
+    check('also: DAG masking hides the record id and the field', $r === ['used' => true, 'record' => null]);
+    \REDCap::$groupNames = [7 => 'north'];
+    $r = alCall($m, 'typed_id', 'P-001', '9', null, 'staff1', 7);
+    check('also: a record inside the user\'s group is named with its field', $r === ['used' => true, 'record' => '1', 'field' => 'scan_id']);
     \REDCap::$groupNames = [];
     // rights: a user who may not open the "also" field's form gets no answer
     \REDCap::$formsWithheld = ['staff1' => ['legacy']];
@@ -3088,8 +3117,16 @@ namespace {
         isset($plan['uniqueExact']['cs_a'], $plan['uniqueExact']['cs_b']));
     check('also plan: fields joined to a case-ignoring rule are folded',
         !isset($plan['uniqueExact']['scan_id']) && !isset($plan['uniqueExact']['typed_id']) && !isset($plan['uniqueExact']['legacy_id']));
-    check('also plan: where each rule\'s "also" fields live', in_array(['legacy' => ['legacy_id'], 'reg' => ['scan_id']],
-        $plan['uniqueMembers'], true) || in_array(['reg' => ['scan_id'], 'legacy' => ['legacy_id']], $plan['uniqueMembers'], true));
+    $tl = null;
+    foreach ($plan['uniqueLookups'] as $spec) if ($spec['hosts'] === ['typed_id']) $tl = $spec;
+    check('also plan: what a rule looks in, and the instrument of each field',
+        $tl !== null && $tl['also'] === ['scan_id', 'legacy_id']
+        && $tl['formOf'] === ['scan_id' => 'reg', 'legacy_id' => 'legacy', 'typed_id' => 'reg']
+        && $tl['hostSlots'] === false && count($tl['shapes']) === 1);
+    check('also plan: a rule with no "also", no "when" and no branch looks in nothing extra',
+        count($plan['uniqueLookups']) === count(array_filter($plan['live'], function ($r) {
+            return ($r['type'] ?? '') === 'unique' && !empty($r['uniqueAlso']);
+        })));
     $csDict = $alDict;
     $csDict['cs_b']['field_annotation'] = '@UVUNIQUE';   // cs_b now has a rule of its own that ignores case
     $m = newModule([], $csDict, $alData, 149);
@@ -3129,6 +3166,195 @@ namespace {
     ]));
     check('dialog also: rules on one field that search different fields are refused', is_string($msg)
         && strpos($msg, 'give "also" different values') !== false);
+
+    // ---- @UVUNIQUE: the scan agrees with the endpoint on branches, "when", scope ----
+    // The scan groups values by key; the endpoint asks "is this value saved
+    // anywhere the rule looks". These cases are where the two used to part.
+    $sxDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'reg'],
+        'site'  => ['field_type' => 'dropdown', 'field_annotation' => '', 'form_name' => 'reg',
+                    'select_choices_or_calculations' => '1, North | 2, South'],
+        // branches that differ in letter case, both searching idb
+        'ida'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' =>
+                    '@UVUNIQUE={"when":"[site]=\'1\'","caseSensitive":true,"also":["idb"]} '
+                  . '@UVUNIQUE={"when":"[site]=\'2\'","also":["idb"]}'],
+        'idb'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        // branches that differ in "with"
+        'idw'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' =>
+                    '@UVUNIQUE={"when":"[site]=\'1\'","with":["w1"],"also":["idwb"]} '
+                  . '@UVUNIQUE={"when":"[site]=\'2\'","with":["w2"],"also":["idwb"]}'],
+        'idwb'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        'w1'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        'w2'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        // a rule that checks only where "when" holds
+        'wid'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"when":"[site]=\'1\'"}'],
+        // "also" with dag and event scope
+        'dg_a'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"scope":"dag","also":["dg_b"]}'],
+        'dg_b'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        'ev_a'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"scope":"event","also":["ev_b"]}'],
+        'ev_b'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        // numbers with different decimal marks
+        'dm_a'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["dm_b"]}',
+                    'text_validation_type_or_show_slider_number' => 'number'],
+        'dm_b'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '',
+                    'text_validation_type_or_show_slider_number' => 'number_comma_decimal'],
+        // the survey opt-in with an "also" field on another instrument
+        'sv_a'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"surveys":true,"also":["sv_far"]}'],
+        'sv_far'=> ['field_type' => 'text', 'form_name' => 'staff_only', 'field_annotation' => ''],
+        'sv_ok' => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"surveys":true,"also":["sv_near"]}'],
+        'sv_near'=> ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+    ];
+    $sxCall = function ($m, $field, array $values, $record = '1', $event = 351, $user = 'staff1', $gid = null, $survey = null) {
+        return $m->redcap_module_ajax('unique-check', ['field' => $field, 'values' => $values], 149, $record,
+            'reg', $event, 1, $survey, null, null, 'DataEntry/index.php', '', $user, $gid);
+    };
+    $sxScan = function (array $data) use ($sxDict) {
+        $m = newModule([], $sxDict, $data, 149);
+        $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+        $at = [];
+        foreach ($res['violations'] as $v) if ($v['type'] === 'unique') $at[] = $v['record'] . ':' . $v['field'];
+        sort($at);
+        return $at;
+    };
+    $sxUniqueLogs = function ($m) {
+        return array_values(array_filter(invalidLogs($m), function ($L) { return $L[1]['type'] === 'unique'; }));
+    };
+
+    // C1: an exact "abc" on the case-keeping branch is not a duplicate of "ABC"
+    $d = ['1' => [351 => ['record_id' => '1', 'site' => '1', 'ida' => 'abc']],
+          '2' => [351 => ['record_id' => '2', 'idb' => 'ABC']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('branches: the case-keeping branch finds no "ABC" for "abc"',
+        $sxCall($m, 'ida', ['ida' => 'abc', 'site' => '1'])['used'] === false);
+    $m->redcap_save_record(149, '1', 'reg', 351, null, null, null, 1);
+    check('branches: and the audit logs nothing', count($sxUniqueLogs($m)) === 0);
+    check('branches: and the scan agrees (a case-folded "also" value is not filed under the exact branch)',
+        !in_array('1:ida', $sxScan($d), true));
+    $d['2'][351]['idb'] = 'abc';
+    check('branches: the exact spelling is found in the "also" field',
+        $sxCall(newModule([], $sxDict, $d, 149), 'ida', ['ida' => 'abc', 'site' => '1']) === ['used' => true, 'record' => '2', 'field' => 'idb']);
+    check('branches: and the scan reports it', $sxScan($d) === ['1:ida']);
+    // the checked values of two branches: each record by the branch it is on
+    $d = ['1' => [351 => ['record_id' => '1', 'site' => '1', 'ida' => 'abc']],
+          '2' => [351 => ['record_id' => '2', 'site' => '2', 'ida' => 'ABC']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('branches: the exact branch does not find "ABC"', $sxCall($m, 'ida', ['ida' => 'abc', 'site' => '1'], '1')['used'] === false);
+    check('branches: the case-ignoring branch finds "abc"', $sxCall($m, 'ida', ['ida' => 'ABC', 'site' => '2'], '2')['used'] === true);
+    check('branches: the scan reports only the record whose branch finds the other', $sxScan($d) === ['2:ida']);
+
+    // C2: branches that key by different "with" fields
+    $d = ['1' => [351 => ['record_id' => '1', 'site' => '1', 'idw' => 'X', 'w1' => 'Q']],
+          '2' => [351 => ['record_id' => '2', 'idwb' => 'X', 'w1' => 'R', 'w2' => 'Q']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('branches: "with" is matched as the record\'s own branch says',
+        $sxCall($m, 'idw', ['idw' => 'X', 'site' => '1', 'w1' => 'Q'])['used'] === false);
+    $m->redcap_save_record(149, '1', 'reg', 351, null, null, null, 1);
+    check('branches: the audit agrees', count($sxUniqueLogs($m)) === 0);
+    check('branches: and the scan agrees', !in_array('1:idw', $sxScan($d), true));
+    $d['2'][351]['w1'] = 'Q';
+    check('branches: same "with" value -> found', $sxCall(newModule([], $sxDict, $d, 149), 'idw',
+        ['idw' => 'X', 'site' => '1', 'w1' => 'Q'])['used'] === true);
+    check('branches: and the scan reports it', $sxScan($d) === ['1:idw']);
+
+    // "when": another record is searched whatever its own "when" says
+    $d = ['1' => [351 => ['record_id' => '1', 'site' => '1', 'wid' => 'W-1']],
+          '2' => [351 => ['record_id' => '2', 'site' => '2', 'wid' => 'W-1']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('when: the endpoint finds the value in a record its "when" skips',
+        $sxCall($m, 'wid', ['wid' => 'W-1', 'site' => '1']) === ['used' => true, 'record' => '2']);
+    check('when: the scan reports the checked record, not the skipped one', $sxScan($d) === ['1:wid']);
+    $d['2'][351]['site'] = '1';
+    check('when: both checked -> both reported', $sxScan($d) === ['1:wid', '2:wid']);
+
+    // caseSensitive with "also" in the scan
+    $d = ['1' => [351 => ['record_id' => '1', 'cs_b' => 'Ab-1']], '9' => [351 => ['record_id' => '9', 'cs_a' => 'ab-1']]];
+    $csScan = function ($d) use ($alDict) {
+        $m = newModule([], $alDict, $d, 149);
+        $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+        $at = [];
+        foreach ($res['violations'] as $v) if ($v['type'] === 'unique') $at[] = $v['record'] . ':' . $v['field'];
+        return $at;
+    };
+    check('caseSensitive: the scan keeps letter case in the "also" field', $csScan($d) === []);
+    $d['9'][351]['cs_a'] = 'Ab-1';
+    check('caseSensitive: the exact spelling is reported', $csScan($d) === ['9:cs_a']);
+
+    // dag scope: only the record's own group is searched
+    $d = ['1' => [351 => ['record_id' => '1', 'dg_b' => 'D-1', 'redcap_data_access_group' => 'north']],
+          '2' => [351 => ['record_id' => '2', 'dg_b' => 'D-2', 'redcap_data_access_group' => 'south']],
+          '9' => [351 => ['record_id' => '9', 'dg_a' => 'D-2', 'redcap_data_access_group' => 'north']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('dag scope: a value saved in another group is free', $sxCall($m, 'dg_a', ['dg_a' => 'D-2'], '9')['used'] === false);
+    check('dag scope: and the scan agrees', $sxScan($d) === []);
+    $d['9'][351]['dg_a'] = 'D-1';
+    check('dag scope: a value saved in the same group is used',
+        $sxCall(newModule([], $sxDict, $d, 149), 'dg_a', ['dg_a' => 'D-1'], '9')['used'] === true);
+    check('dag scope: and the scan reports it', $sxScan($d) === ['9:dg_a']);
+
+    // event scope: only the event the value is saved in is searched
+    $d = ['1' => [352 => ['record_id' => '1', 'ev_b' => 'E-1']],
+          '9' => [351 => ['record_id' => '9', 'ev_a' => 'E-1']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('event scope: a value saved in another event is free', $sxCall($m, 'ev_a', ['ev_a' => 'E-1'], '9', 351)['used'] === false);
+    check('event scope: and the scan agrees', $sxScan($d) === []);
+    check('event scope: the same event finds it', $sxCall($m, 'ev_a', ['ev_a' => 'E-1'], '9', 352)['used'] === true);
+    $d['9'][352] = ['record_id' => '9', 'ev_a' => 'E-1'];
+    check('event scope: and the scan reports that event only', $sxScan($d) === ['9:ev_a']);
+
+    // configuration: decimal marks, and the survey opt-in off the survey's instrument
+    $m = newModule([], $sxDict, [], 149);
+    $p = pageCfg($m, 'entry', '9', 'reg');
+    $why = function ($field) use ($p) { $r = ruleFor($p, $field); return ($r && isset($r['configError'])) ? $r['configError'] : ''; };
+    check('also: a decimal point searched in a decimal-comma field is refused',
+        strpos($why('dm_a'), '"dm_a" holds numbers with a decimal point and "also" field "dm_b" holds numbers with a decimal comma') !== false);
+    check('also: the survey opt-in is refused for an "also" field on another instrument',
+        strpos($why('sv_a'), '"also" field "sv_far" is not on the instrument of "sv_a" ("reg")') !== false);
+    check('also: the survey opt-in with an "also" field on the same instrument stands', $why('sv_ok') === '');
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['idb'], 'unique-also' => 'sv_far', 'unique-surveys' => '1', 'block-save' => 'off'],
+    ]));
+    check('dialog also: the survey opt-in is refused for an "also" field on another instrument',
+        is_string($msg) && strpos($msg, '"also" field "sv_far" is not on the instrument of "idb"') !== false);
+
+    // The endpoint holds both survey refusals itself, for a dictionary that
+    // changed after the rules were read: the rule is read first, then the
+    // dictionary the request sees is edited under it.
+    $flip = function ($m, $field, $key, $value) {
+        $rp = new \ReflectionProperty($m, 'ddCache');
+        $rp->setAccessible(true);
+        $c = $rp->getValue($m);
+        foreach ($c as $pidKey => $dd) if (isset($dd[$field])) $c[$pidKey][$field][$key] = $value;
+        $rp->setValue($m, $c);
+    };
+    $d = ['1' => [351 => ['record_id' => '1', 'sv_near' => 'N-1']]];
+    $m = newModule([], $sxDict, $d, 149);
+    check('survey: a sound opt-in answers yes or no', $sxCall($m, 'sv_ok', ['sv_ok' => 'N-1'], '9', 351, null, null, 'shash')
+        === ['used' => true, 'record' => null]);
+    $flip($m, 'sv_near', 'identifier', 'y');
+    check('survey: an "also" field that became an Identifier is refused at the request',
+        $sxCall($m, 'sv_ok', ['sv_ok' => 'N-1'], '9', 351, null, null, 'shash') === ['error' => 'not enabled on surveys']);
+    $m = newModule([], $sxDict, $d, 149);
+    $sxCall($m, 'sv_ok', ['sv_ok' => 'N-1'], '9', 351, null, null, 'shash');
+    $flip($m, 'sv_near', 'form_name', 'staff_only');
+    check('survey: an "also" field moved to another instrument is refused at the request',
+        $sxCall($m, 'sv_ok', ['sv_ok' => 'N-1'], '9', 351, null, null, 'shash') === ['error' => 'not enabled on surveys']);
+
+    // The durable scan stores lookups beside checked values, marked, once per group.
+    $m = newModule([], $alDict, $alSaved, 149);
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '9', $alSaved['9'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $byKind = [];
+    foreach ($dur['candidates'] as $c) $byKind[$c['field'] . ':' . $c['lookup']] = true;
+    check('durable: the checked typed ID is a candidate, lookup 0', isset($byKind['typed_id:0']));
+    check('durable: the same value is a lookup of the scanned field\'s rule, lookup 1', isset($byKind['typed_id:1']));
+    check('durable: nothing collapsed', $dur['collapsed'] === 0);
+    $m = newModule([], $sxDict, ['2' => [351 => ['record_id' => '2', 'idb' => '123']]], 149);
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', [351 => ['record_id' => '2', 'idb' => '123']], 1,
+        str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $ida = array_values(array_filter($dur['candidates'], function ($c) { return $c['field'] === 'idb'; }));
+    check('durable: a value with no letters, under two branches that differ only in letter case, is two lookups and no collapse',
+        count($ida) === 2 && $ida[0]['lookup'] === 1 && $ida[0]['group_hmac'] !== $ida[1]['group_hmac'] && $dur['collapsed'] === 0);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

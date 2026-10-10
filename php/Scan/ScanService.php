@@ -699,7 +699,6 @@ final class ScanService
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
-        $hosts = self::ruleHostFields($plan);
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
             'hmacKey'  => $this->key(),
@@ -712,42 +711,7 @@ final class ScanService
                 foreach ($locs as $l) $ids[(string) $l['record']] = true;
                 return self::rereadValues($read(array_keys($ids)), $locs, $plan);
             },
-            // A candidate from an @UVUNIQUE "also" field is evidence that a
-            // value is used, not a finding: the rule checks its own fields.
-            'reportable' => function ($sourceId, $field) use ($hosts) {
-                return self::reportableCandidate($hosts, $sourceId, $field);
-            },
         ]);
-    }
-
-    /**
-     * rule source id => [field => true] for every live rule of the plan: the
-     * fields each rule checks, keyed by the ids its candidates carry.
-     */
-    public static function ruleHostFields(array $plan)
-    {
-        $live = (isset($plan['live']) && is_array($plan['live'])) ? $plan['live'] : [];
-        $ids = (isset($plan['ruleIds']) && is_array($plan['ruleIds'])) ? $plan['ruleIds'] : [];
-        $out = [];
-        foreach ($live as $i => $r) {
-            if (!isset($ids[$i]['source_id']) || !is_array($r)) continue;
-            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
-                $out[(string) $ids[$i]['source_id']][(string) $f] = true;
-            }
-        }
-        return $out;
-    }
-
-    /**
-     * Whether a duplicate candidate becomes a finding: when its field is one
-     * its rule checks. A rule the plan does not name is reported rather than
-     * silenced - the same choice durableEvaluateRecord makes for it.
-     */
-    public static function reportableCandidate(array $hosts, $sourceId, $field)
-    {
-        $sourceId = (string) $sourceId;
-        if (!isset($hosts[$sourceId])) return true;
-        return isset($hosts[$sourceId][(string) $field]);
     }
 
     /**
@@ -797,6 +761,14 @@ final class ScanService
      * because the finalizer blocks on absent and would confirm on empty - and
      * confirming a duplicate nobody read is the one outcome that class exists to
      * prevent.
+     *
+     * The location's form ($loc['form'], the candidate's host_form) decides
+     * where the value is: a form that repeats in this record's event keeps
+     * EVERY instance, the first included, in repeat_instances, and a repeating
+     * event keeps them under ''. Its base row carries the field blank, so
+     * reading instance 1 there compared a blank with the grouped value and
+     * blocked the group as a hash collision. A location with no form is read
+     * as before.
      */
     private static function valueAt(array $data, array $loc)
     {
@@ -804,6 +776,20 @@ final class ScanService
         if (!is_array($rec)) return null;
         $ev = $loc['event_id'];
         $inst = isset($loc['instance']) ? (int) $loc['instance'] : 1;
+        $form = (isset($loc['form']) && is_string($loc['form']) && $loc['form'] !== '') ? $loc['form'] : null;
+
+        if ($form !== null) {
+            $ri = (isset($rec['repeat_instances'][$ev]) && is_array($rec['repeat_instances'][$ev]))
+                ? $rec['repeat_instances'][$ev] : [];
+            foreach ([$form, ''] as $bucket) {
+                if (!isset($ri[$bucket]) || !is_array($ri[$bucket])) continue;
+                $row = isset($ri[$bucket][$inst]) ? $ri[$bucket][$inst] : null;
+                return (is_array($row) && array_key_exists($loc['field'], $row)) ? $row[$loc['field']] : null;
+            }
+            if ($inst > 1) return null;
+            $node = isset($rec[$ev]) ? $rec[$ev] : null;
+            return (is_array($node) && array_key_exists($loc['field'], $node)) ? $node[$loc['field']] : null;
+        }
 
         if ($inst > 1 && isset($rec['repeat_instances'][$ev])) {
             foreach ($rec['repeat_instances'][$ev] as $form => $rows) {

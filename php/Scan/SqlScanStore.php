@@ -1107,9 +1107,9 @@ final class SqlScanStore implements ScanStore
     {
         $this->db->exec('INSERT INTO ' . Schema::table('unique_candidate') . '
             (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
-             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned)', [
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned, lookup)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON DUPLICATE KEY UPDATE version_scanned = VALUES(version_scanned), lookup = VALUES(lookup)', [
             self::mustProject($c),
             $c['generation_id'], $c['rule_source_id'], $c['rule_revision'], $c['group_hmac'],
             isset($c['scope_key']) ? $c['scope_key'] : '',
@@ -1122,6 +1122,8 @@ final class SqlScanStore implements ScanStore
             isset($c['instance']) ? $c['instance'] : 1,
             $c['host_form'], $c['field'],
             isset($c['version']) ? $c['version'] : null,
+            // 1: a value a @UVUNIQUE rule looks in, never reported (Schema::statementsV4).
+            empty($c['lookup']) ? 0 : 1,
         ]);
     }
 

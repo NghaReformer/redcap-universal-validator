@@ -1627,6 +1627,110 @@ namespace {
             $logged === true);
     }
 
+    /* =====================================================================
+     * @UVUNIQUE "also" across instruments, repeats and events
+     *
+     * The endpoint reads another record context by context: a base row, or a
+     * repeat instance merged over it (collisionIn). The scan's lookups read
+     * the same contexts, so an "also" value on a base form matches a "with"
+     * value on a repeating one in both. Placements that can never match are
+     * refused when the rule is read.
+     * ===================================================================== */
+    {
+        $D = dict([
+            'record_id' => ['fa'],
+            'ida'       => ['fr', '@UVUNIQUE={"with":["wl"],"also":["idb"]}'],
+            'wl'        => ['fr'],
+            'idb'       => ['fa'],
+        ]);
+        $map = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 1, 'form' => 'fr']];
+        $data = [
+            1 => [1 => ['record_id' => '1'], 'repeat_instances' => [1 => ['fr' => [1 => ['ida' => 'X', 'wl' => 'S1']]]]],
+            2 => [1 => ['record_id' => '2', 'idb' => 'X'], 'repeat_instances' => [1 => ['fr' => [1 => ['wl' => 'S1']]]]],
+        ];
+        $m = mkMod($D, $data, [1 => ['fr' => null]], $map);
+        $r = $m->redcap_module_ajax('unique-check', ['field' => 'ida', 'values' => ['ida' => 'X', 'wl' => 'S1']],
+            PID, '1', 'fr', 1, 1, null, null, null, '', '', 'nurse', null);
+        check('also C3: the endpoint finds a base-form value beside a repeating "with" value',
+            $r === ['used' => true, 'record' => '2', 'field' => 'idb']);
+        $res = mkMod($D, $data, [1 => ['fr' => null]], $map)->scanProject(PID);
+        $at = [];
+        foreach ($res['violations'] as $v) if ($v['type'] === 'unique') $at[] = $v['record'] . ':' . $v['field'];
+        check('also C3: the scan reports it too', $at === ['1:ida']);
+        check('also C3: and raises no rule problem', $res['unconfigurable'] === []);
+        $data[2][1]['idb'] = '';
+        $res = mkMod($D, $data, [1 => ['fr' => null]], $map)->scanProject(PID);
+        check('also C3: with nothing saved there, the scan is clean', vcount($res, 'unique') === 0 && $res['unconfigurable'] === []);
+        $data[2]['repeat_instances'][1]['fr'][1]['wl'] = 'S2';
+        $data[2][1]['idb'] = 'X';
+        $m = mkMod($D, $data, [1 => ['fr' => null]], $map);
+        $r = $m->redcap_module_ajax('unique-check', ['field' => 'ida', 'values' => ['ida' => 'X', 'wl' => 'S1']],
+            PID, '1', 'fr', 1, 1, null, null, null, '', '', 'nurse', null);
+        check('also C3: another "with" value beside it -> free', $r['used'] === false);
+        check('also C3: and the scan agrees', vcount(mkMod($D, $data, [1 => ['fr' => null]], $map)->scanProject(PID), 'unique') === 0);
+
+        // The durable scan stores where a lookup value lives: a base-form value
+        // matched beside repeat instance 2 is re-read from the base row.
+        $node = [1 => ['record_id' => '2', 'idb' => 'X'],
+                 'repeat_instances' => [1 => ['fr' => [1 => ['wl' => 'S9'], 2 => ['wl' => 'S1']]]]];
+        $m = mkMod($D, [2 => $node], [1 => ['fr' => null]], $map);
+        $ctx = $m->durableScanContext(PID, ['generation' => null]);
+        $dur = $m->durableEvaluateRecord($ctx['plan'], PID, '2', $node, 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+        $look = array_values(array_filter($dur['candidates'], function ($c) { return $c['field'] === 'idb'; }));
+        // Three contexts, three "with" values (blank, S9, S1): one lookup each,
+        // every one stored on the base row of idb's own form.
+        $where = array_map(function ($c) { return $c['lookup'] . '|' . $c['host_form'] . '|' . $c['instance']; }, $look);
+        check('also C3 durable: one lookup per group, stored on the base row of its own form',
+            $where === ['1|fa|1', '1|fa|1', '1|fa|1'] && count(array_unique(array_column($look, 'group_hmac'))) === 3);
+        $got = \INSPIRE\UniversalValidator\Scan\ScanService::rereadValues(['ok' => true, 'data' => [2 => $node]],
+            [['record' => '2', 'event_id' => 1, 'instance' => 1, 'field' => 'idb', 'form' => 'fa']], []);
+        check('also C3 durable: and is re-read there', array_values($got['values']) === [['=x']]);
+
+        // Placements that can never match are refused.
+        $D2 = dict([
+            'record_id' => ['fa'],
+            'u2'  => ['fr', '@UVUNIQUE={"with":["wl"],"also":["ob"]}'],
+            'wl'  => ['fr'],
+            'ob'  => ['fb'],
+            'e1'  => ['fa', '@UVUNIQUE={"scope":"event","also":["eb"]}'],
+            'eb'  => ['fc'],
+            'z1'  => ['fa', '@UVUNIQUE={"also":["zz"]}'],
+            'zz'  => ['fz'],
+            'ok1' => ['fr', '@UVUNIQUE={"with":["wl"],"also":["okb"]}'],
+            'okb' => ['fa'],
+        ]);
+        $map2 = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 1, 'form' => 'fr'], ['event_id' => 1, 'form' => 'fb'],
+                 ['event_id' => 2, 'form' => 'fc']];
+        $rep2 = [1 => ['fr' => null, 'fb' => null]];
+        $why = function ($form, $field) use ($D2, $map2, $rep2) {
+            $r = ruleOf(render(mkMod($D2, [], $rep2, $map2), $form), $field);
+            return ($r && isset($r['configError'])) ? $r['configError'] : '';
+        };
+        check('also placement: an "also" field and a "with" field on two repeating instruments are refused',
+            strpos($why('fr', 'u2'), '"also" field "ob" and "with" field "wl" are on different repeating instruments') !== false);
+        check('also placement: event scope with an "also" field no event shares is refused',
+            strpos($why('fa', 'e1'), '"also" field "eb" is in no event together with "e1"') !== false);
+        check('also placement: an "also" field on an instrument no event collects is refused',
+            strpos($why('fa', 'z1'), '"also" field "zz" is on instrument "fz", which no event collects') !== false);
+        check('also placement: a base-form "also" field beside a repeating "with" field stands', $why('fr', 'ok1') === '');
+        check('also placement: nothing is claimed when the events cannot be read',
+            ($r = ruleOf(render(mkMod($D2, [], $rep2, null), 'fr'), 'u2')) !== null && empty($r['configError']));
+
+        // The Configure dialog applies the same check.
+        $flat = function (array $row) {
+            $keys = ['rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message', 'unique-with', 'unique-also',
+                     'unique-scope', 'unique-surveys', 'block-save'];
+            $out = ['rules' => [true]];
+            foreach ($keys as $k) $out[$k] = [isset($row[$k]) ? $row[$k] : ''];
+            return $out;
+        };
+        $m = mkMod(dict(['record_id' => ['fa'], 'u3' => ['fr'], 'wl' => ['fr'], 'ob' => ['fb']]), [], $rep2, $map2);
+        $msg = $m->validateSettings($flat(['rule-type' => 'unique', 'fields' => ['u3'], 'unique-with' => 'wl',
+                                           'unique-also' => 'ob', 'block-save' => 'off']));
+        check('dialog also placement: refused the same way',
+            is_string($msg) && strpos($msg, 'are on different repeating instruments') !== false);
+    }
+
     echo "hosting_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }
