@@ -29,8 +29,9 @@ a value of another field such as the specimen ID on the collection form.</p>
 <tr><td><code>surveys</code></td><td><code>true</code> to check on surveys too (off by default)</td></tr>
 <tr><td><code>project</code></td><td>Look in another project on the same server, by project id or by an
     alias set in this project's module settings; that project must agree (see below)</td></tr>
-<tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
-    <code>caseSensitive</code></td><td>As for the other tags</td></tr>
+<tr><td><code>caseSensitive</code></td><td><code>true</code> compares letter case exactly, in
+    the lookup and in <code>when</code> (off by default: <code>sp-1</code> finds <code>SP-1</code>)</td></tr>
+<tr><td><code>message</code>, <code>blockSave</code>, <code>when</code></td><td>As for the other tags</td></tr>
 </tbody>
 </table>
 </div>
@@ -40,7 +41,8 @@ a value of another field such as the specimen ID on the collection form.</p>
 <p>Text, dropdown, radio and SQL fields. The field searched in, and each pair of
 <code>match</code> fields, must be stored the same way: two dates, two datetimes to the
 minute, two datetimes to the second, two times of the same precision, or neither a date
-nor a time, because the comparison is exact on the stored values.</p>
+nor a time, because dates are compared as stored. Two fields that hold numbers must use the
+same decimal mark.</p>
 
 <h2>What is checked, and when</h2>
 
@@ -52,8 +54,15 @@ nor a time, because the comparison is exact on the stored values.</p>
     to 10 seconds. A value typed and saved at once is therefore checked before the save.</li>
 <li>With several <code>when</code> branches, the page sends the values its conditions
     read, so the server answers from the branch the page is enforcing.</li>
-<li>The comparison is exact and case-sensitive. Dates are compared as REDCap stores them
-    (Y-M-D), whatever format the field shows.</li>
+<li>Values are trimmed and A-Z letter case is ignored unless the rule sets
+    <code>"caseSensitive":true</code>. When the searched field holds numbers (an integer or
+    number Text field, a calc or a slider), values compare by value, so <code>7</code> finds
+    <code>007</code>. Dates are compared as REDCap stores them (Y-M-D), whatever format the
+    field shows.</li>
+<li><code>@UVEXISTS=record</code> never finds the record being edited. A record ID typed in
+    another letter case is found after one read of every record ID.</li>
+<li>Save never trusts a remembered "not found": the value may have been saved elsewhere
+    since, so Save asks again.</li>
 <li>A blank value checks nothing, and so does a blank <code>match</code> field on the
     same page. A <code>match</code> field on another form that is still blank shows
     "could not check" to staff.</li>

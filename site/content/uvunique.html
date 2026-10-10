@@ -35,8 +35,17 @@ everything.</p>
 
 <p>The endpoint answers only for fields that carry a unique rule, so it cannot be used
 to probe arbitrary fields for the existence of a value. Staff see the colliding record
-id only when it is inside their own Data Access Group. Comparison is exact, after
-trimming, against stored values.</p>
+id only when it is inside their own Data Access Group.</p>
+
+<h2>What counts as the same value</h2>
+
+<p>Stored values, trimmed, with A-Z letter case ignored: <code>SP-1</code> and
+<code>sp-1</code> are duplicates. Add <code>"caseSensitive":true</code> when case tells two
+values apart. In a field that holds numbers (an integer or number Text field, or a slider)
+values compare by value, so <code>007</code> and <code>7</code> are duplicates. On a plain
+Text field they stay text. <code>@UVEXISTS</code> compares the same way.</p>
+<p>Up to 2.1.0-rc.2 the comparison was exact. A project that already holds both spellings
+of a value gets duplicate findings after the upgrade.</p>
 
 <h2>Surveys: opt-in, and never on an identifier</h2>
 

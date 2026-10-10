@@ -105,8 +105,9 @@ notice but never block a save.
 only while that condition is true. A false `when` skips the rule — it never erases
 the value. See [The `when` condition language](#the-when-condition-language).
 
-**Text in conditions ignores letter case.** `[status]='active'` is true for `Active`
-and `ACTIVE`, in every tag's `when`, in branch selectors and in `@UVASSERT`. Add
+**Text ignores letter case.** `[status]='active'` is true for `Active` and `ACTIVE`,
+in every tag's `when`, in branch selectors and in `@UVASSERT`. The values
+`@UVEXISTS` looks up and `@UVUNIQUE` compares ignore it too. Add
 `"caseSensitive":true` to a tag's JSON for exact matching. See
 [Letter case](#letter-case).
 
@@ -1094,8 +1095,16 @@ Respondents always receive a **boolean** — never a record id.
   (a data enterer cannot fix a calc collision).
 - **Privacy posture.** The endpoint answers only for fields that carry a unique rule, so
   it cannot be used to probe arbitrary fields for value existence. Staff see the
-  colliding record id only when that record is inside their own DAG. Comparison is exact
-  against stored values, after trimming.
+  colliding record id only when that record is inside their own DAG.
+- **What counts as the same value.** Values are trimmed and letter case is ignored, so
+  `SP-1` and `sp-1` are duplicates; add `"caseSensitive":true` when case tells two
+  values apart. On a field that holds numbers (a Text field validated as an integer or
+  a number, or a slider) values compare by value: `007` and `7.0` both duplicate `7`.
+  On a plain Text field they stay text, so `007` and `7` differ. Dropdown and radio
+  values compare by code. `@UVEXISTS` compares the same way, so the two tags agree when
+  one field carries both.
+- **Save asks again.** A value the page found already used is asked once more when
+  Save is clicked, so a record changed since then no longer blocks the save.
 - **The race is audited, not denied.** Two near-simultaneous saves can both pass the
   live check. The post-save audit re-checks the saved value against every other record
   and logs a collision (`type: unique`, `reason: duplicate-value`) — review the module
@@ -1105,8 +1114,8 @@ Respondents always receive a **boolean** — never a record id.
 ### `@UVUNIQUE` JSON keys
 
 `with`, `scope`, `when`, `message`, `blockSave`, `surveys`, `caseSensitive`. Any other
-key is a configuration error. `caseSensitive` governs the `when` only; the duplicate
-check itself always compares values exactly.
+key is a configuration error. `caseSensitive` governs the `when` and the duplicate check
+alike.
 
 ---
 
@@ -1533,12 +1542,29 @@ stay fields of this record. Three switches must all be on:
 - **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
   each `match` target must exist and hold one value (no checkbox, file or
   descriptive field).
-- **The comparison is exact.** Values are trimmed and compared letter for letter,
-  case included. A date is compared as REDCap stores it (Y-M-D), whatever format
-  the field shows, so the field and the field searched must be stored the same
-  way: two dates, two datetimes to the minute, two datetimes to the second, two
-  times of the same precision, or neither a date nor a time. Dropdown and radio
-  values are compared by code, so the two fields need the same codes.
+- **How values compare.** Values are trimmed (spaces, tabs, line breaks and the
+  no-break space) and letter case is ignored, so `sp-1` finds `SP-1`. Add
+  `"caseSensitive":true` to compare letter for letter. Only A to Z fold:
+  accented letters and other scripts compare exactly, and no Unicode
+  normalisation is applied, so an accent typed as a separate mark differs from
+  the same letter typed whole.
+- **Numbers compare by value** when the searched field holds numbers: a Text
+  field validated as an integer or a number, a calc or a slider. `7` then finds
+  `007`, `7.0` and `+7`. A field with a decimal comma searched from one with a
+  decimal point (or the other way round) is refused when the rule is saved. On a
+  plain Text field numbers stay text, so `7` does not find `007` there.
+- **Dates** compare as REDCap stores them (Y-M-D), whatever format the field
+  shows, so the field and the field searched must be stored the same way: two
+  dates, two datetimes to the minute, two datetimes to the second, two times of
+  the same precision, or neither a date nor a time. Dropdown and radio values
+  are compared by code, so the two fields need the same codes.
+- **Record IDs.** `@UVEXISTS=record` never finds the record being edited. A
+  record ID typed in another letter case (`xe-7` for `XE-7`) is found after one
+  extra read of the project's record IDs, within the survey read budget on a
+  survey. With `"caseSensitive":true` only the exact ID is found.
+- **The record shown to staff.** When several entries match, the one in the
+  user's own Data Access Group comes first, so it can be named, then the one
+  spelled exactly as typed.
 - **Asked when the value is entered, not per keystroke.** The page asks when the
   field is changed or left, and once when the form opens. Typing clears the last
   answer, so a half-typed value never reads "not found"; typing in a text field
@@ -1546,7 +1572,9 @@ stay fields of this record. Three switches must all be on:
 - **Save waits for the answer.** Clicking Save re-checks the field first: a value
   typed and saved at once is asked before the save is decided, and the save is
   held while the answer is on its way. After 10 seconds without one, the value
-  counts as *could not check*.
+  counts as *could not check*. A *not found* is never taken from the page's
+  memory at Save: the value may have been saved elsewhere since, so it is asked
+  again.
 - **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
   and *could not check* (amber; never blocks). A failed read, a `match` field that
   is blank on another form, a busy server and missing rights all answer *could not
@@ -1581,7 +1609,9 @@ stay fields of this record. Three switches must all be on:
   logged as a rule problem, never as a pass.
 - **The Validation scan** reads the searched field once per rule per scan request
   and checks every record against it, with "Not found in its source" in the Issue
-  column. A scan confined to one Data Access Group skips rules whose `scope` is
+  column. It reads in chunks of records and stops with a rule problem, not a
+  pass, when the index it builds is on course to use more than 60% of PHP's
+  memory limit. A scan confined to one Data Access Group skips rules whose `scope` is
   not `dag`, and reports them as not evaluated, because a value saved only in
   another group would read as not found. A durable scan with `@UVEXISTS` rules
   claims coverage through its change fence only when no record changed during
@@ -1606,7 +1636,9 @@ stay fields of this record. Three switches must all be on:
   lookup, answered or refused: the asking project, the channel (staff, survey,
   audit), the user ("survey" for a respondent, "(no user)" for a save nobody
   was signed in for, such as a data import), the field, the result, and the
-  value as a keyed hash under that project's key. The value is left out when
+  value as a keyed hash under that project's key. A rule that ignores letter
+  case hashes the value in lower case and adds `case: ignored`, so `SP-1` and
+  `sp-1` leave the same hash. The value is left out when
   that project's "How to log invalid values" is "none" or "off", and is never
   logged raw. When a *not found* needed a read of that project's record IDs,
   the line says `extra_read: record ids`. Nothing is written there while the
@@ -2256,8 +2288,9 @@ Examples:
 
 ### Letter case
 
-Text in a condition is compared without regard to the case of A-Z. All of these
-match `Yes`, `yes` and `YES`:
+Text in a condition is compared without regard to the case of A-Z. So are the values
+`@UVEXISTS` looks up and the values `@UVUNIQUE` compares. All of these match `Yes`,
+`yes` and `YES`:
 
 ```text
 @UVREQUIRED="[consent]='yes'"
@@ -2270,14 +2303,16 @@ Set `"caseSensitive":true` when case is part of the value:
 ```text
 @UVASSERT={"assert":"[lot_code]=[lot_code_confirm]","caseSensitive":true,"message":"Lot codes must match exactly"}
 @UVREQUIRED={"when":"[grade]='A'","caseSensitive":true}
+@UVUNIQUE={"caseSensitive":true,"message":"This code is taken (codes are case-sensitive)"}
+@UVEXISTS={"in":"[lot_code]","caseSensitive":true}
 ```
 
 - Every tag with a `when` accepts it: `@UVALIDATE`, `@UVASSERT`, `@UVREQUIRED`,
-  `@UVUNIQUE`, `@UVCHOICES`. In the Configure dialog it is the "compare text
-  case-sensitively" checkbox on the rule.
-- It covers **every condition of that one rule**: its `when`, its `assert`, and, when
-  several tags on a field branch, that branch's selector. Each branch uses its own
-  tag's flag.
+  `@UVUNIQUE`, `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS`, `@UVRANGE`. In the Configure
+  dialog it is the "compare text case-sensitively" checkbox on the rule.
+- It covers **every comparison of that one rule**: its `when`, its `assert`, the
+  value `@UVEXISTS` looks up, the duplicate check of `@UVUNIQUE`, and, when several
+  tags on a field branch, that branch's selector. Each branch uses its own tag's flag.
 - The value must be an unquoted `true` or `false`; `"true"` or `1` is a configuration
   error. `false` is the default and changes nothing.
 - Only A-Z are folded. Accented and other non-ASCII letters keep their case, because
@@ -2286,7 +2321,9 @@ Set `"caseSensitive":true` when case is part of the value:
   numbers and text.
 - Branches that differ only in case, such as `[site]='a'` and `[site]='A'`, are both
   true at once under the default and are reported as a branch conflict.
-- It does not change what `@UVUNIQUE` counts as a duplicate; that comparison is exact.
+- Up to 2.1.0-rc.2, `@UVUNIQUE` compared exactly. A project that already holds `SP-1`
+  and `sp-1` in a unique field now shows them as duplicates; add `"caseSensitive":true`
+  to keep the old behaviour.
 
 ---
 
@@ -2530,8 +2567,9 @@ With every option a record-scope rule accepts:
 @UVUNIQUE={"scope":"record","with":["specimen_type"],"when":"[specimen_collected]='1'","message":"This specimen is already entered for this participant","blockSave":"hard","caseSensitive":true}
 ```
 
-`caseSensitive` here governs the `when` text only. The duplicate comparison itself
-always distinguishes case and leading zeros.
+`caseSensitive` here governs the `when` text and the duplicate comparison alike: with
+it, `SP-1` and `sp-1` are different specimens. Leading zeros count unless the field holds
+numbers (an integer or number validation), where `007` and `7` are the same value.
 
 Choose one of these alternatives. Record scope excludes only the exact current
 entry. It differs from `scope:"event"`, which checks other records within the event;
@@ -3422,7 +3460,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `when`          | string          | *(none)*   | Check only while true                                          |
 | `message`       | string          | generic line | Your own wording                                               |
 | `blockSave`     | string          | `off`      | `off`, `confirm`, `hard`                                 |
-| `caseSensitive` | boolean         | `false`    | Exact-case text in`when` (not the duplicate check)           |
+| `caseSensitive` | boolean         | `false`    | Exact-case text in`when` and the duplicate check             |
 
 ### `@UVCHOICES`
 
@@ -3461,7 +3499,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `when`          | string          | *(none)*     | Check only while true                                                  |
 | `message`       | string          | generic line   | Replaces the "not found" line                                          |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
-| `caseSensitive` | boolean         | `false`      | Exact-case text in `when` (the lookup itself is always exact)        |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when` and in the lookup                          |
 
 ### `@UVRANGE`
 
@@ -3661,6 +3699,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}
+@UVUNIQUE={"caseSensitive":true}                       "AB12" and "ab12" are different codes
 
 # ── Composing several kinds on ONE field ─────────────────────────────────────
 @UVREQUIRED="[consent]='1'"

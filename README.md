@@ -445,7 +445,12 @@ call — no page reload), with the usual message/confirm/block enforcement:
 - **Privacy posture.** The endpoint answers only for fields carrying a unique
   rule (it cannot be used to probe arbitrary fields for value existence).
   Staff see the colliding record id only when it is inside their own DAG.
-  Comparison is exact (trimmed) against stored values.
+- **What counts as the same value.** Stored values, trimmed, with letter case
+  ignored (`SP-1` duplicates `sp-1`) unless the rule sets `"caseSensitive":true`.
+  In a field that holds numbers (an integer or number Text field, or a slider)
+  values compare by value, so `007` duplicates `7`. `@UVEXISTS` compares the same
+  way. Up to 2.1.0-rc.2 the comparison was exact: a project that holds both
+  spellings of a value gets duplicate findings after the upgrade.
 - **Surveys: opt-in, and never on an identifier.** Survey respondents are not
   logged in, so an "already used" answer tells anyone holding the survey link
   that a specific value is in the study — one value at a time. `{"surveys":true}`
@@ -575,12 +580,17 @@ the specimen ID on the collection form.
   the target values must sit in the same entry as the searched value (one event
   row, or one repeat instance with its event row). Optional `when`, `message`,
   `blockSave`, `surveys`.
-- **Exact comparison of stored values.** Trimmed and case-sensitive. A date is
-  compared as REDCap stores it (Y-M-D), whatever format the field shows, so the
-  searched field and the field itself must be stored the same way: both dates,
-  both datetimes to the minute, both datetimes to the second, both times of the
-  same precision, or neither a date nor a time. Dropdown and radio values are
-  compared by code.
+- **Comparison of stored values.** Trimmed, with A-Z letter case ignored
+  (`sp-1` finds `SP-1`) unless the rule sets `"caseSensitive":true`. When the
+  searched field holds numbers (an integer or number Text field, a calc or a
+  slider), values compare by value: `7` finds `007`. A date is compared as
+  REDCap stores it (Y-M-D), whatever format the field shows, so the searched
+  field and the field itself must be stored the same way: both dates, both
+  datetimes to the minute, both datetimes to the second, both times of the same
+  precision, or neither a date nor a time. Two number fields must use the same
+  decimal mark. Dropdown and radio values are compared by code.
+  `@UVEXISTS=record` never finds the record being edited, and a record ID typed
+  in another case is found after one read of every record ID.
 - **Asked on change, not per keystroke.** The page asks the server when the value
   is entered or changed, and once when the form opens. Typing clears the
   previous answer, typing in a text field a `when` condition reads included.
@@ -890,9 +900,14 @@ check-character primitive, but the full runtime path the module actually uses:
   dictionary checks, the page config without the lookup target, the
   `exists-check` endpoint (found / not found / could not check, a narrowed miss
   confirmed by a full read, rights, throttle, surveys, the DAG-masked record),
-  the audit, the one-read scan index and group-confined scans.
+  the audit, the chunked scan index and group-confined scans, letter case and
+  numbers in both `@UVEXISTS` and `@UVUNIQUE`.
   `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur
-  only, never blocks on *could not check*, the cache and stale replies.
+  only, never blocks on *could not check*, the cache and stale replies, and
+  Save asking again after a cached *not found*.
+- `tests/lookup_php.php` / `tests/lookup_js.cjs` — how `@UVEXISTS` and
+  `@UVUNIQUE` compare values (trim, letter case, numbers by value) in both
+  runtimes from one fixture, `tests/lookup_fixture.json`.
   `tests/exists_cross_php.php` covers lookups in another project: the server
   switch, the alias, the searched project's agreement (one refusal for every
   reason, nothing read before it passes), rights there, the probe log, the
@@ -963,6 +978,8 @@ php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clo
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
+php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
+node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)

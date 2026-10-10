@@ -198,7 +198,7 @@
           "type": "radio",
           "choices": [
             { "value": "rights", "name": "Only users who have rights to those fields in this project (default)" },
-            { "value": "answer", "name": "Any signed-in user of the asking project, who gets found / not found only. Any value typed there can then be tested against this project." }
+            { "value": "answer", "name": "Any signed-in user of the asking project, who gets found / not found only. Any value typed there can then be tested against this project, and a rule there that ignores letter case (the default) tests every spelling of a value at once." }
           ]
         },
         {

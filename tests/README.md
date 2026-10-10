@@ -22,6 +22,8 @@ php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clo
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
+php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
+node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
@@ -188,6 +190,18 @@ server clock.
   save of the `from` form, scan labels and detail lines, and the durable scan
   clock taken from the run's start time.
 
+## `lookup_php.php` and `lookup_js.cjs` — how lookups compare values
+
+Both drive one fixture, `lookup_fixture.json`, through `Logic::lookupKey` and
+its browser twin `QRID_lookupKey`: the trim set (NUL, vertical tab and U+00A0
+included, the no-break space kept inside a value), the A-Z fold and nothing
+beyond it (`É`, `ß`, the Kelvin sign), numbers in one written form (`007`,
+`7.0`, `+7.50`, `-0`, `1e3`, a decimal comma) and the values that stay text
+(`1,234,5`, `NaN`, `0x1A`, an exponent too large to write out). They also pin
+`sameFlags`, the parser of the record-scope `@UVUNIQUE` operator
+`same:FOLD:MARK`. No Unicode normalisation is applied, because the `intl`
+extension it needs is not on every server and the two runtimes must agree.
+
 ## `exists_php.php` and `exists_dom_js.cjs` — the lookup contract
 
 `exists_php.php` mocks `REDCap::getData` so that it honours `records`, `events`
@@ -196,18 +210,25 @@ wrongly comes back empty, a full read that throws, every read throwing, or a rea
 that returns every event. It covers the grammar and dictionary refusals, that
 the lookup target never reaches the page config, the `exists-check` endpoint
 (found, not found and could not check; a narrowed miss confirmed by the full
-read; trimmed, case-sensitive comparison of stored values; dates typed as shown;
+read; trimmed comparison of stored values, letter case ignored unless the rule
+is caseSensitive, numbers by value in a field that holds them, a refused pair
+of decimal marks; a record ID in another case found by one read of every ID,
+never the record being edited; the caller's group and the exact spelling
+preferred among matches; dates typed as shown;
 `match` fields on and off the page; events, scopes and branches; the form-rights
 gate and the per-session throttle, both shared with `unique-check`; the survey
 opt-in, its Identifier refusal and its whole-field read budget; the DAG-masked
 record; a record outside the caller's group; a group caller whose read may not
 see other groups; `when` values sent from the page), the audit, the scan index
-read once per rule, and the group-confined scan.
+read once per rule in chunks of records (with a test chunk of one record, and a
+memory cap that stops it after its first chunk), the group-confined scan, and
+`@UVUNIQUE` comparing the same way in its scan, audit and endpoint.
 
 `exists_dom_js.cjs` drives the browser rule with fake timers and a stub
 transport: typing clears the answer and asks nothing, change and blur ask once,
 Save waits for an answer still on its way, *could not check* never blocks and
-is not asked again by Save, unknown answers are not cached, a late reply for an
+is not asked again by Save, a cached *not found* is asked again by Save,
+unknown answers are not cached, a late reply for an
 older value is dropped, the message follows an autocomplete widget, surveys are
 opt-in and never see a reason.
 

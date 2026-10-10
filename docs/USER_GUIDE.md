@@ -903,7 +903,17 @@ Yes — since 1.3.0 a **Unique** rule (the `@UVUNIQUE` tag, or the Unique kind
 in the Configure dialog) checks the value against every other record as it is
 typed, with optional composite keys (`with`), project/DAG/event scopes, and a
 real save block. Two saves at the same instant can both pass the live check —
-the post-save audit logs such a collision to the module log.
+the post-save audit logs such a collision to the module log. Letter case is
+ignored, so `SP-1` and `sp-1` count as the same ID, and in a field validated as
+an integer or a number `007` and `7` do too. Add `"caseSensitive":true` when
+case tells two IDs apart.
+
+**Why does `@UVUNIQUE` now report `SP-1` and `sp-1` as duplicates?**
+Up to 2.1.0-rc.2 the duplicate check compared values exactly. It now ignores
+A-Z letter case, as `@UVEXISTS` and every `when` condition do, so a project
+that already holds both spellings gets duplicate findings in the post-save
+audit and the Validation scan. Correct the records, or add
+`"caseSensitive":true` to the rule if the two spellings are different IDs.
 
 **Can a visit date be checked against the protocol window?**
 Yes. The `@UVWINDOW` tag checks a date against a window counted from another
@@ -933,7 +943,9 @@ way. "Could not check" never blocks a save; the post-save audit checks the
 value again unless a `match` field is still blank. Users are answered only
 about forms they may open, and a user in a Data Access Group only on records
 of their group. Surveys need `"surveys":true`, which is refused when the lookup
-touches an Identifier field.
+touches an Identifier field. Letter case is ignored (`sp-1` finds `SP-1`)
+unless the rule sets `"caseSensitive":true`, and a searched field that holds
+numbers is compared by value, so `7` finds `007`.
 Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 

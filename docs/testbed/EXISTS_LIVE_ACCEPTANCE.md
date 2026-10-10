@@ -9,13 +9,14 @@ real rights, real widgets (radio reset link, autocomplete, date picker) and the
 module log.
 
 Target: chpr-redcap.org pid 149 (longitudinal, repeating, seed records XE-1 to
-XE-4). Fixture: [`uvexists_test_fields.csv`](uvexists_test_fields.csv), 25
-fields on one new instrument `uv_exists_test`: 16 rule fields carry a valid
-`@UVEXISTS`, 6 `ux_bad_*` fields carry a broken one, and `ux_type`, `ux_gate`
-and `ux_site_sel` carry no tag. Before this sheet was written, every annotation
+XE-4). Fixture: [`uvexists_test_fields.csv`](uvexists_test_fields.csv), 31
+fields on one new instrument `uv_exists_test`: 19 rule fields carry a valid
+`@UVEXISTS` (one of them with `@UVUNIQUE` too), 2 carry `@UVUNIQUE` only, 7
+`ux_bad_*` fields carry a broken `@UVEXISTS`, and `ux_type`, `ux_gate` and
+`ux_site_sel` carry no tag. Before this sheet was written, every annotation
 and every lookup below was run offline through the module against the
-dictionary and the seed data in `event_instance/`: the 16 rule fields
-configure, the 6 `ux_bad_*` fields show the errors in section F, and each
+dictionary and the seed data in `event_instance/`: the 21 rule fields
+configure, the 7 `ux_bad_*` fields show the errors in section F, and each
 "Expect" below is what the module answered.
 
 ---
@@ -24,8 +25,8 @@ configure, the 6 `ux_bad_*` fields show the errors in section F, and each
 
 1. Deploy the release that contains `@UVEXISTS` and confirm the version in
    Control Center.
-2. Append, never replace. Download the current dictionary, append the 25
-   rows of the CSV, upload. The diff must report one new instrument and 25 new
+2. Append, never replace. Download the current dictionary, append the 31
+   rows of the CSV, upload. The diff must report one new instrument and 31 new
    fields, and nothing else.
 3. Designate `uv_exists_test` on `event_1_arm_1` (event 351).
 4. The steps below use these seed values. Specimen IDs (`xs_id`, repeating `xr_specimen`)
@@ -50,7 +51,7 @@ const uv = cfg.jsmoName.split('.').reduce((o, k) => o[k], window);
 
 ---
 
-## Section A: found, not found, and the exact comparison
+## Section A: found, not found, and how values compare
 
 Wait for each answer (green, red or amber) before the next step, unless the
 step says otherwise.
@@ -62,7 +63,7 @@ step says otherwise.
 | A3 | `ux_rec` = XE-9, leave the field, wait for the red message, press Save | Red message; save blocked (hard) |
 | A4 | `ux_spec` = S-003 | Green "Found (record XE-1)." |
 | A5 | `ux_spec` = S-999, leave the field, wait for the red message, press Save | Red "Register this specimen on the specimen form first."; save blocked |
-| A6 | `ux_spec` = s-003 | Red: the comparison is case-sensitive |
+| A6 | `ux_spec` = s-003 | Green "Found (record XE-1).": letter case is ignored |
 | A7 | `ux_spec` = ` S-001 ` (spaces around) | Green: values are trimmed |
 | A8 | `ux_spec_bl` = S-001, then S-003 | Green, then red: S-003 is registered at Visit 1, not Baseline. Save goes through (advisory) |
 | A9 | `ux_code` = PX-0003, then PX-9999 | Found (record XE-3), then not found |
@@ -128,6 +129,7 @@ On the data entry form, each field shows a visible error and asks nothing:
 | `ux_bad_family` | "xe_consent_date" holds dates and "ux_bad_family" holds no date or time |
 | `ux_bad_event` | "nowhere_arm_1" is not an event of this project |
 | `ux_bad_notes` | does not support "notes" fields |
+| `ux_bad_mark` | "xe_weight" holds numbers with a decimal point and "ux_bad_mark" holds numbers with a decimal comma |
 
 ## Section G: `@UVEXISTS` with `@UVUNIQUE`, and the new `unique-check` gate
 
@@ -202,11 +204,27 @@ Setup:
 
 ---
 
+## Section J: letter case and numbers
+
+The fields under "Letter case and numbers". Wait for each answer before the
+next step.
+
+| # | Action | Expect |
+|---|---|---|
+| J1 | `ux_spec_cs` = S-003, then s-003 | Green "Found (record XE-1).", then red: this rule sets `"caseSensitive":true` |
+| J2 | `ux_rec` = xe-2 | Green "Found.": a record ID in another letter case is found |
+| J3 | On XE-1, `ux_rec` = XE-1 | Red: the record being edited does not find itself |
+| J4 | `ux_weight` = 70.0, then 070, then 71 | Found (record XE-1) twice, then red: numbers compare by value, and every enrolment weight is 70 |
+| J5 | `ux_weight_txt` = 70.00 | Found (record XE-1): the searched field holds numbers, so a plain Text field compares by value too |
+| J6 | On XE-1 save `ux_uq` = UQ-1 and `ux_uq_cs` = UQ-1. Open XE-2, type uq-1 in both, leave each field | `ux_uq`: "already recorded (record XE-1)", and Save is blocked (hard). `ux_uq_cs`: not used before |
+| J7 | Leave XE-2 without saving. Run the Validation scan with `ux_uq` = uq-1 saved on XE-2 (clear `ux_uq_cs` first, or save it too) | Two "Duplicate value" rows for `ux_uq` (XE-1 and XE-2); none for `ux_uq_cs` |
+| J8 | On XE-2, `ux_spec` = S-998 and leave the field (red). In a second tab, register S-998 as a specimen of XE-1 and save. Back in the first tab press Save | Save asks again instead of trusting the red answer: the field turns green and the save goes through |
+
 ## Sign-off
 
 | # | Gate | Result |
 |---|---|---|
-| 1 | Section A: verdicts match, comparison exact, typed-then-Save blocked | ☐ |
+| 1 | Section A: verdicts match, values trimmed and compared without letter case, typed-then-Save blocked | ☐ |
 | 2 | Section B: no request while typing; one per change; cache | ☐ |
 | 3 | Section C: "could not check" never blocks, rights respected | ☐ |
 | 4 | Section D: surveys opt-in, no record named, no field named in errors | ☐ |
@@ -214,11 +232,13 @@ Setup:
 | 6 | Section G: composition and the `unique-check` gate | ☐ |
 | 7 | Section H: choice fields, reset, autocomplete, branches, groups | ☐ |
 | 8 | Section I: another project. Agreement, rights there, probe log, surveys, audit, scan. This is also the pilot gate for `getProjectSetting`/`getSubSettings` with another project id, `log()` with `project_id`, the `project-id` setting type, `isModuleEnabled`, `getProjectStatus`, `\Project` event and group names, and `User::getRights` for another project | ☐ |
+| 9 | Section J: `caseSensitive`, record IDs in another case, the record itself, numbers by value, `@UVUNIQUE` the same way, Save asking again | ☐ |
 
 ## Cleanup
 
 Delete the `uv_exists_test` instrument, or restore the dictionary downloaded in
-setup step 2. Delete the record C2 created (and any record H9 saved). Remove the
+setup step 2. Delete the record C2 created (and any record H9 saved), and the
+specimen J8 registered on XE-1. Remove the
 survey setting if D1 enabled it, and the one-section-per-page setting if D5
 changed it. After section I, delete the `uv_exists_cross` instrument and the alias
 row, delete the source project, and turn "@UVEXISTS in other projects" off
