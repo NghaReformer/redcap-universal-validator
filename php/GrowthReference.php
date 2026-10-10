@@ -469,7 +469,7 @@ final class GrowthReference
      * those values, one more either side, with "first" moved to match; 'xs'
      * null sends every row. Without $need the whole table travels.
      */
-    public static function pageCopy(array $entry, array $table, array $need = null)
+    public static function pageCopy(array $entry, array $table, ?array $need = null)
     {
         $out = [];
         foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];

@@ -269,7 +269,7 @@
                      "rangeAtType", "rangeAtFormat", "rangeAxisComma",
                      "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
                      "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
-                     "deferredOnSave", "extendedAdvisory"],
+                     "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked"],
       "needs": [],
       "dialog": false,
       "js": {"factories": {"range": "QRIDRangeInit"}},

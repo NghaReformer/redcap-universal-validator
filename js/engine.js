@@ -2942,6 +2942,11 @@ function QRID_buildVariants(cfg, makeVariant){
      with an else per group. The dispatcher names the key (cfgFor). */
   var groupKey = (typeof cfg.branchGroup === "string" && cfg.branchGroup !== "") ? cfg.branchGroup : null;
   var groups = [], elseByGroup = Object.create(null), seenGroup = Object.create(null);
+  /* A group whose branch selector the server could not resolve
+     (selectorBlocked, UniversalValidator::foldRuleConditions): every branch of
+     it is deferred, and its first variant stands for the group, so the page
+     names the deferral even when none of its conditions holds. */
+  var blockedGroups = Object.create(null);
   function build(input){
     var v = makeVariant(input);
     v.unavailable = !!input.deferred && v.deferred === undefined;
@@ -2950,6 +2955,7 @@ function QRID_buildVariants(cfg, makeVariant){
     var g = groupKey && input[groupKey] != null ? String(input[groupKey]) : "";
     v.group = g;
     if(!seenGroup[g]){ seenGroup[g] = true; groups.push(g); }
+    if(input.selectorBlocked === true && !blockedGroups[g]) blockedGroups[g] = v;
     return v;
   }
   var elses = [];
@@ -2976,33 +2982,52 @@ function QRID_buildVariants(cfg, makeVariant){
     if(all[b].blockSave !== "off"){ firstBlock = all[b].blockSave; break; }
   }
   return { variants: variants, elseVariant: elseVariant, all: all,
-           grouped: groups.length > 1, groups: groups, elseByGroup: elseByGroup,
+           grouped: groups.length > 1, groups: groups, elseByGroup: elseByGroup, blockedGroups: blockedGroups,
            configError: configError, firstBlock: firstBlock, unresolved: unresolved, config: cfg };
+}
+/* Stands in for a branch group whose selector this page cannot resolve right
+   now (a gate that answers "unknown"): the group's own deferral line, while the
+   other groups judge. The post-save audit reads the saved values. */
+function QRID_dynamicDeferralVariant(group){
+  return { group: group, deferred: true, onSave: false, checkedOnSave: true, deferredWhy: [QRID_DYNAMIC_DEFERRAL],
+           gate: null, watch: [], blockSave: "off", measureBlock: "off", when: null };
 }
 /* The variants whose gate is true right now; the else variant only when no
    conditional one is active. A gate-less variant (legacy rule without "when")
    is always active. With branch groups this holds per group: the result has
    one variant per group that applies, and two active variants of ONE group
-   come back alone, marked "conflict". */
+   come back alone, marked "conflict". A selector that cannot be resolved
+   (the server's selectorBlocked, or a gate that answers "unknown" here)
+   belongs to its own group: that group contributes a deferred variant, and the
+   other groups still judge. */
 function QRID_activeVariants(vs){
   vs.config.dynamicDeferred = false;
   if(vs.unresolved && !vs.configError) return [];
-  var act = [];
+  var act = [], unknown = Object.create(null);
   for(var i = 0; i < vs.variants.length; i++){
     var g = vs.variants[i].gate;
     if(!g || g.active()) act.push(vs.variants[i]);
-    if(g && g.unresolved && g.unresolved()){ vs.config.dynamicDeferred = true; return []; }
+    if(g && g.unresolved && g.unresolved()){
+      if(!vs.grouped){ vs.config.dynamicDeferred = true; return []; }
+      unknown[vs.variants[i].group] = true;
+    }
   }
   if(vs.grouped){
-    var byGroup = Object.create(null), gi, k;
+    var byGroup = Object.create(null), gi, k, gk;
+    var blocked = vs.blockedGroups || Object.create(null);
     for(k = 0; k < act.length; k++) (byGroup[act[k].group] = byGroup[act[k].group] || []).push(act[k]);
     for(gi = 0; gi < vs.groups.length; gi++){
-      var list = byGroup[vs.groups[gi]];
+      gk = vs.groups[gi];
+      if(blocked[gk] || unknown[gk]) continue;
+      var list = byGroup[gk];
       if(list && list.length > 1){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
     }
     act = [];
     for(gi = 0; gi < vs.groups.length; gi++){
-      var one = byGroup[vs.groups[gi]] ? byGroup[vs.groups[gi]][0] : vs.elseByGroup[vs.groups[gi]];
+      gk = vs.groups[gi];
+      var one = blocked[gk] ? blocked[gk]
+              : unknown[gk] ? QRID_dynamicDeferralVariant(gk)
+              : byGroup[gk] ? byGroup[gk][0] : vs.elseByGroup[gk];
       if(one) act.push(one);
     }
   } else if(!act.length && vs.elseVariant) act = [vs.elseVariant];
@@ -3055,11 +3080,15 @@ var QRID_DYNAMIC_DEFERRAL = "Current values cannot resolve this comparison. Save
 function QRID_renderDeferralNotice(msg, input, why, mode, checkedOnSave){
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
-  msg.innerHTML = "&#9888; This rule is not being checked — " +
-    QRID_escapeHtml(why.join(" ")) +
+  msg.innerHTML = "&#9888; " + QRID_deferralText(why, checkedOnSave);
+  QRID_setModeState(input, mode || "check", null);
+}
+/* The notice's text, escaped, without its icon: also one line of a note with
+   several (@UVRANGE with several references). */
+function QRID_deferralText(why, checkedOnSave){
+  return "This rule is not being checked — " + QRID_escapeHtml(why.join(" ")) +
     (checkedOnSave ? " It is checked after the record is saved."
                    : " It is not checked after saving either; the study team needs to correct the rule.");
-  QRID_setModeState(input, mode || "check", null);
 }
 function QRIDSingleInit(QRID_CONFIG){
 
@@ -4140,8 +4169,10 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       if(!configError && !cfg.deferred){
         /* A withheld input means no z-score on this page, so the server sends
-           no table for it (UniversalValidator::attachGrowthTables). */
-        if(!gref && !withheld) configError = '@UVRANGE growth reference "' + cfg.rangeReference + '" was not sent to this page.';
+           no table for it (UniversalValidator::attachGrowthTables); nor for a
+           rule or branch whose condition it settled false (growthIdle), which
+           can never apply here. */
+        if(!gref && !withheld && cfg.growthIdle !== true) configError = '@UVRANGE growth reference "' + cfg.rangeReference + '" was not sent to this page.';
         else if(!ops.Sex || !(ops.AgeDob && ops.AgeAt || ops.AgeDays || ops.AgeMonths || ops.By)){
           configError = "@UVRANGE cannot read the inputs of its growth reference.";
         }
@@ -4229,12 +4260,13 @@ function QRIDRangeInit(QRID_CONFIG){
     if(r.reason === "not-a-number") return "This is not a number.";
     if(r.reason === "not-positive") return "A measurement must be above 0.";
     if(r.reason === "plausible-low" || r.reason === "plausible-high"){
-      /* no z-score, so the rule's "plausible" range judged it */
+      /* no z-score, so the rule's "plausible" range judged it; why there is
+         none is for staff only, as the grey notes are */
       var pn = [];
       if(V.plausibleText) pn.push("allowed " + V.plausibleText);
-      pn.push("no z-score on " + V.growth.ref.title + (r.why ? ": " + r.why : ""));
+      if(!QRID_IS_SURVEY) pn.push("no z-score on " + V.growth.ref.title + (r.why ? ": " + r.why : ""));
       return (r.reason === "plausible-low" ? "This value is below the plausible range" : "This value is above the plausible range") +
-        " (" + QRID_escapeHtml(pn.join("; ")) + ").";
+        (pn.length ? " (" + QRID_escapeHtml(pn.join("; ")) + ")" : "") + ".";
     }
     var t = r.tier === "soft" ? V.softText : V.hardText;
     var low = r.reason === "soft-low" || r.reason === "hard-low";
@@ -4291,6 +4323,7 @@ function QRIDRangeInit(QRID_CONFIG){
       if(ins[k] === null) withheld = true;
     }
     if(withheld) return { tier: "withheld" };
+    if(!g.ref) return { tier: "inert", why: null };   /* growthIdle: never active, so never asked */
     var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
     var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
     if(sex === null){
@@ -4355,15 +4388,6 @@ function QRIDRangeInit(QRID_CONFIG){
       msg.innerHTML = "&#8505; " + html;
       setGuard(false); QRID_setModeState(input, "n", null);
     }
-    /* A rule the page could not carry (the growth table cap) is still checked
-       when the record is saved, so it does not get the "not checked at all"
-       notice of QRID_renderDeferralNotice. The server marks the whole rule,
-       which leaves no active variant (QRID_activeVariants), so the mark is
-       read from the rule's own config, a branched rule's too (cfgFor). */
-    function onSaveNotice(why){
-      if(QRID_IS_SURVEY || !why || !why.length){ inert(); return; }
-      infoNote("Not checked on this page: " + QRID_escapeHtml(why.join(" ")));
-    }
     /* What one active variant says about the typed value: { kind: "none" }
        (nothing to show), "deferral" (why), "info" (html, a grey note for
        staff), or "warn" / "bad" (html, block). */
@@ -4376,7 +4400,8 @@ function QRIDRangeInit(QRID_CONFIG){
           ? { kind: "info", html: "Not checked on this page: " + QRID_escapeHtml(V.deferredWhy.join(" ")) } : { kind: "none" };
       }
       if(V.deferred){
-        return (V.deferredWhy && !QRID_IS_SURVEY) ? { kind: "deferral", why: V.deferredWhy } : { kind: "none" };
+        return (V.deferredWhy && !QRID_IS_SURVEY)
+          ? { kind: "deferral", why: V.deferredWhy, checkedOnSave: V.checkedOnSave === true } : { kind: "none" };
       }
       var r;
       try { r = verdictOf(V, typed); } catch(e){ return { kind: "none" }; }   /* fail open */
@@ -4407,8 +4432,11 @@ function QRIDRangeInit(QRID_CONFIG){
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
-        if(QRID_CONFIG.deferred && QRID_CONFIG.deferredOnSave === true){ onSaveNotice(QRID_CONFIG.deferredWhy); return; }
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
+        /* No branch applies. A rule left off for the table cap is checked on
+           save only where it applies, so it has nothing to say here; any other
+           deferral, and a selector this page cannot resolve, keeps its notice. */
+        var capOnly = QRID_CONFIG.deferred && QRID_CONFIG.deferredOnSave === true && !QRID_CONFIG.dynamicDeferred;
+        if(!capOnly && QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
         inert(); return;
       }
       if(act.conflict || (act.length > 1 && !VS.grouped)){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
@@ -4416,7 +4444,7 @@ function QRIDRangeInit(QRID_CONFIG){
       if(act.length === 1){
         var j = (act[0].deferred || !QRID_isMissingCode(typed)) ? judge(act[0], typed) : { kind: "none" };
         if(j.kind === "deferral"){
-          QRID_renderDeferralNotice(msg, input, j.why, "n");
+          QRID_renderDeferralNotice(msg, input, j.why, "n", j.checkedOnSave);
           setGuard(false); QRID_setModeState(input, "n", null);
           return;
         }
@@ -4430,22 +4458,28 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       /* Several references on one field (branch groups): every one judges the
          value, the note has a line for each that has something to say, and
-         the worst decides the colour and the guard. */
-      if(QRID_isMissingCode(typed)){ inert(); return; }
-      var lines = [], seen = Object.create(null), worst = null, block = "off";
+         the worst decides the colour and the guard. A Missing Data Code is
+         judged by none, but a reference that is not checked still says so,
+         as with one reference. */
+      var missing = QRID_isMissingCode(typed);
+      var lines = [], seen = Object.create(null), worst = null, block = "off", deferral = false;
       for(var ai = 0; ai < act.length; ai++){
-        var one = judge(act[ai], typed);
+        var one = (act[ai].deferred || !missing) ? judge(act[ai], typed) : { kind: "none" };
         if(one.kind === "none") continue;
-        var line = ICON[one.kind] + (one.kind === "deferral"
-          ? "Not checked on this page: " + QRID_escapeHtml(one.why.join(" ")) : one.html);
+        var line = ICON[one.kind] + (one.kind === "deferral" ? QRID_deferralText(one.why, one.checkedOnSave) : one.html);
         if(!seen[line]){ seen[line] = true; lines.push(line); }
+        if(one.kind === "deferral") deferral = true;
         if(one.kind === "bad") worst = "bad";
         else if(one.kind === "warn" && worst !== "bad") worst = "warn";
         if(one.block && BLOCK_RANK[one.block] > BLOCK_RANK[block]) block = one.block;
       }
       if(!lines.length){ inert(); return; }
       if(worst === null){
-        infoNote(lines.join("<br>").replace(/^&#8505; /, ""));
+        /* each line keeps its own icon; amber when a reference is not checked */
+        msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;font-size:13px;font-family:inherit;" +
+          "border:1px solid " + (deferral ? "#d9c48a;background:#fdf8e6;color:#7a5c00" : "#cfcfcf;background:#f5f5f5;color:#555");
+        msg.innerHTML = lines.join("<br>");
+        setGuard(false); QRID_setModeState(input, "n", null);
         return;
       }
       styleMsg(msg, worst);
@@ -6267,7 +6301,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
                       "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
                       "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
-                      "deferredOnSave", "extendedAdvisory"];
+                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

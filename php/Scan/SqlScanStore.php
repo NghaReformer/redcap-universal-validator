@@ -1138,8 +1138,8 @@ final class SqlScanStore implements ScanStore
              record_id_bin, event_id, arm_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity, dag_key,
              status_key, value_bin, value_len, value_fingerprint, value_truncated, value_binary,
-             value_expires_at, group_hmac, stage_epoch, as_of, z_score)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+             value_expires_at, group_hmac, stage_epoch, as_of, z_score, growth_reference)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
             self::mustProject($f),
             $f['generation_id'], $f['identity'],
             // The RUN's sequence number. It used to be a per-record
@@ -1168,6 +1168,7 @@ final class SqlScanStore implements ScanStore
             $staged ? $f['stage_epoch'] : null,
             isset($f['as_of']) ? (string) $f['as_of'] : null,
             isset($f['z_score']) ? (string) $f['z_score'] : null,
+            isset($f['growth_reference']) ? (string) $f['growth_reference'] : null,
         ]);
     }
 
@@ -1270,7 +1271,8 @@ final class SqlScanStore implements ScanStore
     {
         $limit = max(1, min(100, (int) $limit));
         $sql = 'SELECT finding_id, record_id_bin, event_id, instance, host_form, field,
-                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated, as_of, z_score
+                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated, as_of, z_score,
+                       growth_reference
                 FROM ' . Schema::table('finding') . '
                 WHERE project_id = ? AND generation_id = ? AND active_slot = 1
                   AND finding_id > ?';
@@ -1322,12 +1324,13 @@ final class SqlScanStore implements ScanStore
      *
      * The value is NULLED, not the row: the finding is still true, and deleting
      * it would make a report shrink as it ages, which reads as the project
-     * having improved.
+     * having improved. A growth finding's z-score goes with it, since it gives
+     * the measurement back.
      */
     public function expireValues($now)
     {
         $this->db->exec('UPDATE ' . Schema::table('finding') . '
-            SET value_bin = NULL, value_fingerprint = NULL, value_expires_at = NULL
+            SET value_bin = NULL, value_fingerprint = NULL, value_expires_at = NULL, z_score = NULL
             WHERE value_expires_at IS NOT NULL AND value_expires_at <= ?', [$now]);
         return $this->db->affected();
     }

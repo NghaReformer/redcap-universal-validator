@@ -20,14 +20,19 @@
  *   - a Missing Data Code in an input is a blank input,
  *   - a decimal comma in the measurement and in "by",
  *   - a table the page was not given is a configuration error, unless the
- *     rule is deferred or an input is withheld (no z-score there, so no table),
+ *     rule is deferred, an input is withheld (no z-score there, so no table),
+ *     or the server settled its condition false (growthIdle),
  *   - a rule deferred by the page's table cap (deferredOnSave) gets a grey
- *     note that the save checks it, not the "not checked at all" notice,
+ *     note that the save checks it, not the "not checked at all" notice, and
+ *     nothing at all where its condition is false,
  *   - UV_validators[field].test() answers by the z-score,
  *   - several references on one field (branch groups): each judges, the note
  *     has a line for each that has something to say, the worst decides the
  *     colour and the guard, and two active branches of one reference are a
- *     conflict,
+ *     conflict; a reference that is not checked says so in the notice's own
+ *     words, on a Missing Data Code too, and a selector that cannot be
+ *     resolved (on the server or here) sets aside its own reference only,
+ *   - a survey respondent is not told why there is no z-score,
  *   - "not a number" and "0 or below" keep the rule's hard setting when its
  *     inputs are saved values from another form, or its table was left off
  *     the page (deferredOnSave), and say nothing about the saved values; not
@@ -358,12 +363,19 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   check('deferred: says why, never blocks', /already carries 4 growth reference tables/.test(msg.innerHTML) && save(env) === 'saved');
   check('deferred for the cap: a grey note that the save checks it, not "not checked after saving" (got ' + msg.innerHTML + ')',
     /^&#8505; Not checked on this page: this form already carries 4/.test(msg.innerHTML) && !/not checked after saving/i.test(msg.innerHTML));
-  // A rule with branches: no branch applies, the rule-level note is the same.
+  // A rule with branches, none of which applies: the rule does not apply, so
+  // the save does not check it either, and the page says nothing.
   const els2 = inputs('', '16');
   const env2 = boot(els2, { rules: [{ type: 'range', fields: ['weight'], deferred: true, deferredOnSave: true, deferredWhy: CAP,
     branches: [rule(Object.assign({ when: "[sex]='1'", deferred: true }, LIVE))] }] });
-  check('deferred for the cap, branches, none active: the same grey note (got ' + nMsg(env2, 'weight').innerHTML + ')',
+  check('deferred for the cap, branches, none active: nothing (got ' + nMsg(env2, 'weight').innerHTML + ')',
+    !shown(nMsg(env2, 'weight')) && save(env2) === 'saved');
+  els2[0].value = '1'; els2[0].fire('change');
+  check('... and once the branch applies, the grey note (got ' + nMsg(env2, 'weight').innerHTML + ')',
     /^&#8505; Not checked on this page: this form already carries 4/.test(nMsg(env2, 'weight').innerHTML));
+  // One rule, its own "when" false: nothing.
+  const env2c = boot(inputs('2', '16'), { rules: [rule(Object.assign({ when: "[sex]='1'", deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
+  check('deferred for the cap, its "when" false: nothing (got ' + nMsg(env2c, 'weight').innerHTML + ')', !shown(nMsg(env2c, 'weight')));
   // The branch applies: the rule-level mark still decides (a deferred rule has no active variant).
   const env2b = boot(inputs('1', '16'), { rules: [{ type: 'range', fields: ['weight'], deferred: true, deferredOnSave: true, deferredWhy: CAP,
     branches: [rule(Object.assign({ when: "[sex]='1'", deferred: true }, LIVE))] }] });
@@ -490,6 +502,74 @@ function twoRefs(extraA, extraB) {
   const msg = nMsg(env, 'weight');
   check('one reference, two active branches: a conflict (got ' + msg.innerHTML + ')',
     /Validation conflict/.test(msg.innerHTML) && save(env) === 'saved' && env.NS.validators.weight.test() === null);
+}
+
+{
+  // A branch whose condition the server settled false gets no table (growthIdle):
+  // no configuration error, and the other reference still judges.
+  const els = inputs('1', '16');
+  const env = boot(els, { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: "[grp]='2'", whenAst: ['const', false], growthIdle: true }), br({ rangeReference: 't-days2' })] }] });
+  check('settled false (growthIdle): no configuration error, the other reference judges (got ' + nMsg(env, 'weight').innerHTML + ')',
+    !cfgErr(env, 'weight') && /^&#9888; This value is higher than usual \(z-score 4\.55 on Second test/.test(nMsg(env, 'weight').innerHTML)
+    && save(env) === 'asked');
+  // One rule settled false: nothing at all.
+  const env2 = boot(inputs('1', '16'), { rules: [rule(Object.assign({ when: "[grp]='2'", whenAst: ['const', false], growthIdle: true }, LIVE))] });
+  check('settled false, one rule: no configuration error, nothing shown', !cfgErr(env2, 'weight') && !shown(nMsg(env2, 'weight'))
+    && save(env2) === 'saved' && env2.NS.validators.weight.test() === null);
+  // Without the mark a missing table is still an error.
+  const env3 = boot(inputs('1', '16'), { rules: [rule(Object.assign({ when: "[grp]='2'", whenAst: ['const', false] }, LIVE))] });
+  check('... and without growthIdle, a missing table is a configuration error', !!cfgErr(env3, 'weight'));
+}
+{
+  // A reference not checked (an unresolved input), beside one with a verdict: the
+  // notice's own words, one icon.
+  const WHY = ['references "[ht]", which is not collected in this event.'];
+  const els = inputs('1', '16');
+  const w = els[3];
+  const env = boot(els, { missingCodes: ['UNK'], growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ deferred: true, deferredWhy: WHY }), br({ rangeReference: 't-days2' })] }] });
+  const msg = nMsg(env, 'weight');
+  const LINE = '&#9888; This rule is not being checked — references &quot;[ht]&quot;, which is not collected in this event.'
+    + ' It is not checked after saving either; the study team needs to correct the rule.';
+  check('two references, one not checked: its line in the notice\'s words (got ' + msg.innerHTML + ')',
+    msg.innerHTML === LINE + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).');
+  w.value = '11'; w.fire('change');
+  check('... the other passes: the line alone, amber, one icon, saved (got ' + msg.innerHTML + ')',
+    msg.innerHTML === LINE && /#7a5c00/.test(msg.style.cssText) && save(env) === 'saved');
+  w.value = 'UNK'; w.fire('change');
+  check('... a Missing Data Code: the line stays (got ' + msg.innerHTML + ')', msg.innerHTML === LINE && save(env) === 'saved');
+}
+{
+  // The server could not resolve one reference's selector (selectorBlocked): that
+  // reference says so, whatever its conditions read; the other still judges.
+  const WHY = ['references "[grp]", which is not collected in this event.'];
+  const els = inputs('1', '16');
+  const env = boot(els, { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: "[grp]='2'", whenAst: ['const', false], deferred: true, selectorBlocked: true, deferredWhy: WHY }),
+    br({ deferred: true, selectorBlocked: true, deferredWhy: WHY, rangeSoftHi: '9' }),
+    br({ rangeReference: 't-days2' })] }] });
+  const msg = nMsg(env, 'weight');
+  check('selector blocked on one reference: its deferral, and the other\'s verdict (got ' + msg.innerHTML + ')',
+    /^&#9888; This rule is not being checked — references &quot;\[grp\]&quot;/.test(msg.innerHTML)
+    && /<br>&#9888; This value is higher than usual \(z-score 4\.55 on Second test/.test(msg.innerHTML) && save(env) === 'asked');
+  // A selector this page cannot resolve (an event/instance reference): the same, with "checked after saving".
+  const env2 = boot(inputs('1', '16'), { growth: { 't-days': T_DAYS, 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: '[visit_1][grp]=1', whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] }),
+    br({ rangeReference: 't-days2' })] }] });
+  check('a selector this page cannot resolve: that reference\'s line, the other judges (got ' + nMsg(env2, 'weight').innerHTML + ')',
+    /^&#9888; This rule is not being checked — Current values cannot resolve this comparison\. Save and reload to refresh matched data\. It is checked after the record is saved\.<br>&#9888; This value is higher than usual \(z-score 4\.55/.test(nMsg(env2, 'weight').innerHTML));
+}
+{
+  // A survey respondent sees the plausible range, not why there is no z-score.
+  const env = boot(inputs('3', '95'), { context: 'survey', growth: GROWTH,
+    rules: [rule(Object.assign({ rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: '2 to 30 kg' }, LIVE))] });
+  check('plausible on a survey: the range, no reason (got ' + nMsg(env, 'weight').innerHTML + ')',
+    nMsg(env, 'weight').innerHTML === '&#10007; This value is above the plausible range (allowed 2 to 30 kg).' && save(env) === 'held');
+  const env2 = boot(inputs('3', '95'), { context: 'survey', growth: GROWTH,
+    rules: [rule(Object.assign({ rangePlausibleLo: '2', rangePlausibleHi: '30' }, LIVE))] });
+  check('... with no plausible text, no brackets at all (got ' + nMsg(env2, 'weight').innerHTML + ')',
+    nMsg(env2, 'weight').innerHTML === '&#10007; This value is above the plausible range.');
 }
 
 // ---- 9) the measurement alone keeps the rule's hard setting -------------------------------------

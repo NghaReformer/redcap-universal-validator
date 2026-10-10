@@ -655,6 +655,37 @@ namespace {
     $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
     check('two true branches of one reference, extended: a problem, nothing judged (got '.json_encode([$res['violations'],$why]).')',
         !$res['violations']&&count(array_filter($why,function($w){return strpos($w,'multiple active branches')!==false;}))>=1);
+    // One group that cannot be prepared (who-wfh's "by" names a repeating form with no
+    // instance) is named, and the other group is still judged, in the scan and the audit.
+    $withHt=function($ann)use($growth){
+        $m=$growth($ann);
+        REDCap::$dictionary['ht']=['field_type'=>'text','form_name'=>'fb','field_annotation'=>'','text_validation_type_or_show_slider_number'=>'number_1dp'];
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['ht']='80';
+        return $m;
+    };
+    $wfh=' @UVRANGE={"reference":"who-wfh","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B","by":"[baseline_arm_1][ht]","hard":[-5,5]}';
+    $m=$withHt($wfa.'}'.$wfh);$res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'].':'.$v['locus'];sort($hit);
+    $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
+    check('one group not prepared, extended: the other still judged, that one named (got '.json_encode([$hit,$why]).')',
+        $hit===['1/1:soft-low:who-wfa','2/1:hard-low:who-wfa']&&$why
+        &&count(array_filter($why,function($w){return strpos($w,'for part of this field: reference "who-wfh": ')!==false;}))===count($why));
+    $m=$withHt($wfa.'}'.$wfh);$m->redcap_save_record(PID,'1','fa',1,1);
+    $u=array_map(function($c){return $c[1]['why'];},unconf($m));
+    check('... and in the audit, at each of the three entries (got '.json_encode([count(invalid($m)),$u]).')',count(invalid($m))===2&&count($u)===3
+        &&count(array_filter($u,function($w){return strpos($w,'Extended validation unavailable for part of this field: reference "who-wfh": ambiguous')===0;}))===3);
+    // A selector that cannot be resolved sets aside its own group: here who-wfa's
+    // "when" reads [baseline_arm_1][ht] with no instance, and the fixed limits judge.
+    $sel=$wfa.',"when":"[baseline_arm_1][ht]=\'80\'"} @UVRANGE={"hard":[5,40]}';
+    $m=$withHt($sel);REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='4.0';$res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
+    $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
+    check('an unresolved selector of one group, extended: the fixed limits still judge (got '.json_encode([$hit,$why]).')',
+        $hit===['2/1:hard-low']&&$why&&count(array_filter($why,function($w){return strpos($w,'reference "who-wfa": unresolved branch selector')!==false;}))===count($why));
+    $r=ruleOf(render($withHt($sel),'fa'),'a_val');
+    $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['deferred']),!empty($b['selectorBlocked'])];},$r['branches']??[]):[];
+    check('... on the page: that group deferred and named, the other not (got '.json_encode([$marks,$r['deferred']??null]).')',
+        $r&&empty($r['deferred'])&&$marks===[['who-wfa',true,true],['',false,false]]);
 
     // A branched extended rule: each scan finding names the branch that judged
     // it, so the report shows that branch's message and not the first one's.

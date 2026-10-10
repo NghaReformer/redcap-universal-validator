@@ -471,7 +471,7 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         $have = new \FakeModule();
         $have->version = '3';
-        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score'];
+        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score', 'uv_finding.growth_reference'];
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
@@ -488,10 +488,11 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
-     * V5  uv_finding.z_score
+     * V5  uv_finding.z_score and uv_finding.growth_reference
      *
-     * The z-score of a growth-reference finding, for the report. NULL for
-     * every other finding, so no data step.
+     * The z-score of a growth-reference finding and the reference it was
+     * judged against, for the report. NULL for every other finding, so no
+     * data step.
      * ===================================================================== */
     {
         $m = new \FakeModule();
@@ -500,18 +501,26 @@ namespace INSPIRE\UniversalValidator\Scan {
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
         check('v5: an installation at version 4 moves to version 5',
             $r['ok'] === true && $r['from'] === 4 && $r['to'] === 5 && Schema::VERSION === 5);
-        check('v5: by one ALTER that adds uv_finding.z_score, NULL for every existing row (got ' . json_encode($alters) . ')',
-            $alters === ['ALTER TABLE uv_finding ADD COLUMN z_score VARCHAR(16) NULL']);
+        check('v5: by two ALTERs that add uv_finding.z_score and growth_reference, NULL for every existing row (got ' . json_encode($alters) . ')',
+            $alters === ['ALTER TABLE uv_finding ADD COLUMN z_score VARCHAR(16) NULL',
+                         'ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
         check('v5: with no data step', !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
         check('v5: and records version 5',
             (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         $have = new \FakeModule();
         $have->version = '4';
-        $have->columns = ['uv_finding.z_score'];
+        $have->columns = ['uv_finding.z_score', 'uv_finding.growth_reference'];
         $rh = Schema::migrate($have);
         check('v5: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
             && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $half = new \FakeModule();
+        $half->version = '4';
+        $half->columns = ['uv_finding.z_score'];
+        $rh = Schema::migrate($half);
+        $alters = array_values(array_filter($half->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v5: with z_score there, only growth_reference is added (got ' . json_encode($alters) . ')',
+            $rh['ok'] === true && $rh['applied'] === 1 && $alters === ['ALTER TABLE uv_finding ADD COLUMN growth_reference VARCHAR(64) NULL']);
         $inert = new \FakeModule();
         $inert->version = '4';
         $inert->inertAlter = 'ADD COLUMN z_score';
@@ -519,8 +528,16 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v5: an ALTER that did not take is not recorded', $ri['ok'] === false
             && strpos((string) $ri['why'], 'version 5 did not verify') !== false
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
-        check('v5: a fresh install ends with the column',
-            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN z_score VARCHAR(16)') !== false);
+        $inert = new \FakeModule();
+        $inert->version = '4';
+        $inert->inertAlter = 'ADD COLUMN growth_reference';
+        $ri = Schema::migrate($inert);
+        check('v5: ... the second ALTER too, and the refusal names its column', $ri['ok'] === false
+            && strpos((string) $ri['why'], 'has no growth_reference column') !== false
+            && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('v5: a fresh install ends with both columns',
+            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN z_score VARCHAR(16)') !== false
+            && strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN growth_reference VARCHAR(64)') !== false);
     }
 
     /* =====================================================================

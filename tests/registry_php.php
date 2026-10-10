@@ -117,6 +117,9 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // "plausible" (its text in the reference's unit) and "measureScale"
     'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
     'deferredOnSave', 'extendedAdvisory',
+    // a branch settled false that the page has no table for; a branch group
+    // whose selector the server could not resolve
+    'growthIdle', 'selectorBlocked',
 ]);
 
 // Branching::modeOfType.

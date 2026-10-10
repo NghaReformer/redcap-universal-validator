@@ -157,7 +157,8 @@ final class MessageCatalog
      * @UVWINDOW part) carries that day as 'asOf'; an "asOf" template on the
      * entry, or on its type's wildcard entry, adds a sentence naming it. A
      * growth-reference finding carries its z-score as 'z' and its reference
-     * as 'reference' (else the rule's "rangeReference"); a "zScore" template
+     * as 'reference' ('z_score' and 'growth_reference' as the durable store
+     * reads them back; else the rule's "rangeReference"); a "zScore" template
      * adds a sentence with both.
      */
     public static function detail(array $finding, array $rule)
@@ -187,11 +188,13 @@ final class MessageCatalog
         }
         $asOf = isset($finding['asOf']) && is_scalar($finding['asOf']) ? (string) $finding['asOf'] : '';
         // A growth finding's z-score ('z_score' as the durable store reads it
-        // back); its reference is the finding's, else the rule's.
+        // back); its reference is the finding's, else the rule's. A rule with
+        // one branch per reference has no one reference of its own.
         $z = isset($finding['z']) && is_scalar($finding['z']) ? (string) $finding['z']
            : (isset($finding['z_score']) && is_scalar($finding['z_score']) ? (string) $finding['z_score'] : '');
         $ref = isset($finding['reference']) && is_scalar($finding['reference']) ? (string) $finding['reference']
-             : (isset($rule['rangeReference']) && is_string($rule['rangeReference']) ? $rule['rangeReference'] : '');
+             : (isset($finding['growth_reference']) && is_scalar($finding['growth_reference']) ? (string) $finding['growth_reference']
+             : (isset($rule['rangeReference']) && is_string($rule['rangeReference']) ? $rule['rangeReference'] : ''));
         $notes = [];
         if ($asOf !== '') $notes['asOf'] = ['asOf' => $asOf];
         if ($z !== '' && $ref !== '') $notes['zScore'] = ['z' => $z, 'reference' => $ref];

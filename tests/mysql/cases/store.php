@@ -204,12 +204,12 @@ check('store: the slot is released, so the next scan may start',
 // cases/slots.php, which is where it always should have been.
 
 // RETENTION: a value expires without the finding disappearing.
-$A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'secret',
+$A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'secret', z_score = '-3.40',
     value_expires_at = '2000-01-01 00:00:00' WHERE record_id_bin = 'REC-1'");
 check('store: an expired value is cleared', $storeA->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
-$v = $ca->query('SELECT value_bin FROM ' . Schema::table('finding')
+$v = $ca->query('SELECT value_bin, z_score FROM ' . Schema::table('finding')
     . " WHERE record_id_bin = 'REC-1'", []);
-check('store: the value is gone', $v[0][0] === null);
+check('store: the value is gone, and a z-score with it', $v[0][0] === null && $v[0][1] === null);
 $cnt = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
     . " WHERE record_id_bin = 'REC-1'", []);
 check('store: but the finding remains - a report must not shrink as it ages',

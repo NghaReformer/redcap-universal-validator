@@ -68,9 +68,14 @@ trait TemporalIntegration
         if(isset($rule['branches'])){
             $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;$selectorStale=false;
             // A mode with branch groups (@UVRANGE: one per reference) picks one branch per group (Branching).
-            $groupKey=ModeRegistry::branchGroup(ModeRegistry::modeOfType($rule['type']??''));$group=[];$picks=[];
+            // A selector that cannot be resolved, or was read when the page was built, belongs to its own
+            // group then: the other groups are still judged (UniversalValidator::ruleFindings, QRID_activeVariants).
+            $groupMode=ModeRegistry::modeOfType($rule['type']??'');
+            $groupKey=ModeRegistry::branchGroup($groupMode);$group=[];$picks=[];$unknownGroup=[];$staleGroup=[];
             foreach($rule['branches'] as $i=>$branch)$group[$i]=Branching::groupOf($branch,$groupKey);
             $grouped=count(array_unique($group))>1;
+            $groupName=ModeRegistry::branchGroupName($groupMode)?:'group';
+            $label=function($g)use($groupName){return $g===''?'the limits without a '.$groupName:$groupName.' "'.$g.'"';};
             foreach($rule['branches'] as $i=>$branch){
                 $flat=array_merge($rule,$branch);unset($flat['branches']);
                 // The selector alone: a test or an operand that cannot be resolved belongs to its branch, not to the choice of branch.
@@ -86,21 +91,34 @@ trait TemporalIntegration
                         if(isset($g['rule']['whenAst']))$b['rule']['whenAst']=$g['rule']['whenAst'];
                     }
                     $out['branches'][$i]=$b['rule'];
-                    if($g['problems'])$selectorUnknown=true;
-                    if(!empty($g['stale']))$selectorStale=true;
+                    if($g['problems']){$selectorUnknown=true;$unknownGroup[$group[$i]]=true;}
+                    if(!empty($g['stale'])){$selectorStale=true;$staleGroup[$group[$i]]=true;}
                 }else{
                     if(empty($branch['when'])){$fallback=$i;if(!isset($picks[$group[$i]]))$picks[$group[$i]]=['else'=>$i,'active'=>[]];else $picks[$group[$i]]['else']=$i;}
-                    elseif($g['problems'])$selectorUnknown=true;
+                    elseif($g['problems']){$selectorUnknown=true;$unknownGroup[$group[$i]]=true;}
                     elseif(($g['rule']['when']??'')==='1=1'){$active[]=$i;$picks[$group[$i]]['active'][]=$i;}
                 }
             }
-            if($selectorUnknown)return ['rule'=>$out,'problems'=>['unresolved branch selector']];
+            if($selectorUnknown&&(!$grouped||count($unknownGroup)===count(array_unique($group))))return ['rule'=>$out,'problems'=>['unresolved branch selector']];
             if($browser){
                 // A selector read when the page was built may pick the wrong branch, so no
                 // branch blocks: not even a "notFuture" that reads only the live field.
                 // Otherwise each branch carries its own snapshot marks (compile), and a
                 // branch whose "from" is on this page blocks as the rule says.
-                if($selectorStale){
+                if($grouped){
+                    // Per group: a selector that cannot be resolved defers its own group (the page names it,
+                    // selectorBlocked), and a stale one makes only its own group advisory.
+                    foreach($out['branches'] as $i=>$_){
+                        if(isset($unknownGroup[$group[$i]])){
+                            $out['branches'][$i]['deferred']=true;$out['branches'][$i]['selectorBlocked']=true;
+                            $out['branches'][$i]['deferredWhy']=['Extended validation unavailable for '.$label($group[$i]).': unresolved branch selector.'];
+                        }
+                        if(isset($staleGroup[$group[$i]])){
+                            $out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;
+                            if(empty($out['branches'][$i]['snapshotFields']))$out['branches'][$i]['snapshotFields']=['saved event/instance values'];
+                        }
+                    }
+                }elseif($selectorStale){
                     foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
                     $out['snapshotFields']=['saved event/instance values'];
                 }
@@ -109,19 +127,23 @@ trait TemporalIntegration
                 // Each group's pick, prepared on its own, travels as an else branch of that group under its own
                 // index, so ruleFindings evaluates every group and names the branch that judged each finding.
                 // "_groups" keeps the rule's group count, which decides whether findings carry their group.
+                // A group that cannot be prepared is named in groupProblems, and the other groups go on.
                 $flatOut=['type'=>$rule['type']??'single','fields'=>$rule['fields'],'branches'=>[],'_groups'=>count(array_unique($group))];
-                foreach($picks as $p){
+                $groupProblems=[];
+                foreach(array_keys($unknownGroup) as $gk)$groupProblems[]=$label($gk).': unresolved branch selector';
+                foreach($picks as $gk=>$p){
+                    if(isset($unknownGroup[$gk]))continue;
                     if(count($p['active'])>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
                     $pick=$p['active']?$p['active'][0]:($p['else']??null);
                     if($pick===null)continue;
                     $flat=array_merge($rule,$rule['branches'][$pick]);unset($flat['branches']);
                     $res=$this->temporalPrepared($flat,$shape,$node,$ctx,false,null);
-                    if($res['problems'])return $res;
+                    if($res['problems']){$groupProblems[]=$label($gk).': '.implode(', ',$res['problems']);continue;}
                     $b=$res['rule'];unset($b['type'],$b['fields']);if(($b['when']??null)!=='1=0')unset($b['when']);
                     $flatOut['branches'][$pick]=$b;
                 }
-                if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}
-                return ['rule'=>$flatOut,'problems'=>[]];
+                if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[],'groupProblems'=>$groupProblems];}
+                return ['rule'=>$flatOut,'problems'=>[],'groupProblems'=>$groupProblems];
             }
             if(count($active)>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
             $pick=$active?$active[0]:$fallback;
@@ -309,6 +331,8 @@ trait TemporalIntegration
                 if(++$count>$limit || $this->temporalBudget->exhausted()){$this->logUnconfigurable($i,$fields,'Extended audit incomplete: context limit or evaluation budget reached; run the validation scan.',$form,$ctx['event_id'],$ctx['instance']);$stopped=true;break;}
                 $prepared=$this->temporalPrepared($rule,$shape,$node,$this->temporalContext($ctx,$form));
                 if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
+                // One branch group's problem: logged, and the rest of the field is still judged.
+                if(!empty($prepared['groupProblems']))$this->logUnconfigurable($i,$fields,'Extended validation unavailable for part of this field: '.implode('; ',$prepared['groupProblems']),$form,$ctx['event_id'],$ctx['instance']);
                 $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance']);
             }
         }

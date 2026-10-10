@@ -429,6 +429,21 @@ namespace {
     $p8 = page(mod($SET, $set, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: a branch settled false by a saved value gets no table (got ' . json_encode(array_keys($p8['cfg']['growth'] ?? [])) . ')',
         !isset($p8['cfg']['growth']['who-acfa']) && isset($p8['cfg']['growth']['who-wfa']));
+    // ... and is marked idle, so the page does not read the table it was not
+    // sent as one it lost (a configuration error stopping both references)
+    $r8 = ruleFor($p8, 'wt_set');
+    $marks = $r8 ? array_map(function ($b) { return [$b['rangeReference'], !empty($b['growthIdle']), !empty($b['snapshotGate']),
+        in_array('grp', $b['snapshotFields'] ?? [], true)]; }, $r8['branches'] ?? []) : [];
+    check('page: the settled branch is idle; only its own reference reads grp when the page opens (got ' . json_encode($marks) . ')',
+        $marks === [['who-acfa', true, true, true], ['who-wfa', false, false, false]]);
+    // one rule settled false: the rule is idle
+    $ONE = $DICT + ['grp' => f('enrol_form', '', '', 'radio', '1, A | 2, B'),
+        'wt_one' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp]=\'2\'"}', 'number_1dp')];
+    $one = $DATA; $one['2'][351]['grp'] = '1';
+    $p8o = page(mod($ONE, $one, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r8o = ruleFor($p8o, 'wt_one');
+    check('page: one rule settled false: no table, the rule is idle (got ' . json_encode($r8o) . ')',
+        $r8o && !empty($r8o['growthIdle']) && !isset($p8o['cfg']['growth']['who-acfa']) && empty($r8o['deferred']));
     $set['2'][351]['grp'] = '2';
     $p8 = page(mod($SET, $set, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: ... and settled true, it does', isset($p8['cfg']['growth']['who-acfa']));
@@ -443,6 +458,43 @@ namespace {
     $none = ['record_id' => f('enrol_form'), 'x' => f('anthro_form', '@UVRANGE={"hard":[0,10]}', 'number')];
     $p0 = page(mod($none, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: no growth rule, no tables', !isset($p0['cfg']['growth']));
+    // A selector that cannot be resolved (a field on a repeating form read from a
+    // form that does not repeat) sets aside its own reference only: on the page,
+    // in the post-save audit and in the scan.
+    $BLK = $DICT + [
+        'grp_r'  => f('visit_rep', '', '', 'radio', '1, A | 2, B'),
+        'wt_blk' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} '
+            . substr(tag('who-acfa', $AGE), 0, -1) . ',"soft":[-4,4]} ' . tag('who-wfa', $AGE), 'number_1dp'),
+        'wt_blk1' => f('anthro_form', substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} ' . tag('who-wfa', $AGE), 'number_1dp'),
+    ];
+    $blk = $DATA;
+    $blk['2'][351]['wt_blk'] = '6.6'; $blk['2'][351]['wt_blk1'] = '6.6';
+    $blk['2']['repeat_instances'] = [351 => ['visit_rep' => [1 => ['grp_r' => '2'], 2 => ['grp_r' => '1']]]];
+    $pb = page(mod($BLK, $blk, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $rb = ruleFor($pb, 'wt_blk');
+    $marks = $rb ? array_map(function ($b) { return [$b['rangeReference'], !empty($b['deferred']), !empty($b['selectorBlocked']),
+        count($b['deferredWhy'] ?? [])]; }, $rb['branches'] ?? []) : [];
+    check('page: an unresolved selector defers its own reference\'s branches only (got ' . json_encode([$marks, $rb['deferred'] ?? null]) . ')',
+        $rb && empty($rb['deferred']) && $marks === [['who-acfa', true, true, 1], ['who-wfa', false, false, 0], ['who-acfa', true, true, 1]]);
+    $rb1 = ruleFor($pb, 'wt_blk1');
+    check('page: ... with one reference the field as a whole is deferred, as before (got ' . json_encode($rb1['deferredWhy'] ?? null) . ')',
+        $rb1 && !empty($rb1['deferred']) && empty($rb1['branches'][0]['selectorBlocked'])
+        && strpos(implode(' ', $rb1['deferredWhy'] ?? []), 'No branch can be chosen, so the field is not checked here.') !== false);
+    list($by, $un) = audit($BLK, $blk);
+    check('audit: an unresolved selector: who-wfa still judges (got ' . json_encode([$by, $un]) . ')', ($by['wt_blk'] ?? null) === 'soft-low');
+    $ug = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_blk: ') === 0; }));
+    check('audit: ... and the reference set aside is named (got ' . json_encode($ug) . ')', count($ug) === 1
+        && strpos($ug[0], 'a branch "when" condition for the reference "who-acfa" references "[grp_r]"') !== false
+        && strpos($ug[0], 'No branch of it can be chosen, so it is not checked here; the rest of the field is.') !== false);
+    $u1 = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_blk1: ') === 0; }));
+    check('audit: one reference: the whole field, in the words it had (got ' . json_encode($u1) . ')', count($u1) === 1 && !isset($by['wt_blk1'])
+        && strpos($u1[0], 'wt_blk1: a branch "when" condition references "[grp_r]"') === 0
+        && strpos($u1[0], 'No branch can be chosen, so the field is not checked here.') !== false);
+    $res = mod($BLK, $blk, $FULL, 'nurse')->scanProject(149);
+    $sv = []; foreach ($res['violations'] as $v) if ($v['field'] === 'wt_blk') $sv[] = $v['reason'];
+    $su = array_values(array_filter($res['unconfigurable'], function ($u) { return in_array('wt_blk', (array) $u['fields'], true); }));
+    check('scan: the same: who-wfa judged, who-acfa named (got ' . json_encode([$sv, $su]) . ')',
+        $sv === ['soft-low'] && count($su) === 1 && strpos($su[0]['why'], 'for the reference "who-acfa"') !== false);
     // A survey respondent gets nothing of fields on other forms: those inputs are withheld.
     $ps = page(mod($DICT, $DATA, $FULL, 'nurse'), 'survey', '2', 'anthro_form');
     $r = ruleFor($ps, 'weight');
@@ -556,8 +608,13 @@ namespace {
         isset($by['weight']));
 
     // ---- 5) the scan ------------------------------------------------------------------------
+    // A scan that shows values: the project allows it and so does the reader.
+    function rawScan($m) {
+        $m->projectSettings['scan-value-storage'] = 'raw';
+        return $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    }
     $m = mod($DICT, $DATA, $FULL, 'nurse');
-    $res = $m->scanProject(149);
+    $res = rawScan($m);
     $by = []; foreach ($res['violations'] as $v) $by[$v['field']] = $v['reason'];
     ksort($by);
     check('scan: the same verdicts (got ' . json_encode($by) . ')', $by === ['bmi' => 'hard-high', 'hc' => 'hard-low',
@@ -569,6 +626,26 @@ namespace {
     check('scan: the detail names the z-score limits (got ' . json_encode($row['problem'] ?? null) . ')',
         ($row['problem'] ?? '') === 'The value is lower than usual for this field. Expected z-score -2 to 2. '
             . 'Its z-score is -3.40 on the growth reference who-wfa.');
+    // The z-score gives the measurement back, so a scan that withholds the
+    // value withholds it too; the reference is the rule's and stays.
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $res = $m->scanProject(149);
+    $wt = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'weight'; }));
+    check('scan: values withheld, no z-score on the finding, the reference kept (got ' . json_encode($wt[0] ?? null) . ')',
+        $wt && !empty($wt[0]['valueWithheld']) && !isset($wt[0]['z']) && ($wt[0]['reference'] ?? null) === 'who-wfa');
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $row = \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, \INSPIRE\UniversalValidator\ScanColumns::all($dims));
+    check('scan: values withheld, the detail has no z-score (got ' . json_encode($row['problem'] ?? null) . ')',
+        ($row['problem'] ?? '') === 'The value is lower than usual for this field. Expected z-score -2 to 2.');
+    // identifiers withheld: the value of an identifier field is redacted, and its z-score with it
+    $IDD = $DICT; $IDD['weight']['identifier'] = 'y';
+    $m = mod($IDD, $DATA, $FULL, 'nurse');
+    $m->projectSettings['scan-value-storage'] = 'identifier-redacted';
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $zs = [];
+    foreach ($res['violations'] as $v) if (in_array($v['field'], ['weight', 'bmi'], true)) $zs[$v['field']] = [$v['value'], $v['z'] ?? null];
+    check('scan: identifiers withheld, an identifier field\'s z-score goes with its value (got ' . json_encode($zs) . ')',
+        ($zs['weight'] ?? null) === ['[identifier withheld]', null] && ($zs['bmi'] ?? null) === ['30', '5.03']);
     $m = mod($DICT, $weird, $FULL, 'nurse');
     $res = $m->scanProject(149);
     $np = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'wt_h'; }));
@@ -583,7 +660,7 @@ namespace {
         === ['text' => 'Please enter a measurement above 0.', 'source' => 'catalog']);
     // a hard finding's detail names the hard z-score limits
     $m = mod($DICT, $DATA, $FULL, 'nurse');
-    $res = $m->scanProject(149);
+    $res = rawScan($m);
     $dims = $m->scanDimensions(149, $res['rules'] ?? null);
     $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
     $bm = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'bmi'; }));
@@ -735,14 +812,35 @@ namespace {
     // A finding's identity names its reference only when the rule has several: a field
     // with one growth rule keeps the identity it had.
     $m = mod($DICT, $DATA, $FULL, 'nurse');
-    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $m->projectSettings['scan-value-storage'] = 'raw';
+    $ctx = $m->durableScanContext(149, ['generation' => null, 'valueCeiling' => 'raw']);
     $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', $DATA['2'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
     $dw = array_values(array_filter($dur['findings'], function ($x) { return $x['field'] === 'weight'; }));
     $loc = ['record' => '2', 'event_id' => 351, 'instance' => 1, 'host_form' => 'anthro_form', 'field' => 'weight',
             'rule_source_id' => $dw ? $dw[0]['rule_source_id'] : '', 'reason_code' => \INSPIRE\UniversalValidator\Scan\ReasonCode::code('soft-low'), 'locus' => ''];
     check('durable: one growth rule, no locus in its identity',
         count($dw) === 1 && $dw[0]['identity'] === \INSPIRE\UniversalValidator\Scan\Hmac::findingIdentity(149, $loc, str_repeat('k', 32)));
-    check('durable: the finding row carries its z-score (got ' . json_encode($dw[0]['z_score'] ?? null) . ')', ($dw[0]['z_score'] ?? null) === '-3.40');
+    check('durable: the finding row carries its z-score and reference beside its value (got '
+        . json_encode([$dw[0]['value_bin'] ?? null, $dw[0]['z_score'] ?? null, $dw[0]['growth_reference'] ?? null]) . ')',
+        ($dw[0]['value_bin'] ?? null) === '6.6' && ($dw[0]['z_score'] ?? null) === '-3.40' && ($dw[0]['growth_reference'] ?? null) === 'who-wfa');
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', $DATA['2'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $dw = array_values(array_filter($dur['findings'], function ($x) { return $x['field'] === 'weight'; }));
+    check('durable: values withheld, no value and no z-score stored, the reference kept (got '
+        . json_encode([$dw[0]['value_bin'] ?? null, $dw[0]['z_score'] ?? null, $dw[0]['growth_reference'] ?? null]) . ')',
+        count($dw) === 1 && $dw[0]['value_bin'] === null && $dw[0]['z_score'] === null && $dw[0]['growth_reference'] === 'who-wfa');
+    // two references on one field: each finding names its own
+    $m = mod($TWO, $two, $FULL, 'nurse');
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', $two['2'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $gr = [];
+    foreach ($dur['findings'] as $x) if ($x['field'] === 'wt_two') $gr[] = $x['growth_reference'];
+    sort($gr);
+    check('durable: two references on one field, each finding names its own (got ' . json_encode($gr) . ')', $gr === ['who-wfa', 'who-wfh']);
+    check('detail: the durable row\'s reference is used when the rule names none',
+        \INSPIRE\UniversalValidator\MessageCatalog::detail(['type' => 'range', 'reason' => 'soft-low', 'z_score' => '-3.40',
+            'growth_reference' => 'who-wfh'], []) === 'Its z-score is -3.40 on the growth reference who-wfh.');
 
     // ---- 5e) no z-score: "plausible", "measureScale", the z-score on findings, values not evaluated ----
     $PL = $DICT;
@@ -757,6 +855,17 @@ namespace {
     check('log: a growth finding carries its z-score and reference (got ' . json_encode($logged) . ')',
         ($logged['weight'] ?? null) === ['-3.40', 'who-wfa'] && ($logged['wt_g'] ?? null) === ['-3.40', 'who-wfa']
         && ($logged['bmi'] ?? null) === ['5.03', 'who2007-bfa']);
+    // A log that keeps no value, or only its keyed hash, keeps no z-score: the
+    // z-score, sex and age give the measurement back.
+    foreach (['none', 'hashed'] as $lm) {
+        $m = mod($PL, $pl, $FULL, 'nurse');
+        $m->projectSettings['log-values'] = $lm;
+        $m->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
+        $logged = [];
+        foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $logged[$e['field']] = [$e['z'] ?? null, $e['reference'] ?? null, isset($e['value'])];
+        check('log: log-values ' . $lm . ', the reference and no z-score or value (got ' . json_encode($logged) . ')',
+            ($logged['weight'] ?? null) === [null, 'who-wfa', false] && ($logged['bmi'] ?? null) === [null, 'who2007-bfa', false]);
+    }
     $p = page(mod($PL, $pl, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     $r = ruleFor($p, 'wt_g');
     check('page: plausible, its text in the reference\'s unit, and measureScale travel (got '

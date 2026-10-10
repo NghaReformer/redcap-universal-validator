@@ -628,8 +628,12 @@ final class ArrayScanStore implements ScanStore
         foreach ($this->findings as $i => $f) {
             if (empty($f['value_expires_at']) || $f['value_expires_at'] > $now) continue;
             // The VALUE goes, the finding stays. A report that shrinks as it
-            // ages reads as the project having improved.
+            // ages reads as the project having improved. The fingerprint and a
+            // growth finding's z-score go with it, as in SqlScanStore: each
+            // gives the value back.
             $this->findings[$i]['value_bin'] = null;
+            $this->findings[$i]['value_fingerprint'] = null;
+            $this->findings[$i]['z_score'] = null;
             $this->findings[$i]['value_expires_at'] = null;
             $n++;
         }

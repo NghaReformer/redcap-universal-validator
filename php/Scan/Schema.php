@@ -684,8 +684,11 @@ final class Schema
 
     /**
      * Version 5: the z-score of a growth-reference (@UVRANGE "reference")
-     * finding, as the text both runtimes print ("-3.40"), for the report. NULL
-     * for every other finding. One ALTER, skipped when the column is there.
+     * finding, as the text both runtimes print ("-3.40"), and the id of the
+     * reference it was judged against, for the report. A rule may hold one
+     * branch per reference, so the reference is the finding's, not the rule's.
+     * NULL for every other finding. Two ALTERs, each skipped when its column is
+     * there.
      *
      * @return array[] each ['sql' => string, 'skipIf' => ?array]
      */
@@ -693,7 +696,9 @@ final class Schema
     {
         $f = self::table('finding');
         return [['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN z_score VARCHAR(16) NULL',
-                 'skipIf' => ['column', $f, 'z_score']]];
+                 'skipIf' => ['column', $f, 'z_score']],
+                ['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN growth_reference VARCHAR(64) NULL',
+                 'skipIf' => ['column', $f, 'growth_reference']]];
     }
 
     /**
@@ -900,10 +905,13 @@ final class Schema
                         'why' => 'schema version 4 did not verify after it was applied: the unique candidate table '
                                . 'has no lookup column. The version is NOT recorded and the scan stays disabled.'];
             }
-            if ($v === 5 && !self::alreadyApplied($module, ['column', self::table('finding'), 'z_score'])) {
-                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
-                        'why' => 'schema version 5 did not verify after it was applied: the finding table '
-                               . 'has no z_score column. The version is NOT recorded and the scan stays disabled.'];
+            if ($v === 5) {
+                foreach (['z_score', 'growth_reference'] as $col) {
+                    if (self::alreadyApplied($module, ['column', self::table('finding'), $col])) continue;
+                    return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                            'why' => 'schema version 5 did not verify after it was applied: the finding table '
+                                   . 'has no ' . $col . ' column. The version is NOT recorded and the scan stays disabled.'];
+                }
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

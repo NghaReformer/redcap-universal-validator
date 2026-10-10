@@ -73,14 +73,18 @@ $NEIGHBOUR = uv_neighbour($PID);
             'instance' => 1, 'host_form' => 'fa', 'field' => 'x', 'rule_source_id' => 'r1',
             'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
             'reason_code' => 'required-blank', 'value_bin' => 'SECRET',
+            'z_score' => '-3.40', 'growth_reference' => 'who-wfa',
             'value_expires_at' => '2000-01-01 00:00:00'))));
 
     check('retention: nothing expires before its time',
         $ret->expireValues('1999-01-01 00:00:00') === 0);
     check('retention: an overdue value is cleared', $ret->expireValues() === 1);
-    $v = $ca->query('SELECT value_bin, value_expires_at FROM ' . Schema::table('finding')
+    $v = $ca->query('SELECT value_bin, value_expires_at, z_score, growth_reference FROM ' . Schema::table('finding')
         . " WHERE record_id_bin = 'R1'", array());
     check('retention: the value is gone', $v[0][0] === null && $v[0][1] === null);
+    // the z-score gives the measurement back, so it goes with the value; the reference is the rule's
+    check('retention: the z-score goes with it, the reference stays (got ' . json_encode($v[0]) . ')',
+        $v[0][2] === null && $v[0][3] === 'who-wfa');
     // The row survives: a report that shrinks as it ages reads as the project
     // having improved, which is the misreading this module exists to prevent.
     // NOT $n: check() keeps its counter in a global of that name, and assigning
@@ -90,6 +94,16 @@ $NEIGHBOUR = uv_neighbour($PID);
     $kept = $ca->query('SELECT COUNT(*) FROM ' . Schema::table('finding')
         . " WHERE record_id_bin = 'R1'", array());
     check('retention: but the FINDING remains', (int) $kept[0][0] === 1);
+
+    // A tightened value policy clears the project's stored previews at once,
+    // and a growth finding's z-score with its value.
+    $A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'SECRET', z_score = '-3.40'
+        WHERE record_id_bin = 'R1' AND project_id = " . $PID);
+    $ret->revokePreviews($PID, 99);
+    $v = $ca->query('SELECT value_bin, z_score, growth_reference FROM ' . Schema::table('finding')
+        . " WHERE record_id_bin = 'R1' AND project_id = " . $PID, array());
+    check('retention: a revoked preview takes its z-score with it, the reference stays (got ' . json_encode($v) . ')',
+        $v[0][0] === null && $v[0][1] === null && $v[0][2] === 'who-wfa');
 
     // An active run is never purged, however old it looks.
     $A->query('UPDATE ' . Schema::table('scan_run')

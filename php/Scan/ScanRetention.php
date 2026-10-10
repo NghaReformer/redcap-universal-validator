@@ -74,7 +74,7 @@ final class ScanRetention
     {
         $now = $now === null ? self::now() : $now;
         $this->db->exec('UPDATE ' . Schema::table('finding') . '
-            SET value_bin = NULL, value_fingerprint = NULL, value_expires_at = NULL
+            SET value_bin = NULL, value_fingerprint = NULL, value_expires_at = NULL, z_score = NULL
             WHERE value_expires_at IS NOT NULL AND value_expires_at <= ?', [$now]);
         return $this->db->affected();
     }
@@ -116,7 +116,7 @@ final class ScanRetention
         $this->db->exec('UPDATE ' . Schema::table('finding') . ' f
             JOIN ' . Schema::table('scan_run') . ' r
                  ON r.generation_id = f.generation_id AND r.project_id = f.project_id
-            SET f.value_bin = NULL, f.value_fingerprint = NULL, f.value_expires_at = NULL
+            SET f.value_bin = NULL, f.value_fingerprint = NULL, f.value_expires_at = NULL, f.z_score = NULL
             WHERE r.project_id = ?', [$pid]);
         return $n;
     }

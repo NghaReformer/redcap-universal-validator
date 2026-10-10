@@ -376,8 +376,12 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($f['invalid'] as $v) {
             $extra = [];
             if (isset($v['asOf'])) $extra['as_of'] = (string) $v['asOf'];
-            // a growth finding: its z-score (when there is one) and its reference
-            if (isset($v['z'])) $extra['z'] = (string) $v['z'];
+            // A growth finding: its reference, and its z-score only where the
+            // log keeps the value itself. The z-score, the reference, the sex
+            // and the age give the measurement back to within a rounding, so a
+            // log that keeps no value (none) or only its keyed hash (hashed)
+            // must not keep the z-score either.
+            if (isset($v['z']) && $logMode === 'raw') $extra['z'] = (string) $v['z'];
             if (isset($v['reference'])) $extra['reference'] = (string) $v['reference'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
                 $extra);
@@ -428,10 +432,16 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 $asts = (is_array($whenAst) && isset($whenAst['branches'])) ? $whenAst['branches'] : [];
             }
-            $groupKey = ModeRegistry::branchGroup(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+            $groupMode = ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : '');
+            $groupKey = ModeRegistry::branchGroup($groupMode);
             $active = [];   // group => [branch index, ...]
             $else = [];     // group => branch index
             $groups = [];   // group => true, in branch order
+            // A group whose branch cannot be chosen (an unparseable or
+            // unresolvable "when") => why. It sets aside that group only: the
+            // other groups of the field are still judged, as on the page
+            // (QRID_activeVariants). With one group that is the whole field.
+            $broken = [];
             foreach ($rule['branches'] as $bi => $b) {
                 $g = Branching::groupOf($b, $groupKey);
                 $groups[$g] = true;
@@ -439,10 +449,11 @@ class UniversalValidator extends AbstractExternalModule
                     $else[$g] = $bi;
                     continue;
                 }
+                if (isset($broken[$g])) continue;
                 $ast = isset($asts[$bi]) ? $asts[$bi] : false;
                 if (!is_array($ast)) {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'a branch "when" condition cannot be evaluated — field skipped'];
-                    return $out;
+                    $broken[$g] = ['cannot be evaluated', null];
+                    continue;
                 }
                 // A SELECTOR we could not resolve makes the whole branch decision
                 // undecidable, and the failure is asymmetric: an unresolved
@@ -455,15 +466,31 @@ class UniversalValidator extends AbstractExternalModule
                 foreach (Logic::referencedFields($ast) as $ref) {
                     $state = isset($resolution[$ref[0]]) ? $resolution[$ref[0]] : 'ok';
                     if ($state !== 'ok') {
-                        $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                            'why' => 'a branch "when" condition ' . self::resolutionProblem($state, $ref[0])
-                                   . ' No branch can be chosen, so the field is not checked here.'];
-                        return $out;
+                        $broken[$g] = [$state, $ref[0]];
+                        continue 2;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[Branching::groupOf($b, $groupKey)][] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[$g][] = $bi;
             }
-            foreach ($active as $list) {
+            if ($broken && count($groups) === 1) {
+                // One group: the field as a whole is not checked.
+                list($state, $refField) = reset($broken);
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $refField === null
+                    ? 'a branch "when" condition cannot be evaluated — field skipped'
+                    : 'a branch "when" condition ' . self::resolutionProblem($state, $refField)
+                      . ' No branch can be chosen, so the field is not checked here.'];
+                return $out;
+            }
+            $groupName = ModeRegistry::branchGroupName($groupMode) ?: 'group';
+            foreach ($broken as $g => $bk) {
+                $which = $g === '' ? 'the limits without a ' . $groupName : 'the ' . $groupName . ' "' . $g . '"';
+                $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $bk[1] === null
+                    ? 'a branch "when" condition for ' . $which . ' cannot be evaluated — that ' . $groupName . ' is skipped'
+                    : 'a branch "when" condition for ' . $which . ' ' . self::resolutionProblem($bk[0], $bk[1])
+                      . ' No branch of it can be chosen, so it is not checked here; the rest of the field is.'];
+            }
+            foreach ($active as $g => $list) {
+                if (isset($broken[$g])) continue;
                 if (count($list) > 1) {
                     $out['unconfigurable'][] = ['fields' => $rule['fields'],
                         'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
@@ -476,6 +503,7 @@ class UniversalValidator extends AbstractExternalModule
             // identities of their own (Scan\Hmac::findingIdentity).
             $several = (isset($rule['_groups']) ? (int) $rule['_groups'] : count($groups)) > 1;
             foreach (array_keys($groups) as $g) {
+                if (isset($broken[$g])) continue;
                 if (isset($active[$g])) $pick = $active[$g][0];
                 elseif (isset($else[$g])) $pick = $else[$g];
                 else continue; // no branch of this group applies to this context
@@ -3059,8 +3087,15 @@ class UniversalValidator extends AbstractExternalModule
                 // for another reason is not judged here either.
                 if ($this->anyOperandWithheld($n) || !empty($n['deferred'])) continue;
                 // A branch whose condition the server settled false can never
-                // apply on this page.
-                if (isset($n['whenAst']) && is_array($n['whenAst']) && self::settledFalse($n['whenAst'], $n)) continue;
+                // apply on this page. It is marked idle, so the page does not
+                // read the table it was not sent as one it lost (a
+                // configuration error that would stop every reference on the
+                // field: js/engine.js makeVariant).
+                if (isset($n['whenAst']) && is_array($n['whenAst']) && self::settledFalse($n['whenAst'], $n)) {
+                    if ($branched) $config['rules'][$i]['branches'][$bi]['growthIdle'] = true;
+                    else $config['rules'][$i]['growthIdle'] = true;
+                    continue;
+                }
                 if ($cap === null) {
                     $dir = $this->referenceDir();
                     $cap = GrowthReference::catalog($dir)['pageTables'];
@@ -3444,28 +3479,44 @@ class UniversalValidator extends AbstractExternalModule
             if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
             if ($gateSnap) $rules[$i]['snapshotGate'] = true;
             if (isset($r['branches']) && is_array($r['branches'])) {
+                // Both marks below are kept PER BRANCH GROUP. A mode with groups
+                // (@UVRANGE: one per reference) chooses a branch once per group
+                // (Branching, QRID_activeVariants), so one reference's selector
+                // says nothing about which branch of another applies; collected
+                // across the rule, a saved value read by one reference's "when"
+                // made every other reference on the field advisory. A mode with
+                // no groups has one group, which is the whole rule, as before.
+                $groupKey = ModeRegistry::branchGroup(ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : ''));
                 // An unresolved SELECTOR makes the branch decision undecidable, and
                 // the client would otherwise fall through to the fallback branch and
-                // enforce it (H-01). Mark EVERY branch deferred, not just the blocked
-                // one, so no branch can be selected and enforced on this page.
-                $selectorBlocked = [];
+                // enforce it (H-01). Mark EVERY branch of the group deferred, not
+                // just the blocked one, so no branch of it can be selected and
+                // enforced on this page.
+                $selectorBlocked = [];   // group => field => state
                 // A SELECTOR settled on the server picks the branch from page-load
                 // truth. Whichever branch that turns out to be, its verdict rests
                 // on a value that may already have changed, so the staleness
-                // belongs to the whole rule — every branch is marked, because only
-                // the selected one's BLOCK setting is ever consulted (H-01).
-                $selectorSnapshot = [];
+                // belongs to the whole group — every branch of it is marked,
+                // because only the selected one's BLOCK setting is ever consulted
+                // (H-01).
+                $selectorSnapshot = [];  // group => field => true
+                $groupsSeen = [];
                 foreach ($r['branches'] as $bi => $b) {
+                    $g = Branching::groupOf($b, $groupKey);
+                    $groupsSeen[$g] = true;
                     if (!isset($b['when']) || $b['when'] === '') continue;
                     if (!empty($blocked[$b['when']])) {
-                        foreach ($blocked[$b['when']] as $bf => $bstate) $selectorBlocked[$bf] = $bstate;
+                        foreach ($blocked[$b['when']] as $bf => $bstate) $selectorBlocked[$g][$bf] = $bstate;
                     }
-                    foreach (isset($snapshot[$b['when']]) ? $snapshot[$b['when']] : [] as $sf => $_) $selectorSnapshot[$sf] = true;
+                    foreach (isset($snapshot[$b['when']]) ? $snapshot[$b['when']] : [] as $sf => $_) $selectorSnapshot[$g][$sf] = true;
                 }
+                $severalGroups = count($groupsSeen) > 1;
                 foreach ($r['branches'] as $bi => $b) {
+                    $g = Branching::groupOf($b, $groupKey);
+                    $gBlocked = isset($selectorBlocked[$g]) ? $selectorBlocked[$g] : [];
                     $bWhy = [];
-                    $bSnap = $selectorSnapshot;
-                    $bGate = (bool) $selectorSnapshot;
+                    $bSnap = isset($selectorSnapshot[$g]) ? $selectorSnapshot[$g] : [];
+                    $bGate = (bool) $bSnap;
                     if (isset($b['when']) && isset($folded[$b['when']])) {
                         $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']][empty($b['caseSensitive']) ? 0 : 1];
                         if (!empty($blocked[$b['when']])) {
@@ -3500,17 +3551,25 @@ class UniversalValidator extends AbstractExternalModule
                     // be written ONTO the branch or they are silently dropped.
                     if ($bSnap) $rules[$i]['branches'][$bi]['snapshotFields'] = array_keys($bSnap);
                     if ($bGate) $rules[$i]['branches'][$bi]['snapshotGate'] = true;
-                    if ($selectorBlocked) {
+                    if ($gBlocked) {
                         $rules[$i]['branches'][$bi]['deferred'] = true;
-                        foreach ($selectorBlocked as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
+                        // With other groups beside it, the page names this
+                        // group's deferral whether or not any of its
+                        // conditions holds (QRID_buildVariants).
+                        if ($severalGroups) $rules[$i]['branches'][$bi]['selectorBlocked'] = true;
+                        foreach ($gBlocked as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                     }
                     if ($bWhy) $rules[$i]['branches'][$bi]['deferredWhy'] = array_values($bWhy);
                 }
-                if ($selectorBlocked) {
+                // Only when no group can choose a branch is the field not
+                // checked here at all.
+                if ($selectorBlocked && count($selectorBlocked) === count($groupsSeen)) {
                     $rules[$i]['deferred'] = true;
-                    foreach ($selectorBlocked as $bf => $bs) {
-                        $notes[$i][$bf . '|' . $bs] = self::resolutionProblem($bs, $bf)
-                            . ' No branch can be chosen, so the field is not checked here.';
+                    foreach ($selectorBlocked as $gBlocked) {
+                        foreach ($gBlocked as $bf => $bs) {
+                            $notes[$i][$bf . '|' . $bs] = self::resolutionProblem($bs, $bf)
+                                . ' No branch can be chosen, so the field is not checked here.';
+                        }
                     }
                 }
             }
@@ -6201,6 +6260,8 @@ class UniversalValidator extends AbstractExternalModule
 
     /** Longest value the report will carry. A report is not a second copy of the project. */
     const REPORT_VALUE_MAX = 120;
+    /** What reportValue() shows in place of an identifier field's value. */
+    const REPORT_REDACTED = '[identifier withheld]';
 
     /**
      * The value to show beside one finding, or null to show nothing.
@@ -6245,7 +6306,7 @@ class UniversalValidator extends AbstractExternalModule
 
         $field = isset($v['field']) ? (string) $v['field'] : '';
         $ids = isset($plan['identifiers']) ? $plan['identifiers'] : null;
-        if (self::mustRedact($ids, $field, $mode)) return '[identifier withheld]';
+        if (self::mustRedact($ids, $field, $mode)) return self::REPORT_REDACTED;
 
         if (!mb_check_encoding($val, 'UTF-8')) {
             return '[' . strlen($val) . ' bytes, not valid text]';
@@ -6563,8 +6624,13 @@ class UniversalValidator extends AbstractExternalModule
                 'value_expires_at' => ($blob === null) ? null : $valueExpiry,
                 // The day a @UVWINDOW verdict was judged against, for the report.
                 'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
-                // A growth finding's z-score (the reference is the rule's).
-                'z_score' => isset($v['z']) ? (string) $v['z'] : null,
+                // A growth finding's z-score, kept only beside a stored value
+                // preview and cleared with it (ScanRetention), since it gives
+                // the measurement back; and its reference, which is the rule's
+                // and not participant data. A rule with branches per reference
+                // has no one reference, so the finding carries its own.
+                'z_score' => ($blob !== null && isset($v['z'])) ? (string) $v['z'] : null,
+                'growth_reference' => isset($v['reference']) ? substr((string) $v['reference'], 0, 64) : null,
             ];
         }
 
@@ -7211,6 +7277,12 @@ class UniversalValidator extends AbstractExternalModule
                                 'why'=>'Extended validation unavailable at event ' . $ctx['event_id'] . ', instance ' . $ctx['instance'] . ': ' . implode(', ', $prepared['problems'])];
                             continue;
                         }
+                        // One branch group's problem: that group is reported and
+                        // the rest of the field is still judged.
+                        if (!empty($prepared['groupProblems'])) {
+                            $unconf[$i . '|temporal-group|' . $ck] = ['rule'=>$i+1, 'fields'=>$ownFields,
+                                'why'=>'Extended validation unavailable at event ' . $ctx['event_id'] . ', instance ' . $ctx['instance'] . ' for part of this field: ' . implode('; ', $prepared['groupProblems'])];
+                        }
                         $evaluatedRule = $prepared['rule'];
                         $evaluatedMode = ModeRegistry::modeOfType($evaluatedRule['type'] ?? '');
                         if (isset($prepared['branch'])) $preparedBranch = (int) $prepared['branch'];
@@ -7258,8 +7330,12 @@ class UniversalValidator extends AbstractExternalModule
                         ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
                           // the day a today-relative @UVWINDOW part was judged against
                           + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
-                          // a growth finding's z-score and reference
-                          + (isset($v['z']) ? ['z' => (string) $v['z']] : [])
+                          // A growth finding's reference, and its z-score only
+                          // beside a value the report shows: the z-score gives
+                          // the measurement back, so it is withheld wherever
+                          // the value is.
+                          + (isset($v['z']) && is_string($rv) && $rv !== self::REPORT_REDACTED
+                              ? ['z' => (string) $v['z']] : [])
                           + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : []));
                     }
                     foreach ($f['unconfigurable'] as $u) {
@@ -8683,7 +8759,7 @@ class UniversalValidator extends AbstractExternalModule
                 $shape=$this->temporalShape($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
                 $this->temporalBegin($pid);
                 $p=$this->temporalPrepared($r,$shape,$node,['event'=>$event_id,'instrument'=>$instrument,'instance'=>$repeat_instance,'values'=>[]]);
-                if ($p['problems'] || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
+                if ($p['problems'] || !empty($p['groupProblems']) || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
                 return $p['rule'];
             }
             if (!isset($r['branches']) || !is_array($r['branches'])) return $r;
