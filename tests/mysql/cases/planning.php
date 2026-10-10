@@ -336,8 +336,10 @@ $NEIGHBOUR = uv_neighbour($PID);
         // that records where the walk stands is next, and the request's
         // connection dies before it is sent.
         private function seam($sql) {
-            if ($this->killed || stripos(ltrim($sql), 'UPDATE ' . $this->table) !== 0
-                    || strpos($sql, 'plan_cursor') === false) {
+            $s = ltrim($sql);
+            $plan = stripos($s, 'UPDATE ' . $this->table) === 0
+                 || stripos($s, 'INSERT INTO ' . $this->table) === 0;
+            if ($this->killed || !$plan || strpos($sql, 'plan_cursor') === false) {
                 return;                // the claim's attempt count is not the page's write
             }
             $this->killed = true;
