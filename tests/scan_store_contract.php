@@ -21,8 +21,13 @@ namespace INSPIRE\UniversalValidator\Scan;
 /**
  * @param callable $newStore  () => ScanStore, fresh and empty
  * @param string   $label     which implementation, for the check names
+ * @param callable $age       (ScanStore $store, int $runId, int $seconds) => void:
+ *                            make every claim on the run that much older. A dead
+ *                            worker is a claim that has aged (review R2S-1), and
+ *                            the contract cannot wait fifteen minutes to show one;
+ *                            each store's harness knows where its clock is kept.
  */
-function storeContract(callable $newStore, $label)
+function storeContract(callable $newStore, $label, callable $age)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -735,13 +740,15 @@ function storeContract(callable $newStore, $label)
     // attempt counted. A record that kills PHP every time it is evaluated was
     // therefore taken over and retried for ever. A row that is free and still
     // carries a claim token is that dead worker's, because every way a live
-    // worker lets go of a row clears the token.
+    // worker lets go of a row clears the token - once the claim is as old as a
+    // claimed row must be before it is free at all (review R2S-1, below).
     $s8 = $newStore();
     $rid8 = (int) $s8->startRun(735, [])['run']['run_id'];
     $s8->writeManifest($rid8, [$mk5('V'), $mk5('W'), $mk5('X')]);
     $ep8 = (int) $s8->run(735, $rid8)['lease_epoch'];
     $C('dead worker: the fixture claims two rows and then runs nothing',
         count($s8->claim($rid8, 'w1', $ep8, 2)) === 2);
+    $age($s8, $rid8, 1000);
     $t8 = $s8->claimPending($rid8, 'w2', $ep8, 10, 900, 3);
     $C('dead worker: a takeover hands out an abandoned row ALONE, whatever the limit',
         is_array($t8) && count($t8) === 1 && $t8[0]['abandoned'] === true);
@@ -765,13 +772,39 @@ function storeContract(callable $newStore, $label)
     $s9->writeManifest($rid9, [$mk5('Y')]);
     $ep9 = (int) $s9->run(736, $rid9)['lease_epoch'];
     $s9->claim($rid9, 'w1', $ep9, 1);
+    $age($s9, $rid9, 1000);
+    $ret9 = -1;
     $C('dead worker: at the limit the abandoned row is retired, not handed out',
-        $s9->claimPending($rid9, 'w2', $ep9, 10, 900, 1) === []);
+        $s9->claimPending($rid9, 'w2', $ep9, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret9) === []);
+    $C('dead worker: and the caller is told how many rows the call retired',
+        $ret9 === 1);
     $st9 = $s9->recordStates($rid9);
     $C('dead worker: retired as UNREADABLE, with the attempt counted',
         isset($st9[ScanStore::REC_UNREADABLE]) && (int) $st9[ScanStore::REC_UNREADABLE] === 1);
     $C('dead worker: so the manifest is complete and the run can end',
         $s9->manifestComplete($rid9) === true);
+
+    // A LIVE WORKER IS NOT A DEAD ONE (review R2S-1). claim() stamps the rows it
+    // hands out in scanning and leaves them PENDING, and a PENDING row is free
+    // at any age - so "free and still stamped" also describes a worker that is
+    // alive and still evaluating its last scanning batch. A second driver that
+    // reached catch-up (a second tab, a reload) charged those rows, and at an
+    // attempt limit of 1 retired every one of them as unreadable before anybody
+    // had examined it. A fresh stamp is taken over UNCHARGED, all of it at once.
+    $s12 = $newStore();
+    $rid12 = (int) $s12->startRun(739, [])['run']['run_id'];
+    $s12->writeManifest($rid12, [$mk5('L1'), $mk5('L2'), $mk5('L3')]);
+    $ep12 = (int) $s12->run(739, $rid12)['lease_epoch'];
+    $s12->claim($rid12, 'w1', $ep12, 3);                 // w1 is alive, evaluating
+    $ret12 = -1;
+    $t12 = $s12->claimPending($rid12, 'w2', $ep12, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret12);
+    $C('live worker: a fresh scanning stamp is not abandoned, so nothing is retired',
+        $ret12 === 0 && is_array($t12) && count($t12) === 3);
+    $C('live worker: and nothing is charged - each row is taken over as it stood',
+        is_array($t12) && count($t12) === 3 && $t12[0]['abandoned'] === false
+        && (int) $t12[0]['attempts'] === 0 && (int) $t12[2]['attempts'] === 0);
+    $C('live worker: no record became an exclusion nobody examined',
+        !isset($s12->recordStates($rid12)[ScanStore::REC_UNREADABLE]));
 
     // A RELEASED row is not abandoned, and a caller that gives no attempt
     // limit keeps the old behaviour exactly.

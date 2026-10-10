@@ -572,8 +572,10 @@ final class SqlScanStore implements ScanStore
      * nothing about a claim marks a record examined.
      */
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
-                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE)
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE,
+                                 &$retired = null)
     {
+        $retired = 0;
         $limit = max(1, (int) $limit);
         $token = $this->claimToken($runId);
         if ($token < 1) return false;            // no such run: refused, not empty
@@ -592,12 +594,16 @@ final class SqlScanStore implements ScanStore
             }
             $t = Schema::table('scan_record');
             $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
+            // The eighth column says whether the row's claim is as old as a
+            // CLAIMED row must be before it is free: asked of the server, in
+            // the same comparison the WHERE clause makes, so the two can never
+            // disagree about what stale means.
             $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
-                attempts, version_scanned, claim_seq
+                attempts, version_scanned, claim_seq, (updated_at < ?)
                 FROM ' . $t . '
                 WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
                 ORDER BY ordinal LIMIT ' . $limit,
-                [$runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
+                [$stale, $runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
             $out = [];
             $retire = [];
             foreach ($rows as $row) {
@@ -617,7 +623,21 @@ final class SqlScanStore implements ScanStore
                 // worker too, it charges only itself and not the records that
                 // happened to share its batch. Only with $maxAttempts, so a
                 // caller that does not bound attempts keeps the old behaviour.
-                $abandoned = $maxAttempts !== null && (int) $row[6] !== 0;
+                //
+                // AND ONLY WHEN THE CLAIM IS STALE (review R2S-1). The rule
+                // above said "free and still stamped", and a PENDING row is
+                // free at any age - while claim() stamps the rows it hands
+                // out in scanning and leaves them PENDING. So a LIVE worker
+                // still evaluating its last scanning batch looked dead to a
+                // second driver that had reached catch-up (a second tab, a
+                // reload, Continue while the old request ran): its healthy
+                // records were charged, and at recordAttempts=1 retired as
+                // unreadable before anyone examined them. A fresh stamp is
+                // taken over uncharged, which replaces its token and lets the
+                // live worker's commit drop it - wasteful, never wrong. Stale
+                // is the eighth column: updated_at, which the stamp wrote.
+                $abandoned = $maxAttempts !== null && (int) $row[6] !== 0
+                          && (int) $row[7] === 1;
                 $attempts = (int) $row[4];
                 if ($abandoned) {
                     if ($out) break;                 // it goes alone, in a call of its own
@@ -637,11 +657,14 @@ final class SqlScanStore implements ScanStore
                 $marks = implode(',', array_fill(0, count($retire), '?'));
                 // Terminal, so the run can finish; blocking, so it can never
                 // finish clean - the same state noteAttempts() retires to.
-                $this->db->execNoCount('UPDATE ' . $t . '
+                // COUNTED, so the worker can report them: a record retired
+                // here was never in a batch, and nothing else would say so.
+                $this->db->exec('UPDATE ' . $t . '
                     SET state = ?, attempts = LEAST(attempts + 1, 254),
                         claim_owner = NULL, claim_seq = 0, updated_at = ?
                     WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
                     array_merge([(int) $exhausted, self::now(), $runId], $retire, [self::REC_DONE]));
+                $retired += $this->db->affected();
             }
             if ($out && $out[0]['abandoned']) {
                 // The attempt the dead worker never counted, with the takeover.
@@ -667,7 +690,9 @@ final class SqlScanStore implements ScanStore
             return $out;
         } catch (\Throwable $e) {
             // A failed read is not an empty one, and it is not a refused one
-            // either. This is the file that says so everywhere else.
+            // either. This is the file that says so everywhere else. Nothing
+            // was retired either: the rollback undid it.
+            $retired = 0;
             throw $this->rolledBack($e);
         }
     }
@@ -697,11 +722,13 @@ final class SqlScanStore implements ScanStore
      * record used to destroy the work of every record beside it. Dropping its
      * findings costs nothing: the new holder is committing them.
      */
-    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                &$heldOrdinals = null)
     {
         // Nothing held until the transaction has committed, so every refusal,
         // throw and rollback below leaves it at 0. See ScanStore::commitBatch().
         $heldCount = 0;
+        $heldOrdinals = [];
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
@@ -962,6 +989,7 @@ final class SqlScanStore implements ScanStore
 
             $this->db->commit();
             $heldCount = count($held);
+            $heldOrdinals = array_keys($held);
             return true;
         } catch (\Throwable $e) {
             $this->db->rollback();

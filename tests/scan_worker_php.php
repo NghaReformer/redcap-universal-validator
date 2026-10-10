@@ -1824,7 +1824,8 @@ namespace INSPIRE\UniversalValidator\Scan {
     require_once __DIR__ . '/scan_fault_support.php';
     list($inner, $runId) = $fixture($ids25);
     $refusing = new class($inner) extends FaultyStore {
-        public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
+        public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                    &$heldOrdinals = null)
         {
             return 'the database refused this batch';
         }
@@ -2592,10 +2593,11 @@ namespace INSPIRE\UniversalValidator\Scan {
         $spy = new class($inner) extends FaultyStore {
             public $offered = [];
             public $refuse = 1;
-            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null) {
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                        &$heldOrdinals = null) {
                 $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
                 if ($this->refuse-- > 0) return 'refused for the test, and said so at some length';
-                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount);
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount, $heldOrdinals);
             }
         };
         $w3 = new ScanWorker($spy, ['fence' => new Versions(), 'read' => $reader,
@@ -2622,10 +2624,11 @@ namespace INSPIRE\UniversalValidator\Scan {
         $lost = new class($inner5) extends FaultyStore {
             public $offered = [];
             public $lose = 1;
-            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null) {
+            public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                        &$heldOrdinals = null) {
                 $this->offered[] = isset($batch['marks']) ? count($batch['marks']) : -1;
-                if ($this->lose-- > 0) { $heldCount = 0; return true; }
-                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount);
+                if ($this->lose-- > 0) { $heldCount = 0; $heldOrdinals = []; return true; }
+                return parent::commitBatch($runId, $owner, $epoch, $batch, $heldCount, $heldOrdinals);
             }
         };
         $w5 = new ScanWorker($lost, ['fence' => new Versions(), 'read' => $reader,
@@ -2649,6 +2652,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         list($store6, $run6) = $fixture(['K1', 'K2', 'K3'], 820);
         $ep6 = (int) $store6->run(820, $run6)['lease_epoch'];
         $store6->claim($run6, 'dead', $ep6, 3);              // and then nothing ran
+        ageClaims($store6, $run6, 1000);                     // ... for longer than a live batch takes
         $batches = [];
         $counting = function (array $ids) use ($reader, &$batches) {
             $batches[] = count($ids);
@@ -2666,16 +2670,57 @@ namespace INSPIRE\UniversalValidator\Scan {
         list($store7, $run7) = $fixture(['K4', 'K5'], 821);
         $ep7 = (int) $store7->run(821, $run7)['lease_epoch'];
         $store7->claim($run7, 'dead', $ep7, 2);
+        ageClaims($store7, $run7, 1000);
         $evaluated7 = 0;
+        $notes7 = [];
         $w7 = new ScanWorker($store7, ['fence' => new Versions(), 'read' => $reader,
             'evaluate' => function ($id, $node) use ($quiet, &$evaluated7) {
                 $evaluated7++;
                 return $quiet($id, $node);
-            }, 'budget' => $twoAt(), 'owner' => 'w2', 'attempts' => 1, 'finalizer' => $fin()]);
-        $w7->work(821, $run7);
+            }, 'budget' => $twoAt(), 'owner' => 'w2', 'attempts' => 1, 'finalizer' => $fin(),
+            'note' => function ($event, $ctx) use (&$notes7) { $notes7[] = $event; }]);
+        $res7 = $w7->work(821, $run7);
         check('dead worker: out of attempts, its rows are retired as not examined, not evaluated again',
             $evaluated7 === 0
             && $store7->recordStates($run7) === [ScanStore::REC_UNREADABLE => 2]);
+        // AND THE REQUEST SAYS SO (review R2S-1). A row retired inside the
+        // straggler sweep never reaches a batch, so the request reported
+        // blocked=0 while two records became blocking exclusions, and nothing
+        // anywhere said why.
+        check('dead worker: the records the sweep retired are reported as blocked',
+            $res7['blocked'] === 2);
+        check('dead worker: and the reason is written where an administrator can read it',
+            in_array('scan records retired', $notes7, true));
+
+        // A LIVE WORKER IS NOT A DEAD ONE (review R2S-1). W1 has claimed every
+        // record in scanning and is evaluating the first when a second driver of
+        // the same run - another tab, a reload, Continue pressed while W1's
+        // request is still running - reaches catch-up. W1's rows are PENDING and
+        // stamped, which is what a dead worker's rows looked like, so W2 charged
+        // them; at an attempt limit of 1 it retired all four unexamined. Now
+        // W2 takes them over uncharged and examines them, and W1, whose commit
+        // then holds nothing, says it examined nothing.
+        list($store8, $run8) = $fixture(['L1', 'L2', 'L3', 'L4'], 822);
+        $w2res = null;
+        $w2 = new ScanWorker($store8, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(1), 'budget' => $wide(), 'owner' => 'w2', 'attempts' => 1,
+            'finalizer' => $fin()]);
+        $one = $finder(1);
+        $w1 = new ScanWorker($store8, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => function ($id, $node) use (&$w2res, $w2, $run8, $one) {
+                if ($w2res === null) $w2res = $w2->work(822, $run8);
+                return $one($id, $node);
+            }, 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 1, 'finalizer' => $fin()]);
+        $w1res = $w1->work(822, $run8);
+        check('live worker: a second driver arriving mid-batch retires none of the live rows',
+            $store8->recordStates($run8) === [ScanStore::REC_DONE => 4]);
+        check('live worker: it takes them over and examines every one',
+            is_array($w2res) && $w2res['worked'] === 4 && $w2res['blocked'] === 0);
+        $active8 = 0;
+        foreach ($store8->allFindings() as $f) if ((int) $f['active_slot'] === 1) $active8++;
+        check('live worker: so every healthy record has its finding stored, once', $active8 === 4);
+        check('live worker: and the worker whose commit held nothing reports nothing examined',
+            $w1res['ok'] === true && $w1res['worked'] === 0 && $w1res['findings'] === 0);
 
         // A batch with nothing to say carries an empty list, not a missing key.
         list($store4, $run4) = $fixture(['A'], 818);

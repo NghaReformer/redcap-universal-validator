@@ -247,6 +247,68 @@ $NEIGHBOUR = uv_neighbour($PID);
         . " SET active_slot = NULL, phase = 'terminal', terminal = 'cancelled'
             WHERE run_id = " . $hrid);
 
+    // A LIVE WORKER IS NOT A DEAD ONE (review R2S-1), on two connections. W1
+    // has claimed every record in scanning and is evaluating the first when W2,
+    // on the other connection, reaches catch-up: a second tab, or Continue
+    // pressed while W1's request still runs. W1's rows are PENDING and stamped,
+    // which is what a dead worker's rows looked like, and W2 charged them - at
+    // an attempt limit of 1 it retired all four as unreadable, unexamined.
+    $liveRun = $store->startRun($PID, array('created_by' => 'alice'));
+    $lrid = (int) $liveRun['run']['run_id'];
+    $lgen = (int) $liveRun['run']['generation_id'];
+    $lseq = uv_run_seq($dbA, $lrid);
+    $lrecs = array();
+    foreach (array('LV1', 'LV2', 'LV3', 'LV4') as $id) {
+        $lrecs[] = array('id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null);
+    }
+    $store->writeManifest($lrid, $lrecs);
+    $findLive = function ($id, $node) use ($lgen, $lseq, $PID) {
+        return array('bytes' => 1, 'contexts' => 1, 'why' => null, 'findings' => array(array(
+            'project_id' => $PID, 'generation_id' => $lgen,
+            'identity' => hash('sha256', 'lv' . $id, true), 'valid_from_seq' => $lseq,
+            'record_hash' => hash('sha256', $id, true), 'record_id_bin' => $id,
+            'instance' => 1, 'host_form' => 'f', 'field' => 'x', 'rule_source_id' => 'r1',
+            'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+            'reason_code' => 'required-blank')));
+    };
+    $doneFinalizer = new class implements \INSPIRE\UniversalValidator\Scan\DuplicateFinalizer {
+        public function step($generationId, $limit = 500, $readLimit = null) {
+            return array('done' => true, 'groups' => 0, 'verified' => 0, 'emitted' => 0,
+                         'published' => 1, 'collisions' => 0, 'read' => 0, 'why' => null);
+        }
+    };
+    $liveBudget = function () {
+        return new \INSPIRE\UniversalValidator\Scan\WorkBudget(array('mode' => 'cron',
+            'memoryLimit' => null, 'timeLimit' => null, 'min' => 1, 'max' => 20, 'first' => 10,
+            'startedAt' => microtime(true)));
+    };
+    $liveB = new \INSPIRE\UniversalValidator\Scan\SqlScanStore(new MysqliDb($B));
+    $wB = new \INSPIRE\UniversalValidator\Scan\ScanWorker($liveB, array(
+        'fence' => null, 'read' => $readAll, 'evaluate' => $findLive, 'owner' => 'tab-2',
+        'attempts' => 1, 'budget' => $liveBudget(), 'finalizer' => $doneFinalizer));
+    $wBres = null;
+    $wA = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, array(
+        'fence' => null, 'read' => $readAll, 'owner' => 'tab-1', 'attempts' => 1,
+        'budget' => $liveBudget(), 'finalizer' => $doneFinalizer,
+        'evaluate' => function ($id, $node) use (&$wBres, $wB, $PID, $lrid, $findLive) {
+            if ($wBres === null) $wBres = $wB->work($PID, $lrid);
+            return $findLive($id, $node);
+        }));
+    $wAres = $wA->work($PID, $lrid);
+    check('live worker: a second connection arriving mid-batch retires none of the live rows',
+        $store->recordStates($lrid) === array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE => 4));
+    check('live worker: it takes them over and examines every one',
+        is_array($wBres) && $wBres['worked'] === 4 && $wBres['blocked'] === 0);
+    $liveF = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1', array($PID, $lgen));
+    check('live worker: so every healthy record has its finding stored, once',
+        (int) $liveF[0][0] === 4);
+    check('live worker: and the worker whose commit held nothing reports nothing examined',
+        $wAres['worked'] === 0 && $wAres['findings'] === 0);
+    $A->query('UPDATE ' . Schema::table('scan_run')
+        . " SET active_slot = NULL, phase = 'terminal', terminal = 'cancelled'
+            WHERE run_id = " . $lrid);
+
     foreach (array('redcap_log_event', 'redcap_record_list', 'redcap_data',
                    'redcap_projects') as $t) {
         $A->query('DROP TABLE IF EXISTS ' . $t);

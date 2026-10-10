@@ -290,11 +290,29 @@ interface ScanStore
      * the whole of the takeover fence: the old holder's commit then matches no
      * row and is discarded, without disturbing any other worker of the run.
      *
+     * ABANDONED MEANS STALE, NOT MERELY STAMPED (review R2S-1). With
+     * $maxAttempts, a row left by a worker that died is charged the attempt
+     * that worker could not count, and goes out alone. A row is that worker's
+     * only when it is free, still carries a token AND that token is older than
+     * $staleSeconds - the same age a CLAIMED row needs before it is free at
+     * all. A scanning-phase claim stamps a token on rows it leaves PENDING, so
+     * "free and stamped" also describes a LIVE worker still evaluating its last
+     * scanning batch; charging those rows retired healthy records as unreadable
+     * the moment a second tab reached catch-up. A fresh stamp is taken over
+     * uncharged, as every straggler was before attempts were counted here.
+     *
+     * Rows retired here, out of attempts, are counted into the optional
+     * `&$retired` out-parameter, so the caller can report them as the blocking
+     * exclusions they are: such a row never reaches a batch, and nothing else
+     * would say it was excluded. Both stores set it on every call, to 0 unless
+     * a row was retired and the retirement was kept.
+     *
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
-                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE);
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE,
+                                 &$retired = null);
 
     /**
      * Commit one batch: record states, findings and uniqueness candidates, in
@@ -332,6 +350,14 @@ interface ScanStore
      * override this method with four parameters. A caller passes a variable
      * set to null. When the variable comes back still null, the store does not
      * report holding, and the caller keeps its old reading of `true`.
+     *
+     * AND A SIXTH, `&$heldOrdinals = null`, for the same reason and in the
+     * same way (review R2S-1). A count says how many records were kept and
+     * not which, and a worker that reports what it examined needs which: a
+     * batch whose records were taken over mid-evaluation used to report every
+     * one of them as worked while the new holder committed them. Both stores
+     * set it to the list of ordinals the commit held, and to [] whenever
+     * nothing was written.
      *
      * @return true|string true when it committed; otherwise the sentence to
      *         show, and the caller must discard everything it buffered.

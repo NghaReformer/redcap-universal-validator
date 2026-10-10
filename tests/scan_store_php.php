@@ -29,10 +29,14 @@ namespace {
     }
 
     require_once __DIR__ . '/scan_store_contract.php';
+    require_once __DIR__ . '/scan_fault_support.php';
 
     \INSPIRE\UniversalValidator\Scan\storeContract(function () {
         return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
-    }, 'array-store');
+    }, 'array-store', function ($store, $runId, $seconds) {
+        // This store keeps a claim's time in claimed_at; see ageClaims().
+        \INSPIRE\UniversalValidator\Scan\ageClaims($store, $runId, $seconds);
+    });
 
     echo "scan_store_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

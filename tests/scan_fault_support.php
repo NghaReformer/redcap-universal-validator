@@ -216,17 +216,20 @@ class FaultyStore implements ScanStore
     { $this->gate('claim'); return $this->inner->claim($runId, $owner, $epoch, $limit); }
 
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
-                                 $maxAttempts = null, $exhausted = ScanStore::REC_UNREADABLE)
+                                 $maxAttempts = null, $exhausted = ScanStore::REC_UNREADABLE,
+                                 &$retired = null)
     {
         $this->gate('claimPending');
         return $this->inner->claimPending($runId, $owner, $epoch, $limit, $staleSeconds,
-                                          $maxAttempts, $exhausted);
+                                          $maxAttempts, $exhausted, $retired);
     }
 
-    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                &$heldOrdinals = null)
     {
         $this->gate('commitBatch');
-        return $this->inner->commitBatch($runId, $owner, $epoch, $batch, $heldCount);
+        return $this->inner->commitBatch($runId, $owner, $epoch, $batch, $heldCount,
+                                         $heldOrdinals);
     }
 
     public function releaseClaims($runId, $epoch, $owner, array $claims)
@@ -308,6 +311,27 @@ class FaultyStore implements ScanStore
 
     public function blockingAggregates($runId)
     { $this->gate('blockingAggregates'); return $this->inner->blockingAggregates($runId); }
+}
+
+/**
+ * Make every claim on an in-memory run look $seconds older.
+ *
+ * A dead worker is a claim that has aged (review R2S-1), and the fast suite
+ * cannot wait fifteen minutes to show one. The database matrix moves
+ * updated_at for the same purpose. Bound into the store rather than added to
+ * it, because a public method there would be one more method with no
+ * production caller - tests/scan_wiring_php.php counts those.
+ */
+function ageClaims(ArrayScanStore $store, $runId, $seconds)
+{
+    $age = function ($runId, $seconds) {
+        if (!isset($this->records[$runId])) return;
+        foreach ($this->records[$runId] as $o => $rec) {
+            if ($rec['claimed_at'] === null) continue;
+            $this->records[$runId][$o]['claimed_at'] = (int) $rec['claimed_at'] - (int) $seconds;
+        }
+    };
+    \Closure::bind($age, $store, ArrayScanStore::class)($runId, $seconds);
 }
 
 /**

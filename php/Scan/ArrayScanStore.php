@@ -161,8 +161,10 @@ final class ArrayScanStore implements ScanStore
     }
 
     public function claimPending($runId, $owner, $epoch, $limit, $staleSeconds = 900,
-                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE)
+                                 $maxAttempts = null, $exhausted = self::REC_UNREADABLE,
+                                 &$retired = null)
     {
+        $retired = 0;
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
         // Refused and empty are DIFFERENT answers - see SqlScanStore::claim().
         // Both stores are judged by one contract, so both must draw the line in
@@ -181,8 +183,11 @@ final class ArrayScanStore implements ScanStore
                  || ($rec['state'] === self::REC_CLAIMED
                      && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut);
             if (!$free) continue;
-            // ABANDONED: free, yet still carrying a claim. See SqlScanStore.
-            $abandoned = $maxAttempts !== null && (int) $rec['claim_seq'] !== 0;
+            // ABANDONED: free, still carrying a claim, AND that claim stale -
+            // a fresh stamp on a PENDING row is a live scanning worker's
+            // (review R2S-1). See SqlScanStore.
+            $abandoned = $maxAttempts !== null && (int) $rec['claim_seq'] !== 0
+                      && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut;
             if ($abandoned) {
                 if ($out) break;                     // it goes alone, in a call of its own
                 $now = min(254, (int) $rec['attempts'] + 1);
@@ -192,6 +197,7 @@ final class ArrayScanStore implements ScanStore
                     $this->records[$runId][$o]['claim_owner'] = null;
                     $this->records[$runId][$o]['claim_seq'] = 0;
                     $this->records[$runId][$o]['claimed_at'] = null;
+                    $retired++;
                     continue;
                 }
             }
@@ -233,6 +239,10 @@ final class ArrayScanStore implements ScanStore
                 // sweep for a quarter of an hour. See SqlScanStore::claim().
                 $this->records[$runId][$o]['claim_owner'] = (string) $owner;
                 $this->records[$runId][$o]['claim_seq'] = $token;
+                // WHEN, as the SQL store's updated_at says it: the straggler
+                // sweep tells a live scanning claim from a dead one by its age
+                // (review R2S-1), and a stamp with no time cannot be aged.
+                $this->records[$runId][$o]['claimed_at'] = time();
                 $out[] = self::claimRow($this->records[$runId][$o]);
                 if ((int) $rec['ordinal'] > $to) $to = (int) $rec['ordinal'];
             }
@@ -260,10 +270,12 @@ final class ArrayScanStore implements ScanStore
         return ++$this->seq[$pid];
     }
 
-    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null)
+    public function commitBatch($runId, $owner, $epoch, array $batch, &$heldCount = null,
+                                &$heldOrdinals = null)
     {
         // Nothing held until the batch is kept. See ScanStore::commitBatch().
         $heldCount = 0;
+        $heldOrdinals = [];
         $records    = isset($batch['records'])    && is_array($batch['records'])    ? $batch['records']    : [];
         $findings   = isset($batch['findings'])   && is_array($batch['findings'])   ? $batch['findings']   : [];
         $candidates = isset($batch['candidates']) && is_array($batch['candidates']) ? $batch['candidates'] : [];
@@ -449,6 +461,7 @@ final class ArrayScanStore implements ScanStore
                 = min(254, (int) $this->records[$runId][$o]['attempts'] + 1);
             $this->records[$runId][$o]['claim_owner'] = null;
             $this->records[$runId][$o]['claim_seq'] = 0;
+            $this->records[$runId][$o]['claimed_at'] = null;
             // The source version this record was examined AT. Catch-up compares
             // it against the change log to decide whether an edit is already
             // inside the reading we hold; a store that dropped it would requeue
@@ -493,6 +506,7 @@ final class ArrayScanStore implements ScanStore
         // One of exactly two places, and only when a record actually finished.
         if ($applied > 0) $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
         $heldCount = count($held);
+        $heldOrdinals = array_keys($held);
         return true;
     }
 
@@ -548,9 +562,9 @@ final class ArrayScanStore implements ScanStore
             // changes state, and only the second is counted as handed back.
             if ($rec['state'] === self::REC_CLAIMED) {
                 $this->records[$runId][$o]['state'] = self::REC_PENDING;
-                $this->records[$runId][$o]['claimed_at'] = null;
                 $n++;
             }
+            $this->records[$runId][$o]['claimed_at'] = null;
             $this->records[$runId][$o]['claim_owner'] = null;
             $this->records[$runId][$o]['claim_seq'] = 0;
             $released[] = $o;

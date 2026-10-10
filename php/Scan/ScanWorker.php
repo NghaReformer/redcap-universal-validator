@@ -71,6 +71,8 @@ final class ScanWorker
      *   budget:         WorkBudget
      *   owner:          string        who this worker is, for the leases
      *   attempts:       int           how many times one record may be retried
+     *   claimStale:     int           seconds before a claim's worker is taken to have
+     *                                 stopped; 900 when absent. See claimStale().
      *   fingerprint:    string        the configuration as it is NOW
      *   policyRevision: int           the privacy policy as it is NOW
      *   slotTtl:        int
@@ -414,9 +416,21 @@ final class ScanWorker
                 // With the attempt limit, so a row a dead worker left claimed is
                 // charged the attempt it died on and handed out alone (see
                 // SqlScanStore::claimPending()).
+                //
+                // AND WITH WHAT IT RETIRED (review R2S-1). A row out of
+                // attempts is retired inside the claim, never reaches a batch,
+                // and was reported by nobody: the request said blocked=0 while
+                // records became blocking exclusions. They are counted here and
+                // written down where an administrator can read why.
+                $retired = 0;
                 $claimed = $this->store->claimPending($runId, $this->owner(), $epoch,
-                                                      $budget->claim('records'), 900,
-                                                      $this->maxAttempts(), ScanStore::REC_UNREADABLE);
+                                                      $budget->claim('records'), $this->claimStale(),
+                                                      $this->maxAttempts(), ScanStore::REC_UNREADABLE,
+                                                      $retired);
+                if ((int) $retired > 0) {
+                    $blocked += (int) $retired;
+                    $this->noteRetired($runId, (int) $retired);
+                }
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
                                                              $found, $phase);
                 if (!$claimed) {
@@ -616,6 +630,9 @@ final class ScanWorker
 
         $batch = ['bytes' => 0, 'records' => [], 'findings' => [], 'candidates' => [], 'marks' => []];
         $worked = 0; $requeued = 0; $blocked = 0;
+        // ordinal => which of the three counters its row adds to, so the
+        // counters can be taken again over the rows the commit actually held.
+        $outcome = [];
 
         $moved = function ($id) use ($fence, $before, $after) {
             return ($fence instanceof RecordVersions)
@@ -673,11 +690,13 @@ final class ScanWorker
                                            'state' => ScanStore::REC_UNSTABLE, 'version' => null,
                                            'claim' => $claim];
                     $blocked++;
+                    $outcome[(int) $c['ordinal']] = 'blocked';
                 } else {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null,
                                            'claim' => $claim];
                     $requeued++;
+                    $outcome[(int) $c['ordinal']] = 'requeued';
                 }
                 continue;
             }
@@ -701,11 +720,13 @@ final class ScanWorker
                                                ? ScanStore::REC_TOMBSTONE : ScanStore::REC_UNREADABLE,
                                            'version' => null, 'claim' => $claim];
                     $blocked++;
+                    $outcome[(int) $c['ordinal']] = 'blocked';
                 } else {
                     $batch['records'][] = ['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
                                            'state' => ScanStore::REC_PENDING, 'version' => null,
                                            'claim' => $claim];
                     $requeued++;
+                    $outcome[(int) $c['ordinal']] = 'requeued';
                 }
                 continue;
             }
@@ -729,6 +750,7 @@ final class ScanWorker
                                        'state' => ScanStore::REC_UNREADABLE, 'version' => null,
                                        'claim' => $claim];
                 $blocked++;
+                $outcome[(int) $c['ordinal']] = 'blocked';
                 continue;
             }
             foreach ($ev['findings'] as $f) {
@@ -779,6 +801,7 @@ final class ScanWorker
                                    'version' => isset($after[$id]) ? $after[$id] : null,
                                    'claim' => $claim];
             $worked++;
+            $outcome[(int) $c['ordinal']] = 'worked';
         }
 
         // A 'stop' on the last record cut nothing off. The budget still hears
@@ -789,8 +812,10 @@ final class ScanWorker
         $batch['marks'] = array_values($marks);
         // null when the store does not say how many records it still held (a
         // store written before the out-parameter existed); 0 when it held none.
+        // The same for WHICH it held.
         $held = null;
-        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch, $held);
+        $heldOrd = null;
+        $ok = $this->store->commitBatch($runId, $this->owner(), $epoch, $batch, $held, $heldOrd);
         if ($ok !== true) {
             $why = is_string($ok) ? $ok
                  : 'this scan was stopped or taken over while these records were being '
@@ -821,6 +846,35 @@ final class ScanWorker
             foreach ($marks as $k => $m) $this->marked[$runId][$k] = true;
         }
 
+        // WHAT THE COMMIT HELD, NOT WHAT WAS SENT (review R2S-1). A record
+        // taken over while this worker evaluated it - by a second tab's
+        // straggler sweep, say - is committed by its new holder, and this
+        // commit drops it. Counting it here as well reported it twice: the
+        // worker that lost every record of its batch answered worked=4 for a
+        // commit that wrote nothing. So the counters are taken again over the
+        // rows the store says it kept. A store that does not say keeps the old
+        // reading, as $held does above.
+        $findings = count($batch['findings']);
+        $candidates = count($batch['candidates']);
+        if (is_array($heldOrd)) {
+            $keep = array_flip(array_map('intval', $heldOrd));
+            $tally = ['worked' => 0, 'requeued' => 0, 'blocked' => 0];
+            foreach ($outcome as $o => $k) {
+                if (isset($keep[$o])) $tally[$k]++;
+            }
+            $worked = $tally['worked'];
+            $requeued = $tally['requeued'];
+            $blocked = $tally['blocked'];
+            $findings = 0;
+            foreach ($batch['findings'] as $f) {
+                if (isset($keep[(int) $f['ordinal']])) $findings++;
+            }
+            $candidates = 0;
+            foreach ($batch['candidates'] as $f) {
+                if (isset($keep[(int) $f['ordinal']])) $candidates++;
+            }
+        }
+
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of
         // its own (noteAttempts, the same door a failed read or a refused
@@ -837,8 +891,7 @@ final class ScanWorker
             $this->store->releaseClaims($runId, $epoch, $this->owner(), $setAside + $untouched);
         }
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => count($batch['findings']),
-                'candidates' => count($batch['candidates']),
+                'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
                 'examined' => count($claimed) - count($untouched), 'cut' => $cut,
                 'why' => $cut === 'drop' ? WorkBudget::SET_ASIDE
                        : ($cut === 'stop' ? WorkBudget::CUT_SHORT : null)];
@@ -912,6 +965,38 @@ final class ScanWorker
         $this->store->releaseClaims($runId, $epoch, $this->owner(), $claims);
         return ['ok' => false, 'stop' => $stop, 'worked' => 0, 'requeued' => 0,
                 'blocked' => $retired, 'findings' => 0, 'candidates' => 0, 'why' => $why];
+    }
+
+    /**
+     * How old a claim must be before its worker is taken to have stopped.
+     *
+     * Fifteen minutes unless the composition root says otherwise: long enough
+     * that a live batch is never mistaken for a dead one, short enough that a
+     * crash costs a delay rather than the run. See ScanStore::claimPending().
+     */
+    private function claimStale()
+    {
+        return isset($this->deps['claimStale']) ? max(1, (int) $this->deps['claimStale']) : 900;
+    }
+
+    /**
+     * Where records retired by the straggler sweep are written down.
+     *
+     * The worker that left them died without saying so, and the sweep that
+     * retired them examined nothing - so this line is the only record of why
+     * they became exclusions. Wrapped, as noteBatchRefused() is.
+     */
+    private function noteRetired($runId, $n)
+    {
+        $note = isset($this->deps['note']) ? $this->deps['note'] : null;
+        if (!is_callable($note)) return;
+        try {
+            $note('scan records retired', ['run_id' => (int) $runId,
+                'detail' => $n . ' record(s) left claimed by a worker that stopped had no attempts '
+                          . 'left, so they were reported as not examined rather than tried again']);
+        } catch (\Throwable $ignored) {
+            // A failure while reporting a failure is not worth a second one.
+        }
     }
 
     /** Where a refused batch is written down. Wrapped: the log is a database too. */

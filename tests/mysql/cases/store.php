@@ -926,4 +926,10 @@ $fresh = function () use ($A, $storeA) {
     }
     return $storeA;
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store');
+// This store keeps a claim's time in updated_at, which the claim writes.
+$age = function ($store, $runId, $seconds) use ($A) {
+    $A->query('UPDATE ' . Schema::table('scan_record')
+        . ' SET updated_at = DATE_SUB(updated_at, INTERVAL ' . (int) $seconds . ' SECOND)'
+        . ' WHERE run_id = ' . (int) $runId . ' AND claim_seq <> 0');
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age);
