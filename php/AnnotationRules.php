@@ -89,6 +89,10 @@ class AnnotationRules
     /** Composite-key size cap: [field]+with must stay a cheap lookup. */
     const MAX_UNIQUE_WITH = 5;
 
+    /** Cap on the other fields a unique value is also looked for in ("also"):
+     *  each one widens every lookup's read by one field. */
+    const MAX_UNIQUE_ALSO = 5;
+
     /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
      *  every re-evaluation, so the list must stay small. REDCap fields with
      *  more choices than this belong in an autocomplete dropdown anyway. */
@@ -314,9 +318,12 @@ class AnnotationRules
      *   @UVUNIQUE                       unique across the whole project
      *   @UVUNIQUE=event                 pick a scope (project | dag | event)
      *   @UVUNIQUE={"with":["site"],"scope":"event","when":"...",
-     *              "message":"...","blockSave":"hard","surveys":true}
+     *              "message":"...","blockSave":"hard","surveys":true,
+     *              "also":["typed_id"]}
      * "with" makes the key composite (value + those fields together must be
-     * unique). "surveys" is an explicit OPT-IN: a live used/free answer is
+     * unique). "also" looks for the value in those other fields of the other
+     * records too, so a value saved in either field counts as used.
+     * "surveys" is an explicit OPT-IN: a live used/free answer is
      * record-derived information, so survey respondents only get the check
      * when the designer decides the trade-off is acceptable (the server
      * answers surveys with a boolean only, never a record id).
@@ -344,7 +351,7 @@ class AnnotationRules
             return ['error' => self::TAG_UNIQUE . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['with', 'scope', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'references'];
+        $allowed = ['with', 'also', 'scope', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'references'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_UNIQUE . ' option(s): ' . implode(', ', $unknown)
@@ -358,6 +365,12 @@ class AnnotationRules
             $out['uniqueWith'] = array_map(function ($w) {
                 return is_string($w) ? strtolower(trim($w)) : $w;
             }, array_values($cfg['with']));
+        }
+        if (isset($cfg['also'])) {
+            if (!is_array($cfg['also'])) return ['error' => '"also" must be a list of field names, e.g. ["typed_id"].'];
+            $out['uniqueAlso'] = array_map(function ($a) {
+                return is_string($a) ? strtolower(trim($a)) : $a;
+            }, array_values($cfg['also']));
         }
         if (isset($cfg['scope'])) {
             if (!is_string($cfg['scope'])) return ['error' => '"scope" must be a string.'];
@@ -2049,10 +2062,11 @@ class AnnotationRules
 
     /**
      * Semantic validation for a unique (@UVUNIQUE) fragment: scope whitelist,
-     * composite "with" list shape (valid field-name syntax, no duplicates,
-     * capped), optional when/message/blockSave/surveys. Whether the with-fields
-     * exist (and are scalar) is checked in the channel glue with the data
-     * dictionary in hand.
+     * composite "with" list and "also" list shapes (valid field-name syntax,
+     * no duplicates, capped, no field in both), "also" not under the record
+     * scope, optional when/message/blockSave/surveys. Whether the listed
+     * fields exist (and are scalar) is checked in the channel glue with the
+     * data dictionary in hand.
      */
     public static function checkUnique(array $frag, array $opts = [])
     {
@@ -2061,29 +2075,56 @@ class AnnotationRules
             && !in_array($frag['uniqueScope'], !empty($opts['qualified']) ? array_merge(self::UNIQUE_SCOPES, ['record']) : self::UNIQUE_SCOPES, true)) {
             $errors[] = '"scope" must be ' . implode(', ', self::UNIQUE_SCOPES) . '.';
         }
-        if (isset($frag['uniqueWith'])) {
-            $with = $frag['uniqueWith'];
-            if (!is_array($with) || !$with) {
-                $errors[] = '"with" must be a non-empty list of field names.';
-            } elseif (count($with) > self::MAX_UNIQUE_WITH) {
-                $errors[] = '"with" is limited to ' . self::MAX_UNIQUE_WITH . ' fields.';
-            } else {
-                $seen = [];
-                foreach ($with as $w) {
-                    if (!is_string($w) || !preg_match('/^[a-z][a-z0-9_]*$/', strtolower($w))) {
-                        $errors[] = '"with" entry ' . json_encode($w) . ' is not a valid REDCap field name.';
+        $withOk = isset($frag['uniqueWith']) ? self::checkFieldNameList($frag['uniqueWith'], 'with', self::MAX_UNIQUE_WITH, $errors) : true;
+        if (isset($frag['uniqueAlso'])) {
+            $alsoOk = self::checkFieldNameList($frag['uniqueAlso'], 'also', self::MAX_UNIQUE_ALSO, $errors);
+            if ($alsoOk && $withOk && isset($frag['uniqueWith'])) {
+                foreach ($frag['uniqueAlso'] as $a) {
+                    if (in_array(strtolower($a), array_map('strtolower', $frag['uniqueWith']), true)) {
+                        $errors[] = '"' . strtolower($a) . '" is in both "with" and "also" — a field is either part of the key or a place the value is looked for.';
                         break;
                     }
-                    $lw = strtolower($w);
-                    if (isset($seen[$lw])) { $errors[] = '"with" lists "' . $lw . '" twice.'; break; }
-                    $seen[$lw] = true;
                 }
+            }
+            // The record scope compares the entries of one record, and "also"
+            // the other records' fields: under it the value would be compared
+            // with the same record's other fields, which @UVASSERT does.
+            if (($frag['uniqueScope'] ?? null) === 'record') {
+                $errors[] = '"also" cannot be used with "scope":"record" — to compare fields of one record, use @UVASSERT.';
             }
         }
         if (isset($frag['uniqueSurveys']) && !is_bool($frag['uniqueSurveys'])) {
             $errors[] = '"surveys" must be true or false (unquoted).';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Shape of a @UVUNIQUE field-name list ("with", "also"): a non-empty list
+     * of at most $max valid REDCap field names, none twice. Appends to
+     * $errors and returns whether the list is sound.
+     */
+    private static function checkFieldNameList($list, $key, $max, array &$errors)
+    {
+        if (!is_array($list) || !$list) {
+            $errors[] = '"' . $key . '" must be a non-empty list of field names.';
+            return false;
+        }
+        if (count($list) > $max) {
+            $errors[] = '"' . $key . '" is limited to ' . $max . ' fields.';
+            return false;
+        }
+        $seen = [];
+        foreach ($list as $w) {
+            if (!is_string($w) || !preg_match('/^[a-z][a-z0-9_]*$/', strtolower($w))) {
+                $errors[] = '"' . $key . '" entry ' . json_encode($w) . ' is not a valid REDCap field name.';
+                return false;
+            }
+            $lw = strtolower($w);
+            if (isset($seen[$lw])) { $errors[] = '"' . $key . '" lists "' . $lw . '" twice.'; return false; }
+            $seen[$lw] = true;
+        }
+        return true;
     }
 
     /**

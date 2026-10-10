@@ -699,6 +699,7 @@ final class ScanService
     {
         $read = $ctx['read'];
         $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
+        $hosts = self::ruleHostFields($plan);
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
             'hmacKey'  => $this->key(),
@@ -711,7 +712,42 @@ final class ScanService
                 foreach ($locs as $l) $ids[(string) $l['record']] = true;
                 return self::rereadValues($read(array_keys($ids)), $locs, $plan);
             },
+            // A candidate from an @UVUNIQUE "also" field is evidence that a
+            // value is used, not a finding: the rule checks its own fields.
+            'reportable' => function ($sourceId, $field) use ($hosts) {
+                return self::reportableCandidate($hosts, $sourceId, $field);
+            },
         ]);
+    }
+
+    /**
+     * rule source id => [field => true] for every live rule of the plan: the
+     * fields each rule checks, keyed by the ids its candidates carry.
+     */
+    public static function ruleHostFields(array $plan)
+    {
+        $live = (isset($plan['live']) && is_array($plan['live'])) ? $plan['live'] : [];
+        $ids = (isset($plan['ruleIds']) && is_array($plan['ruleIds'])) ? $plan['ruleIds'] : [];
+        $out = [];
+        foreach ($live as $i => $r) {
+            if (!isset($ids[$i]['source_id']) || !is_array($r)) continue;
+            foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                $out[(string) $ids[$i]['source_id']][(string) $f] = true;
+            }
+        }
+        return $out;
+    }
+
+    /**
+     * Whether a duplicate candidate becomes a finding: when its field is one
+     * its rule checks. A rule the plan does not name is reported rather than
+     * silenced - the same choice durableEvaluateRecord makes for it.
+     */
+    public static function reportableCandidate(array $hosts, $sourceId, $field)
+    {
+        $sourceId = (string) $sourceId;
+        if (!isset($hosts[$sourceId])) return true;
+        return isset($hosts[$sourceId][(string) $field]);
     }
 
     /**

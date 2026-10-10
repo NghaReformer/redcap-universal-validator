@@ -5041,8 +5041,10 @@ function QRIDUniqueInit(QRID_CONFIG){
         QRID_setModeState(input, "q", "bad");
         setGuard(true, V.blockSave);
         QRID_setModeState(input, "q", "bad");
+        /* resp.field: the "also" field the value was found in (staff only). */
         msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
             : "This value is already recorded" +
+              (resp.field ? " in field <b>" + QRID_escapeHtml(String(resp.field)) + "</b>" : "") +
               (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".");
       } else {
         styleMsg(msg, true);

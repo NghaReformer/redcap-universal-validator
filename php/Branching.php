@@ -28,7 +28,8 @@
  *     instead of a branch rule): at most one sharing rule without "when";
  *     no two sharing rules with byte-identical "when" strings (they could
  *     never be told apart); all sharing rules must have the same type
- *     (single/pooled).
+ *     (single/pooled); all sharing rules must give each of their mode's
+ *     uniformBranchKeys the same value (php/modes.json; @UVUNIQUE "also").
  *
  * Fields claimed by exactly one rule pass through UNTOUCHED — resolve() is
  * the identity for rule lists without sharing, so single-rule projects take
@@ -71,8 +72,8 @@ class Branching
 
     /**
      * Illegal sharing per field: field => ['kind' => 'two-unconditional' |
-     * 'identical-when' | 'mixed-type', 'rules' => [ruleIndex, ...],
-     * 'detail' => count|whenString|[typeA, typeB]]. Fields whose sharing is
+     * 'identical-when' | 'mixed-type' | 'differing-key', 'rules' => [ruleIndex, ...],
+     * 'detail' => count|whenString|[typeA, typeB]|[tag, option name]]. Fields whose sharing is
      * legal (or not shared at all) are absent. Rule indexes refer to the
      * INPUT list, so callers can name "Rule 2 and Rule 5" in messages.
      */
@@ -188,6 +189,10 @@ class Branching
             case 'mixed-type':
                 return 'field "' . $field . '" is covered by both a single-value rule and a pooled rule '
                     . '— all rules sharing a field must have the same field type.';
+            case 'differing-key':
+                return 'field "' . $field . '" is covered by ' . $conflict['detail'][0] . ' rules that give "'
+                    . $conflict['detail'][1] . '" different values — every rule on one field must give "'
+                    . $conflict['detail'][1] . '" the same value.';
         }
         return 'field "' . $field . '" has conflicting rules.';   // unreachable
     }
@@ -230,7 +235,8 @@ class Branching
     /**
      * Legality of one shared field; null when the sharing is legal. When a
      * field violates several rules at once, ONE conflict is reported, in
-     * fixed priority order: two-unconditional, identical-when, mixed-type.
+     * fixed priority order: two-unconditional, identical-when, mixed-type,
+     * differing-key.
      */
     private static function conflictOf(array $rules, $field, array $idxs)
     {
@@ -259,7 +265,33 @@ class Branching
         if (count($types) > 1) {
             return ['kind' => 'mixed-type', 'rules' => array_values($types), 'detail' => array_keys($types)];
         }
+        $t = (isset($rules[$idxs[0]]['type']) && $rules[$idxs[0]]['type'] !== '') ? $rules[$idxs[0]]['type'] : 'single';
+        $mode = self::modeOfType($t);
+        foreach (ModeRegistry::uniformBranchKeys($mode) as $k => $name) {
+            $first = self::uniformValue($rules[$idxs[0]], $k);
+            foreach ($idxs as $i) {
+                if (self::uniformValue($rules[$i], $k) !== $first) {
+                    return ['kind' => 'differing-key', 'rules' => [$idxs[0], $i],
+                            'detail' => [ModeRegistry::tag($mode), $name]];
+                }
+            }
+        }
         return null;
+    }
+
+    /**
+     * One rule's value of a uniform branch key, in the form two rules are
+     * compared in: a list as its sorted distinct members (order and
+     * repeats say nothing), a missing key as an empty list.
+     */
+    private static function uniformValue(array $rule, $key)
+    {
+        if (!isset($rule[$key])) return [];
+        $v = $rule[$key];
+        if (!is_array($v)) return $v;
+        $v = array_values(array_unique(array_map(function ($x) { return is_string($x) ? strtolower($x) : $x; }, $v), SORT_REGULAR));
+        sort($v);
+        return $v;
     }
 
     /** Sparse branch copy of one source rule (per-rule keys + when|null). */

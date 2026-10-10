@@ -548,6 +548,7 @@ class UniversalValidator extends AbstractExternalModule
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+        $also  = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
         $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
@@ -567,7 +568,7 @@ class UniversalValidator extends AbstractExternalModule
                 $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? (string) $values[$w] : '';
             }
             $col = $this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id, null, false,
-                                        empty($rule['caseSensitive']));
+                                        empty($rule['caseSensitive']), null, $also);
             if ($col === false) {
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => 'the saved values could not be read to compare with'];
             } elseif ($col !== null) {
@@ -3670,9 +3671,10 @@ class UniversalValidator extends AbstractExternalModule
         $types = $this->projectFieldTypes($pid);
         $choices = $this->projectFieldChoices($pid);
         $identifiers = $this->projectIdentifierFields($pid);
+        $dd = $this->dataDictionary($pid);
 
         foreach ($subs as $s) {
-            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid));
+            $rule = $this->settingRowToRule(is_array($s) ? $s : [], $known, $types, $choices, $identifiers, $this->temporalOptions($pid), $dd);
             if ($rule === null) continue;
             // THE ROW'S OWN ID, CARRIED ONTO THE RULE.
             //
@@ -3737,13 +3739,13 @@ class UniversalValidator extends AbstractExternalModule
         return isset($s['case-sensitive']) && in_array($s['case-sensitive'], [true, 'true', '1', 1], true);
     }
 
-    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [])
+    private function settingRowToRule(array $s, $known, $types, $choices = null, $identifiers = null, array $opts = [], $dd = null)
     {
         // Stored settings can hold surprising shapes after upgrades or manual
         // edits; for these keys only scalars are meaningful — discard anything
         // else instead of warning or letting it reach the engine.
         foreach (['rule-type', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
-                  'unique-with', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
+                  'unique-with', 'unique-also', 'unique-scope', 'unique-surveys', 'algorithm', 'source',
                   'suggest-fix', 'pattern', 'alternates-json', 'strip',
                   'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                   'expected-count', 'block-save'] as $k) {
@@ -3849,6 +3851,10 @@ class UniversalValidator extends AbstractExternalModule
                     $rule['uniqueWith'] = array_map('strtolower',
                         preg_split('/[,;\s]+/', trim((string) $s['unique-with']), -1, PREG_SPLIT_NO_EMPTY));
                 }
+                if (isset($s['unique-also']) && trim((string) $s['unique-also']) !== '') {
+                    $rule['uniqueAlso'] = array_map('strtolower',
+                        preg_split('/[,;\s]+/', trim((string) $s['unique-also']), -1, PREG_SPLIT_NO_EMPTY));
+                }
                 if (!empty($s['unique-scope'])) $rule['uniqueScope'] = strtolower((string) $s['unique-scope']);
                 if (isset($s['unique-surveys']) && in_array($s['unique-surveys'], [true, 'true', '1', 1], true)) {
                     $rule['uniqueSurveys'] = true;
@@ -3886,11 +3892,13 @@ class UniversalValidator extends AbstractExternalModule
             // SEC-002 warns about: on an import/API context it returns null, the
             // dictionary comes back empty, and the guard would silently pass.
             if (!empty($rule['uniqueSurveys'])) {
-                // The Identifier refusal covers the primary field(s) AND the
-                // composite "with" fields (H-01) — an identifying value anywhere in
-                // the uniqueness key makes the survey answer an existence oracle.
+                // The Identifier refusal covers the primary field(s), the
+                // composite "with" fields (H-01) and the "also" fields — an
+                // identifying value anywhere in the lookup makes the survey
+                // answer an existence oracle.
                 $withF = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-                $idField = self::firstIdentifier($identifiers, array_merge($fields, $withF));
+                $alsoF = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
+                $idField = self::firstIdentifier($identifiers, array_merge($fields, $withF, $alsoF));
                 if ($idField !== null) $errors[] = 'field "' . $idField . '": ' . self::SURVEY_ON_IDENTIFIER;
             }
             // Composite-key fields: exist, scalar, and not one of the covered
@@ -3900,6 +3908,20 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($fields as $f) {
                     if (in_array($f, $rule['uniqueWith'], true)) {
                         $errors[] = '"with" must not name a field this rule validates ("' . $f . '").';
+                    }
+                }
+            }
+            // "also" fields: exist, hold one value, and store it the way each
+            // covered field does. Naming a covered field is refused per field.
+            if (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso']) && !$errors) {
+                foreach (self::checkUniqueAlso($rule['uniqueAlso'], null, $types, null) as $e) $errors[] = $e;
+                if (!$errors) {
+                    foreach ($fields as $f) {
+                        if (in_array($f, $rule['uniqueAlso'], true)) {
+                            $errors[] = '"also" must not name a field this rule validates ("' . $f . '") — that field is always searched.';
+                            continue;
+                        }
+                        foreach (self::checkUniqueAlso($rule['uniqueAlso'], $f, null, $dd) as $e) $errors[] = $e;
                     }
                 }
             }
@@ -4026,6 +4048,7 @@ class UniversalValidator extends AbstractExternalModule
             $types = $pid ? $this->projectFieldTypes($pid) : null;
             $choices = $pid ? $this->projectFieldChoices($pid) : null;
             $identifiers = $pid ? $this->projectIdentifierFields($pid) : null;
+            $dd = $pid ? $this->dataDictionary($pid) : null;
             $wasEnabled = $this->temporalOptions($pid)['qualified'];
             $enabled = in_array($settings['enable-event-instance-refs'] ?? $wasEnabled, [true,1,'1','true'],true);
             // Turning the dialect off preserves its authored rules for reactivation.
@@ -4041,7 +4064,7 @@ class UniversalValidator extends AbstractExternalModule
             $clean = [];    // assembled live rules, for the cross-rule check below
             $rowNums = [];  // their 1-based dialog row numbers, for messages
             foreach (self::rowsFromFlatSettings($settings) as $i => $row) {
-                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended]);
+                $rule = $this->settingRowToRule($row, $known, $types, $choices, $identifiers, ['qualified' => $parseExtended], $dd);
                 if ($rule === null) continue;
                 if (!empty($rule['configError'])) {
                     $errors[] = 'Rule ' . ($i + 1) . ': ' . $rule['configError'];
@@ -4169,7 +4192,7 @@ class UniversalValidator extends AbstractExternalModule
     private static function rowsFromFlatSettings(array $settings)
     {
         $keys = ['references-json', 'rule-note', 'rule-type', 'fields', 'fields-csv', 'when', 'case-sensitive', 'assert', 'message',
-                 'unique-with', 'unique-scope', 'unique-surveys',
+                 'unique-with', 'unique-also', 'unique-scope', 'unique-surveys',
                  'algorithm', 'source',
                  'suggest-fix', 'pattern', 'alternates-json', 'strip', 'keep-chars', 'id-lengths', 'id-min-len', 'id-max-len',
                  'expected-count', 'block-save'];
@@ -4266,17 +4289,21 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * @UVUNIQUE "field" hook: refuse the survey opt-in when the primary field
-     * OR any composite "with" field is an Identifier (H-01), naming the
-     * offending field so a composite hit is not mistaken for the primary one.
+     * @UVUNIQUE "field" hook: refuse the survey opt-in when the primary field,
+     * any composite "with" field (H-01) or any "also" field is an Identifier,
+     * naming the offending field so a composite hit is not mistaken for the
+     * primary one. An "also" field is searched for the typed value, so an
+     * answer of "already used" says that value is saved there.
      */
     private function annotateUniqueField(array $frag, $name, array $meta, $pid)
     {
         if (empty($frag['uniqueSurveys'])) return $frag;
         $withF = (isset($frag['uniqueWith']) && is_array($frag['uniqueWith'])) ? $frag['uniqueWith'] : [];
-        $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF));
+        $alsoF = (isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) ? $frag['uniqueAlso'] : [];
+        $idField = self::firstIdentifier($this->projectIdentifierFields($pid), array_merge([$name], $withF, $alsoF));
         if ($idField === null) return $frag;
-        return ['error' => ($idField === $name ? '' : 'composite "with" field "' . $idField . '": ')
+        $role = $idField === $name ? '' : (in_array($idField, $withF, true) ? 'composite "with" field "' : '"also" field "');
+        return ['error' => ($role === '' ? '' : $role . $idField . '": ')
             . self::SURVEY_ON_IDENTIFIER, '_tag' => AnnotationRules::TAG_UNIQUE];
     }
 
@@ -4284,12 +4311,16 @@ class UniversalValidator extends AbstractExternalModule
      * @UVUNIQUE "dictionary" hook: composite-key fields must exist and hold ONE
      * scalar value (checkbox is multi-valued; file/descriptive have no
      * comparable value), and "with" naming the field itself is a tautology,
-     * not a composite.
+     * not a composite. Each "also" field must exist, hold one value and store
+     * it the way the field does (checkUniqueAlso).
      */
     private function annotateUniqueDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
-        if (!isset($frag['uniqueWith'])) return $frag;
-        $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+        $errs = [];
+        if (isset($frag['uniqueWith'])) $errs = self::checkUniqueWith($frag['uniqueWith'], $name, $types);
+        if (!$errs && isset($frag['uniqueAlso']) && is_array($frag['uniqueAlso'])) {
+            $errs = self::checkUniqueAlso($frag['uniqueAlso'], $name, $types, $this->dataDictionary($pid));
+        }
         return $errs ? ['error' => implode(' ', $errs), '_tag' => AnnotationRules::TAG_UNIQUE] : $frag;
     }
 
@@ -5101,6 +5132,58 @@ class UniversalValidator extends AbstractExternalModule
         return $errors;
     }
 
+    /**
+     * Dictionary checks for a unique rule's "also" fields: each must exist,
+     * hold one value, not be the unique field itself, and store its value the
+     * way $selfField does - the same kind of date or none, and text, or
+     * numbers with the same decimal mark. A value is looked for as it is
+     * stored (Logic::lookupKey), and a number never equals text there, so a
+     * pair that stores values differently could never match, and "007" in a
+     * number field would match "7" in one direction and not in the other.
+     * Returns a list of error strings, [] when sound. $selfField is null for a
+     * dialog rule covering several fields; the caller then checks each.
+     * $dd is the data dictionary; without it only names and types are checked.
+     */
+    private static function checkUniqueAlso(array $also, $selfField, $types, $dd)
+    {
+        $errors = [];
+        foreach ($also as $a) {
+            if (!is_string($a) || $a === '') continue; // shape errors already caught by checkUnique
+            if ($selfField !== null && $a === $selfField) {
+                $errors[] = '"also" must not name the unique field itself ("' . $a . '") — that field is always searched.';
+                continue;
+            }
+            if (is_array($types)) {
+                if (!isset($types[$a])) {
+                    $errors[] = '"also" field "' . $a . '" is not in this project — check the spelling.';
+                    continue;
+                }
+                if (!in_array($types[$a], self::EXISTS_SCALAR_TYPES, true)) {
+                    $errors[] = '"also" field "' . $a . '" is a ' . $types[$a]
+                        . ' field — the value is looked for in fields that hold one value.';
+                    continue;
+                }
+            }
+            if ($selfField === null || !is_array($dd) || !isset($dd[$selfField], $dd[$a])) continue;
+            $kindSelf = self::storedKindOf(self::validationOf($dd[$selfField]));
+            $kindAlso = self::storedKindOf(self::validationOf($dd[$a]));
+            if ($kindSelf !== $kindAlso) {
+                $errors[] = '"' . $selfField . '" holds ' . $kindSelf . ' and "also" field "' . $a . '" holds ' . $kindAlso
+                    . ' — values are compared as REDCap stores them, so both must be the same kind.';
+                continue;
+            }
+            $markSelf = self::numberMarkOf($dd[$selfField]);
+            $markAlso = self::numberMarkOf($dd[$a]);
+            if ($markSelf !== $markAlso) {
+                $errors[] = '"' . $selfField . '" holds ' . (self::numberMarkWords($markSelf) ?? 'text')
+                    . ' and "also" field "' . $a . '" holds ' . (self::numberMarkWords($markAlso) ?? 'text')
+                    . ' — both must hold text, or both numbers with the same decimal mark '
+                    . '(validate both fields the same way).';
+            }
+        }
+        return $errors;
+    }
+
     /** Fields claimed by more than one live (non-config-error) rule. */
     private static function duplicateFields(array $rules)
     {
@@ -5787,13 +5870,16 @@ class UniversalValidator extends AbstractExternalModule
 
         // Aggregate duplicate detection: a group is a violation when TWO OR
         // MORE DISTINCT RECORDS share the key (same-record repeats mirror the
-        // endpoint/audit, which only compare against OTHER records).
+        // endpoint/audit, which only compare against OTHER records). An "also"
+        // value (a member) counts as one of those records but is not itself
+        // reported: the rule checks its own fields.
         $emitted = [];
         foreach ($uniqueSeen as $entries) {
             $records = [];
             foreach ($entries as $e) $records[$e['record']] = true;
             if (count($records) < 2) continue;
             foreach ($entries as $e) {
+                if (!empty($e['member'])) continue;
                 // One row, one finding. Host scoping already stops a rule being
                 // collected from contexts it does not live in; this is the belt to
                 // that brace, so a row can never be listed twice for one rule
@@ -6445,15 +6531,31 @@ class UniversalValidator extends AbstractExternalModule
         // The durable scan re-reads a duplicate group's values and compares
         // them as the scan grouped them (ScanService::comparableValue): letter
         // case counts only on a field whose every unique rule and branch says so.
+        //
+        // An "also" field's values join the groups of the rule that searches
+        // it, so it is compared the way that rule compares, and a field joined
+        // by "also" to a field that ignores case ignores it too: one group can
+        // hold values of both, and the re-read must compare them alike.
         $exact = [];
         $folded = [];
+        $joined = [];
         foreach ($live as $r) {
             if (($r['type'] ?? null) !== 'unique' || !isset($r['fields']) || !is_array($r['fields'])) continue;
             $variants = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
-            foreach ($r['fields'] as $f) {
-                foreach ($variants as $b) {
+            foreach ($variants as $b) {
+                $also = (isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [];
+                foreach (array_merge($r['fields'], $also) as $f) {
                     if (empty($b['caseSensitive'])) $folded[$f] = true; else $exact[$f] = true;
                 }
+                foreach ($r['fields'] as $f) {
+                    foreach ($also as $a) { $joined[$f][$a] = true; $joined[$a][$f] = true; }
+                }
+            }
+        }
+        for ($todo = array_keys($folded); $todo; ) {
+            $f = array_pop($todo);
+            foreach (isset($joined[$f]) ? array_keys($joined[$f]) : [] as $g) {
+                if (!isset($folded[$g])) { $folded[$g] = true; $todo[] = $g; }
             }
         }
         $out['uniqueExact'] = array_diff_key($exact, $folded);
@@ -6477,6 +6579,28 @@ class UniversalValidator extends AbstractExternalModule
             }
             $hostFields[$i] = $h['forms'];
         }
+        // WHERE each unique rule's "also" fields live: their values are
+        // collected from those forms' contexts as evidence for the rule's
+        // groups (collectUniqueMembers), never as findings. "also" is the same
+        // on every branch of a rule (Branching refuses otherwise).
+        $members = [];
+        foreach ($live as $i => $r) {
+            if (($r['type'] ?? null) !== 'unique') continue;
+            $variants = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
+            $also = [];
+            foreach ($variants as $b) {
+                foreach ((isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [] as $a) $also[(string) $a] = true;
+            }
+            if (!$also) continue;
+            $h = $this->ruleHostForms(['fields' => array_keys($also)], $pid);
+            if ($h['unknown']) {
+                $unconf[$i . '|also-unlocatable'] = ['rule' => $i + 1, 'fields' => $h['unknown'],
+                    'why' => 'the instrument that owns this rule\'s "also" field(s) could not be determined from the '
+                           . 'data dictionary, so values saved there are not looked at by the scan'];
+            }
+            $members[$i] = $h['forms'];
+        }
+        $out['uniqueMembers'] = $members;
         // A rule whose instrument is designated for NO event can never run.
         // hostContextsFor() drops every context for an unmapped form, so the
         // rule yields no violation - and, because nothing ever reached the
@@ -6928,6 +7052,21 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
+            // The values of the rule's "also" fields in this record, wherever
+            // they live: what the rule's values are looked for in.
+            foreach ((isset($plan['uniqueMembers'][$i]) && is_array($plan['uniqueMembers'][$i])) ? $plan['uniqueMembers'][$i] : []
+                     as $memberForm => $memberFields) {
+                if (!isset($hostCache[$memberForm])) {
+                    $hostCache[$memberForm] = $this->hostContextsFor($ctxAll, $memberForm, $pid);
+                }
+                foreach ($hostCache[$memberForm] as $ck => $ctx) {
+                    if (!isset($resCache[$ck])) {
+                        $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
+                    }
+                    self::collectUniqueMembers($uniqueSeen, $unconf, $r, $i, $ctx, $rec, $recDag, (array) $memberFields,
+                                               $resCache[$ck], $memberForm, $plan);
+                }
+            }
         }
         return ['contexts' => count($ctxAll), 'why' => null];
     }
@@ -7329,6 +7468,84 @@ class UniversalValidator extends AbstractExternalModule
         }
     }
 
+    /**
+     * Collect one context's "also" values for a unique rule into the
+     * aggregate map, under the same keys collectUniqueCandidates gives the
+     * rule's own values: one per host field of the rule (the value is looked
+     * for from each), with the composite "with" values of this context and
+     * the scope part. Marked 'member': a member is evidence that a host value
+     * is used elsewhere, never a finding of its own, because the rule checks
+     * its own fields and not the fields it searches.
+     *
+     * Not gated by "when" or by a branch: those decide whether a value is
+     * checked, and a member is not checked, only searched - as findCollision
+     * searches every other record's "also" fields. Where branches differ in
+     * "with", scope or letter case, the member is filed under each shape.
+     */
+    private static function collectUniqueMembers(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag,
+                                                 array $memberFields, array $resolution, $memberForm, array $plan)
+    {
+        $dupes = isset($plan['dupes']) && is_array($plan['dupes']) ? $plan['dupes'] : [];
+        $hosts = [];
+        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $f) {
+            if (!isset($dupes[$f])) $hosts[] = (string) $f;
+        }
+        if (!$hosts) return;
+        $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
+        $codes = isset($plan['missingCodes']) ? $plan['missingCodes'] : [];
+        $shapes = [];
+        foreach ((isset($rule['branches']) && is_array($rule['branches'])) ? $rule['branches'] : [$rule] as $b) {
+            $also = (isset($b['uniqueAlso']) && is_array($b['uniqueAlso'])) ? $b['uniqueAlso'] : [];
+            if (!$also) continue;
+            $with = (isset($b['uniqueWith']) && is_array($b['uniqueWith'])) ? $b['uniqueWith'] : [];
+            $scope = isset($b['uniqueScope']) ? $b['uniqueScope'] : 'project';
+            $fold = empty($b['caseSensitive']);
+            $shapes[serialize([$with, $scope, $fold, $also])] = [$with, $scope, $fold, $also];
+        }
+        foreach ($shapes as list($with, $scope, $fold, $also)) {
+            if ($scope === 'record') continue;   // refused with "also" (AnnotationRules::checkUnique)
+            // A record in no group has no group to share a value with.
+            if ($scope === 'dag' && ($recDag === null || (string) $recDag === '')) continue;
+            $withKeys = [];
+            foreach ($with as $w) {
+                $state = isset($resolution[$w]) ? $resolution[$w] : 'ok';
+                if ($state !== 'ok') {
+                    $unconf[$ruleIndex . '|unique-also-with-unresolved'] = ['rule' => $ruleIndex + 1, 'fields' => $rule['fields'],
+                        'why' => 'next to an "also" field, the unique rule\'s composite key ' . self::resolutionProblem($state, $w)
+                               . ' Values saved in the "also" field there are not looked at.'];
+                    continue 2;
+                }
+                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? Logic::lookupTrim($ctx['values'][$w]) : '';
+                $withKeys[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
+            }
+            foreach ($memberFields as $a) {
+                if (!in_array($a, $also, true)) continue;
+                $state = isset($resolution[$a]) ? $resolution[$a] : 'ok';
+                if ($state !== 'ok') {
+                    $unconf[$ruleIndex . '|unique-also-unresolved'] = ['rule' => $ruleIndex + 1, 'fields' => $rule['fields'],
+                        'why' => 'the unique rule\'s "also" field ' . self::resolutionProblem($state, $a)
+                               . ' Values saved there are not looked at.'];
+                    continue;
+                }
+                $v = isset($ctx['values'][$a]) ? $ctx['values'][$a] : null;
+                if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
+                if (self::isMissingCode($v, $codes)) continue;
+                $vk = Logic::lookupKey($v, $fold, isset($marks[$a]) ? $marks[$a] : null);
+                foreach ($hosts as $h) {
+                    // The key collectUniqueCandidates builds for host $h, bin2hex-joined.
+                    $keyParts = array_merge([(string) $ruleIndex, $h, $vk], $withKeys);
+                    if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = (string) $ctx['event_id']; }
+                    elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
+                    $key = '';
+                    foreach ($keyParts as $kp) $key .= bin2hex($kp) . '.';
+                    $seen[$key][] = ['record' => (string) $rec, 'event_id' => $ctx['event_id'],
+                                     'instance' => $ctx['instance'], 'field' => (string) $a, 'rule' => $ruleIndex + 1,
+                                     'member' => true, 'instrument' => $memberForm, 'dag' => $recDag];
+                }
+            }
+        }
+    }
+
     // -- uniqueness (@UVUNIQUE): live endpoint + shared lookup ---------------
 
     /**
@@ -7511,10 +7728,13 @@ class UniversalValidator extends AbstractExternalModule
                 // The refusal covers the primary field AND every composite "with"
                 // field (H-01), not just the primary: an "already used" answer whose
                 // key includes an identifying value is the same existence oracle.
+                // And every "also" field: "already used" there says the value is
+                // saved in it.
                 $identifiers = $this->projectIdentifierFields($project_id);
                 $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+                $alsoFields = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
                 if ($identifiers === null
-                        || self::firstIdentifier($identifiers, array_merge([$field], $withFields)) !== null) {
+                        || self::firstIdentifier($identifiers, array_merge([$field], $withFields, $alsoFields)) !== null) {
                     return ['error' => 'not enabled on surveys'];
                 }
                 // ...and never faster than the throttle allows.
@@ -7524,8 +7744,11 @@ class UniversalValidator extends AbstractExternalModule
                 // forms they may open: "already used" on a field of a form the
                 // user has no access to is a read of that form by another door.
                 if ($this->signedInRateLimited($project_id)) return ['error' => 'too many checks — slow down'];
+                // An "also" field is searched too, so the caller must be able
+                // to open its form as well.
                 $withFields = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
-                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $withFields)) !== null) {
+                $alsoFields = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
+                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $withFields, $alsoFields)) !== null) {
                     return ['error' => 'not a checkable field'];
                 }
                 // The record's saved values are read below; one of another
@@ -7536,6 +7759,7 @@ class UniversalValidator extends AbstractExternalModule
             }
 
             $with  = (isset($rule['uniqueWith']) && is_array($rule['uniqueWith'])) ? $rule['uniqueWith'] : [];
+            $also  = (isset($rule['uniqueAlso']) && is_array($rule['uniqueAlso'])) ? $rule['uniqueAlso'] : [];
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
             // A date arrives as the field shows it; the comparison is on stored values.
             $values = $this->storedFormOf($project_id, $values);
@@ -7587,7 +7811,7 @@ class UniversalValidator extends AbstractExternalModule
             $mayFullRead = $isAuthenticated ? null
                 : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
             $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,
-                                        empty($rule['caseSensitive']), $mayFullRead);
+                                        empty($rule['caseSensitive']), $mayFullRead, $also);
             // Not settled (the read budget refused the read it needed, or the
             // read failed): not "free", which would let a known duplicate
             // through a save that asked again.
@@ -7598,6 +7822,7 @@ class UniversalValidator extends AbstractExternalModule
             // survey page never names a record even if a staff session happens
             // to be open in the same browser.
             $recOut = null;
+            $fieldOut = null;
             if ($isAuthenticated && !$isSurvey) {
                 $recOut = $col['record'];
                 if ($group_id !== null && $group_id !== '') {
@@ -7606,8 +7831,11 @@ class UniversalValidator extends AbstractExternalModule
                     $userDag = ScanPageView::dagNameOf($group_id);
                     if ($userDag === null || $col['dag'] !== $userDag) $recOut = null;
                 }
+                // Found in an "also" field: say which. The caller may open its
+                // form (checked above), and the name comes from the stored rule.
+                if (isset($col['field']) && $col['field'] !== $field) $fieldOut = $col['field'];
             }
-            return ['used' => true, 'record' => $recOut];
+            return ['used' => true, 'record' => $recOut] + ($fieldOut !== null ? ['field' => $fieldOut] : []);
         } catch (\Throwable $e) {
             return ['error' => 'unique check failed']; // client fails open; no detail leaks
         }
@@ -8236,20 +8464,35 @@ class UniversalValidator extends AbstractExternalModule
      * another way), so a narrowed read settles only a hit: findCollision
      * confirms every miss with a full read. Whatever else a clause lets
      * through, the PHP comparison drops.
+     *
+     * $also are the other fields the primary value is looked for in
+     * (@UVUNIQUE "also"): the value's clause becomes an OR over the primary
+     * field and each of them, ANDed with the composite clauses as before.
      */
-    private static function collisionFilterLogic(array $need, array $target, $fold = false, array $marks = [])
+    private static function collisionFilterLogic(array $need, array $target, $fold = false, array $marks = [], array $also = [])
     {
+        reset($need);
+        $primary = current($need);
         $clauses = [];
         foreach ($need as $f) {
             $tv = isset($target[$f]) ? $target[$f] : '';
             if ($tv === '') continue;                                       // don't constrain a blank component
             if (!preg_match('/^[A-Za-z0-9 ._:\/-]+$/', $tv)) return null;    // unsafe to inline -> full scan
-            $n = (isset($marks[$f]) && $marks[$f] === 'point') ? Logic::numberKey($tv, 'point') : null;
-            if ($n !== null) $clauses[] = '[' . $f . '] = ' . $n;
-            elseif ($fold && preg_match('/[A-Za-z]/', $tv)) $clauses[] = 'lower([' . $f . "]) = '" . Logic::foldAscii($tv) . "'";
-            else $clauses[] = '[' . $f . "] = '" . $tv . "'";
+            $slots = $f === $primary ? array_merge([$f], $also) : [$f];
+            $any = [];
+            foreach ($slots as $sf) $any[] = self::collisionClause($sf, $tv, $fold, isset($marks[$sf]) ? $marks[$sf] : null);
+            $clauses[] = count($any) > 1 ? '(' . implode(' or ', $any) . ')' : $any[0];
         }
         return $clauses ? implode(' and ', $clauses) : null;
+    }
+
+    /** One collisionFilterLogic clause: field $f holds $tv, compared as the rule compares. */
+    private static function collisionClause($f, $tv, $fold, $mark)
+    {
+        $n = $mark === 'point' ? Logic::numberKey($tv, 'point') : null;
+        if ($n !== null) return '[' . $f . '] = ' . $n;
+        if ($fold && preg_match('/[A-Za-z]/', $tv)) return 'lower([' . $f . "]) = '" . Logic::foldAscii($tv) . "'";
+        return '[' . $f . "] = '" . $tv . "'";
     }
 
     /**
@@ -8269,20 +8512,28 @@ class UniversalValidator extends AbstractExternalModule
      * falling back to the acting user's group; unresolvable DAG degrades to
      * project scope, the conservative direction for finding duplicates).
      * Returns null (no other record holds the value), ['record' => id,
-     * 'dag' => nameOrNull], or false when the lookup could not be settled:
-     * the read failed, or $mayFullRead refused it.
+     * 'dag' => nameOrNull, 'field' => the field it was found in], or false
+     * when the lookup could not be settled: the read failed, or $mayFullRead
+     * refused it.
+     *
+     * $also (@UVUNIQUE "also") are other fields the value is looked for in:
+     * a value saved in the primary field OR in any of them, in another record,
+     * collides. The composite "with" fields still have to match in the same
+     * entry as the field the value was found in, and the record being checked
+     * is still left out entirely: its own fields are compared by @UVASSERT.
      *
      * $mayFullRead (a survey's read budget) is asked before every read of the
      * whole field: one that confirms a narrowed miss, and one made because the
      * value could not be narrowed at all. A narrowed miss is never final: the
      * filter cannot see a saved value with spaces around it, which the
-     * comparison here trims. A saved Missing Data Code in the tagged field is
-     * no duplicate (the scan skips them too).
+     * comparison here trims. A saved Missing Data Code in the tagged field,
+     * or in an "also" field, is no duplicate (the scan skips them too).
      */
-    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null)
+    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null, array $also = [])
     {
         $need = array_merge([$field], $with);
-        $marks = $this->lookupMarks($pid, $need);
+        $also = array_values(array_diff(array_unique($also), $need));
+        $marks = $this->lookupMarks($pid, array_merge($need, $also));
         $codes = $this->missingDataCodes($pid);
         $target = [];
         $keys = [];
@@ -8295,7 +8546,7 @@ class UniversalValidator extends AbstractExternalModule
         $params = [
             'project_id'    => $pid,
             'return_format' => 'array',
-            'fields'        => $need,
+            'fields'        => array_merge($need, $also),
             'exportDataAccessGroups' => true,
         ];
         if ($scope === 'event' && $event_id) $params['events'] = [$event_id];
@@ -8318,12 +8569,12 @@ class UniversalValidator extends AbstractExternalModule
         // Only a hit settles the lookup here; a miss falls through to the full
         // read (collisionFilterLogic says why).
         if ($narrow && $scope !== 'dag') {
-            $fl = self::collisionFilterLogic($need, $target, $fold, $marks);
+            $fl = self::collisionFilterLogic($need, $target, $fold, $marks, $also);
             if ($fl !== null) {
                 try {
                     $n = \REDCap::getData($params + ['filterLogic' => $fl]);
                     if (is_array($n)) {
-                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes);
+                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
                         if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
@@ -8334,14 +8585,24 @@ class UniversalValidator extends AbstractExternalModule
         if ($mayFullRead !== null && !call_user_func($mayFullRead)) return false;
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
-        return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes);
+        return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes, $also);
     }
 
-    /** findCollision's comparison over one exported data set: the colliding ['record','dag'], or null. */
-    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $scope, $excludeRecord, $groupId, array $codes = [])
+    /**
+     * findCollision's comparison over one exported data set: the colliding
+     * ['record','dag','field'], or null. The primary value is looked for in
+     * the primary field and then in each of $also, keyed with that field's
+     * own number mark; the composite components must match in the same
+     * merged context either way.
+     */
+    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $scope, $excludeRecord, $groupId, array $codes = [], array $also = [])
     {
         reset($target);
         $primary = key($target);
+        $slots = [$primary => $keys[$primary]];
+        foreach ($also as $a) {
+            $slots[$a] = Logic::lookupKey($target[$primary], $fold, isset($marks[$a]) ? $marks[$a] : null);
+        }
         $currentDag = null;
         if ($scope === 'dag') {
             if ($excludeRecord !== null && $excludeRecord !== '' && isset($data[$excludeRecord]) && is_array($data[$excludeRecord])) {
@@ -8364,14 +8625,21 @@ class UniversalValidator extends AbstractExternalModule
                 $row = $ctx['values'];
                 $match = true;
                 foreach ($target as $f => $tv) {
+                    if ($f === $primary) continue;
                     $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
-                    if ($f === $primary && $codes && self::isMissingCode($rv, $codes)) { $match = false; break; }
                     // A blank component's key is '', which no lookupKey equals, so it
-                    // matches only a blank stored value (the line above).
+                    // matches only a blank stored value (the line below).
                     if ($rv === $tv) continue;
                     if (Logic::lookupKey($rv, $fold, $marks[$f]) !== $keys[$f]) { $match = false; break; }
                 }
-                if ($match) return ['record' => (string) $rec, 'dag' => $dag];
+                if (!$match) continue;
+                foreach ($slots as $f => $key) {
+                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
+                    if ($rv === '' || ($codes && self::isMissingCode($rv, $codes))) continue;
+                    if ($rv === $target[$primary] || Logic::lookupKey($rv, $fold, isset($marks[$f]) ? $marks[$f] : null) === $key) {
+                        return ['record' => (string) $rec, 'dag' => $dag, 'field' => (string) $f];
+                    }
+                }
             }
         }
         return null;

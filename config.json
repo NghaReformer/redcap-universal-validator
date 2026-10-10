@@ -349,6 +349,11 @@
           "type": "text"
         },
         {
+          "key": "unique-also",
+          "name": "Unique rules only (optional): other fields to look for the value in, separated by commas — a value already saved in any of these fields in another record also counts as used (e.g. a typed ID must not match an ID scanned into another field). Up to 5 fields; each must hold one value and be validated the same way as the field (both text, both dates of the same kind, or both numbers with the same decimal mark). This checks one direction only: to stop it both ways, add a rule on the other field too.",
+          "type": "text"
+        },
+        {
           "key": "unique-scope",
           "name": "Unique rules only: where the value must be unique.",
           "type": "dropdown",

@@ -15,7 +15,11 @@
     "snapshotAdvisory (optional): the mode's page factory turns only the parts that read a snapshot advisory",
     "(snapshotFields), so the extended path keeps the rule's blockSave unless a condition read a snapshot.",
     "serverKeys (optional): keys the server needs and the page must not carry; they are removed from every",
-    "rule and branch before the page config is written (ModeRegistry::clientShape)."
+    "rule and branch before the page config is written (ModeRegistry::clientShape).",
+    "uniformBranchKeys (optional): branch keys every rule sharing one field must give the same value (a list is",
+    "compared as a set), mapped to the option name the refusal shows; a difference makes the field a",
+    "configuration error (Branching::conflictOf). refKeys role lookup = a field read only to look values up in",
+    "other records, so saving its form does not re-check the rule."
   ],
   "common": {
     "refKeys": [
@@ -121,10 +125,13 @@
       "evaluator": "findingsUnique",
       "missingCodes": "skip",
       "refKeys": [
-        {"key": "uniqueWith", "kind": "fieldList", "role": "test"}
+        {"key": "uniqueWith", "kind": "fieldList", "role": "test"},
+        {"key": "uniqueAlso", "kind": "fieldList", "role": "lookup"}
       ],
-      "branchKeys": ["uniqueWith", "uniqueScope", "uniqueSurveys"],
+      "branchKeys": ["uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueAlso"],
+      "uniformBranchKeys": {"uniqueAlso": "also"},
       "clientKeys": ["uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts"],
+      "serverKeys": ["uniqueAlso"],
       "needs": ["transport"],
       "dialog": true,
       "js": {"factories": {"unique": "QRIDUniqueInit"}},

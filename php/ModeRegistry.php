@@ -71,6 +71,17 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['uniformBranchKeys'])) {
+                $u = $m['uniformBranchKeys'];
+                if (!is_array($u) || array_values($u) === $u && $u) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a uniformBranchKeys that is not a key => option name map');
+                }
+                foreach ($u as $k => $name) {
+                    if (!in_array($k, $m['branchKeys'], true) || !is_string($name) || $name === '') {
+                        throw new \RuntimeException('mode "' . $m['mode'] . '" has a uniformBranchKeys entry that is not one of its branchKeys');
+                    }
+                }
+            }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no eligibility.fieldTypes');
             }
@@ -185,6 +196,17 @@ final class ModeRegistry
             foreach (self::all() as $m) foreach ($m['clientKeys'] as $k) $out[$k] = true;
             return array_keys($out);
         });
+    }
+
+    /**
+     * Branch keys that every rule sharing one field must give the same value,
+     * per mode: mode => [key => the option name a refusal shows]. Branching
+     * refuses a field whose sharing rules differ on one (Branching::conflictOf).
+     */
+    public static function uniformBranchKeys($mode)
+    {
+        $m = self::mode($mode);
+        return (isset($m['uniformBranchKeys']) && is_array($m['uniformBranchKeys'])) ? $m['uniformBranchKeys'] : [];
     }
 
     /**

@@ -66,6 +66,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'blockSave', 'suggestFix', 'note',
     'assert', 'caseSensitive', 'message', 'references',
     'uniqueWith', 'uniqueScope', 'uniqueSurveys',
+    // @UVUNIQUE "also" (must be the same on every branch: uniformBranchKeys)
+    'uniqueAlso',
     'choicesShow', 'choicesHide', 'choicesAll',
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
@@ -197,6 +199,20 @@ check('refFields: every operand and field list, once', ModeRegistry::refFields($
     === ['g', 'f', 'h', 'k', 'm', 'w1', 'w2']);
 check('refFields skips a condition that does not parse',
     ModeRegistry::refFields(['when' => '[a]=', 'assert' => '[b]=1']) === ['b']);
+// @UVUNIQUE "also": a field list read only to look values up (role lookup),
+// kept off the page (serverKeys), the same on every branch (uniformBranchKeys).
+$ua = ['type' => 'unique', 'fields' => ['f'], 'uniqueWith' => ['w'],
+       'branches' => [['when' => "[k]='1'", 'uniqueAlso' => ['a1', 'a2']], ['when' => null, 'uniqueAlso' => ['a2', 'a1']]]];
+check('refFields: "also" fields are field lists', ModeRegistry::refFields($ua, ['fieldList']) === ['w', 'a1', 'a2']);
+check('fieldListRefs: the lookup role leaves "also" out', ModeRegistry::fieldListRefs($ua, ['lookup']) === ['w']);
+check('serverKeys holds uniqueAlso', in_array('uniqueAlso', ModeRegistry::serverKeys(), true));
+check('uniqueAlso is not a client key', !in_array('uniqueAlso', ModeRegistry::clientKeys(), true));
+$shaped = ModeRegistry::clientShape($ua);
+check('clientShape removes "also" from every branch', !isset($shaped['branches'][0]['uniqueAlso'])
+    && !isset($shaped['branches'][1]['uniqueAlso']) && $shaped['uniqueWith'] === ['w']);
+check('uniform branch keys of unique', ModeRegistry::uniformBranchKeys('unique') === ['uniqueAlso' => 'also']);
+check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check') === []
+    && ModeRegistry::uniformBranchKeys('exists') === []);
 
 // Operand keys (2.2.0): one field reference whose VALUE the verdict reads.
 check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], $rk['value']]; }, ModeRegistry::operandKeys())
@@ -328,6 +344,15 @@ $cases = [
     'operand without op'  => (function ($g) { $g['modes'][1]['refKeys'][0] = ['key' => 'x', 'kind' => 'operand', 'value' => 'xValue']; return json_encode($g); })($good),
     'operand without value' => (function ($g) { $g['modes'][1]['refKeys'][0] = ['key' => 'x', 'kind' => 'operand', 'op' => 'xOp']; return json_encode($g); })($good),
     'no field types'      => (function ($g) { unset($g['modes'][3]['eligibility']['fieldTypes']); return json_encode($g); })($good),
+    'uniform key not a branch key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['nope' => 'nope'];
+        return json_encode($g); })($good),
+    'uniform keys as a list' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso'];
+        return json_encode($g); })($good),
+    'uniform key without a name' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso' => ''];
+        return json_encode($g); })($good),
 ];
 foreach ($cases as $label => $content) {
     @unlink($tmp);

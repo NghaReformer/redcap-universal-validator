@@ -115,6 +115,11 @@ final class UniqueFinalizer implements DuplicateFinalizer
      *             keyed by "recordId|eventId|instance|field"
      *   versions: ?RecordVersions
      *   page:     int  candidates per bounded page
+     *   reportable: ?callable(string $ruleSourceId, string $field): bool
+     *             whether a candidate becomes a finding; a candidate from an
+     *             @UVUNIQUE "also" field counts towards its group's records
+     *             and is verified like the rest, but is not reported. Absent,
+     *             every candidate is reported.
      * }
      */
     public function __construct(ScanDb $db, array $deps = [])
@@ -480,10 +485,17 @@ final class UniqueFinalizer implements DuplicateFinalizer
         }
 
         $key = isset($this->deps['hmacKey']) ? $this->deps['hmacKey'] : null;
+        $reportable = (isset($this->deps['reportable']) && is_callable($this->deps['reportable']))
+            ? $this->deps['reportable'] : null;
         $cursor = $g['emit_cursor'];
         $flat = [];
         $marks = [];
         foreach ($rows as $r) {
+            // Past it either way: the cursor moves over an unreported row too.
+            if ($reportable !== null && !$reportable((string) $r[7], (string) $r[6])) {
+                $cursor = (int) $r[0];
+                continue;
+            }
             // The candidate's 0 sentinel is undone before the event reaches
             // either the identity or the finding row. uv_finding.event_id is
             // still nullable and the ordinary scan path writes null there on a
@@ -502,6 +514,14 @@ final class UniqueFinalizer implements DuplicateFinalizer
                 $flat[] = $v;
             }
             $cursor = (int) $r[0];
+        }
+        if (!$marks) {
+            // A page of "also" candidates only: nothing to write, the cursor moves on.
+            $this->db->exec('UPDATE ' . Schema::table('unique_group')
+                . ' SET emit_cursor = ?
+                   WHERE project_id = ? AND group_id = ? AND candidate_epoch = ?',
+                [$cursor, $this->pid, $g['group_id'], $g['candidate_epoch']]);
+            return ['emitted' => 0, 'published' => false, 'why' => null];
         }
         // ONE STATEMENT PER PAGE, not one per finding. A group holding every
         // record in the project would otherwise be one round trip per record,
