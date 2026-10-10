@@ -283,6 +283,8 @@ final class ScanDimensions
         $r = $this->rules[$ordinal];
         // The branch that judged a finding speaks for it: its message and its
         // limits, never another branch's. A label only the rule has stays.
+        // A message does not: a branch without one shows the default wording,
+        // as it does on the page (branches never inherit a rule-level message).
         if ($branch !== null && isset($r['branches'][$branch])) {
             $b = $r['branches'][$branch];
             if ($b['label'] === '') $b['label'] = $r['label'];

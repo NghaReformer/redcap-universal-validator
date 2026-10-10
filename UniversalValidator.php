@@ -512,6 +512,21 @@ class UniversalValidator extends AbstractExternalModule
             if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) return $out;
         }
 
+        // A field marked with a Missing Data Code holds the code, not an
+        // answer, and REDCap does not validate it either: a mode that judges
+        // the value (php/modes.json "missingCodes":"skip") leaves it alone.
+        // @UVREQUIRED ("answer") counts the code as an answer.
+        $codes = $this->missingDataCodes($project_id);
+        if ($codes && ModeRegistry::missingCodes($mode) === 'skip') {
+            $kept = [];
+            foreach ($rule['fields'] as $f) {
+                if (!self::isMissingCode(isset($values[$f]) ? $values[$f] : null, $codes)) $kept[] = $f;
+            }
+            if (!$kept) return $out;
+            $rule['fields'] = $kept;
+        }
+        $meta['missingCodes'] = $codes;
+
         // The mode's own verdict (php/modes.json "evaluator").
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta);
@@ -591,7 +606,8 @@ class UniversalValidator extends AbstractExternalModule
                     continue 2;
                 }
                 $v = isset($values[$lf]) ? $values[$lf] : '';
-                if (is_array($v) || trim((string) $v) === '') continue 2;   // nothing to narrow by yet
+                // nothing to narrow by yet (blank, or a Missing Data Code)
+                if (is_array($v) || trim((string) $v) === '' || self::isMissingCode($v, isset($meta['missingCodes']) ? $meta['missingCodes'] : [])) continue 2;
                 $lv[$lf] = trim((string) $v);
             }
             $r = $this->existsLookup($project_id, $rule, trim((string) $value), $lv, $event_id, $record, $meta);
@@ -1311,6 +1327,56 @@ class UniversalValidator extends AbstractExternalModule
         return $this->projectObjects[$pid];
     }
 
+    /** @var array pid => that project's Missing Data Codes, code => true */
+    private $missingCodesMemo = [];
+
+    /**
+     * The project's Missing Data Codes (Project Setup > Additional
+     * customizations) as code => true, read once per request; [] when the
+     * project has none or they cannot be read. A field marked with REDCap's
+     * "M" button holds the code itself as its value, and REDCap skips its own
+     * validation for it, so the checks of php/modes.json "missingCodes":"skip"
+     * modes treat such a value as not entered.
+     */
+    private function missingDataCodes($pid)
+    {
+        $pid = (int) $pid;
+        if (isset($this->missingCodesMemo[$pid])) return $this->missingCodesMemo[$pid];
+        $codes = [];
+        try {
+            $p = $this->projectObject($pid);
+            if ($p && isset($p->project) && is_array($p->project) && isset($p->project['missing_data_codes'])) {
+                $codes = self::parseMissingDataCodes($p->project['missing_data_codes']);
+            }
+        } catch (\Throwable $e) {
+            $codes = [];
+        }
+        return $this->missingCodesMemo[$pid] = $codes;
+    }
+
+    /**
+     * REDCap's "CODE, Label" lines as ['CODE' => true, ...]. Lines are split
+     * on a newline or the two characters backslash-n, the way REDCap writes
+     * choice lists.
+     */
+    public static function parseMissingDataCodes($raw)
+    {
+        $out = [];
+        if (!is_string($raw) || $raw === '') return $out;
+        foreach (preg_split('/\r\n|\r|\n|\\\\n/', $raw) as $line) {
+            $parts = explode(',', $line, 2);
+            $code = trim($parts[0]);
+            if ($code !== '') $out[$code] = true;
+        }
+        return $out;
+    }
+
+    /** Whether $value, trimmed, is one of $codes (from missingDataCodes). */
+    private static function isMissingCode($value, array $codes)
+    {
+        return $codes && is_scalar($value) && isset($codes[trim((string) $value)]);
+    }
+
     /** The event id of a unique event name in ANOTHER project, or null. */
     private function eventIdIn($pid, $name)
     {
@@ -1829,6 +1895,9 @@ class UniversalValidator extends AbstractExternalModule
                 $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
                 $anchor = is_array($v) ? '' : (string) $v;
             }
+            // A "from" date marked with a Missing Data Code was not entered:
+            // there is nothing to count from, as with a blank one.
+            if (self::isMissingCode($anchor, $this->missingDataCodes($project_id))) $anchor = '';
         }
         $spec = [
             'lo' => isset($rule['windowLo']) ? $rule['windowLo'] : null,
@@ -2303,6 +2372,12 @@ class UniversalValidator extends AbstractExternalModule
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
         if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
+        // The project's Missing Data Codes (codes only, never their labels): a
+        // field marked with one holds the code, which the checks leave alone.
+        if ($config['rules']) {
+            $codes = $pid !== null ? $this->missingDataCodes($pid) : [];
+            if ($codes) $config['missingCodes'] = array_map('strval', array_keys($codes));
+        }
         return $config;
     }
 
@@ -4812,7 +4887,7 @@ class UniversalValidator extends AbstractExternalModule
                     'valueWithheld' => ($rv === false),
                     'instrument' => isset($e['instrument']) ? $e['instrument'] : null,
                     'dag' => isset($e['dag']) ? $e['dag'] : null,
-                ]);
+                ] + (isset($e['branch']) ? ['branch' => (int) $e['branch']] : []));
             }
         }
         $result['unconfigurable'] = array_values($unconf);
@@ -5348,6 +5423,9 @@ class UniversalValidator extends AbstractExternalModule
                 // "no forms" on the path where it should read as "no answer".
                 'ownership' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
+                // A value that is a Missing Data Code is no candidate for a
+                // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
+                'missingCodes' => $this->missingDataCodes($pid),
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
                 // The PROJECT's setting, capped by what THIS READER is entitled
@@ -5832,6 +5910,8 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     $evaluatedRule = $r;
                     $evaluatedMode = $mode;
+                    // The branch an extended rule was flattened to, when it had branches.
+                    $preparedBranch = null;
                     if (TemporalRules::extended($r)) {
                         if ($this->temporalBudget->exhausted()) {
                             $unconf[$i.'|temporal-budget']=['rule'=>$i+1,'fields'=>$ownFields,'why'=>'Extended record evaluation budget exhausted; this record was not fully checked.'];
@@ -5846,9 +5926,10 @@ class UniversalValidator extends AbstractExternalModule
                         }
                         $evaluatedRule = $prepared['rule'];
                         $evaluatedMode = ModeRegistry::modeOfType($evaluatedRule['type'] ?? '');
+                        if (isset($prepared['branch'])) $preparedBranch = (int) $prepared['branch'];
                     }
                     if ($evaluatedMode === 'unique' && !isset($evaluatedRule['uniqueRecordResults'])) {
-                        self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan);
+                        self::collectUniqueCandidates($uniqueSeen, $unconf, $evaluatedRule, $i, $ctx, $rec, $recDag, $plan['dupes'], $onForm, $resCache[$ck], $hostForm, $plan, $preparedBranch);
                         continue;
                     }
                     // Branches scanPlan found another project will not answer for
@@ -5861,6 +5942,9 @@ class UniversalValidator extends AbstractExternalModule
                     // A scan request answers @UVEXISTS from one index per rule, not one
                     // whole-project read per record (findingsExists).
                     $f = $this->ruleFindings($evaluatedRule, $i, $ctx['values'], $plan['dupes'], $onForm, $pid, $rec, $ctx['event_id'], null, $resCache[$ck], ['dag' => $recDag, 'existsIndex' => true]);
+                    if ($preparedBranch !== null) {
+                        foreach ($f['invalid'] as $k => $v) if (!isset($v['branch'])) $f['invalid'][$k]['branch'] = $preparedBranch;
+                    }
                     foreach ($f['invalid'] as $v) {
                         // Computed ONCE, and compared with === false. A truthiness
                         // test here would turn a legitimate value of '0' into null.
@@ -6135,7 +6219,7 @@ class UniversalValidator extends AbstractExternalModule
      * for scope=event, the record's DAG for scope=dag). Branch rules resolve
      * their active branch against this context first.
      */
-    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null, array $plan = [])
+    private static function collectUniqueCandidates(array &$seen, array &$unconf, array $rule, $ruleIndex, array $ctx, $rec, $recDag, array $dupes, $onForm = null, array $resolution = [], $hostForm = null, array $plan = [], $branch = null)
     {
         // Every reference this aggregation consumes goes through the SAME
         // resolution the rest of the scan uses. Without it the composite key was
@@ -6191,6 +6275,7 @@ class UniversalValidator extends AbstractExternalModule
             $b = $rule['branches'][$pick];
             unset($b['when']);
             $cfg = array_merge(['type' => 'unique', 'fields' => $rule['fields']], $b);
+            $branch = $pick;
         }
         if (isset($cfg['when']) && is_string($cfg['when']) && $cfg['when'] !== '') {
             $p = Logic::parse($cfg['when']);
@@ -6254,6 +6339,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
             if ($v === null || is_array($v) || trim((string) $v) === '') continue;
+            if (self::isMissingCode($v, isset($plan['missingCodes']) ? $plan['missingCodes'] : [])) continue;
             // Collision-free, LOSSLESS composite key (L-01, L01-UTF8-COLLAPSE): a raw
             // byte in a value (a 0x1F separator, or an invalid-UTF8 byte from a Latin-1
             // import) must not let two DISTINCT tuples share a key and read as a false
@@ -6284,7 +6370,8 @@ class UniversalValidator extends AbstractExternalModule
                              // @UVUNIQUE rule over a Notes field that was the most
                              // expensive thing in the scan.
                              'value' => self::reportValue(['field' => $field, 'value' => $v], $plan),
-                             'instrument' => $hostForm, 'dag' => $recDag];
+                             'instrument' => $hostForm, 'dag' => $recDag]
+                           + ($branch !== null ? ['branch' => (int) $branch] : []);
         }
     }
 
@@ -6498,6 +6585,10 @@ class UniversalValidator extends AbstractExternalModule
             $scope = isset($rule['uniqueScope']) ? $rule['uniqueScope'] : 'project';
             // A date arrives as the field shows it; the comparison is on stored values.
             $values = $this->storedFormOf($project_id, $values);
+            // A Missing Data Code is not a value anyone else can have "used".
+            if (self::isMissingCode(isset($values[$field]) ? $values[$field] : null, $this->missingDataCodes($project_id))) {
+                return ['used' => false, 'record' => null];
+            }
 
             // Resolve composite "with" values the browser could not read (H-03). A
             // field that is not on the rendered instrument is sent as "" by the
@@ -6635,6 +6726,9 @@ class UniversalValidator extends AbstractExternalModule
             // Values arrive as the page shows them; the lookup compares stored ones.
             $values = $this->storedFormOf($project_id, $values);
             $value = trim($values[$field]);
+            // A Missing Data Code is no value to look up (the page never asks).
+            $codes = $this->missingDataCodes($project_id);
+            if (self::isMissingCode($value, $codes)) return ['error' => 'nothing to look up'];
             $lv = [];
             $offPage = [];
             $onForm = $locals ? $this->fieldsOnInstrument($project_id, $instrument) : null;
@@ -6662,6 +6756,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach ($lv as $lf => $v) {
                 if ($v === '') return $unknown('[' . $lf . '] is blank, so there is nothing to match against yet');
+                if (self::isMissingCode($v, $codes)) return $unknown('[' . $lf . '] holds a missing data code, so there is nothing to match against');
             }
             $dag = null;
             if (($rule['existsScope'] ?? 'project') === 'dag') {

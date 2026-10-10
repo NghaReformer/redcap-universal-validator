@@ -33,6 +33,7 @@
       },
       "hooks": {},
       "evaluator": "findingsCheck",
+      "missingCodes": "skip",
       "refKeys": [],
       "branchKeys": ["algorithm", "idPattern", "alternates", "source", "strip", "keepChars",
                      "idLengths", "idMinLen", "idMaxLen", "expectedIds",
@@ -60,6 +61,7 @@
       },
       "hooks": {},
       "evaluator": "findingsConstraint",
+      "missingCodes": "skip",
       "refKeys": [
         {"key": "assert", "kind": "cond", "role": "test", "ast": "assertAst"}
       ],
@@ -88,6 +90,7 @@
       },
       "hooks": {},
       "evaluator": "findingsRequired",
+      "missingCodes": "answer",
       "refKeys": [],
       "branchKeys": ["blockSave", "caseSensitive", "message", "references"],
       "clientKeys": ["blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
@@ -111,6 +114,7 @@
       },
       "hooks": {"field": "annotateUniqueField", "dictionary": "annotateUniqueDictionary"},
       "evaluator": "findingsUnique",
+      "missingCodes": "skip",
       "refKeys": [
         {"key": "uniqueWith", "kind": "fieldList", "role": "test"}
       ],
@@ -136,6 +140,7 @@
       },
       "hooks": {"field": "annotateChoicesField", "dictionary": "annotateChoicesDictionary"},
       "evaluator": "findingsChoices",
+      "missingCodes": "skip",
       "refKeys": [],
       "branchKeys": ["choicesShow", "choicesHide", "choicesAll"],
       "clientKeys": ["choicesShow", "choicesHide", "choicesAll"],
@@ -159,6 +164,7 @@
       },
       "hooks": {"field": "annotateWindowField", "dictionary": "annotateWindowDictionary"},
       "evaluator": "findingsWindow",
+      "missingCodes": "skip",
       "refKeys": [
         {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue"}
       ],
@@ -188,6 +194,7 @@
       },
       "hooks": {"field": "annotateExistsField", "dictionary": "annotateExistsDictionary"},
       "evaluator": "findingsExists",
+      "missingCodes": "skip",
       "refKeys": [
         {"key": "existsLocal", "kind": "fieldList", "role": "test"},
         {"key": "existsTargets", "kind": "fieldList", "role": "lookup"}
@@ -219,6 +226,7 @@
       },
       "hooks": {"field": "annotateRangeField"},
       "evaluator": "findingsRange",
+      "missingCodes": "skip",
       "refKeys": [],
       "branchKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",

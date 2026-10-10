@@ -305,6 +305,70 @@ namespace {
     $row = \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, $cols);
     check('report: an unbranched rule keeps its own message', ($row['problem'] ?? '') === 'Check the scale. Allowed 0.5 to 250.');
 
+    // A branch without its own message shows the default wording, as on the
+    // page: branches never inherit a rule-level message.
+    $dims = \INSPIRE\UniversalValidator\ScanDimensions::build(149, $DICT, [
+        ['type' => 'range', 'fields' => ['hb'], 'message' => 'Rule-level.', 'branches' => [
+            ['when' => "[sex]='1'", 'rangeHardLo' => '3', 'rangeHardHi' => '25', 'rangeHardText' => '3 to 25', 'message' => 'Men.'],
+            ['when' => "[sex]='2'", 'rangeHardLo' => '3', 'rangeHardHi' => '20', 'rangeHardText' => '3 to 20']]],
+    ]);
+    check('report: a branch with a message speaks with it', $dims->rule(1, 0)['message'] === 'Men.');
+    check('report: a branch without one has none, not the rule\'s', $dims->rule(1, 1)['message'] === ''
+        && $dims->rule(1, 1)['detail']['rangeHardText'] === '3 to 20');
+
+    // ---- 5) the fallback branch, a conflict, comma texts, the survey page -----------
+    $D3 = ['record_id' => f('enrol_form'), 'sex' => f('enrol_form', '', '', 'radio'),
+        'hb_fb' => f('labs_form', '@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"when":"[sex]=\'1\'"} @UVRANGE={"soft":[12,15.5],"hard":[3,25]}', 'number'),
+        'hb_cf' => f('labs_form', '@UVRANGE={"hard":[3,25],"when":"[sex]=\'1\'"} @UVRANGE={"hard":[3,20],"when":"[sex]<>\'2\'"}', 'number'),
+        'lo_comma' => f('labs_form', '@UVRANGE={"soft":[0.5,null],"hard":[-0.5,10]}', 'number_comma_decimal')];
+    $V3 = ['2' => [351 => ['record_id' => '2', 'sex' => '3', 'hb_fb' => '16', 'hb_cf' => '22', 'lo_comma' => '0,4']]];
+    $p = page(mod($D3, $V3, $FULL, 'nurse'), 'form', '2', 'labs_form');
+    $r = ruleFor($p, 'hb_fb');
+    check('fallback: a tag without "when" travels as a branch without one', $r && count($r['branches']) === 2
+        && count(array_filter($r['branches'], function ($x) { return !isset($x['when']); })) === 1);
+    $r = ruleFor($p, 'lo_comma');
+    check('comma texts: an open bound and a negative one (got ' . json_encode([$r['rangeSoftText'] ?? null, $r['rangeHardText'] ?? null]) . ')',
+        $r && $r['rangeSoftText'] === 'at least 0,5' && $r['rangeHardText'] === '-0,5 to 10' && $r['rangeHardLo'] === '-0.5');
+    $m = mod($D3, $V3, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'labs_form', 351, null, null, null, 1);
+    $by = []; foreach (findings($m) as $e) $by[$e['field']] = $e;
+    check('audit: no condition true, the fallback judges', ($by['hb_fb']['reason'] ?? null) === 'soft-high');
+    check('audit: one condition of two true, that branch judges', ($by['hb_cf']['reason'] ?? null) === 'hard-high');
+    check('audit: a comma value under an open soft bound', ($by['lo_comma']['reason'] ?? null) === 'soft-low');
+    $V3['2'][351]['sex'] = '1';
+    $m = mod($D3, $V3, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'labs_form', 351, null, null, null, 1);
+    $by = []; foreach (findings($m) as $e) $by[$e['field']] = $e;
+    check('audit: a true condition takes over from the fallback', !isset($by['hb_fb']));
+    $cf = array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) {
+        return strpos((string) $e['fields'], 'hb_cf') !== false && strpos((string) $e['why'], 'branch conflict') !== false;
+    });
+    check('audit: two true conditions are a rule problem, not a finding', !isset($by['hb_cf']) && count($cf) === 1);
+
+    // A survey gets the branch already chosen from the saved selector: each
+    // branch keeps its condition text, its answer is a constant, and the
+    // snapshot makes it advisory.
+    $ps = page(mod($DICT, $DATA, $FULL, 'nurse'), 'survey', '2', 'labs_form');
+    $pins = [];
+    foreach ((ruleFor($ps, 'hb')['branches'] ?? []) as $x) $pins[$x['when'] ?? ''] = [$x['whenAst'] ?? null, $x['snapshotFields'] ?? null];
+    ksort($pins);
+    check('survey: conditions, constant answers and the snapshot (got ' . json_encode($pins) . ')',
+        $pins === ["[sex]='1'" => [['const', true], ['sex']], "[sex]='2'" => [['const', false], ['sex']]]);
+
+    // ---- 6) a branched @UVUNIQUE duplicate names its branch ------------------------
+    $UD = ['record_id' => f('enrol_form'), 'sex' => f('enrol_form', '', '', 'radio'),
+        'mrn' => f('enrol_form', '@UVUNIQUE={"when":"[sex]=\'1\'"} @UVUNIQUE={"when":"[sex]=\'2\'","message":"This MRN is already in use."}')];
+    $UV = ['1' => [351 => ['record_id' => '1', 'sex' => '2', 'mrn' => 'M-1']],
+           '2' => [351 => ['record_id' => '2', 'sex' => '2', 'mrn' => 'M-1']],
+           '3' => [351 => ['record_id' => '3', 'sex' => '1', 'mrn' => 'M-2']]];
+    $m = mod($UD, $UV, ['nurse' => ['forms' => ['enrol_form' => '1']]], 'nurse');
+    $res = $m->scanProject(149);
+    $dups = array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; }));
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $msgs = array_map(function ($v) use ($dims) { return isset($v['branch']) ? $dims->rule($v['rule'], $v['branch'])['message'] : null; }, $dups);
+    check('scan: each branched duplicate names the branch that judged it (got ' . json_encode($msgs) . ')',
+        count($dups) === 2 && $msgs === ['This MRN is already in use.', 'This MRN is already in use.']);
+
     check('scan labels per tier', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'soft-high') === 'Unusual value'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'hard-low') === 'Implausible value'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number');

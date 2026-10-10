@@ -771,7 +771,59 @@ class Logic
         $v = trim((string) $value, " \t\r\n");
         if ($v === '') return '';
         if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
-        return preg_match(self::NUM_RE, $v) ? $v : null;
+        if (preg_match(self::NUM_RE, $v)) return $v;
+        // REDCap's "number" validation accepts an exponent (2.5E1), and a calc
+        // can produce one (1e-7). Written out digit for digit it is the same
+        // number, so it is judged like one.
+        return self::plainDecimal($v);
+    }
+
+    /**
+     * A number written with an exponent, written out as a plain decimal digit
+     * for digit: "2.5E1" is "25", "-1.5e-7" is "-0.00000015", "1e3" is "1000".
+     * Null when $s is not that shape or the exponent has more than three
+     * digits. Zero carries no sign. Twin of QRID_plainDecimal.
+     */
+    public static function plainDecimal($s)
+    {
+        if (!preg_match('/^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?[0-9]{1,3})$/D', (string) $s, $m)) return null;
+        $intDigits = $m[2];
+        $fracDigits = isset($m[3]) ? $m[3] : '';
+        if ($intDigits === '' && $fracDigits === '') return null;
+        $digits = $intDigits . $fracDigits;
+        $point = strlen($intDigits) + (int) $m[4];   // digits before the decimal point
+        if ($point <= 0) {
+            $int = '';
+            $frac = str_repeat('0', -$point) . $digits;
+        } elseif ($point >= strlen($digits)) {
+            $int = $digits . str_repeat('0', $point - strlen($digits));
+            $frac = '';
+        } else {
+            $int = substr($digits, 0, $point);
+            $frac = substr($digits, $point);
+        }
+        $int = ltrim($int, '0');
+        $frac = rtrim($frac, '0');
+        if ($int === '') $int = '0';
+        $zero = ($int === '0' && $frac === '');
+        return ($m[1] === '-' && !$zero ? '-' : '') . $int . ($frac === '' ? '' : '.' . $frac);
+    }
+
+    /**
+     * A NUM_RE string as a limit is shown: no "+", no leading zeros, a bare
+     * "." dropped and ".5" as "0.5"; a zero carries no sign. The digits after
+     * the point stay as typed, so 36.0 is still 36.0. Null for anything else.
+     */
+    public static function canonicalDecimal($s)
+    {
+        if (!preg_match('/^([+-]?)([0-9]*)(?:\.([0-9]*))?$/D', (string) $s, $m) || ($m[2] === '' && (!isset($m[3]) || $m[3] === ''))) {
+            return null;
+        }
+        $int = ltrim($m[2], '0');
+        if ($int === '') $int = '0';
+        $frac = isset($m[3]) ? $m[3] : '';
+        $zero = ($int === '0' && trim($frac, '0') === '');
+        return ($m[1] === '-' && !$zero ? '-' : '') . $int . ($frac === '' ? '' : '.' . $frac);
     }
 
     /**

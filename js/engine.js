@@ -661,6 +661,21 @@
      technical config detail is muted there (UX-001) — admins still see every
      detail on data-entry forms, in the Configure dialog, and in the module log. */
   var QRID_IS_SURVEY = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.context === "survey");
+  /* The project's Missing Data Codes. A field marked with REDCap's "M" button
+     holds the code itself; REDCap does not validate it, and neither does a
+     check that judges the value (php/modes.json "missingCodes":"skip"). Every
+     factory except @UVREQUIRED treats it like a blank field. */
+  var QRID_MISSING_CODES = (function(){
+    var set = Object.create(null);
+    var list = (QRID_COMBINED_CONFIG && Array.isArray(QRID_COMBINED_CONFIG.missingCodes)) ? QRID_COMBINED_CONFIG.missingCodes : [];
+    for(var i = 0; i < list.length; i++){ if(typeof list[i] === "string" && list[i] !== "") set[list[i]] = true; }
+    return set;
+  })();
+  function QRID_isMissingCode(value){
+    if(value === null || value === undefined) return false;
+    var t = String(value).replace(/^[ \t\r\n\0\x0B]+|[ \t\r\n\0\x0B]+$/g, "");
+    return t !== "" && QRID_MISSING_CODES[t] === true;
+  }
 
   /* Shared per-load registries (were window globals; now namespace-only).
      Object.create(null): REDCap field names are attacker-ish input for a plain
@@ -1831,7 +1846,30 @@ function QRID_rangeNumber(value, decimalComma){
   var v = QRID_whenTrim(value == null ? "" : String(value));
   if(v === "") return "";
   if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
-  return QRID_WHEN_NUM_RE.test(v) ? v : null;
+  if(QRID_WHEN_NUM_RE.test(v)) return v;
+  /* REDCap's "number" validation accepts an exponent (2.5E1); written out it is
+     the same number. */
+  return QRID_plainDecimal(v);
+}
+/* A number with an exponent written out digit for digit ("2.5E1" is "25",
+   "-1.5e-7" is "-0.00000015"); null when not that shape or the exponent has more
+   than three digits. Zero carries no sign. Twin of Logic::plainDecimal. */
+function QRID_plainDecimal(s){
+  var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?[0-9]{1,3})$/.exec(String(s));
+  if(!m) return null;
+  var intDigits = m[2], fracDigits = m[3] === undefined ? "" : m[3];
+  if(intDigits === "" && fracDigits === "") return null;
+  var digits = intDigits + fracDigits;
+  var point = intDigits.length + parseInt(m[4], 10);
+  var intPart, frac;
+  if(point <= 0){ intPart = ""; frac = new Array(-point + 1).join("0") + digits; }
+  else if(point >= digits.length){ intPart = digits + new Array(point - digits.length + 1).join("0"); frac = ""; }
+  else { intPart = digits.slice(0, point); frac = digits.slice(point); }
+  intPart = intPart.replace(/^0+/, "");
+  frac = frac.replace(/0+$/, "");
+  if(intPart === "") intPart = "0";
+  var zero = intPart === "0" && frac === "";
+  return (m[1] === "-" && !zero ? "-" : "") + intPart + (frac === "" ? "" : "." + frac);
 }
 /* The @UVRANGE verdict: { tier: ok|soft|hard|inert, reason }. Bounds inclusive,
    exact decimal comparison. Twin of Logic::rangeVerdict; tests/range_fixture.json
@@ -2868,7 +2906,7 @@ function QRIDSingleInit(QRID_CONFIG){
       var V = act[0];
       input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
       var v = (input.value || "").trim();
-      if(!v){
+      if(!v || QRID_isMissingCode(v)){
         msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
         QRID_setModeState(input, "check", null);
         return;
@@ -3102,7 +3140,7 @@ function QRIDConstraintInit(QRID_CONFIG){
          not JS String.trim: String.trim also strips Unicode spaces such as
          U+00A0, so a host value of " " went inert in the browser while the
          server compared it untrimmed and logged a violation (M-04). */
-      if(val === null || QRID_whenTrim(val) === ""){ inert(); return; }
+      if(val === null || QRID_whenTrim(val) === "" || QRID_isMissingCode(val)){ inert(); return; }
       var ok = true;
       try { ok = V.assertGate.active(); } catch(e){ ok = true; }
       if(V.assertGate.unresolved && V.assertGate.unresolved()){
@@ -3144,7 +3182,7 @@ function QRIDConstraintInit(QRID_CONFIG){
   /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "constraint", mode: { constraint: true, configError: configError },
-      test: function(){ var a = QRID_activeVariants(VS); return (a.length === 1) ? a[0].assertGate.active() : null; } };
+      test: function(){ var a = QRID_activeVariants(VS); if(a.length !== 1 || QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null; return a[0].assertGate.active(); } };
   });
   function boot(){
     if(configError){
@@ -3262,6 +3300,8 @@ function QRIDWindowInit(QRID_CONFIG){
     var op = V.fromOp, anchor = null;
     if(op && op[0] === "ref") anchor = op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null);
     else if(op && op[0] === "lit") anchor = String(op[1]);
+    /* A "from" date marked with a Missing Data Code was not entered. */
+    if(anchor !== null && QRID_isMissingCode(anchor)) anchor = "";
     var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
     var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, clock);
     r.clock = clock;
@@ -3336,6 +3376,7 @@ function QRIDWindowInit(QRID_CONFIG){
         }
         inert(); return;
       }
+      if(QRID_isMissingCode(QRID_WHEN.readRef(fieldName, null))){ inert(); return; }
       var r;
       try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
       var future = r.verdict === "future";
@@ -3380,6 +3421,7 @@ function QRIDWindowInit(QRID_CONFIG){
       test: function(){
         var a = QRID_activeVariants(VS);
         if(a.length !== 1 || a[0].deferred) return null;
+        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
         var v = verdictOf(a[0], f).verdict;
         return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
       } };
@@ -3524,8 +3566,9 @@ function QRIDRangeInit(QRID_CONFIG){
         }
         inert(); return;
       }
-      var r;
-      try { r = QRID_rangeVerdict(V.spec, QRID_WHEN.readRef(fieldName, null)); } catch(e){ inert(); return; }   /* fail open */
+      var r, typed = QRID_WHEN.readRef(fieldName, null);
+      if(QRID_isMissingCode(typed)){ inert(); return; }
+      try { r = QRID_rangeVerdict(V.spec, typed); } catch(e){ inert(); return; }   /* fail open */
       if(r.tier !== "soft" && r.tier !== "hard"){ inert(); return; }
       var kind = r.tier === "soft" ? "warn" : "bad";
       styleMsg(msg, kind);
@@ -3561,6 +3604,7 @@ function QRIDRangeInit(QRID_CONFIG){
       test: function(){
         var a = QRID_activeVariants(VS);
         if(a.length !== 1 || a[0].deferred) return null;
+        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
         var t = QRID_rangeVerdict(a[0].spec, QRID_WHEN.readRef(f, null)).tier;
         return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
       } };
@@ -4306,7 +4350,7 @@ function QRIDUniqueInit(QRID_CONFIG){
          information a respondent would not otherwise see (SEC-005 posture). */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
-      if(val === ""){ inert(); return; }
+      if(val === "" || QRID_isMissingCode(val)){ inert(); return; }
       var localGate = localGates[VS.all.indexOf(V)];
       if(localGate){
         var valid = localGate.active();
@@ -4546,7 +4590,7 @@ function QRIDExistsInit(QRID_CONFIG){
       /* Surveys are opt-in per rule, as for @UVUNIQUE. */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = trim(QRID_WHEN.readRef(fieldName, null));
-      if(val === ""){ ++seq; pendingKey = null; inert(); return; }
+      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
       var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
       for(var li = 0; li < V.locals.length; li++){
@@ -4556,7 +4600,7 @@ function QRIDExistsInit(QRID_CONFIG){
         if(!QRID_WHEN.has(lf, null)) continue;
         var lv = trim(QRID_WHEN.readRef(lf, null));
         /* A match field on this page that is blank: nothing to narrow by yet. */
-        if(lv === ""){ ++seq; pendingKey = null; inert(); return; }
+        if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); return; }
         payload.values[lf] = lv;
       }
       var key = JSON.stringify([payload.values, payload.cond]);
@@ -5147,7 +5191,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     var V = act[0];
     input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
     var v = (input.value || "").trim();
-    if(!v){
+    if(!v || QRID_isMissingCode(v)){
       msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
       QRID_setModeState(input, "check", null);
       return;
@@ -5485,7 +5529,7 @@ window.INSPIREUniversalValidator = {
     family: QRID_temporalFamily, clockNow: QRID_clockNow, units: QRID_WINDOW_UNITS
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
-    verdict: QRID_rangeVerdict, number: QRID_rangeNumber
+    verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,

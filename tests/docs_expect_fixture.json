@@ -4298,7 +4298,37 @@
                 "hardLo": "3",
                 "hardHi": "25"
             },
+            "input": "1.5E1",
+            "tier": "ok",
+            "reason": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:1744",
+            "tagLine": 1732,
+            "kind": "range",
+            "spec": {
+                "decimalComma": false,
+                "softLo": "12",
+                "softHi": "17.5",
+                "hardLo": "3",
+                "hardHi": "25"
+            },
             "input": "1e1",
+            "tier": "soft",
+            "reason": "soft-low"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:1745",
+            "tagLine": 1732,
+            "kind": "range",
+            "spec": {
+                "decimalComma": false,
+                "softLo": "12",
+                "softHi": "17.5",
+                "hardLo": "3",
+                "hardHi": "25"
+            },
+            "input": "n/a",
             "tier": "hard",
             "reason": "not-a-number"
         }

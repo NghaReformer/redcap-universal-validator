@@ -1740,7 +1740,9 @@ is a typing slip. `@UVRANGE` checks a number against both levels. JSON form only
 19     => soft-high
 2.5    => hard-low
 31     => hard-high
-1e1    => not-a-number
+1.5E1  => ok
+1e1    => soft-low
+n/a    => not-a-number
 ```
 
 `soft` is the usual range. A value outside it is unusual. Its note is amber,
@@ -1805,15 +1807,24 @@ not a number.
   calc fields and sliders. A Text field with any other validation, such as a
   date or an email, shows a configuration error.
 - **What counts as a number.** Digits with at most one decimal point and an
-  optional sign, such as `12`, `-0.5`, `.5` or `+14`. Exponents (`1e3`),
-  thousands separators (`1,200`) and a unit typed into the box (`12 g/dL`) are
+  optional sign, such as `12`, `-0.5`, `.5` or `+14`, and the exponent form
+  REDCap's number validation also accepts: `1.5E1` is 15 and `2e-3` is 0.002.
+  Thousands separators (`1,200`) and a unit typed into the box (`12 g/dL`) are
   not numbers and count as implausible, even on a rule with only `soft`
-  limits. REDCap's own validation stops most of these on a number field; on a
-  Text field with no validation, `@UVRANGE` is the only check.
+  limits. REDCap's own validation stops these on a number field; on a Text
+  field with no validation, `@UVRANGE` is the only check.
 - **Exact comparison.** Limits and values are compared as decimals, digit by
   digit, so `17.50` equals `17.5` and very long numbers keep every digit. A
-  limit too long or too precise for a JSON number can be written in quotes,
-  such as `"hard":["0","9007199254740993"]`.
+  limit is kept exactly as written, quoted or not: `0.12345678901234567890`
+  keeps all twenty digits. A limit may be up to 64 characters long once any
+  exponent is written out.
+- **Missing data codes.** A field marked with one of the project's missing
+  data codes (REDCap's "M" button, or an import) holds the code itself, such as
+  `UNK` or `-99`. REDCap does not validate it and neither does `@UVRANGE`: the
+  field is treated as blank, on the page, in the post-save audit and in the
+  scan. Every other tag does the same, except `@UVREQUIRED`, which counts a
+  missing data code as an answer. A `when` condition reads the code as itself,
+  as REDCap's branching logic does.
 - **Comma decimals.** On a field with comma-decimal validation
   (`number_1dp_comma_decimal` and the like), `17,5` is read as 17.5 and the
   notes write the limits with a comma. Limits in the tag are always written
@@ -1823,20 +1834,24 @@ not a number.
   shows the note, and the post-save audit and the scan still report it. A
   read-only field never holds a save either.
 - **A `when` that reads a field on another form** works as on the other tags.
-  The page reads that field's saved value when it opens, the note says which
-  values chose the limits, and the rule does not block on the page. The
-  post-save audit checks it with the saved values.
+  The page reads that field's saved value when it opens, and the rule does not
+  block on the page. On a data entry form the note names the fields that chose
+  the limits; a survey names none. The post-save audit checks it with the saved
+  values.
 - **No event or instance references yet.** `when` reads fields of this entry
   only. A `when` with an event or instance reference, and the `references`
   key, are refused.
-- **The server checks every save.** The post-save audit logs a value outside
-  either range as `type: range`, with reason `soft-low`, `soft-high`,
+- **The post-save audit checks each form and survey save.** It logs a value
+  outside either range as `type: range`, with reason `soft-low`, `soft-high`,
   `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock` says. A
   rule that only shows notes still leaves a record of each unusual value.
-- **The Validation scan** reports "Unusual value", "Implausible value" or "Not
-  a number" in the Issue column, and the limits in the detail line ("Expected
-  12 to 17.5 g/dL." or "Allowed 3 to 25 g/dL."). On a branched rule the
-  detail line names the limits of the branch that judged the value.
+- **The Validation scan** counts these findings. Its report labels them
+  "Unusual value", "Implausible value" or "Not a number", with the limits in
+  the detail line ("Expected 12 to 17.5 g/dL." or "Allowed 3 to 25 g/dL.").
+  The report page and its download are not available while the scan is being
+  rebuilt (see the README); the scan page shows the count. The scan's own
+  result names the branch that judged each value, so the report can show that
+  branch's limits; the stored run does not keep the branch yet.
 - **Configure dialog:** none. `@UVRANGE` exists only as an action tag.
 
 ### `@UVRANGE` JSON keys
@@ -1876,9 +1891,13 @@ These are refused when the rule is saved:
 # refused: must be a number such as 12
 @UVRANGE={"hard":["three",25]}
 
-# A quoted limit is a plain decimal: no exponent, no comma.
+# A limit is written with a point, even for a comma-decimal field.
 # refused: must be a number such as 12
-@UVRANGE={"hard":["0","1e3"]}
+@UVRANGE={"hard":["0","1,5"]}
+
+# A limit of more than 64 characters once written out.
+# refused: is longer than 64 characters
+@UVRANGE={"hard":[0,1e100]}
 
 # blockSave is replaced by softBlock and hardBlock.
 # refused: "blockSave" does not apply
@@ -1888,7 +1907,8 @@ These are refused when the rule is saved:
 # refused: "softBlock" must be off or confirm
 @UVRANGE={"soft":[12,17.5],"softBlock":"hard"}
 
-# hardBlock cannot be off. Use "soft" alone for notes only.
+# hardBlock cannot be off. For notes only, use "soft" with "softBlock":"off";
+# text that is not a number still follows hardBlock.
 # refused: "hardBlock" must be confirm or hard
 @UVRANGE={"hard":[3,25],"hardBlock":"off"}
 

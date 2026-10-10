@@ -46,6 +46,8 @@ class AnnotationRules
 
     /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
     const MAX_RANGE_UNIT = 20;
+    /** Longest @UVRANGE limit, in characters once any exponent is written out. */
+    const MAX_RANGE_BOUND = 64;
 
     /** Where an @UVEXISTS lookup may search: the whole project (default), the
      *  record's own Data Access Group, or the event of the entry being checked. */
@@ -721,12 +723,16 @@ class AnnotationRules
             return ['error' => self::TAG_RANGE . ' needs its settings as JSON, e.g. '
                 . self::TAG_RANGE . '={"soft":[12,17.5],"hard":[3,25]}.'];
         }
-        // A whole number past PHP_INT_MAX stays a string, so it is kept exactly.
         $cfg = json_decode($val, true, 512, JSON_BIGINT_AS_STRING);
         if (!is_array($cfg)) {
             return ['error' => self::TAG_RANGE . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
+        // The same JSON with every number as the text it was typed as. A limit
+        // is read from here, so 0.12345678901234567890 keeps all its digits
+        // instead of becoming the nearest double. Types are still judged on
+        // $cfg: a "unit" typed as 5 is a number, not the string "5".
+        $exact = json_decode(self::quoteJsonNumbers($val), true);
         if (array_key_exists('blockSave', $cfg)) {
             return ['error' => '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" (off or confirm) '
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
@@ -749,11 +755,14 @@ class AnnotationRules
             }
             foreach ([0 => 'Lo', 1 => 'Hi'] as $i => $side) {
                 if ($pair[$i] === null) continue;
-                $b = self::rangeBound($pair[$i]);
+                $typed = isset($exact[$k][$i]) && is_string($exact[$k][$i]) ? $exact[$k][$i] : null;
+                $b = self::rangeBound($pair[$i], $typed);
+                $what = 'the "' . $k . '" ' . ($i === 0 ? 'low' : 'high') . ' limit';
                 if ($b === null) {
-                    return ['error' => 'the "' . $k . '" ' . ($i === 0 ? 'low' : 'high') . ' limit must be a number such as 12 or '
-                        . '17.5 — got ' . json_encode($pair[$i]) . '. Write a very large or very precise number in quotes, '
-                        . 'e.g. "9007199254740993".'];
+                    return ['error' => $what . ' must be a number such as 12 or 17.5 — got ' . json_encode($pair[$i]) . '.'];
+                }
+                if (strlen($b) > self::MAX_RANGE_BOUND) {
+                    return ['error' => $what . ' is longer than ' . self::MAX_RANGE_BOUND . ' characters written out.'];
                 }
                 $out[$prefix . $side] = $b;
             }
@@ -770,55 +779,64 @@ class AnnotationRules
     }
 
     /**
-     * One @UVRANGE limit as an exact decimal string, or null. A whole number
-     * is kept as written; a fraction is written back the shortest way that
-     * reads as the same double (17.5, 0.1, 0.0000001); a string must already
-     * be a plain decimal. A double at or past 2^53 is refused: it has already
-     * lost digits, and the string form keeps them.
+     * One @UVRANGE limit as an exact decimal string, or null. A JSON number is
+     * taken as the text it was typed as ($typed, from quoteJsonNumbers), so
+     * 17.5, 3.0 and 9007199254740993 keep their digits; a string must be a
+     * number too. An exponent is written out digit for digit (1e3 is 1000,
+     * -2.5e-5 is -0.000025), the same way Logic::normalizeNumber reads one
+     * typed into the field.
      */
-    private static function rangeBound($b)
+    private static function rangeBound($b, $typed)
     {
-        if (is_int($b)) return (string) $b;
-        if (is_float($b)) {
-            if (!is_finite($b) || abs($b) >= 9007199254740992.0) return null;
-            // Shortest round-trip form whatever php.ini says: an old
-            // serialize_precision of 17 would turn 0.1 into 0.10000000000000001.
-            $old = function_exists('ini_set') ? ini_set('serialize_precision', '-1') : false;
-            $s = json_encode($b);
-            if ($old !== false) ini_set('serialize_precision', $old);
-            if (!is_string($s)) return null;
-            // PHP writes a small or large double with an exponent (1.0e-7 for
-            // 0.0000001 as typed); spell it out, digit for digit.
-            if (stripos($s, 'e') !== false) $s = self::plainDecimal($s);
-            if ($s === null || !preg_match(Logic::NUM_RE, $s)) return null;
-            return preg_replace('/\.0$/', '', $s);
-        }
-        if (is_string($b)) {
+        if (is_int($b) || is_float($b)) {
+            if (!is_string($typed)) return null;
+            $t = $typed;
+        } elseif (is_string($b)) {
             $t = trim($b);
-            return preg_match(Logic::NUM_RE, $t) ? $t : null;
+        } else {
+            return null;
         }
-        return null;
+        if (preg_match(Logic::NUM_RE, $t)) return Logic::canonicalDecimal($t);
+        return Logic::plainDecimal($t);
     }
 
-    /** "1.5e-7" as "0.00000015", "1.0e+15" as "1000000000000000.0"; null if not that shape. */
-    private static function plainDecimal($s)
+    /**
+     * The JSON text with every number token outside a string wrapped in
+     * quotes, so json_decode hands back each number exactly as typed. Only
+     * called on text that already decodes, so every token it wraps is a valid
+     * JSON number.
+     */
+    private static function quoteJsonNumbers($json)
     {
-        if (!preg_match('/^(-?)([0-9]+)(?:\.([0-9]+))?e([+-]?[0-9]{1,3})$/i', $s, $m)) return null;
-        $digits = $m[2] . (isset($m[3]) ? $m[3] : '');
-        $point = strlen($m[2]) + (int) $m[4];   // digits before the decimal point
-        if ($point <= 0) {
-            $int = '0';
-            $frac = str_repeat('0', -$point) . $digits;
-        } elseif ($point >= strlen($digits)) {
-            $int = $digits . str_repeat('0', $point - strlen($digits));
-            $frac = '0';
-        } else {
-            $int = substr($digits, 0, $point);
-            $frac = substr($digits, $point);
+        $out = '';
+        $n = strlen($json);
+        $inString = false;
+        for ($i = 0; $i < $n; $i++) {
+            $c = $json[$i];
+            if ($inString) {
+                $out .= $c;
+                if ($c === '\\' && $i + 1 < $n) {
+                    $out .= $json[++$i];
+                } elseif ($c === '"') {
+                    $inString = false;
+                }
+                continue;
+            }
+            if ($c === '"') {
+                $inString = true;
+                $out .= $c;
+                continue;
+            }
+            if ($c === '-' || ($c >= '0' && $c <= '9')) {
+                $j = $i;
+                while ($j < $n && strpos('0123456789+-.eE', $json[$j]) !== false) $j++;
+                $out .= '"' . substr($json, $i, $j - $i) . '"';
+                $i = $j - 1;
+                continue;
+            }
+            $out .= $c;
         }
-        $int = ltrim($int, '0');
-        $frac = rtrim($frac, '0');
-        return $m[1] . ($int === '' ? '0' : $int) . '.' . ($frac === '' ? '0' : $frac);
+        return $out;
     }
 
     /**

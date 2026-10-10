@@ -423,6 +423,17 @@ namespace {
     $r=ruleOf(render($m,'fa'),'a_val');
     check('window from its own entry: the page names the field itself (the browser reads no anchor)',($r['windowFromOp']??null)===['ref','a_val',null]);
 
+    // A branched extended rule: each scan finding names the branch that judged
+    // it, so the report shows that branch's message and not the first one's.
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"assert":"[a_val]<[baseline_arm_1][b_open][2]","when":"[key_a]=\'A\'","message":"under"} '
+        .'@UVASSERT={"assert":"[a_val]>[baseline_arm_1][b_open][2]","when":"[key_a]=\'B\'","message":"over"}';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='5';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='20';
+    $res=$m->scanProject(PID);$dims=$m->scanDimensions(PID,$res['rules']??null);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.(isset($v['branch'])?$dims->rule($v['rule'],$v['branch'])['message']:'none');sort($hit);
+    check('branched extended rule: each scan finding names its branch (got '.json_encode($hit).')',$hit===['1/3:over','2/1:under']&&!$res['unconfigurable']);
+
     $goldenPath=__DIR__.'/temporal_golden.json';
     if(in_array('--update-golden',$argv,true))file_put_contents($goldenPath,json_encode($golden,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");
     check('deterministic payload audit reads findings and identities',$golden===json_decode(file_get_contents($goldenPath),true));

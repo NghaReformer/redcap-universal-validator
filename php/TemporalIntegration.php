@@ -96,7 +96,10 @@ trait TemporalIntegration
             $pick=$active?$active[0]:$fallback;
             if($pick===null){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}
             $flat=array_merge($rule,$rule['branches'][$pick]);unset($flat['branches']);
-            return $this->temporalPrepared($flat,$shape,$node,$ctx,false,null);
+            // The chosen branch travels with the flattened rule, so a finding can
+            // name the branch that judged it (ScanDimensions keeps one per branch).
+            $res=$this->temporalPrepared($flat,$shape,$node,$ctx,false,null);$res['branch']=$pick;
+            return $res;
         }
         $prepared=TemporalRules::compile($rule,$resolver,$shape,$ctx,$browser,$mayRead);
         if(!$browser && !$prepared['problems'] && ($prepared['rule']['when']??null)==='1=0')return $prepared;

@@ -65,6 +65,9 @@ final class ModeRegistry
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has no "' . $k . '" list');
                 }
             }
+            if (!isset($m['missingCodes']) || !in_array($m['missingCodes'], ['skip', 'answer'], true)) {
+                throw new \RuntimeException('mode "' . $m['mode'] . '" has no "missingCodes" of skip or answer');
+            }
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
@@ -253,6 +256,16 @@ final class ModeRegistry
     {
         $m = self::mode($mode);
         return (isset($m['hooks'][$phase]) && is_string($m['hooks'][$phase])) ? $m['hooks'][$phase] : null;
+    }
+
+    /**
+     * What a REDCap Missing Data Code in a checked field means to the mode:
+     * 'skip' (the value is not an answer to judge; nothing is checked) or
+     * 'answer' (it counts as filled in, as for @UVREQUIRED).
+     */
+    public static function missingCodes($mode)
+    {
+        return self::mode($mode)['missingCodes'];
     }
 
     /** Whether the mode needs a runtime service ('transport', 'clock'). */

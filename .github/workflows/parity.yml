@@ -67,6 +67,8 @@ jobs:
         run: |
           node tests/range_js.cjs
           node tests/range_dom_js.cjs
+      - name: JS Missing Data Codes (a coded field is not judged in any mode; @UVREQUIRED counts it)
+        run: node tests/missing_codes_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
         run: node tests/alternates_dom_js.cjs
       - name: JS documented outcomes (expect blocks in the example docs)
@@ -195,6 +197,8 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
+      - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
+        run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path
         run: php tests/hook_php.php
       - name: PHP cross-form @UVASSERT (entitled bake, deferred fallback, fail-closed)

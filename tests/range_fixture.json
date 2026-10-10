@@ -20,7 +20,19 @@
     {"name": "spaces are blank",             "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "  ",        "tier": "inert", "reason": null},
     {"name": "spaces around are trimmed",    "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": " 14 ",      "tier": "ok",    "reason": null},
     {"name": "text is not a number",         "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "abc",       "tier": "hard",  "reason": "not-a-number"},
-    {"name": "an exponent is not a number",  "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1",       "tier": "hard",  "reason": "not-a-number"},
+    {"name": "an exponent is that number",   "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1",       "tier": "soft",  "reason": "soft-low"},
+    {"name": "an exponent inside the soft range", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1.45E1", "tier": "ok", "reason": null},
+    {"name": "an exponent past the hard range", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "2.6e+1", "tier": "hard", "reason": "hard-high"},
+    {"name": "a negative exponent",          "spec": {"hardLo": "0.0000001", "hardHi": "0.00025"},                   "value": "1.5e-7",    "tier": "ok",    "reason": null},
+    {"name": "a negative exponent under the hard low", "spec": {"hardLo": "0.0000001", "hardHi": "0.00025"},         "value": "9.9e-8",    "tier": "hard",  "reason": "hard-low"},
+    {"name": "an exponent with a sign and a bare point", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "+.125e2", "tier": "ok", "reason": null},
+    {"name": "an exponent on a comma decimal", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25", "decimalComma": true}, "value": "1,45e1", "tier": "ok", "reason": null},
+    {"name": "an exponent with no digits before it", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "e5", "tier": "hard", "reason": "not-a-number"},
+    {"name": "an exponent with no digits after it", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e", "tier": "hard", "reason": "not-a-number"},
+    {"name": "a four-digit exponent",        "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1000",    "tier": "hard",  "reason": "not-a-number"},
+    {"name": "two exponents",                "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "1e1e1",     "tier": "hard",  "reason": "not-a-number"},
+    {"name": "a trailing point is a number", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "12.",       "tier": "ok",    "reason": null},
+    {"name": "a trailing point under the soft range", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "11.", "tier": "soft", "reason": "soft-low"},
     {"name": "a lone minus is not a number", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "-",         "tier": "hard",  "reason": "not-a-number"},
     {"name": "a lone point is not a number", "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": ".",         "tier": "hard",  "reason": "not-a-number"},
     {"name": "a plus sign is a number",      "spec": {"softLo": "12", "softHi": "17.5", "hardLo": "3", "hardHi": "25"}, "value": "+14",       "tier": "ok",    "reason": null},
@@ -47,5 +59,12 @@
     {"name": "hard only, inside",            "spec": {"hardLo": "0", "hardHi": "10"},                                    "value": "5",         "tier": "ok",    "reason": null},
     {"name": "hard only, outside",           "spec": {"hardLo": "0", "hardHi": "10"},                                    "value": "11",        "tier": "hard",  "reason": "hard-high"},
     {"name": "hard low only",                "spec": {"hardLo": "0"},                                                     "value": "-1",        "tier": "hard",  "reason": "hard-low"}
+  ],
+  "_plainDecimal": "Logic::plainDecimal and QRID_plainDecimal: [input, written out or null].",
+  "plainDecimal": [
+    ["1e3", "1000"], ["2.5E1", "25"], ["2.50e1", "25"], ["-1.5e-7", "-0.00000015"], ["+.125e2", "12.5"],
+    ["5.e0", "5"], ["0.000e5", "0"], ["-0e5", "0"], ["1.23e-2", "0.0123"], ["123.45e1", "1234.5"],
+    ["123.45e-5", "0.0012345"], ["7e+2", "700"], ["00012e-1", "1.2"],
+    ["1e1000", null], ["e5", null], [".e5", null], ["1e", null], ["1e1e1", null], ["1.2.3e1", null], ["--1e1", null], ["1e1.5", null], ["12", null], ["", null], [" 1e3", null]
   ]
 }

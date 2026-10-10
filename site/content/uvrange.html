@@ -1,9 +1,9 @@
 <p>REDCap's number validation takes one minimum and one maximum, and only warns. A lab
 value has two kinds of limit: the range most patients fall in, and the range outside
 which the number is almost certainly a typing or unit error. <code>@UVRANGE</code>
-checks both, live as the value is entered: outside the <strong>soft</strong> range the
-value is unusual and the save asks first; outside the <strong>hard</strong> range it is
-implausible and the save is held.</p>
+checks both when the field is left and again when the form is saved. Outside the
+<strong>soft</strong> range the value is unusual and the save asks first; outside the
+<strong>hard</strong> range it is implausible and the save is held.</p>
 
 <h2>Syntax</h2>
 
@@ -37,10 +37,10 @@ implausible and the save is held.</p>
 </table>
 </div>
 
-<p>Limits are compared as exact decimals, so <code>17.50</code> equals <code>17.5</code>
-and no rounding moves a value across a limit. Write a very large or very precise limit
-in quotes, e.g. <code>"9007199254740993"</code>. <code>blockSave</code> is refused: use
-<code>softBlock</code> and <code>hardBlock</code>.</p>
+<p>Limits and values are compared as exact decimals, so <code>17.50</code> equals
+<code>17.5</code>. A limit is kept exactly as written, quoted or not, so
+<code>0.12345678901234567890</code> keeps all twenty digits. <code>blockSave</code> is
+refused: use <code>softBlock</code> and <code>hardBlock</code>.</p>
 
 <h2>Field types</h2>
 
@@ -57,7 +57,7 @@ accepts anything, so a value that is not a number is reported as implausible.</p
     <code>@UVREQUIRED</code> when it must be filled.</li>
 <li>The note appears when the field is <strong>left</strong>, not while a number is being
     typed. Clicking Save checks the value as it is, left or not.</li>
-<li>A value inside the soft range shows nothing: the tag only speaks about numbers
+<li>A value inside the soft range shows no note. The tag only speaks about numbers
     that need a second look.</li>
 <li>A <strong>calc</strong> field is noted but never holds the save, since nobody typed
     it. A read-only field is the same.</li>
@@ -67,8 +67,12 @@ accepts anything, so a value that is not a number is reported as implausible.</p
     read when the page opens, so that check is advisory and never blocks.</li>
 <li><code>when</code> reads fields of this entry only: event and instance references,
     and the <code>references</code> key, are not supported by this tag yet.</li>
-<li>Exponents (<code>1e3</code>), thousands separators (<code>1,200</code>) and a unit
-    typed into the box are not numbers.</li>
+<li>The exponent form REDCap's number validation accepts is a number:
+    <code>1.5E1</code> is 15. Thousands separators (<code>1,200</code>) and a unit typed
+    into the box are not numbers.</li>
+<li>A field marked with one of the project's <strong>missing data codes</strong>
+    (<code>UNK</code>, <code>-99</code>) holds the code, not a number. It is treated as
+    blank, on the page, in the audit and in the scan.</li>
 </ul>
 
 <h2>Audit</h2>
@@ -76,5 +80,6 @@ accepts anything, so a value that is not a number is reported as implausible.</p
 <p>The post-save audit logs a value outside either range as <code>type: range</code>
 with reason <code>soft-low</code>, <code>soft-high</code>, <code>hard-low</code>,
 <code>hard-high</code> or <code>not-a-number</code>, whatever <code>softBlock</code> says,
-and the Validation scan reports it as an unusual value, an implausible value or not a
-number, with the expected or allowed range.</p>
+and the Validation scan counts it. The scan's report, when it returns, labels each one
+an unusual value, an implausible value or not a number, with the expected or allowed
+range.</p>

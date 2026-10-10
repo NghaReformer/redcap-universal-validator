@@ -352,5 +352,53 @@ const HB = { type: 'range', fields: ['hb'], rangeSoftLo: '12', rangeSoftHi: '17.
   check('compose: range holds on its own', save(env) === 'held' && /plausible/.test(nMsg(env, 'hb').innerHTML));
 }
 
+// ---- 12) branches: their own enforcement, the fallback, a conflict -------------
+{
+  // softBlock belongs to the branch that judged the value.
+  const sex = numEl('sex', '1');
+  const hb = numEl('hb', '20');
+  const base = { rangeSoftLo: '12', rangeSoftHi: '17.5', rangeSoftText: '12 to 17.5 g/dL', rangeHardLo: '3', rangeHardHi: '25' };
+  const env = boot([sex, hb], { rules: [{ type: 'range', fields: ['hb'], branches: [
+    Object.assign({}, base, { when: "[sex]='1'", rangeSoftBlock: 'off' }),
+    Object.assign({}, base, { when: "[sex]='2'" }) ] }] });
+  check('branch with softBlock off: noted, saves without asking', /higher than usual/.test(nMsg(env, 'hb').innerHTML) && save(env) === 'saved');
+  sex.value = '2'; sex.fire('change');
+  check('branch with softBlock confirm: the same value asks', save(env) === 'asked');
+}
+{
+  // A tag without "when" is the fallback: it judges when no condition is true.
+  const sex = numEl('sex', '3');
+  const hb = numEl('hb', '16');
+  const env = boot([sex, hb], { rules: [{ type: 'range', fields: ['hb'], branches: [
+    { when: "[sex]='1'", rangeSoftLo: '13.5', rangeSoftHi: '17.5', rangeSoftText: '13.5 to 17.5 g/dL' },
+    { rangeSoftLo: '12', rangeSoftHi: '15.5', rangeSoftText: '12 to 15.5 g/dL' } ] }] });
+  const msg = nMsg(env, 'hb');
+  check('fallback: no condition true, the fallback judges', /expected 12 to 15\.5 g\/dL/.test(msg.innerHTML));
+  sex.value = '1'; sex.fire('change');
+  check('fallback: a true condition takes over', !shown(msg));
+}
+{
+  // Two conditions true at once: a configuration problem, never a block.
+  const sex = numEl('sex', '1');
+  const hb = numEl('hb', '30');
+  const env = boot([sex, hb], { rules: [{ type: 'range', fields: ['hb'], branches: [
+    { when: "[sex]='1'", rangeHardLo: '3', rangeHardHi: '25' },
+    { when: "[sex]<>'2'", rangeHardLo: '3', rangeHardHi: '20' } ] }] });
+  check('conflict: said plainly', /Validation conflict/.test(nMsg(env, 'hb').innerHTML));
+  check('conflict: never held', save(env) === 'saved');
+  sex.value = '3'; sex.fire('change');
+  check('conflict resolved: the one true branch holds', /allowed|plausible/.test(nMsg(env, 'hb').innerHTML) && save(env) === 'held');
+}
+
+// ---- 13) a soft-only rule still holds a value that is not a number -------------
+{
+  const p = numEl('pain', 'abc');
+  const env = boot([p], { rules: [{ type: 'range', fields: ['pain'], rangeSoftLo: '0', rangeSoftHi: '7', rangeSoftText: '0 to 7' }] });
+  check('soft-only: not a number is red', /^&#10007; This is not a number\./.test(nMsg(env, 'pain').innerHTML));
+  check('soft-only: not a number is held (hardBlock hard)', save(env) === 'held');
+  p.value = '9'; p.fire('change');
+  check('soft-only: outside soft asks', save(env) === 'asked');
+}
+
 console.log('range_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

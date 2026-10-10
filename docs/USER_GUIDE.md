@@ -957,9 +957,22 @@ that blocks the save outside 3 to 25 or for text that is not a number. Set
 of blocking. Write one tag per group with `when` for limits by sex or age
 group. The note appears when the user leaves the field, not while typing. A
 calc field never blocks. The post-save audit logs every value outside either
-range, and the Validation scan lists them as "Unusual value" or "Implausible
-value". Annotation-only; see the README section and
+range, and the Validation scan counts them; its report labels them "Unusual
+value", "Implausible value" or "Not a number". Annotation-only; see the README
+section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**What happens to a field marked with a missing data code?**
+A field marked with one of the project's missing data codes (REDCap's "M"
+button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not
+validate it, and the module treats it as blank: no check-character, format,
+`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW` or `@UVRANGE` verdict, on the
+page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
+an answer, so a field marked "unknown" is not reported as missing. A code in an
+`@UVEXISTS` `match` field or a `@UVWINDOW` "from" date also counts as blank.
+In a `when` condition or an `@UVASSERT` expression the code is read as itself,
+the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
+`when` to leave such records out.
 
 **Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
 In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as

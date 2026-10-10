@@ -112,8 +112,8 @@ Open the browser's network panel and filter on `exists-check`.
 |---|---|---|
 | E1 | On XE-1 save `ux_spec_bl` = S-003 (advisory: red, does not block) | Module log: `invalid-id-saved`, `type: exists`, reason `not-found`, field `ux_spec_bl` |
 | E2 | [optional] Import `ux_spec` = S-999 for XE-2 through the Data Import Tool | Module log: reason `not-found` (if this REDCap version runs the save hook on imports; otherwise E3 finds it) |
-| E3 | Run the Validation scan | XE-1 `ux_spec_bl` with Issue "Not found in its source" (and XE-2 `ux_spec` if E2 ran) |
-| E4 | [only if the project has DAGs] Run the scan confined to one Data Access Group | Every `@UVEXISTS` rule except `ux_dag` is listed as not evaluated: "looks for the value across every Data Access Group". No finding is reported for those rules |
+| E3 | [only if the durable scan is enabled] Run the Validation scan | The panel counts at least 1 finding (2 if E2 ran). The scan page shows counts only while its report is being rebuilt; the Issue label "Not found in its source" is pinned offline by `tests/registry_php.php` |
+| E4 | [only if the project has DAGs and the durable scan is enabled] Run the scan as a user in one Data Access Group | The count includes no finding from a `@UVEXISTS` rule other than `ux_dag`: those rules are not evaluated in a group-confined scan. The "looks for the value across every Data Access Group" wording is pinned offline by `tests/exists_php.php` |
 | E5 | [only if the durable scan is enabled] Start a durable scan, save any record while it runs, let it finish | Coverage is manifest-complete, and the reason says records changed during the run and `@UVEXISTS` answers depend on other records |
 
 ## Section F: configuration errors
@@ -194,11 +194,11 @@ Setup:
 | I12 | Source project: also tick "Also answer survey respondents". Enable `uv_exists_cross` as a survey, open it, `uxc_survey` = LS-001, then LS-999 | Found, then not found, no record named; the source project's log shows channel `survey`, user `survey` |
 | I13 | Source project settings: try to save a second row for 149, a row with field `nope`, and a row with surveys ticked under "Only users who have rights" | The dialog refuses each and names the row |
 | I14 | Back to "Only users who have rights". Import `uxc_spec` = LS-999 for XE-1 with the Data Import Tool (the form itself blocks that save) | Module log of pid 149: `invalid-id-saved`, `type: exists`, reason `not-found`; source project log: channel `audit` |
-| I15 | Run the Validation scan in pid 149 | XE-1 `uxc_spec` with "Not found in its source"; one `uv-exists-index-read` line per searched field in the source project's log, none per record |
+| I15 | [only if the durable scan is enabled] Run the Validation scan in pid 149 | The panel counts the `uxc_spec` finding; one `uv-exists-index-read` line per searched field in the source project's log, none per record |
 | I16 | [optional] Control Center: set "lookups one searched project answers per minute" to 2, then enter four values in `uxc_spec` within a minute | The third and fourth answer "could not check (too many lookups in the other project in the last minute)". The source project's log shows two `found` lines and one `throttled` line, not two. Clear the setting after |
-| I17 | [only if the source project has DAGs] Put the test account in a group there; `uxc_spec` = a specimen of another group | Not found (the lookup stays in the account's group there). A scan then lists the rule as not evaluated, "Data Access Group of project SRC" |
+| I17 | [only if the source project has DAGs] Put the test account in a group there; `uxc_spec` = a specimen of another group | Not found (the lookup stays in the account's group there). A scan then counts no finding for `uxc_spec`; the "Data Access Group of project SRC" wording is pinned offline by `tests/exists_cross_php.php` |
 | I18 | [only if I17 ran] Same account, still in the group there: import `uxc_spec` = LS-001 for XE-1 | Module log of pid 149: `uvalidate-unconfigurable` for `uxc_spec`, "your account is in a Data Access Group of the other project, so the check after saving cannot see values saved in its other groups". Source project log: channel `audit`, result `refused`. Take the account out of the group after |
-| I19 | Second account (rights in 149 only, and to the Validation scan): open the scan report from I15 | The report is not shown: "this scan looks values up in project SRC, which does not answer your lookups, so its results are not shown to you" |
+| I19 | [deferred until the scan report page returns] Second account (rights in 149 only, and to the Validation scan): open the scan report from I15 | The report is not shown: "this scan looks values up in project SRC, which does not answer your lookups, so its results are not shown to you". Pinned offline by `tests/exists_cross_php.php` meanwhile |
 
 ---
 
@@ -210,7 +210,7 @@ Setup:
 | 2 | Section B: no request while typing; one per change; cache | ☐ |
 | 3 | Section C: "could not check" never blocks, rights respected | ☐ |
 | 4 | Section D: surveys opt-in, no record named, no field named in errors | ☐ |
-| 5 | Section E: audit and scan agree with the browser | ☐ |
+| 5 | Section E: the audit agrees with the browser; the scan counts the findings | ☐ |
 | 6 | Section G: composition and the `unique-check` gate | ☐ |
 | 7 | Section H: choice fields, reset, autocomplete, branches, groups | ☐ |
 | 8 | Section I: another project. Agreement, rights there, probe log, surveys, audit, scan. This is also the pilot gate for `getProjectSetting`/`getSubSettings` with another project id, `log()` with `project_id`, the `project-id` setting type, `isModuleEnabled`, `getProjectStatus`, `\Project` event and group names, and `User::getRights` for another project | ☐ |

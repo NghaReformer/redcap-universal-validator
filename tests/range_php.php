@@ -39,7 +39,18 @@ foreach ($fx['cases'] as $c) {
 check('normalizeNumber: blank is ""', Logic::normalizeNumber("  \t") === '');
 check('normalizeNumber: comma decimal', Logic::normalizeNumber('17,5', true) === '17.5');
 check('normalizeNumber: comma on a point field is not a number', Logic::normalizeNumber('17,5') === null);
-check('normalizeNumber: an exponent is not a number', Logic::normalizeNumber('1e3') === null);
+check('normalizeNumber: an exponent is written out', Logic::normalizeNumber(' 2.5E1 ') === '25');
+check('normalizeNumber: text is not a number', Logic::normalizeNumber('1e3x') === null);
+check('plainDecimal fixture loads', isset($fx['plainDecimal']) && count($fx['plainDecimal']) > 15);
+foreach ($fx['plainDecimal'] as $pd) {
+    $got = Logic::plainDecimal($pd[0]);
+    check('plainDecimal(' . json_encode($pd[0]) . ') => ' . json_encode($pd[1]) . ', got ' . json_encode($got), $got === $pd[1]);
+}
+check('plainDecimal: a three-digit exponent', Logic::plainDecimal('1e999') === '1' . str_repeat('0', 999));
+foreach ([['+5', '5'], ['5.', '5'], ['.5', '0.5'], ['-0.0', '0.0'], ['-0', '0'], ['007.50', '7.50'], ['-12.30', '-12.30'], ['0', '0']] as $cd) {
+    check('canonicalDecimal(' . $cd[0] . ') => ' . $cd[1], Logic::canonicalDecimal($cd[0]) === $cd[1]);
+}
+check('canonicalDecimal: not a number is null', Logic::canonicalDecimal('1e3') === null && Logic::canonicalDecimal('.') === null);
 check('normalizeNumber: kept as typed', Logic::normalizeNumber(' 0014.50 ') === '0014.50');
 check('numCompare: 2.50 = 2.5', Logic::numCompare('2.50', '2.5') === 0);
 check('numCompare: beyond 2^53', Logic::numCompare('9007199254740993', '9007199254740992') > 0);
@@ -73,10 +84,24 @@ check('hard only', !isset($f['error']) && $f['rangeHardLo'] === '0' && $f['range
 $f = frag('@UVRANGE={"soft":[1,2]}');
 check('soft only', !isset($f['error']) && $f['rangeSoftLo'] === '1' && !isset($f['rangeHardLo']));
 $f = frag('@UVRANGE={"hard":[3.0,0.1]}');
-check('3.0 is kept as 3 (a float written back the shortest way)', isset($f['error']) && strpos($f['error'], '(3) is above its high limit (0.1)') !== false);
+check('3.0 is kept as typed', isset($f['error']) && strpos($f['error'], '(3.0) is above its high limit (0.1)') !== false);
 $f = frag('@UVRANGE={"hard":[0.1,0.30000000000000004]}');
-check('a float keeps its shortest round-trip digits', !isset($f['error']) && $f['rangeHardLo'] === '0.1'
+check('a fraction keeps the digits typed', !isset($f['error']) && $f['rangeHardLo'] === '0.1'
     && $f['rangeHardHi'] === '0.30000000000000004');
+// Unquoted, these used to become the nearest double without a word.
+$f = frag('@UVRANGE={"hard":[0.12345678901234567890,123456789012345.68]}');
+check('more than 15 significant digits, unquoted: kept exactly (got ' . json_encode($f) . ')', !isset($f['error'])
+    && $f['rangeHardLo'] === '0.12345678901234567890' && $f['rangeHardHi'] === '123456789012345.68');
+$f = frag('@UVRANGE={"hard":[0,2.00000000000000001]}');
+check('2.00000000000000001 is not 2', !isset($f['error']) && $f['rangeHardHi'] === '2.00000000000000001');
+$f = frag('@UVRANGE={"hard":[-0.0,"+5"],"soft":[".5","5."]}');
+check('limits are written the plain way: no +, no bare point, zero unsigned', !isset($f['error'])
+    && $f['rangeHardLo'] === '0.0' && $f['rangeHardHi'] === '5' && $f['rangeSoftLo'] === '0.5' && $f['rangeSoftHi'] === '5');
+$f = frag('@UVRANGE={"hard":[0,10],"unit":"x","message":"a \"quoted\" 5 and -3.5e2 in text"}');
+check('numbers inside strings are left alone', !isset($f['error']) && $f['message'] === 'a "quoted" 5 and -3.5e2 in text');
+$f = frag('@UVRANGE={"message":"a \"5\" b\\\\","hard":[0,1.10]}');
+check('an escaped quote before the limits does not end the string (got ' . json_encode($f) . ')', !isset($f['error'])
+    && $f['message'] === 'a "5" b\\' && $f['rangeHardHi'] === '1.10');
 $f = frag('@UVRANGE={"hard":["0.1000000000000000000001","9007199254740993"]}');
 check('quoted limits are kept exactly', !isset($f['error']) && $f['rangeHardLo'] === '0.1000000000000000000001'
     && $f['rangeHardHi'] === '9007199254740993');
@@ -99,16 +124,22 @@ $f = frag('@UVRANGE={"hard":[-2.5e-5,1e3],"soft":[-1.25E-5,0.000125]}');
 check('a JSON number with an exponent is that number', !isset($f['error']) && $f['rangeHardLo'] === '-0.000025'
     && $f['rangeHardHi'] === '1000' && $f['rangeSoftLo'] === '-0.0000125' && $f['rangeSoftHi'] === '0.000125');
 $f = frag('@UVRANGE={"hard":[0,1e15]}');
-check('a large whole double below 2^53 is spelled out', !isset($f['error']) && $f['rangeHardHi'] === '1000000000000000');
+check('1e15 is spelled out', !isset($f['error']) && $f['rangeHardHi'] === '1000000000000000');
 $f = frag('@UVRANGE={"hard":[0,1.0e16]}');
-check('a double at or past 2^53 is refused', isset($f['error']) && strpos($f['error'], 'the "hard" high limit must be a number') !== false);
+check('1.0e16 is spelled out too: no double in between', !isset($f['error']) && $f['rangeHardHi'] === '10000000000000000');
+$f = frag('@UVRANGE={"hard":[0,9007199254740993.5]}');
+check('a fraction past 2^53 is kept exactly', !isset($f['error']) && $f['rangeHardHi'] === '9007199254740993.5');
+$f = frag('@UVRANGE={"hard":["1e3","2.5E4"]}');
+check('a quoted exponent is that number too', !isset($f['error']) && $f['rangeHardLo'] === '1000' && $f['rangeHardHi'] === '25000');
+$f = frag('@UVRANGE={"hard":[0,"' . str_repeat('9', 64) . '"]}');
+check('a limit of exactly 64 characters is fine', !isset($f['error']));
 
-// serialize_precision 17 (old php.ini) must not change the digits kept.
+// serialize_precision 17 (old php.ini) cannot change the digits kept: no
+// double is ever written back.
 $old = ini_get('serialize_precision');
 ini_set('serialize_precision', '17');
 $f = frag('@UVRANGE={"hard":[0.1,17.5]}');
 check('serialize_precision 17: 0.1 stays 0.1', !isset($f['error']) && $f['rangeHardLo'] === '0.1' && $f['rangeHardHi'] === '17.5');
-check('serialize_precision is restored', ini_get('serialize_precision') === '17');
 ini_set('serialize_precision', $old);
 
 // Refusals: every one names the problem.
@@ -124,9 +155,10 @@ $refusals = [
     'hard a number'           => ['@UVRANGE={"hard":5}', '"hard" must be a list of two limits'],
     'both open'               => ['@UVRANGE={"soft":[null,null]}', '"soft" needs at least one limit'],
     'limit a word'            => ['@UVRANGE={"hard":["low",10]}', 'the "hard" low limit must be a number'],
-    'limit an exponent string' => ['@UVRANGE={"hard":["1e3",10]}', 'the "hard" low limit must be a number'],
-    'limit an exponent number' => ['@UVRANGE={"hard":[0,1e300]}', 'the "hard" high limit must be a number'],
-    'limit a float past 2^53' => ['@UVRANGE={"hard":[0,9007199254740993.5]}', 'Write a very large or very precise number in quotes'],
+    'limit a hex string'      => ['@UVRANGE={"hard":["0x10",10]}', 'the "hard" low limit must be a number'],
+    'limit an exponent too long' => ['@UVRANGE={"hard":[0,1e300]}', 'the "hard" high limit is longer than 64 characters'],
+    'limit 65 characters'     => ['@UVRANGE={"hard":[0,"' . str_repeat('9', 65) . '"]}', 'the "hard" high limit is longer than 64 characters'],
+    'limit a 4-digit exponent' => ['@UVRANGE={"hard":[0,"1e1000"]}', 'the "hard" high limit must be a number'],
     'limit true'              => ['@UVRANGE={"hard":[true,10]}', 'the "hard" low limit must be a number'],
     'limit a comma string'    => ['@UVRANGE={"hard":["17,5",20]}', 'the "hard" low limit must be a number'],
     'hard low above high'     => ['@UVRANGE={"hard":[25,3]}', 'the "hard" low limit (25) is above its high limit (3)'],

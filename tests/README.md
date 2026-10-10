@@ -26,6 +26,8 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
+php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
@@ -227,10 +229,11 @@ the Configure dialog checks of the alias and agreement rows.
 give the same level (ok, soft, hard, inert) and reason. Cases cover values on
 and next to each limit, `17.50` against `17.5`, numbers past 2^53 and long
 fractions, open limits, a rule with only one level, comma decimals on comma
-fields and commas on point fields, and text that is not a number (`1e1`, `-`,
-`.`, `1,200`). `range_php.php` also covers the grammar: exact limit strings
-from JSON integers, floats (including the exponent form PHP prints for a small
-double) and quoted decimals, and every refusal.
+fields and commas on point fields, exponents written out (`2.5E1` is 25), and
+text that is not a number (`-`, `.`, `1,200`, `1e1000`). `range_php.php` also
+covers the grammar: limits kept exactly as typed, quoted or not (the JSON is
+read a second time with every number quoted), exponents written out, the
+64-character cap, and every refusal.
 
 - `range_dom_js.cjs` boots the browser rule on a stub page: the note waits for
   the field to be left, typing clears it, each level blocks per `softBlock` and
@@ -239,7 +242,23 @@ double) and quoted decimals, and every refusal.
 - `range_module_php.php` covers the server side: which fields may carry the
   tag, comma-decimal fields, the notes' limit texts, the audit reasons, the
   scan, its labels and detail lines, and the detail line of a branched rule,
-  taken from the branch that judged the value.
+  taken from the branch that judged the value. It also covers the fallback
+  branch, two true conditions (a rule problem, never a finding), the survey
+  page's baked-in branch choice, and the branch on a branched `@UVUNIQUE`
+  duplicate.
+
+## `missing_codes_*` — Missing Data Codes
+
+A field marked with one of the project's missing data codes holds the code.
+Each mode says in `php/modes.json` (`missingCodes`) what that means to it:
+`skip` treats the field as blank, `answer` (`@UVREQUIRED`) counts it as filled
+in. `missing_codes_dom_js.cjs` checks every browser factory with a code, then
+an ordinary bad value, then the code again, plus spaces around a code, case,
+a `@UVWINDOW` "from" date and an `@UVEXISTS` `match` field holding a code.
+`missing_codes_php.php` checks REDCap's "CODE, Label" lines, the registry, the
+post-save audit with and without codes configured, the scan (two records
+marked `UNK` are not duplicates), the `unique-check` and `exists-check`
+endpoints, and the page config (codes, never their labels).
 
 ## `hook_php.php` — the audit-path contract
 

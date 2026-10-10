@@ -674,17 +674,19 @@ slip:
   (including comma decimals), calc fields and sliders. A calc field and a
   read-only field never block a save.
 - **Exact.** Limits and values are compared as decimals, digit by digit, so
-  `17.50` equals `17.5`. Exponents, thousands separators and units typed into
-  the box are not numbers. Blank checks nothing.
+  `17.50` equals `17.5`, and a limit is kept exactly as written, quoted or not.
+  `1.5E1` is 15, as REDCap's number validation reads it. Thousands separators
+  and units typed into the box are not numbers. Blank checks nothing, and so
+  does a missing data code (`UNK`, `-99`).
 - **Branch by group.** Several `@UVRANGE` tags with `when` give different
   limits by sex, age group or anything else on the form.
 - **The note waits.** It appears when the field is left, not while a number is
   being typed.
 - **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
   `soft-high`, `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock`
-  says. The Validation scan reports "Unusual value", "Implausible value" or "Not
-  a number", with the limits in the detail line. Configure via field annotation
-  only.
+  says. The Validation scan counts the same findings; its report (see below)
+  labels them "Unusual value", "Implausible value" or "Not a number", with the
+  limits in the detail line. Configure via field annotation only.
 
 ## The Validation scan — checking data that is already saved
 
@@ -880,6 +882,10 @@ check-character primitive, but the full runtime path the module actually uses:
   field to be left, each level's block, calc and read-only fields never block)
   and `tests/range_module_php.php` the server side: eligible fields, the audit,
   the scan and its per-branch detail line.
+- `tests/missing_codes_dom_js.cjs` / `tests/missing_codes_php.php` — a field
+  marked with a missing data code is not judged by any mode, on the page, in
+  the audit, in the scan or by the lookup endpoints; `@UVREQUIRED` counts it
+  as an answer.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -928,6 +934,8 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
+php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)
