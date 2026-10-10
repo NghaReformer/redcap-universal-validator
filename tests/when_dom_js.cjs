@@ -369,6 +369,9 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   check('D-M-Y: a partly typed date is compared as typed', t.sid.__qridInvalid === false);
   d.value = '31-12-2025'; d.fire('change');
   check('D-M-Y: day and month do not decide the order', t.sid.__qridInvalid === false);
+  d = date('visit', '15-03');
+  t = gated("[visit]<>''", [d], { visit: ['date', 'dmy'] });
+  check('D-M-Y: a partly typed date is not blank', t.sid.__qridInvalid === true);
 
   d = date('visit', '15-03-2026');
   t = gated("[visit]>'2026-03-01'", [d], undefined);
@@ -383,6 +386,12 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   check('D-M-Y datetime: compared as Y-M-D H:M', t.sid.__qridInvalid === true);
   d.value = '15-03-2026 13:59'; d.fire('change');
   check('D-M-Y datetime: a minute earlier is earlier', t.sid.__qridInvalid === false);
+  d = date('seen_at', '15-03-2026 14:30');
+  t = gated("[seen_at]='2026-03-15 14:30'", [d], { seen_at: ['datetime', 'dmy'] });
+  check('D-M-Y datetime: equal to its stored form, which has no seconds', t.sid.__qridInvalid === true);
+  d = date('seen_s', '15-03-2026 14:30:05');
+  t = gated("[seen_s]='2026-03-15 14:30:05'", [d], { seen_s: ['datetime_seconds', 'dmy'] });
+  check('D-M-Y datetime with seconds: equal to its stored form', t.sid.__qridInvalid === true);
 
   const a = date('adm', '20-03-2026'), b = date('dis', '03-10-2026');
   t = gated("[dis]>=[adm]", [a, b], { adm: ['date', 'dmy'], dis: ['date', 'mdy'] });
