@@ -19,6 +19,7 @@ node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDCap's log
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
@@ -187,8 +188,14 @@ server clock.
 - `window_module_php.php` covers the server side: field and dictionary checks,
   the four outcomes of the page fold for a `from` date (live, snapshot,
   withheld, unresolved), `config.clock`, the audit reasons, re-auditing on a
-  save of the `from` form, scan labels and detail lines, and the durable scan
-  clock taken from the run's start time.
+  save of the `from` form, scan labels and detail lines, a clock read by each
+  part of a durable scan, and the parts judged against today: the dictionary
+  checks for `today`, `now` and fixed dates, the week start, `windowSaved`, and
+  the audit and the scan judging each value against the day it was saved.
+- `value_stamps_php.php` reads a mock of REDCap's log through
+  `php/ValueStamps.php`: the `data_values` format with repeating instances,
+  checkbox and ambiguous lines, the newest row winning, paging and its cap, the
+  record ID compared as bytes, the time zones, and the records held in memory.
 
 ## `lookup_php.php` and `lookup_js.cjs` — how lookups compare values
 

@@ -926,8 +926,11 @@ than the server, name it in the project setting **Time zone for @UVWINDOW
 `from` date on another form only advises, because that form could change while
 this one is open. On a survey, or for a user without rights to that form, the
 `from` date is not sent to the page; the page then checks only `notFuture`, and
-the window is checked when the record is saved. Annotation-only; see the README
-section and
+the window is checked when the record is saved. The same tag checks dates
+counted from today (`"from":"today","window":[-7,0]`), calendar periods
+(`"period":"month","offset":-1` for last month) and `"notPast":true`; those parts
+judge a saved value against the day it was saved, so an old record never turns
+red because time has passed. Annotation-only; see the README section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
 
 **Can a specimen ID on a result form be checked against the registered specimens?**

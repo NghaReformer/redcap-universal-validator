@@ -1,19 +1,29 @@
 <p>REDCap's date validation can set a fixed minimum and maximum date, and it only warns.
 It cannot say "21 to 35 days after this participant's baseline visit", and it has no
 notion of today. <code>@UVWINDOW</code> checks a date against a <strong>window around
-another date</strong>, and/or that it is <strong>not in the future</strong>, live as the
-date is entered.</p>
+another date</strong>, today or a fixed date, or a <strong>calendar period</strong> such as
+last month, and/or that it is <strong>not in the future</strong> or <strong>not in the
+past</strong>, live as the date is entered.</p>
 
 <h2>Syntax</h2>
 
 <p><strong>JSON form only.</strong> A <code>from</code> date with a <code>window</code>,
-or <code>"notFuture": true</code>, or both.</p>
+a <code>period</code>, <code>"notFuture": true</code> or <code>"notPast": true</code>, or
+several of them.</p>
 
 <pre><code>@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"unit":"days"}
 
 @UVWINDOW={"from":"[dob]","window":[0,null]}
 
 @UVWINDOW={"notFuture":true}
+
+@UVWINDOW={"notPast":true}
+
+@UVWINDOW={"from":"today","window":[-7,0]}
+
+@UVWINDOW={"period":"month","offset":-1}
+
+@UVWINDOW={"period":"week","from":"[visit_date]","weekStart":"sunday"}
 
 @UVWINDOW={"from":"[enrol_date]","window":[-7,7],"unit":"days","notFuture":true,
            "message":"The screening visit must be within a week of enrolment.",
@@ -24,14 +34,27 @@ or <code>"notFuture": true</code>, or both.</p>
 <thead><tr><th>Key</th><th>Meaning</th></tr></thead>
 <tbody>
 <tr><td><code>from</code></td><td>The date the window counts from: one field reference such as
-    <code>[visit_date_bl]</code></td></tr>
+    <code>[visit_date_bl]</code>, <code>"today"</code> (date fields), <code>"now"</code>
+    (datetime fields) or a Y-M-D date such as <code>"2026-01-01"</code></td></tr>
 <tr><td><code>window</code></td><td><code>[earliest, latest]</code> in whole units from the
     <code>from</code> date, both ends included. <code>null</code> leaves an end open;
     negative numbers count back</td></tr>
-<tr><td><code>unit</code></td><td><code>days</code> (default) or <code>weeks</code>; on datetime
-    fields also <code>minutes</code> or <code>hours</code></td></tr>
+<tr><td><code>unit</code></td><td><code>days</code> (default), <code>weeks</code>, <code>months</code>
+    or <code>years</code>; on datetime fields also <code>minutes</code> or <code>hours</code>.
+    Months and years follow the calendar: one month after January 31 is the last day of
+    February</td></tr>
+<tr><td><code>period</code></td><td><code>week</code>, <code>month</code>, <code>quarter</code> or
+    <code>year</code>: the period holding today, or the <code>from</code> date. Not with
+    <code>window</code></td></tr>
+<tr><td><code>offset</code></td><td>Moves the period: <code>-1</code> for the one before,
+    <code>[-3,-1]</code> for the three before it</td></tr>
+<tr><td><code>weekStart</code></td><td><code>monday</code> (default, ISO 8601) or
+    <code>sunday</code>; the project setting <em>First day of the week for @UVWINDOW</em>
+    sets the default</td></tr>
 <tr><td><code>notFuture</code></td><td><code>true</code>: the date may not be after today
     (a datetime: after now)</td></tr>
+<tr><td><code>notPast</code></td><td><code>true</code>: the date may not be before today
+    (a datetime: before now)</td></tr>
 <tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
     <code>caseSensitive</code></td><td>As for the other tags</td></tr>
 <tr><td><code>references</code></td><td>Named bindings that <code>when</code> reads as
@@ -82,6 +105,17 @@ message shows the allowed dates the way the field shows them.</p>
     multi-page survey, put the <code>from</code> field on the same page.</li>
 </ul>
 
+<h2>Which day counts as today</h2>
+
+<p>A window counted from <code>today</code> or <code>now</code>, a period without
+<code>from</code>, and <code>notPast</code> are judged against the day the value was saved.
+The form judges only a value that is new or changed, so an old record never turns red
+because time has passed. After a save, and in the Validation scan, the module reads
+REDCap's own log for the day each value was saved; when the log does not show it, that
+part is reported as not checked. Use these rules for timeliness. Count a clinical window
+from a date in the record, such as the interview date: data entered late from paper, or
+synced late from the Mobile App, is saved days after the visit.</p>
+
 <div class="note">
 <p>With event and instance references enabled in the project settings,
 <code>from</code> may name another event, e.g.
@@ -91,6 +125,7 @@ message shows the allowed dates the way the field shows them.</p>
 <h2>Audit</h2>
 
 <p>The post-save audit logs a violation as <code>type: window</code> with reason
-<code>window-early</code>, <code>window-late</code> or <code>future</code>, and the
-Validation scan reports it retrospectively. A scan judges "future" against the day it
-runs, so it only flags a date that is still in the future on that day.</p>
+<code>window-early</code>, <code>window-late</code>, <code>future</code> or
+<code>past</code>, and the Validation scan reports it retrospectively. A part judged
+against today uses the day the value was saved, which the log entry names as
+<code>as_of</code> and the scan report as "Judged against &lt;day&gt;".</p>

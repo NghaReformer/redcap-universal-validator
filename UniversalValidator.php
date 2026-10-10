@@ -4510,7 +4510,7 @@ class UniversalValidator extends AbstractExternalModule
         $unit = isset($frag['windowUnit']) ? $frag['windowUnit'] : null;
         if ($tv['type'] === 'date' && ($unit === 'minutes' || $unit === 'hours')) {
             return ['error' => '"unit" "' . $unit . '" needs a datetime field — this field holds dates without a time, '
-                . 'so use days or weeks.', '_tag' => AnnotationRules::TAG_WINDOW];
+                . 'so use days, weeks, months or years.', '_tag' => AnnotationRules::TAG_WINDOW];
         }
         // A "from" of today, now or a written date: of the field's kind, except
         // for a period, which reads only the anchor's day.

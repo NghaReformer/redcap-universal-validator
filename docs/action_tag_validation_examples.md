@@ -1257,14 +1257,23 @@ rule; test its live filtering on the actual data-entry form or survey.
 REDCap's date validation takes a fixed minimum and maximum date, and only warns.
 It cannot say "21 to 35 days after this participant's baseline visit", and it has
 no idea what today is. `@UVWINDOW` checks a date against a window counted from
-another date, and/or that the date is not after today. JSON form only.
+another date, from today or from a fixed date, or against a calendar period such
+as last month. It can also check that the date is not after today, or not before
+it. JSON form only.
 
-### Level 1 — not in the future
+### Level 1 — not in the future, or not in the past
 
 ```text
 # on: visit_date — a visit cannot be recorded before it happens
 @UVWINDOW={"notFuture":true}
+
+# on: next_appointment — an appointment cannot be booked in the past
+@UVWINDOW={"notPast":true}
 ```
+
+`notPast` refuses a date before today, and on a datetime field a time before
+now. With both, only today passes. A saved value is judged against the day it
+was saved (see [Which day counts as today](#which-day-counts-as-today)).
 
 "Today" is the server's date, never the date on the user's computer, so a
 laptop whose clock runs a day ahead cannot accept tomorrow's date. The page gets
@@ -1303,14 +1312,67 @@ without the other field's name. The example assumes a D-M-Y field.
 
 # on: sample_taken_at (datetime) — within 6 hours after the dose
 @UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours"}
+
+# on: visit_m6 — 6 to 7 calendar months after enrolment
+@UVWINDOW={"from":"[enrol_date]","window":[6,7],"unit":"months"}
 ```
 
 `null` leaves that end open; one end must be a number. A negative bound counts
-back from the `from` date. `unit` is `days` or `weeks` on a date field, and also
-`minutes` or `hours` on a datetime field. Bounds are whole numbers up to 36,500
-either way.
+back from the `from` date. `unit` is `days`, `weeks`, `months` or `years` on a
+date field, and also `minutes` or `hours` on a datetime field. Bounds are whole
+numbers up to 36,500 either way.
 
-### Level 4 — both checks, message and enforcement
+`months` and `years` count calendar months. When the day does not exist in the
+target month, the last day of that month is used: one month after 2026-01-31 is
+2026-02-28, and one year after 2024-02-29 is 2025-02-28. On a datetime field the
+time of day is kept.
+
+### Level 4 — counted from today, now or a fixed date
+
+```text
+# on: last_period_date — within the last 280 days
+@UVWINDOW={"from":"today","window":[-280,0]}
+
+# on: dose_time (datetime) — within the last 2 hours
+@UVWINDOW={"from":"now","window":[-2,0],"unit":"hours"}
+
+# on: consent_date — on or after the day the protocol opened
+@UVWINDOW={"from":"2026-01-01","window":[0,null]}
+```
+
+`today` is the server's date and goes on a date field; `now` is the server's
+time and goes on a datetime field. A fixed date is written Y-M-D, with a time
+(`2026-01-01 08:00`) when the field holds dates with a time. A window counted
+from `now` gets the same small margin as `notFuture` at both ends, so REDCap's
+Now button passes.
+
+### Level 5 — calendar periods
+
+```text
+# on: stock_count_date — in the current month
+@UVWINDOW={"period":"month"}
+
+# on: report_date — last week, Monday to Sunday
+@UVWINDOW={"period":"week","offset":-1}
+
+# on: review_date — in one of the three months before this one
+@UVWINDOW={"period":"month","offset":[-3,-1]}
+
+# on: lab_date — in the same week as the visit, weeks starting on Sunday
+@UVWINDOW={"period":"week","from":"[visit_date]","weekStart":"sunday"}
+```
+
+`period` is `week`, `month`, `quarter` or `year`. Without `from` it is the period
+holding today; with `from` it is the period holding that date. `offset` moves it
+by whole periods: `-1` is the one before, `[-3,-1]` the three before it, up to
+1,200 either way. Weeks start on Monday (ISO 8601) unless the project setting
+"First day of the week for @UVWINDOW" or the rule's `weekStart` says Sunday. A
+period cannot be combined with `window`. The message names the period and its
+dates in the field's format:
+
+> ✗ This date must be in last month: 01-09-2026 to 30-09-2026.
+
+### Level 6 — both checks, message and enforcement
 
 ```text
 # on: screening_date — within a week of enrolment, never in the future, hard block
@@ -1322,7 +1384,7 @@ either way.
 When both checks fail, the page shows the "future" message, because a date in the
 future is the more likely typing slip.
 
-### Level 5 — gated, or counted from another event
+### Level 7 — gated, or counted from another event
 
 ```text
 # on: visit_date — the window applies to scheduled visits only
@@ -1336,6 +1398,34 @@ The second form, a `from` date in another event or instance, needs **event and
 instance references** enabled in the project settings (see
 [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)).
 Without the feature, `from` must be a field of the same event.
+
+### Which day counts as today
+
+A window counted from `today` or `now`, a period without `from`, and `notPast`
+are judged against the day the value was saved, not the day someone looks at it.
+
+- On the form, only a value that is new or changed is judged. A saved value
+  shows nothing when the record is opened again, so a visit date entered last
+  month does not turn red because a month has passed. A value filled in by
+  `@TODAY` or `@NOW` counts as new.
+- After a save, the module reads REDCap's own log to find when each value was
+  saved, and judges the value against that day. Saving another field of the
+  record later does not change the verdict.
+- The Validation scan does the same, and its detail line names the day:
+  "Judged against 2026-10-02, when this value was saved."
+- When the log does not show when a value was saved (it came in some way REDCap
+  did not log, or more than 5,000 saves of the record ago), that part of the
+  rule is reported as not checked for the value, with the reason.
+- `notFuture` uses the same day where the log shows it, so a scan still finds a
+  date that was in the future when it was saved. Where the day is not known it
+  uses today, which can miss such a date but never reports one that was fine.
+
+Use these rules to check timeliness, that data is entered close to when it
+happened. For a clinical window, count from a date in the record, such as the
+interview date: data entered late from paper, or synced late from the REDCap
+Mobile App, is saved days after the visit, and a window counted from today
+would refuse it. `"blockSave":"confirm"` lets staff save such data after a
+warning.
 
 ### Semantics worth knowing
 
@@ -1390,8 +1480,9 @@ Without the feature, `from` must be a field of the same event.
   day. A computer clock moved forward while the form is open moves it too; the
   post-save audit reads the server clock and still logs the date. The date is
   taken in the server's time zone unless the project setting **Time zone for
-  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. A page left
-  open across a daylight-saving change follows it.
+  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. The same
+  setting decides `notPast` and a `from` of `today` or `now`. A page left open
+  across a daylight-saving change follows it.
 - **A date and time gets a small margin.** It may run up to 120 seconds past
   the server's "now", on the page, in the post-save audit and in the scan. On the
   page the margin also covers how far the computer's clock runs ahead of the
@@ -1403,28 +1494,39 @@ Without the feature, `from` must be a field of the same event.
   time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
   server's. `notFuture` on a field filled by one of the last four is refused when
   that zone runs ahead of the rule's time zone at any time of the year: in New
-  York, a UTC "now" is four hours in the future in summer and five in winter. A
-  rule that also has a window keeps the window; only `notFuture` is dropped, and
-  staff see why on the form.
+  York, a UTC "now" is four hours in the future in summer and five in winter.
+  `notPast` is refused when that zone runs behind, and a `from` of `today` or
+  `now` when it differs either way. A rule that also has a window or period
+  counted from a field or a fixed date keeps it; only the parts judged against
+  the clock are dropped, and staff see why on the form.
 - **Hours and minutes count wall-clock time.** `"window":[0,6],"unit":"hours"`
   compares the times as written, so across a daylight-saving change the window
   spans 5 or 7 hours of elapsed time.
 - **The server checks every save.** The post-save audit logs a violation as
-  `type: window` with reason `window-early`, `window-late` or `future`. Saving
-  only the form that holds the `from` date re-checks the windows counted from it.
+  `type: window` with reason `window-early`, `window-late`, `future` or `past`,
+  and `as_of` names the day a part judged against today used. Saving only the
+  form that holds the `from` date re-checks the windows counted from it.
 - **The Validation scan** reports the same findings, with "Date outside allowed
-  window" or "Date in the future" in the Issue column and the missed bound in the
-  detail line. A scan judges "future" against the day it runs, so it flags only
-  dates that are still in the future on that day. Each part of a durable scan
-  reads the clock when that part runs.
+  window", "Date in the future" or "Date in the past" in the Issue column and
+  the missed bound in the detail line. Where the log does not show when a value
+  was saved, `notFuture` is judged against the day the scan runs. Each part of a
+  durable scan reads the clock when that part runs. A durable scan's report
+  leaves out the "Judged against" sentence.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys
 
-`from`, `window`, `unit`, `notFuture`, `when`, `message`, `blockSave`,
+`from` (a field, `today`, `now` or a Y-M-D date), `window`, `unit`, `period`,
+`offset`, `weekStart`, `notFuture`, `notPast`, `when`, `message`, `blockSave`,
 `caseSensitive`, and `references` (named bindings that `when` reads as `{alias}`;
-needs event and instance references). A rule needs `from` with `window`, or
-`"notFuture":true`, or both. Any other key is a configuration error.
+needs event and instance references). A rule needs `from` with `window`, a
+`period`, `"notFuture":true` or `"notPast":true`. Any other key is a
+configuration error.
+
+These are refused when the dictionary is checked, since they depend on the
+field: `"from":"now"` on a date field, `"from":"today"` with a `window` on a
+datetime field (a `period` may count from today there), and a fixed date of the
+other kind (`"2026-01-01 08:00"` on a date field) unless the rule names a period.
 
 These are refused when the rule is saved:
 
@@ -1457,9 +1559,9 @@ These are refused when the rule is saved:
 # refused: limited to 36500 units
 @UVWINDOW={"from":"[dob]","window":[0,40000]}
 
-# Months and years vary in length. Use days or weeks.
-# refused: "unit" must be minutes, hours, days or weeks
-@UVWINDOW={"from":"[visit_date_bl]","window":[1,3],"unit":"months"}
+# Not a unit.
+# refused: "unit" must be minutes, hours, days, weeks, months or years
+@UVWINDOW={"from":"[visit_date_bl]","window":[1,3],"unit":"fortnights"}
 
 # A quoted boolean.
 # refused: "notFuture" must be true or false
@@ -1474,8 +1576,44 @@ These are refused when the rule is saved:
 @UVWINDOW={"from":"[symptoms(1)]","window":[0,7]}
 
 # Neither check.
-# refused: needs a "from" date with a "window", or "notFuture": true
+# refused: needs a "from" date with a "window", a "period"
 @UVWINDOW={"message":"Check the date"}
+
+# A period and a window together. Use one or the other.
+# refused: "period" and "window" cannot be combined
+@UVWINDOW={"period":"month","window":[0,7]}
+
+# Not a period.
+# refused: "period" must be week, month, quarter or year
+@UVWINDOW={"period":"fortnight"}
+
+# An offset without a period.
+# refused: "offset" only applies to a "period"
+@UVWINDOW={"from":"[visit_date_bl]","window":[0,7],"offset":-1}
+
+# First and last swapped.
+# refused: the "offset" first period (-1) is after its last (-3)
+@UVWINDOW={"period":"month","offset":[-1,-3]}
+
+# More than 100 years of months.
+# refused: "offset" is limited to 1200 periods
+@UVWINDOW={"period":"month","offset":-1201}
+
+# A week start on a month.
+# refused: "weekStart" only applies to "period": "week"
+@UVWINDOW={"period":"month","weekStart":"sunday"}
+
+# Today with nothing to check.
+# refused: "from" needs a "window" to check against
+@UVWINDOW={"from":"today"}
+
+# An impossible date.
+# refused: is not a date
+@UVWINDOW={"from":"2026-02-30","window":[0,null]}
+
+# A quoted boolean.
+# refused: "notPast" must be true or false
+@UVWINDOW={"notPast":"true"}
 ```
 
 ## `@UVEXISTS` — values that must already exist
@@ -3092,6 +3230,25 @@ counts as the same value), `scope` narrows the **search** (which records are com
 
 # on: specimen_collected_at (datetime) — a collection time cannot be later than now
 @UVWINDOW={"notFuture":true,"message":"The collection time is in the future - check the clock"}
+```
+
+#### Timeliness, appointments and reporting periods
+
+```text
+# on: visit_date — entered within 7 days of the visit; staff may confirm a late entry
+@UVWINDOW={"from":"today","window":[-7,0],"blockSave":"confirm"}
+
+# on: next_visit_date — booked for today or later
+@UVWINDOW={"notPast":true,"blockSave":"hard"}
+
+# on: monthly_report_date — the report covers last month
+@UVWINDOW={"period":"month","offset":-1}
+
+# on: drug_given_at (datetime) — recorded within 4 hours of giving the drug
+@UVWINDOW={"from":"now","window":[-4,0],"unit":"hours"}
+
+# on: quarter_end_count — in the quarter that has just ended
+@UVWINDOW={"period":"quarter","offset":-1}
 ```
 
 #### Protocol visit windows

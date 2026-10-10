@@ -521,19 +521,32 @@ field instead of one near-duplicate field per country:
 
 REDCap's date validation takes a fixed minimum and maximum and only warns.
 `@UVWINDOW` checks a date against a window counted from another date of the same
-record, and/or that it is not after today:
+record, from today or from a fixed date, or against a calendar period, and/or
+that it is not after today or not before it:
 
 ```text
 @UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}
 @UVWINDOW={"from":"[dob]","window":[0,null],"notFuture":true}
 @UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours","blockSave":"hard"}
 @UVWINDOW={"notFuture":true}
+@UVWINDOW={"notPast":true}
+@UVWINDOW={"from":"today","window":[-7,0]}
+@UVWINDOW={"period":"month","offset":-1}
 ```
 
 - **JSON form only.** `window` is `[earliest, latest]` in whole units from the
   `from` date, both ends included; `null` leaves an end open and negative bounds
-  count back. `unit` is `days` (default) or `weeks`, and also `minutes` or
-  `hours` on datetime fields. Optional `when`, `message`, `blockSave`.
+  count back. `unit` is `days` (default), `weeks`, `months` or `years`, and also
+  `minutes` or `hours` on datetime fields. `from` is a field, `today`, `now` or a
+  Y-M-D date. `period` (`week`, `month`, `quarter`, `year`) is the period holding
+  today or the `from` date, moved by `offset`; weeks start on Monday unless the
+  project setting "First day of the week for @UVWINDOW" or `weekStart` says
+  Sunday. Optional `when`, `message`, `blockSave`.
+- **Judged on the day it was saved.** A part counted from today or now, a period
+  without `from`, and `notPast` are judged on the form only for a new or changed
+  value, and after saving against the day REDCap's log shows the value was
+  saved. Use them for timeliness; count clinical windows from a date in the
+  record.
 - **Date fields only:** Text fields with date, datetime or datetime-with-seconds
   validation, in any display format. The `from` field must be the same kind of
   date. The message names the allowed dates in the field's own format.
@@ -556,7 +569,7 @@ record, and/or that it is not after today:
   makes the whole rule advisory, `notFuture` included. On a multi-page survey, put the `from` field on the same page as the date it
   anchors, or the window is checked only after the save.
 - **Audited.** The post-save audit logs `type: window` with reason
-  `window-early`, `window-late` or `future`, and saving the `from` date's form
+  `window-early`, `window-late`, `future` or `past`, and saving the `from` date's form
   re-checks the windows counted from it. The Validation scan reports the same
   findings. Configure via field annotation only.
 
@@ -981,6 +994,7 @@ node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
 php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/value_stamps_php.php   # @UVWINDOW save days read from a mock of REDCap's log
 php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
 php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
 node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
