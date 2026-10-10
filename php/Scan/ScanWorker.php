@@ -121,12 +121,12 @@ final class ScanWorker
         // later. The live pilot left one there within a minute of pressing Stop.
         //
         // Whoever arrives next finishes it. finish() is idempotent, so two
-        // workers arriving together is not a race.
+        // workers arriving together is not a race. Through the one finisher
+        // Stop and the reap use (review R3U-3): this branch used to write the
+        // run without its counts or its truncation, so the stored row depended
+        // on which request ended the run.
         if ($phase === ScanPhase::CANCELLING) {
-            $this->store->finish($runId, ScanOutcome::derive([
-                'cancelled' => true,
-                'manifestDone' => $this->store->manifestComplete($runId),
-            ]));
+            ScanPromotion::finishCancelled($this->store, $pid, $runId, $this->limits());
             return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'cancelled',
                     'why' => 'this scan was stopped, so the records after that point were never '
@@ -159,8 +159,7 @@ final class ScanWorker
         // design; loosening waits for the next run.
         if (isset($this->deps['policyRevision'])
                 && (int) $run['policy_revision'] !== (int) $this->deps['policyRevision']) {
-            $this->store->finish($runId, array_merge(
-                ScanOutcome::derive(['cancelled' => true]),
+            ScanPromotion::finishCancelled($this->store, $pid, $runId, array_merge($this->limits(),
                 ['why' => 'the project\'s privacy settings were tightened while this scan was '
                         . 'running, so it was stopped before writing anything further']));
             return self::stop('this project\'s privacy settings changed during the scan, so it was '
@@ -1113,6 +1112,17 @@ final class ScanWorker
             return ['findings' => [], 'bytes' => 0, 'contexts' => 0,
                     'why' => 'this record could not be examined (' . get_class($e) . ')'];
         }
+    }
+
+    /**
+     * The detail budget a run this worker ends as cancelled is judged against
+     * (review R3U-3): ScanService hands the numbers it gives promote(), so the
+     * stopped row is truncated or not whichever request ends it. [] when the
+     * caller did not say, which judges the run against no budget.
+     */
+    private function limits()
+    {
+        return (isset($this->deps['limits']) && is_array($this->deps['limits'])) ? $this->deps['limits'] : [];
     }
 
     private function owner()

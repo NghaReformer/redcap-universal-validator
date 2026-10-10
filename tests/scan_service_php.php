@@ -2118,6 +2118,25 @@ namespace INSPIRE\UniversalValidator\Scan {
         $wres['status']['ruleProblems'] === 1 && $wres['status']['notExamined'] === 1
         && $wres['status']['detail'] === ScanOutcome::DETAIL_TRUNCATED);
 
+    // The worker's own two endings. advanceRun() ends a stopping run before
+    // it builds the worker, so the worker meets one only when the run turns
+    // `cancelling` between the two reads; it must still write the same row,
+    // and so must its stop when the privacy settings tightened.
+    $limits = ['maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']];
+    list($ks, $km, $kr) = $stopped(874);
+    $ks->cancel(874, $kr, 'alice');
+    $kres = (new ScanWorker($ks, ['owner' => 'w2', 'attempts' => 3, 'limits' => $limits]))->work(874, $kr);
+    check('R3U-3: the worker that finds the run stopping ends it ...',
+        !empty($kres['ok']) && $kres['stop'] === 'cancelled');
+    check('R3U-3: ... with the same row promote() writes', $cols($ks, 874, $kr) === $want);
+    list($vs, $vm, $vr) = $stopped(875);
+    $vres = (new ScanWorker($vs, ['owner' => 'w2', 'attempts' => 3, 'limits' => $limits,
+                                  'policyRevision' => 99]))->work(875, $vr);
+    $vrow = $vs->run(875, $vr);
+    check('R3U-3: a stop because the privacy settings tightened keeps the counts and the truncation ...',
+        $vres['ok'] === false && $cols($vs, 875, $vr) === $want);
+    check('R3U-3: ... and says why', strpos((string) $vrow['terminal_reason'], 'privacy settings were tightened') !== false);
+
     // The finisher never reopens a run, and ends one only once.
     check('R3U-3: the finisher does not touch a run that has ended',
         ScanPromotion::finishCancelled($ws, 873, $wr, []) === false && $cols($ws, 873, $wr) === $want);
