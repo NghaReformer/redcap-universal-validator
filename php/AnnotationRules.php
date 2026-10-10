@@ -54,6 +54,10 @@ class AnnotationRules
     /** "measureScale" bounds: a millionth (micrograms to grams) to a million. */
     const MIN_MEASURE_SCALE = '0.000001';
     const MAX_MEASURE_SCALE = '1000000';
+    /** What an @UVRANGE rule with a growth "reference" can write to fields ("return"). */
+    const RETURN_VALUES = ['z', 'lower', 'upper', 'range'];
+    /** The limits a rule's returned bounds come from ("returnLimits"; soft is the default). */
+    const RETURN_LIMITS = ['soft', 'hard'];
 
     /** Where an @UVEXISTS lookup may search: the whole project (default), the
      *  record's own Data Access Group, or the event of the entry being checked. */
@@ -792,6 +796,15 @@ class AnnotationRules
      * "sex", "age" (one of {"dob","at"}, {"days"} or {"months"}) and "by" become
      * the operand keys rangeSex, rangeAgeDob/rangeAgeAt, rangeAgeDays,
      * rangeAgeMonths and rangeBy; checkGrowth refuses a wrong combination.
+     *
+     * "return" writes values worked out from the reference to Text fields of
+     * the same form, and the rule then needs no limits when it returns only "z":
+     *   "return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}
+     * z is the z-score of the measurement, lower and upper the measurements at
+     * the low and high z limit of the "soft" limits (or "hard", "returnLimits")
+     * rounded inward to "decimals", and range the two as "7.7 to 12.0 kg". The
+     * keys become rangeReturn (value => field name), rangeReturnLimits and
+     * rangeDecimals.
      */
     private static function parseRangeValue($val, array $opts = [])
     {
@@ -815,7 +828,8 @@ class AnnotationRules
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
         $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive',
-                    'reference', 'sex', 'male', 'female', 'age', 'by', 'plausible', 'measureScale'];
+                    'reference', 'sex', 'male', 'female', 'age', 'by', 'plausible', 'measureScale',
+                    'return', 'returnLimits', 'decimals'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)
@@ -895,6 +909,47 @@ class AnnotationRules
                 if (!is_string($v)) return ['error' => '"age" "' . $k . '" must be one field reference, such as "[' . ($k === 'at' ? 'visit_date' : $k) . ']".'];
                 $out['rangeAge' . ucfirst($k)] = $v;
             }
+        }
+        // Values worked out from the reference, written to Text fields of the
+        // same form: {"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]",
+        // "range":"[wfa_range]"}. checkRange says what else they need.
+        if (array_key_exists('return', $cfg)) {
+            $r = $cfg['return'];
+            if (!is_array($r) || !$r || array_values($r) === $r) {
+                return ['error' => '"return" must say which field gets which value, e.g. {"z":"[wfa_z]","range":"[wfa_range]"} — '
+                    . 'the values are ' . implode(', ', self::RETURN_VALUES) . '.'];
+            }
+            $targets = [];
+            foreach ($r as $k => $v) {
+                if (!in_array($k, self::RETURN_VALUES, true)) {
+                    return ['error' => 'unknown "return" value "' . $k . '" — valid: ' . implode(', ', self::RETURN_VALUES) . '.'];
+                }
+                if (!is_string($v) || !preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)\]$/', trim($v), $m)) {
+                    return ['error' => '"return" "' . $k . '" must be one field of this form, such as "[wfa_' . ($k === 'range' ? 'range' : $k) . ']".'];
+                }
+                $targets[$k] = strtolower($m[1]);
+            }
+            $seen = [];
+            foreach ($targets as $k => $f) {
+                if (isset($seen[$f])) {
+                    return ['error' => '"return" writes "' . $seen[$f] . '" and "' . $k . '" to the same field "[' . $f . ']" — give each its own.'];
+                }
+                $seen[$f] = $k;
+            }
+            $out['rangeReturn'] = $targets;
+        }
+        if (array_key_exists('returnLimits', $cfg)) {
+            if (!is_string($cfg['returnLimits']) || !in_array($cfg['returnLimits'], self::RETURN_LIMITS, true)) {
+                return ['error' => '"returnLimits" must be "soft" or "hard" — the limits the returned bounds come from.'];
+            }
+            $out['rangeReturnLimits'] = $cfg['returnLimits'];
+        }
+        if (array_key_exists('decimals', $cfg)) {
+            if (!is_int($cfg['decimals']) || $cfg['decimals'] < 0 || $cfg['decimals'] > GrowthReference::MAX_DECIMALS) {
+                return ['error' => '"decimals" must be a whole number from 0 to ' . GrowthReference::MAX_DECIMALS
+                    . ' — how many decimals the returned bounds are written with.'];
+            }
+            $out['rangeDecimals'] = $cfg['decimals'];
         }
         self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out, $opts);
@@ -1980,8 +2035,12 @@ class AnnotationRules
                     . ', such as 0.001 for grams typed into a reference in kg — got ' . (is_string($s) ? $s : json_encode($s)) . '.';
             }
         }
+        // A rule with a reference that only returns the z-score judges nothing
+        // and needs no limits.
+        $onlyZ = isset($frag['rangeReference']) && isset($frag['rangeReturn']) && is_array($frag['rangeReturn'])
+            && array_keys($frag['rangeReturn']) === ['z'];
         if (!array_key_exists('rangeSoftLo', $frag) && !array_key_exists('rangeSoftHi', $frag)
-                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag)) {
+                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag) && !$onlyZ) {
             $errors[] = self::TAG_RANGE . ' needs "soft" or "hard" limits, e.g. "soft":[12,17.5],"hard":[3,25].';
         }
         $zLimits = array_intersect_key($b, array_flip(['rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi']));
@@ -2044,6 +2103,12 @@ class AnnotationRules
                         . 'are already in the unit the field holds.'];
                 }
             }
+            foreach (['rangeReturn', 'rangeReturnLimits', 'rangeDecimals'] as $k) {
+                if (array_key_exists($k, $frag)) {
+                    return ['"return", "returnLimits" and "decimals" only apply with a "reference": they write values worked out '
+                        . 'from a growth reference, such as "reference":"who-wfa".'];
+                }
+            }
             return [];
         }
         $id = $frag['rangeReference'];
@@ -2095,6 +2160,86 @@ class AnnotationRules
                 ? 'a ' . $label . ' field in another event or instance needs event and instance references — enable them in project settings first.'
                 : $label . ' must be exactly one field reference, e.g. "[' . self::growthExample($k) . ']" or "[baseline_arm_1]['
                   . self::growthExample($k) . ']" (not a checkbox code, a {binding} or a list of instances).';
+        }
+        return array_merge($errors, self::checkReturn($frag, $limits, array_keys($inputs), $opts));
+    }
+
+    /**
+     * The "return" part of a growth rule: which values go to which fields.
+     * Each value is one of RETURN_VALUES and each field one plain name (no
+     * two values to one field, and none of them an input of this rule: the
+     * rule would write what it reads). Bounds come from the "soft" limits
+     * unless "returnLimits" says "hard", and the limits asked for must be
+     * there: "lower" needs the low limit, "upper" the high one, and "range"
+     * either (one-sided it reads "at least 7.7 kg"). "decimals" is how many
+     * decimals the bounds are written with. That the fields exist, are Text
+     * fields of the measured field's form, and take such a value is checked
+     * with the data dictionary in hand (UniversalValidator::annotateRangeDictionary).
+     */
+    private static function checkReturn(array $frag, array $limits, array $inputKeys, array $opts)
+    {
+        $errors = [];
+        $has = array_key_exists('rangeReturn', $frag);
+        if (!$has) {
+            foreach (['rangeReturnLimits' => '"returnLimits"', 'rangeDecimals' => '"decimals"'] as $k => $label) {
+                if (array_key_exists($k, $frag)) $errors[] = $label . ' only applies with "return" — it sets how the returned bounds are made.';
+            }
+            return $errors;
+        }
+        $ret = $frag['rangeReturn'];
+        if (!is_array($ret) || !$ret) {
+            return ['"return" must say which field gets which value, e.g. {"z":"[wfa_z]","range":"[wfa_range]"}.'];
+        }
+        $seen = [];
+        foreach ($ret as $k => $f) {
+            if (!in_array($k, self::RETURN_VALUES, true)) {
+                $errors[] = 'unknown "return" value "' . $k . '" — valid: ' . implode(', ', self::RETURN_VALUES) . '.';
+                continue;
+            }
+            if (!is_string($f) || !preg_match('/^[a-z][a-z0-9_]*$/', $f)) {
+                $errors[] = '"return" "' . $k . '" must be one field name, such as "wfa_' . $k . '".';
+                continue;
+            }
+            if (isset($seen[$f])) {
+                $errors[] = '"return" writes "' . $seen[$f] . '" and "' . $k . '" to the same field "[' . $f . ']" — give each its own.';
+            }
+            $seen[$f] = $k;
+        }
+        // not a field the rule reads
+        foreach ($inputKeys as $ik) {
+            if (!array_key_exists($ik, $frag)) continue;
+            $op = ModeRegistry::operandRef($frag[$ik], ['qualified' => true]);
+            if ($op !== null && isset($seen[(string) $op[1]])) {
+                $errors[] = '"return" writes "' . $seen[(string) $op[1]] . '" to "[' . $op[1] . ']", which this rule reads — '
+                    . 'give the value a field of its own.';
+            }
+        }
+        $tier = isset($frag['rangeReturnLimits']) ? $frag['rangeReturnLimits'] : 'soft';
+        if (!in_array($tier, self::RETURN_LIMITS, true)) {
+            $errors[] = '"returnLimits" must be "soft" or "hard".';
+            return $errors;
+        }
+        $T = $tier === 'soft' ? 'Soft' : 'Hard';
+        $lo = isset($limits['range' . $T . 'Lo']);
+        $hi = isset($limits['range' . $T . 'Hi']);
+        $other = $tier === 'soft' ? '"returnLimits":"hard"' : '"returnLimits":"soft"';
+        foreach ($ret as $k => $f) {
+            if ($k === 'lower' && !$lo) {
+                $errors[] = '"return" "lower" is the measurement at the low "' . $tier . '" limit, which this rule does not have — add one, or write '
+                    . $other . '.';
+            } elseif ($k === 'upper' && !$hi) {
+                $errors[] = '"return" "upper" is the measurement at the high "' . $tier . '" limit, which this rule does not have — add one, or write '
+                    . $other . '.';
+            } elseif ($k === 'range' && !$lo && !$hi) {
+                $errors[] = '"return" "range" is made from the "' . $tier . '" limits, which this rule does not have — add them, or write '
+                    . $other . '.';
+            }
+        }
+        if (array_key_exists('rangeDecimals', $frag)) {
+            $d = $frag['rangeDecimals'];
+            if (!is_int($d) || $d < 0 || $d > GrowthReference::MAX_DECIMALS) {
+                $errors[] = '"decimals" must be a whole number from 0 to ' . GrowthReference::MAX_DECIMALS . '.';
+            }
         }
         return $errors;
     }

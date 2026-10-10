@@ -71,6 +71,13 @@ final class ModeRegistry
             if (isset($m['serverKeys']) && !is_array($m['serverKeys'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has a serverKeys that is not a list');
             }
+            if (isset($m['returns'])) {
+                $rt = $m['returns'];
+                if (!is_array($rt) || !isset($rt['method'], $rt['targets']) || !is_string($rt['method']) || $rt['method'] === ''
+                        || !is_string($rt['targets']) || !in_array($rt['targets'], $m['branchKeys'], true)) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a returns that is not a method name and one of its branchKeys');
+                }
+            }
             if (isset($m['uniformBranchKeys'])) {
                 $u = $m['uniformBranchKeys'];
                 if (!is_array($u) || array_values($u) === $u && $u) {
@@ -337,6 +344,41 @@ final class ModeRegistry
     public static function evaluator($mode)
     {
         return self::mode($mode)['evaluator'];
+    }
+
+    /**
+     * What a mode's rules write besides judging: ["method" => the
+     * UniversalValidator method that works the values out, "targets" => the
+     * rule key holding value name => field name], or null for a mode that
+     * writes nothing (php/modes.json "returns").
+     */
+    public static function returns($mode)
+    {
+        $m = self::mode($mode);
+        return (isset($m['returns']) && is_array($m['returns'])) ? $m['returns'] : null;
+    }
+
+    /**
+     * Every field a rule writes to: the fields its "targets" key names, on the
+     * rule and on each branch. These are the fields the rule owns, so the ones
+     * it clears when no branch applies. Empty for a mode that writes nothing.
+     *
+     * @return string[]
+     */
+    public static function returnFields(array $r)
+    {
+        $ret = self::returns(self::modeOfType(isset($r['type']) ? $r['type'] : ''));
+        if ($ret === null) return [];
+        $nodes = [$r];
+        if (isset($r['branches']) && is_array($r['branches'])) {
+            foreach ($r['branches'] as $b) if (is_array($b)) $nodes[] = $b;
+        }
+        $out = [];
+        foreach ($nodes as $n) {
+            if (!isset($n[$ret['targets']]) || !is_array($n[$ret['targets']])) continue;
+            foreach ($n[$ret['targets']] as $f) if (is_string($f) && $f !== '') $out[$f] = true;
+        }
+        return array_keys($out);
     }
 
     /** Whether a mode's rules carry a check-character algorithm. */

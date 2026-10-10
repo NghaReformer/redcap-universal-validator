@@ -3873,9 +3873,42 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         unset($candidate);
-        $resolved = Branching::resolve($out);
+        $resolved = self::markReturnClashes(Branching::resolve($out));
         if ($this->dataDictionary($pid)) $this->rulesMemo[$key] = $resolved;
         return $resolved;
+    }
+
+    /**
+     * A field takes the value of ONE rule. Two rules that return a value to the
+     * same field would overwrite each other in whichever order the page and
+     * the save run them, so both are refused, naming each other. Rules on one
+     * field (branches) share their fields on purpose: only one is active.
+     */
+    private static function markReturnClashes(array $rules)
+    {
+        $owner = [];    // target field => index of the rule that claimed it first
+        $clash = [];    // rule index => [target field => the other rule's index]
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError'])) continue;
+            foreach (ModeRegistry::returnFields($r) as $f) {
+                if (isset($owner[$f]) && $owner[$f] !== $i) {
+                    $clash[$i][$f] = $owner[$f];
+                    $clash[$owner[$f]][$f] = $i;
+                } else {
+                    $owner[$f] = $i;
+                }
+            }
+        }
+        foreach ($clash as $i => $fields) {
+            $parts = [];
+            foreach ($fields as $f => $other) {
+                $of = isset($rules[$other]['fields'][0]) ? $rules[$other]['fields'][0] : '?';
+                $parts[] = '"[' . $f . ']" (also written by the rule on "' . $of . '")';
+            }
+            $rules[$i]['configError'] = 'a field takes the value of one rule, and this rule\'s "return" shares '
+                . implode(', ', $parts) . ' — give each rule its own fields.';
+        }
+        return $rules;
     }
 
     /** Translate the repeatable "rules" project settings into engine rules. */
@@ -4963,6 +4996,16 @@ class UniversalValidator extends AbstractExternalModule
         } elseif ($ftype === 'calc') {
             $frag['rangeComputed'] = true;
         }
+        // Bounds a rule returns are written with the decimals the measured
+        // field takes: none for an integer, N for number_Ndp, one otherwise
+        // ("decimals" says otherwise). Resolved here so both runtimes get a
+        // number, never a default of their own.
+        if (isset($frag['rangeReturn']) && !array_key_exists('rangeDecimals', $frag)) {
+            $v = $ftype === 'text' ? strtolower(self::validationOf($meta)) : '';
+            if (preg_match('/^number_([1-9])dp/', $v, $dp)) $frag['rangeDecimals'] = min((int) $dp[1], GrowthReference::MAX_DECIMALS);
+            elseif ($v === 'int' || $v === 'integer') $frag['rangeDecimals'] = 0;
+            else $frag['rangeDecimals'] = 1;
+        }
         $unit = isset($frag['rangeUnit']) ? $frag['rangeUnit'] : '';
         $comma = !empty($frag['decimalComma']);
         // With a growth reference the limits are z-scores: plain numbers,
@@ -5031,6 +5074,7 @@ class UniversalValidator extends AbstractExternalModule
         $dd = $this->dataDictionary($pid);
         $opts = $this->temporalOptions($pid);
         $comma = false;
+        $inputFields = [];
         foreach (['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'] as $k => $label) {
             if (!isset($frag[$k])) continue;
@@ -5095,9 +5139,78 @@ class UniversalValidator extends AbstractExternalModule
                         . 'in days, or a number field or calc that keeps the part month (datediff with "M", not rounded).');
                 }
             }
+            $inputFields[$f] = true;
         }
         if ($comma) $frag['rangeAxisComma'] = true;
+        if (isset($frag['rangeReturn']) && is_array($frag['rangeReturn'])) {
+            $marks = [];
+            $why = $this->returnTargetsProblem($frag, $name, is_array($dd) ? $dd : [], $inputFields, $marks);
+            if ($why !== null) return $refuse($why);
+            $frag['rangeReturnComma'] = $marks;
+        }
         return $frag;
+    }
+
+    /**
+     * Why the fields a growth rule returns values to cannot take them, or null;
+     * $marks gets value name => whether that field writes a decimal comma.
+     *
+     * A value is written into the page being edited, so each field must be a
+     * Text field of the measured field's own form (and so of its event and
+     * instance), and not the measured field, an input of the rule or the record
+     * ID. "range" is text ("7.7 to 12.0 kg") and needs a field without
+     * validation; the numbers (z, lower, upper) need none or number validation,
+     * with room for the decimals they are written with: two for z, "decimals"
+     * for a bound. A number goes in the field's own decimal mark; a field
+     * without validation takes the measured field's.
+     */
+    private function returnTargetsProblem(array $frag, $name, array $dd, array $inputs, array &$marks)
+    {
+        $home = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : null;
+        $pk = $dd ? array_keys($dd)[0] : null;
+        $own = !empty($frag['decimalComma']);
+        $decimals = isset($frag['rangeDecimals']) ? (int) $frag['rangeDecimals'] : 1;
+        foreach ($frag['rangeReturn'] as $k => $t) {
+            $label = '"return" "' . $k . '" field "' . $t . '"';
+            if (!isset($dd[$t])) return $label . ' is not a field in this project.';
+            if ($t === $name) return '"return" "' . $k . '" is the measured field itself — write the value to a field of its own.';
+            if (isset($inputs[$t])) return $label . ' is read by this rule — write the value to a field of its own.';
+            if ($t === $pk) return $label . ' is the record ID.';
+            $m = $dd[$t];
+            $ftype = isset($m['field_type']) ? $m['field_type'] : '';
+            if ($ftype !== 'text') {
+                return $label . ' is a ' . $ftype . ' field — a returned value goes into a Text field.';
+            }
+            $form = isset($m['form_name']) ? (string) $m['form_name'] : null;
+            if ($home === null || $form !== $home) {
+                return $label . ' is on the form "' . ($form === null ? '?' : $form) . '", not on "' . ($home === null ? '?' : $home)
+                    . '" with the measured field — a value is written into the page being edited, so the field must be on that form.';
+            }
+            $v = strtolower(self::validationOf($m));
+            if ($k === 'range') {
+                if ($v !== '') {
+                    return $label . ' has "' . $v . '" validation, which would refuse a text such as "7.7 to 12.0 kg" — remove the validation.';
+                }
+                $marks[$k] = $own;
+                continue;
+            }
+            if ($v === '') {
+                $marks[$k] = $own;
+                continue;
+            }
+            if (!preg_match('/^(?:float|number)(?:_([1-9])dp)?(_comma_decimal)?$/', $v, $mm)) {
+                return $label . ' has "' . $v . '" validation, which cannot hold a number written with decimals — give it number '
+                    . 'validation, or none.';
+            }
+            $need = $k === 'z' ? 2 : $decimals;
+            $room = (isset($mm[1]) && $mm[1] !== '') ? (int) $mm[1] : null;
+            if ($room !== null && $need > $room) {
+                return $label . ' takes ' . $room . ' decimal place' . ($room === 1 ? '' : 's') . ' and this value is written with ' . $need
+                    . ' — give it number validation without a place count' . ($k === 'z' ? ', or number_2dp' : ', or lower "decimals" to ' . $room) . '.';
+            }
+            $marks[$k] = !empty($mm[2]);
+        }
+        return null;
     }
 
     /**

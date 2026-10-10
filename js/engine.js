@@ -6433,6 +6433,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
                       "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
                       "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
+                      "rangeReturn", "rangeReturnLimits", "rangeDecimals", "rangeReturnComma",
                       "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked"];
   var MODE_OF_TYPE = {
     "single": "check",
