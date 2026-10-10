@@ -30,6 +30,12 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
     require_once __DIR__ . '/../php/Scan/DbError.php';
+    // R2O-1 drives promotion over the real in-memory store, and the rollup's
+    // axis list is what the summary it reads is keyed by.
+    require_once __DIR__ . '/../php/Scan/Schema.php';
+    require_once __DIR__ . '/../php/Scan/ScanDb.php';
+    require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/../php/Scan/RollupBuilder.php';
 
     $n = 0; $fail = 0;
     function check($label, $cond) {
@@ -559,6 +565,87 @@ namespace INSPIRE\UniversalValidator\Scan {
             $empty['clean'] === false && $empty['terminal'] !== 'complete');
         check('outcome: and claims the WEAKEST coverage, not that a manifest was finished',
             $empty['coverage'] === 'partial');
+    }
+
+    /* =====================================================================
+     * R2O-1  EVERY RECORD DELETED, CHECKED OR NOT
+     *
+     * Since OC-1 an empty scope means no record is left `done`. Catch-up
+     * tombstones a record deleted after it was EXAMINED, and its findings stay
+     * active - so the commonest way in stored "no record was examined" beside a
+     * findings count that examination produced. Both shapes are driven through
+     * the real store and the real promotion: records examined (with a finding
+     * each) and then deleted, and records deleted before anything read them.
+     * The classification must be the same - never clean, never complete - and
+     * the stored sentence must be true of both.
+     * ===================================================================== */
+    {
+        $shape = function ($examineFirst) {
+            $pid = 801;
+            $h = function ($id) { return hash('sha256', $id, true); };
+            $store = new ArrayScanStore();
+            $runId = (int) $store->startRun($pid, ['created_by' => 'alice', 'fence_open' => '1'])
+                ['run']['run_id'];
+            $gen = (int) $store->run($pid, $runId)['generation_id'];
+            $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null],
+                                           ['id_bin' => 'B', 'hash' => $h('B'), 'dag' => null]]);
+            $epoch = (int) $store->run($pid, $runId)['lease_epoch'];
+            if ($examineFirst) {
+                $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+                foreach ($store->claim($runId, 'w1', $epoch, 2) as $c) {
+                    $batch['records'][] = ['ordinal' => $c['ordinal'], 'state' => ScanStore::REC_DONE,
+                                           'version' => '100', 'claim' => $c['claim']];
+                    $batch['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $pid,
+                        'generation_id' => $gen, 'identity' => $h('f' . $c['id_bin']),
+                        'record_hash' => $h($c['id_bin']), 'record_id_bin' => $c['id_bin'],
+                        'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
+                        'rule_revision' => str_repeat('0', 64), 'rule_ord' => 1,
+                        'check_type' => 'required', 'reason_code' => 'required-blank',
+                        'event_id' => 1, 'instance' => 1, 'dag_key' => null, 'valid_from_seq' => 1];
+                }
+                $store->commitBatch($runId, 'w1', $epoch, $batch);
+            }
+            // The store path CatchUp::step() takes for a record the project no
+            // longer has, whatever state it is in.
+            $store->advancePhase($runId, $epoch, ScanPhase::CATCH_UP);
+            $gone = $store->tombstone($runId, $epoch, ['A', 'B']);
+            // What the rollup would have summarised: one active finding per
+            // examined record, on every axis.
+            if ($examineFirst) {
+                foreach (RollupBuilder::KINDS as $k) {
+                    $store->addAggregate($runId, $k, 'x', '', 2);
+                }
+            }
+            $p = ScanPromotion::promote($store, $pid, $runId,
+                ['uniqueDone' => true, 'rollupDone' => true]);
+            $run = $store->run($pid, $runId);
+            return ['p' => $p, 'run' => $run, 'gone' => $gone, 'detail' => (int) $run['detail_rows'],
+                    'found' => ScanPromotion::findingsOf($store, $run)];
+        };
+        foreach (['examined, then deleted' => true, 'deleted before it was read' => false] as $how => $first) {
+            $s = $shape($first);
+            $o = $s['p']['outcome'];
+            check("R2O-1 ($how): every record became a tombstone", $s['gone'] === 2);
+            check("R2O-1 ($how): the run is an empty scope - partial, never complete, never clean",
+                $s['p']['promoted'] === true && $o['terminal'] === ScanOutcome::PARTIAL
+                && $o['coverage'] === ScanOutcome::EMPTY_SCOPE && $o['clean'] === false
+                && ScanOutcome::cleanColumn($o) === 0 && $o['suffix'] === '_NO_RECORDS');
+            check("R2O-1 ($how): the stored reason does not say no record was examined",
+                stripos($s['run']['terminal_reason'], 'no record was examined') === false
+                && stripos($s['run']['terminal_reason'], 'before it could be read') === false);
+            check("R2O-1 ($how): it says no record is left, that they were deleted checked or not, "
+                . 'and that it says nothing about the project',
+                strpos($s['run']['terminal_reason'], 'no record is left') === 0
+                && strpos($s['run']['terminal_reason'], 'whether or not it had been examined') !== false
+                && strpos($s['run']['terminal_reason'], 'says nothing about the project') !== false);
+            check("R2O-1 ($how): and it is stored whole, not cut at the column",
+                $s['run']['terminal_reason'] === $o['why'] && strlen($o['why']) <= 255);
+        }
+        $ex = $shape(true);
+        check('R2O-1: the examined shape really did examine and find - this is the case the sentence lied about',
+            $ex['detail'] === 2 && $ex['found'] === 2);
+        check('R2O-1: and its reason accounts for those findings instead of denying the examination',
+            strpos($ex['run']['terminal_reason'], 'any findings it kept are on deleted records') !== false);
     }
 
     /* =====================================================================

@@ -114,8 +114,9 @@ UV.labels = {
                        + 'the project did not change during the scan.',
     'partial': 'Some records could not be checked. This is not a complete picture of the project.',
     'failed': 'The scan failed, so it describes nothing.',
-    'empty-scope': 'Nothing was checked: no records were in scope for this scan, or every one was '
-                 + 'deleted before it could be checked. This result says nothing about the project.',
+    'empty-scope': 'This scan has no record left to report on: none was in scope, or every one was '
+                 + 'deleted while it ran, whether or not it had been checked. Any findings it '
+                 + 'counted are on deleted records. This result says nothing about the project.',
   },
   coverageUnknown: 'This scan finished, but this page does not recognise the result it recorded '
                  + '({value}). Treat it as incomplete and run it again.',
@@ -532,11 +533,21 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   reset([{ ok: true, run_id: 7 }, { ok: true, status: finished('empty-scope') }]);
   UV.start(); await ticks(6);
   check('client: an empty-scope run gets its own sentence, not the unknown fallback',
-    els['uv-scan-done'].textContent.indexOf('Nothing was checked') === 0
+    els['uv-scan-done'].textContent.indexOf('This scan has no record left to report on') === 0
     && els['uv-scan-done'].textContent.indexOf('does not recognise') === -1);
   check('client: and it never claims a record was checked',
-    els['uv-scan-done'].textContent.indexOf('Every record was checked') === -1
-    && els['uv-scan-done'].textContent.toLowerCase().indexOf('nothing was checked') !== -1);
+    els['uv-scan-done'].textContent.indexOf('Every record was checked') === -1);
+  // R2O-1. Nor that NONE was: records checked and then deleted keep their
+  // findings, and the panel counts them. Both lines, as the client renders an
+  // empty-scope run whose records were examined before they were deleted.
+  reset([{ ok: true, run_id: 7 }, { ok: true, status: Object.assign(finished('empty-scope'),
+    { terminal: 'partial', done: 0, settled: 2, removed: 2, total: 2, findings: 2, clean: 0 }) }]);
+  UV.start(); await ticks(6);
+  check('client: R2O-1 an empty scope with findings does not say nothing was checked beside them',
+    els['uv-scan-found'].textContent === '2 findings so far'
+    && els['uv-scan-done'].textContent.toLowerCase().indexOf('nothing was checked') === -1
+    && els['uv-scan-done'].textContent.indexOf('whether or not it had been checked') !== -1
+    && els['uv-scan-done'].textContent.indexOf('Any findings it counted are on deleted records') !== -1);
 
   // Truncated detail is stated even on a run whose coverage was complete: the
   // report the reader holds is not the report the run produced.

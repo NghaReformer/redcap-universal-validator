@@ -207,13 +207,19 @@ class ScanPageView
             // each sentence appear literally in the HTML. Every existing
             // sentence happens to avoid one; this one avoids it on purpose.
             //
-            // TWO WAYS IN, ONE SENTENCE. It said only that no records were in
-            // scope, which is false of the other way to get here: every record
-            // was in scope and was deleted before it could be checked. Both
-            // are true of what it now says first.
-            Scan\ScanOutcome::EMPTY_SCOPE => 'Nothing was checked: no records were in scope for this '
-                                           . 'scan, or every one was deleted before it could be '
-                                           . 'checked. This result says nothing about the project.',
+            // EVERY WAY IN, ONE SENTENCE. It said only that no records were in
+            // scope, which is false of a run whose records were all deleted.
+            // It then opened "Nothing was checked", which is false of the
+            // commonest of those (review R2O-1): records checked and THEN
+            // deleted, whose findings stay counted - so the panel said nothing
+            // was checked above "2 findings so far". No record being left is
+            // true of all three, and the findings line is accounted for in the
+            // sentence that sits beside it.
+            Scan\ScanOutcome::EMPTY_SCOPE => 'This scan has no record left to report on: none was in '
+                                           . 'scope, or every one was deleted while it ran, whether '
+                                           . 'or not it had been checked. Any findings it counted '
+                                           . 'are on deleted records. This result says nothing '
+                                           . 'about the project.',
             Scan\ScanOutcome::COV_PARTIAL => 'Some records could not be checked. This is not a complete '
                                            . 'picture of the project.',
             Scan\ScanOutcome::COV_FAILED  => 'The scan failed, so it describes nothing.',

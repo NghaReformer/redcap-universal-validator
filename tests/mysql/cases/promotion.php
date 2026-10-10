@@ -199,12 +199,36 @@ $NEIGHBOUR = uv_neighbour($PID);
             }
             $store->commitBatch($rid, 'w', $epoch, array('bytes' => 0, 'findings' => array(),
                 'records' => $rows));
+        } elseif ($how === 'examined') {
+            // R2O-1. EXAMINED FIRST, THEN DELETED - the commonest way to an
+            // empty scope, and the one the stored sentence denied. Each record
+            // is read and stored DONE with a finding, then catch-up finds it
+            // gone and tombstones it through the store path CatchUp::step()
+            // takes. The findings stay active, so the summary counts them.
+            $claimed = $store->claim($rid, 'w', $epoch, 5);
+            $batch = array('bytes' => 0, 'records' => array(), 'findings' => array());
+            foreach ($claimed as $c) {
+                $batch['records'][] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'],
+                    'version' => '500', 'record_hash' => $c['hash'],
+                    'state' => \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE);
+                $batch['findings'][] = array('ordinal' => $c['ordinal'], 'project_id' => $pid,
+                    'generation_id' => $gen, 'identity' => hash('sha256', 'ex-' . $c['id_bin'], true),
+                    'valid_from_seq' => uv_run_seq($dbA, $rid),
+                    'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+                    'event_id' => null, 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
+                    'rule_source_id' => 'r1', 'rule_revision' => str_repeat('e', 64), 'rule_ord' => 1,
+                    'check_type' => 'required', 'reason_code' => 'required-blank');
+            }
+            $store->commitBatch($rid, 'w', $epoch, $batch);
+            $store->advancePhase($rid, $epoch, \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP);
+            $store->tombstone($rid, $epoch, array('G1', 'G2'));
         } else {
             $A->query('DELETE FROM ' . Schema::table('scan_record') . ' WHERE run_id = ' . $rid);
         }
         foreach (array(\INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::UNIQUE,
                        \INSPIRE\UniversalValidator\Scan\ScanPhase::ROLLUP) as $ph) {
+            if ($how === 'examined' && $ph === \INSPIRE\UniversalValidator\Scan\ScanPhase::CATCH_UP) continue;
             $store->advancePhase($rid, $epoch, $ph);
         }
         $store->setProgressState($rid, $epoch, array('fenceTarget' => '500', 'rollupCursor' => 0));
@@ -213,7 +237,8 @@ $NEIGHBOUR = uv_neighbour($PID);
         $p = \INSPIRE\UniversalValidator\Scan\ScanPromotion::promote($store, $pid, $rid,
             array('uniqueDone' => true, 'rollupDone' => true,
                   'blockingAggregates' => $store->blockingAggregates($rid)));
-        $raw = $A->query('SELECT terminal, coverage, clean IS NULL, clean, manifest_total
+        $raw = $A->query('SELECT terminal, coverage, clean IS NULL, clean, manifest_total,
+                terminal_reason
             FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . $rid)->fetch_row();
         return array($p, $raw, $store->recordStates($rid));
     };
@@ -280,4 +305,28 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('nothing examined: and finishes as an empty scope, stored not clean',
         $p['promoted'] === true && $raw[1] === 'empty-scope' && (int) $raw[2] === 0
         && (int) $raw[3] === 0);
+
+    // R2O-1, ON A REAL SERVER. Every record examined, a finding stored for
+    // each, then every one deleted. The classification is the one above - no
+    // record is left to vouch for, so never clean - and the stored reason must
+    // be true of this run as well as of the one that read nothing.
+    list($p, $raw, $states) = $finishEmpty(957, 'examined');
+    $rid957 = (int) $A->query('SELECT MAX(run_id) FROM ' . Schema::table('scan_run')
+        . ' WHERE project_id = 957')->fetch_row()[0];
+    $run957 = $store->run(957, $rid957);
+    check('R2O-1: the fixture examined both records, stored a finding for each, then deleted both',
+        $states === array(\INSPIRE\UniversalValidator\Scan\ScanStore::REC_TOMBSTONE => 2)
+        && (int) $run957['detail_rows'] === 2
+        && \INSPIRE\UniversalValidator\Scan\ScanPromotion::findingsOf($store, $run957) === 2);
+    check('R2O-1: it is an empty scope, partial, stored NOT clean',
+        $p['promoted'] === true && $raw[0] === 'partial' && $raw[1] === 'empty-scope'
+        && (int) $raw[2] === 0 && (int) $raw[3] === 0);
+    check('R2O-1: its stored reason does not say no record was examined',
+        stripos((string) $raw[5], 'no record was examined') === false
+        && stripos((string) $raw[5], 'before it could be read') === false);
+    check('R2O-1: it says no record is left, deleted whether or not examined, findings and all - whole',
+        strpos((string) $raw[5], 'no record is left') === 0
+        && strpos((string) $raw[5], 'whether or not it had been examined') !== false
+        && strpos((string) $raw[5], 'any findings it kept are on deleted records') !== false
+        && $raw[5] === $p['outcome']['why']);
 }

@@ -45,8 +45,9 @@ namespace INSPIRE\UniversalValidator\Scan;
  * the run open forever - C3's mirror case. It reaches a terminal state of its
  * own and is counted, so a reader can see the project changed underneath the
  * scan without the run being unable to end. It is not an examination either: a
- * run whose records are ALL tombstones examined nothing and is an empty scope,
- * never a pass - see `emptyScope` in facts().
+ * run whose records are ALL tombstones has nothing left to vouch for - whether
+ * or not some were read before they went - and is an empty scope, never a
+ * pass. See `emptyScope` in facts().
  *
  * PHP 7.4.
  */
@@ -320,9 +321,18 @@ final class ScanPromotion
         $polBad = ($polNow !== null && isset($run['policy_revision'])
                    && (int) $run['policy_revision'] !== (int) $polNow);
 
-        // NOTHING WAS EXAMINED: no record reached `done`, none is still waiting,
-        // and nothing is blocked. That is the question `emptyScope` answers, and
-        // it is asked of the census alone.
+        // NO RECORD IS LEFT DONE: none is `done`, none is still waiting, and
+        // nothing is blocked. That is the question `emptyScope` answers, and it
+        // is asked of the census alone.
+        //
+        // NOT "NOTHING WAS EXAMINED", which is what this note and the stored
+        // sentence used to say (review R2O-1). CatchUp::step() tombstones a
+        // record that was deleted after it was examined, so `done` drops to
+        // zero while the findings that examination produced stay active. The
+        // classification is right - no record remains for the run to vouch
+        // for, so it must never be clean - but the census cannot say whether a
+        // tombstone was read first, and ScanOutcome's sentence now claims only
+        // what is true either way.
         //
         // It used to be `manifest_total === 0 && every state summed === 0`, and
         // both halves were the wrong question. The sum counted TOMBSTONES, so a

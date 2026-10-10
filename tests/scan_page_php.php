@@ -1770,8 +1770,39 @@ namespace {
         $esSentence = $V::coverageSentence(
             \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE);
         check('LABELS: the empty-scope sentence never claims a record was checked',
-            stripos($esSentence, 'Every record was checked') === false
-            && stripos($esSentence, 'nothing was checked') !== false);
+            stripos($esSentence, 'Every record was checked') === false);
+        // R2O-1. NOR THAT NONE WAS. It opened "Nothing was checked", which is
+        // false of a run whose records were checked and then deleted - the
+        // commonest way in, and the one whose panel also counts findings.
+        // What it may say is what is true of every way in: no record is left,
+        // deleted checked or not, and the findings are on deleted records.
+        check('LABELS: R2O-1 the empty-scope sentence does not say nothing was checked',
+            stripos($esSentence, 'nothing was checked') === false
+            && stripos($esSentence, 'before it could be checked') === false);
+        check('LABELS: R2O-1 it says no record is left, deleted whether or not it had been checked',
+            strpos($esSentence, 'no record left') !== false
+            && strpos($esSentence, 'whether or not it had been checked') !== false);
+        check('LABELS: R2O-1 it accounts for any findings, and still says nothing about the project',
+            strpos($esSentence, 'Any findings it counted are on deleted records') !== false
+            && strpos($esSentence, 'says nothing about the project') !== false);
+        // Both shapes, as the panel renders them: findings counted by an
+        // examination that came before the deletions, and none at all.
+        $esStatus = function ($findings) {
+            return ['ok' => true, 'phase' => 'terminal', 'terminal' => 'partial',
+                'coverage' => \INSPIRE\UniversalValidator\Scan\ScanOutcome::EMPTY_SCOPE,
+                'detail' => 'complete', 'total' => 2, 'done' => 0, 'settled' => 2, 'removed' => 2,
+                'excluded' => 0, 'findings' => $findings, 'clean' => 0, 'ruleProblems' => 0,
+                'active' => false];
+        };
+        $esChecked = $V::panelPrefill($esStatus(2));
+        $esNever = $V::panelPrefill($esStatus(0));
+        check('PREFILL: R2O-1 records checked then deleted keep their count, beside a sentence that allows it',
+            $esChecked['found'] === '2 findings so far'
+            && stripos($esChecked['done'], 'nothing was checked') === false
+            && strpos($esChecked['done'], $esSentence) === 0
+            && substr($esChecked['done'], -strlen($V::NOT_CERTIFIED)) === $V::NOT_CERTIFIED);
+        check('PREFILL: R2O-1 and records deleted before any check read the same, true sentence',
+            $esNever['found'] === 'Nothing found yet' && $esNever['done'] === $esChecked['done']);
         check('LABELS: and it survives json_encode into the page unaltered',
             strpos(json_encode($esSentence,
                 JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), '\\u') === false);

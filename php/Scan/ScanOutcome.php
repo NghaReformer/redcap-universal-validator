@@ -45,11 +45,12 @@ final class ScanOutcome
     const COV_PARTIAL = 'partial';
     const COV_FAILED  = 'failed';
     /**
-     * Nothing was examined, so nothing may be claimed about the project: the
-     * scope held no records, or every record in it was deleted before it could
-     * be read. The two are one value because they support the same claim -
-     * none - and ScanPromotion::facts() cannot tell them apart without a
-     * manifest count it has learned not to trust.
+     * No record is left to report on, so nothing may be claimed about the
+     * project: the scope held no records, or every record in it was deleted
+     * while the run went on - before it was read, or after (review R2O-1). The
+     * three are one value because they support the same claim - none - and
+     * ScanPromotion::facts() cannot tell them apart without a manifest count
+     * it has learned not to trust.
      *
      * ITS OWN VALUE RATHER THAN `failed` OR `manifest-complete`, and both of
      * those were tried on paper first. `failed` is what the two neighbouring
@@ -84,7 +85,7 @@ final class ScanOutcome
      *   cancelled:     bool  cancellation was requested and honoured
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
-     *   emptyScope:    bool  nothing was examined: no records in scope, or all deleted
+     *   emptyScope:    bool  no record is left: none in scope, or all deleted, checked or not
      *   lookupsMoved:  bool  @UVEXISTS verdicts may have moved with a change in the window
      *   violations:    int   ABSENT IS UNKNOWN, and unknown is never clean
      *   ruleProblems:  int   ABSENT IS UNKNOWN, and unknown is never clean
@@ -154,14 +155,21 @@ final class ScanOutcome
         // whose rule is that a forgotten field yields the weaker claim. It is
         // not: a false emptyScope falls through to weaker rows, while a true one
         // ASSERTS that the scope was empty. Asserting is never the safe default.
-        // THE SENTENCE COVERS BOTH WAYS IN. It said "no records were in scope",
-        // which is false of a run whose every record was deleted while it ran -
-        // they were in scope, and they stopped existing. What is true of both
-        // is that nothing was examined.
+        // THE SENTENCE COVERS EVERY WAY IN, and it has been wrong twice. It
+        // said "no records were in scope", which is false of a run whose every
+        // record was deleted while it ran. It then said "no record was
+        // examined", which is false of the commonest of those runs (review
+        // R2O-1): catch-up tombstones a record it had already examined, its
+        // findings stay active, and the run was stored as having examined
+        // nothing beside a count of what that examination found. What is true
+        // of all of them is that no record is LEFT: none was listed, or every
+        // one listed was deleted, checked or not - and whatever it found is
+        // about records the project no longer has.
         if ($b('emptyScope')) {
             return self::out(self::PARTIAL, self::EMPTY_SCOPE, $detail, false, $gaps,
-                'no record was examined - none was in scope, or every one was deleted before '
-                . 'it could be read - so it says nothing about the project');
+                'no record is left for it to report on - none was in scope, or every one was '
+                . 'deleted while it ran, whether or not it had been examined, and any findings it '
+                . 'kept are on deleted records - so it says nothing about the project');
         }
 
         // A record that could not be read, or a degradation that blocks
