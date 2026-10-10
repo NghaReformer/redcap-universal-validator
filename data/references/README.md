@@ -89,6 +89,22 @@ national reference) can be added without changing the module's code.
    the same id. Every rule naming such a reference shows a configuration error
    on its form and in the Validation scan; the check after saving skips it.
 
+4. **Check a value.** Before a rule uses the reference, work out one z-score
+   with the module's own code and compare it with the source's published
+   value or a z-score you trust:
+
+   ```
+   php convert.php --check cdc-wfa --folder /var/redcap/growth --sex male --x 30 --y 12.5
+   ```
+
+   `--x` is the age, length or height in the reference's axis unit (months
+   here) and `--y` the measurement in its unit. The script prints the row's
+   L, M and S and the z-score, or why there is none: the id is unknown, the
+   entry is broken, the table does not match its SHA-256, or x lies outside
+   `valid`. Without `--folder` it reads the shipped references only, so
+   `--check who-wfa --sex male --x 365 --y 6.6` prints -3.40, the worked
+   example of the action tag guide.
+
 ### The index entry
 
 | Key | Meaning |
@@ -104,12 +120,21 @@ national reference) can be added without changing the module's code.
 | `adjust` | `who-restricted` measures a z beyond ±3 in units of the distance between 2 and 3 SD, as WHO does for weight-based indicators; `none` uses the LMS formula throughout |
 
 An age given in days and a reference by months (or the other way round) are
-converted with 30.4375 days to the month, as WHO does. `pageTables` at the top
-of an index.json sets how many references one page may carry (default 4); a
-rule over that number is checked after saving instead of on the page. A rule
-whose sex, date or axis field is on a form the viewer cannot see (or a survey
-does not show) gets no table and does not count: the page cannot work out its
-z-score, so it only checks that the measurement is a number above 0.
+converted with 30.4375 days to the month, as WHO does.
+
+`pageTables` at the top of an index.json (0 to 50, default 4) sets how many
+tables one page may carry. A table sent whole counts 1. When the sex is a
+value saved on another form, only that sex's rows travel, and the table
+counts 0.5. When the age or length is a saved value too, only the few rows
+around it travel, and the table counts nothing. A rule whose `when` saved
+values already make false carries nothing. A rule past the cap is checked
+after saving instead of on the page, and the page still checks that the
+measurement is a number above 0. To raise the cap, set `pageTables` in
+the index.json of your folder; each whole table adds tens of kilobytes to the
+page. A rule whose sex, date or axis field is on a form the viewer cannot see
+(or a survey does not show) gets no table and does not count: the page cannot
+work out its z-score, so it only checks that the measurement is a number
+above 0.
 
 Some rows cap the z-score a measurement can get. With `adjust` `none`, a row
 whose L is below 0 never scores above 1/(|L| × S), and one whose L is above 0
@@ -119,3 +144,63 @@ gives 3.85 even for a BMI of a million. A rule whose `soft` or `hard` limit
 lies beyond such a bound anywhere in `valid` is a configuration error that
 names the row and the value the limit must clear, since an absurd value
 would otherwise pass that limit.
+
+## Tables that are not WHO-shaped
+
+**A reference with one set of rows for both sexes.** The module needs male and
+female rows. Add a sex column and write every row twice, once with 1 and once
+with 2, then convert as usual. A rule still names a sex field and its codes.
+On a project without one, a calculated field whose equation is `1` serves,
+with `"male":"1","female":"2"`.
+
+**A reference given as a mean and a standard deviation.** Write L as 1, M as
+the mean and S as the SD divided by the mean; the LMS formula then gives
+(y − mean) / SD. For a log-normal reference, write L as 0, M as the median
+and S as the SD of the natural log of the measurement. Work the columns out
+in a spreadsheet, save it as CSV and convert it.
+
+**Gestational age.** A reference by gestational age (birth weight for
+gestational age, for example) uses `"axis": "age"` and `"axisUnit": "days"`,
+with `valid` in days of gestation, such as `{"min": "168", "max": "300"}`.
+The rule gives the gestational age in days with `"age":{"days":"[ga_days]"}`,
+where `ga_days` is a calculated field such as `[ga_weeks]*7 + [ga_extra_days]`.
+`dob` and `at` give the age since birth, so leave them out here.
+
+**References that are not L, M and S.** Curves fitted with four parameters
+(Box-Cox t or Box-Cox power exponential, as used for some INTERGROWTH-21st
+standards) cannot be written as L, M and S, and the module does not support
+them.
+
+**CDC 2000.**
+
+- Ages are half months; use `--x-offset 0.5` and the `floor` lookup, as in
+  step 1.
+- The infant tables (birth to 36 months) start with a row at Agemos 0, which
+  is not on the half-month grid. Skip it with `--min-x 0.5`, skip the
+  whole-month row at the end with `--max-x 35.5`, and set `valid` to
+  `{"min": "0", "below": "36"}`.
+- Use `"adjust": "none"`. The module computes the ordinary LMS z-score. CDC's
+  flags for biologically implausible values use modified z-scores, which the
+  module does not compute, so their cut-offs do not carry over as `hard`
+  limits.
+- Every CDC BMI-for-age row has an L below 0, so its z-scores have a ceiling
+  (see the last section). A `hard` or `soft` high limit above the lowest
+  ceiling within `valid` is refused with a message that names the row and the
+  value the limit must stay under. Set the limit below that value, or narrow
+  `valid`.
+
+## Limits
+
+- A table file is at most 4 MB, with a `scale` of 1 to 1000 rows per unit.
+- `valid` bounds lie within -1000000 to 1000000.
+- S is at least 0.0001, and an L that is not 0 is at least 0.000001 in size.
+- index.json and the tables may start with a byte-order mark, as Windows
+  Notepad saves UTF-8. The SHA-256 is that of the file as saved, mark included;
+  `convert.php` prints the right one.
+
+Two rule keys help with a custom table. `"measureScale"` multiplies the typed
+value before the z-score, for a field in other units than the reference
+(0.001 for grams typed into a reference in kg). `"plausible": [lo, hi]`, in
+the reference's unit, judges the value when no z-score can be worked out (the
+date of birth is blank, say). Both are described in Level 5 of
+`docs/action_tag_validation_examples.md`.
