@@ -433,6 +433,16 @@ $PUR = 830;
              'finding' => ['project_id', 'generation_id'], 'unique_candidate' => ['project_id', 'generation_id'],
              'unique_group' => ['project_id', 'generation_id'], 'scan_dim' => ['project_id', 'generation_id']];
     foreach ($want as $t => $lead) {
+        // STATISTICS AS THEY ARE NOW, not as InnoDB's background thread last
+        // sampled them. These tables held a handful of rows a moment ago and
+        // hold none now, and on so few rows MySQL 5.7 picks a table scan or
+        // the key by when that thread happened to run: in wave 9 the
+        // scan_aggregate DELETE showed no key on three runs in a row, and the
+        // key on the same tree with two reads added in front of the EXPLAIN.
+        // Base 5b693e0 showed the key. Analyzed first, it shows the key on
+        // every server.
+        $an = $A->query('ANALYZE TABLE ' . Schema::table($t));
+        if ($an instanceof \mysqli_result) $an->free();
         $d = $rec->matching('exec', ['DELETE FROM ' . Schema::table($t) . ' WHERE']);
         $key = $d ? uv_explain_key($A, $d[0][1], $d[0][2]) : '';
         echo '  plan purge ' . $t . ': ' . ($d ? implode(' ', uv_explain_rows($A, $d[0][1], $d[0][2])) : '-') . "\n";
