@@ -197,6 +197,9 @@ namespace {
     check('@NOW-UTC with a clock level with or ahead of UTC all year: allowed', $zoneErr('Europe/London', 'nf_utc') === '');
     check('@NOW (the computer\'s time) is not judged here', $zoneErr('America/New_York', 'nf_now') === '');
     check('a window without notFuture is not refused for it', $zoneErr('America/New_York', 'win_utc') === '');
+    $mz = mod($Z, $DATA, $FULL, 'nurse');
+    $mz->projectSettings['window-timezone'] = 'America/New_York';
+    check('...and gets no note about it', empty(ruleFor(page($mz, 'form', '2', 'visit_form'), 'win_utc')['windowNotFutureOff']));
     $tzWas = date_default_timezone_get();
     date_default_timezone_set('Europe/Paris');
     check('@NOW-SERVER ahead of the rule\'s clock: refused', strpos($zoneErr('UTC', 'nf_srv'), 'Europe/Paris time') !== false);
