@@ -1249,6 +1249,42 @@ $SUPER = 787;
     check('supersede: and the older generations are found through a project-leading run key',
         $mkey !== '' && array_slice(uv_index_columns($A, Schema::table('scan_run'), $mkey), 0, 1) === ['project_id']);
     echo '  plan supersede page: ' . implode(' ', $plan) . ' | older: ' . $mkey . "\n";
+
+    // ONE GROUP'S SCAN CLOSES NOTHING, AND SENDS NOTHING THAT COULD (review
+    // R8-1). Older generations with active rows are still here - the third
+    // run's supersede has done one page - and a run scoped to group 42
+    // completes over one record. Its call reads its own run row and stops:
+    // no older generation is looked up, no finding is written, its cursor
+    // does not move, and no row anywhere carries its sequence as an end.
+    $activeBefore = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1', [$SUPER]);
+    $gr = $sa->startRun($SUPER, ['created_by' => 'alice', 'scope_dag' => '42']);
+    $grid = (int) $gr['run']['run_id'];
+    $sa->writeManifest($grid, [['id_bin' => 'SP-G', 'hash' => hash('sha256', 'SP-G', true), 'dag' => '42']]);
+    $gep = (int) $sa->run($SUPER, $grid)['lease_epoch'];
+    $gc = $sa->claim($grid, 'w', $gep, 1);
+    $sa->commitBatch($grid, 'w', $gep, ['bytes' => 0, 'findings' => [], 'records' => [
+        ['ordinal' => $gc[0]['ordinal'], 'record_hash' => $gc[0]['hash'], 'state' => ScanStore::REC_DONE,
+         'claim' => $gc[0]['claim']]]]);
+    $sa->finish($grid, $done);
+    $rec->log = [];
+    $gp = $sr->supersedePrevious($SUPER, $grid, 100);
+    $gseq = uv_run_seq($dbA, $grid);
+    $activeAfter = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot = 1', [$SUPER]);
+    $endedBy = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND valid_to_seq = ?', [$SUPER, $gseq]);
+    $gcur = $dbA->select('SELECT supersede_cursor, terminal FROM ' . Schema::table('scan_run')
+        . ' WHERE run_id = ?', [$grid]);
+    check('supersede: a completed scan of one group closes nothing and says why',
+        $gp['done'] === true && $gp['rows'] === 0 && $gp['why'] === ScanStore::SUPERSEDE_SCOPED
+        && (string) $gcur[0][1] === ScanOutcome::COMPLETE);
+    check('supersede: every active finding of the project is still active, none ended at its sequence',
+        (int) $activeBefore[0][0] > 0 && (int) $activeAfter[0][0] === (int) $activeBefore[0][0]
+        && (int) $endedBy[0][0] === 0 && (int) $gcur[0][0] === 0);
+    check('supersede: and the call read its run row and nothing else',
+        count($rec->log) === 1 && $rec->log[0][0] === 'select'
+        && strpos($rec->log[0][1], 'FOR UPDATE') !== false);
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

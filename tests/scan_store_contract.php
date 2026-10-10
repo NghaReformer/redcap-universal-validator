@@ -1029,8 +1029,8 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
     // findings() is what the report reads. The SQL store answered twelve
     // positional columns and the in-memory store its whole internal row, paged
     // by a count of rows walked; neither was what FindingRowMapper takes.
-    $scan = function ($store, $pid, array $findings, $how) use ($mk5) {
-        $r = $store->startRun($pid, ['created_by' => 'alice']);
+    $scan = function ($store, $pid, array $findings, $how, $scope = null) use ($mk5) {
+        $r = $store->startRun($pid, ['created_by' => 'alice', 'scope_dag' => $scope]);
         $rid = (int) $r['run']['run_id'];
         $gen = (int) $r['run']['generation_id'];
         $recs = [];
@@ -1243,6 +1243,42 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
         && count($sp->findings(795, $gy['gen'], [], 0, 100)) === 1);
     $C('supersede: a run id nobody has is done with nothing to do',
         $sp->supersedePrevious(795, 987654321, 10)['done'] === true);
+
+    // ONLY A WHOLE-PROJECT RUN SUPERSEDES (review R8-1). A run scoped to one
+    // data access group read that group's records and no others; it closed
+    // every older generation regardless, so the other groups' findings were
+    // stamped superseded by a run that never read them. A whole-project run
+    // of three records, then a run scoped to group 11 of one record: the
+    // scoped run closes nothing, and says why. The next whole-project run to
+    // complete closes both older generations, the scoped one included.
+    $sd = $newStore();
+    $whole = $scan($sd, 797, [[[]], [[]], [[]]], 'complete');
+    $group = $scan($sd, 797, [[[]]], 'complete', '11');
+    $C('scope: the fixture runs completed, one of them scoped to a group',
+        $sd->run(797, $group['run'])['terminal'] === ScanOutcome::COMPLETE
+        && (string) $sd->run(797, $group['run'])['scope_dag'] === '11'
+        && $sd->run(797, $whole['run'])['scope_dag'] === null);
+    $g = $sd->supersedePrevious(797, $group['run'], 100);
+    $C('scope: a run of one group closes nothing, is done, and says why',
+        $g === ['done' => true, 'rows' => 0, 'cursor' => 0, 'why' => ScanStore::SUPERSEDE_SCOPED]);
+    $C('scope: so every finding of the whole-project run is still current',
+        count($sd->findings(797, $whole['gen'], [], 0, 100)) === 3);
+    $C('scope: and asking again changes nothing',
+        $sd->supersedePrevious(797, $group['run'], 100) === $g
+        && count($sd->findings(797, $whole['gen'], [], 0, 100)) === 3);
+    $next = $scan($sd, 797, [[[]]], 'complete');
+    $closed = 0;
+    $calls = 0;
+    do {
+        $z = $sd->supersedePrevious(797, $next['run'], 100);
+        $closed += $z['rows'];
+        $calls++;
+    } while (!$z['done'] && $calls < 10);
+    $C('scope: the next whole-project run closes both older generations, the group\'s included',
+        $z['done'] === true && $z['why'] === null && $closed === 4
+        && $sd->findings(797, $whole['gen'], [], 0, 100) === []
+        && $sd->findings(797, $group['gen'], [], 0, 100) === []
+        && count($sd->findings(797, $next['gen'], [], 0, 100)) === 1);
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

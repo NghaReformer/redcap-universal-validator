@@ -1791,7 +1791,8 @@ final class SqlScanStore implements ScanStore
         $limit = max(1, min(self::PAGE, (int) $limit));
         $this->db->begin();
         try {
-            $r = $this->db->select('SELECT generation_id, run_seq, terminal, supersede_cursor FROM '
+            $r = $this->db->select('SELECT generation_id, run_seq, terminal, supersede_cursor,
+                    scope_dag FROM '
                 . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ? FOR UPDATE',
                 [$runId, $pid]);
             if (!isset($r[0])) {
@@ -1810,6 +1811,15 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return self::superseded(true, 0, $cursor,
                     'this scan did not complete, so the previous report stays the current one');
+            }
+            // ONE GROUP'S SCAN SUPERSEDES NOTHING (review R8-1). It examined
+            // that group's records and no others, and closing every older
+            // generation closed the other groups' findings too, as superseded
+            // by a run that never read them. Why not the group's share alone:
+            // ScanStore::supersedePrevious().
+            if ($r[0][4] !== null) {
+                $this->db->rollback();
+                return self::superseded(true, 0, $cursor, self::SUPERSEDE_SCOPED);
             }
             $older = $this->olderGeneration($pid, $cursor, $gen);
             if ($older === null) {

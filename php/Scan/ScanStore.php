@@ -603,6 +603,27 @@ interface ScanStore
      * Idempotent and safe from two requests at once: the second waits on the
      * run row and then finds the rows already closed or the cursor moved.
      *
+     * ONLY A WHOLE-PROJECT RUN SUPERSEDES (review R8-1). A run scoped to one
+     * data access group examined that group's records and no others, and
+     * closing every older generation closed the other groups' findings as well
+     * - each stamped as superseded by a run that never read its record, and
+     * gone from any reading of the project's current state. A scoped run
+     * therefore closes nothing and answers done with SUPERSEDE_SCOPED; the
+     * older generations stay current until a whole-project run completes,
+     * which closes all of them, scoped ones included. Closing only the group's
+     * share was considered and is not done, for three reasons. The store
+     * cannot name it: scope_dag is REDCap's group id and a finding's dag_key
+     * the group's unique name, two axes. A group is not a fixed set of
+     * records: a record that moved out of the group since the older run was
+     * never read by this one, and closing its findings by their old group
+     * closes what may be its only current evidence. And closing by this run's
+     * own manifest needs a position inside an older generation, which
+     * supersede_cursor (a generation) cannot hold: without one every page
+     * walks again each out-of-scope row in front of it. Leaving the group's
+     * older rows open over-reports - a record re-examined by the scoped run
+     * shows its older findings beside its new ones until the next whole-project
+     * run - which is the direction that hides nothing.
+     *
      * @return array{done:bool, rows:int, cursor:int, why:?string} `done` is
      *         true when nothing is left for this run to close - including a
      *         run that may not supersede (`why` says which) - and false while
@@ -611,6 +632,10 @@ interface ScanStore
      * @throws ScanStoreUnavailable when the storage failed; nothing is closed
      */
     public function supersedePrevious($pid, $runId, $limit);
+
+    /** Why a scan of one data access group closed nothing. See supersedePrevious(). */
+    const SUPERSEDE_SCOPED = 'this scan covered one data access group, so it supersedes nothing: the '
+                           . 'previous reports stay current until a scan of the whole project completes';
 
     // expireValues() IS GONE FROM THIS CONTRACT TOO, for purgeRuns()'s reason.
     //

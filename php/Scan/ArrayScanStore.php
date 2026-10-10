@@ -889,6 +889,8 @@ final class ArrayScanStore implements ScanStore
             return $out(true, 0, $cursor,
                 'this scan did not complete, so the previous report stays the current one');
         }
+        // One group's scan supersedes nothing (review R8-1); see the contract.
+        if ($r['scope_dag'] !== null) return $out(true, 0, $cursor, self::SUPERSEDE_SCOPED);
         $older = $this->olderGeneration($pid, $cursor, $gen);
         if ($older === null) {
             $this->runs[$runId]['supersede_cursor'] = max($cursor, $gen);
