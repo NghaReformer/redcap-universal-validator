@@ -2313,6 +2313,75 @@ function QRID_growthZScore(ref, sex, x, y){
   if(z === null) z = y > lms[1] ? QRID_GROWTH_MAX_Z_TEXT : -QRID_GROWTH_MAX_Z_TEXT;
   return { state: "ok", z: QRID_growthZText(z) };
 }
+/* The measurement that scores z against L, M and S, or null when none above 0
+   does: the inverse of QRID_growthZRaw, with the same restriction beyond +-3 SD.
+   Twin of GrowthReference::valueAt. */
+function QRID_growthValueAt(z, lms, restricted){
+  var l = lms[0], m = lms[1], s = lms[2], y, sd, a;
+  if(l === 0){
+    sd = function(k){ return m * Math.exp(s * k); };
+  } else {
+    sd = function(k){ var b = 1 + l * s * k; return b > 0 ? m * Math.pow(b, 1 / l) : NaN; };
+  }
+  if(restricted && z > 3){ a = sd(3); y = a + (z - 3) * (a - sd(2)); }
+  else if(restricted && z < -3){ a = sd(-3); y = a + (z + 3) * (sd(-2) - a); }
+  else y = sd(z);
+  return (isFinite(y) && y > 0) ? y : null;
+}
+/* y in whole units of 10^-decimals, rounded inward: up for a low bound, down
+   for a high one. Null beyond QRID_GROWTH_MAX_BOUND_UNITS. Twin of
+   GrowthReference::boundUnits. */
+var QRID_GROWTH_BOUND_SLACK = 1e-12, QRID_GROWTH_MAX_BOUND_UNITS = 1e15;
+function QRID_growthBoundUnits(y, decimals, up){
+  var n = y * Math.pow(10, decimals);
+  if(!isFinite(n) || Math.abs(n) > QRID_GROWTH_MAX_BOUND_UNITS) return null;
+  var slack = QRID_GROWTH_BOUND_SLACK * Math.max(1, Math.abs(n));
+  return (up ? Math.ceil(n - slack) : Math.floor(n + slack)) + 0;   /* "+ 0": no -0 */
+}
+/* units of 10^-decimals as text with all its decimals: (77, 1) is "7.7". */
+function QRID_growthUnitsText(units, decimals){
+  var a = Math.abs(units), sign = units < 0 ? "-" : "";
+  if(decimals === 0) return sign + a;
+  var p = Math.pow(10, decimals), f = String(a % p);
+  return sign + Math.floor(a / p) + "." + new Array(decimals - f.length + 1).join("0") + f;
+}
+/* A number as text with the decimal mark of the field it is written to. */
+function QRID_growthMarkText(text, comma){ return comma ? String(text).replace(/\./g, ",") : String(text); }
+/* What a rule that returns values writes for one child: { z, lower, upper,
+   range }, each text or null (nothing to write). limits is { lo, hi }, each a
+   z limit as text or null. Twin of GrowthReference::outputs. */
+function QRID_growthOutputs(ref, sex, x, y, limits, decimals, comma){
+  var out = { z: null, lower: null, upper: null, range: null };
+  if(y !== null && y !== undefined){
+    var z = QRID_growthZScore(ref, sex, x, y);
+    if(z.state === "ok") out.z = z.z;
+  }
+  var want = { lo: false, hi: false };
+  var sides = [["lo", "lower", true], ["hi", "upper", false]];
+  for(var i = 0; i < sides.length; i++){
+    var lim = limits ? limits[sides[i][0]] : null;
+    if(lim === null || lim === undefined || lim === "") continue;
+    want[sides[i][0]] = true;
+    var lms = QRID_growthLms(ref, sex, x);
+    var v = lms === null ? null : QRID_growthValueAt(parseFloat(lim), lms, ref.adjust === "who-restricted");
+    if(v === null) continue;
+    var k = QRID_growthBoundUnits(v, decimals, sides[i][2]);
+    if(k !== null) out[sides[i][1]] = QRID_growthUnitsText(k, decimals);
+  }
+  if((want.lo || want.hi) && (!want.lo || out.lower !== null) && (!want.hi || out.upper !== null)){
+    var unit = " " + ref.unit;
+    if(want.lo && want.hi){
+      if(QRID_whenDecCmp(out.lower, out.upper) <= 0){
+        out.range = QRID_growthMarkText(out.lower, comma) + " to " + QRID_growthMarkText(out.upper, comma) + unit;
+      }
+    } else if(want.lo){
+      out.range = "at least " + QRID_growthMarkText(out.lower, comma) + unit;
+    } else {
+      out.range = "at most " + QRID_growthMarkText(out.upper, comma) + unit;
+    }
+  }
+  return out;
+}
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
@@ -6565,7 +6634,9 @@ window.INSPIREUniversalValidator = {
   },
   growthLogic: {                             /* @UVRANGE growth references, locked by tests/growth_js.cjs */
     axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,
-    measure: QRID_growthMeasure, zScore: QRID_growthZScore, plausible: QRID_growthPlausible
+    measure: QRID_growthMeasure, zScore: QRID_growthZScore, plausible: QRID_growthPlausible,
+    valueAt: QRID_growthValueAt, boundUnits: QRID_growthBoundUnits, unitsText: QRID_growthUnitsText,
+    markText: QRID_growthMarkText, outputs: QRID_growthOutputs
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,

@@ -63,6 +63,48 @@ for (const c of fx.zScore) {
 }
 check('zText: never exponent notation, never "-0.00"', G.zText(-0) === '0.00' && G.zText(1e-300) === '0.00' && G.zText(-1e-300) === '0.00');
 
+// The values an @UVRANGE rule returns: tests/growth_php.php runs the same cases.
+check('fixture: return-value sections load', fx.valueAt.length > 10 && fx.boundUnits.length > 5
+  && fx.unitsText.length > 5 && fx.outputs.length > 10);
+for (const c of fx.valueAt) {
+  const got = G.valueAt(c.z, c.lms, c.restricted);
+  const ok = c.want === null ? got === null : (got !== null && Math.abs(got - c.want) <= 1e-9 * Math.max(1, Math.abs(c.want)));
+  check('valueAt: ' + c.name + ' (got ' + JSON.stringify(got) + ')', ok);
+}
+for (const c of fx.boundUnits) {
+  const got = G.boundUnits(c.y, c.decimals, c.up);
+  check('boundUnits: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+}
+for (const [u, d, want] of fx.unitsText) {
+  check('unitsText(' + u + ', ' + d + ') => ' + want + ' (got ' + G.unitsText(u, d) + ')', G.unitsText(u, d) === want);
+}
+for (const c of fx.outputs) {
+  const got = G.outputs(R[c.ref], c.sex, c.x, c.y, c.limits, c.decimals, c.comma);
+  check('outputs: ' + c.name + ' (got ' + JSON.stringify(got) + ')',
+    ['z', 'lower', 'upper', 'range'].every((k) => got[k] === c.want[k]) && Object.keys(got).length === 4);
+}
+check('markText: a comma only when asked', G.markText('7.7', true) === '7,7' && G.markText('7.7', false) === '7.7'
+  && G.markText('12.0', true) === '12,0');
+{
+  /* valueAt inverts zRaw over random rows, with and without the WHO restriction */
+  let seed = 4711;
+  const next = () => { seed = (seed * 48271) % 2147483647; return seed; };
+  let worst = 0;
+  for (let i = 0; i < 4000; i++) {
+    const l = [0, 1, -1, 0.5, -0.5, 2, -2, 0.25, 0.1, -0.3][next() % 10];
+    const m = 1 + next() % 400 / 10;
+    const sd = 0.03 + next() % 300 / 1000;
+    const z = -5 + next() % 1001 / 100;
+    const r = next() % 2 === 1;
+    const y = G.valueAt(z, [l, m, sd], r);
+    if (y === null) continue;
+    const back = G.zRaw(y, [l, m, sd], r);
+    if (back === null) { worst = Infinity; break; }
+    worst = Math.max(worst, Math.abs(back - z) / Math.max(1, Math.abs(z)));
+  }
+  check('valueAt: zRaw(valueAt(z)) is z, 4,000 random rows (worst relative error ' + worst + ')', worst < 1e-8);
+}
+
 // ---- 2. the bundled WHO references: WHO's own z-scores ---------------------------
 const dir = path.join(__dirname, '..', 'data', 'references');
 const idx = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));

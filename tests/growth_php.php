@@ -86,6 +86,50 @@ foreach ($fx['zScore'] as $c) {
 check('zText: never exponent notation, never "-0.00"', G::zText(-0.0) === '0.00' && G::zText(1e-300) === '0.00'
     && G::zText(-1e-300) === '0.00');
 
+// The values an @UVRANGE rule returns: the inverse of the z-score, the bounds
+// rounded inward, the texts. tests/growth_js.cjs runs the same cases.
+check('fixture: return-value sections load', count($fx['valueAt']) > 10 && count($fx['boundUnits']) > 5
+    && count($fx['unitsText']) > 5 && count($fx['outputs']) > 10);
+foreach ($fx['valueAt'] as $c) {
+    $got = G::valueAt($c['z'], $c['lms'], $c['restricted']);
+    $ok = $c['want'] === null ? $got === null : ($got !== null && abs($got - $c['want']) <= 1e-9 * max(1.0, abs($c['want'])));
+    check('valueAt: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $ok);
+}
+foreach ($fx['boundUnits'] as $c) {
+    $got = G::boundUnits($c['y'], $c['decimals'], $c['up']);
+    check('boundUnits: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+}
+foreach ($fx['unitsText'] as $c) {
+    check('unitsText(' . $c[0] . ', ' . $c[1] . ') => ' . $c[2] . ' (got ' . G::unitsText($c[0], $c[1]) . ')', G::unitsText($c[0], $c[1]) === $c[2]);
+}
+foreach ($fx['outputs'] as $c) {
+    $got = G::outputs($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y'], $c['limits'], $c['decimals'], $c['comma']);
+    check('outputs: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+}
+check('markText: a comma only when asked', G::markText('7.7', true) === '7,7' && G::markText('7.7', false) === '7.7'
+    && G::markText('12.0', true) === '12,0');
+// valueAt inverts zRaw over random rows, with and without the WHO restriction
+function roundTripWorst()
+{
+    $seed = 4711;
+    $worst = 0.0;
+    for ($i = 0; $i < 4000; $i++) {
+        $l = [0, 1, -1, 0.5, -0.5, 2, -2, 0.25, 0.1, -0.3][minstd($seed) % 10];
+        $m = 1 + minstd($seed) % 400 / 10;
+        $sd = 0.03 + minstd($seed) % 300 / 1000;
+        $z = -5 + minstd($seed) % 1001 / 100;
+        $r = minstd($seed) % 2 === 1;
+        $y = G::valueAt($z, [$l, $m, $sd], $r);
+        if ($y === null) continue;
+        $back = G::zRaw($y, [$l, $m, $sd], $r);
+        if ($back === null) return INF;
+        $worst = max($worst, abs($back - $z) / max(1.0, abs($z)));
+    }
+    return $worst;
+}
+$worst = roundTripWorst();
+check('valueAt: zRaw(valueAt(z)) is z, 4,000 random rows (worst relative error ' . $worst . ')', $worst < 1e-8);
+
 // ---- 2. the bundled WHO references ------------------------------------------------
 
 G::reset();

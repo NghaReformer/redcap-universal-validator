@@ -40,6 +40,12 @@ final class GrowthReference
     const MIN_L = 0.000001;
     /** A z-score bound further out than this limits nothing: limits lie within +-20. */
     const BOUND_LIMIT = 21;
+    /** The most decimals a returned bound may be written with. */
+    const MAX_DECIMALS = 6;
+    /** A bound within this (relative, in units of its last decimal) of a whole unit counts as on it. */
+    const BOUND_SLACK = 1e-12;
+    /** A bound counted in more units than this is not written (both runtimes hold it exactly far below 2^53). */
+    const MAX_BOUND_UNITS = 1e15;
 
     const AXES = ['age' => ['days', 'months'], 'length' => ['cm'], 'height' => ['cm']];
     const LOOKUPS = ['round', 'floor', 'linear'];
@@ -725,5 +731,130 @@ final class GrowthReference
         // bound. Twin: QRID_growthZScore.
         if ($z === null) $z = $y > $lms[1] ? self::MAX_Z_TEXT : -self::MAX_Z_TEXT;
         return ['state' => 'ok', 'z' => self::zText($z)];
+    }
+
+    /**
+     * The measurement that scores $z against L, M and S: the inverse of
+     * zRaw(), with the same WHO restriction beyond +-3 SD. Null when no
+     * measurement above 0 scores it (1 + L*S*z at or below 0, or a result
+     * that is not a finite number). Twin: QRID_growthValueAt.
+     */
+    public static function valueAt($z, array $lms, $restricted)
+    {
+        list($l, $m, $s) = $lms;
+        $z = (float) $z;
+        if ($l == 0) {
+            $sd = function ($k) use ($m, $s) { return $m * exp($s * $k); };
+        } else {
+            $sd = function ($k) use ($l, $m, $s) {
+                $b = 1 + $l * $s * $k;
+                return $b > 0 ? $m * pow($b, 1 / $l) : NAN;
+            };
+        }
+        if ($restricted && $z > 3) {
+            $sd3 = $sd(3);
+            $y = $sd3 + ($z - 3) * ($sd3 - $sd(2));
+        } elseif ($restricted && $z < -3) {
+            $sd3 = $sd(-3);
+            $y = $sd3 + ($z + 3) * ($sd(-2) - $sd3);
+        } else {
+            $y = $sd($z);
+        }
+        return (is_finite($y) && $y > 0) ? $y : null;
+    }
+
+    /**
+     * The measurement that scores $z for 'male' or 'female' at axis position
+     * $x, or null when the table has no row there or none scores it.
+     */
+    public static function valueFor(array $entry, array $table, $sex, $x, $z)
+    {
+        $lms = self::lms($entry, $table, $sex, $x);
+        if ($lms === null) return null;
+        return self::valueAt($z, $lms, $entry['adjust'] === 'who-restricted');
+    }
+
+    /**
+     * $y in whole units of 10^-$decimals, rounded INWARD: up for a low bound
+     * ($up), down for a high one, so that every value inside a written range
+     * passes the limit. A value within BOUND_SLACK of a unit counts as on it,
+     * because the arithmetic that produced it is not exact. Null when the
+     * count is beyond what both runtimes hold exactly.
+     */
+    public static function boundUnits($y, $decimals, $up)
+    {
+        $n = (float) $y * pow(10, (int) $decimals);
+        if (!is_finite($n) || abs($n) > self::MAX_BOUND_UNITS) return null;
+        $slack = self::BOUND_SLACK * max(1.0, abs($n));
+        $k = $up ? ceil($n - $slack) : floor($n + $slack);
+        return (int) $k;
+    }
+
+    /** $units of 10^-$decimals as text, with all its decimals: (77, 1) is "7.7", (120, 1) "12.0", (8, 0) "8". */
+    public static function unitsText($units, $decimals)
+    {
+        $d = (int) $decimals;
+        $a = abs((int) $units);
+        $sign = $units < 0 ? '-' : '';
+        if ($d === 0) return $sign . $a;
+        $p = (int) pow(10, $d);
+        return $sign . intdiv($a, $p) . '.' . str_pad((string) ($a % $p), $d, '0', STR_PAD_LEFT);
+    }
+
+    /**
+     * What an @UVRANGE rule that returns values writes for one child, from the
+     * same inputs the verdict reads:
+     *   z      the z-score of the measurement $y (null while there is none),
+     *          written the way the verdict reads it, to two decimals;
+     *   lower  the measurement at the low z limit, rounded up to $decimals;
+     *   upper  the measurement at the high z limit, rounded down to $decimals;
+     *   range  "7.7 to 12.0 kg", "at least 7.7 kg" or "at most 12.0 kg" (the
+     *          reference's unit; $comma writes a decimal comma).
+     * $limits is ['lo' => z limit as text or null, 'hi' => same]. Every key
+     * is null when there is nothing to write: no measurement, no such limit,
+     * or no measurement that scores it. "range" is also null when the two
+     * rounded bounds cross: a band narrower than one unit of the last
+     * decimal holds no value at that precision (lower and upper are still
+     * written, and say so). The numbers of z, lower and upper use a decimal
+     * point; markText() gives a field its own mark. Twin: QRID_growthOutputs.
+     *
+     * @return array ['z' => ?string, 'lower' => ?string, 'upper' => ?string, 'range' => ?string]
+     */
+    public static function outputs(array $entry, array $table, $sex, $x, $y, array $limits, $decimals, $comma = false)
+    {
+        $out = ['z' => null, 'lower' => null, 'upper' => null, 'range' => null];
+        if ($y !== null) {
+            $z = self::zScore($entry, $table, $sex, $x, $y);
+            if ($z['state'] === 'ok') $out['z'] = $z['z'];
+        }
+        $want = ['lo' => false, 'hi' => false];
+        foreach (['lo' => ['lower', true], 'hi' => ['upper', false]] as $side => $spec) {
+            $lim = isset($limits[$side]) ? $limits[$side] : null;
+            if ($lim === null || $lim === '') continue;
+            $want[$side] = true;
+            $v = self::valueFor($entry, $table, $sex, $x, (float) $lim);
+            if ($v === null) continue;
+            $k = self::boundUnits($v, $decimals, $spec[1]);
+            if ($k !== null) $out[$spec[0]] = self::unitsText($k, $decimals);
+        }
+        if (($want['lo'] || $want['hi']) && (!$want['lo'] || $out['lower'] !== null) && (!$want['hi'] || $out['upper'] !== null)) {
+            $unit = ' ' . $entry['unit'];
+            if ($want['lo'] && $want['hi']) {
+                if (Logic::numCompare($out['lower'], $out['upper']) <= 0) {
+                    $out['range'] = self::markText($out['lower'], $comma) . ' to ' . self::markText($out['upper'], $comma) . $unit;
+                }
+            } elseif ($want['lo']) {
+                $out['range'] = 'at least ' . self::markText($out['lower'], $comma) . $unit;
+            } else {
+                $out['range'] = 'at most ' . self::markText($out['upper'], $comma) . $unit;
+            }
+        }
+        return $out;
+    }
+
+    /** A number as text with the decimal mark of the field it is written to: "7.7", or "7,7" for a comma. */
+    public static function markText($text, $comma)
+    {
+        return $comma ? str_replace('.', ',', (string) $text) : (string) $text;
     }
 }
