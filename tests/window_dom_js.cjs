@@ -27,7 +27,11 @@
  *   - "future" keeps the authored block when a snapshot or withheld "from"
  *     date makes the window part advisory,
  *   - a "from" that names the field itself gives no window verdict,
- *   - a deferred stub with no bounds shows its deferral, not a config error.
+ *   - a deferred stub with no bounds shows its deferral, not a config error,
+ *   - a window counted from "today", "now" or a written date, a calendar
+ *     period (this week, last month, the week of a field) and notPast; the
+ *     parts judged against today judge a new or changed value only
+ *     (config.windowSaved), and notFuture still judges every value.
  *
  * The verdict itself is parity-locked by tests/window_js.cjs + window_php.php;
  * this file tests the DOM wiring around it.
@@ -584,6 +588,211 @@ const realNow = Date.now;
   check('snapshot "from": a future date has no snapshot note', /after today/.test(msg.innerHTML) && !/read when this page was opened/.test(msg.innerHTML));
   v.value = '2026-09-01'; v.fire('change');
   check('snapshot "from": the window note names the "from" date', /counted from enrol_date, read when this page was opened/.test(msg.innerHTML));
+}
+
+// ---- 17) a window counted from today -------------------------------------------
+const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
+{
+  const v = dateEl('seen', '01-09-2026');               // 38 days back
+  const rule = { type: 'window', fields: ['seen'], windowAnchor: 'today', windowLo: -30, windowHi: 0, windowUnit: 'days',
+    dateType: 'date', dateFormat: 'dmy', blockSave: 'hard' };
+  let env = boot([v], { clock: CLK, rules: [rule] });
+  let msg = wMsg(env, 'seen');
+  check('today [-30,0]: early', /between 09-09-2026 and 09-10-2026/.test(msg.innerHTML));
+  check('today [-30,0]: names today', /-30 to 0 days from today/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('today [-30,0]: hard block', ev._prevented === true);
+  v.value = '15-09-2026'; v.fire('change');
+  check('today [-30,0]: inside is OK', /OK/.test(msg.innerHTML));
+  v.value = '10-10-2026'; v.fire('change');
+  check('today [-30,0]: tomorrow is late', /between 09-09-2026 and 09-10-2026/.test(msg.innerHTML));
+  check('today [-30,0]: test() false', env.NS.validators.seen.test() === false);
+  const s2 = dateEl('seen', '01-09-2026');
+  env = boot([s2], { context: 'survey', clock: CLK, rules: [rule] });
+  check('today [-30,0]: a survey is told it counts from today', /from today/.test(wMsg(env, 'seen').innerHTML));
+  const s3 = dateEl('seen', '01-09-2026');
+  env = boot([s3], { rules: [rule] });
+  check('today [-30,0]: no server clock, no verdict', !shown(wMsg(env, 'seen')));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('today [-30,0]: no server clock, never blocks', ev._prevented === false);
+}
+
+// ---- 18) only a new or changed value is judged against today ---------------------
+{
+  const v = dateEl('seen', '01-09-2026');
+  const rule = { type: 'window', fields: ['seen'], windowAnchor: 'today', windowLo: -30, windowHi: 0, windowUnit: 'days',
+    dateType: 'date', dateFormat: 'dmy', blockSave: 'hard' };
+  const env = boot([v], { clock: CLK, windowSaved: { seen: '2026-09-01' }, rules: [rule] });
+  const msg = wMsg(env, 'seen');
+  check('saved value, unchanged: not judged against today', !shown(msg) && v.getAttribute('aria-invalid') === null);
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('saved value, unchanged: never blocks', ev._prevented === false);
+  check('saved value, unchanged: test() has no verdict', env.NS.validators.seen.test() === null);
+  v.value = '02-09-2026'; v.fire('change');
+  check('changed value: judged', /between 09-09-2026 and 09-10-2026/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('changed value: blocks', ev._prevented === true);
+  v.value = ' 01-09-2026 '; v.fire('change');
+  check('changed back to the saved value: not judged', !shown(msg));
+}
+{
+  const v = dateEl('seen', '2026-10-08');
+  const rule = { type: 'window', fields: ['seen'], windowNotPast: true, windowNotFuture: true,
+    dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' };
+  const env = boot([v], { clock: CLK, windowSaved: { seen: null }, rules: [rule] });
+  const msg = wMsg(env, 'seen');
+  check('saved value unreadable: notPast is not judged', /OK/.test(msg.innerHTML) && !/before today/.test(msg.innerHTML));
+  v.value = '2026-10-07'; v.fire('change');
+  check('saved value unreadable: not judged even when changed', /OK/.test(msg.innerHTML) && !/before today/.test(msg.innerHTML));
+  v.value = '2026-10-10'; v.fire('change');
+  check('saved value unreadable: notFuture still judges', /after today \(2026-10-09\)/.test(msg.innerHTML));
+}
+{
+  const v = dateEl('seen', '2026-10-08');
+  const env = boot([v], { clock: CLK, windowSaved: {}, rules: [{ type: 'window', fields: ['seen'], windowNotPast: true,
+    dateType: 'date', dateFormat: 'ymd' }] });
+  check('a record not saved yet: every value is new', /before today \(2026-10-09\)/.test(wMsg(env, 'seen').innerHTML));
+}
+
+// ---- 19) notPast -----------------------------------------------------------------
+{
+  const v = dateEl('appt', '2026-10-08');
+  const env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['appt'], windowNotPast: true,
+    dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'appt');
+  check('notPast: yesterday flagged', /before today \(2026-10-09\)/.test(msg.innerHTML));
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  check('notPast: hard block', ev._prevented === true);
+  check('notPast: test() false', env.NS.validators.appt.test() === false);
+  v.value = '2026-10-09'; v.fire('change');
+  check('notPast: today OK', /OK/.test(msg.innerHTML));
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('notPast: today saves', ev._prevented === false);
+}
+{
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV;
+  const v = dateEl('appt_at', '2026-10-09 14:28');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['appt_at'], windowNotPast: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'appt_at');
+  check('notPast datetime: 2 minutes back passes (the margin)', /OK/.test(msg.innerHTML));
+  v.value = '2026-10-09 14:25'; v.fire('change');
+  check('notPast datetime: 5 minutes back is past', /in the past/.test(msg.innerHTML));
+  Date.now = realNow;
+}
+{
+  // A computer 5 minutes slow fills in a time 5 minutes back with the Now button.
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV - 300000;
+  const v = dateEl('appt_at', '2026-10-09 14:25');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['appt_at'], windowNotPast: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  check('notPast datetime: a slow computer\'s Now passes', /OK/.test(wMsg(env, 'appt_at').innerHTML));
+  Date.now = realNow;
+}
+
+// ---- 20) periods -----------------------------------------------------------------
+{
+  const v = dateEl('paid', '15-10-2026');
+  const env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['paid'], windowAnchor: 'today', windowPeriod: 'month',
+    windowOffLo: -1, windowOffHi: -1, dateType: 'date', dateFormat: 'dmy', blockSave: 'confirm' }] });
+  const msg = wMsg(env, 'paid');
+  check('last month: named with its dates', /in last month: 01-09-2026 to 30-09-2026\./.test(msg.innerHTML));
+  v.value = '30-09-2026'; v.fire('change');
+  check('last month: its last day is OK', /OK/.test(msg.innerHTML));
+}
+{
+  const v = dateEl('paid', '2026-06-30');
+  const env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['paid'], windowAnchor: 'today', windowPeriod: 'month',
+    windowOffLo: -3, windowOffHi: -1, dateType: 'date', dateFormat: 'ymd' }] });
+  check('the three months before this one', /in the 3 months before this one: 2026-07-01 to 2026-09-30/.test(wMsg(env, 'paid').innerHTML));
+}
+{
+  const v = dateEl('seen_at', '2026-10-12 00:00');
+  const env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['seen_at'], windowAnchor: 'today', windowPeriod: 'week',
+    windowWeekStart: 'monday', dateType: 'datetime', dateFormat: 'ymd' }] });
+  check('this week on a datetime field: dates without a time', /in this week: 2026-10-05 to 2026-10-11\./.test(wMsg(env, 'seen_at').innerHTML));
+}
+{
+  const vd = dateEl('visit_date', '2026-10-09');        // a Friday
+  const v = dateEl('lab_date', '2026-10-11');
+  const rule = { type: 'window', fields: ['lab_date'], windowFrom: '[visit_date]', windowFromOp: ['ref', 'visit_date', null],
+    windowPeriod: 'week', windowWeekStart: 'sunday', dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd' };
+  let env = boot([vd, v], { rules: [rule] });
+  const msg = wMsg(env, 'lab_date');
+  check('the week of a field (Sunday start)', /in the week of \[visit_date\]: 2026-10-04 to 2026-10-10\./.test(msg.innerHTML));
+  vd.value = '2026-10-11'; vd.fire('change');
+  check('the week of a field: moving the field re-checks', /OK/.test(msg.innerHTML));
+  const vd2 = dateEl('visit_date', '2026-10-09'), v2 = dateEl('lab_date', '2026-10-11');
+  env = boot([vd2, v2], { context: 'survey', rules: [rule] });
+  check('the week of a field: a survey sees dates, no field name',
+    /between 2026-10-04 and 2026-10-10\./.test(wMsg(env, 'lab_date').innerHTML) && !/visit_date/.test(wMsg(env, 'lab_date').innerHTML));
+}
+{
+  const vd = dateEl('visit_date', '2026-10-09');
+  const v = dateEl('lab_date', '2026-06-30');
+  const env = boot([vd, v], { rules: [{ type: 'window', fields: ['lab_date'], windowFrom: '[visit_date]',
+    windowFromOp: ['ref', 'visit_date', null], windowPeriod: 'month', windowOffLo: -3, windowOffHi: -1,
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd' }] });
+  check('1 to 3 months before the month of a field',
+    /in 1 to 3 months before the month of \[visit_date\]: 2026-07-01 to 2026-09-30/.test(wMsg(env, 'lab_date').innerHTML));
+}
+
+// ---- 21) "now" and a written date ----------------------------------------------------
+{
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV;
+  const v = dateEl('dose_at', '2026-10-09 14:32');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['dose_at'], windowAnchor: 'now', windowLo: -2, windowHi: 0, windowUnit: 'hours',
+      dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'dose_at');
+  check('now [-2,0] hours: 2 minutes ahead passes (the margin)', /OK/.test(msg.innerHTML));
+  v.value = '2026-10-09 14:33'; v.fire('change');
+  check('now [-2,0] hours: 3 minutes ahead is late', /between 2026-10-09 12:28 and 2026-10-09 14:32/.test(msg.innerHTML));
+  v.value = '2026-10-09 12:28'; v.fire('change');
+  check('now [-2,0] hours: the early end counts from 2 minutes back', /OK/.test(msg.innerHTML));
+  v.value = '2026-10-09 12:27'; v.fire('change');
+  check('now [-2,0] hours: before it is early', /between 2026-10-09 12:28 and/.test(msg.innerHTML));
+  check('now [-2,0] hours: names now', /-2 to 0 hours from now/.test(msg.innerHTML));
+  Date.now = realNow;
+}
+{
+  const v = dateEl('consent', '31-12-2025');
+  const env = boot([v], { rules: [{ type: 'window', fields: ['consent'], windowAnchor: '2026-01-01', windowLo: 0, windowUnit: 'days',
+    dateType: 'date', dateFormat: 'dmy', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'consent');
+  check('a written date: on or after it, in the field\'s format', /on or after 01-01-2026/.test(msg.innerHTML)
+    && /at least 0 days from 01-01-2026/.test(msg.innerHTML));
+  v.value = '01-01-2026'; v.fire('change');
+  check('a written date: that day is OK', /OK/.test(msg.innerHTML));
+}
+{
+  // A written date is not judged against today: a saved value is still judged.
+  const v = dateEl('consent', '2025-12-31');
+  const env = boot([v], { windowSaved: { consent: '2025-12-31' }, rules: [{ type: 'window', fields: ['consent'],
+    windowAnchor: '2026-01-01', windowLo: 0, windowUnit: 'days', dateType: 'date', dateFormat: 'ymd' }] });
+  check('a written date: an unchanged saved value is still judged', /on or after 2026-01-01/.test(wMsg(env, 'consent').innerHTML));
+}
+
+// ---- 22) configuration errors ------------------------------------------------------------
+{
+  const v = dateEl('d', '2026-10-01');
+  let env = boot([v], { clock: CLK, rules: [{ type: 'window', fields: ['d'], windowAnchor: 'today', windowPeriod: 'decade',
+    dateType: 'date', dateFormat: 'ymd' }] });
+  check('an unknown period is a configuration error', !!cfgErr(env, 'd') && /period/.test(cfgErr(env, 'd').innerHTML));
+  const v2 = dateEl('d', '2026-10-01');
+  env = boot([v2], { clock: CLK, rules: [{ type: 'window', fields: ['d'], windowAnchor: 'today', windowPeriod: 'month',
+    windowOffLo: 0, windowOffHi: -1, dateType: 'date', dateFormat: 'ymd' }] });
+  check('an offset whose first is after its last is a configuration error', !!cfgErr(env, 'd') && /offset/.test(cfgErr(env, 'd').innerHTML));
+  const v3 = dateEl('d', '2026-10-01');
+  env = boot([v3], { clock: CLK, rules: [{ type: 'window', fields: ['d'], windowAnchor: '2026-02-30', windowLo: 0,
+    dateType: 'date', dateFormat: 'ymd' }] });
+  check('a written date that is not a date is a configuration error', !!cfgErr(env, 'd'));
+  const v4 = dateEl('d', '2026-10-01');
+  env = boot([v4], { clock: CLK, rules: [{ type: 'window', fields: ['d'], windowNotPast: true, dateType: 'date', dateFormat: 'ymd' }] });
+  check('notPast alone has something to check', !cfgErr(env, 'd'));
 }
 
 Date.now = realNow;

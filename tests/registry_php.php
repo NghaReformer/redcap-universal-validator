@@ -69,7 +69,9 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'choicesShow', 'choicesHide', 'choicesAll',
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
-    'dateType', 'dateFormat', 'fromType', 'fromFormat', 'windowNotFutureOff',
+    'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    // today, now and written dates, periods, notPast; notFuture dropped for its time zone
+    'windowAnchor', 'windowPeriod', 'windowOffLo', 'windowOffHi', 'windowWeekStart', 'windowNotPast', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS
     'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project
@@ -94,6 +96,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowFromOp', 'windowFromOpWhy', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    // today, now and written dates, periods, notPast
+    'windowAnchor', 'windowPeriod', 'windowOffLo', 'windowOffHi', 'windowWeekStart', 'windowNotPast',
     // a condition read when the page opened; notFuture dropped for its time zone
     'snapshotGate', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)

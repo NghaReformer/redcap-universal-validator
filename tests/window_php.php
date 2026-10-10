@@ -44,6 +44,34 @@ foreach ($fx['calendar'] as $c) {
         $got === $c['out']);
 }
 
+// windowVerdictSpread, the same cases as window_js.cjs
+check('spread fixture loads', !empty($fx['spread']));
+foreach ($fx['spread'] as $c) {
+    $spec = $c['spec'] + ['unit' => 'days'];
+    $clock = array_key_exists('clock', $c) ? $c['clock'] : $fx['clock'];
+    $got = TemporalLogic::windowVerdictSpread($spec, $c['value'], 'ymd', $c['anchorLo'], $c['anchorHi'], 'ymd', $clock);
+    $want = ['verdict' => $c['verdict'], 'earliest' => $c['earliest'], 'latest' => $c['latest']];
+    check('spread ' . $c['name'] . ' -> ' . json_encode($want) . ' (got ' . json_encode($got) . ')', $got === $want);
+}
+
+// clockSlack: futureNow and pastNow 120 s either side of "now", which stays
+$cs = TemporalLogic::clockSlack(['today' => '2026-10-09', 'now' => '2026-10-09 14:30:00']);
+check('clockSlack futureNow', $cs['futureNow'] === '2026-10-09 14:32:00');
+check('clockSlack pastNow', $cs['pastNow'] === '2026-10-09 14:28:00');
+check('clockSlack keeps now and today', $cs['now'] === '2026-10-09 14:30:00' && $cs['today'] === '2026-10-09');
+check('clockSlack leaves a clock that does not read', TemporalLogic::clockSlack(['now' => 'x']) === ['now' => 'x']);
+
+// anchorType / keywordAnchorType, the same pins as window_js.cjs
+check('anchorType date', TemporalLogic::anchorType('2026-01-01') === 'date');
+check('anchorType datetime', TemporalLogic::anchorType('2026-01-01 08:00') === 'datetime');
+check('anchorType datetime_seconds', TemporalLogic::anchorType('2026-01-01 08:00:09') === 'datetime_seconds');
+check('anchorType refuses an impossible date', TemporalLogic::anchorType('2026-02-30') === null);
+check('anchorType refuses junk and non-strings', TemporalLogic::anchorType('today') === null && TemporalLogic::anchorType(null) === null
+    && TemporalLogic::anchorType(' 2026-01-01') === null);
+check('keywordAnchorType today is a date', TemporalLogic::keywordAnchorType('today') === 'date');
+check('keywordAnchorType now is a date and time to the second', TemporalLogic::keywordAnchorType('now') === 'datetime_seconds');
+check('keywordAnchorType of a written date', TemporalLogic::keywordAnchorType('2026-01-01 08:00') === 'datetime');
+
 // fromValidation: the type and format a REDCap validation implies
 foreach ([
     'date_ymd' => ['type' => 'date', 'format' => 'ymd'],

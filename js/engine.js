@@ -1657,26 +1657,66 @@ function QRID_clockAt(base,elapsedMs){
   return now===null?null:{today:now.slice(0,10),now:now};
 }
 function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
-/* "Now" for a date and time typed on this page: the server's clock plus 120
-   seconds (TemporalLogic::CLOCK_SLACK_S, which the post-save audit allows too),
-   plus how far this computer's clock runs ahead of the server's, up to 10
-   minutes. REDCap's Now button and @NOW fill in the computer's time, so on a
-   computer a little fast they still pass. The lead is measured in UTC
-   (QRID_deviceClockError), so the computer's time zone plays no part: a
-   computer set to a zone ahead of the rule's is still refused, which points
-   to the project's time zone setting. Dates have no margin. */
+/* "Now" for a date and time typed on this page is a span around the server's
+   clock. futureNow (for notFuture, and the late end of a window counted from
+   "now") is the clock plus 120 seconds (TemporalLogic::CLOCK_SLACK_S, which
+   the post-save audit allows too), plus how far this computer's clock runs
+   ahead of the server's, up to 10 minutes. pastNow (for notPast, and the
+   early end of a window counted from "now") is as far before it, plus how far
+   this computer's clock runs behind. REDCap's Now button and @NOW fill in the
+   computer's time, so on a computer a little off they still pass. The error
+   is measured in UTC (QRID_deviceClockError), so the computer's time zone
+   plays no part: a computer set to another zone than the rule's is still
+   refused, which points to the project's time zone setting. "today" and
+   "now" are unchanged, and dates have no margin. */
 var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_ERROR_MAX_S=600;
 function QRID_clockLenient(clock,errorSeconds){
   var b=clock?QRID_temporalDate(clock.now,'datetime_seconds','ymd'):null;if(!b)return clock;
-  var lead=(QRID_finiteNumber(errorSeconds)&&errorSeconds>0)?Math.min(Math.floor(errorSeconds),QRID_DEVICE_ERROR_MAX_S):0;
-  var now=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead,'datetime');
-  return now===null?clock:{today:clock.today,now:now};
+  var err=QRID_finiteNumber(errorSeconds)?errorSeconds:0;
+  var lead=err>0?Math.min(Math.floor(err),QRID_DEVICE_ERROR_MAX_S):0;
+  var lag=err<0?Math.min(Math.floor(-err),QRID_DEVICE_ERROR_MAX_S):0;
+  var out={today:clock.today,now:clock.now};
+  var later=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead,'datetime');
+  var earlier=QRID_temporalCanonical(b.seconds-QRID_CLOCK_SLACK_S-lag,'datetime');
+  if(later!==null)out.futureNow=later;
+  if(earlier!==null)out.pastNow=earlier;
+  return out;
 }
 /* How many seconds this computer's clock ran ahead of the server's when the
    page loaded (behind is negative), from the clock's UTC stamp; null without
    one. The time the page took to arrive counts as a little lead. */
 function QRID_deviceClockError(base){
   return (base&&typeof base==='object'&&QRID_finiteNumber(base.utc))?(QRID_CLOCK_T0-base.utc)/1000:null;
+}
+/* The verdict for a window counted from a moment known only to within a
+   margin (a "from" of "now", which a computer a little off fills in): a value
+   passes when some anchor between anchorLo and anchorHi accepts it. The
+   earliest bound comes from anchorLo, the latest from anchorHi. Twin of
+   TemporalLogic::windowVerdictSpread. */
+function QRID_windowVerdictSpread(spec,value,valueFormat,anchorLo,anchorHi,anchorFormat,clock){
+  var lo=QRID_windowVerdict(spec,value,valueFormat,anchorLo,anchorFormat,clock);
+  if(anchorHi===anchorLo)return lo;
+  var hi=QRID_windowVerdict(spec,value,valueFormat,anchorHi,anchorFormat,clock);
+  var windowish=['ok','window-early','window-late'];
+  if(windowish.indexOf(lo.verdict)<0)return lo;
+  if(windowish.indexOf(hi.verdict)<0)return hi;
+  var verdict=lo.verdict==='window-early'?'window-early':(hi.verdict==='window-late'?'window-late':'ok');
+  return {verdict:verdict,earliest:lo.earliest,latest:hi.latest};
+}
+/* The temporal type of a date written in a rule ("from": "2026-01-01"): date,
+   datetime (to the minute) or datetime_seconds; null when it is not a date.
+   Twin of TemporalLogic::anchorType. */
+function QRID_anchorType(text){
+  if(typeof text!=='string')return null;
+  var type=text.length===10?'date':(text.length===16?'datetime':'datetime_seconds');
+  return QRID_temporalDate(text,type,'ymd')?type:null;
+}
+/* The type of a "from" keyword's or written date's anchor: today a date, now a
+   date and time to the second. Twin of TemporalLogic::keywordAnchorType. */
+function QRID_keywordAnchorType(anchor){
+  if(anchor==='today')return 'date';
+  if(anchor==='now')return 'datetime_seconds';
+  return QRID_anchorType(anchor);
 }
 
 /* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
@@ -3590,8 +3630,10 @@ function QRIDConstraintInit(QRID_CONFIG){
   else boot();
 }
 /* ---- window validator (@UVWINDOW) -----------------------------------------
-   A date must fall inside a window around another date ("from"), and/or not
-   after today ("notFuture"). The verdict is QRID_windowVerdict, the twin of
+   A date must fall inside a window around another date ("from": a field,
+   "today", "now" or a written date) or inside a calendar period ("period"),
+   and/or not after today ("notFuture") or before it ("notPast"). The verdict
+   is QRID_windowVerdict, the twin of
    TemporalLogic::windowVerdict (tests/window_fixture.json drives both), and
    UniversalValidator::findingsWindow is the server side of this factory.
    The "from" date arrives FOLDED (UniversalValidator::foldRuleConditions):
@@ -3603,8 +3645,12 @@ function QRIDConstraintInit(QRID_CONFIG){
    and time may run up to QRID_clockLenient's margin past the server's "now",
    so the Now button on a computer whose clock is a little fast still passes.
    A value that is not yet a whole date (being typed, or 31-02) shows no
-   verdict: REDCap's own date check speaks to that. tests/window_dom_js.cjs
-   locks this factory. */
+   verdict: REDCap's own date check speaks to that.
+   The parts judged against today (a "from" of today or now, notPast) judge a
+   new or changed value only (config.windowSaved holds the saved values): a
+   saved value is judged against the day it was saved, after saving
+   (UniversalValidator::findingsWindow), so opening an old record never flags
+   it. tests/window_dom_js.cjs locks this factory. */
 function QRIDWindowInit(QRID_CONFIG){
   function styleMsg(el, ok){
     var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -3620,24 +3666,43 @@ function QRIDWindowInit(QRID_CONFIG){
       configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
     }
     var lo = bound(cfg.windowLo), hi = bound(cfg.windowHi);
-    var hasWindow = lo !== null || hi !== null;
-    var notFuture = cfg.windowNotFuture === true;
+    /* A calendar period (week, month, quarter, year) holding the "from" date,
+       moved by offLo..offHi periods. */
+    var period = null;
+    if(cfg.windowPeriod != null){
+      if(["week", "month", "quarter", "year"].indexOf(cfg.windowPeriod) >= 0) period = cfg.windowPeriod;
+      else if(!configError) configError = '"period" must be week, month, quarter or year.';
+    }
+    var offLo = cfg.windowOffLo == null ? 0 : bound(cfg.windowOffLo);
+    var offHi = cfg.windowOffHi == null ? 0 : bound(cfg.windowOffHi);
+    if(!configError && (offLo === null || offHi === null || offLo > offHi)){
+      configError = '"offset" must be a whole number of periods, or [first, last].';
+    }
+    var hasWindow = lo !== null || hi !== null || period !== null;
+    var notFuture = cfg.windowNotFuture === true, notPast = cfg.windowNotPast === true;
+    /* "from" as "today", "now" or a written date (windowAnchor), not a field. */
+    var anchorKw = (typeof cfg.windowAnchor === "string" && cfg.windowAnchor !== "") ? cfg.windowAnchor : null;
+    var anchorType = anchorKw === null ? null : QRID_keywordAnchorType(anchorKw);
+    if(!configError && anchorKw !== null && anchorType === null) configError = '@UVWINDOW cannot read its "from" date.';
+    var clockAnchor = anchorKw === "today" || anchorKw === "now";
     /* A deferred stub (the page could not be given this rule) carries no bounds
        or date type: it reports its deferral, not a configuration error. */
-    if(!configError && !cfg.deferred && !hasWindow && !notFuture){
-      configError = '@UVWINDOW has nothing to check — set a "from" date with a "window", or "notFuture": true.';
+    if(!configError && !cfg.deferred && !hasWindow && !notFuture && !notPast){
+      configError = '@UVWINDOW has nothing to check — set a "from" date with a "window" or a "period", "notFuture": true or "notPast": true.';
     }
     if(!configError && !cfg.deferred && (cfg.dateType !== "date" && cfg.dateType !== "datetime" && cfg.dateType !== "datetime_seconds")){
       configError = "@UVWINDOW needs a date field — this field's date type is unknown.";
     }
     /* The anchor. A rule the server built always carries windowFromOp unless it
-       is deferred; the plain-text fallback serves hand-written configs and the
-       test harnesses, and reads only a plain [field] of this page. */
+       is deferred or counts from today, now or a written date (["anchor", it]);
+       the plain-text fallback serves hand-written configs and the test
+       harnesses, and reads only a plain [field] of this page. */
     var fromOp = null;
     if(!configError && hasWindow){
       var op = cfg.windowFromOp;
+      if(anchorKw !== null) fromOp = ["anchor", anchorKw];
       /* "withheld": the server sent nothing of a "from" date this viewer may not read. */
-      if(op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld")) fromOp = op;
+      else if(op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld")) fromOp = op;
       else if(typeof cfg.windowFrom === "string" && cfg.windowFrom !== ""){
         var p = QRID_whenParse(cfg.windowFrom + "=''");
         if(p.ok && p.ast[0] === "cmp" && p.ast[2][0] === "ref" && p.ast[2][2] === null) fromOp = ["ref", p.ast[2][1], null];
@@ -3652,10 +3717,10 @@ function QRIDWindowInit(QRID_CONFIG){
     /* A "from" field on this page re-checks the window when it changes. */
     var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
     return { configError: configError, gate: GATE, fromWatch: FROM_WATCH, blockSave: BLOCK,
-             /* "future" never depends on the "from" date, so a snapshot or withheld
-                anchor (which turns blockSave off) does not soften it. A condition
-                read when the page was built (snapshotGate) does: whether the rule
-                applies may have changed since. */
+             /* "future" and "past" never depend on the "from" date, so a snapshot
+                or withheld anchor (which turns blockSave off) does not soften
+                them. A condition read when the page was built (snapshotGate)
+                does: whether the rule applies may have changed since. */
              futureBlock: cfg.snapshotGate === true ? "off" : BLOCK,
              snapshotGate: cfg.snapshotGate === true,
              notFutureOff: (cfg.windowNotFutureOff && cfg.windowNotFutureOff.length) ? cfg.windowNotFutureOff : null,
@@ -3668,48 +3733,124 @@ function QRIDWindowInit(QRID_CONFIG){
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: { lo: lo, hi: hi, unit: (typeof cfg.windowUnit === "string" && cfg.windowUnit !== "") ? cfg.windowUnit : "days",
-                     notFuture: notFuture, type: cfg.dateType, fromType: cfg.fromType == null ? null : cfg.fromType },
+                     period: period, offLo: offLo, offHi: offHi, weekStart: cfg.windowWeekStart === "sunday" ? "sunday" : "monday",
+                     notFuture: notFuture, notPast: notPast, type: cfg.dateType,
+                     fromType: anchorKw !== null ? anchorType : (cfg.fromType == null ? null : cfg.fromType) },
              fromOp: fromOp,
+             anchorKw: anchorKw, clockAnchor: clockAnchor,
+             /* the parts judged against today: a "from" of today or now, notPast */
+             todayRelative: clockAnchor || notPast,
              fromFormat: (fromOp && fromOp[0] === "ref") ? (cfg.fromFormat || "ymd") : "ymd",
-             fromName: (typeof cfg.windowFrom === "string") ? cfg.windowFrom : "",
+             fromName: anchorKw === null ? ((typeof cfg.windowFrom === "string") ? cfg.windowFrom : "")
+                     : clockAnchor ? anchorKw : QRID_temporalFormat(anchorKw, anchorType, cfg.dateFormat || "ymd"),
              dateFormat: cfg.dateFormat || "ymd",
              mode: { window: true } };
   }
 
   var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
   var configError = VS.configError;
+  /* The block for a date judged against the clock alone (notFuture, notPast). */
   var FUTURE_BLOCK = "off";
   for(var fbi = 0; fbi < VS.all.length; fbi++){
     var fv = VS.all[fbi];
-    if(!fv.configError && !fv.deferred && fv.spec.notFuture && fv.futureBlock !== "off"){ FUTURE_BLOCK = fv.futureBlock; break; }
+    if(!fv.configError && !fv.deferred && (fv.spec.notFuture || fv.spec.notPast) && fv.futureBlock !== "off"){ FUTURE_BLOCK = fv.futureBlock; break; }
   }
   var ANY_BLOCK = VS.firstBlock !== "off" || FUTURE_BLOCK !== "off";
 
+  /* Whether the field's value is new or changed since the page was built.
+     config.windowSaved holds the saved value of each field a today-relative
+     part judges; only a new or changed value is judged against today, as a
+     saved one was judged against the day it was saved, after saving. A field
+     the server could not read (null) counts as unchanged, so nothing is
+     judged against today there. Without windowSaved (a record not saved yet,
+     a hand-written config) every value is new. */
+  function isNewValue(V, fieldName, val){
+    var saved = QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.windowSaved;
+    if(!saved || typeof saved !== "object" || !Object.prototype.hasOwnProperty.call(saved, fieldName)) return true;
+    var s = saved[fieldName];
+    if(typeof s !== "string") return false;
+    var cur = typeof val === "string" ? QRID_whenTrim(val) : "";
+    var a = QRID_temporalDate(cur, V.spec.type, V.dateFormat), b = QRID_temporalDate(QRID_whenTrim(s), V.spec.type, "ymd");
+    if(a && b) return a.value !== b.value;
+    return cur !== QRID_whenTrim(s);
+  }
   /* One variant's verdict for the field's current value. A "from" that names the
      field itself (the extended path folds [baseline_arm_1][visit_date] to a live
-     ref on the baseline visit) is not an anchor: no window applies there. */
+     ref on the baseline visit) is not an anchor: no window applies there. A
+     "from" of "now" is the span QRID_clockLenient gives, so the window's early
+     end counts from pastNow and its late end from futureNow. */
   function verdictOf(V, fieldName){
     var val = QRID_WHEN.readRef(fieldName, null);
-    var op = V.fromOp, anchor = null;
+    var spec = V.spec, op = V.fromOp, anchor = null, anchorHi;
+    if(V.todayRelative && !isNewValue(V, fieldName, val)){
+      spec = {};
+      for(var k in V.spec) if(Object.prototype.hasOwnProperty.call(V.spec, k)) spec[k] = V.spec[k];
+      spec.notPast = false;
+      if(V.clockAnchor){ spec.lo = null; spec.hi = null; spec.period = null; }
+    }
+    var windowed = spec.lo !== null || spec.hi !== null || spec.period !== null;
+    var clock = (spec.notFuture || spec.notPast || (V.clockAnchor && windowed))
+      ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
+    var judge = (clock && V.spec.type !== "date")
+      ? QRID_clockLenient(clock, QRID_deviceClockError(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock)) : clock;
     if(op && op[0] === "ref") anchor = op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null);
     else if(op && op[0] === "lit") anchor = String(op[1]);
     /* A "from" date marked with a Missing Data Code was not entered. */
-    if(anchor !== null && QRID_isMissingCode(anchor)) anchor = "";
-    var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
-    var judge = (clock && V.spec.type !== "date")
-      ? QRID_clockLenient(clock, QRID_deviceClockError(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock)) : clock;
-    var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, judge);
+    if(typeof anchor === "string" && QRID_isMissingCode(anchor)) anchor = "";
+    anchorHi = anchor;
+    if(op && op[0] === "anchor" && windowed){
+      if(op[1] === "today"){ anchor = judge ? judge.today : false; anchorHi = anchor; }
+      else if(op[1] === "now"){
+        anchor = judge ? (judge.pastNow != null ? judge.pastNow : judge.now) : false;
+        anchorHi = judge ? (judge.futureNow != null ? judge.futureNow : judge.now) : false;
+      }
+      else { anchor = op[1]; anchorHi = anchor; }
+    }
+    var r = QRID_windowVerdictSpread(spec, val, V.dateFormat, anchor, anchorHi, V.fromFormat, judge);
     r.clock = clock;
     r.anchor = anchor;
     return r;
   }
+  /* A period by name: "last month", "the month of [visit_date]". */
+  function periodLabel(V){
+    var p = V.spec.period, a = V.spec.offLo, b = V.spec.offHi, name = V.fromName;
+    var rel = V.clockAnchor;
+    function plural(n){ return n + " " + p + (n === 1 ? "" : "s"); }
+    function one(o){
+      if(rel) return o === 0 ? "this " + p : o === -1 ? "last " + p : o === 1 ? "next " + p
+                   : "the " + p + " " + plural(Math.abs(o)) + (o < 0 ? " ago" : " from now");
+      var of = "the " + p + " of " + name;
+      return o === 0 ? of : plural(Math.abs(o)) + (o < 0 ? " before " : " after ") + of;
+    }
+    if(a === b) return one(a);
+    if(rel && b === -1) return "the " + plural(-a) + " before this one";
+    if(rel && a === 1) return "the " + plural(b) + " after this one";
+    if(rel && b === 0) return "this " + p + " and the " + plural(-a) + " before it";
+    if(rel && a === 0) return "this " + p + " and the " + plural(b) + " after it";
+    if(!rel && b < 0) return (-b) + " to " + plural(-a) + " before the " + p + " of " + name;
+    if(!rel && a > 0) return a + " to " + plural(b) + " after the " + p + " of " + name;
+    return one(a) + " to " + one(b);
+  }
   /* The default wording names the allowed dates the way the field shows them.
-     Survey respondents are not told which field the window counts from. */
+     Survey respondents are not told which field the window counts from; a
+     window counted from today, now or a written date names it. */
   function describe(V, r){
     var t = V.spec.type, f = V.dateFormat;
     if(r.verdict === "future"){
       if(t !== "date") return "This date and time is in the future.";
       return "This date is after today" + (r.clock ? " (" + QRID_escapeHtml(QRID_temporalFormat(r.clock.today, "date", f)) + ")" : "") + ".";
+    }
+    if(r.verdict === "past"){
+      if(t !== "date") return "This date and time is in the past.";
+      return "This date is before today" + (r.clock ? " (" + QRID_escapeHtml(QRID_temporalFormat(r.clock.today, "date", f)) + ")" : "") + ".";
+    }
+    var named = V.anchorKw !== null || !QRID_IS_SURVEY;
+    if(V.spec.period !== null && r.earliest !== null && r.latest !== null){
+      /* a period is whole days: its dates are shown without a time */
+      var pe = QRID_escapeHtml(QRID_temporalFormat(r.earliest.slice(0, 10), "date", f));
+      var pl = QRID_escapeHtml(QRID_temporalFormat(r.latest.slice(0, 10), "date", f));
+      return named ? "This date must be in " + QRID_escapeHtml(periodLabel(V)) + ": " + pe + " to " + pl + "."
+                   : "This date must be between " + pe + " and " + pl + ".";
     }
     var e = r.earliest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.earliest, t, f)) : null;
     var l = r.latest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.latest, t, f)) : null;
@@ -3717,7 +3858,7 @@ function QRIDWindowInit(QRID_CONFIG){
              : e ? "This date must be on or after " + e + "."
              : l ? "This date must be on or before " + l + "."
              : "This date is outside its allowed window.";
-    if(!QRID_IS_SURVEY && V.fromName){
+    if(named && V.fromName && V.spec.period === null){
       var lo = V.spec.lo, hi = V.spec.hi, u = V.spec.unit;
       var range = (lo !== null && hi !== null) ? lo + " to " + hi : (lo !== null ? "at least " + lo : "at most " + hi);
       text += ' <span style="opacity:.8">(' + QRID_escapeHtml(range + " " + u + " from " + V.fromName) + ")</span>";
@@ -3756,7 +3897,9 @@ function QRIDWindowInit(QRID_CONFIG){
           "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
         msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
           " is not checked on this page — " + QRID_escapeHtml(V.withheldWhy.join(" ")) +
-          (V.spec.notFuture ? " A date after today is still flagged." : "");
+          (V.spec.notFuture && V.spec.notPast ? " A date other than today is still flagged."
+           : V.spec.notFuture ? " A date after today is still flagged."
+           : V.spec.notPast ? " A date before today is still flagged." : "");
         setGuard(false); QRID_setModeState(input, "w", null);
         return;
       }
@@ -3786,7 +3929,8 @@ function QRIDWindowInit(QRID_CONFIG){
       if(QRID_isMissingCode(QRID_WHEN.readRef(fieldName, null))){ inert(); return; }
       var r;
       try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
-      var future = r.verdict === "future";
+      /* judged against the clock alone: never depends on the "from" date */
+      var clockHit = r.verdict === "future" || r.verdict === "past";
       if(r.verdict === "unknown" && !QRID_IS_SURVEY && V.fromOp && V.fromOp[0] === "lit"
          && typeof r.anchor === "string" && QRID_whenTrim(r.anchor) !== ""
          && QRID_temporalDate(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))), V.spec.type, V.dateFormat)){
@@ -3800,21 +3944,21 @@ function QRIDWindowInit(QRID_CONFIG){
         return;
       }
       if(r.verdict === "unknown" || (r.verdict === "inert" && !V.windowWithheld)){ inert(); return; }
-      if(!future && V.windowWithheld){
+      if(!clockHit && V.windowWithheld){
         /* inert here can only mean "nothing else to check": the value is typed */
         if(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === ""){ inert(); return; }
         withheld(V); return;
       }
-      if(r.verdict !== "ok" && !future && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
+      if(r.verdict !== "ok" && !clockHit && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
       var ok = r.verdict === "ok";
       styleMsg(msg, ok);
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
-      setGuard(!ok, future ? V.futureBlock : V.blockSave);
+      setGuard(!ok, clockHit ? V.futureBlock : V.blockSave);
       var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
       /* Why a verdict that rests on a value read when the page was opened does
          not block: named by what read it, the "from" date or the condition
          that decides whether the rule applies (snapshotGate). */
-      if(!ok && V.snapshot && !QRID_IS_SURVEY && (!future || V.snapshotGate)){
+      if(!ok && V.snapshot && !QRID_IS_SURVEY && (!clockHit || V.snapshotGate)){
         base += ' <span style="opacity:.8">(' + (V.snapshotGate ? "based on " : "counted from ") +
           QRID_escapeHtml(V.snapshot.join(", ")) +
           ", read when this page was opened — reload if it has changed since." +
@@ -3849,7 +3993,7 @@ function QRIDWindowInit(QRID_CONFIG){
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
         var v = verdictOf(a[0], f).verdict;
         if(v === "ok" && a[0].windowWithheld) return null;   /* the window part was never checked */
-        return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
+        return v === "ok" ? true : (v === "future" || v === "past" || v === "window-early" || v === "window-late") ? false : null;
       } };
   });
   function boot(){
@@ -5938,14 +6082,16 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
                       "windowFromOpWhy", "windowLo", "windowHi", "windowUnit",
                       "windowNotFuture", "dateType", "dateFormat", "fromType", "fromFormat",
-                      "snapshotGate", "windowNotFutureOff", "existsLocal", "existsSurveys",
-                      "rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi",
-                      "rangeSoftBlock", "rangeHardBlock", "rangeUnit", "rangeSoftText",
-                      "rangeHardText", "decimalComma", "rangeComputed", "rangeReference",
-                      "rangeSexOp", "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
-                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
-                      "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
-                      "deferredOnSave", "extendedAdvisory"];
+                      "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi",
+                      "windowWeekStart", "windowNotPast", "snapshotGate", "windowNotFutureOff",
+                      "existsLocal", "existsSurveys", "rangeSoftLo", "rangeSoftHi",
+                      "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
+                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",
+                      "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
+                      "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
+                      "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
+                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "deferredOnSave",
+                      "extendedAdvisory"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -6125,7 +6271,8 @@ window.INSPIREUniversalValidator = {
     caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
   },
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
-    verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
+    verdict: QRID_windowVerdict, verdictSpread: QRID_windowVerdictSpread, anchorType: QRID_anchorType,
+    keywordAnchorType: QRID_keywordAnchorType, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
     clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS, calendarUnits: QRID_CALENDAR_UNITS,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,

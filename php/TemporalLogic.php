@@ -127,17 +127,47 @@ final class TemporalLogic
     const CLOCK_SLACK_S = 120;
 
     /**
-     * $clock with "now" CLOCK_SLACK_S later, "today" unchanged, or $clock as
-     * it is when its "now" does not read.
+     * $clock with the margin a date and time gets: futureNow CLOCK_SLACK_S
+     * after "now" (for notFuture) and pastNow as much before it (for notPast
+     * and the early end of a window counted from "now"). "now" and "today"
+     * are unchanged; $clock comes back as it is when its "now" does not read.
      */
     public static function clockSlack(array $clock)
     {
         $now = isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
         if (!$now || $now['state'] !== 'ok') return $clock;
         $later = TemporalValue::canonical($now['seconds'] + self::CLOCK_SLACK_S, 'datetime');
-        if ($later === null) return $clock;
-        $clock['now'] = $later;
+        $earlier = TemporalValue::canonical($now['seconds'] - self::CLOCK_SLACK_S, 'datetime');
+        if ($later !== null) $clock['futureNow'] = $later;
+        if ($earlier !== null) $clock['pastNow'] = $earlier;
         return $clock;
+    }
+
+    /**
+     * The verdict for a window counted from a moment known only to within a
+     * margin (a "from" of "now", which a computer a little off fills in): a
+     * value passes when some anchor between $anchorLo and $anchorHi accepts
+     * it. The earliest bound comes from $anchorLo, the latest from $anchorHi.
+     * Twin of QRID_windowVerdictSpread.
+     */
+    public static function windowVerdictSpread(array $spec, $value, $valueFormat, $anchorLo, $anchorHi, $anchorFormat, $clock)
+    {
+        $lo = self::windowVerdict($spec, $value, $valueFormat, $anchorLo, $anchorFormat, $clock);
+        if ($anchorHi === $anchorLo) return $lo;
+        $hi = self::windowVerdict($spec, $value, $valueFormat, $anchorHi, $anchorFormat, $clock);
+        $windowish = ['ok', 'window-early', 'window-late'];
+        if (!in_array($lo['verdict'], $windowish, true)) return $lo;
+        if (!in_array($hi['verdict'], $windowish, true)) return $hi;
+        $verdict = $lo['verdict'] === 'window-early' ? 'window-early' : ($hi['verdict'] === 'window-late' ? 'window-late' : 'ok');
+        return ['verdict' => $verdict, 'earliest' => $lo['earliest'], 'latest' => $hi['latest']];
+    }
+
+    /** The temporal type of a "from" keyword's or written date's anchor: today a date, now a date and time to the second. */
+    public static function keywordAnchorType($anchor)
+    {
+        if ($anchor === 'today') return 'date';
+        if ($anchor === 'now') return 'datetime_seconds';
+        return self::anchorType($anchor);
     }
 
     /** Seconds in one window unit. */

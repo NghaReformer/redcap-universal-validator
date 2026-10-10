@@ -99,16 +99,24 @@ check('clockAt: no next change counts elapsed time only',
 check('clockAt: a zone field that is not a number is ignored',
   W.clockAt(Object.assign({}, dst, { offsetAfter: '0' }), 120 * 1000).now === '2026-10-25 02:00:00');
 
-// clockLenient: a date and time may run 120 s past "now", plus how far this
-// computer's clock runs ahead of the server's (in UTC), by up to 10 minutes.
+// clockLenient: a date and time may run 120 s past "now" (futureNow), plus how
+// far this computer's clock runs ahead of the server's (in UTC), by up to 10
+// minutes; and as far before it (pastNow), plus how far it runs behind.
 const srv = { today: '2026-10-09', now: '2026-10-09 14:30:00' };
-check('clockLenient: 120 s past the server clock', W.clockLenient(srv, null).now === '2026-10-09 14:32:00');
-check('clockLenient: a computer behind the server does not narrow it', W.clockLenient(srv, -1800).now === '2026-10-09 14:32:00');
-check('clockLenient: a computer 5 minutes fast widens it', W.clockLenient(srv, 300).now === '2026-10-09 14:37:00');
-check('clockLenient: by up to 10 minutes', W.clockLenient(srv, 600).now === '2026-10-09 14:42:00');
-check('clockLenient: a clock days ahead widens it by 10 minutes only', W.clockLenient(srv, 3 * 86400).now === '2026-10-09 14:42:00');
-check('clockLenient: a lead that is not a number is ignored', W.clockLenient(srv, NaN).now === '2026-10-09 14:32:00');
+check('clockLenient: 120 s past the server clock', W.clockLenient(srv, null).futureNow === '2026-10-09 14:32:00');
+check('clockLenient: a computer behind the server does not narrow it', W.clockLenient(srv, -1800).futureNow === '2026-10-09 14:32:00');
+check('clockLenient: a computer 5 minutes fast widens it', W.clockLenient(srv, 300).futureNow === '2026-10-09 14:37:00');
+check('clockLenient: by up to 10 minutes', W.clockLenient(srv, 600).futureNow === '2026-10-09 14:42:00');
+check('clockLenient: a clock days ahead widens it by 10 minutes only', W.clockLenient(srv, 3 * 86400).futureNow === '2026-10-09 14:42:00');
+check('clockLenient: a lead that is not a number is ignored', W.clockLenient(srv, NaN).futureNow === '2026-10-09 14:32:00');
 check('clockLenient: keeps the server day', W.clockLenient(srv, 600).today === '2026-10-09');
+check('clockLenient: "now" itself is unchanged', W.clockLenient(srv, 600).now === '2026-10-09 14:30:00');
+check('clockLenient: pastNow is 120 s before the server clock', W.clockLenient(srv, null).pastNow === '2026-10-09 14:28:00');
+check('clockLenient: a computer ahead does not widen pastNow', W.clockLenient(srv, 300).pastNow === '2026-10-09 14:28:00');
+check('clockLenient: a computer 5 minutes slow widens pastNow', W.clockLenient(srv, -300).pastNow === '2026-10-09 14:23:00');
+check('clockLenient: pastNow by up to 10 minutes', W.clockLenient(srv, -3 * 86400).pastNow === '2026-10-09 14:18:00');
+check('clockLenient: a clock that does not read stays as it is', W.clockLenient({ today: 'x', now: 'x' }, 0).now === 'x'
+  && W.clockLenient({ today: 'x', now: 'x' }, 0).futureNow === undefined);
 check('clockLenient: no clock stays no clock', W.clockLenient(null, 600) === null);
 check('clockError: no UTC stamp, no lead', W.clockError({ today: '2026-10-09', now: '2026-10-09 14:30:00' }) === null);
 // The lead is fixed when the engine loads: against a stamp of 0 it is that moment.
@@ -121,6 +129,34 @@ check('a time 2 minutes ahead passes with the margin',
   W.verdict(dtSpec, '2026-10-09 14:32', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'ok');
 check('...3 minutes ahead does not',
   W.verdict(dtSpec, '2026-10-09 14:33', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'future');
+const dtPast = { type: 'datetime', notPast: true };
+check('notPast: a time 2 minutes back passes with the margin',
+  W.verdict(dtPast, '2026-10-09 14:28', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'ok');
+check('...3 minutes back does not',
+  W.verdict(dtPast, '2026-10-09 14:27', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'past');
+
+// anchorType / keywordAnchorType: twins of TemporalLogic::anchorType / keywordAnchorType
+check('anchorType date', W.anchorType('2026-01-01') === 'date');
+check('anchorType datetime', W.anchorType('2026-01-01 08:00') === 'datetime');
+check('anchorType datetime_seconds', W.anchorType('2026-01-01 08:00:09') === 'datetime_seconds');
+check('anchorType refuses an impossible date', W.anchorType('2026-02-30') === null);
+check('anchorType refuses junk and non-strings', W.anchorType('today') === null && W.anchorType(null) === null
+  && W.anchorType(' 2026-01-01') === null);
+check('keywordAnchorType today is a date', W.keywordAnchorType('today') === 'date');
+check('keywordAnchorType now is a date and time to the second', W.keywordAnchorType('now') === 'datetime_seconds');
+check('keywordAnchorType of a written date', W.keywordAnchorType('2026-01-01 08:00') === 'datetime');
+
+// verdictSpread: the fixture's "spread" cases (window_php.php runs them too)
+check('spread fixture loads', Array.isArray(fx.spread) && fx.spread.length > 0);
+for (const c of fx.spread) {
+  const spec = Object.assign({ unit: 'days' }, c.spec);
+  const clock = Object.prototype.hasOwnProperty.call(c, 'clock') ? c.clock : fx.clock;
+  const got = W.verdictSpread(spec, c.value, 'ymd', c.anchorLo, c.anchorHi, 'ymd', clock);
+  const want = { verdict: c.verdict, earliest: c.earliest, latest: c.latest };
+  let same = true;
+  try { assert.deepStrictEqual(got, want); } catch (e) { same = false; }
+  check('spread ' + c.name + ' -> ' + JSON.stringify(want) + ' (got ' + JSON.stringify(got) + ')', same);
+}
 
 Date.now = realNow;
 console.log(`window_js: ${n} checks, ${fails} failure(s)`);

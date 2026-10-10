@@ -155,8 +155,17 @@
     },
     {
       "key": "window-timezone",
-      "name": "Time zone for @UVWINDOW \"notFuture\" (today and now), as a name such as Africa/Douala. Blank uses the server's time zone. Set it when the sites entering data are ahead of the server's time zone: otherwise a date or time entered there as today or now counts as in the future.",
+      "name": "Time zone for @UVWINDOW \"notFuture\" (today and now, also for \"notPast\" and a \"from\" of \"today\" or \"now\"), as a name such as Africa/Douala. Blank uses the server's time zone. Set it when the sites entering data are in another time zone than the server: otherwise a date or time entered there as today or now can count as in the future or the past.",
       "type": "text"
+    },
+    {
+      "key": "window-week-start",
+      "name": "First day of the week for @UVWINDOW \"period\":\"week\". A rule's own \"weekStart\" overrides it.",
+      "type": "radio",
+      "choices": [
+        { "value": "monday", "name": "Monday (ISO 8601, the default)" },
+        { "value": "sunday", "name": "Sunday" }
+      ]
     },
     {
       "key": "exists-project-aliases",

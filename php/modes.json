@@ -176,16 +176,19 @@
       ],
       "snapshotAdvisory": true,
       "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
-                     "dateType", "dateFormat", "fromType", "fromFormat", "windowNotFutureOff"],
+                     "dateType", "dateFormat", "fromType", "fromFormat",
+                     "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi", "windowWeekStart", "windowNotPast",
+                     "windowNotFutureOff"],
       "clientKeys": ["windowFrom", "windowFromOp", "windowFromOpWhy", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
                      "dateType", "dateFormat", "fromType", "fromFormat",
+                     "windowAnchor", "windowPeriod", "windowOffLo", "windowOffHi", "windowWeekStart", "windowNotPast",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                      "snapshotGate", "windowNotFutureOff"],
       "needs": ["clock"],
       "dialog": false,
       "js": {"factories": {"window": "QRIDWindowInit"}},
-      "scan": {"issueLabels": {"future": "Date in the future", "*": "Date outside allowed window"},
-               "detailKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit"]}
+      "scan": {"issueLabels": {"future": "Date in the future", "past": "Date in the past", "*": "Date outside allowed window"},
+               "detailKeys": ["windowFrom", "windowAnchor", "windowLo", "windowHi", "windowUnit", "windowPeriod", "windowOffLo", "windowOffHi"]}
     },
     {
       "mode": "exists",
