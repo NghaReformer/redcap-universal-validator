@@ -977,6 +977,233 @@ function storeContract(callable $newStore, $label, callable $age)
     $C('and a cancel takes the summary away from the worker that held it',
         $s11->holdRollupCursor($rid11, $ep11) === ScanStore::ROLLUP_TAKEN_OVER);
 
+    // -- A RUN NOBODY CAN FIND IS NOT COMPLETE (W6-N1) ------------------------
+    //
+    // The SQL store answered true here - no unfinished row, because no row at
+    // all - and the in-memory store false, and this file used to pin the
+    // disagreement rather than choose. Both fail closed now.
+    $C('a run that does not exist is not complete', $s->manifestComplete(987654321) === false);
+
+    // -- ONE ROW SHAPE, AND A CURSOR THAT NEVER REPEATS A ROW (B5-N1, M13) ----
+    //
+    // findings() is what the report reads. The SQL store answered twelve
+    // positional columns and the in-memory store its whole internal row, paged
+    // by a count of rows walked; neither was what FindingRowMapper takes.
+    $scan = function ($store, $pid, array $findings, $how) use ($mk5) {
+        $r = $store->startRun($pid, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $recs = [];
+        foreach (array_keys($findings) as $i) $recs[] = $mk5('F' . $pid . '-' . $gen . '-' . $i);
+        $store->writeManifest($rid, $recs);
+        $ep = (int) $store->run($pid, $rid)['lease_epoch'];
+        $c = $store->claim($rid, 'w1', $ep, count($recs));
+        $batch = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($c as $j => $row) {
+            $batch['records'][] = ['ordinal' => $row['ordinal'], 'record_hash' => $row['hash'],
+                                   'state' => ScanStore::REC_DONE, 'claim' => $row['claim']];
+            foreach ($findings[$j] as $k => $over) {
+                $batch['findings'][] = array_merge([
+                    'ordinal' => $row['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
+                    'host_form' => 'fa', 'field' => 'x' . $k, 'check_type' => 'required',
+                    'reason_code' => 'required-blank', 'record_id_bin' => $row['id_bin'],
+                    'identity' => hash('sha256', $pid . '|' . $gen . '|' . $j . '|' . $k, true),
+                    'record_hash' => $row['hash'], 'rule_source_id' => 'r1',
+                    'rule_revision' => str_repeat('c', 64)], $over);
+            }
+        }
+        $ok = $store->commitBatch($rid, 'w1', $ep, $batch);
+        if ($how !== null) {
+            $store->finish($rid, $how === 'complete'
+                ? ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'violations' => 1])
+                : ScanOutcome::derive([$how => true, 'fenced' => true, 'manifestDone' => true]));
+        }
+        return ['run' => $rid, 'gen' => $gen, 'ok' => $ok];
+    };
+    // Every value the drivers may hand back as a number or a string, as a string.
+    $flat = function (array $row) {
+        $out = [];
+        foreach ($row as $k => $v) $out[$k] = $v === null ? null : (string) $v;
+        return $out;
+    };
+
+    $sf = $newStore();
+    $nbF = $scan($sf, 791, [[[]]], 'complete');
+    $one = $scan($sf, 790, [
+        [['host_form' => 'visit', 'dag_key' => 'north', 'event_id' => 5, 'instance' => 2,
+          'rule_ord' => 3, 'reason_bits' => 6, 'value_bin' => 'v-1', 'value_len' => 3,
+          'value_truncated' => 0, 'value_expires_at' => '2031-01-01 00:00:00'],
+         ['dag_key' => 'south']],
+        [['dag_key' => 'north'],
+         // A STAGED duplicate: the finalizer's row, invisible to every report
+         // until its group is published. The SQL store writes it with
+         // active_slot NULL; the in-memory store used to write it active.
+         ['stage_epoch' => 3, 'group_hmac' => hash('sha256', 'grp', true)]],
+        [[]],
+    ], null);
+    $C('rows: the batch the shape is read from commits', $one['ok'] === true);
+    $all = $sf->findings(790, $one['gen'], [], 0, 100);
+    $C('rows: every row is keyed by FindingRowMapper::INPUT_KEYS, in that order',
+        $all !== [] && array_reduce($all, function ($ok, $row) {
+            return $ok && array_keys($row) === FindingRowMapper::INPUT_KEYS;
+        }, true));
+    $C('rows: a staged duplicate is not an active finding', count($all) === 4);
+    $ids = array_map(function ($r) { return (int) $r['finding_id']; }, $all);
+    $sorted = $ids;
+    sort($sorted);
+    $C('rows: in finding_id order', $ids === $sorted && count(array_unique($ids)) === 4);
+    $first = $flat($all[0]);
+    $C('rows: carrying what the producer sent, as the columns hold it',
+        $first['project_id'] === '790' && $first['host_form'] === 'visit'
+        && $first['field'] === 'x0' && $first['event_id'] === '5' && $first['instance'] === '2'
+        && $first['rule_source_id'] === 'r1' && $first['rule_ord'] === '3'
+        && $first['check_type'] === 'required' && $first['reason_code'] === 'required-blank'
+        && $first['reason_bits'] === '6' && $first['dag_key'] === 'north'
+        && $first['value_bin'] === 'v-1' && $first['value_len'] === '3'
+        && $first['value_truncated'] === '0'
+        && $first['value_expires_at'] === '2031-01-01 00:00:00');
+    $plain = $flat($all[3]);
+    $C('rows: and the column defaults where it sent none',
+        $plain['event_id'] === null && $plain['instance'] === '1' && $plain['rule_ord'] === '0'
+        && $plain['reason_bits'] === '0' && $plain['dag_key'] === null
+        && $plain['value_bin'] === null && $plain['value_len'] === null
+        && $plain['value_truncated'] === '0' && $plain['value_expires_at'] === null);
+
+    $p1 = $sf->findings(790, $one['gen'], [], 0, 2);
+    $last = (int) $p1[count($p1) - 1]['finding_id'];
+    $p2 = $sf->findings(790, $one['gen'], [], $last, 2);
+    $p3 = $sf->findings(790, $one['gen'], [], (int) $p2[count($p2) - 1]['finding_id'], 2);
+    $seen = [];
+    foreach (array_merge($p1, $p2) as $r) $seen[] = (int) $r['finding_id'];
+    $C('paging: page two starts after the last row of page one and repeats none of it',
+        count($p1) === 2 && count($p2) === 2 && count(array_unique($seen)) === 4
+        && min(array_map(function ($r) { return (int) $r['finding_id']; }, $p2)) > $last);
+    $C('paging: and the page after the last row is empty', $p3 === []);
+    $C('paging: a limit below one is one row, and above a hundred is a hundred',
+        count($sf->findings(790, $one['gen'], [], 0, 0)) === 1
+        && count($sf->findings(790, $one['gen'], [], 0, 1000)) === 4);
+    $north = $sf->findings(790, $one['gen'], ['dag_key' => 'north'], 0, 100);
+    $C('filter: by group, in both stores',
+        count($north) === 2 && $north[0]['dag_key'] === 'north' && $north[1]['dag_key'] === 'north');
+    $C('filter: by instrument',
+        count($sf->findings(790, $one['gen'], ['host_form' => 'visit'], 0, 100)) === 1);
+    $C('filter: an axis it does not know is ignored, not interpolated',
+        count($sf->findings(790, $one['gen'], ['record_hash' => 'x', 'host_form' => ''], 0, 100)) === 4);
+    $C('rows: and the neighbour\'s page answers for the neighbour',
+        count($sf->findings(791, $nbF['gen'], [], 0, 100)) === 1
+        && (int) $sf->findings(791, $nbF['gen'], [], 0, 100)[0]['project_id'] === 791);
+
+    // ONE STAGED ROW PER IDENTITY PER PASS, the second unique key. A staged row
+    // and an active row of one identity are two keys and both commit; two
+    // staged rows of one identity in one pass are refused, by both stores.
+    $sk = $newStore();
+    $same = ['identity' => hash('sha256', 'staged-twice', true)];
+    $staged = $same + ['stage_epoch' => 4, 'group_hmac' => hash('sha256', 'g', true)];
+    $twoKeys = $scan($sk, 792, [[$same, $staged]], null);
+    $C('staged: a staged row beside an active row of the same identity commits',
+        $twoKeys['ok'] === true && count($sk->findings(792, $twoKeys['gen'], [], 0, 100)) === 1);
+    $twice = $scan($sk, 793, [[$staged, $staged]], null);
+    $C('staged: two staged rows of one identity in one pass are refused',
+        is_string($twice['ok']) && strpos($twice['ok'], 'database refused') !== false);
+    // And across batches: the key is held by the staged row ALREADY STORED, not
+    // only by the batch that carries it. The in-memory store checked the batch
+    // against itself and the active rows, so a second batch of the same pass
+    // could stage the same identity again where MySQL refuses it.
+    $sx = $newStore();
+    $sr = $sx->startRun(794, ['created_by' => 'alice']);
+    $srid = (int) $sr['run']['run_id'];
+    $sgen = (int) $sr['run']['generation_id'];
+    $sx->writeManifest($srid, [$mk5('S1'), $mk5('S2')]);
+    $sep = (int) $sx->run(794, $srid)['lease_epoch'];
+    $scl = $sx->claim($srid, 'w1', $sep, 2);
+    $stageOne = function ($c) use ($sx, $srid, $sep, $sgen, $staged) {
+        return $sx->commitBatch($srid, 'w1', $sep, ['bytes' => 0,
+            'records' => [['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
+                           'state' => ScanStore::REC_DONE, 'claim' => $c['claim']]],
+            'findings' => [$staged + [
+                'ordinal' => $c['ordinal'], 'project_id' => 794, 'generation_id' => $sgen,
+                'host_form' => 'fa', 'field' => 'x', 'check_type' => 'unique',
+                'reason_code' => 'unique-duplicate', 'record_id_bin' => $c['id_bin'],
+                'record_hash' => $c['hash'], 'rule_source_id' => 'r1',
+                'rule_revision' => str_repeat('c', 64)]]]);
+    };
+    $firstStage = count($scl) === 2 ? $stageOne($scl[0]) : null;
+    $againStage = count($scl) === 2 ? $stageOne($scl[1]) : null;
+    $C('staged: a staged row already stored holds its key against a later batch',
+        $firstStage === true && is_string($againStage)
+        && strpos($againStage, 'database refused') !== false);
+
+    // -- THE PREVIOUS GENERATION IS CLOSED WHEN A RUN COMPLETES (W4-D1) --------
+    $sp = $newStore();
+    $nb = $scan($sp, 796, [[[], []]], 'complete');
+    $g1 = $scan($sp, 795, [[[], []]], 'complete');
+    $C('supersede: a first complete run has nothing older, and says it is done',
+        $sp->supersedePrevious(795, $g1['run'], 10)
+            === ['done' => true, 'rows' => 0, 'cursor' => $g1['gen'], 'why' => null]);
+    $g2 = $scan($sp, 795, [[[], [], []]], null);
+    $live = $sp->supersedePrevious(795, $g2['run'], 10);
+    $C('supersede: a run still in progress closes nothing, and is NOT done - it may yet complete',
+        $live['done'] === false && $live['rows'] === 0 && is_string($live['why'])
+        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 2);
+    $sp->finish($g2['run'], ScanOutcome::derive(['fenced' => true, 'manifestDone' => true,
+                                                 'violations' => 1]));
+    $C('supersede: the fixture run really did complete',
+        $sp->run(795, $g2['run'])['terminal'] === ScanOutcome::COMPLETE);
+    $C('supersede: another project\'s id does not reach this run',
+        $sp->supersedePrevious(796, $g2['run'], 10)['rows'] === 0
+        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 2);
+    $a = $sp->supersedePrevious(795, $g2['run'], 1);
+    $C('supersede: one page closes at most its limit, and is not done while it was full',
+        $a['rows'] === 1 && $a['done'] === false && $a['cursor'] === 0
+        && count($sp->findings(795, $g1['gen'], [], 0, 100)) === 1);
+    $b = $sp->supersedePrevious(795, $g2['run'], 1);
+    $c = $sp->supersedePrevious(795, $g2['run'], 1);
+    $C('supersede: the next calls carry on where it stopped, and the one that comes up short is done',
+        $b['rows'] === 1 && $b['done'] === false && $c['rows'] === 0 && $c['done'] === true
+        && $c['cursor'] === $g2['gen']);
+    $C('supersede: the older generation has no active finding left',
+        $sp->findings(795, $g1['gen'], [], 0, 100) === []);
+    $C('supersede: this run\'s own generation is untouched',
+        count($sp->findings(795, $g2['gen'], [], 0, 100)) === 3);
+    $C('supersede: and so is the project next door',
+        count($sp->findings(796, $nb['gen'], [], 0, 100)) === 2);
+    $C('supersede: asking again changes nothing',
+        $sp->supersedePrevious(795, $g2['run'], 10)
+            === ['done' => true, 'rows' => 0, 'cursor' => $g2['gen'], 'why' => null]);
+    // A run that did NOT complete leaves the previous report the current one.
+    foreach (['partial' => ['fenced' => true, 'manifestDone' => false, 'blocked' => true],
+              'cancelled' => ['cancelled' => true, 'fenced' => true, 'manifestDone' => true]] as $how => $o) {
+        $gx = $scan($sp, 795, [[[]]], null);
+        $sp->finish($gx['run'], ScanOutcome::derive($o));
+        $x = $sp->supersedePrevious(795, $gx['run'], 10);
+        $C("supersede: a $how run closes nothing, and that is final",
+            $x['done'] === true && $x['rows'] === 0 && is_string($x['why'])
+            && count($sp->findings(795, $g2['gen'], [], 0, 100)) === 3);
+    }
+    // MORE THAN ONE OLDER GENERATION: four of them now - the first run's,
+    // already closed, the second's three rows, and one row each from the
+    // partial and the cancelled run. Walked oldest first, one generation per
+    // call when each fits in a page, the cursor only ever rising.
+    $gy = $scan($sp, 795, [[[]]], 'complete');
+    $rest = 0;
+    $calls = 0;
+    $rising = true;
+    $was = -1;
+    do {
+        $y = $sp->supersedePrevious(795, $gy['run'], 100);
+        $rest += $y['rows'];
+        $calls++;
+        if ($y['cursor'] <= $was) $rising = false;
+        $was = $y['cursor'];
+    } while (!$y['done'] && $calls < 10);
+    $C('supersede: several older generations are closed oldest first, one per call',
+        $y['done'] === true && $calls === 4 && $rising && $y['cursor'] === $gy['gen']);
+    $C('supersede: every older row is closed and the newest run alone is current',
+        $rest === 5 && $sp->findings(795, $g2['gen'], [], 0, 100) === []
+        && count($sp->findings(795, $gy['gen'], [], 0, 100)) === 1);
+    $C('supersede: a run id nobody has is done with nothing to do',
+        $sp->supersedePrevious(795, 987654321, 10)['done'] === true);
+
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //
     // Six assertions used to sit at the end of this function, driving the

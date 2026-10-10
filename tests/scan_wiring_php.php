@@ -94,9 +94,13 @@ namespace {
         //    lands, which is why they are last and not first.
         //    expireAbandoned and expireValues graduated when this line of work
         //    was merged with 1.11.0, whose uvScanReapCron and
-        //    uvScanExpireValuesCron call them. expireValues is still the
-        //    unpaged UPDATE that wave 8 pages.
+        //    uvScanExpireValuesCron call them. Wave 8 paged expireValues into
+        //    primary-key windows (expireValuesPage); the cron still runs the
+        //    whole sweep in one request until wave 10 gives it a cursor.
         'ScanRetention::purgeRuns'       => 'wave 10 (B6) wires the cron; needs wave 4\'s project scoping, or one project\'s expired run deletes every project\'s findings',
+        'ScanStore::supersedePrevious'      => 'wave 10 (W4-D1) wires the cron: until then a finished run leaves the previous generation\'s rows active',
+        'SqlScanStore::supersedePrevious'   => 'wave 10 (W4-D1), with the contract',
+        'ArrayScanStore::supersedePrevious' => 'wave 10 (W4-D1), with the contract',
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',

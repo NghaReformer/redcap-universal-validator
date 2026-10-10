@@ -46,6 +46,12 @@ final class WorkerSlots
      * now and its worker would keep running with no record that it holds
      * anything. Shrinking takes effect as slots fall idle - see idleAbove().
      *
+     * ROWS ADDED, AS THE SERVER COUNTS THEM (W6-N3). This counted one per
+     * INSERT IGNORE it SENT, and an ignored insert - a row another save had
+     * just written between the MAX read and the insert - was reported as added.
+     * The rows now go in one statement and the answer is its affected count,
+     * which for INSERT IGNORE is the rows actually inserted.
+     *
      * @return int rows added
      */
     public function provision($limit)
@@ -54,14 +60,15 @@ final class WorkerSlots
         $t = Schema::table('scan_worker_slot');
         $have = $this->db->select('SELECT COALESCE(MAX(slot_no), 0) FROM ' . $t);
         $max = isset($have[0][0]) ? (int) $have[0][0] : 0;
-        $added = 0;
-        for ($n = $max + 1; $n <= $limit; $n++) {
-            // INSERT IGNORE, not INSERT: two administrators saving settings at
-            // the same moment must not turn provisioning into an error.
-            $this->db->exec('INSERT IGNORE INTO ' . $t . ' (slot_no, epoch) VALUES (?, 0)', [$n]);
-            $added++;
-        }
-        return $added;
+        if ($max >= $limit) return 0;
+        // The candidate list is the gap between the table and the limit, which
+        // an administrator sets in tens; one placeholder a row.
+        $nos = range($max + 1, $limit);
+        // INSERT IGNORE, not INSERT: two administrators saving settings at the
+        // same moment must not turn provisioning into an error.
+        $this->db->exec('INSERT IGNORE INTO ' . $t . ' (slot_no, epoch) VALUES '
+            . implode(',', array_fill(0, count($nos), '(?, 0)')), $nos);
+        return (int) $this->db->affected();
     }
 
     /**

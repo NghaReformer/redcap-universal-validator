@@ -28,11 +28,22 @@ final class ArrayScanStore implements ScanStore
 {
     private $runs = [];        // run_id => row
     private $records = [];     // run_id => [ordinal => row]
-    private $findings = [];    // list
+    private $findings = [];    // list, in finding_id order - see stored()
     private $candidates = [];  // uniqueness candidates, keyed as the UNIQUE index is
     private $aggregates = [];  // run_id => list
     private $audits = [];
     private $nextRun = 1;
+
+    /**
+     * The stand-in for uv_finding's AUTO_INCREMENT (M13).
+     *
+     * Findings had no id here at all, so findings() paged by POSITION in this
+     * list: page two's cursor was a count of rows walked, closed and other
+     * projects' rows included, and no caller holding a row could ask for the
+     * next page from it. The SQL store pages by finding_id, so the two could
+     * not even be asked the same question.
+     */
+    private $nextFinding = 1;
 
     /** Per-project generation counters, the stand-in for uv_project_seq. */
     private $seq = [];
@@ -421,10 +432,19 @@ final class ArrayScanStore implements ScanStore
         // time the inserts happen they will not be active any more. That is the
         // supersede: it is what lets a re-examined record commit the same
         // finding again.
+        //
+        // AND ONE STAGED ROW PER IDENTITY PER FINALIZER PASS, which is the other
+        // unique key (uq_staged_identity_v2). A staged row - one carrying a
+        // stage_epoch - is written with active_slot NULL by the SQL store and
+        // so is not held by the active key at all; this store used to write it
+        // ACTIVE, where findings() returned it and the active check counted it.
         $active = [];
         foreach ($this->findings as $i => $old) {
             if (isset($close[$i])) continue;
-            if (!isset($old['active_slot']) || (int) $old['active_slot'] !== 1) continue;
+            if ($old['stage_epoch'] !== null) {
+                $active[self::stagedKey($old)] = true;
+            }
+            if ($old['active_slot'] === null || (int) $old['active_slot'] !== 1) continue;
             $active[(int) $old['project_id'] . '|' . (int) $old['generation_id']
                     . '|' . bin2hex($old['identity'])] = true;
         }
@@ -450,12 +470,14 @@ final class ArrayScanStore implements ScanStore
                          . '; refusing to let the database invent one';
                 }
             }
-            $k = (int) $f['project_id'] . '|' . (int) $f['generation_id']
-               . '|' . bin2hex($f['identity']);
+            $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
+            $k = $staged ? self::stagedKey($f)
+               : (int) $f['project_id'] . '|' . (int) $f['generation_id'] . '|' . bin2hex($f['identity']);
             if (isset($active[$k]) || isset($incoming[$k])) {
                 return 'the database refused to store these findings, so nothing from these '
                      . 'records was kept: Duplicate entry (value withheld) for key '
-                     . "'uv_finding.uq_active_identity_v2'";
+                     . ($staged ? "'uv_finding.uq_staged_identity_v2'"
+                                : "'uv_finding.uq_active_identity_v2'");
             }
             $incoming[$k] = true;
             $keep[] = $f;
@@ -492,9 +514,7 @@ final class ArrayScanStore implements ScanStore
             $this->findings[$i]['valid_to_seq'] = $runSeq;
         }
         foreach ($keep as $f) {
-            if (!isset($f['active_slot'])) $f['active_slot'] = 1;
-            if (!isset($f['valid_from_seq'])) $f['valid_from_seq'] = $runSeq;
-            $this->findings[] = $f;
+            $this->findings[] = self::stored($f, $runSeq, $this->nextFinding++);
         }
         // In the same commit as the findings, for the reason in SqlScanStore:
         // a candidate that outlived a rolled-back batch would make a record a
@@ -538,6 +558,65 @@ final class ArrayScanStore implements ScanStore
                 'hash' => $rec['hash'], 'dag' => $rec['dag'],
                 'attempts' => (int) $rec['attempts'], 'version' => $rec['version'],
                 'claim' => (int) $rec['claim_seq']];
+    }
+
+    /**
+     * A finding as uv_finding holds it: every column, and the schema's default
+     * where the producer sent none (M13).
+     *
+     * This store kept whatever array it was handed, so a column the producer
+     * left out was absent here and DEFAULTED there - instance 1, rule_ord 0,
+     * reason_bits 0, valid_from_seq the run's - and a staged duplicate went in
+     * ACTIVE because nothing read its stage_epoch. Written out against the
+     * schema rather than borrowed from SqlScanStore::findingRow(): the two
+     * stores are independent on purpose, and the contract compares what they
+     * answer. The producer's name `identity` is kept for finding_identity,
+     * because every check in this class reads it by that name.
+     */
+    private static function stored(array $f, $runSeq, $id)
+    {
+        $staged = isset($f['stage_epoch']) && $f['stage_epoch'] !== null;
+        $or = function ($k, $default) use ($f) { return isset($f[$k]) ? $f[$k] : $default; };
+        return [
+            'finding_id'        => (int) $id,
+            'project_id'        => (int) $f['project_id'],
+            'generation_id'     => (int) $f['generation_id'],
+            'identity'          => $f['identity'],
+            'valid_from_seq'    => (int) $or('valid_from_seq', $runSeq),
+            'valid_to_seq'      => null,
+            'active_slot'       => $staged ? null : 1,
+            'record_hash'       => $f['record_hash'],
+            'record_id_bin'     => $f['record_id_bin'],
+            'event_id'          => $or('event_id', null),
+            'arm_id'            => $or('arm_id', null),
+            'instance'          => $or('instance', 1),
+            'host_form'         => $f['host_form'],
+            'field'             => $f['field'],
+            'rule_source_id'    => $f['rule_source_id'],
+            'rule_revision'     => $f['rule_revision'],
+            'rule_ord'          => $or('rule_ord', 0),
+            'check_type'        => $f['check_type'],
+            'reason_code'       => $f['reason_code'],
+            'reason_bits'       => $or('reason_bits', 0),
+            'severity'          => $or('severity', 0),
+            'dag_key'           => $or('dag_key', null),
+            'status_key'        => $or('status_key', null),
+            'value_bin'         => $or('value_bin', null),
+            'value_len'         => $or('value_len', null),
+            'value_fingerprint' => $or('value_fingerprint', null),
+            'value_truncated'   => $or('value_truncated', 0),
+            'value_binary'      => $or('value_binary', 0),
+            'value_expires_at'  => $or('value_expires_at', null),
+            'group_hmac'        => $or('group_hmac', null),
+            'stage_epoch'       => $staged ? $f['stage_epoch'] : null,
+        ];
+    }
+
+    /** uq_staged_identity_v2's key, for a row that carries a stage_epoch. */
+    private static function stagedKey(array $f)
+    {
+        return 'staged|' . (int) $f['project_id'] . '|' . (int) $f['generation_id']
+             . '|' . bin2hex($f['identity']) . '|' . (int) $f['stage_epoch'];
     }
 
     /** Uniqueness candidates written so far. For assertions, not for production. */
@@ -717,28 +796,35 @@ final class ArrayScanStore implements ScanStore
     // server - which is where a semaphore's behaviour can actually be shown,
     // since the interesting half of it is two processes racing.
 
+    /**
+     * One keyset page, as the SQL store pages: finding_id > $afterId, in
+     * finding_id order, each row keyed by FindingRowMapper::INPUT_KEYS in that
+     * order (B5-N1). This returned the whole internal row, positioned by a
+     * count of rows walked, and ignored a dag_key filter the SQL store applies.
+     */
     public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
+        $limit = max(1, min(100, (int) $limit));
         $out = [];
-        $i = 0;
         foreach ($this->findings as $f) {
-            $i++;
-            if ($i <= (int) $afterId) continue;
+            if ((int) $f['finding_id'] <= (int) $afterId) continue;
             if ((int) $f['project_id'] !== (int) $projectId) continue;
             if ((int) $f['generation_id'] !== (int) $generationId) continue;
             // Closed rows belong to an earlier reading of a record and are
             // kept so an "as of run N" view stays reproducible. A report
             // shows the ACTIVE ones; the real store says the same with
             // active_slot = 1 in its WHERE.
-            if (!isset($f['active_slot']) || (int) $f['active_slot'] !== 1) continue;
-            $skip = false;
-            foreach (['host_form', 'reason_code', 'check_type'] as $k) {
+            if ($f['active_slot'] === null || (int) $f['active_slot'] !== 1) continue;
+            foreach (['host_form', 'reason_code', 'dag_key', 'check_type'] as $k) {
                 if (isset($filter[$k]) && $filter[$k] !== ''
-                    && (!isset($f[$k]) || $f[$k] !== $filter[$k])) { $skip = true; break; }
+                    && ($f[$k] === null || (string) $f[$k] !== (string) $filter[$k])) continue 2;
             }
-            if ($skip) continue;
-            $out[] = $f;
-            if (count($out) >= max(1, min(100, (int) $limit))) break;
+            $row = [];
+            foreach (FindingRowMapper::INPUT_KEYS as $k) {
+                $row[$k] = array_key_exists($k, $f) ? $f[$k] : null;
+            }
+            $out[] = $row;
+            if (count($out) >= $limit) break;
         }
         return $out;
     }
@@ -748,18 +834,66 @@ final class ArrayScanStore implements ScanStore
         return isset($this->aggregates[$runId]) ? $this->aggregates[$runId] : [];
     }
 
-    public function expireValues($now)
+    /**
+     * The same page the SQL store closes, in the same order: the next older
+     * generation of this project's own runs, its active rows in finding_id
+     * order, at most min($limit, PAGE) of them; the cursor past a generation
+     * that closed fewer than that, and to this run's own generation when none
+     * is left. See SqlScanStore::supersedePrevious().
+     */
+    public function supersedePrevious($pid, $runId, $limit)
     {
-        $n = 0;
-        foreach ($this->findings as $i => $f) {
-            if (empty($f['value_expires_at']) || $f['value_expires_at'] > $now) continue;
-            // The VALUE goes, the finding stays. A report that shrinks as it
-            // ages reads as the project having improved.
-            $this->findings[$i]['value_bin'] = null;
-            $this->findings[$i]['value_expires_at'] = null;
-            $n++;
+        $pid = (int) $pid;
+        $limit = max(1, min(self::PAGE, (int) $limit));
+        $out = function ($done, $rows, $cursor, $why) {
+            return ['done' => (bool) $done, 'rows' => (int) $rows, 'cursor' => (int) $cursor,
+                    'why' => $why];
+        };
+        $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
+        if ($r === null || (int) $r['project_id'] !== $pid) {
+            return $out(true, 0, 0, 'there is no such run in this project');
         }
-        return $n;
+        $gen = (int) $r['generation_id'];
+        $cursor = (int) $r['supersede_cursor'];
+        if ($r['terminal'] === null) {
+            return $out(false, 0, $cursor, 'this scan has not finished, so it supersedes nothing yet');
+        }
+        if ((string) $r['terminal'] !== ScanOutcome::COMPLETE) {
+            return $out(true, 0, $cursor,
+                'this scan did not complete, so the previous report stays the current one');
+        }
+        $older = $this->olderGeneration($pid, $cursor, $gen);
+        if ($older === null) {
+            $this->runs[$runId]['supersede_cursor'] = max($cursor, $gen);
+            return $out(true, 0, $gen, null);
+        }
+        $rows = 0;
+        foreach ($this->findings as $i => $f) {
+            if ($rows >= $limit) break;
+            if ($f['project_id'] !== $pid || (int) $f['generation_id'] !== $older) continue;
+            if ($f['active_slot'] === null || (int) $f['active_slot'] !== 1) continue;
+            $this->findings[$i]['active_slot'] = null;
+            $this->findings[$i]['valid_to_seq'] = (int) $r['run_seq'];
+            $rows++;
+        }
+        if ($rows >= $limit) return $out(false, $rows, $cursor, null);
+        $after = $this->olderGeneration($pid, $older + 1, $gen);
+        $to = $after === null ? $gen : $older + 1;
+        $this->runs[$runId]['supersede_cursor'] = $to;
+        return $out($after === null, $rows, $to, null);
+    }
+
+    /** The lowest generation of this project's runs in [$from, $gen), or null. */
+    private function olderGeneration($pid, $from, $gen)
+    {
+        $min = null;
+        foreach ($this->runs as $run) {
+            if ((int) $run['project_id'] !== (int) $pid) continue;
+            $g = (int) $run['generation_id'];
+            if ($g < (int) $from || $g >= (int) $gen) continue;
+            if ($min === null || $g < $min) $min = $g;
+        }
+        return $min;
     }
 
 

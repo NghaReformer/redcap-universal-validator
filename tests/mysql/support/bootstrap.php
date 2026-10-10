@@ -27,6 +27,8 @@ require_once __DIR__ . '/../../../php/Scan/DbError.php';
 // died as "class not found" instead - a fatal, not the failure under test.
 require_once __DIR__ . '/../../../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../../../php/Scan/SqlScanStore.php';
+// findings() zips its rows with FindingRowMapper::INPUT_KEYS (B5-N1).
+require_once __DIR__ . '/../../../php/Scan/FindingRowMapper.php';
 require_once __DIR__ . '/../../../php/Scan/WorkerSlots.php';
 require_once __DIR__ . '/../../../php/Scan/ScanRetention.php';
 require_once __DIR__ . '/../../../php/Scan/SourceFence.php';
@@ -312,6 +314,43 @@ function uv_explain_keys($conn, $sql, array $params) {
     }
     $r->free();
     return $keys;
+}
+
+/**
+ * An index's columns, in key order, as the server holds them.
+ *
+ * For a plan assertion that is about the SHAPE of the key rather than its
+ * name. uv_finding has five keys that begin (project_id, generation_id,
+ * active_slot), and the optimiser may pick any of them for a statement that
+ * fixes those three; what bounds the statement is the prefix, so that is what
+ * gets asserted. PRIMARY answers its own column list like any other key.
+ */
+function uv_index_columns($conn, $table, $index) {
+    $r = $conn->query("SELECT COLUMN_NAME FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = '" . $conn->real_escape_string($table)
+        . "' AND index_name = '" . $conn->real_escape_string($index) . "' ORDER BY SEQ_IN_INDEX");
+    $out = [];
+    if ($r === false) return $out;
+    while ($row = $r->fetch_row()) $out[] = strtolower((string) $row[0]);
+    $r->free();
+    return $out;
+}
+
+/**
+ * The plan of one captured statement, for the report and for a failure line:
+ * every EXPLAIN row's table, key and estimated rows.
+ */
+function uv_explain_rows($conn, $sql, array $params) {
+    $r = $conn->query('EXPLAIN ' . uv_inline_params($conn, $sql, $params));
+    if ($r === false) return [];
+    $out = [];
+    while ($row = $r->fetch_assoc()) {
+        $out[] = (isset($row['table']) ? $row['table'] : '?') . ':'
+               . (isset($row['key']) && $row['key'] !== null ? $row['key'] : '-') . ':'
+               . (isset($row['rows']) ? $row['rows'] : '?');
+    }
+    $r->free();
+    return $out;
 }
 
 /** Two INDEPENDENT connections. One cannot see the other's uncommitted work. */

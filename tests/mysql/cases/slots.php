@@ -42,6 +42,27 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('slots: LOWERING the limit deletes nothing', $slotsA->provision(2) === 0);
     $c = $slotsA->census();
     check('slots: the census reports what exists', $c['total'] === 5 && $c['held'] === 0);
+
+    // TWO SAVES AT ONCE (W6-N3). Another administrator's save inserts slot 6
+    // between this one's MAX read and its INSERT IGNORE. The ignored row was
+    // counted as added: the count was of statements sent, not rows the server
+    // kept. Connection B writes the row from inside A's read.
+    $racing = new class($A, $B) extends MysqliDb {
+        private $other; public $raced = false;
+        public function __construct($conn, $other) { parent::__construct($conn); $this->other = $other; }
+        public function select($sql, array $params = []) {
+            $out = parent::select($sql, $params);
+            if (!$this->raced && strpos($sql, 'MAX(slot_no)') !== false) {
+                $this->raced = true;
+                $this->other->query('INSERT INTO ' . Schema::table('scan_worker_slot')
+                    . ' (slot_no, epoch) VALUES (6, 0)');
+            }
+            return $out;
+        }
+    };
+    $raced = (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($racing))->provision(7);
+    check('slots: a slot another save wrote first is not counted as added',
+        $racing->raced === true && $raced === 1 && $slotsA->census()['total'] === 7);
     check('slots: and names which are idle above a reduced limit',
         $slotsA->idleAbove(2) === [3, 4, 5]);
 

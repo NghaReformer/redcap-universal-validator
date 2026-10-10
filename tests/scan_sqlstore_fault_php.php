@@ -36,6 +36,8 @@ namespace {
     require_once __DIR__ . '/../php/Scan/Schema.php';
     require_once __DIR__ . '/../php/Scan/Hmac.php';
     require_once __DIR__ . '/../php/Scan/SqlScanStore.php';
+    require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+    require_once __DIR__ . '/../php/Scan/ScanRetention.php';
     // CL-1 and the catch-up resolver: a record-list cache that is not the
     // project, and a probe that cannot answer.
     require_once __DIR__ . '/../php/Scan/RecordManifestSource.php';
@@ -357,18 +359,34 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('complete: the question is an existence test over the state index',
         strpos($asked, 'SELECT EXISTS(') === 0 && strpos($asked, 'FORCE INDEX (ix_run_state)') !== false
         && stripos($asked, 'COUNT(') === false);
+    // TWO ANSWERS IN ONE ROW since W6-N1: is any manifest row unfinished, and
+    // does the run exist at all. Yes needs both, read as numbers.
     $db = new ScriptedDb();
-    $db->rows = ['SELECT EXISTS(' => [[0]]];
-    check('complete: no unfinished row is complete',
+    $db->rows = ['SELECT EXISTS(' => [[0, 1]]];
+    check('complete: no unfinished row of a run that exists is complete',
         (new SqlScanStore($db))->manifestComplete(1) === true);
     $db = new ScriptedDb();
-    $db->rows = ['SELECT EXISTS(' => [['1']]];
+    $db->rows = ['SELECT EXISTS(' => [['1', '1']]];
     check('complete: one unfinished row is not, whatever type the driver gave it',
         (new SqlScanStore($db))->manifestComplete(1) === false);
     $db = new ScriptedDb();
-    $db->rows = ['SELECT EXISTS(' => [[null]]];
+    $db->rows = ['SELECT EXISTS(' => [[null, 1]]];
     check('complete: and a NULL answer is not complete either',
         (new SqlScanStore($db))->manifestComplete(1) === false);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT EXISTS(' => [[0, 0]]];
+    check('complete: a run that does not exist is NOT complete (W6-N1)',
+        (new SqlScanStore($db))->manifestComplete(1) === false);
+    $db = new ScriptedDb();
+    $db->rows = ['SELECT EXISTS(' => [[0]]];
+    check('complete: and half an answer is not one',
+        (new SqlScanStore($db))->manifestComplete(1) === false);
+    $askedRun = '';
+    foreach ($db->log as $stmt) {
+        if (strpos($stmt, Schema::table('scan_record')) !== false) $askedRun = $stmt;
+    }
+    check('complete: the run is looked up in the same statement, by its primary key',
+        strpos($askedRun, 'EXISTS(SELECT 1 FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?)') !== false);
 
     // =====================================================================
     // M9 - findings go to the server a chunk at a time, not one by one
@@ -931,6 +949,283 @@ namespace INSPIRE\UniversalValidator\Scan {
         $formTotal($s, $rid) === 0 && (int) $s->progressState($rid)['rollupCursor'] === 0);
     check('rollup: and the worker is told why, so it stops',
         $b['rows'] === 0 && $b['why'] === ScanStore::ROLLUP_FINISHED);
+
+    // =====================================================================
+    // Wave 8: store parity, the paged retention, and what each does when the
+    // database answers badly
+    // =====================================================================
+
+    /** A ScriptedDb that keeps each statement's parameters beside it. */
+    $paramDb = function () {
+        return new class extends ScriptedDb {
+            public $sent = [];
+            public function exec($sql, array $params = [])
+            {
+                $this->sent[] = [$sql, $params];
+                parent::exec($sql, $params);
+            }
+            public function execNoCount($sql, array $params = [])
+            {
+                $this->sent[] = [$sql, $params];
+                parent::execNoCount($sql, $params);
+            }
+            public function select($sql, array $params = [])
+            {
+                $this->sent[] = [$sql, $params];
+                return parent::select($sql, $params);
+            }
+            public function affected()
+            {
+                if (strpos($this->lastWrite, 'INSERT INTO ' . Schema::table('finding')) !== false) {
+                    return substr_count($this->lastWrite, '),(') + 1;
+                }
+                return parent::affected();
+            }
+            /** Every sent statement containing all of $needles. */
+            public function with(array $needles)
+            {
+                $out = [];
+                foreach ($this->sent as $s) {
+                    $hit = true;
+                    foreach ($needles as $n) if (strpos($s[0], $n) === false) $hit = false;
+                    if ($hit) $out[] = $s;
+                }
+                return $out;
+            }
+        };
+    };
+
+    // -- M13: a finding that names no valid_from_seq opens at the RUN's -------
+    //
+    // The SQL store wrote 0 - an interval opened before the project's first
+    // run - while ArrayScanStore wrote the run's sequence. The fence row here
+    // carries run_seq 9 and generation 5, so the two cannot be mistaken.
+    $vdb = $paramDb();
+    $vdb->rows = ['FOR UPDATE' => [[0, null, 700, 5, 9, null]]];
+    $noSeq = $mkFinding(1);
+    $withSeq = $mkFinding(2);
+    $withSeq['valid_from_seq'] = 4;
+    $got = (new SqlScanStore($vdb))->commitBatch(1, 'w1', 0, ['records' => [['ordinal' => 1,
+        'state' => ScanStore::REC_DONE, 'claim' => 9, 'record_hash' => str_repeat('h', 32)]],
+        'findings' => [$noSeq, $withSeq]]);
+    $ins = $vdb->with(['INSERT INTO ' . Schema::table('finding')]);
+    // findingRow() puts valid_from_seq fourth: project, generation, identity, seq.
+    check('valid_from: a finding with none opens at the run\'s own sequence',
+        $got === true && count($ins) === 1 && (int) $ins[0][1][3] === 9);
+    check('valid_from: and one that names its own keeps it',
+        count($ins) === 1 && count($ins[0][1]) === 58 && (int) $ins[0][1][29 + 3] === 4);
+
+    // -- B5-N1: findings() answers INPUT_KEYS, zipped, or refuses -------------
+    $fdb = $paramDb();
+    $wide = [];
+    foreach (FindingRowMapper::INPUT_KEYS as $i => $k) $wide[] = 'v' . $i;
+    $fdb->rows = ['FROM ' . Schema::table('finding') => [$wide, $wide]];
+    $page = (new SqlScanStore($fdb))->findings(700, 5, ['dag_key' => 'n', 'nope' => 'x'], 0, 50);
+    check('rows: findings() keys every row by FindingRowMapper::INPUT_KEYS, in order',
+        count($page) === 2 && array_keys($page[0]) === FindingRowMapper::INPUT_KEYS
+        && $page[0]['finding_id'] === 'v0' && $page[1]['value_expires_at'] === 'v16');
+    $sel = $fdb->with(['FROM ' . Schema::table('finding')]);
+    check('rows: the SELECT list is that list and nothing else',
+        count($sel) === 1 && strpos($sel[0][0], 'SELECT ' . implode(', ', FindingRowMapper::INPUT_KEYS)
+            . "\n") === 0);
+    check('rows: a known axis is bound, an unknown one never reaches the statement',
+        count($sel) === 1 && strpos($sel[0][0], 'dag_key = ?') !== false
+        && strpos($sel[0][0], 'nope') === false && $sel[0][1] === [700, 5, 0, 'n']);
+    $fdb->rows = ['FROM ' . Schema::table('finding') => [array_slice($wide, 0, 12)]];
+    $r = outcomeOf(function () use ($fdb) {
+        return (new SqlScanStore($fdb))->findings(700, 5, [], 0, 50);
+    });
+    check('rows: a row of the old twelve columns is a LogicException, never a false row',
+        $r['kind'] === 'other' && $r['class'] === 'LogicException');
+
+    // -- W6-N3: provisioning reports the rows the server added ----------------
+    //
+    // Three slots asked for, one inserted: the other two were written by a
+    // settings save that landed between the MAX read and the insert. The
+    // count used to be the number of statements sent.
+    $pdb = $paramDb();
+    $pdb->affectedNext = 1;
+    check('slots: provisioning answers what the server inserted, not what it was sent',
+        (new WorkerSlots($pdb))->provision(3) === 1);
+    $pIns = $pdb->with(['INSERT IGNORE INTO ' . Schema::table('scan_worker_slot')]);
+    check('slots: in one statement for the whole gap',
+        count($pIns) === 1 && $pIns[0][1] === [1, 2, 3]
+        && substr_count($pIns[0][0], '(?, 0)') === 3);
+    $full = $paramDb();
+    $full->rows = ['MAX(slot_no)' => [[5]]];
+    check('slots: and sends nothing when the table already holds the limit',
+        (new WorkerSlots($full))->provision(3) === 0
+        && $full->with(['INSERT IGNORE']) === []);
+
+    // -- W4-D1: supersedePrevious fails closed --------------------------------
+    //
+    // run row: generation 7, run_seq 7, complete, cursor 0. One older
+    // generation, 3, with active rows to close.
+    $supDb = function ($older) use ($paramDb) {
+        $db = $paramDb();
+        $db->rows = [
+            'FOR UPDATE' => [[7, 7, ScanOutcome::COMPLETE, 0]],
+            'MIN(generation_id)' => $older,
+        ];
+        return $db;
+    };
+    $db = $supDb([[3]]);
+    $db->failAt('UPDATE ' . Schema::table('finding'), 1);
+    $r = outcomeOf(function () use ($db) { return (new SqlScanStore($db))->supersedePrevious(70, 1, 10); });
+    check('supersede: a deadlock in the page is unavailable, not "done"',
+        $r['kind'] === 'unavailable' && $db->rollbacks === 1 && !in_array('COMMIT', $db->log, true));
+    $db = $supDb([]);
+    $r = outcomeOf(function () use ($db) { return (new SqlScanStore($db))->supersedePrevious(70, 1, 10); });
+    check('supersede: an older-generation read with no answer is not "nothing older"',
+        $r['kind'] === 'unavailable' && $db->with(['UPDATE ']) === [] && $db->rollbacks === 1);
+    $db = $supDb([[3]]);
+    $db->affectedNext = 10;
+    $r = (new SqlScanStore($db))->supersedePrevious(70, 1, 10);
+    $page = $db->with(['UPDATE ' . Schema::table('finding')]);
+    check('supersede: a full page closes its limit and leaves the cursor for the next call',
+        $r === ['done' => false, 'rows' => 10, 'cursor' => 0, 'why' => null]
+        && $db->with(['supersede_cursor = ?']) === []);
+    check('supersede: through the project, the older generation and the active slot only',
+        count($page) === 1 && $page[0][1] === [7, 70, 3]
+        && strpos($page[0][0], 'WHERE project_id = ? AND generation_id = ? AND active_slot = 1') !== false
+        && strpos($page[0][0], 'LIMIT 10') !== false);
+    $db = $supDb([[3]]);
+    $db->affectedNext = 0;          // the page came up short, and so did the cursor's CAS
+    $r = (new SqlScanStore($db))->supersedePrevious(70, 1, 10);
+    check('supersede: a cursor that did not move as expected gives the page back',
+        $r['done'] === false && $r['rows'] === 0 && $r['why'] === SqlScanStore::SUPERSEDE_MOVED
+        && $db->rollbacks === 1 && !in_array('COMMIT', $db->log, true));
+    $limitDb = $supDb([[3]]);
+    $limitDb->affectedNext = 0;
+    (new SqlScanStore($limitDb))->supersedePrevious(70, 1, 999999);
+    $capped = $limitDb->with(['UPDATE ' . Schema::table('finding')]);
+    check('supersede: a page is never more than PAGE rows, whatever it is asked for',
+        count($capped) === 1 && strpos($capped[0][0], 'LIMIT ' . ScanStore::PAGE) !== false);
+    foreach ([null => false, ScanOutcome::PARTIAL => true] as $terminal => $done) {
+        $db = $paramDb();
+        $db->rows = ['FOR UPDATE' => [[7, 7, $terminal === '' ? null : $terminal, 0]]];
+        $r = (new SqlScanStore($db))->supersedePrevious(70, 1, 10);
+        check('supersede: a run ' . ($terminal === '' ? 'still in progress' : 'that ended ' . $terminal)
+            . ' closes nothing' . ($done ? ', and that is final' : ', and is not done'),
+            $r['done'] === $done && $r['rows'] === 0 && is_string($r['why'])
+            && $db->with(['UPDATE ']) === []);
+    }
+
+    // -- P6: the paged retention, statement by statement ----------------------
+    $rdb = $paramDb();
+    $rdb->rows = ['MAX(finding_id)' => [[12000]]];
+    $rdb->affectedNext = 7;
+    $ret = new ScanRetention($rdb);
+    $p = $ret->expireValuesPage(5000, 42, '2030-01-01 00:00:00');
+    $w = $rdb->with(['UPDATE ' . Schema::table('finding')]);
+    check('expire: one window of PAGE ids through the primary key, and the next cursor',
+        $p === ['done' => false, 'rows' => 7, 'cursor' => 10000, 'top' => 12000]
+        && count($w) === 1 && strpos($w[0][0], 'finding_id > ? AND finding_id <= ?') !== false
+        && $w[0][1] === [5000, 10000, '2030-01-01 00:00:00', 42]);
+    check('expire: the window reaching the top id is the last',
+        $ret->expireValuesPage(10000)['done'] === true);
+    $rdb->sent = [];
+    $ret->expireValuesPage(0, null, '2030-01-01 00:00:00', 1000000);
+    $w = $rdb->with(['UPDATE ' . Schema::table('finding')]);
+    check('expire: a window asked for wider than PAGE is PAGE ids wide',
+        count($w) === 1 && $w[0][1] === [0, ScanRetention::PAGE, '2030-01-01 00:00:00']);
+    $rdb = $paramDb();                 // MAX answers no row at all
+    $r = outcomeOf(function () use ($rdb) { return (new ScanRetention($rdb))->expireValuesPage(0); });
+    check('expire: a top id that could not be read is not "done"',
+        $r['kind'] === 'other' && $r['class'] === 'RuntimeException');
+    $rdb = $paramDb();
+    $rdb->rows = ['MAX(finding_id)' => [[12000]]];
+    $rdb->affectedNext = 2;
+    check('expire: the whole sweep is a window at a time, and adds up',
+        (new ScanRetention($rdb))->expireValues('2030-01-01 00:00:00') === 6
+        && count($rdb->with(['UPDATE ' . Schema::table('finding')])) === 3);
+    $r = outcomeOf(function () use ($rdb) { return (new ScanRetention($rdb))->expireValuesPage(0, 0); });
+    check('expire: a project scope of 0 is refused rather than read as "the leftovers"',
+        $r['kind'] === 'other' && $r['class'] === 'InvalidArgumentException');
+
+    // purgeRuns: the run row goes last, and only after every child answered short.
+    $udb = $paramDb();
+    $udb->rows = ['ORDER BY run_id LIMIT 1' => [[31, 4]], 'SELECT EXISTS(' => [[0]]];
+    $udb->affectedNext = 3;
+    $pr = (new ScanRetention($udb))->purgeRuns(70, 30, 3);
+    check('purge: a child that gives up a full page ends the call, the run row still there',
+        $pr === ['done' => false, 'rows' => 3, 'runs' => 0, 'cursor' => 31]
+        && count($udb->with(['DELETE FROM'])) === 1
+        && $udb->with(['DELETE FROM ' . Schema::table('scan_run')]) === []);
+    $udb = $paramDb();
+    $udb->rows = ['ORDER BY run_id LIMIT 1' => [[31, 4]], 'SELECT EXISTS(' => [[0]]];
+    $udb->affectedNext = 1;
+    $pr = (new ScanRetention($udb))->purgeRuns(70, 30, 3);
+    $order = [];
+    foreach ($udb->with(['DELETE FROM']) as $s) {
+        preg_match('/DELETE FROM (\S+)/', $s[0], $m);
+        $order[] = $m[1];
+    }
+    $T = function ($s) { return Schema::table($s); };
+    check('purge: children first - manifest, aggregates, plan, then the generation, then the run',
+        $order === [$T('scan_record'), $T('scan_aggregate'), $T('scan_plan'), $T('finding'),
+                    $T('unique_candidate'), $T('unique_group'), $T('scan_dim'), $T('scan_run')]);
+    check('purge: and the generation\'s tables by project AND generation, a page at a time',
+        count($udb->with(['DELETE FROM ' . $T('finding') . ' WHERE project_id = ? AND generation_id = ? LIMIT 3'])) === 1);
+    $udb = $paramDb();
+    $udb->rows = ['ORDER BY run_id LIMIT 1' => [[31, 4]], 'SELECT EXISTS(' => [[1]]];
+    $udb->affectedNext = 0;
+    (new ScanRetention($udb))->purgeRuns(70, 30, 3);
+    check('purge: a generation another run still names keeps its findings',
+        $udb->with(['DELETE FROM ' . $T('finding')]) === []
+        && count($udb->with(['DELETE FROM ' . $T('scan_run')])) === 1);
+    $udb = $paramDb();
+    $udb->rows = ['ORDER BY run_id LIMIT 1' => [[31, 4]]];      // EXISTS answers nothing
+    $r = outcomeOf(function () use ($udb) { return (new ScanRetention($udb))->purgeRuns(70, 30); });
+    check('purge: an unreadable "is this generation shared" deletes nothing',
+        $r['kind'] === 'other' && $udb->with(['DELETE FROM']) === []);
+
+    // revokePreviews: the bump, then one bounded page through ix_page_v2.
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => [[3], [8]],
+                  'SELECT COUNT(*), MAX(finding_id)' => [[2, 41]]];
+    $vdb->affectedNext = 2;
+    $rv = (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2);
+    $clear = $vdb->with(['UPDATE ' . $T('finding')]);
+    check('revoke: the bump first, and a full page leaves the cursor inside the slice',
+        $rv === ['runs' => 2, 'rows' => 2, 'done' => false,
+                 'cursor' => ['gen' => 3, 'slot' => 1, 'after' => 41]]
+        && count($clear) === 1 && $clear[0][1] === [70, 3, 0, 41]
+        && strpos($clear[0][0], 'AND active_slot = 1') !== false
+        && strpos($clear[0][0], 'AND finding_id > ? AND finding_id <= ?') !== false);
+    // A short page clears its rows and ends the call at the next slice: one
+    // UPDATE per call, however little the slice held.
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => [[3], [8]],
+                  'SELECT COUNT(*), MAX(finding_id)' => [[1, 41]]];
+    $vdb->affectedNext = 1;
+    $rv = (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2);
+    check('revoke: a short page is one UPDATE, and the cursor moves to the next slice',
+        $rv === ['runs' => 1, 'rows' => 1, 'done' => false,
+                 'cursor' => ['gen' => 3, 'slot' => 0, 'after' => 0]]
+        && count($vdb->with(['UPDATE ' . $T('finding')])) === 1);
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => [[3]],
+                  'SELECT COUNT(*), MAX(finding_id)' => [[2, 41]]];
+    $vdb->affectedNext = 2;
+    (new ScanRetention($vdb))->revokePreviews(70, 5, null, 1000000);
+    $bound = $vdb->with(['SELECT COUNT(*), MAX(finding_id)']);
+    check('revoke: a page asked for larger than PAGE reads PAGE rows',
+        count($bound) === 1 && strpos($bound[0][0], 'LIMIT ' . ScanRetention::PAGE . ') page') !== false);
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => [[3], [8]],
+                  'SELECT COUNT(*), MAX(finding_id)' => [[0, null]]];
+    $vdb->affectedNext = 0;
+    $rv = (new ScanRetention($vdb))->revokePreviews(70, 5, ['gen' => 3, 'slot' => 1, 'after' => 41]);
+    check('revoke: empty slices are walked without a write, to the end',
+        $rv === ['runs' => 0, 'rows' => 0, 'done' => true, 'cursor' => null]
+        && $vdb->with(['UPDATE ' . $T('finding')]) === []
+        && count($vdb->with(['SELECT COUNT(*), MAX(finding_id)'])) === 4);
+    $vdb = $paramDb();
+    $vdb->rows = ['SELECT DISTINCT generation_id' => [[3]]];      // the page bound answers nothing
+    $r = outcomeOf(function () use ($vdb) { return (new ScanRetention($vdb))->revokePreviews(70, 5); });
+    check('revoke: a page bound that could not be read clears nothing and says so',
+        $r['kind'] === 'other' && $vdb->with(['UPDATE ' . $T('finding')]) === []);
 }
 
 namespace {

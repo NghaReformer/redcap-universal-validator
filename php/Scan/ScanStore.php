@@ -174,6 +174,29 @@ interface ScanStore
     ];
 
     /**
+     * Four uv_finding columns that are RESERVED: in the table, written with
+     * their schema default by both stores, read by nothing (review W7-R7).
+     *
+     *   arm_id        the event's arm. The store is handed an event id and no
+     *                 event metadata, so filling it would cost a read of
+     *                 REDCap's event table per batch, which no reader needs.
+     *   value_binary  whether the stored value is text. value_bin is cut at
+     *                 byte 255, so "not valid UTF-8" also describes a text value
+     *                 cut inside a character; FindingRowMapper decides from the
+     *                 bytes themselves (W7-R5), and a second answer here would
+     *                 be the wrong one for every cut value.
+     *   severity      no rule kind has a severity.
+     *   status_key    the form's completion status. Not read by the scan, and a
+     *                 second read per record to fill a column nothing shows.
+     *
+     * None is in FindingRowMapper::INPUT_KEYS, so findings() does not return
+     * them and the report cannot branch on a default. Giving one a producer is
+     * a change to UniversalValidator's finding literal, not to the schema,
+     * which already holds them.
+     */
+    const FINDING_RESERVED = ['arm_id', 'value_binary', 'severity', 'status_key'];
+
+    /**
      * How many windows of $limit rows one claimPending() call may retire
      * before it answers. See claimPending(): a call that retires a whole
      * window looks at the next one, and this is where it stops looking, so one
@@ -181,6 +204,17 @@ interface ScanStore
      * many dead rows sit in front of the live ones. Both stores use it.
      */
     const SWEEP_WINDOWS = 16;
+
+    /**
+     * The most rows one retention or supersede statement may touch.
+     *
+     * An unpaged DELETE of 500,000 findings was measured at 160 seconds as one
+     * statement, holding its row locks throughout. Every statement that walks
+     * findings, manifest rows or aggregates on behalf of retention is bounded
+     * by this, and every method built on one answers whether there is more, so
+     * a caller runs a fixed slice and comes back. ScanRetention::PAGE is this.
+     */
+    const PAGE = 5000;
 
     /**
      * Create a run and take the project's active slot, or report busy.
@@ -452,6 +486,12 @@ interface ScanStore
      * read is "not complete". A run with an EMPTY manifest answers true - the
      * predicate is vacuous there, and it is ScanPromotion's emptyScope fact, not
      * this method, that stops an empty run being certified.
+     *
+     * A RUN THAT DOES NOT EXIST IS NOT COMPLETE, from both stores (W6-N1). The
+     * SQL store used to answer true for it - no unfinished row, because no row
+     * at all - while the in-memory store answered false, and the contract had
+     * pinned the disagreement rather than chosen. "Nothing is unfinished" about
+     * a run nobody can find is the vacuous reading in the dangerous direction.
      */
     public function manifestComplete($runId);
 
@@ -492,14 +532,72 @@ interface ScanStore
     // one owner held two. A resource with two mechanisms is a resource where
     // the unused mechanism collects the defects.
 
-    /** One keyset page of findings for a generation, already filtered. */
+    /**
+     * One keyset page of a generation's ACTIVE findings, already filtered.
+     *
+     * EACH ROW IS KEYED BY FindingRowMapper::INPUT_KEYS, in that order, from
+     * both stores (B5-N1). The SQL store used to hand back twelve positional
+     * columns and the in-memory one its whole internal row, so a report built
+     * against either would have read nothing correctly from the other. The SQL
+     * store selects exactly that list and zips it with array_combine(), the way
+     * run() zips RUN_COLUMNS, and a row of the wrong width throws.
+     *
+     * KEYSET ON finding_id: rows come back with finding_id > $afterId, in
+     * finding_id order, so the last row's finding_id is the next page's
+     * $afterId and no row is ever returned on two pages. $limit is clamped to
+     * 1..100. $filter takes host_form, reason_code, dag_key and check_type;
+     * any other key is ignored rather than interpolated.
+     */
     public function findings($projectId, $generationId, array $filter, $afterId, $limit);
 
     /** Aggregate rows (collection gaps, not-checked kinds, rule problems). */
     public function aggregates($runId);
 
-    /** Expire stored value previews whose TTL has passed. Returns rows affected. */
-    public function expireValues($now);
+    /**
+     * Close the active findings of this project's OLDER generations, one page.
+     *
+     * When a run ends `complete`, every earlier generation of its project is
+     * history. Each reader is scoped to one generation, so nothing reads them
+     * as current - but "the current state of this project" stays a question
+     * about the newest generation only until their rows are closed, and
+     * valid_to_seq is how an "as of run N" view knows when they stopped being
+     * true (W4-D1). Closing is active_slot = NULL and valid_to_seq = this run's
+     * run_seq, never a delete (I5).
+     *
+     * ONE PAGE PER CALL, at most min($limit, PAGE) rows, inside one
+     * transaction that holds this run's row FOR UPDATE and moves
+     * scan_run.supersede_cursor with the page. The cursor is a GENERATION:
+     * every older generation below it has been closed. A generation is
+     * finished when a page closes fewer rows than it was allowed; the cursor
+     * then moves past it. When no older generation is left the cursor becomes
+     * the run's own generation, which is how a caller can tell a finished
+     * supersede from one that has not started without calling it.
+     *
+     * NEVER this run's own generation, never a newer one, never another
+     * project: the generations come from this project's own runs and must be
+     * below this run's. Only a run that ended `complete` supersedes anything; a
+     * partial, failed, cancelled or expired run leaves the previous report as
+     * the current one, which is why this happens at promotion and not at start.
+     *
+     * Idempotent and safe from two requests at once: the second waits on the
+     * run row and then finds the rows already closed or the cursor moved.
+     *
+     * @return array{done:bool, rows:int, cursor:int, why:?string} `done` is
+     *         true when nothing is left for this run to close - including a
+     *         run that may not supersede (`why` says which) - and false while
+     *         a further call has work to do. A run still in progress is not
+     *         done: it may yet complete.
+     * @throws ScanStoreUnavailable when the storage failed; nothing is closed
+     */
+    public function supersedePrevious($pid, $runId, $limit);
+
+    // expireValues() IS GONE FROM THIS CONTRACT TOO, for purgeRuns()'s reason.
+    //
+    // Each store carried its own unpaged installation-wide UPDATE of
+    // value_expires_at beside ScanRetention::expireValues(), which the cron
+    // calls; nothing in production called the store's. Two implementations of
+    // the one clear that touches participant data is one more than can be
+    // kept paged, scoped and tested.
 
     // purgeRuns() IS GONE FROM THIS CONTRACT, DELIBERATELY.
     //

@@ -950,7 +950,7 @@ final class SqlScanStore implements ScanStore
             // The findings of HELD records only, and the filter is applied inside
             // insertFindings() as it walks them rather than by building a second
             // list here - see the memory note there.
-            $stored = $this->insertFindings($findings, $held);
+            $stored = $this->insertFindings($findings, $held, $runSeq);
             // UNIQUENESS CANDIDATES, in the SAME transaction as the findings and
             // the record states. A uniqueness verdict is the only thing in the
             // scan that depends on records other than the one being examined, so
@@ -1314,7 +1314,7 @@ final class SqlScanStore implements ScanStore
      * deliberately shares nothing with this one: it stages rows under the other
      * unique key and uses ON DUPLICATE KEY UPDATE, the opposite conflict policy.
      */
-    private static function findingRow(array $f)
+    private static function findingRow(array $f, $runSeq)
     {
         // The project first, so a finding missing both is refused for the same
         // reason by both stores.
@@ -1342,7 +1342,11 @@ final class SqlScanStore implements ScanStore
             // The RUN's sequence number. It used to be a per-record
             // ordinal, which put valid_from_seq and valid_to_seq in
             // different number spaces and made the interval meaningless.
-            'valid_from_seq'    => isset($f['valid_from_seq']) ? (int) $f['valid_from_seq'] : 0,
+            // ABSENT MEANS THIS RUN'S, as in ArrayScanStore (M13). It was 0
+            // here, an interval opened before the project's first run, while
+            // the in-memory store used the run's sequence; the producer always
+            // sends it, so only the two stores disagreed.
+            'valid_from_seq'    => isset($f['valid_from_seq']) ? (int) $f['valid_from_seq'] : (int) $runSeq,
             'active_slot'       => $staged ? null : 1,
             'record_hash'       => $f['record_hash'],
             'record_id_bin'     => $f['record_id_bin'],
@@ -1405,9 +1409,10 @@ final class SqlScanStore implements ScanStore
      *
      * @param array $held ordinal => true, the records this transaction still
      *                    holds; a finding of any other record is not written
+     * @param int $runSeq the run's sequence, for a finding that names none
      * @return int rows stored
      */
-    private function insertFindings(array $findings, array $held)
+    private function insertFindings(array $findings, array $held, $runSeq)
     {
         $head = null;
         $mark = null;
@@ -1418,7 +1423,7 @@ final class SqlScanStore implements ScanStore
         $stored = 0;
         foreach ($findings as $f) {
             if (empty($held[(int) $f['ordinal']])) continue;
-            $row = self::findingRow($f);
+            $row = self::findingRow($f, $runSeq);
             if ($head === null) {
                 // findingRow() is the only column list, so the statement is
                 // shaped from the first row it builds.
@@ -1498,13 +1503,20 @@ final class SqlScanStore implements ScanStore
      * index. tests/mysql/cases/store.php asserts the plan. Safe to force:
      * ix_run_state is part of the version-1 CREATE TABLE, so there is no schema
      * carrying this table without it.
+     *
+     * AND THE RUN HAS TO EXIST (W6-N1). A run id with no manifest rows has no
+     * unfinished row either, so the first EXISTS alone answered "complete" for
+     * a run nobody can find, where ArrayScanStore answered "not complete". The
+     * second EXISTS is a primary-key probe in the same statement; both columns
+     * must be read, as numbers, for the answer to be yes.
      */
     public function manifestComplete($runId)
     {
         $r = $this->db->select('SELECT EXISTS(SELECT 1 FROM ' . Schema::table('scan_record')
-            . ' FORCE INDEX (ix_run_state) WHERE run_id = ? AND state < ?)',
-            [$runId, self::REC_DONE]);
-        return isset($r[0][0]) && (int) $r[0][0] === 0;
+            . ' FORCE INDEX (ix_run_state) WHERE run_id = ? AND state < ?), EXISTS(SELECT 1 FROM '
+            . Schema::table('scan_run') . ' WHERE run_id = ?)',
+            [$runId, self::REC_DONE, $runId]);
+        return isset($r[0][0], $r[0][1]) && (int) $r[0][0] === 0 && (int) $r[0][1] === 1;
     }
 
     /**
@@ -1604,12 +1616,22 @@ final class SqlScanStore implements ScanStore
 
     // -- reads --------------------------------------------------------------
 
-    /** One keyset page. Never OFFSET: it degrades quadratically over a run. */
+    /**
+     * One keyset page. Never OFFSET: it degrades quadratically over a run.
+     *
+     * THE SELECT LIST IS FindingRowMapper::INPUT_KEYS, and each row is zipped
+     * with it (B5-N1). This returned twelve positional columns - no project, no
+     * rule source, no stored length, no expiry - so the report the mapper
+     * renders could not have been built from it, and ArrayScanStore answered
+     * with a different shape again. Every name in the list is a column of
+     * uv_finding, so it is imploded straight into the statement; nothing here
+     * comes from a caller.
+     */
     public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         $limit = max(1, min(100, (int) $limit));
-        $sql = 'SELECT finding_id, record_id_bin, event_id, instance, host_form, field,
-                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated
+        $keys = FindingRowMapper::INPUT_KEYS;
+        $sql = 'SELECT ' . implode(', ', $keys) . '
                 FROM ' . Schema::table('finding') . '
                 WHERE project_id = ? AND generation_id = ? AND active_slot = 1
                   AND finding_id > ?';
@@ -1630,7 +1652,18 @@ final class SqlScanStore implements ScanStore
             }
         }
         $sql .= ' ORDER BY finding_id LIMIT ' . $limit;
-        return $this->db->select($sql, $params);
+        $out = [];
+        foreach ($this->db->select($sql, $params) as $r) {
+            $row = array_values((array) $r);
+            if (count($row) !== count($keys)) {
+                // As in run(): array_combine() would answer false, and a false
+                // row reads as "no such key" in every cell of the report.
+                throw new \LogicException('a finding row has ' . count($row) . ' columns and '
+                    . 'FindingRowMapper::INPUT_KEYS names ' . count($keys));
+            }
+            $out[] = array_combine($keys, $row);
+        }
+        return $out;
     }
 
     /**
@@ -1654,21 +1687,144 @@ final class SqlScanStore implements ScanStore
         return $out;
     }
 
-    // -- retention ----------------------------------------------------------
+    // -- superseding the previous generation (W4-D1) --------------------------
+    //
+    // Value expiry used to live here as well, as a second unpaged UPDATE beside
+    // ScanRetention's; see the note in ScanStore where expireValues() was.
 
     /**
-     * Expire value previews whose TTL has passed.
+     * Close one page of this project's older generations. See the contract.
      *
-     * The value is NULLED, not the row: the finding is still true, and deleting
-     * it would make a report shrink as it ages, which reads as the project
-     * having improved.
+     * BY GENERATION, NOT BY FINDING ID. The page is
+     * `project_id = ? AND generation_id = ? AND active_slot = 1 LIMIT n`, which
+     * is an equality on the first three columns of ix_page_v2: the server reads
+     * exactly the rows it closes, and a closed row leaves that range, so the
+     * next page starts where this one stopped without a cursor inside the
+     * generation. A finding-id cursor across generations has no index to walk
+     * (generation_id comes before finding_id in every key), and a range over
+     * `generation_id < ?` reads every closed row of every older run on every
+     * page - the whole history of the project, again and again.
+     *
+     * THE CURSOR MOVES WITH THE PAGE THAT FINISHES A GENERATION, in the same
+     * transaction, as a compare-and-set under the run row's lock. It always
+     * changes when it moves (a generation id below this run's becomes a larger
+     * one), so affected() is meaningful; a cursor that did not move as expected
+     * rolls the page back. A page that closed its full limit leaves the cursor
+     * where it was: the generation may have more, and the next call looks.
+     *
+     * LOCK ORDER is this run's row, then the older generations' finding rows.
+     * commitBatch() takes ITS run's row and then its own generation's rows, so
+     * the two never wait on each other's rows; the one meeting point is the
+     * next-key lock at the end of a closed range, which InnoDB resolves as a
+     * deadlock and this method reports as unavailable, having closed nothing.
+     *
+     * valid_to_seq IS THIS RUN'S run_seq. A newer run that completes before
+     * this one has finished closing will close the rest with its own sequence,
+     * which is a later end than the truth by one run; nothing reads the
+     * interval finer than that.
      */
-    public function expireValues($now)
+    public function supersedePrevious($pid, $runId, $limit)
     {
-        $this->db->exec('UPDATE ' . Schema::table('finding') . '
-            SET value_bin = NULL, value_fingerprint = NULL, value_expires_at = NULL
-            WHERE value_expires_at IS NOT NULL AND value_expires_at <= ?', [$now]);
-        return $this->db->affected();
+        $pid = (int) $pid;
+        $limit = max(1, min(self::PAGE, (int) $limit));
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT generation_id, run_seq, terminal, supersede_cursor FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? AND project_id = ? FOR UPDATE',
+                [$runId, $pid]);
+            if (!isset($r[0])) {
+                $this->db->rollback();
+                return self::superseded(true, 0, 0, 'there is no such run in this project');
+            }
+            $gen = (int) $r[0][0];
+            $seq = (int) $r[0][1];
+            $cursor = (int) $r[0][3];
+            if ($r[0][2] === null) {
+                $this->db->rollback();
+                return self::superseded(false, 0, $cursor,
+                    'this scan has not finished, so it supersedes nothing yet');
+            }
+            if ((string) $r[0][2] !== ScanOutcome::COMPLETE) {
+                $this->db->rollback();
+                return self::superseded(true, 0, $cursor,
+                    'this scan did not complete, so the previous report stays the current one');
+            }
+            $older = $this->olderGeneration($pid, $cursor, $gen);
+            if ($older === null) {
+                // Nothing below this run is left. The cursor becomes the run's
+                // own generation, once, so "done" is readable from the row.
+                if ($cursor < $gen) {
+                    $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                        . ' SET supersede_cursor = ? WHERE run_id = ? AND supersede_cursor = ?',
+                        [$gen, $runId, $cursor]);
+                    if ($this->db->affected() !== 1) {
+                        $this->db->rollback();
+                        return self::superseded(false, 0, $cursor, self::SUPERSEDE_MOVED);
+                    }
+                }
+                $this->db->commit();
+                return self::superseded(true, 0, $gen, null);
+            }
+
+            $this->db->exec('UPDATE ' . Schema::table('finding') . '
+                SET active_slot = NULL, valid_to_seq = ?
+                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                LIMIT ' . $limit, [$seq, $pid, $older]);
+            $rows = $this->db->affected();
+            $to = $cursor;
+            $done = false;
+            if ($rows < $limit) {
+                // This generation is closed. Past it - and when nothing older
+                // is left, all the way to the run's own generation, so the
+                // call that finishes says so rather than leaving it to the next.
+                $after = $this->olderGeneration($pid, $older + 1, $gen);
+                $to = $after === null ? $gen : $older + 1;
+                $done = $after === null;
+                $this->db->exec('UPDATE ' . Schema::table('scan_run')
+                    . ' SET supersede_cursor = ? WHERE run_id = ? AND supersede_cursor = ?',
+                    [$to, $runId, $cursor]);
+                if ($this->db->affected() !== 1) {
+                    $this->db->rollback();
+                    return self::superseded(false, 0, $cursor, self::SUPERSEDE_MOVED);
+                }
+            }
+            $this->db->commit();
+            return self::superseded($done, $rows, $to, null);
+        } catch (\Throwable $e) {
+            throw $this->rolledBack($e);
+        }
+    }
+
+    /** Why a supersede page was given back rather than kept. */
+    const SUPERSEDE_MOVED = 'the supersede cursor moved under this page, so nothing was closed; ask again';
+
+    /**
+     * The lowest generation of this project at or above $from and below $gen.
+     *
+     * From the project's own runs - one per generation, a handful per project -
+     * through the project-leading run keys. A generation with findings always
+     * has its run: purgeRuns() deletes the run row last.
+     *
+     * @return int|null
+     */
+    private function olderGeneration($pid, $from, $gen)
+    {
+        $n = $this->db->select('SELECT MIN(generation_id) FROM ' . Schema::table('scan_run')
+            . ' WHERE project_id = ? AND generation_id >= ? AND generation_id < ?',
+            [$pid, (int) $from, (int) $gen]);
+        if (!isset($n[0]) || !array_key_exists(0, (array) $n[0])) {
+            // MIN() always answers one row. No row is a read that did not work,
+            // and reading it as "nothing older" would mark the supersede done.
+            throw new \RuntimeException('the older generations of this project could not be read');
+        }
+        $v = array_values((array) $n[0]);
+        return $v[0] === null ? null : (int) $v[0];
+    }
+
+    private static function superseded($done, $rows, $cursor, $why)
+    {
+        return ['done' => (bool) $done, 'rows' => (int) $rows, 'cursor' => (int) $cursor,
+                'why' => $why];
     }
 
 

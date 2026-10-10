@@ -204,10 +204,13 @@ check('store: the slot is released, so the next scan may start',
 // than repaired, so these went with them; the live pair is asserted in
 // cases/slots.php, which is where it always should have been.
 
-// RETENTION: a value expires without the finding disappearing.
+// RETENTION: a value expires without the finding disappearing. Through
+// ScanRetention, which is the only value sweep now: the store's own unpaged
+// copy of it had no production caller and was deleted (wave 8).
 $A->query('UPDATE ' . Schema::table('finding') . " SET value_bin = 'secret',
     value_expires_at = '2000-01-01 00:00:00' WHERE record_id_bin = 'REC-1'");
-check('store: an expired value is cleared', $storeA->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
+check('store: an expired value is cleared',
+    (new \INSPIRE\UniversalValidator\Scan\ScanRetention($dbA))->expireValues(gmdate('Y-m-d H:i:s')) >= 1);
 $v = $ca->query('SELECT value_bin FROM ' . Schema::table('finding')
     . " WHERE record_id_bin = 'REC-1'", []);
 check('store: the value is gone', $v[0][0] === null);
@@ -705,14 +708,18 @@ $ASKED = 782;
     $A->query('UPDATE ' . Schema::table('scan_record') . ' SET state = ' . (int) ScanStore::REC_PENDING
         . ' WHERE run_id = ' . $rid . ' AND ordinal = 600');
     check('asked: one row put back makes it incomplete again', $s->manifestComplete($rid) === false);
-    // A KNOWN DIVERGENCE, PINNED SO IT IS NOT "FIXED" BY ACCIDENT. The SQL
-    // store answers true for a run id that does not exist - nothing is
-    // unfinished - where ArrayScanStore answers false. No production caller can
-    // reach it, because work() reads the run row first. Store parity (M13,
-    // wave 8) owns choosing one answer; until then a rewrite of this method
-    // must not move it silently.
-    check('asked: a run that does not exist still answers as it always has',
-        $s->manifestComplete(999999999) === true);
+    // THE DIVERGENCE THAT WAS PINNED HERE IS CHOSEN NOW (W6-N1). The SQL store
+    // answered true for a run id that does not exist - nothing unfinished -
+    // where ArrayScanStore answered false. Both fail closed, and the run is
+    // looked up by its primary key inside the same statement.
+    check('asked: a run that does not exist is not complete',
+        $s->manifestComplete(999999999) === false);
+    $rec->log = [];
+    $s->manifestComplete($rid);
+    $q = $rec->matching('select', [Schema::table('scan_record'), 'state <']);
+    $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
+    check('asked: and the run lookup costs a primary-key probe beside the state index',
+        count($q) === 1 && in_array('ix_run_state', $keys, true) && in_array('PRIMARY', $keys, true));
 }
 
 // THE DECISION IS ON THE ROW (H15), read back RAW.
@@ -904,6 +911,204 @@ $LENIENT = 785;
     if ($server !== $byStore) {
         fwrite(STDERR, '  server: ' . implode(',', $server) . "\n  store:  " . implode(',', $byStore) . "\n");
     }
+}
+
+// ONE ROW SHAPE, ASKED OF BOTH STORES AT ONCE (B5-N1, M13).
+//
+// The contract below judges each store against FindingRowMapper::INPUT_KEYS
+// separately. This puts the same batch through the in-memory store and this
+// one and compares what they answer, value by value, so a column one of them
+// defaults differently fails here by name.
+$PARITY = 786;
+{
+    $build = function ($store, $pid) {
+        $r = $store->startRun($pid, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $store->writeManifest($rid, [['id_bin' => 'PA-1', 'hash' => hash('sha256', 'PA-1', true), 'dag' => 'north'],
+                                     ['id_bin' => 'PA-2', 'hash' => hash('sha256', 'PA-2', true), 'dag' => null]]);
+        $ep = (int) $store->run($pid, $rid)['lease_epoch'];
+        $c = $store->claim($rid, 'w', $ep, 2);
+        $base = function ($row, $i) use ($pid, $gen) {
+            // No valid_from_seq anywhere: the run's own sequence is the default
+            // both stores must agree on.
+            return ['ordinal' => $row['ordinal'], 'project_id' => $pid, 'generation_id' => $gen,
+                    'identity' => hash('sha256', 'parity-' . $i, true),
+                    'record_hash' => $row['hash'], 'record_id_bin' => $row['id_bin'],
+                    'host_form' => 'visit', 'field' => 'f' . $i, 'rule_source_id' => 'src-' . $i,
+                    'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+                    'reason_code' => 'required-blank'];
+        };
+        $fs = [
+            $base($c[0], 1) + ['event_id' => 12, 'instance' => 3, 'rule_ord' => 4, 'reason_bits' => 5,
+                               'dag_key' => 'north', 'value_bin' => "b\xC3\xA9", 'value_len' => 3,
+                               'value_truncated' => 1, 'value_expires_at' => '2031-02-03 04:05:06'],
+            $base($c[0], 2),
+            $base($c[1], 3) + ['stage_epoch' => 2, 'group_hmac' => hash('sha256', 'pg', true)],
+            $base($c[1], 4) + ['value_bin' => '', 'value_len' => 0],
+        ];
+        $ok = $store->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs, 'records' => [
+            ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[0]['claim']],
+            ['ordinal' => $c[1]['ordinal'], 'record_hash' => $c[1]['hash'], 'state' => ScanStore::REC_DONE, 'claim' => $c[1]['claim']]]]);
+        return ['run' => $rid, 'gen' => $gen, 'ok' => $ok,
+                'rows' => $store->findings($pid, $gen, [], 0, 100)];
+    };
+    $flat = function (array $rows) {
+        $out = [];
+        foreach ($rows as $row) {
+            $f = [];
+            foreach ($row as $k => $v) {
+                if ($k === 'finding_id') continue;      // an id each store numbers its own way
+                $f[$k] = $v === null ? null : (string) $v;
+            }
+            $out[] = $f;
+        }
+        return $out;
+    };
+    $mem = $build(new \INSPIRE\UniversalValidator\Scan\ArrayScanStore(), $PARITY);
+    $sql = $build(new SqlScanStore($dbA), $PARITY);
+    check('parity: the same batch commits in both stores', $mem['ok'] === true && $sql['ok'] === true);
+    check('parity: and both answer FindingRowMapper::INPUT_KEYS, in that order, on every row',
+        count($sql['rows']) === 3 && count($mem['rows']) === 3
+        && array_keys($sql['rows'][0]) === \INSPIRE\UniversalValidator\Scan\FindingRowMapper::INPUT_KEYS
+        && array_keys($mem['rows'][2]) === array_keys($sql['rows'][2]));
+    $a = $flat($mem['rows']);
+    $b = $flat($sql['rows']);
+    check('parity: with the same values, defaults included, row for row', $a === $b);
+    if ($a !== $b) {
+        foreach ($a as $i => $row) {
+            foreach ($row as $k => $v) {
+                $w = isset($b[$i]) && array_key_exists($k, $b[$i]) ? $b[$i][$k] : '(absent)';
+                if ($v !== $w) fwrite(STDERR, "  row $i $k: memory=" . var_export($v, true)
+                    . ' server=' . var_export($w, true) . "\n");
+            }
+        }
+    }
+    $from = $dbA->select('SELECT COUNT(*), MIN(valid_from_seq), MAX(valid_from_seq) FROM '
+        . Schema::table('finding') . ' WHERE project_id = ? AND generation_id = ?', [$PARITY, $sql['gen']]);
+    $seq = uv_run_seq($dbA, $sql['run']);
+    check('parity: a finding that names no interval opens at its run\'s sequence, not at 0',
+        (int) $from[0][0] === 4 && (int) $from[0][1] === $seq && (int) $from[0][2] === $seq && $seq > 0);
+    $staged = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND active_slot IS NULL AND stage_epoch = 2', [$PARITY]);
+    check('parity: the staged row is stored staged, which is why neither store returns it',
+        (int) $staged[0][0] === 1);
+    // THE READ IS THE KEY IT WAS BUILT FOR. Asserted on the statement sent.
+    $rec = new UvRecordingDb($dbA);
+    (new SqlScanStore($rec))->findings($PARITY, $sql['gen'], [], 0, 100);
+    $q = $rec->matching('select', ['FROM ' . Schema::table('finding')]);
+    $keys = $q ? uv_explain_keys($A, $q[0][1], $q[0][2]) : [];
+    check('parity: a page of findings is read through ix_page_v2',
+        count($q) === 1 && $keys === ['ix_page_v2']);
+    if ($keys !== ['ix_page_v2']) fwrite(STDERR, '  findings plan: ' . implode(' ', uv_explain_rows($A, $q[0][1], $q[0][2])) . "\n");
+}
+
+// THE PREVIOUS GENERATION, CLOSED A PAGE AT A TIME WHEN A RUN COMPLETES (W4-D1).
+//
+// The contract asserts what is closed. This asserts what it costs and what the
+// rows say afterwards: the page is the three-column prefix of the active-page
+// key, the closed rows carry the closing run's sequence, the run row carries
+// the finished cursor, and a request that cannot hold the run row closes
+// nothing at all.
+$SUPER = 787;
+{
+    $sa = new SqlScanStore($dbA);
+    $nbS = uv_plant_neighbour($dbA, $SUPER);
+    $done = ScanOutcome::derive(['fenced' => true, 'manifestDone' => true, 'violations' => 1]);
+    $runWith = function ($n) use ($sa, $SUPER, $done) {
+        $r = $sa->startRun($SUPER, ['created_by' => 'alice']);
+        $rid = (int) $r['run']['run_id'];
+        $gen = (int) $r['run']['generation_id'];
+        $sa->writeManifest($rid, [['id_bin' => 'SP-' . $gen, 'hash' => hash('sha256', 'SP-' . $gen, true), 'dag' => null]]);
+        $ep = (int) $sa->run($SUPER, $rid)['lease_epoch'];
+        $c = $sa->claim($rid, 'w', $ep, 1);
+        $fs = [];
+        for ($i = 0; $i < $n; $i++) {
+            $fs[] = ['ordinal' => $c[0]['ordinal'], 'project_id' => $SUPER, 'generation_id' => $gen,
+                     'identity' => hash('sha256', 'sp-' . $gen . '-' . $i, true),
+                     'record_hash' => $c[0]['hash'], 'record_id_bin' => $c[0]['id_bin'],
+                     'host_form' => 'fa', 'field' => 'x' . $i, 'rule_source_id' => 'r1',
+                     'rule_revision' => str_repeat('c', 64), 'check_type' => 'required',
+                     'reason_code' => 'required-blank'];
+        }
+        $sa->commitBatch($rid, 'w', $ep, ['bytes' => 0, 'findings' => $fs, 'records' => [
+            ['ordinal' => $c[0]['ordinal'], 'record_hash' => $c[0]['hash'], 'state' => ScanStore::REC_DONE,
+             'claim' => $c[0]['claim']]]]);
+        $sa->finish($rid, $done);
+        return ['run' => $rid, 'gen' => $gen];
+    };
+    $old = $runWith(5);
+    $new = $runWith(2);
+    check('supersede: the neighbour shares the older run\'s generation, as two projects do',
+        is_array($nbS) && (int) $nbS['generation_id'] === $old['gen']);
+
+    // A REQUEST THAT CANNOT HOLD THE RUN ROW CLOSES NOTHING. Connection A holds
+    // it; B's page waits, gives up, and reports the storage unavailable.
+    $B->query('SET SESSION innodb_lock_wait_timeout = 1');
+    $A->query('START TRANSACTION');
+    $A->query('SELECT run_id FROM ' . Schema::table('scan_run') . ' WHERE run_id = ' . $new['run'] . ' FOR UPDATE');
+    $blocked = null;
+    try {
+        (new SqlScanStore($dbB))->supersedePrevious($SUPER, $new['run'], 10);
+        $blocked = 'returned';
+    } catch (\INSPIRE\UniversalValidator\Scan\ScanStoreUnavailable $e) {
+        $blocked = 'unavailable';
+    }
+    $A->query('ROLLBACK');
+    $B->query('SET SESSION innodb_lock_wait_timeout = 50');
+    $activeOld = function () use ($dbA, $SUPER, $old) {
+        $r = $dbA->select('SELECT COUNT(*) FROM ' . Schema::table('finding')
+            . ' WHERE project_id = ? AND generation_id = ? AND active_slot = 1', [$SUPER, $old['gen']]);
+        return (int) $r[0][0];
+    };
+    check('supersede: a second request waits on the run row, and closes nothing when it cannot have it',
+        $blocked === 'unavailable' && $activeOld() === 5);
+
+    $rec = new UvRecordingDb($dbA);
+    $sr = new SqlScanStore($rec);
+    $pages = [];
+    do {
+        $rec->log = [];
+        $p = $sr->supersedePrevious($SUPER, $new['run'], 2);
+        $pages[] = $p['rows'];
+    } while (!$p['done'] && count($pages) < 10);
+    check('supersede: pages of 2 close 5 rows as 2, 2, 1, and the short page finishes',
+        $pages === [2, 2, 1] && $p['done'] === true && $p['cursor'] === $new['gen']);
+    $rec->log = [];
+    $sr->supersedePrevious($SUPER, $new['run'], 2);
+    check('supersede: a finished supersede sends no write at all',
+        $rec->matching('exec', ['UPDATE']) === []);
+    $rows = $dbA->select('SELECT COUNT(*), MIN(valid_to_seq), MAX(valid_to_seq) FROM '
+        . Schema::table('finding') . ' WHERE project_id = ? AND generation_id = ? AND active_slot IS NULL',
+        [$SUPER, $old['gen']]);
+    $seqNew = uv_run_seq($dbA, $new['run']);
+    check('supersede: every older row is closed at the closing run\'s sequence',
+        $activeOld() === 0 && (int) $rows[0][0] === 5
+        && (int) $rows[0][1] === $seqNew && (int) $rows[0][2] === $seqNew);
+    $cur = $dbA->select('SELECT supersede_cursor FROM ' . Schema::table('scan_run') . ' WHERE run_id = ?',
+        [$new['run']]);
+    check('supersede: and the run row carries the finished cursor, readable without calling',
+        (int) $cur[0][0] === $new['gen']);
+    check('supersede: the closing run\'s own rows and the neighbour\'s are untouched',
+        count($sa->findings($SUPER, $new['gen'], [], 0, 100)) === 2
+        && uv_neighbour_findings($dbA, $SUPER) === 2);
+
+    // THE PLAN. One more older run to close, recorded, and the page EXPLAINed.
+    $third = $runWith(3);
+    $rec->log = [];
+    $sr->supersedePrevious($SUPER, $third['run'], 2);
+    $u = $rec->matching('exec', ['UPDATE ' . Schema::table('finding'), 'active_slot = NULL']);
+    $plan = $u ? uv_explain_rows($A, $u[0][1], $u[0][2]) : [];
+    $key = $u ? uv_explain_key($A, $u[0][1], $u[0][2]) : '';
+    check('supersede: the page is read through a key that begins (project_id, generation_id, active_slot)',
+        count($u) === 1 && $key !== ''
+        && array_slice(uv_index_columns($A, Schema::table('finding'), $key), 0, 3)
+            === ['project_id', 'generation_id', 'active_slot']);
+    $m = $rec->matching('select', ['MIN(generation_id)']);
+    $mkey = $m ? uv_explain_key($A, $m[0][1], $m[0][2]) : '';
+    check('supersede: and the older generations are found through a project-leading run key',
+        $mkey !== '' && array_slice(uv_index_columns($A, Schema::table('scan_run'), $mkey), 0, 1) === ['project_id']);
+    echo '  plan supersede page: ' . implode(' ', $plan) . ' | older: ' . $mkey . "\n";
 }
 
 // The identical assertions run in the fast suite against ArrayScanStore. Two

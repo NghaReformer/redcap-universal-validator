@@ -44,6 +44,8 @@ require_once __DIR__ . '/../php/Scan/DbError.php';
 require_once __DIR__ . '/../php/Scan/ScanStoreUnavailable.php';
 require_once __DIR__ . '/../php/Scan/ScanStore.php';
 require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+// findings() keys its rows by FindingRowMapper::INPUT_KEYS (B5-N1).
+require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
 
 /**
  * A ScanDb the test controls completely.
@@ -269,9 +271,8 @@ class FaultyStore implements ScanStore
     public function aggregates($runId)
     { $this->gate('aggregates'); return $this->inner->aggregates($runId); }
 
-    public function expireValues($now)
-    { $this->gate('expireValues'); return $this->inner->expireValues($now); }
-
+    public function supersedePrevious($pid, $runId, $limit)
+    { $this->gate('supersedePrevious'); return $this->inner->supersedePrevious($pid, $runId, $limit); }
 
     public function audit($pid, $runId, $event, $actor, $detail)
     { $this->gate('audit'); return $this->inner->audit($pid, $runId, $event, $actor, $detail); }
