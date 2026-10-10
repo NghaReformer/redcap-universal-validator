@@ -36,6 +36,14 @@ foreach ($fx['cases'] as $c) {
     check($c['name'] . ' -> ' . json_encode($want) . ' (got ' . json_encode($got) . ')', $got === $want);
 }
 
+// calendar arithmetic, the same cases as window_js.cjs
+check('calendar fixture loads', !empty($fx['calendar']));
+foreach ($fx['calendar'] as $c) {
+    $got = call_user_func_array([TemporalValue::class, $c['fn']], $c['args']);
+    check('calendar ' . $c['fn'] . json_encode($c['args']) . ' -> ' . json_encode($c['out']) . ' (got ' . json_encode($got) . ')',
+        $got === $c['out']);
+}
+
 // fromValidation: the type and format a REDCap validation implies
 foreach ([
     'date_ymd' => ['type' => 'date', 'format' => 'ymd'],

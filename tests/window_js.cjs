@@ -38,6 +38,14 @@ for (const c of fx.cases) {
   check(c.name + ' -> ' + JSON.stringify(want) + ' (got ' + JSON.stringify(got) + ')', same);
 }
 
+// calendar arithmetic, the same cases as window_php.php
+check('calendar fixture loads', Array.isArray(fx.calendar) && fx.calendar.length > 0);
+for (const c of fx.calendar) {
+  const got = W.calendar[c.fn].apply(null, c.args);
+  check('calendar ' + c.fn + JSON.stringify(c.args) + ' -> ' + JSON.stringify(c.out) + ' (got ' + JSON.stringify(got) + ')',
+    got === c.out);
+}
+
 // format: canonical -> how the field displays it (same pins as window_php.php)
 check('format date dmy', W.format('2026-01-22', 'date', 'dmy') === '22-01-2026');
 check('format date mdy', W.format('2026-01-22', 'date', 'mdy') === '01-22-2026');

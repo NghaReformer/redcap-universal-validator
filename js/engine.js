@@ -1478,6 +1478,61 @@ function QRID_temporalCanonical(seconds,type){
   var iso=d.toISOString();
   return type==='date'?iso.slice(0,10):iso.slice(0,19).replace('T',' ');
 }
+/* Calendar arithmetic for @UVWINDOW months, years and periods: Y-M-D dates in
+   and out, null for an invalid input or a result outside the years 1-9999.
+   Twins of TemporalValue::shiftMonths and the rest; tests/window_fixture.json
+   "calendar" drives both. A month shift clamps the day to the end of the
+   target month (Jan 31 + 1 month = Feb 28); Date.setUTCMonth would overflow. */
+function QRID_daysInMonth(y,m){
+  if(m===2)return (y%4===0&&(y%100!==0||y%400===0))?29:28;
+  return (m===4||m===6||m===9||m===11)?30:31;
+}
+function QRID_ymd(date){
+  var p=QRID_temporalDate(typeof date==='string'?date:'','date','ymd');if(!p)return null;
+  return [Number(p.value.slice(0,4)),Number(p.value.slice(5,7)),Number(p.value.slice(8,10))];
+}
+function QRID_shiftMonths(date,n){
+  var p=QRID_ymd(date);if(!p||typeof n!=='number'||Math.floor(n)!==n)return null;
+  var total=p[0]*12+(p[1]-1)+n;if(total<12||total>9999*12+11)return null;
+  var y=Math.floor(total/12),mo=total-y*12+1,d=Math.min(p[2],QRID_daysInMonth(y,mo));
+  return ('000'+y).slice(-4)+'-'+('0'+mo).slice(-2)+'-'+('0'+d).slice(-2);
+}
+function QRID_shiftDays(date,n){
+  var p=QRID_temporalDate(typeof date==='string'?date:'','date','ymd');
+  if(!p||typeof n!=='number'||Math.floor(n)!==n)return null;
+  return QRID_temporalCanonical(p.seconds+n*86400,'date');
+}
+function QRID_isoWeekday(date){
+  var p=QRID_temporalDate(typeof date==='string'?date:'','date','ymd');if(!p)return null;
+  var days=Math.floor(p.seconds/86400);   /* 1970-01-01 was a Thursday */
+  return (((days+3)%7)+7)%7+1;
+}
+function QRID_periodStart(date,period,weekStart){
+  if(weekStart===undefined)weekStart='monday';
+  var p=QRID_ymd(date);if(!p)return null;
+  var pad=function(v,w){return ('000'+v).slice(-w);};
+  if(period==='week'){
+    if(weekStart!=='monday'&&weekStart!=='sunday')return null;
+    var back=(QRID_isoWeekday(date)-(weekStart==='sunday'?7:1)+7)%7;
+    return QRID_shiftDays(date,-back);
+  }
+  if(period==='month')return pad(p[0],4)+'-'+pad(p[1],2)+'-01';
+  if(period==='quarter')return pad(p[0],4)+'-'+pad(Math.floor((p[1]-1)/3)*3+1,2)+'-01';
+  if(period==='year')return pad(p[0],4)+'-01-01';
+  return null;
+}
+function QRID_periodShift(start,period,n){
+  if(typeof n!=='number'||Math.floor(n)!==n)return null;
+  if(period==='week')return QRID_shiftDays(start,7*n);
+  if(period==='month')return QRID_shiftMonths(start,n);
+  if(period==='quarter')return QRID_shiftMonths(start,3*n);
+  if(period==='year')return QRID_shiftMonths(start,12*n);
+  return null;
+}
+function QRID_periodEnd(start,period){
+  var next=QRID_periodShift(start,period,1);
+  return next===null?null:QRID_shiftDays(next,-1);
+}
 /* A canonical value written the way a field of this type and format shows it. */
 function QRID_temporalFormat(canonical,type,format){
   var m=typeof canonical==='string'?/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(canonical):null;
@@ -6028,7 +6083,9 @@ window.INSPIREUniversalValidator = {
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
     verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
-    clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS
+    clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS,
+    calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
+                periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
