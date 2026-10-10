@@ -1773,7 +1773,10 @@ final class SqlScanStore implements ScanStore
                 return self::superseded(true, 0, $gen, null);
             }
 
-            $this->db->exec('UPDATE ' . Schema::table('finding') . '
+            // FORCE INDEX: the page is ix_page_v2's three-column prefix, and
+            // MySQL 5.7 chose another key for it once in eight matrix passes.
+            // See ScanRetention::slicePage().
+            $this->db->exec('UPDATE ' . Schema::table('finding') . ' FORCE INDEX (ix_page_v2)
                 SET active_slot = NULL, valid_to_seq = ?
                 WHERE project_id = ? AND generation_id = ? AND active_slot = 1
                 LIMIT ' . $limit, [$seq, $pid, $older]);
