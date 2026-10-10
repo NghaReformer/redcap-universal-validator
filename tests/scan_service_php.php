@@ -27,6 +27,7 @@ namespace {
     require_once __DIR__ . '/../php/Scan/DbError.php';
     require_once __DIR__ . '/../php/Scan/ScanStore.php';
     require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
+    require_once __DIR__ . '/../php/Scan/FindingRowMapper.php';
     require_once __DIR__ . '/../php/Scan/ScanOutcome.php';
     require_once __DIR__ . '/../php/Scan/ScanPhase.php';
     require_once __DIR__ . '/../php/Scan/ScanPolicy.php';
@@ -468,6 +469,189 @@ namespace {
             $n = 0;
             foreach ($this->log as $s) if (strpos($s, $needle) !== false) $n++;
             return $n;
+        }
+    }
+
+    /**
+     * A whole installation under ScanService, with ArrayScanStore as the store
+     * (the merge guard).
+     *
+     * WHY THIS EXISTS. The merge of main left advanceRun() calling
+     * aggregateTotal(), a method the scan chain had deleted, so every work
+     * request that reached promotion died with an Error - and nothing in the
+     * fast suite or the database harness drove a work request that far. Every
+     * other fixture here stops at a gate, or builds the worker by hand. This one
+     * serves every statement the four verbs send outside the store, so start(),
+     * work() and status() run end to end over the REAL planner, worker,
+     * catch-up, uniqueness finalizer, summary builder and promotion:
+     *
+     *   the record index   FakeSourceDb's three-statement index, over $records
+     *   the change log     one entry per record before the run (ids 1..100) and
+     *                      nothing during it, so a run can prove its window
+     *   the worker slots   one slot, always free, with a real compare-and-set
+     *   the summary        RollupBuilder's page of active findings, answered
+     *                      from the store's own keyset findings()
+     *   duplicate groups   none: no rule here is a uniqueness rule
+     *   everything else    no rows, which is what an empty installation says
+     *
+     * The rule is one required field, a_val on instrument fa. $flagged records
+     * hold a blank and get a finding; $broken records are read and cannot be
+     * examined (the evaluator answers `why`); $problems is what the plan says it
+     * cannot evaluate.
+     */
+    class E2eModule
+    {
+        public $sys = [];
+        public $proj = [];
+        public $user;
+        /** @var \INSPIRE\UniversalValidator\Scan\ArrayScanStore */
+        public $store;
+        /** record ids in the project */
+        public $records = ['R001', 'R002', 'R003'];
+        /** record id => true: a blank required field, so a finding */
+        public $flagged = [];
+        /** record id => true: read, and not examinable */
+        public $broken = [];
+        /** rule problems the plan reports */
+        public $problems = [];
+        /** @var bool whether the context asks the service to compare fingerprints */
+        public $verifyFingerprint = true;
+        /** @var ?string what the run's lease reads as, or null for no lease */
+        public $lease = null;
+        public $logs = [];
+        private $count = 0;
+        private $slotEpoch = 0;
+        private $index;
+
+        public function __construct(\INSPIRE\UniversalValidator\Scan\ArrayScanStore $store)
+        {
+            $this->store = $store;
+            $this->user = new \VerbUser();
+            $this->user->name = 'alice';
+            $this->sys = [\INSPIRE\UniversalValidator\Scan\ScanService::SYS_FLAG => '1',
+                          'log-hmac-key' => str_repeat('k', 32)];
+            $this->proj = [\INSPIRE\UniversalValidator\Scan\ScanService::PROJ_FLAG => '1'];
+            $this->index = new \FakeSourceDb();
+        }
+
+        public function getUser() { return $this->user; }
+        public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
+        public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
+        public function log($event, $context = []) { $this->logs[] = [$event, $context]; return 1; }
+
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $gen = isset($opts['generation']) ? (int) $opts['generation'] : null;
+            $seq = isset($opts['runSeq']) ? (int) $opts['runSeq'] : 1;
+            $key = $this->sys['log-hmac-key'];
+            $self = $this;
+            return ['ok' => true, 'why' => null,
+                'rules' => [['type' => 'required', 'fields' => ['a_val']]],
+                'ownership' => ['a_val' => 'fa'], 'structure' => [],
+                'problems' => $this->problems,
+                'verifyFingerprint' => $this->verifyFingerprint,
+                'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [],
+                           'crossRecordLookups' => false],
+                'read' => function (array $ids) use ($self) {
+                    $d = [];
+                    foreach ($ids as $id) {
+                        $id = (string) $id;
+                        if (!in_array($id, $self->records, true)) continue;
+                        $d[$id] = ['1' => ['a_val' => isset($self->flagged[$id]) ? '' : 'x']];
+                    }
+                    return ['ok' => true, 'data' => $d, 'why' => null];
+                },
+                'evaluate' => function ($id, $node) use ($self, $pid, $gen, $seq, $key) {
+                    $id = (string) $id;
+                    if (isset($self->broken[$id])) {
+                        return ['findings' => [], 'bytes' => 0, 'contexts' => 0,
+                                'why' => 'this record could not be examined'];
+                    }
+                    if (!isset($self->flagged[$id])) {
+                        return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+                    }
+                    $hash = \INSPIRE\UniversalValidator\Scan\Hmac::raw(
+                        \INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $pid, $id, $key);
+                    return ['findings' => [['project_id' => (int) $pid, 'generation_id' => (int) $gen,
+                        'identity' => hash('sha256', 'f|' . $id, true), 'valid_from_seq' => $seq,
+                        'record_hash' => $hash, 'record_id_bin' => $id, 'event_id' => 1,
+                        'instance' => 1, 'dag_key' => null, 'host_form' => 'fa', 'field' => 'a_val',
+                        'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                        'rule_ord' => 1, 'check_type' => 'required',
+                        'reason_code' => 'required-blank']],
+                        'bytes' => 10, 'contexts' => 1, 'why' => null];
+                },
+            ];
+        }
+
+        public function query($sql, $params = [])
+        {
+            $s = ltrim($sql);
+            if (strpos($s, 'SELECT ROW_COUNT()') === 0) return [[$this->count]];
+            $this->count = 0;
+            if (in_array($s, ['START TRANSACTION', 'COMMIT', 'ROLLBACK'], true)) return [];
+            if (strpos($sql, 'MAX(version)') !== false) {
+                return [[(string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION]];
+            }
+            if (strpos($s, 'SELECT table_name FROM information_schema.tables') === 0) {
+                return array_map(function ($t) { return [$t]; }, $params);
+            }
+            if (strpos($sql, 'information_schema.tables') !== false) return [[1]];
+            if (strpos($sql, 'log_event_table') !== false) return [['redcap_log_event']];
+            if (strpos($sql, 'FROM redcap_log_event') !== false) {
+                if (strpos($sql, 'pk IN (') !== false) {
+                    $out = [];
+                    foreach (array_slice($params, 1) as $id) {
+                        if (in_array((string) $id, $this->records, true)) $out[] = [(string) $id, '50'];
+                    }
+                    return $out;
+                }
+                if (strpos($sql, 'log_event_id > ?') !== false) return [];
+                if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [['1']];
+                if (strpos($s, 'SELECT MAX(log_event_id)') === 0) return [['100']];
+                return [];
+            }
+            if (strpos($sql, 'information_schema.columns') !== false
+                    || strpos($sql, 'redcap_record_list') !== false
+                    || strpos($sql, 'redcap_projects') !== false
+                    || strpos($sql, 'FROM redcap_data') !== false) {
+                $this->index->rows = array_map(function ($id) { return [$id, null]; }, $this->records);
+                return $this->index->select($sql, $params);
+            }
+            if (strpos($sql, \INSPIRE\UniversalValidator\Scan\Schema::table('scan_worker_slot')) !== false) {
+                if (strpos($s, 'SELECT slot_no, epoch') === 0) return [[1, $this->slotEpoch]];
+                if (strpos($s, 'SELECT COUNT(*)') === 0) return [[1, 0]];
+                if (strpos($s, 'SELECT 1') === 0) return [[1]];
+                if (strpos($s, 'UPDATE') === 0) {
+                    if (strpos($sql, 'SET owner = ?, run_id = ?, epoch = ?') !== false) $this->slotEpoch++;
+                    $this->count = 1;
+                    return true;
+                }
+                return [];
+            }
+            if (strpos($s, 'SELECT finding_id, host_form, reason_code, dag_key, check_type') === 0) {
+                $limit = preg_match('/LIMIT (\d+)/', $sql, $m) ? (int) $m[1] : 100;
+                $out = [];
+                foreach ($this->store->findings($params[0], $params[1], [], $params[2], $limit) as $f) {
+                    $out[] = [$f['finding_id'], $f['host_form'], $f['reason_code'], $f['dag_key'],
+                              $f['check_type']];
+                }
+                return $out;
+            }
+            if (strpos($s, 'SELECT lease_expires_at') === 0) {
+                return $this->lease === null ? [] : [[$this->lease]];
+            }
+            $runs = \INSPIRE\UniversalValidator\Scan\Schema::table('scan_run');
+            if (strpos($s, 'SELECT run_id FROM ' . $runs) === 0 && strpos($sql, 'phase = ?') !== false) {
+                // reapCancelled(): this project's active runs in that phase.
+                $out = [];
+                for ($id = 1; $id <= 50; $id++) {
+                    $r = $this->store->run($params[0], $id);
+                    if ($r !== null && $r['terminal'] === null && $r['phase'] === $params[1]) $out[] = [$id];
+                }
+                return $out;
+            }
+            return [];
         }
     }
 }
@@ -1580,6 +1764,140 @@ namespace INSPIRE\UniversalValidator\Scan {
     $pz = (new ScanService($pm))->status(149, 77);
     check('P10: and an absent or negative counter as zero, never a negative size',
         $pz['detailRows'] === 0 && $pz['detailBytes'] === 0);
+}
+
+/* =====================================================================
+ * MERGE GUARD  START, WORK AND STATUS, END TO END, WITH NO DATABASE
+ *
+ * From the merge of main until wave 8, every work request that reached
+ * promotion threw an Error: advanceRun() called aggregateTotal(), which the
+ * scan chain had deleted. No fast suite and no database case drove a work
+ * request that far, so it shipped green. These drive the four verbs the page
+ * calls, over ArrayScanStore (E2eModule), until the run is over - and assert
+ * the row promotion stored and what status() says about it.
+ * ===================================================================== */
+{
+    /**
+     * Start, then work until the run is terminal (at most 25 requests). A
+     * Throwable from any verb is caught and reported as `threw`, so a missing
+     * method fails a check rather than ending the file.
+     */
+    $drive = function (\E2eModule $m, ArrayScanStore $store, $pid, $then = null) {
+        $out = ['start' => null, 'passes' => 0, 'works' => [], 'threw' => null, 'row' => null,
+                'status' => null, 'svc' => null];
+        try {
+            $svc = new ScanService($m, $store);
+            $out['svc'] = $svc;
+            $out['start'] = $svc->start($pid);
+            if (empty($out['start']['ok'])) return $out;
+            $runId = (int) $out['start']['run_id'];
+            if ($then !== null) $then($svc, $runId);
+            while ($out['passes'] < 25) {
+                $out['passes']++;
+                // A request is its own ScanService, as it is in production.
+                $w = (new ScanService($m, $store))->work($pid, $runId);
+                $out['works'][] = $w;
+                $row = $store->run($pid, $runId);
+                if ($row['terminal'] !== null || empty($w['ok'])) break;
+            }
+            $out['row'] = $store->run($pid, $runId);
+            $out['status'] = (new ScanService($m, $store))->status($pid, $runId);
+        } catch (\Throwable $e) {
+            $out['threw'] = get_class($e) . ': ' . $e->getMessage();
+        }
+        return $out;
+    };
+
+    // -- a clean run ----------------------------------------------------------
+    $cs = new ArrayScanStore();
+    $cm = new \E2eModule($cs);
+    $c = $drive($cm, $cs, 149);
+    check('E2E clean: no verb threw' . ($c['threw'] ? ' (' . $c['threw'] . ')' : ''), $c['threw'] === null);
+    check('E2E clean: start opened a run', !empty($c['start']['ok']) && (int) $c['start']['run_id'] > 0);
+    check('E2E clean: every work request answered ok',
+        $c['works'] && !array_filter($c['works'], function ($w) { return empty($w['ok']); }));
+    $row = $c['row'];
+    check('E2E clean: the run was promoted complete, through its fence, and certified clean',
+        is_array($row) && $row['phase'] === ScanPhase::TERMINAL && $row['terminal'] === ScanOutcome::COMPLETE
+        && $row['coverage'] === ScanOutcome::FENCED && $row['detail'] === ScanOutcome::DETAIL_COMPLETE
+        && (int) $row['clean'] === 1 && (int) $row['rule_problem_count'] === 0
+        && (int) $row['not_examined'] === 0 && (string) $row['fence_target'] === '100');
+    $st = $c['status'];
+    check('E2E clean: and status() says so: finished, every record examined, nothing found',
+        !empty($st['ok']) && $st['terminal'] === ScanOutcome::COMPLETE && $st['active'] === false
+        && $st['clean'] === 1 && $st['findings'] === 0 && $st['total'] === 3 && $st['done'] === 3
+        && $st['settled'] === 3 && $st['ruleProblems'] === 0 && $st['notExamined'] === 0);
+    $last = end($c['works']);
+    check('E2E clean: the work request that finished it carries the same status',
+        isset($last['status']['terminal']) && $last['status']['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- a run with a finding ---------------------------------------------------
+    $fs = new ArrayScanStore();
+    $fm = new \E2eModule($fs);
+    $fm->flagged = ['R002' => true];
+    $f = $drive($fm, $fs, 150);
+    check('E2E findings: no verb threw' . ($f['threw'] ? ' (' . $f['threw'] . ')' : ''), $f['threw'] === null);
+    $row = $f['row'];
+    check('E2E findings: the run covers the project and is not clean, because it found something',
+        is_array($row) && $row['terminal'] === ScanOutcome::COMPLETE && $row['coverage'] === ScanOutcome::FENCED
+        && (int) $row['clean'] === 0 && (int) $row['rule_problem_count'] === 0
+        && (int) $row['not_examined'] === 0);
+    $st = $f['status'];
+    check('E2E findings: status() counts the finding from the summary the rollup built',
+        !empty($st['ok']) && $st['clean'] === 0 && $st['findings'] === 1 && $st['done'] === 3);
+
+    // -- a finding, a record that cannot be examined, and a rule problem ---------
+    $ps = new ArrayScanStore();
+    $pm = new \E2eModule($ps);
+    $pm->flagged = ['R001' => true];
+    $pm->broken = ['R003' => true];
+    $pm->problems = [['rule' => 2, 'fields' => ['b_val'], 'why' => 'rule 2 cannot be evaluated', 'code' => 'c2']];
+    $p = $drive($pm, $ps, 151);
+    check('E2E partial: no verb threw' . ($p['threw'] ? ' (' . $p['threw'] . ')' : ''), $p['threw'] === null);
+    $row = $p['row'];
+    check('E2E partial: a record that could not be examined caps the run at partial, with the counts stored',
+        is_array($row) && $row['terminal'] === ScanOutcome::PARTIAL && $row['coverage'] === ScanOutcome::COV_PARTIAL
+        && (int) $row['clean'] === 0 && (int) $row['rule_problem_count'] === 1
+        && (int) $row['not_examined'] === 1);
+    $st = $p['status'];
+    check('E2E partial: and status() reports the finding, the rule problem and the record not examined',
+        !empty($st['ok']) && $st['findings'] === 1 && $st['ruleProblems'] === 1 && $st['notExamined'] === 1
+        && $st['done'] === 2 && $st['excluded'] === 1);
+
+    // -- Stop, with nobody driving the run -------------------------------------
+    $xs = new ArrayScanStore();
+    $xm = new \E2eModule($xs);
+    $xm->problems = [['rule' => 2, 'fields' => ['b_val'], 'why' => 'rule 2 cannot be evaluated', 'code' => 'c2']];
+    $stop = null;
+    $x = $drive($xm, $xs, 152, function (ScanService $svc, $runId) use (&$stop) {
+        $stop = $svc->cancel(152, $runId);
+    });
+    check('E2E stop: no verb threw' . ($x['threw'] ? ' (' . $x['threw'] . ')' : ''), $x['threw'] === null);
+    check('E2E stop: Stop on a run nobody drives ends it at once',
+        !empty($stop['ok']) && $stop['stopped'] === true);
+    $row = $x['row'];
+    check('E2E stop: the run is stored cancelled, partial, with no verdict',
+        is_array($row) && $row['terminal'] === ScanOutcome::CANCELLED && $row['coverage'] === ScanOutcome::COV_PARTIAL
+        && $row['clean'] === null);
+    check('E2E stop: and status() says it was cancelled, and that it is over',
+        !empty($x['status']['ok']) && $x['status']['terminal'] === ScanOutcome::CANCELLED
+        && $x['status']['active'] === false);
+
+    // -- Stop while a worker holds the run --------------------------------------
+    $hs = new ArrayScanStore();
+    $hm = new \E2eModule($hs);
+    $hm->lease = gmdate('Y-m-d H:i:s', time() + 300);
+    $held = null;
+    $h = $drive($hm, $hs, 153, function (ScanService $svc, $runId) use (&$held, $hs) {
+        $held = $svc->cancel(153, $runId);
+        $held['phase'] = $hs->run(153, $runId)['phase'];
+    });
+    check('E2E held stop: no verb threw' . ($h['threw'] ? ' (' . $h['threw'] . ')' : ''), $h['threw'] === null);
+    check('E2E held stop: Stop on a run a worker holds leaves it stopping for that worker',
+        !empty($held['ok']) && $held['stopped'] === false && $held['phase'] === ScanPhase::CANCELLING);
+    check('E2E held stop: and the next work request ends it, cancelled',
+        is_array($h['row']) && $h['row']['terminal'] === ScanOutcome::CANCELLED && $h['passes'] === 1
+        && !empty($h['status']['ok']) && $h['status']['terminal'] === ScanOutcome::CANCELLED);
 }
 }
 

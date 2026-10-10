@@ -103,12 +103,29 @@ final class ScanService
     private $entitlements = [];
     /** @var \ArrayObject the plans durableScanContext() built for this request */
     private $plans;
+    /** @var ?ScanStore the store a test handed in; null is SqlScanStore over $db */
+    private $givenStore;
 
-    public function __construct($module)
+    /**
+     * @param object     $module the module
+     * @param ?ScanStore $store  THE STORE, AND ONLY A TEST PASSES ONE. Production
+     *                           builds SqlScanStore over the module's handle and
+     *                           passes nothing. The seam exists because the path
+     *                           from a work request to promotion could not be run
+     *                           without a database, and so nothing ran it: the
+     *                           merge of main left advanceRun() calling a method
+     *                           the scan chain had deleted, and every work request
+     *                           that reached promotion died with an Error until a
+     *                           later wave happened to notice. tests/
+     *                           scan_service_php.php now drives start, work and
+     *                           status to a finished run over ArrayScanStore.
+     */
+    public function __construct($module, ?ScanStore $store = null)
     {
         $this->module = $module;
         $this->db = is_callable([$module, 'query']) ? new ModuleDb($module) : null;
         $this->plans = new \ArrayObject();
+        $this->givenStore = $store;
     }
 
     /**
@@ -1092,7 +1109,7 @@ final class ScanService
 
     private function store()
     {
-        return new SqlScanStore($this->db);
+        return $this->givenStore !== null ? $this->givenStore : new SqlScanStore($this->db);
     }
 
     /**
