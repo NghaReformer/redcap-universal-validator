@@ -542,12 +542,13 @@ function twoRefs(extraA, extraB) {
 }
 {
   // The server could not resolve one reference's selector (selectorBlocked): that
-  // reference says so, whatever its conditions read; the other still judges.
+  // reference says so, though none of its conditions holds and it has no else;
+  // the other still judges.
   const WHY = ['references "[grp]", which is not collected in this event.'];
   const els = inputs('1', '16');
   const env = boot(els, { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
     br({ when: "[grp]='2'", whenAst: ['const', false], deferred: true, selectorBlocked: true, deferredWhy: WHY }),
-    br({ deferred: true, selectorBlocked: true, deferredWhy: WHY, rangeSoftHi: '9' }),
+    br({ when: "[grp]='3'", whenAst: ['const', false], deferred: true, selectorBlocked: true, deferredWhy: WHY, rangeSoftHi: '9' }),
     br({ rangeReference: 't-days2' })] }] });
   const msg = nMsg(env, 'weight');
   check('selector blocked on one reference: its deferral, and the other\'s verdict (got ' + msg.innerHTML + ')',
@@ -559,6 +560,13 @@ function twoRefs(extraA, extraB) {
     br({ rangeReference: 't-days2' })] }] });
   check('a selector this page cannot resolve: that reference\'s line, the other judges (got ' + nMsg(env2, 'weight').innerHTML + ')',
     /^&#9888; This rule is not being checked — Current values cannot resolve this comparison\. Save and reload to refresh matched data\. It is checked after the record is saved\.<br>&#9888; This value is higher than usual \(z-score 4\.55/.test(nMsg(env2, 'weight').innerHTML));
+  // ... and alone, when the other reference does not apply: the notice, which says the save checks it
+  const env3 = boot(inputs('1', '16'), { growth: { 't-days': T_DAYS, 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: '[visit_1][grp]=1', whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] }),
+    br({ rangeReference: 't-days2', when: "[sex]='2'" })] }] });
+  check('... alone: the notice says the save checks it (got ' + nMsg(env3, 'weight').innerHTML + ')',
+    nMsg(env3, 'weight').innerHTML === '&#9888; This rule is not being checked — Current values cannot resolve this comparison. '
+      + 'Save and reload to refresh matched data. It is checked after the record is saved.' && save(env3) === 'saved');
 }
 {
   // A survey respondent sees the plausible range, not why there is no z-score.

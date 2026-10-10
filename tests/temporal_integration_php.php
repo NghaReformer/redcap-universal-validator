@@ -686,6 +686,11 @@ namespace {
     $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['deferred']),!empty($b['selectorBlocked'])];},$r['branches']??[]):[];
     check('... on the page: that group deferred and named, the other not (got '.json_encode([$marks,$r['deferred']??null]).')',
         $r&&empty($r['deferred'])&&$marks===[['who-wfa',true,true],['',false,false]]);
+    // A selector read when the page was built makes only its own group advisory.
+    $r=ruleOf(render($withHt($wfa.',"when":"[baseline_arm_1][key_b][2]=\'A\'"} @UVRANGE={"hard":[5,40]}'),'fa'),'a_val');
+    $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['snapshotGate']),$b['snapshotFields']??null];},$r['branches']??[]):[];
+    check('a stale selector of one group, on the page: only that group is advisory (got '.json_encode([$marks,$r['snapshotFields']??null]).')',
+        $r&&!isset($r['snapshotFields'])&&$marks[0][0]==='who-wfa'&&$marks[0][1]===true&&$marks[1]===['',false,null]);
 
     // A branched extended rule: each scan finding names the branch that judged
     // it, so the report shows that branch's message and not the first one's.

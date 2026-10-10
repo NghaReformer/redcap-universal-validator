@@ -3018,7 +3018,6 @@ function QRID_activeVariants(vs){
     for(k = 0; k < act.length; k++) (byGroup[act[k].group] = byGroup[act[k].group] || []).push(act[k]);
     for(gi = 0; gi < vs.groups.length; gi++){
       gk = vs.groups[gi];
-      if(blocked[gk] || unknown[gk]) continue;
       var list = byGroup[gk];
       if(list && list.length > 1){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
     }
@@ -4323,7 +4322,6 @@ function QRIDRangeInit(QRID_CONFIG){
       if(ins[k] === null) withheld = true;
     }
     if(withheld) return { tier: "withheld" };
-    if(!g.ref) return { tier: "inert", why: null };   /* growthIdle: never active, so never asked */
     var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
     var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
     if(sex === null){

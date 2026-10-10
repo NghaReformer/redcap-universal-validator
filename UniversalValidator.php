@@ -6624,12 +6624,13 @@ class UniversalValidator extends AbstractExternalModule
                 'value_expires_at' => ($blob === null) ? null : $valueExpiry,
                 // The day a @UVWINDOW verdict was judged against, for the report.
                 'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
-                // A growth finding's z-score, kept only beside a stored value
-                // preview and cleared with it (ScanRetention), since it gives
-                // the measurement back; and its reference, which is the rule's
-                // and not participant data. A rule with branches per reference
-                // has no one reference, so the finding carries its own.
-                'z_score' => ($blob !== null && isset($v['z'])) ? (string) $v['z'] : null,
+                // A growth finding's z-score. It gives the measurement back, so
+                // scanRecord passes it only beside a value the report shows: it
+                // is stored only beside a value preview, and cleared with it
+                // (ScanRetention). And its reference, which is the rule's and
+                // not participant data; a rule with branches per reference has
+                // no one reference, so the finding carries its own.
+                'z_score' => isset($v['z']) ? (string) $v['z'] : null,
                 'growth_reference' => isset($v['reference']) ? substr((string) $v['reference'], 0, 64) : null,
             ];
         }
@@ -8759,7 +8760,7 @@ class UniversalValidator extends AbstractExternalModule
                 $shape=$this->temporalShape($pid,$dd);$node=$this->temporalReadRecord($pid,$record,[$r]);
                 $this->temporalBegin($pid);
                 $p=$this->temporalPrepared($r,$shape,$node,['event'=>$event_id,'instrument'=>$instrument,'instance'=>$repeat_instance,'values'=>[]]);
-                if ($p['problems'] || !empty($p['groupProblems']) || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
+                if ($p['problems'] || ($p['rule']['uniqueScope'] ?? null)==='record' || ($p['rule']['when'] ?? null)==='1=0') return null;
                 return $p['rule'];
             }
             if (!isset($r['branches']) || !is_array($r['branches'])) return $r;
