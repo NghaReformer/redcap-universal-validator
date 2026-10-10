@@ -11,8 +11,10 @@
  *   - notFuture is judged against the SERVER clock (config.clock), advanced by
  *     how long the page has been open, and the save-time recheck moves past
  *     midnight with it; without a server clock there is no verdict; a date and
- *     time may run 120 s past it, or to a fast computer's local time (up to
- *     26 hours ahead), so the Now button passes,
+ *     time may run 120 s past it, plus how far a fast computer's clock runs
+ *     ahead (measured in UTC, up to 10 minutes), so the Now button passes,
+ *   - a condition read when the page was opened (snapshotGate): a future date
+ *     does not block and says why,
  *   - a snapshot "from" date (another form's saved value) never blocks and
  *     says what it was counted from; surveys never see a field name,
  *   - a deferred rule never blocks, and says why only on staff forms,
@@ -556,6 +558,32 @@ const realNow = Date.now;
     deferredWhy: ['Extended reference unavailable: unresolved.'] }] });
   check('deferred stub: no configuration error', !cfgErr(env, 'fu_date'));
   check('deferred stub: shows its deferral', /not being checked/.test(wMsg(env, 'fu_date').innerHTML));
+}
+
+// ---- 16) a condition read when the page was opened -------------------------------
+{
+  const v = dateEl('fu_date', '2026-10-10');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [{ type: 'window', fields: ['fu_date'],
+    windowNotFuture: true, dateType: 'date', dateFormat: 'ymd', blockSave: 'hard',
+    when: "[visit_date_bl]<>''", whenAst: ['const', true], snapshotFields: ['visit_date_bl'], snapshotGate: true }] });
+  const msg = wMsg(env, 'fu_date');
+  check('stale condition: a future date is flagged', /after today/.test(msg.innerHTML));
+  check('stale condition: says what it is based on and that it does not block',
+    /based on visit_date_bl, read when this page was opened/.test(msg.innerHTML) && /does not block saving/.test(msg.innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('stale condition: never blocks', ev._prevented === false);
+}
+{
+  // A "from" read when the page was opened, the condition live: a future date
+  // keeps its block and needs no note.
+  const v = dateEl('fu_date', '2026-10-10');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [{ type: 'window', fields: ['fu_date'],
+    windowFrom: '[enrol_date]', windowFromOp: ['lit', '2026-10-01'], windowLo: 0, windowHi: 30, windowUnit: 'days', windowNotFuture: true,
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard', snapshotFields: ['enrol_date'] }] });
+  const msg = wMsg(env, 'fu_date');
+  check('snapshot "from": a future date has no snapshot note', /after today/.test(msg.innerHTML) && !/read when this page was opened/.test(msg.innerHTML));
+  v.value = '2026-09-01'; v.fire('change');
+  check('snapshot "from": the window note names the "from" date', /counted from enrol_date, read when this page was opened/.test(msg.innerHTML));
 }
 
 Date.now = realNow;

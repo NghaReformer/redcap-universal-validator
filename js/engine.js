@@ -1395,7 +1395,11 @@ function QRID_temporalBlank(v){ return v!==null&&typeof v!=='object'&&QRID_whenT
 function QRID_temporalValue(op,read,raw){
   if(op[0]==='lit')return op[1];if(op[0]==='unknown')return null;
   if(op[0]==='ref'){var rv=read(op[1],op[2]);return (!raw&&op[2]==null&&typeof read.logicValue==='function')?read.logicValue(op[1],rv):rv;}
-  if(op[0]==='guard'){for(var g=0;g<op[1].length;g++)if(String(read(op[1][g][0],null))!==op[1][g][1])return null;return QRID_temporalValue(op[2],read,raw);}
+  if(op[0]==='guard'){
+    /* the match key as REDCap stores it, as the server saved it into the guard */
+    for(var g=0;g<op[1].length;g++){var gv=read(op[1][g][0],null);if(typeof read.logicValue==='function')gv=read.logicValue(op[1][g][0],gv);if(String(gv)!==op[1][g][1])return null;}
+    return QRID_temporalValue(op[2],read,raw);
+  }
   if(op[0]==='date'){
     var dv=QRID_temporalValue(op[3],read,true);if(dv===null||typeof dv==='object')return null;
     /* A saved blank is a RESOLVED answer ("not entered yet"), not an unknown: it
@@ -2833,21 +2837,27 @@ function QRID_renderConflict(msg, input, act, mode){
    own inert path untouched, so an ordinary inapplicable rule is unchanged. */
 function QRID_renderRuleDeferral(msg, input, cfg, mode){
   if(QRID_IS_SURVEY || !cfg || (!cfg.deferred && !cfg.dynamicDeferred)) return false;
-  var why = cfg.dynamicDeferred ? ["Current values cannot resolve this comparison. Save and reload to refresh matched data."] : cfg.deferredWhy;
+  if(cfg.dynamicDeferred){ QRID_renderDeferralNotice(msg, input, [QRID_DYNAMIC_DEFERRAL], mode, true); return true; }
+  var why = cfg.deferredWhy;
   if(!why || !why.length) return false;
   QRID_renderDeferralNotice(msg, input, why, mode);
   return true;
 }
+/* A match key typed on this page names other saved data than the page was given. */
+var QRID_DYNAMIC_DEFERRAL = "Current values cannot resolve this comparison. Save and reload to refresh matched data.";
 /* The one wording for "this rule is not being checked", shared by the rule-level
    notice above and every validator's per-variant deferral. It was wrong once
    already — it promised the value would still be checked after saving, which the
-   audit does not do for an unresolved reference — so there is exactly one copy. */
-function QRID_renderDeferralNotice(msg, input, why, mode){
+   audit does not do for an unresolved reference — so there is exactly one copy.
+   checkedOnSave: only this page could not resolve it (a match key typed here);
+   the post-save audit reads the saved values and does check it. */
+function QRID_renderDeferralNotice(msg, input, why, mode, checkedOnSave){
   msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
     "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
   msg.innerHTML = "&#9888; This rule is not being checked — " +
     QRID_escapeHtml(why.join(" ")) +
-    " It is not checked after saving either; the study team needs to correct the rule.";
+    (checkedOnSave ? " It is checked after the record is saved."
+                   : " It is not checked after saving either; the study team needs to correct the rule.");
   QRID_setModeState(input, mode || "check", null);
 }
 function QRIDSingleInit(QRID_CONFIG){
@@ -3420,7 +3430,7 @@ function QRIDConstraintInit(QRID_CONFIG){
       try { ok = V.assertGate.active(); } catch(e){ ok = true; }
       if(V.assertGate.unresolved && V.assertGate.unresolved()){
         inert();
-        if(!QRID_IS_SURVEY) QRID_renderDeferralNotice(msg, input, ["Current values cannot resolve this comparison. Save and reload to refresh matched data."], "c");
+        if(!QRID_IS_SURVEY) QRID_renderDeferralNotice(msg, input, [QRID_DYNAMIC_DEFERRAL], "c", true);
         return;
       }          /* fail open: a gate bug never traps a save */
       styleMsg(msg, ok);
@@ -3548,6 +3558,7 @@ function QRIDWindowInit(QRID_CONFIG){
                 read when the page was built (snapshotGate) does: whether the rule
                 applies may have changed since. */
              futureBlock: cfg.snapshotGate === true ? "off" : BLOCK,
+             snapshotGate: cfg.snapshotGate === true,
              notFutureOff: (cfg.windowNotFutureOff && cfg.windowNotFutureOff.length) ? cfg.windowNotFutureOff : null,
              windowWithheld: !!(fromOp && fromOp[0] === "withheld"),
              /* why a withheld "from" date was withheld when it was not for rights:
@@ -3701,8 +3712,12 @@ function QRIDWindowInit(QRID_CONFIG){
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
       setGuard(!ok, future ? V.futureBlock : V.blockSave);
       var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
-      if(!ok && !future && V.snapshot && !QRID_IS_SURVEY){
-        base += ' <span style="opacity:.8">(counted from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+      /* Why a verdict that rests on a value read when the page was opened does
+         not block: named by what read it, the "from" date or the condition
+         that decides whether the rule applies (snapshotGate). */
+      if(!ok && V.snapshot && !QRID_IS_SURVEY && (!future || V.snapshotGate)){
+        base += ' <span style="opacity:.8">(' + (V.snapshotGate ? "based on " : "counted from ") +
+          QRID_escapeHtml(V.snapshot.join(", ")) +
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
       }

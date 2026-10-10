@@ -215,7 +215,8 @@ final class TemporalRules
                 return $guards?['guard',$guards,$node]:$node;
             }
             $r=$resolver->resolve($op,$context);
-            if(isset($r['members'])){$members=[];foreach($r['members'] as $m)$members[]=$member($m);return ['set',$r['quantifier'],$members];}
+            // Which entries the set holds was read when the page was built, as for a binding.
+            if(isset($r['members'])){if($browser)$snapshot=true;$members=[];foreach($r['members'] as $m)$members[]=$member($m);return ['set',$r['quantifier'],$members];}
             return $member($r);
         };
         $walk=function(array $ast)use(&$walk,$operand){

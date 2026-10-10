@@ -151,5 +151,34 @@ for(const type of ['single','pooled','constraint','required']){
  check('local unique flags repeat without AJAX',field.getAttribute('aria-invalid')==='true');
  const event=submitEv();env.doc.fire('submit',event);check('local unique advisory',!event._prevented);
 }
+// Record uniqueness on a D-M-Y date: the server sends the other entries as saved
+// (Y-M-D) and the page compares the typed date in that form.
+{
+ const field=makeEl('input');field.name='a_val';field.value='07-01-2026';
+ const same=(d)=>['not',['and',[['cmp','same:fold:text',['ref','a_val',null],['lit',d]]]]];
+ const tree=['temporal',['and',[same('2026-01-07'),same('2026-01-09')]]];
+ const env=boot([field],{dateFormats:{a_val:['date','dmy']},
+   rules:[{type:'unique',fields:['a_val'],uniqueScope:'record',uniqueRecordAsts:{a_val:tree},blockSave:'off'}]});
+ check('D-M-Y record uniqueness: a typed duplicate is flagged',field.getAttribute('aria-invalid')==='true');
+ field.value='09-01-2026';field.fire('change');
+ check('D-M-Y record uniqueness: a duplicate in another event is flagged',field.getAttribute('aria-invalid')==='true');
+ field.value='08-01-2026';field.fire('change');
+ check('D-M-Y record uniqueness: a free date passes',field.getAttribute('aria-invalid')!=='true');
+}
+// A binding's match key on a D-M-Y date: the guard holds the saved Y-M-D value and
+// the page compares the typed key in that form.
+{
+ const field=makeEl('input');field.name='target';field.value='30';
+ const key=makeEl('input');key.name='key_a';key.value='05-01-2026';
+ const tree=['temporal',['cmp','<',['ref','target',null],['guard',[['key_a','2026-01-05']],['lit','20']]]];
+ const env=boot([field,key],{dateFormats:{key_a:['date','dmy']},
+   rules:[{type:'constraint',fields:['target'],assert:'1=1',assertAst:tree,blockSave:'off'}]});
+ check('a D-M-Y match key that matches the saved one: the comparison is judged',
+   field.getAttribute('aria-invalid')==='true'&&!msgOf(env,'target').innerHTML.includes('cannot resolve'));
+ key.value='06-01-2026';key.fire('change');field.fire('change');
+ const m=msgOf(env,'target').innerHTML;
+ check('a changed match key: not checked on this page, and checked after the save',
+   m.includes('cannot resolve')&&m.includes('It is checked after the record is saved.')&&!m.includes('not checked after saving either'));
+}
 console.log('deferral_dom_js: '+n+' checks, '+fail+' failure(s)');
 process.exit(fail?1:0);

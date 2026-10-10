@@ -7,9 +7,9 @@ D-M-Y and M-D-Y date fields that ships with it. The automated suites
 real REDCap date inputs, real save paths and the real server clock.
 
 Target: chpr-redcap.org pid 149 (longitudinal, event and instance references
-enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 22
+enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 25
 fields on one new instrument `uv_window_test`. Every annotation in it was run
-through the module offline before this sheet was written: the 17 other fields
+through the module offline before this sheet was written: the 20 other fields
 configure (`uw_utc` only while the project's time zone is not behind UTC, see
 H5), and the 5 `uw_bad_*` fields show the errors listed in section F.
 
@@ -19,8 +19,8 @@ H5), and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 1. Deploy the release that contains `@UVWINDOW` and confirm the version in
    Control Center.
-2. **Append, never replace.** Download the current dictionary, append the 22
-   rows of the CSV, upload. The diff must report one new instrument and 22 new
+2. **Append, never replace.** Download the current dictionary, append the 25
+   rows of the CSV, upload. The diff must report one new instrument and 25 new
    fields, and nothing else.
 3. Designate `uv_window_test` on `event_1_arm_1` (same event as `xe_enrol`,
    so `uw_offpage` reads the consent date from another form of the same event).
@@ -128,6 +128,9 @@ Each field shows a visible error and checks nothing:
 | H3 | `uw_anchor` = 2026-03-01, `uw_dmy` = 06-03-2026, `uw_when_dmy` = 2026-03-12 | Red, window late: the condition reads 06-03-2026 as 2026-03-06, as REDCap stores it. Before this release the rule stayed off |
 | H4 | `uw_dmy` = 31-12-2025 | The `uw_when_dmy` message disappears |
 | H5 | Set the project setting Time zone for @UVWINDOW "notFuture" to `America/New_York` and open the form | `uw_utc` shows a configuration error naming UTC and America/New_York. Set `Africa/Douala` and reload, and the error is gone. Clear the setting after |
+| H6 | Designate `uv_window_test` on `event_2_arm_1` too. On XE-1 in `event_1_arm_1` save `uw_uniq_rec_dmy` = 07-01-2026. Open XE-1 in `event_2_arm_1` and type 07-01-2026 in `uw_uniq_rec_dmy`, then 08-01-2026 | Red "This value duplicates another event or repeat in this record.", then no duplicate. Before this fix the page found no duplicate for a D-M-Y date |
+| H7 | Time zone setting `America/New_York`, reload. `uw_anchor` = 2026-03-01, `uw_gate` = Yes, `uw_utc_branch` = 2026-03-20; then `uw_gate` = No | Both times red, window late, with the note that "notFuture" cannot be judged on a field filled by @TODAY-UTC and only the window is checked. Clear the setting after |
+| H8 | On XE-1 (consent date saved), `uw_gate_offpage` = tomorrow, press Save | Red "This date is after today (...)" with "(based on xe_consent_date, read when this page was opened ... This check does not block saving ...)"; the save goes through. Module log: reason `future` |
 
 ---
 
@@ -142,6 +145,7 @@ Each field shows a visible error and checks nothing:
 | 5 | Section E: audit and scan agree with the browser | ☐ |
 | 6 | Section G: the D-M-Y duplicate is found live | ☐ |
 | 7 | Section H: the Now button passes, D-M-Y conditions compare stored dates, a UTC default is refused where it would read as future | ☐ |
+| 8 | H6 to H8: a record-scope D-M-Y duplicate is found live, the @TODAY-UTC note reaches every branch, a condition read at page load never blocks and says so | ☐ |
 
 ## Cleanup
 

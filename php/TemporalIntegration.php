@@ -94,8 +94,13 @@ trait TemporalIntegration
             if($browser){
                 // A selector read when the page was built may pick the wrong branch, so no
                 // branch blocks: not even a "notFuture" that reads only the live field.
-                if($selectorStale)foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
-                $out['snapshotFields']=['saved event/instance values'];$out['blockSave']='off';return ['rule'=>$out,'problems'=>[]];}
+                // Otherwise each branch carries its own snapshot marks (compile), and a
+                // branch whose "from" is on this page blocks as the rule says.
+                if($selectorStale){
+                    foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
+                    $out['snapshotFields']=['saved event/instance values'];
+                }
+                $out['blockSave']='off';return ['rule'=>$out,'problems'=>[]];}
             if(count($active)>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
             $pick=$active?$active[0]:$fallback;
             if($pick===null){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}
@@ -129,14 +134,14 @@ trait TemporalIntegration
                     $holders=$index['holders'][self::temporalTupleKey($current,$parts,$fold,$marks)]??[];
                     unset($holders[$own]);$results[$field]=!$holders;continue;
                 }
-                // A live date reads as the field shows it (31-12-2026), saved ones as Y-M-D.
-                $shown=[];foreach($parts as $f)$shown[$f]=$currentOps[$f][0]==='ref'?TemporalValue::fromValidation($shape->field($f)['validation']??''):null;
+                // The page compares a live date in the form REDCap stores it (read.logicValue
+                // turns 31-12-2026 into 2026-12-31), so the other entries go as saved.
                 $clauses=[];$sent=[];
                 foreach($index['tuples'] as $id=>$tuple){
                     if((string)$id===$own)continue;
                     // Entries holding the same tuple are one clause: the page asks "is my value taken", not "by how many".
                     $key=self::temporalTupleKey($tuple,$parts,$fold,$marks);if(isset($sent[$key]))continue;$sent[$key]=true;
-                    $eq=[];foreach($parts as $f)$eq[]=['cmp',TemporalLogic::sameOp($fold,$marks[$f]),$currentOps[$f],['lit',self::temporalShown($tuple[$f],$shown[$f])]];$clauses[]=['not',['and',$eq]];
+                    $eq=[];foreach($parts as $f)$eq[]=['cmp',TemporalLogic::sameOp($fold,$marks[$f]),$currentOps[$f],['lit',$tuple[$f]]];$clauses[]=['not',['and',$eq]];
                 }
                 $tests[$field]=['and',$clauses];
             }
@@ -195,14 +200,6 @@ trait TemporalIntegration
             $held=$this->temporalResolver=['shape'=>$shape,'budget'=>$this->temporalBudget,'browser'=>(bool)$browser,'node'=>$node,'resolver'=>$resolver];
         }
         return $held['resolver'];
-    }
-
-    /** A saved date or datetime written the way its field shows it; any other value as saved. */
-    private static function temporalShown($value,$tv)
-    {
-        if($tv===null)return $value;
-        $shown=TemporalValue::format(trim((string)$value),$tv['type'],$tv['format']);
-        return $shown!==''?$shown:$value;
     }
 
     /** Components compare as TemporalLogic's "same:FOLD:MARK" does: by Logic::lookupKey. */

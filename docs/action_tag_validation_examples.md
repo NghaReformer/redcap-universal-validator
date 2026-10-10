@@ -1362,13 +1362,14 @@ Without the feature, `from` must be a field of the same event.
   `from` date, so a hard rule still blocks a future date when the window part is
   advisory or not sent. A `from` in another event works the same way: the window
   part is advisory, and `notFuture` blocks as set. A `from` that resolves to a
-  field on this page (`[visit_date][current-instance]`) blocks as set too.
+  field on this page (`[visit_date_bl][current-instance]`, where both dates are
+  on one form) blocks as set too.
 - **A condition read when the page opened makes the whole rule advisory.** When
   a `when`, or the condition that picks a branch, reads a value from another
   form or event, the page judges with the value it read when it opened. Whether
   the rule applies may have changed since, so nothing in the rule blocks there,
-  `notFuture` included. A count or set of entries in another event counts as
-  such a value, even when it holds no entries.
+  `notFuture` included. A count or set of entries, in this event or another,
+  counts as such a value, even when it holds no entries or only this one.
 - **Multi-page surveys.** The browser reads a `from` date only on the page being
   shown. If the `from` field is on an earlier page of the survey, the window is
   not checked while the respondent types; the post-save audit still checks it.
@@ -2380,8 +2381,10 @@ inactive/unconfigured when the feature is off; existing plain-field rules retain
 legacy behavior. See [the reference guide](EVENT-INSTANCE-REFERENCES.md) for selectors,
 permissions, exact arithmetic, limits, audit/scan behavior and rollback.
 
-All extended browser checks are **advisory**. Current-page values can stay live;
-other events/instances are snapshots. A missing row, unavailable metadata or an
+Extended browser checks are advisory, except the parts of `@UVWINDOW` that
+read only values on the current page: a `from` date on this page and `notFuture`
+keep the rule's `blockSave` (see [@UVWINDOW](#uvwindow--dates-within-a-window)).
+Current-page values can stay live; other events/instances are snapshots. A missing row, unavailable metadata or an
 ambiguous match is unresolved, not a saved blank. An unresolved branch does not
 activate its fallback. Save/reload to refresh snapshots, and run a scan to reconcile
 imports, deleted instances or writes that do not invoke a save hook.

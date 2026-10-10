@@ -69,7 +69,7 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'choicesShow', 'choicesHide', 'choicesAll',
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
-    'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    'dateType', 'dateFormat', 'fromType', 'fromFormat', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS
     'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project

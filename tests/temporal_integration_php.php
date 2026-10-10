@@ -227,18 +227,21 @@ namespace {
     check('repeat uniqueness preserves leading zeros',$eval($r,['a_val'=>'012'])===true);
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
     $res=$m->scanProject(PID);check('record duplicates both contexts reported',count($res['violations'])===2);
-    // The page reads a D-M-Y date as typed, the other entries come from saved
-    // Y-M-D data: the page must get them the way the field shows them.
+    // The page turns a D-M-Y date typed as 07-01-2026 into 2026-01-07 before it
+    // compares (read.logicValue), so the other entries go as saved, Y-M-D.
     $m=temporal('',null,'UVUNIQUE');
     REDCap::$dictionary['a_val']['text_validation_type_or_show_slider_number']='date_dmy';
     REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2026-01-07';
     REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-01-09';
     $r=ruleOf(render($m,'fa'),'a_val');
-    check('D-M-Y record uniqueness: a typed duplicate is caught',$eval($r,['a_val'=>'07-01-2026'])===false);
-    check('D-M-Y record uniqueness: a duplicate in another event is caught',$eval($r,['a_val'=>'09-01-2026'])===false);
-    check('D-M-Y record uniqueness: a free date passes',$eval($r,['a_val'=>'08-01-2026'])===true);
-    check('D-M-Y record uniqueness: this entry\'s own saved date passes',$eval($r,['a_val'=>'05-01-2026'])===true);
+    $lits=json_encode($r['uniqueRecordAsts']['a_val']??null);
+    check('D-M-Y record uniqueness: the other entries go as saved, never as the field shows them',
+        strpos($lits,'"2026-01-07"')!==false&&strpos($lits,'"2026-01-09"')!==false&&strpos($lits,'07-01-2026')===false);
+    check('D-M-Y record uniqueness: a typed duplicate is caught',$eval($r,['a_val'=>'2026-01-07'])===false);
+    check('D-M-Y record uniqueness: a duplicate in another event is caught',$eval($r,['a_val'=>'2026-01-09'])===false);
+    check('D-M-Y record uniqueness: a free date passes',$eval($r,['a_val'=>'2026-01-08'])===true);
+    check('D-M-Y record uniqueness: this entry\'s own saved date passes',$eval($r,['a_val'=>'2026-01-05'])===true);
     $res=$m->scanProject(PID);check('D-M-Y record uniqueness: the scan finds no duplicate',!$res['violations']);
 
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
@@ -516,6 +519,13 @@ namespace {
     $r=ruleOf(render($m,'fa'),'a_val');
     check('...an instance with no event reads this event too: refused',
         $r&&strpos((string)($r['configError']??''),'which no event of this field collects')!==false);
+    foreach(['[event-name][b_open]','[b_open][current-instance]'] as $sameEv){
+        $m=$win('@UVWINDOW={"from":"'.$sameEv.'","window":[21,35]}');
+        REDCap::$eventMappings=[['event_id'=>1,'form'=>'fa'],['event_id'=>2,'form'=>'fb']];
+        $r=ruleOf(render($m,'fa'),'a_val');
+        check('...'.$sameEv.' reads this event too: refused',
+            $r&&strpos((string)($r['configError']??''),'which no event of this field collects')!==false);
+    }
     // A "when" that reads another event is a stale gate: then the whole rule is advisory.
     $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"notFuture":true,"blockSave":"hard","when":"[baseline_arm_1][b_open][2]<>\'\'"}');
     $r=ruleOf(render($m,'fa'),'a_val');
@@ -526,6 +536,27 @@ namespace {
     $r=ruleOf(render($m,'fa'),'a_val');
     $bs=array_map(function($b){return [$b['blockSave']??null,!empty($b['snapshotGate'])];},array_values($r['branches']??[]));
     check('branches chosen by a value from another event: none blocks',$bs===[['off',true],['off',true]]);
+    check('...and the rule says it was read when the page was built',!empty($r['snapshotFields']));
+    // The same selector on a form this viewer may not read: no branch blocks either.
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"blockSave":"hard","when":"[baseline_arm_1][key_b][2]=\'A\'"} @UVWINDOW={"notFuture":true,"blockSave":"hard"}');
+    REDCap::$rights['nurse']['forms']['fb']='0';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    REDCap::$rights['nurse']['forms']['fb']='1';
+    $bs=array_map(function($b){return [$b['blockSave']??null,!empty($b['snapshotGate'])];},array_values($r['branches']??[]));
+    check('branches chosen by a value this viewer may not read: none blocks',$bs===[['off',true],['off',true]]);
+    // A selector and a "from" both on this page: each branch blocks as it says,
+    // and the rule as a whole is not marked as read when the page was built.
+    $m=$win('@UVWINDOW={"from":"[a_from][current-instance]","window":[21,35],"blockSave":"hard","when":"[key_a][current-instance]=\'A\'"} @UVWINDOW={"from":"[a_from][current-instance]","window":[0,14],"blockSave":"hard"}');
+    REDCap::$dictionary['a_from']=['field_type'=>'text','form_name'=>'fa','field_annotation'=>'','text_validation_type_or_show_slider_number'=>'date_ymd'];
+    $r=ruleOf(render($m,'fa'),'a_val');
+    $bs=array_map(function($b){return [$b['blockSave']??null,!empty($b['snapshotGate']),!empty($b['snapshotFields'])];},array_values($r['branches']??[]));
+    check('branches with a live selector and a live "from": each blocks as it says (got '.json_encode($bs).')',
+        $r&&empty($r['configError'])&&$bs===[['hard',false,false],['hard',false,false]]&&empty($r['snapshotFields']));
+    // A set of entries is read when the page is built, even one holding only this entry.
+    $m=$win('@UVWINDOW={"notFuture":true,"blockSave":"hard","when":"[a_val][any-instance]<>\'\'"}');
+    $r=ruleOf(render($m,'fa','1',2,1),'a_val');
+    check('a "when" over a set of entries holding only this one: advisory in the browser',
+        $r&&empty($r['configError'])&&($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
     // A count of entries in another event is read when the page is built, even a count of none.
     $m=$win('@UVWINDOW={"notFuture":true,"blockSave":"hard","when":"{n}=0","references":{"n":{"field":"b_open","events":["event-name","baseline_arm_1"],"aggregate":"count"}}}');
     unset(REDCap::$data[1]['repeat_instances'][1]['fb']);

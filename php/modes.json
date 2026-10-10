@@ -176,7 +176,7 @@
       ],
       "snapshotAdvisory": true,
       "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
-                     "dateType", "dateFormat", "fromType", "fromFormat"],
+                     "dateType", "dateFormat", "fromType", "fromFormat", "windowNotFutureOff"],
       "clientKeys": ["windowFrom", "windowFromOp", "windowFromOpWhy", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
                      "dateType", "dateFormat", "fromType", "fromFormat",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",

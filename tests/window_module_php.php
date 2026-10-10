@@ -216,6 +216,25 @@ namespace {
     check('@TODAY-UTC on a rule with a window: the window stays, notFuture is dropped with a note',
         $r && empty($r['configError']) && empty($r['windowNotFuture']) && ($r['windowLo'] ?? null) === 0
         && strpos(implode(' ', $r['windowNotFutureOff'] ?? []), 'filled by @TODAY-UTC') !== false);
+    // ...on each branch of a branched rule too.
+    $Z['win_nf_br'] = f('visit_form', '@TODAY-UTC @UVWINDOW={"from":"[v_start]","window":[0,7],"notFuture":true,"when":"[v_start]<>\'\'"} '
+        . '@UVWINDOW={"from":"[v_start]","window":[0,14],"notFuture":true}', 'date_ymd');
+    $mz = mod($Z, $DATA, $FULL, 'nurse');
+    $mz->projectSettings['window-timezone'] = 'America/New_York';
+    $r = ruleFor(page($mz, 'form', '2', 'visit_form'), 'win_nf_br');
+    $notes = array_map(function ($b) { return [empty($b['windowNotFuture']), strpos(implode(' ', $b['windowNotFutureOff'] ?? []), 'filled by @TODAY-UTC') !== false]; },
+        array_values($r['branches'] ?? []));
+    check('@TODAY-UTC on a branched rule: every branch drops notFuture with the note', $notes === [[true, true], [true, true]]);
+
+    // A branch selector read from another form, when the page was built: every
+    // branch, the else branch too, may be the wrong one, so none blocks.
+    $G = $DICT;
+    $G['gate_br'] = f('visit_form', '@UVWINDOW={"notFuture":true,"blockSave":"hard","when":"[visit_date_bl]<>\'\'"} '
+        . '@UVWINDOW={"notFuture":true,"blockSave":"hard"}', 'date_ymd');
+    $r = ruleFor(page(mod($G, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form'), 'gate_br');
+    $gates = array_map(function ($b) { return [!empty($b['snapshotGate']), $b['blockSave'] ?? null]; }, array_values($r['branches'] ?? []));
+    check('a selector from another form: every branch, the else too, is marked and does not block (got ' . json_encode($gates) . ')',
+        count($gates) === 2 && $gates[0][0] && $gates[1][0]);
 
     // ---- 2) the fold: live, snapshot, and nothing shipped when not entitled ---
     $r = ruleFor($p, 'visit_date_2');
