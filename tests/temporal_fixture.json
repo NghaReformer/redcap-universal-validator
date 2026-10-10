@@ -1926,5 +1926,168 @@
     ],
     "expected": null,
     "values": {}
+  },
+  {
+    "name": "unique same folds letter case",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:fold:text",
+        [
+          "lit",
+          "SP-1"
+        ],
+        [
+          "lit",
+          "sp-1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "unique same exact keeps letter case",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:exact:text",
+        [
+          "lit",
+          "SP-1"
+        ],
+        [
+          "lit",
+          "sp-1"
+        ]
+      ]
+    ],
+    "expected": false,
+    "values": {}
+  },
+  {
+    "name": "unique same text keeps leading zeros",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:fold:text",
+        [
+          "lit",
+          "007"
+        ],
+        [
+          "lit",
+          "7"
+        ]
+      ]
+    ],
+    "expected": false,
+    "values": {}
+  },
+  {
+    "name": "unique same numbers by value",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:exact:point",
+        [
+          "lit",
+          "007"
+        ],
+        [
+          "lit",
+          "7.0"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "unique same comma numbers",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:fold:comma",
+        [
+          "lit",
+          "1,50"
+        ],
+        [
+          "lit",
+          "1.5"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "unique same no-break space trimmed",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:exact:text",
+        [
+          "lit",
+          " A "
+        ],
+        [
+          "lit",
+          "A"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {}
+  },
+  {
+    "name": "unique same reads a field",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:fold:text",
+        [
+          "ref",
+          "value",
+          null
+        ],
+        [
+          "lit",
+          "ab-1"
+        ]
+      ]
+    ],
+    "expected": true,
+    "values": {
+      "value": "AB-1"
+    }
+  },
+  {
+    "name": "unique same malformed operator is unknown",
+    "ast": [
+      "temporal",
+      [
+        "cmp",
+        "same:fold:pointy",
+        [
+          "lit",
+          "1"
+        ],
+        [
+          "lit",
+          "1"
+        ]
+      ]
+    ],
+    "expected": null,
+    "values": {}
   }
 ]

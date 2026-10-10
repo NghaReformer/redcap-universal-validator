@@ -110,16 +110,19 @@ trait TemporalIntegration
                 if (!$owner || !$mayRead($owner)) return ['rule'=>$rule,'problems'=>['unauthorized']];
             }
             $results=[];
+            // Values compare as @UVEXISTS compares them (Logic::lookupKey): letter case
+            // ignored unless caseSensitive, numbers by value in a field that holds them.
+            $fold=empty($rule['caseSensitive']);
             foreach($rule['fields'] as $field){
                 $meta=$shape->field($field);if(!$meta||$meta['form']!==$ctx['instrument'])continue;
-                $parts=array_merge([$field],$rule['uniqueWith']??[]);$current=[];$currentOps=[];
+                $parts=array_merge([$field],$rule['uniqueWith']??[]);$current=[];$currentOps=[];$marks=$this->lookupMarks($this->temporalPid,$parts);
                 foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$ctx);if($v['state']!=='ok')return ['rule'=>$rule,'problems'=>[$v['state']]];$current[$f]=$v['value'];$currentOps[$f]=($browser&&!empty($v['self']))?['ref',$f,null]:['lit',$v['value']];}
-                $index=$this->temporalUniqueTuples($resolver,$node,$meta['form'],$field,$parts);
+                $index=$this->temporalUniqueTuples($resolver,$node,$meta['form'],$field,$parts,$fold,$marks);
                 if($index['problem']!==null)return ['rule'=>$rule,'problems'=>[$index['problem']]];
                 $own=$ctx['event'].'|'.$ctx['instance'];
                 if(!$browser){
                     // Saved data: is this entry's tuple held by any OTHER entry? One lookup.
-                    $holders=$index['holders'][self::temporalTupleKey($current,$parts)]??[];
+                    $holders=$index['holders'][self::temporalTupleKey($current,$parts,$fold,$marks)]??[];
                     unset($holders[$own]);$results[$field]=!$holders;continue;
                 }
                 // A live date reads as the field shows it (31-12-2026), saved ones as Y-M-D.
@@ -128,8 +131,8 @@ trait TemporalIntegration
                 foreach($index['tuples'] as $id=>$tuple){
                     if((string)$id===$own)continue;
                     // Entries holding the same tuple are one clause: the page asks "is my value taken", not "by how many".
-                    $key=self::temporalTupleKey($tuple,$parts);if(isset($sent[$key]))continue;$sent[$key]=true;
-                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',self::temporalShown($tuple[$f],$shown[$f])]];$clauses[]=['not',['and',$eq]];
+                    $key=self::temporalTupleKey($tuple,$parts,$fold,$marks);if(isset($sent[$key]))continue;$sent[$key]=true;
+                    $eq=[];foreach($parts as $f)$eq[]=['cmp',TemporalLogic::sameOp($fold,$marks[$f]),$currentOps[$f],['lit',self::temporalShown($tuple[$f],$shown[$f])]];$clauses[]=['not',['and',$eq]];
                 }
                 $tests[$field]=['and',$clauses];
             }
@@ -141,8 +144,8 @@ trait TemporalIntegration
             }else{
                 $prepared['rule']['uniqueRecordResults']=$results;
             }
-            // The tuple comparison is exact by its own operator ("identical"), in both
-            // engines. The rule's caseSensitive flag belongs to its "when" gate and is left
+            // The tuple comparison carries its own flags in its operator ("same:FOLD:MARK"),
+            // in both engines, so the page gate keeps the rule's caseSensitive for its "when"
             // as authored: forcing it on made the page read [site]='a' exactly while the
             // audit folded case, so a rule the server enforced never ran in the browser.
         }
@@ -198,10 +201,10 @@ trait TemporalIntegration
         return $shown!==''?$shown:$value;
     }
 
-    /** Components compare as TemporalLogic's "identical" does: exact strings after PHP's default trim. */
-    private static function temporalTupleKey(array $tuple,array $parts)
+    /** Components compare as TemporalLogic's "same:FOLD:MARK" does: by Logic::lookupKey. */
+    private static function temporalTupleKey(array $tuple,array $parts,$fold,array $marks)
     {
-        $key=[];foreach($parts as $f)$key[]=trim((string)($tuple[$f]??''));
+        $key=[];foreach($parts as $f)$key[]=Logic::lookupKey($tuple[$f]??'',$fold,$marks[$f]??null);
         return serialize($key);   // binary-safe, unlike json_encode on a value that is not UTF-8
     }
 
@@ -214,9 +217,9 @@ trait TemporalIntegration
      * blank are left out: blank is never a duplicate). holders: tuple key =>
      * the entries holding it.
      */
-    private function temporalUniqueTuples(AddressResolver $resolver,array $node,$form,$field,array $parts)
+    private function temporalUniqueTuples(AddressResolver $resolver,array $node,$form,$field,array $parts,$fold,array $marks)
     {
-        $cacheKey=$form.'|'.implode(',',$parts);
+        $cacheKey=$form.'|'.implode(',',$parts).'|'.($fold?'fold':'exact');
         if(isset($this->temporalUniqueIndex[$cacheKey]))return $this->temporalUniqueIndex[$cacheKey];
         $index=['problem'=>null,'tuples'=>[],'holders'=>[]];$count=0;
         foreach($this->hostContextsFor(self::recordContexts($node),$form,$this->temporalPid) as $other){
@@ -225,7 +228,7 @@ trait TemporalIntegration
             foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$oc);if($v['state']!=='ok'){$index['problem']=$v['state'];break 2;}$tuple[$f]=$v['value'];}
             if($tuple[$field]==='')continue;
             $id=$other['event_id'].'|'.$other['instance'];
-            $index['tuples'][$id]=$tuple;$index['holders'][self::temporalTupleKey($tuple,$parts)][$id]=true;
+            $index['tuples'][$id]=$tuple;$index['holders'][self::temporalTupleKey($tuple,$parts,$fold,$marks)][$id]=true;
         }
         return $this->temporalUniqueIndex[$cacheKey]=$index;
     }

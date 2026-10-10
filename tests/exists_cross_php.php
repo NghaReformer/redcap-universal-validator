@@ -512,8 +512,10 @@ namespace {
     $p = logsOf($m, 'uv-exists-probe');
     check('probe log: a survey lookup is logged as such', count($p) === 1 && $p[0]['channel'] === 'survey' && $p[0]['user'] === 'survey');
     $hk = new \ReflectionMethod($m, 'hashedIdentifier'); $hk->setAccessible(true);
-    check('probe log: the hash is keyed to the other project', $p[0]['value_hash'] === $hk->invoke($m, 300, 'SP-1')
-        && $p[0]['value_hash'] !== $hk->invoke($m, 149, 'SP-1'));
+    check('probe log: the hash is keyed to the other project', $p[0]['value_hash'] === $hk->invoke($m, 300, 'sp-1')
+        && $p[0]['value_hash'] !== $hk->invoke($m, 149, 'sp-1'));
+    check('probe log: a lookup that ignores letter case hashes the value in lower case, and says so',
+        ($p[0]['case'] ?? null) === 'ignored');
     $m = mod('nurse', null, false);
     ask($m, 'x_spec', ['x_spec' => 'SP-1']);
     check('probe log: nothing is written with the switch off', !logsOf($m, 'uv-exists-probe'));
@@ -603,7 +605,7 @@ namespace {
     foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[] = $v['record'] . '/' . $v['field'];
     sort($hits);
     check('scan: values not found there are reported', $hits === ['1/x_spec', '2/x_rec']);
-    $idx = array_filter(readsOf(300), function ($c) { return empty($c['records']) && empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id']; });
+    $idx = array_filter(readsOf(300), function ($c) { return empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id']; });
     check('scan: the other project is read once per searched field', count($idx) === 1);
     check('scan: no per-record lookups there', !array_filter(readsOf(300), function ($c) { return !empty($c['filterLogic']); }));
     $ir = logsOf($m, 'uv-exists-index-read');
@@ -636,11 +638,12 @@ namespace {
     check('scan: a read over the budget there is not made, and says so', (bool) array_filter($ir, function ($l) { return $l['result'] === 'throttled'; })
         // The first index (specimen_id) spends the budget of 1; the record-ID
         // index is then refused: x_rec is reported, and only the first index
-        // reached the other project. Its "not found" rests on that same read:
-        // the scan makes no second, uncounted read there.
+        // reached the other project, with its two reads (the record IDs, then
+        // the searched field by record). Its "not found" rests on those reads:
+        // the scan makes no further, uncounted read there.
         && (bool) array_filter($res['unconfigurable'], function ($u) {
             return in_array('x_rec', $u['fields'], true) && strpos($u['why'], 'lookup-unavailable') !== false; })
-        && count(readsOf(300)) === 1);
+        && count(readsOf(300)) === 2);
     $m = mod();
     \REDCap::$data[149]['1'][351] += ['x_spec' => 'SP-404', 'redcap_data_access_group' => 'north'];
     $res = $scan($m, 7);

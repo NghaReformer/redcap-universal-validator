@@ -137,10 +137,31 @@ namespace {
             // chunking was unfalsifiable: a caller that requested the wrong slice
             // still saw every record and produced identical findings. The record
             // list is read WITHOUT 'records', so the pre-read is unaffected.
+            if (self::$exactFilter && isset($params['filterLogic'])) return self::filtered($params['filterLogic']);
             if (empty($params['records'])) return self::$data;
             $out = [];
             foreach ($params['records'] as $r) {
                 if (array_key_exists($r, self::$data)) $out[$r] = self::$data[$r];
+            }
+            return $out;
+        }
+        /**
+         * When set, a filterLogic of "[f] = 'v'" clauses joined by " and " keeps
+         * only records with an event row holding every value exactly, as a
+         * case-sensitive REDCap would. Off, the filter is ignored (a build that
+         * returns everything).
+         */
+        public static $exactFilter = false;
+        private static function filtered($logic) {
+            preg_match_all("/\\[(\\w+)\\] = '([^']*)'/", $logic, $m, PREG_SET_ORDER);
+            $out = [];
+            foreach (self::$data as $rec => $node) {
+                foreach ($node as $ev => $row) {
+                    if (!is_array($row) || $ev === 'repeat_instances') continue;
+                    $all = true;
+                    foreach ($m as $c) if (!isset($row[$c[1]]) || (string) $row[$c[1]] !== $c[2]) { $all = false; break; }
+                    if ($all) { $out[$rec] = $node; break; }
+                }
             }
             return $out;
         }
@@ -2392,20 +2413,44 @@ namespace {
         !isset(\REDCap::$lastGetDataParams['filterLogic']));
     // control: a project-scoped check still narrows (the amplification guard applies)
     $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => 'P-1']]], 149);
-    \REDCap::$lastGetDataParams = null;
+    \REDCap::$getDataCalls = [];
     $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'P-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('F4-DAG-01 control: a project-scoped check still narrows',
-        isset(\REDCap::$lastGetDataParams['filterLogic']));
+        isset(\REDCap::$getDataCalls[0]['filterLogic']));
+    // The filter compares exactly, so its miss on a value with letters, under a
+    // rule that ignores letter case, is confirmed by one full read...
+    check('lookup case: a narrowed miss on a value with letters is confirmed by a full read',
+        count(\REDCap::$getDataCalls) === 2 && !isset(\REDCap::$getDataCalls[1]['filterLogic']));
+    // ...which finds the duplicate typed in another case.
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup case: "p-1" is used when "P-1" is saved', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '1');
+    // A value with no letters gets the same answer from the filter alone.
+    $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => '11-1']]], 149);
+    \REDCap::$getDataCalls = [];
+    $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '11-2']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup case: a narrowed miss on a value with no letters is final', count(\REDCap::$getDataCalls) === 1);
+    // An exact rule keeps every narrowed miss final.
+    $csDict = $f4Dict;
+    $csDict['pid_f']['field_annotation'] = '@UVUNIQUE={"caseSensitive":true}';
+    $m = newModule([], $csDict, ['1' => [351 => ['record_id' => '1', 'pid_f' => 'P-1']]], 149);
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup case: "caseSensitive": true keeps "p-1" free next to "P-1"', ($r['used'] ?? null) === false);
 
     // F5: a SESSIONLESS flood is bounded per project (the session-only throttle
     // could not count a cookieless caller). CLI has no active session, so the
     // endpoint takes the per-project tier. Pre-seed the budget to the cap -> the
     // next anon check is throttled.
+    // An exact rule: its narrowed misses are final, so these throttle counts
+    // see no confirming read (that budget is counted further down).
     $f5Dict = [
         'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
         'tok' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
-                  'field_annotation' => '@UVUNIQUE={"surveys":true}'],
+                  'field_annotation' => '@UVUNIQUE={"surveys":true,"caseSensitive":true}'],
     ];
     $f5Data = ['1' => [351 => ['record_id' => '1', 'tok' => 'TK-1']]];
     $m = newModule([], $f5Dict, $f5Data, 149);
@@ -2447,6 +2492,24 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-8']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
+
+    // A survey's confirming full read spends the per-project read budget, and
+    // a spent budget leaves the narrowed answer standing (the audit decides).
+    $foldDict = $f5Dict;
+    $foldDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true}';
+    $m = newModule([], $foldDict, $f5Data, 149);
+    \REDCap::$exactFilter = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'tk-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    $fullSlot = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + 2;
+    check('lookup case: a survey finds "tk-1" used when "TK-1" is saved', $r === ['used' => true, 'record' => null]);
+    check('lookup case: ...and the confirming read was counted in the read budget', ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 1);
+    $m = newModule([], $foldDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'tk-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('lookup case: a spent read budget leaves the narrowed answer (fails open)', $r === ['used' => false, 'record' => null]);
+    \REDCap::$exactFilter = false;
 
     // F6: THE COUNTER'S STORAGE IS NOT REACHABLE. Two shapes, both of which
     // shipped as a silent pass. The first is the one that mattered: with the

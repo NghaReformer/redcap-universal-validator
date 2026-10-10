@@ -71,10 +71,30 @@ final class TemporalLogic
         }
         return null;
     }
+    /**
+     * A lookup equality, "same:FOLD:MARK" (FOLD fold|exact, MARK text|point|comma),
+     * as [fold, mark] for Logic::lookupKey, or null for a malformed one. The older
+     * "identical" is "same:exact:text". Twin: QRID_sameFlags.
+     */
+    public static function sameFlags($op)
+    {
+        if($op==='identical')return [false,null];
+        $p=explode(':',(string)$op);
+        if(count($p)!==3||$p[0]!=='same'||($p[1]!=='fold'&&$p[1]!=='exact')||!in_array($p[2],['text','point','comma'],true))return null;
+        return [$p[1]==='fold',$p[2]==='text'?null:$p[2]];
+    }
+    /** The lookup equality for [fold, mark]: the inverse of sameFlags. */
+    public static function sameOp($fold,$mark)
+    {
+        return 'same:'.($fold?'fold':'exact').':'.($mark===null?'text':$mark);
+    }
     public static function compare($op,$a,$b,$blank,$case,?callable $charge=null)
     {
         if($a===null||$b===null)return null;
-        if($op==='identical')return is_scalar($a)&&is_scalar($b)?trim((string)$a)===trim((string)$b):null;
+        if($op==='identical'||strncmp((string)$op,'same:',5)===0){
+            $f=self::sameFlags($op);
+            return $f!==null&&is_scalar($a)&&is_scalar($b)?Logic::lookupKey($a,$f[0],$f[1])===Logic::lookupKey($b,$f[0],$f[1]):null;
+        }
         if(is_array($a)&&isset($a['set']) || is_array($b)&&isset($b['set'])){
             if(is_array($a)&&isset($a['set'])&&is_array($b)&&isset($b['set']))return null;
             $left=is_array($a)&&isset($a['set']);$set=$left?$a:$b;

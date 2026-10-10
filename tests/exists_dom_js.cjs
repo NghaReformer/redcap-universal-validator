@@ -269,20 +269,28 @@ function one(value, extra, cfgExtra) {
   t.stub.next = { state: 'not-found' };
   const env = boot([t.spec], t.cfg, t.stub);
   const msg = xMsg(env, 'spec');
-  check('load: not-found shown', /not saved/.test(msg.innerHTML) && !saved(env));
+  check('load: not-found shown', /not saved/.test(msg.innerHTML) && t.stub.calls.length === 1);
+  // M1: the save asks again rather than trust the cached "not found".
+  check('save: a cached "not found" is asked again before the save is decided', !saved(env) && t.stub.calls.length === 2
+    && t.stub.calls[1].payload.values.spec === 'SP-1');
+  t.stub.next = { state: 'found', record: null };
+  check('save: ...and a value saved elsewhere since then lets the save through', saved(env) && t.stub.calls.length === 3
+    && /Found/.test(msg.innerHTML));
+  check('save: a cached "found" is not asked again', saved(env) && t.stub.calls.length === 3);
+  t.stub.next = { state: 'not-found' };
   for (const v of ['S', 'SP', 'SP-', 'SP-2']) { t.spec.value = v; t.spec.fire('input'); }
   check('typing: the verdict is cleared at once', msg.style.display === 'none' && t.spec.getAttribute('aria-invalid') === null);
   flush();
-  check('typing: no request per keystroke, even after the pause', t.stub.calls.length === 1);
+  check('typing: no request per keystroke, even after the pause', t.stub.calls.length === 3);
   t.stub.next = { state: 'found', record: null };
   t.spec.fire('change');
-  check('change: one request with the finished value', t.stub.calls.length === 2 && t.stub.calls[1].payload.values.spec === 'SP-2');
+  check('change: one request with the finished value', t.stub.calls.length === 4 && t.stub.calls[3].payload.values.spec === 'SP-2');
   flush();
-  check('the registry echo of the same change asks nothing more', t.stub.calls.length === 2);
+  check('the registry echo of the same change asks nothing more', t.stub.calls.length === 4);
   t.spec.value = 'SP-3'; t.spec.fire('input');
   t.stub.next = { state: 'not-found' };
   t.spec.fire('blur');
-  check('blur asks too', t.stub.calls.length === 3 && /not saved/.test(msg.innerHTML));
+  check('blur asks too', t.stub.calls.length === 5 && /not saved/.test(msg.innerHTML));
 }
 {
   // Typed, then Save at once: the click's blur is the first moment anyone asks.

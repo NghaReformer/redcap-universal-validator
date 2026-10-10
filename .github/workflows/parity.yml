@@ -63,6 +63,8 @@ jobs:
           node tests/window_dom_js.cjs
       - name: JS exists (@UVEXISTS) DOM contract (asks on change, could-not-check never blocks, cache)
         run: node tests/exists_dom_js.cjs
+      - name: JS lookup comparison (@UVEXISTS/@UVUNIQUE letter case and numbers) vs fixture
+        run: node tests/lookup_js.cjs
       - name: JS range (@UVRANGE) verdict vs fixture, and its DOM contract (tiers, comma decimals, calc never blocks)
         run: |
           node tests/range_js.cjs
@@ -199,6 +201,8 @@ jobs:
         run: php tests/exists_php.php
       - name: PHP @UVEXISTS in another project (consent, rights there, probe log, budgets, audit, scan)
         run: php tests/exists_cross_php.php
+      - name: PHP lookup comparison (@UVEXISTS/@UVUNIQUE letter case and numbers) vs fixture
+        run: php tests/lookup_php.php
       - name: PHP @UVRANGE verdict vs fixture, grammar, field hook, branches, audit and scan
         run: |
           php tests/range_php.php

@@ -137,6 +137,11 @@ const JSMO = 'EMStub.UV';
     && stub.calls[0].payload.field === 'pid' && stub.calls[0].payload.values.pid === 'AB100');
   let ev = submitEv(); env.doc.fire('submit', ev);
   check('used: hard block traps the save', ev._prevented === true);
+  // The save asks again rather than trust the cached "used".
+  check('used: the save asked again', stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'AB100');
+  stub.next = { used: false, record: null };
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('used: a value freed since then lets the save through', ev._prevented === false && stub.calls.length === 3);
 
   stub.next = { used: false, record: null };
   pid.value = 'FRESH1';
@@ -144,11 +149,12 @@ const JSMO = 'EMStub.UV';
   check('free: green note', /Not used before/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('free: save allowed', ev._prevented === false);
+  check('free: a cached "free" is not asked again', stub.calls.length === 4);
 
   pid.value = '';
   pid.fire('change');
   check('empty: inert', msg.style.display === 'none');
-  check('empty: no request sent', stub.calls.length === 2);
+  check('empty: no request sent', stub.calls.length === 4);
 }
 
 // ---- 2) custom message wins; composite "with" values travel -----------------

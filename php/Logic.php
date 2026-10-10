@@ -861,6 +861,62 @@ class Logic
         return ($m[1] === '-' && !$zero ? '-' : '') . $int . ($frac === '' ? '' : '.' . $frac);
     }
 
+    /** A-Z to a-z, nothing else: the fold "caseSensitive" turns off. Twin: QRID_whenFoldCase. */
+    public static function foldAscii($s)
+    {
+        return strtr((string) $s, self::ASCII_UPPER, self::ASCII_LOWER);
+    }
+
+    /**
+     * A looked-up value (@UVEXISTS, @UVUNIQUE) without the space around it:
+     * space, tab, CR, LF, NUL, vertical tab and the no-break space U+00A0 (as
+     * UTF-8 bytes: C2 is never a continuation byte, so no other character
+     * loses a byte). Twin: QRID_lookupTrim.
+     */
+    public static function lookupTrim($s)
+    {
+        return (string) preg_replace('/^(?:[ \t\r\n\0\x0B]|\xC2\xA0)+|(?:[ \t\r\n\0\x0B]|\xC2\xA0)+$/', '', (string) $s);
+    }
+
+    /**
+     * A number in one written form, or null when $s is not a number: no "+",
+     * no leading zeros, no trailing zeros after the point, an exponent written
+     * out ("1e3" is "1000"), and a zero without a sign. "007", "7.0" and "7"
+     * are all "7". $mark 'comma' reads one comma as the decimal mark (a
+     * *_comma_decimal field). Twin: QRID_numberKey.
+     */
+    public static function numberKey($s, $mark = 'point')
+    {
+        $v = self::lookupTrim($s);
+        if ($mark === 'comma' && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
+        if (!preg_match(self::NUM_RE, $v)) {
+            $v = self::plainDecimal($v);
+            if ($v === null) return null;
+        }
+        $c = self::canonicalDecimal($v);
+        if ($c === null) return null;
+        if (strpos($c, '.') !== false) $c = rtrim(rtrim($c, '0'), '.');
+        return $c === '-0' ? '0' : $c;
+    }
+
+    /**
+     * The form two looked-up values are compared in: trimmed (lookupTrim), a
+     * number in numberKey form when $mark is 'point' or 'comma' (the field
+     * holds numbers), else the text, A-Z folded when $fold. No Unicode
+     * normalisation: the intl extension it needs is not on every server, and
+     * the browser twin must give the same answer. The leading "#" or "=" keeps
+     * a number from ever equalling a text. Twin: QRID_lookupKey.
+     */
+    public static function lookupKey($s, $fold, $mark = null)
+    {
+        $v = self::lookupTrim($s);
+        if ($mark === 'point' || $mark === 'comma') {
+            $n = self::numberKey($v, $mark);
+            if ($n !== null) return '#' . $n;
+        }
+        return '=' . ($fold ? self::foldAscii($v) : $v);
+    }
+
     /**
      * The @UVRANGE verdict for one value: ['tier' => ok|soft|hard|inert,
      * 'reason' => null|soft-low|soft-high|hard-low|hard-high|not-a-number].

@@ -295,6 +295,31 @@ namespace {
     $rule=['type'=>'unique','fields'=>['a_val','key_a'],'uniqueScope'=>'record'];
     $pr=$prep->invoke($m,$rule,$shape,REDCap::$data[1],['event'=>1,'instrument'=>'fa','instance'=>3,'values'=>REDCap::$data[1]['repeat_instances'][1]['fa'][3]]);
     check('multi-field uniqueness isolates results',$pr['rule']['uniqueRecordResults']===['a_val'=>false,'key_a'=>true]);
+    // Record scope compares as @UVEXISTS does: letter case ignored unless the
+    // rule is caseSensitive, numbers by value in a field that holds them.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='ab-1';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='AB-1';
+    $res=$m->scanProject(PID);
+    check('record uniqueness ignores letter case by default',count($res['violations'])===2);
+    $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('...and the page compares with the folding operator',strpos($ast,'"same:fold:text"')!==false&&strpos($ast,'"ab-1"')!==false);
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVUNIQUE={"scope":"record","caseSensitive":true}';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='ab-1';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='AB-1';
+    $res=$m->scanProject(PID);
+    check('record uniqueness with caseSensitive keeps "AB-1" and "ab-1" apart',count($res['violations'])===0);
+    $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('...and the page compares exactly',strpos($ast,'"same:exact:text"')!==false);
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['text_validation_type_or_show_slider_number']='integer';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='007';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='7';
+    $res=$m->scanProject(PID);
+    check('record uniqueness on an integer field compares numbers by value',count($res['violations'])===2);
+    $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('...and the page compares numbers too',strpos($ast,'"same:fold:point"')!==false);
     // ---- adversarial review 2026-09-20 ----------------------------------------
     // One saved value that is not valid UTF-8 used to make json_encode() fail and
     // the page then carried NO rule at all, in silence.

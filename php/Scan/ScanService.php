@@ -804,9 +804,18 @@ final class ScanService
         return null;
     }
 
+    /**
+     * What a finding means, for the run fingerprint: raise it when the same
+     * data and rules start to give different findings, so a durable scan
+     * started under the old meaning stops instead of mixing both.
+     * engine-2: @UVEXISTS and @UVUNIQUE ignore letter case unless the rule is
+     * caseSensitive, and compare numbers by value.
+     */
+    const ENGINE_VERSION = 'engine-2';
+
     private function engineVersion()
     {
-        return defined('UV_ENGINE_VERSION') ? UV_ENGINE_VERSION : 'engine-1';
+        return defined('UV_ENGINE_VERSION') ? UV_ENGINE_VERSION : self::ENGINE_VERSION;
     }
 
     private function username()

@@ -231,6 +231,16 @@ namespace {
         'res_ubr'     => f('result', '@UVUNIQUE={"when":"[res_site]=\'A\'","blockSave":"hard"} '
                                    . '@UVUNIQUE={"when":"[res_site]=\'B\'"}'),
         'res_uw'      => f('result', '@UVUNIQUE={"with":["res_site"]}'),
+        'spec_num'    => f('lab_reg', '', 'integer'),
+        'spec_cnum'   => f('lab_reg', '', 'number_comma_decimal'),
+        'res_cs'      => f('result', '@UVEXISTS={"in":"[specimen_id]","caseSensitive":true}'),
+        'res_rec_cs'  => f('result', '@UVEXISTS={"in":"record","caseSensitive":true}'),
+        'res_num'     => f('result', '@UVEXISTS=[spec_num]', 'integer'),
+        'res_cnum'    => f('result', '@UVEXISTS=[spec_cnum]', 'number_1dp_comma_decimal'),
+        'res_tnum'    => f('result', '@UVEXISTS=[spec_num]'),
+        'bad_mark'    => f('result', '@UVEXISTS=[spec_cnum]', 'number'),
+        'res_ucs'     => f('result', '@UVUNIQUE={"caseSensitive":true}'),
+        'res_unum'    => f('result', '@UVUNIQUE', 'integer'),
     ];
     $DATA = [
         '1' => [351 => ['record_id' => '1', 'home_site' => 'A', 'specimen_id' => ' SP-1 ', 'site_code' => 'A',
@@ -378,8 +388,10 @@ namespace {
         && \REDCap::$calls[0]['fields'] === ['specimen_id']);
     $r = ask(mod(), 'res_spec', ['res_spec' => '  SP-1']);
     check('trimmed on both sides', ($r['state'] ?? null) === 'found');
-    $r = ask(mod(), 'res_spec', ['res_spec' => 'sp-2']);
-    check('case-sensitive', ($r['state'] ?? null) === 'not-found');
+    $m = mod();
+    $r = ask($m, 'res_spec', ['res_spec' => 'sp-2']);
+    check('letter case is ignored by default', $r === ['state' => 'found', 'record' => '2']);
+    check('...the exact narrowed read missed, so the full read decided', count(\REDCap::$calls) === 2 && fullReads() === 1);
     $m = mod();
     $r = ask($m, 'res_spec', ['res_spec' => 'SP-404']);
     check('not found', $r === ['state' => 'not-found', 'record' => null]);
@@ -451,8 +463,10 @@ namespace {
     $r = ask(mod(), 'res_dag', ['res_dag' => 'SP-2'], '', 99);
     check('scope dag: a group whose name cannot be read answers unknown', ($r['state'] ?? null) === 'unknown');
 
-    $r = ask(mod(), 'res_rec_dag', ['res_rec_dag' => '1'], '1');
+    $r = ask(mod(), 'res_rec_dag', ['res_rec_dag' => '1'], '', 7);
     check('record lookup, scope dag: a record of the same group is found', ($r['state'] ?? null) === 'found');
+    $r = ask(mod(), 'res_rec_dag', ['res_rec_dag' => '1'], '1');
+    check('record lookup: the record being edited does not find itself', ($r['state'] ?? null) === 'not-found');
     $r = ask(mod(), 'res_rec_dag', ['res_rec_dag' => '2'], '1');
     check('record lookup, scope dag: a record of another group is not', ($r['state'] ?? null) === 'not-found');
     // The lookup itself refuses a blank "match" value, whoever calls it.
@@ -586,9 +600,34 @@ namespace {
     sort($hits);
     check('scan: not-found values reported', $hits === ['2/res_m', '2/res_spec', '3/res_rec']);
     $idxReads = array_filter(\REDCap::$calls, function ($c) {
-        return empty($c['records']) && empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id'];
+        return empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id'];
     });
-    check('scan: the searched field is read once for every record', count($idxReads) === 1);
+    $readRecs = [];
+    foreach ($idxReads as $c) foreach ($c['records'] ?? ['(all)'] as $r) $readRecs[] = (string) $r;
+    sort($readRecs);
+    check('scan: the searched field is read once for every record, by record', count($idxReads) === 1 && $readRecs === ['1', '2', '3']);
+    $m = mod(); \REDCap::$data = $SC;
+    $chunk = new \ReflectionProperty($m, 'existsIndexChunk'); $chunk->setAccessible(true);
+    $chunk->setValue(null, 1);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $readRecs = [];
+    foreach (\REDCap::$calls as $c) if (empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id']) $readRecs[] = $c['records'] ?? null;
+    check('scan: the index reads its records in chunks', $readRecs === [['1'], ['2'], ['3']]);
+    $hits = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[] = $v['record'] . '/' . $v['field'];
+    sort($hits);
+    check('scan: ...with the same findings', $hits === ['2/res_m', '2/res_spec', '3/res_rec']);
+    $m = mod(); \REDCap::$data = $SC;
+    $cap = new \ReflectionProperty($m, 'existsIndexCap'); $cap->setAccessible(true);
+    $cap->setValue($m, 1);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $readRecs = [];
+    foreach (\REDCap::$calls as $c) if (empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id']) $readRecs[] = $c['records'] ?? null;
+    check('scan: an index projected past the memory cap stops after its first chunk', $readRecs === [['1']]);
+    check('scan: ...and its rules are reported as not checked, never as passes',
+        !array_filter($res['violations'], function ($v) { return in_array($v['field'], ['res_spec', 'res_m'], true); })
+        && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('res_spec', $u['fields'], true); }));
+    $chunk->setValue(null, 2000);
     check('scan: no narrowed per-record lookups', !array_filter(\REDCap::$calls, function ($c) { return !empty($c['filterLogic']); }));
     $m = mod(); \REDCap::$data = $SC; \REDCap::$failFull = true;
     $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
@@ -668,7 +707,8 @@ namespace {
     $ip = new \ReflectionProperty($m, 'existsIndexes'); $ip->setAccessible(true);
     $siteIdx = null;
     foreach ($ip->getValue($m) as $k => $idx) if (is_array($idx) && strpos($k, '"site_code"') !== false) $siteIdx = $idx;
-    check('index: 58 records sharing a value cost one entry per (group, event)', $siteIdx !== null && count($siteIdx['B']) === 2);
+    $bKey = bin2hex('=b') . '.';
+    check('index: 58 records sharing a value cost one entry per (group, event)', $siteIdx !== null && count($siteIdx[$bKey] ?? []) === 2);
     check('index: the key names the project', (bool) array_filter(array_keys($ip->getValue($m)), function ($k) { return strpos($k, '[149,') === 0; }));
 
     // S6 + S4: a group-confined scan does not evaluate what it says it cannot.
@@ -770,6 +810,117 @@ namespace {
     $m->redcap_save_record(149, '1', 'lab_reg', 351, null, null, null, 1);
     check('reverse dependency: saving the searched form does not re-audit this record\'s lookups',
         !array_filter(findings($m), function ($e) { return $e['field'] === 'res_spec'; }));
+
+    // ---- 8) letter case and numbers ------------------------------------------------------
+    // "caseSensitive": true keeps the exact comparison.
+    check('caseSensitive: "sp-2" is not "SP-2"', (ask(mod(), 'res_cs', ['res_cs' => 'sp-2'])['state'] ?? null) === 'not-found');
+    check('caseSensitive: ...and "SP-2" is found', (ask(mod(), 'res_cs', ['res_cs' => 'SP-2'])['state'] ?? null) === 'found');
+    // A record ID: REDCap may find a record by its exact name only.
+    $LR = $DATA; $LR['XE-7'] = [351 => ['record_id' => 'XE-7', 'redcap_data_access_group' => 'north']];
+    $m = mod(); \REDCap::$data = $LR;
+    check('record ID in another letter case: found', (ask($m, 'res_rec', ['res_rec' => 'xe-7'])['state'] ?? null) === 'found');
+    check('...after the exact read missed, by one read of every record ID', count(\REDCap::$calls) === 2
+        && (\REDCap::$calls[0]['records'] ?? null) === ['xe-7'] && empty(\REDCap::$calls[1]['records'])
+        && (\REDCap::$calls[1]['fields'] ?? null) === ['record_id']);
+    $m = mod(); \REDCap::$data = $LR;
+    ask($m, 'res_rec', ['res_rec' => 'XE-7']);
+    check('record ID spelled exactly: one read', count(\REDCap::$calls) === 1);
+    $m = mod(); \REDCap::$data = $LR;
+    check('record ID, exact rule: "xe-7" is not "XE-7"', (ask($m, 'res_rec_cs', ['res_rec_cs' => 'xe-7'])['state'] ?? null) === 'not-found'
+        && count(\REDCap::$calls) === 1);
+    $m = mod(); \REDCap::$data = $LR;
+    ask($m, 'res_rec', ['res_rec' => '404']);
+    check('record ID with no letters: no second read', count(\REDCap::$calls) === 1);
+    $m = mod(); \REDCap::$data = $LR;
+    check('record ID in another letter case is still the record being edited',
+        (ask($m, 'res_rec', ['res_rec' => 'xe-7'], 'XE-7')['state'] ?? null) === 'not-found');
+    $LR2 = $LR; $LR2['xe-7'] = [351 => ['record_id' => 'xe-7', 'redcap_data_access_group' => 'south']];
+    $fe = new \ReflectionMethod(mod(), 'findExisting'); $fe->setAccessible(true);
+    $m = mod(); \REDCap::$data = $LR2;
+    $hit = $fe->invoke($m, 149, ['type' => 'exists', 'existsIn' => 'record'], 'XE-7', [], 351, null, true);
+    check('record IDs that differ only in case: the exact one is the one found', ($hit['record'] ?? null) === 'XE-7');
+    $m = mod(null); \REDCap::$data = $LR;
+    $m->rateBuckets['149|' . $tier2] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    check('survey: the read of every record ID is within the read budget',
+        (askSurvey($m, 'bad_recid', ['bad_recid' => 'xe-7'])['state'] ?? null) === 'unknown' && count(\REDCap::$calls) === 1);
+    // The scan's record-ID index folds too.
+    $SR = $LR; $SR['1'][351] += ['res_rec' => 'xe-7']; $SR['2'][351] += ['res_rec_cs' => 'xe-7'];
+    $m = mod(); \REDCap::$data = $SR;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $hits = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[] = $v['record'] . '/' . $v['field'];
+    check('scan: a record ID in another case is found, unless the rule is exact', $hits === ['2/res_rec_cs']);
+    // A value with letters in another case, through the scan index and the audit.
+    $SF = $DATA; $SF['1'][351] += ['res_spec' => 'sp-2', 'res_cs' => 'sp-2'];
+    $m = mod(); \REDCap::$data = $SF;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $hits = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'exists') $hits[] = $v['record'] . '/' . $v['field'];
+    check('scan: "sp-2" is found in [specimen_id] unless the rule is exact', $hits === ['1/res_cs']);
+    check('scan: a folding rule and an exact rule on one field keep separate indexes', count(array_filter(\REDCap::$calls, function ($c) {
+        return empty($c['filterLogic']) && ($c['fields'] ?? null) === ['specimen_id']; })) === 2);
+    $m = mod(); \REDCap::$data = $SF;
+    $m->redcap_save_record(149, '1', 'result', 351, null, null, null, 1);
+    $by = []; foreach (findings($m) as $e) $by[$e['field']] = $e;
+    check('audit: the same answers as the scan', !isset($by['res_spec']) && isset($by['res_cs']));
+    // Numbers by value when the searched field holds numbers.
+    $NM = $DATA; $NM['2'][351]['spec_num'] = '007'; $NM['3'][351]['spec_cnum'] = '1,50';
+    $m = mod(); \REDCap::$data = $NM;
+    check('numbers: "7" finds a saved "007" in an integer field', (ask($m, 'res_num', ['res_num' => '7'])['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $NM;
+    check('numbers: "7.0" too', (ask($m, 'res_num', ['res_num' => '7.0'])['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $NM;
+    check('numbers: a text field searching an integer field compares by the target', (ask($m, 'res_tnum', ['res_tnum' => '07'])['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $NM;
+    check('numbers: a decimal comma: "1,5" finds a saved "1,50"', (ask($m, 'res_cnum', ['res_cnum' => '1,5'])['state'] ?? null) === 'found');
+    $m = mod(); \REDCap::$data = $NM;
+    check('numbers: "8" is not "007"', (ask($m, 'res_num', ['res_num' => '8'])['state'] ?? null) === 'not-found');
+    $NS = $NM; $NS['1'][351] += ['res_num' => '7.00'];
+    $m = mod(); \REDCap::$data = $NS;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    check('numbers: the scan index keys numbers by value', !array_filter($res['violations'], function ($v) { return $v['field'] === 'res_num'; }));
+    check('decimal marks: a point field searching a comma field is refused',
+        strpos($cerr('bad_mark'), '"spec_cnum" holds numbers with a decimal comma and "bad_mark" holds numbers with a decimal point') !== false);
+    check('decimal marks: the same mark is allowed', $cerr('res_cnum') === '' && $cerr('res_num') === '' && $cerr('res_tnum') === '');
+    // The record shown to staff: of the matches the deciding read returned, one
+    // in their own group first (so it can be named), then the exact spelling.
+    $PR = $DATA; $PR['1'][351]['specimen_id'] = 'SP-2';   // north and south (record 2) both hold "SP-2"
+    $m = mod(); \REDCap::$data = $PR;
+    check('shown record: a match in the caller\'s group is preferred, so it can be named',
+        ask($m, 'res_spec', ['res_spec' => 'SP-2'], '', 8) === ['state' => 'found', 'record' => '2']);
+    $PE = $DATA; $PE['1'][351]['specimen_id'] = 'sp-2';   // record 1 first in the read, record 2 exact
+    $m = mod(); \REDCap::$data = $PE;
+    $hit = $fe->invoke($m, 149, ['type' => 'exists', 'existsIn' => 'specimen_id'], 'SP-2', [], 351, null, false);
+    check('shown record: the exact spelling is preferred over an earlier match in another case', ($hit['record'] ?? null) === '2');
+    $hit = $fe->invoke($m, 149, ['type' => 'exists', 'existsIn' => 'specimen_id'], 'Sp-2', [], 351, null, false);
+    check('shown record: with no exact match, the first match in another case', ($hit['record'] ?? null) === '1');
+
+    // ---- 9) @UVUNIQUE compares as @UVEXISTS does -------------------------------------------
+    $UQ = $DATA;
+    $UQ['1'][351] += ['res_uniq' => 'U-1', 'res_ucs' => 'U-1', 'res_unum' => '007'];
+    $UQ['2'][351] += ['res_uniq' => 'u-1', 'res_ucs' => 'u-1', 'res_unum' => '7'];
+    $m = mod(); \REDCap::$data = $UQ;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $dup = [];
+    foreach ($res['violations'] as $v) if ($v['type'] === 'unique') $dup[] = $v['record'] . '/' . $v['field'];
+    sort($dup);
+    check('unique scan: letter case ignored by default, numbers by value, caseSensitive exact',
+        $dup === ['1/res_uniq', '1/res_unum', '2/res_uniq', '2/res_unum']);
+    $m = mod(); \REDCap::$data = $UQ;
+    $m->redcap_save_record(149, '2', 'result', 351, null, null, null, 1);
+    $by = []; foreach (findings($m) as $e) if ($e['type'] === 'unique') $by[$e['field']] = true;
+    check('unique audit: the same answers as the scan', isset($by['res_uniq']) && isset($by['res_unum']) && !isset($by['res_ucs']));
+    $m = mod(); \REDCap::$data = $UQ;
+    check('unique endpoint: "u-1" is used next to "U-1"', ($call($m, 'unique-check', 'res_uniq', ['res_uniq' => 'u-1'], [], '3')['used'] ?? null) === true);
+    $m = mod(); \REDCap::$data = $UQ;
+    $UC = $DATA; $UC['1'][351] += ['res_ucs' => 'U-1'];
+    $m = mod(); \REDCap::$data = $UC;
+    check('unique endpoint, caseSensitive: "u-1" is free next to "U-1"',
+        ($call($m, 'unique-check', 'res_ucs', ['res_ucs' => 'u-1'], [], '3')['used'] ?? null) === false);
+    $m = mod(); \REDCap::$data = $UC;
+    check('unique endpoint, caseSensitive: "U-1" is used', ($call($m, 'unique-check', 'res_ucs', ['res_ucs' => 'U-1'], [], '3')['used'] ?? null) === true);
+    $m = mod(); \REDCap::$data = $UQ;
+    check('unique endpoint: "07" is used next to "007" in an integer field', ($call($m, 'unique-check', 'res_unum', ['res_unum' => '07'], [], '3')['used'] ?? null) === true);
 
     echo "exists_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

@@ -1385,9 +1385,16 @@ function QRID_temporalValue(op,read){
   }
   return null;
 }
+/* A lookup equality "same:FOLD:MARK" as [fold, mark], or null. Twin of TemporalLogic::sameFlags. */
+function QRID_sameFlags(op){
+  if(op==='identical')return [false,null];
+  var p=String(op).split(':');
+  if(p.length!==3||p[0]!=='same'||(p[1]!=='fold'&&p[1]!=='exact')||['text','point','comma'].indexOf(p[2])<0)return null;
+  return [p[1]==='fold',p[2]==='text'?null:p[2]];
+}
 function QRID_temporalCompare(op,a,b,blank,cs){
   if(a===null||b===null)return null;
-  if(op==='identical')return typeof a!=='object'&&typeof b!=='object'?String(a).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,'')===String(b).replace(/^[ \t\r\n\v\0]+|[ \t\r\n\v\0]+$/g,''):null;
+  if(op==='identical'||String(op).slice(0,5)==='same:'){var f=QRID_sameFlags(op);return f!==null&&typeof a!=='object'&&typeof b!=='object'?QRID_lookupKey(a,f[0],f[1])===QRID_lookupKey(b,f[0],f[1]):null;}
   if((a&&a.set)||(b&&b.set)){
     if(a.set&&b.set)return null;var left=!!a.set,set=left?a:b;if(!set.values.length)return null;var and=set.set==='all',unknown=false;
     for(var i=0;i<set.values.length;i++){var r=QRID_temporalCompare(op,left?set.values[i]:a,left?b:set.values[i],blank,cs);if(r===null)unknown=true;else if(r!==and)return !and;}return unknown?null:and;
@@ -1892,6 +1899,29 @@ function QRID_partsText(p){
   else if(pt >= d.length) t = d + new Array(pt - d.length + 1).join("0");
   else t = d.slice(0, pt) + "." + d.slice(pt);
   return p.sign + t;
+}
+/* A looked-up value (@UVEXISTS, @UVUNIQUE) without the space around it: space,
+   tab, CR, LF, NUL, vertical tab and the no-break space. Twin of Logic::lookupTrim. */
+function QRID_lookupTrim(v){ return String(v).replace(/^[ \t\r\n\0\v\u00A0]+|[ \t\r\n\0\v\u00A0]+$/g, ""); }
+/* A number in one written form ("007", "7.0" and "7" are all "7"), or null.
+   mark "comma" reads one comma as the decimal mark. Twin of Logic::numberKey. */
+function QRID_numberKey(s, mark){
+  var v = QRID_lookupTrim(s);
+  if(mark === "comma" && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
+  if(!QRID_WHEN_NUM_RE.test(v)){ v = QRID_plainDecimal(v); if(v === null) return null; }
+  var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?$/.exec(v);
+  if(!m || (m[2] === "" && !m[3])) return null;
+  var whole = m[2].replace(/^0+/, "") || "0", frac = (m[3] || "").replace(/0+$/, "");
+  if(whole === "0" && frac === "") return "0";
+  return (m[1] === "-" ? "-" : "") + whole + (frac === "" ? "" : "." + frac);
+}
+/* The form two looked-up values are compared in: a number in one written form
+   when the field holds numbers, else the text, A-Z folded when fold. No Unicode
+   normalisation, as on the server. Twin of Logic::lookupKey. */
+function QRID_lookupKey(s, fold, mark){
+  var v = QRID_lookupTrim(s);
+  if(mark === "point" || mark === "comma"){ var n = QRID_numberKey(v, mark); if(n !== null) return "#" + n; }
+  return "=" + (fold ? QRID_whenFoldCase(v) : v);
 }
 /* The @UVRANGE verdict: { tier: ok|soft|hard|inert, reason }. Bounds inclusive,
    exact decimal comparison. Twin of Logic::rangeVerdict; tests/range_fixture.json
@@ -4623,7 +4653,7 @@ function QRIDUniqueInit(QRID_CONFIG){
       /* Surveys are opt-in per rule: a used/free answer is record-derived
          information a respondent would not otherwise see (SEC-005 posture). */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
-      var val = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+      var val = QRID_lookupTrim(QRID_WHEN.readRef(fieldName, null));
       /* A reply still on its way is for a value this field no longer holds. */
       if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
       var localGate = localGates[VS.all.indexOf(V)];
@@ -4645,11 +4675,13 @@ function QRIDUniqueInit(QRID_CONFIG){
         /* A "with" field this page does not carry is left out: the server
            reads its saved value (another form, or another survey page). */
         if(!QRID_WHEN.has(w, null)) continue;
-        payload.values[w] = String(QRID_WHEN.readRef(w, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+        payload.values[w] = QRID_lookupTrim(QRID_WHEN.readRef(w, null));
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      if(cached){
+      /* Save never trusts a cached "used": the other record may have changed
+         since. It is asked again, and the guard holds the save meanwhile. */
+      if(cached && !(saving === true && cached.used === true)){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
@@ -4785,7 +4817,7 @@ function QRIDExistsInit(QRID_CONFIG){
   var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
   var configError = VS.configError;
   var ANY_BLOCK = VS.firstBlock !== "off";
-  function trim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
+  function trim(v){ return QRID_lookupTrim(v); }
 
   function attach(fieldName){
     var input = QRID_findAnchor(fieldName);
@@ -4880,7 +4912,10 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      if(cached){
+      /* Save never trusts a cached "not found": the value may have been saved
+         elsewhere since (another tab, a colleague). It is asked again, and the
+         guard holds the save until the answer lands. */
+      if(cached && !(saving === true && cached.state === "not-found")){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
@@ -5810,6 +5845,9 @@ window.INSPIREUniversalValidator = {
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
+  },
+  lookupLogic: {                             /* @UVEXISTS/@UVUNIQUE comparison twins, locked by tests/lookup_js.cjs */
+    key: QRID_lookupKey, number: QRID_numberKey, trim: QRID_lookupTrim, sameFlags: QRID_sameFlags
   },
   growthLogic: {                             /* @UVRANGE growth references, locked by tests/growth_js.cjs */
     axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,

@@ -550,7 +550,7 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
-            if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+            if ($value === null || is_array($value) || Logic::lookupTrim($value) === '') continue;
             if (isset($rule['uniqueRecordResults'])) {
                 if (!array_key_exists($field,$rule['uniqueRecordResults']) || $rule['uniqueRecordResults'][$field] === null) {
                     $out['unconfigurable'][]=['fields'=>[$field],'why'=>'Record uniqueness could not be resolved.'];
@@ -559,11 +559,12 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 continue;
             }
-            $cand = [$field => trim((string) $value)];
+            $cand = [$field => (string) $value];
             foreach ($with as $w) {
-                $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? trim((string) $values[$w]) : '';
+                $cand[$w] = (isset($values[$w]) && !is_array($values[$w])) ? (string) $values[$w] : '';
             }
-            if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id) !== null) {
+            if ($this->findCollision($project_id, $field, $with, $scope, $cand, $record, $event_id, null, false,
+                                     empty($rule['caseSensitive'])) !== null) {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'unique', 'type' => 'unique', 'reason' => 'duplicate-value'];
             }
         }
@@ -593,7 +594,7 @@ class UniversalValidator extends AbstractExternalModule
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
-            if ($value === null || is_array($value) || trim((string) $value) === '') continue;
+            if ($value === null || is_array($value) || Logic::lookupTrim($value) === '') continue;
             if ($refused !== null) {
                 $out['unconfigurable'][] = ['fields' => [$field], 'why' => $refused];
                 continue;
@@ -608,10 +609,10 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 $v = isset($values[$lf]) ? $values[$lf] : '';
                 // nothing to narrow by yet (blank, or a Missing Data Code)
-                if (is_array($v) || trim((string) $v) === '' || self::isMissingCode($v, isset($meta['missingCodes']) ? $meta['missingCodes'] : [])) continue 2;
-                $lv[$lf] = trim((string) $v);
+                if (is_array($v) || Logic::lookupTrim($v) === '' || self::isMissingCode($v, isset($meta['missingCodes']) ? $meta['missingCodes'] : [])) continue 2;
+                $lv[$lf] = Logic::lookupTrim($v);
             }
-            $r = $this->existsLookup($project_id, $rule, trim((string) $value), $lv, $event_id, $record, $meta);
+            $r = $this->existsLookup($project_id, $rule, Logic::lookupTrim($value), $lv, $event_id, $record, $meta);
             if ($r['state'] === 'not-found') {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'exists', 'type' => 'exists', 'reason' => 'not-found'];
             } elseif ($r['state'] !== 'found') {
@@ -684,6 +685,41 @@ class UniversalValidator extends AbstractExternalModule
         return 'no date or time';
     }
 
+    /**
+     * How @UVEXISTS and @UVUNIQUE compare the values of one field
+     * (Logic::lookupKey): 'point' or 'comma' (the decimal mark) when the field
+     * holds numbers - a calc, a slider, or a Text field validated as an integer
+     * or a number - so "007" equals "7"; null when it holds text.
+     */
+    private static function numberMarkOf($meta)
+    {
+        if (!is_array($meta)) return null;
+        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
+        if ($type === 'calc' || $type === 'slider') return 'point';
+        if ($type !== 'text') return null;
+        $v = strtolower(self::validationOf($meta));
+        if (preg_match('/^(?:int|integer|float|number(?:_[1-9]dp)?)$/', $v)) return 'point';
+        if (preg_match('/^number(?:_[1-9]dp)?_comma_decimal$/', $v)) return 'comma';
+        return null;
+    }
+
+    /** numberMarkOf for each of $fields of project $pid; null for a field the dictionary does not hold. */
+    private function lookupMarks($pid, array $fields)
+    {
+        $dd = $this->dataDictionary($pid);
+        $out = [];
+        foreach ($fields as $f) $out[$f] = (is_array($dd) && isset($dd[$f])) ? self::numberMarkOf($dd[$f]) : null;
+        return $out;
+    }
+
+    /** "holds numbers with a decimal point" and so on, for a refusal; null for text. */
+    private static function numberMarkWords($mark)
+    {
+        if ($mark === 'point') return 'numbers with a decimal point';
+        if ($mark === 'comma') return 'numbers with a decimal comma';
+        return null;
+    }
+
     /** "the record IDs" or "[field]", for messages. */
     private static function existsSourceName(array $rule)
     {
@@ -729,8 +765,8 @@ class UniversalValidator extends AbstractExternalModule
                 $dag = $rd['dag'];
             }
         }
-        if (!empty($meta['existsIndex'])) return $this->existsIndexLookup($pid, $rule, $value, $locals, $eventId, $dag);
-        $opts = [];
+        if (!empty($meta['existsIndex'])) return $this->existsIndexLookup($pid, $rule, $value, $locals, $eventId, $dag, $record);
+        $opts = ['self' => $record];
         if (isset($meta['callerGroup']) && $meta['callerGroup'] !== null && $meta['callerGroup'] !== '') {
             $opts['callerDag'] = ScanPageView::dagNameOf($meta['callerGroup']);
             if ($opts['callerDag'] === null) {
@@ -745,8 +781,17 @@ class UniversalValidator extends AbstractExternalModule
      * Whether $value is saved where the rule looks. $locals holds the values of
      * the "match" fields of the record being checked; $dag the DAG to stay in
      * for "scope":"dag" (null = no DAG, false = not known, which answers
-     * unknown). Exact comparison of trimmed stored values, case-sensitive: a
-     * date is compared in the Y-M-D form REDCap stores.
+     * unknown). Values compare by Logic::lookupKey (existsSpec): trimmed, letter
+     * case ignored unless the rule is caseSensitive, numbers by value when the
+     * searched field holds numbers; a date is compared in the Y-M-D form REDCap
+     * stores. Of several matches the one returned is in the caller's Data
+     * Access Group first, then spelled exactly as the value.
+     *
+     * A record ID is looked up by its exact name first. When that misses, a
+     * value with letters in a rule that ignores case is compared with every
+     * record ID of the project (one read per request, under the same budget
+     * as the confirming full read). The record being edited ($opts['self'])
+     * never finds itself.
      *
      * $narrow (the live endpoint and the audit): first ask REDCap for candidate
      * entries only (filterLogic). A hit there is final. A miss is not trusted:
@@ -769,27 +814,38 @@ class UniversalValidator extends AbstractExternalModule
      *   foreign      the lookup searches another project (crossLookup): an
      *                empty read proves nothing there, so a "not found" needs
      *                a read that showed records (existsMiss).
+     *   self         the record being checked, left out of a record-ID lookup.
      */
     private function findExisting($pid, array $rule, $value, array $locals, $eventId, $dag, $narrow = false, array $opts = [])
     {
         $unknown = ['state' => 'unknown', 'record' => null, 'dag' => null];
-        $value = trim((string) $value);
+        $value = Logic::lookupTrim($value);
         $spec = $this->existsSpec($pid, $rule, $value, $locals, $eventId);
         if ($spec === null || $value === '') return $unknown;
         $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
         if ($scope === 'dag' && $dag === false) return $unknown;
+        $prefer = isset($opts['callerDag']) ? $opts['callerDag'] : null;
         try {
             if ($spec['in'] === 'record') {
                 $pk = $this->recordIdFieldOf($pid);
                 if ($pk === null) return $unknown;
+                $self = (isset($opts['self']) && $opts['self'] !== null && $opts['self'] !== '') ? (string) $opts['self'] : null;
                 $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'records' => [$value],
                                           'fields' => [$pk], 'exportDataAccessGroups' => true]);
                 if (!is_array($data)) return $unknown;
+                $ids = [];
                 foreach ($data as $rec => $node) {
-                    if ((string) $rec !== $value || !is_array($node)) continue;
-                    $rdag = self::dagOfRecordNode($node);
-                    if ($scope === 'dag' && $rdag !== $dag) continue;
-                    return ['state' => 'found', 'record' => (string) $rec, 'dag' => $rdag];
+                    if (is_array($node)) $ids[(string) $rec] = self::dagOfRecordNode($node);
+                }
+                $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self);
+                if ($hit !== null) return ['state' => 'found'] + $hit;
+                // REDCap may find a record by its exact name only, so a value that
+                // differs from a record ID in letter case needs every record ID.
+                if ($spec['fold'] && preg_match('/[A-Za-z]/', $value)) {
+                    $all = $this->recordIdsOf($pid, $this->fullReadGate($pid, $opts));
+                    if ($all === null) return $unknown + ['why' => 'the record IDs could not be read just now'];
+                    $hit = self::recordIdMatch($all, $value, $spec['fold'], $scope, $dag, $self);
+                    if ($hit !== null) return ['state' => 'found'] + $hit;
                 }
                 return $this->existsMiss($pid, $scope, $opts, $dag);
             }
@@ -801,7 +857,7 @@ class UniversalValidator extends AbstractExternalModule
                 if ($fl !== null) {
                     try {
                         $n = \REDCap::getData($params + ['filterLogic' => $fl]);
-                        $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag) : null;
+                        $hit = is_array($n) ? self::existsMatchIn($n, $spec, $scope, $dag, $prefer) : null;
                         if ($hit !== null) return ['state' => 'found'] + $hit;
                     } catch (\Throwable $e) {
                         // a filter this build cannot run: the full read below decides
@@ -813,7 +869,7 @@ class UniversalValidator extends AbstractExternalModule
             }
             $data = \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
-            $hit = self::existsMatchIn($data, $spec, $scope, $dag);
+            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer);
             if ($hit !== null) return ['state' => 'found'] + $hit;
             // The read just made is the evidence of what this request can see
             // there; it spares existsMiss a second read of that project.
@@ -841,14 +897,7 @@ class UniversalValidator extends AbstractExternalModule
         $foreign = !empty($opts['foreign']);
         // Another project's record IDs are read only within the caller's read
         // budget, and the read is named in that project's probe log line.
-        $gate = null;
-        if ($foreign) {
-            $gate = function () use ($opts, $pid) {
-                if (isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) return false;
-                $this->crossExtraRead[(int) $pid] = true;
-                return true;
-            };
-        }
+        $gate = $foreign ? $this->fullReadGate($pid, $opts) : null;
         if ($scope === 'dag') {
             if (!$foreign || $this->readShows($pid, function ($g) use ($dag) { return $g === $dag; }, $gate)) return $notFound;
             return ['state' => 'unknown', 'record' => null, 'dag' => null,
@@ -878,22 +927,78 @@ class UniversalValidator extends AbstractExternalModule
             if ($want($g)) return true;
         }
         if (!empty($this->groupVisibilityRead[$pid])) return false;   // every record ID is already in hand
-        if ($gate !== null && !call_user_func($gate)) return false;
-        $this->groupVisibilityRead[$pid] = true;
-        try {
-            $pk = $this->recordIdFieldOf($pid);
-            if ($pk === null) return false;
-            $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
-                                      'exportDataAccessGroups' => true]);
-            if (!is_array($data)) return false;
-            $this->noteGroupsSeen($pid, $data, true);
-        } catch (\Throwable $e) {
-            return false;
-        }
+        if ($this->recordIdsOf($pid, $gate) === null) return false;
         foreach ($this->groupVisibility[$pid] as $g) {
             if ($want($g)) return true;
         }
         return false;
+    }
+
+    /**
+     * Every record ID of project $pid => its Data Access Group (null = none),
+     * read once per request (a failed read is not repeated); null when $gate
+     * refuses the read or it fails. The read also counts as evidence for
+     * readShows.
+     */
+    private function recordIdsOf($pid, ?callable $gate = null)
+    {
+        if (array_key_exists((int) $pid, $this->recordIds)) return $this->recordIds[(int) $pid];
+        if ($gate !== null && !call_user_func($gate)) return null;
+        $this->recordIds[(int) $pid] = null;
+        $this->groupVisibilityRead[$pid] = true;
+        try {
+            $pk = $this->recordIdFieldOf($pid);
+            if ($pk === null) return null;
+            $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
+                                      'exportDataAccessGroups' => true]);
+            if (!is_array($data)) return null;
+            $this->noteGroupsSeen($pid, $data, true);
+            $ids = [];
+            foreach ($data as $rec => $node) {
+                if (is_array($node)) $ids[(string) $rec] = self::dagOfRecordNode($node);
+            }
+            return $this->recordIds[(int) $pid] = $ids;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** @var array pid => record ID => DAG, or null for a read that failed (recordIdsOf) */
+    private $recordIds = [];
+
+    /**
+     * The gate for a read of a whole searched field or of every record ID
+     * that a lookup makes beyond its first read: the caller's budget
+     * ($opts['mayFullRead']), and for another project a note that the probe
+     * log line names the extra read.
+     */
+    private function fullReadGate($pid, array $opts)
+    {
+        return function () use ($opts, $pid) {
+            if (isset($opts['mayFullRead']) && is_callable($opts['mayFullRead']) && !call_user_func($opts['mayFullRead'])) return false;
+            if (!empty($opts['foreign'])) $this->crossExtraRead[(int) $pid] = true;
+            return true;
+        };
+    }
+
+    /**
+     * The entry of $ids (record ID => DAG) whose ID matches $value, as
+     * ['record','dag'], or null. The exact spelling wins over a match that
+     * differs in letter case ($fold), $self (the record being edited) never
+     * matches, and under "scope":"dag" only records of $dag count.
+     */
+    private static function recordIdMatch(array $ids, $value, $fold, $scope, $dag, $self)
+    {
+        $want = Logic::lookupKey($value, $fold);
+        $best = null;
+        foreach ($ids as $rec => $rdag) {
+            $rec = (string) $rec;
+            if ($self !== null && $rec === $self) continue;
+            if ($scope === 'dag' && $rdag !== $dag) continue;
+            if ($rec === $value) return ['record' => $rec, 'dag' => $rdag];
+            if ($best === null && $fold && Logic::lookupKey($rec, true) === $want) $best = ['record' => $rec, 'dag' => $rdag];
+        }
+        return $best;
     }
 
     /**
@@ -914,7 +1019,10 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * What one lookup compares: 'in', the 'target' field => value map (the
-     * searched field plus the "match" targets), and the one event id to search
+     * searched field plus the "match" targets, trimmed), each target's
+     * Logic::lookupKey ('keys'), how they were made ('fold': letter case is
+     * ignored unless the rule is caseSensitive; 'marks': numberMarkOf of each
+     * searched field of project $pid), and the one event id to search
      * ('event', null = every event). Null when the event cannot be resolved or
      * a "match" value is blank.
      */
@@ -923,12 +1031,16 @@ class UniversalValidator extends AbstractExternalModule
         $in = isset($rule['existsIn']) ? (string) $rule['existsIn'] : '';
         if ($in === '') return null;
         $target = [];
-        if ($in !== 'record') $target[$in] = (string) $value;
+        if ($in !== 'record') $target[$in] = Logic::lookupTrim($value);
         foreach ((isset($rule['existsMatch']) && is_array($rule['existsMatch'])) ? $rule['existsMatch'] : [] as $t => $l) {
-            $lv = isset($locals[$l]) ? trim((string) $locals[$l]) : '';
+            $lv = isset($locals[$l]) ? Logic::lookupTrim($locals[$l]) : '';
             if ($lv === '') return null;
             $target[(string) $t] = $lv;
         }
+        $fold = empty($rule['caseSensitive']);
+        $marks = $this->lookupMarks($pid, array_keys($target));
+        $keys = [];
+        foreach ($target as $f => $tv) $keys[$f] = Logic::lookupKey($tv, $fold, $marks[$f]);
         $event = null;
         if (!empty($rule['existsEvent'])) {
             $event = !empty($rule['existsPid']) ? $this->eventIdIn($pid, $rule['existsEvent'])
@@ -938,12 +1050,20 @@ class UniversalValidator extends AbstractExternalModule
             if ($eventId === null || $eventId === '') return null;
             $event = $eventId;
         }
-        return ['in' => $in, 'target' => $target, 'event' => $event];
+        return ['in' => $in, 'target' => $target, 'keys' => $keys, 'fold' => $fold, 'marks' => $marks, 'event' => $event];
     }
 
-    /** The first entry of an exported data set that holds every target value, as ['record','dag'], or null. */
-    private static function existsMatchIn(array $data, array $spec, $scope, $dag)
+    /**
+     * An entry of an exported data set that holds every target value (by
+     * existsSpec's keys), as ['record','dag'], or null. Of several, the first
+     * in Data Access Group $prefer (the caller's, so staff can be shown it),
+     * then the first spelled exactly as looked up.
+     */
+    private static function existsMatchIn(array $data, array $spec, $scope, $dag, $prefer = null)
     {
+        $best = null;
+        $bestScore = -1;
+        $top = ($prefer !== null ? 2 : 0) + 1;
         foreach ($data as $rec => $node) {
             if (!is_array($node)) continue;
             $rdag = self::dagOfRecordNode($node);
@@ -951,15 +1071,22 @@ class UniversalValidator extends AbstractExternalModule
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
                 $row = $ctx['values'];
-                $ok = true;
+                $exact = true;
                 foreach ($spec['target'] as $f => $tv) {
-                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? trim((string) $row[$f]) : '';
-                    if ($rv !== $tv) { $ok = false; break; }
+                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
+                    if ($rv === $tv) continue;
+                    $exact = false;
+                    if ($rv === '' || Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) continue 2;
                 }
-                if ($ok) return ['record' => (string) $rec, 'dag' => $rdag];
+                $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
+                if ($score > $bestScore) {
+                    $best = ['record' => (string) $rec, 'dag' => $rdag];
+                    $bestScore = $score;
+                    if ($score === $top) return $best;
+                }
             }
         }
-        return null;
+        return $best;
     }
 
     /**
@@ -968,7 +1095,7 @@ class UniversalValidator extends AbstractExternalModule
      * from it. An index that cannot be read, or that would not fit in memory,
      * answers unknown for every record of the request.
      */
-    private function existsIndexLookup($pid, array $rule, $value, array $locals, $eventId, $dag)
+    private function existsIndexLookup($pid, array $rule, $value, array $locals, $eventId, $dag, $self = null)
     {
         $unknown = ['state' => 'unknown', 'record' => null, 'dag' => null];
         $spec = $this->existsSpec($pid, $rule, $value, $locals, $eventId);
@@ -976,7 +1103,8 @@ class UniversalValidator extends AbstractExternalModule
         $scope = isset($rule['existsScope']) ? $rule['existsScope'] : 'project';
         if ($scope === 'dag' && $dag === false) return $unknown;
         $fields = array_keys($spec['target']);
-        $key = json_encode([(int) $pid, $spec['in'], $fields, isset($rule['existsEvent']) ? $rule['existsEvent'] : null]);
+        $key = json_encode([(int) $pid, $spec['in'], $fields, isset($rule['existsEvent']) ? $rule['existsEvent'] : null,
+                            $spec['fold'], $spec['marks']]);
         $foreign = !empty($rule['existsPid']);
         if (!array_key_exists($key, $this->existsIndexes)) {
             // Another project's index costs one read there per request: it is
@@ -988,15 +1116,17 @@ class UniversalValidator extends AbstractExternalModule
                 if ($over === 'log') $this->logCrossIndexRead($pid, $fields, 'throttled');
             } else {
                 $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
-                    !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign);
+                    !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks']);
                 if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
             }
         }
         $idx = $this->existsIndexes[$key];
         if ($idx === false) return $unknown;
-        $k = implode("\x1f", array_values($spec['target']));
-        if ($spec['in'] === 'record') $k = (string) $value;
+        $k = self::existsIndexKey(array_values($spec['keys']));
+        if ($spec['in'] === 'record') $k = Logic::lookupKey($value, $spec['fold']);
+        $self = ($self !== null && $self !== '') ? (string) $self : null;
         foreach (isset($idx[$k]) ? $idx[$k] : [] as $hit) {
+            if ($spec['in'] === 'record' && $hit[0] === $self) continue;
             if ($scope === 'dag' && $hit[1] !== $dag) continue;
             if ($scope === 'event' && (string) $hit[2] !== (string) $spec['event']) continue;
             return ['state' => 'found', 'record' => $hit[0], 'dag' => $hit[1]];
@@ -1011,58 +1141,82 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * key => [[record, dag, event_id], ...] for one searched field set, or false.
-     * The key joins the target values in rule order with \x1f, which no stored
-     * REDCap value contains; a record-ID index is keyed by the record ID.
+     * The key is existsIndexKey of the values' Logic::lookupKey ($fold,
+     * $marks) in rule order; a record-ID index is keyed by the record ID's
+     * lookupKey, so IDs that differ only in letter case share a key.
      * One hit is kept per (DAG, event) under a key - all a lookup ever asks -
      * so a value repeated in many records costs one entry, not a list that
      * every later record has to be compared against.
      * $foreign: the project is another one; what the read showed is noted for
      * readShows, the evidence that a "not found" there is real.
+     *
+     * The record IDs are read first (recordIdsOf), then the searched fields in
+     * chunks of records. After each chunk the memory the index has grown by is
+     * projected over the records still to read, and the build stops (false)
+     * as soon as that projection passes the cap: well before the read that
+     * would have run the request out of memory, not after it.
      */
-    private function buildExistsIndex($pid, $in, array $fields, $event, $foreign = false)
+    private function buildExistsIndex($pid, $in, array $fields, $event, $foreign = false, $fold = true, array $marks = [])
     {
         try {
-            $limit = self::memoryLimitBytes();
+            $ids = $this->recordIdsOf($pid);
+            if ($ids === null) return false;
+            $idx = [];
             if ($in === 'record') {
-                $pk = $this->recordIdFieldOf($pid);
-                if ($pk === null) return false;
-                $data = \REDCap::getData(['project_id' => $pid, 'return_format' => 'array', 'fields' => [$pk],
-                                          'exportDataAccessGroups' => true]);
-                if (!is_array($data)) return false;
-                if ($foreign) $this->noteGroupsSeen($pid, $data, true);
-                $idx = [];
-                foreach ($data as $rec => $node) {
-                    if (is_array($node)) $idx[(string) $rec] = [[(string) $rec, self::dagOfRecordNode($node), null]];
-                }
+                foreach ($ids as $rec => $rdag) $idx[Logic::lookupKey((string) $rec, $fold)][] = [(string) $rec, $rdag, null];
                 return $idx;
             }
+            $cap = $this->existsIndexCap !== null ? (int) $this->existsIndexCap : (int) (self::memoryLimitBytes() * 0.6);
             $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => $fields, 'exportDataAccessGroups' => true];
             if ($event !== null) $params['events'] = [$event];
-            $data = \REDCap::getData($params);
-            if (!is_array($data)) return false;
-            if ($foreign) $this->noteGroupsSeen($pid, $data, false);
-            $idx = [];
-            foreach ($data as $rec => $node) {
-                if (!is_array($node)) continue;
-                $rdag = self::dagOfRecordNode($node);
-                foreach (self::recordContexts($node) as $ctx) {
-                    if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
-                    $parts = [];
-                    foreach ($fields as $f) {
-                        $v = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? trim((string) $ctx['values'][$f]) : '';
-                        if ($v === '') continue 2;   // an entry with a blank searched field holds nothing to find
-                        $parts[] = $v;
+            $total = count($ids);
+            $done = 0;
+            $start = memory_get_usage();
+            foreach (array_chunk(array_map('strval', array_keys($ids)), max(1, (int) self::$existsIndexChunk)) as $chunk) {
+                $data = \REDCap::getData($params + ['records' => $chunk]);
+                if (!is_array($data)) return false;
+                if ($foreign) $this->noteGroupsSeen($pid, $data, false);
+                foreach ($data as $rec => $node) {
+                    if (!is_array($node)) continue;
+                    $rdag = self::dagOfRecordNode($node);
+                    foreach (self::recordContexts($node) as $ctx) {
+                        if ($event !== null && (string) $ctx['event_id'] !== (string) $event) continue;
+                        $parts = [];
+                        foreach ($fields as $f) {
+                            $v = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? Logic::lookupTrim($ctx['values'][$f]) : '';
+                            if ($v === '') continue 2;   // an entry with a blank searched field holds nothing to find
+                            $parts[] = Logic::lookupKey($v, $fold, isset($marks[$f]) ? $marks[$f] : null);
+                        }
+                        $k = self::existsIndexKey($parts);
+                        $slot = ($rdag === null ? '' : 'g' . $rdag) . "\x1e" . (string) $ctx['event_id'];
+                        if (!isset($idx[$k][$slot])) $idx[$k][$slot] = [(string) $rec, $rdag, (string) $ctx['event_id']];
                     }
-                    $k = implode("\x1f", $parts);
-                    $slot = ($rdag === null ? '' : 'g' . $rdag) . "\x1e" . (string) $ctx['event_id'];
-                    if (!isset($idx[$k][$slot])) $idx[$k][$slot] = [(string) $rec, $rdag, (string) $ctx['event_id']];
                 }
-                if ($limit > 0 && memory_get_usage(true) >= (int) ($limit * 0.6)) return false;
+                unset($data);
+                $done += count($chunk);
+                if ($cap > 0) {
+                    $now = memory_get_usage();
+                    if ($now + max(0, $now - $start) / $done * ($total - $done) >= $cap) return false;
+                }
             }
             return $idx;
         } catch (\Throwable $e) {
             return false;
         }
+    }
+
+    /** Records per read when the scan index reads a searched field (buildExistsIndex). */
+    private static $existsIndexChunk = 2000;
+
+    /** Bytes the scan index may bring the request to; null = 60% of memory_limit. Tests set it. */
+    private $existsIndexCap = null;
+
+    /** One key for a list of lookup keys: each hex-encoded, so no value can run into the next. */
+    private static function existsIndexKey(array $parts)
+    {
+        $k = '';
+        foreach ($parts as $p) $k .= bin2hex((string) $p) . '.';
+        return $k;
     }
 
     /** The record-ID field of a project: REDCap's first dictionary field. */
@@ -1556,8 +1710,13 @@ class UniversalValidator extends AbstractExternalModule
                 'result'         => (string) $result,
             ];
             if ($extra) $entry['extra_read'] = 'record ids';
-            if ($mode !== 'none' && $mode !== 'off' && $value !== null && trim((string) $value) !== '') {
-                $h = $this->hashedIdentifier($b, trim((string) $value));
+            // A lookup that ignores letter case logs the hash of the value in
+            // lower case, so "SP-1" and "sp-1" leave the same hash there.
+            $fold = empty($rule['caseSensitive']);
+            if ($fold) $entry['case'] = 'ignored';
+            $probed = $value !== null ? Logic::lookupTrim($value) : '';
+            if ($mode !== 'none' && $mode !== 'off' && $probed !== '') {
+                $h = $this->hashedIdentifier($b, $fold ? Logic::foldAscii($probed) : $probed);
                 if ($h !== null) $entry['value_hash'] = $h;
             }
             $this->log('uv-exists-probe', $entry);
@@ -1686,6 +1845,8 @@ class UniversalValidator extends AbstractExternalModule
                 if ($over === 'log') $this->logCrossProbe($b, $pid, $channel, $rule, $value, 'throttled');
                 return $unknown('too many lookups in the other project in the last minute');
             }
+            // The record being edited is a record of this project, not of that one.
+            unset($opts['self']);
             $r = $this->findExisting($b, $ruleB, $value, $locals, null, $dag, true,
                 ['foreign' => true, 'callerDag' => $callerDag] + $opts);
             $this->logCrossProbe($b, $pid, $channel, $rule, $value, $r['state']);
@@ -3849,8 +4010,9 @@ class UniversalValidator extends AbstractExternalModule
      * @UVEXISTS "dictionary" hook: the searched field and each "match" field
      * must exist and hold one scalar value, the searched field must not be the
      * field itself, a pair of fields compared with each other must hold the
-     * same kind of date (or both no date: REDCap stores dates as Y-M-D and the
-     * comparison is exact), and "event" must name an event of the project.
+     * same kind of date (or both no date: REDCap stores dates as Y-M-D and
+     * dates compare as stored) and, when both hold numbers, use the same
+     * decimal mark, and "event" must name an event of the project.
      */
     private function annotateExistsDictionary(array $frag, $name, $types, $choices, $pid = null)
     {
@@ -3887,11 +4049,14 @@ class UniversalValidator extends AbstractExternalModule
             if ($l === $name) return $refuse('"match" uses this field itself for "' . $t . '" — it is already the value looked up.');
             $pairs[] = [(string) $t, $l];
         }
+        $mark = function ($f) use ($dd) { return self::numberMarkOf(isset($dd[$f]) ? $dd[$f] : null); };
         foreach ($pairs as list($a, $b)) {
             if ($family($a) !== $family($b)) {
                 return $refuse('"' . $a . '" holds ' . $family($a) . ' and "' . $b . '" holds ' . $family($b)
-                    . ' — values are compared exactly, so both must be the same kind.');
+                    . ' — values are compared as REDCap stores them, so both must be the same kind.');
             }
+            $why = self::markMismatch($a, $mark($a), $b, $mark($b), '');
+            if ($why !== null) return $refuse($why);
         }
         if (isset($frag['existsEvent'])) {
             if ($this->eventIdOf($pid, $frag['existsEvent']) === null) {
@@ -3899,6 +4064,18 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         return $frag;
+    }
+
+    /**
+     * Why two fields compared by value cannot be (one holds numbers with a
+     * decimal point, the other with a decimal comma), or null. $where names
+     * the project of $a when it is another one.
+     */
+    private static function markMismatch($a, $markA, $b, $markB, $where)
+    {
+        if ($markA === null || $markB === null || $markA === $markB) return null;
+        return '"' . $a . '"' . $where . ' holds ' . self::numberMarkWords($markA) . ' and "' . $b . '" holds '
+            . self::numberMarkWords($markB) . ' — numbers are compared by value, so both must use the same decimal mark.';
     }
 
     /** Field types whose saved value is one comparable value. */
@@ -3965,8 +4142,11 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($pairs as list($there, $here)) {
             if ($kindB($there) !== $kindA($here)) {
                 return $refuse('"' . $there . '" of project ' . $b . ' holds ' . $kindB($there) . ' and "' . $here . '" holds '
-                    . $kindA($here) . ' — values are compared exactly, so both must be the same kind.');
+                    . $kindA($here) . ' — values are compared as REDCap stores them, so both must be the same kind.');
             }
+            $why = self::markMismatch($there, self::numberMarkOf(isset($ddB[$there]) ? $ddB[$there] : null),
+                $here, self::numberMarkOf(isset($ddA[$here]) ? $ddA[$here] : null), ' of project ' . $b);
+            if ($why !== null) return $refuse($why);
         }
         // The agreement lists fields, not events: whether a name is an event
         // there gets the same one answer as every other refusal, so a designer
@@ -5739,6 +5919,9 @@ class UniversalValidator extends AbstractExternalModule
                 // A value that is a Missing Data Code is no candidate for a
                 // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
                 'missingCodes' => $this->missingDataCodes($pid),
+                // How @UVUNIQUE keys each field's values (numberMarkOf): the
+                // fields that hold numbers, field => decimal mark.
+                'numberMarks' => array_filter($this->lookupMarks($pid, array_keys($this->dataDictionary($pid) ?: []))),
                 // Resolved once: the policy cannot change mid-scan, and the
                 // identifier set is a dictionary read we already paid for.
                 // The PROJECT's setting, capped by what THIS READER is entitled
@@ -6651,7 +6834,7 @@ class UniversalValidator extends AbstractExternalModule
                 continue;
             }
             $v = isset($ctx['values'][$field]) ? $ctx['values'][$field] : null;
-            if ($v === null || is_array($v) || trim((string) $v) === '') continue;
+            if ($v === null || is_array($v) || Logic::lookupTrim($v) === '') continue;
             if (self::isMissingCode($v, isset($plan['missingCodes']) ? $plan['missingCodes'] : [])) continue;
             // Collision-free, LOSSLESS composite key (L-01, L01-UTF8-COLLAPSE): a raw
             // byte in a value (a 0x1F separator, or an invalid-UTF8 byte from a Latin-1
@@ -6659,11 +6842,14 @@ class UniversalValidator extends AbstractExternalModule
             // duplicate. bin2hex encodes every byte injectively and '.' cannot appear
             // in hex output, so the joined key round-trips uniquely — unlike
             // json_encode with JSON_INVALID_UTF8_SUBSTITUTE, which collapsed distinct
-            // invalid-UTF8 values to U+FFFD. findCollision compares raw bytes, so the
-            // key must too (keeps the scan and the audit in agreement).
-            $keyParts = [(string) $ruleIndex, $field, trim((string) $v)];
+            // invalid-UTF8 values to U+FFFD. Each value is its Logic::lookupKey, as
+            // findCollision compares them (keeps the scan and the audit in agreement).
+            $fold = empty($cfg['caseSensitive']);
+            $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
+            $keyParts = [(string) $ruleIndex, $field, Logic::lookupKey($v, $fold, isset($marks[$field]) ? $marks[$field] : null)];
             foreach ($with as $w) {
-                $keyParts[] = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? trim((string) $ctx['values'][$w]) : '';
+                $wv = (isset($ctx['values'][$w]) && !is_array($ctx['values'][$w])) ? Logic::lookupTrim($ctx['values'][$w]) : '';
+                $keyParts[] = $wv === '' ? '' : Logic::lookupKey($wv, $fold, isset($marks[$w]) ? $marks[$w] : null);
             }
             if ($scope === 'event') { $keyParts[] = 'evt'; $keyParts[] = (string) $ctx['event_id']; }
             elseif ($scope === 'dag') { $keyParts[] = 'dag'; $keyParts[] = (string) $recDag; }
@@ -6676,7 +6862,7 @@ class UniversalValidator extends AbstractExternalModule
                              // the report policy lives where the plan is in scope.
                              // The REPORTABLE form, decided now rather than kept
                              // raw to the end. The key above already carries
-                             // bin2hex(trim($v)), so holding the raw value too was
+                             // bin2hex of $v's lookup key, so holding the raw value too was
                              // roughly three times the bytes per candidate,
                              // retained project-wide - including in locations
                              // mode, where it can never be shown at all. On a
@@ -6939,7 +7125,13 @@ class UniversalValidator extends AbstractExternalModule
             // let REDCap filter to candidate matches instead of exporting the whole
             // project (F4). The post-save audit's findCollision call keeps the full,
             // authoritative scan.
-            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true);
+            // A narrowed miss that a rule ignoring letter case (or comparing
+            // numbers by value) cannot trust is confirmed by a full read, which
+            // a survey makes only within its read budget.
+            $mayFullRead = $isAuthenticated ? null
+                : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
+            $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,
+                                        empty($rule['caseSensitive']), $mayFullRead);
             if ($col === null) return ['used' => false, 'record' => null];
 
             // The colliding record id goes ONLY to an authenticated user, and a
@@ -7034,11 +7226,11 @@ class UniversalValidator extends AbstractExternalModule
                     return $unknown('this record is not in your Data Access Group');
                 }
             }
-            $value = isset($values[$field]) ? trim($values[$field]) : '';
+            $value = isset($values[$field]) ? Logic::lookupTrim($values[$field]) : '';
             if ($value === '') return ['error' => 'nothing to look up'];
             // Values arrive as the page shows them; the lookup compares stored ones.
             $values = $this->storedFormOf($project_id, $values);
-            $value = trim($values[$field]);
+            $value = Logic::lookupTrim($values[$field]);
             // A Missing Data Code is no value to look up (the page never asks).
             $codes = $this->missingDataCodes($project_id);
             if (self::isMissingCode($value, $codes)) return ['error' => 'nothing to look up'];
@@ -7051,8 +7243,8 @@ class UniversalValidator extends AbstractExternalModule
                 // survey) is left out and read from the saved record; so is a
                 // blank sent for a field of another form.
                 if (array_key_exists($lf, $values)
-                        && (trim($values[$lf]) !== '' || ($onForm !== null && isset($onForm[$lf])))) {
-                    $lv[$lf] = trim($values[$lf]);
+                        && (Logic::lookupTrim($values[$lf]) !== '' || ($onForm !== null && isset($onForm[$lf])))) {
+                    $lv[$lf] = Logic::lookupTrim($values[$lf]);
                     continue;
                 }
                 $offPage[] = $lf;
@@ -7063,7 +7255,7 @@ class UniversalValidator extends AbstractExternalModule
                 } else {
                     $saved = $this->readValues($project_id, $record, $offPage, $event_id, $instrument, $repeat_instance, false);
                     foreach ($offPage as $lf) {
-                        $lv[$lf] = (isset($saved[$lf]) && !is_array($saved[$lf])) ? trim((string) $saved[$lf]) : '';
+                        $lv[$lf] = (isset($saved[$lf]) && !is_array($saved[$lf])) ? Logic::lookupTrim($saved[$lf]) : '';
                     }
                 }
             }
@@ -7084,7 +7276,7 @@ class UniversalValidator extends AbstractExternalModule
                     if ($dag === null) return $unknown('your Data Access Group could not be read');
                 }
             }
-            $opts = [];
+            $opts = ['self' => $record];
             if (!$isAuthenticated) {
                 // Anyone can produce misses, and a miss is confirmed by a read of
                 // the whole searched field: a budget per project keeps that
@@ -7588,11 +7780,13 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * Scan every OTHER record for the candidate value(s). Comparison is exact
-     * string equality after ASCII trimming — raw stored values (dropdown/radio
-     * codes, canonical Y-M-D dates) on both sides, deliberately no
-     * normalization: uniqueness is about what is stored. A blank primary value
-     * never collides; composite "with" components match blank-to-blank. Each
+     * Scan every OTHER record for the candidate value(s). Values compare by
+     * Logic::lookupKey, as @UVEXISTS compares them: trimmed, letter case
+     * ignored unless $fold is false (the rule's caseSensitive), and numbers by
+     * value in a field that holds them (numberMarkOf), on stored values
+     * (dropdown/radio codes, canonical Y-M-D dates) on both sides. A blank
+     * primary value never collides; composite "with" components match
+     * blank-to-blank. Each
      * other record is compared as its MERGED contexts (base-event row + each
      * repeat instance), so a composite key that spans an event-level field and a
      * repeating-instrument field is matched exactly the way the Validation scan
@@ -7602,13 +7796,21 @@ class UniversalValidator extends AbstractExternalModule
      * falling back to the acting user's group; unresolvable DAG degrades to
      * project scope, the conservative direction for finding duplicates).
      * Returns null or ['record' => id, 'dag' => nameOrNull].
+     *
+     * $mayFullRead (a survey's read budget) is asked before a full read that
+     * confirms a narrowed miss. When it refuses, the narrowed answer stands:
+     * the live check fails open, as it does on any failure, and the post-save
+     * audit, which never narrows, still finds the duplicate.
      */
-    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false)
+    private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null)
     {
         $need = array_merge([$field], $with);
+        $marks = $this->lookupMarks($pid, $need);
         $target = [];
+        $keys = [];
         foreach ($need as $f) {
-            $target[$f] = isset($values[$f]) ? trim((string) $values[$f]) : '';
+            $target[$f] = isset($values[$f]) ? Logic::lookupTrim($values[$f]) : '';
+            $keys[$f] = $target[$f] === '' ? '' : Logic::lookupKey($target[$f], $fold, $marks[$f]);
         }
         if ($target[$field] === '') return null;
 
@@ -7634,21 +7836,48 @@ class UniversalValidator extends AbstractExternalModule
         // and a no-DAG acting user (group_id null) would silently degrade to project
         // scope, falsely flagging a collision in another DAG. Keep the full scan for
         // dag scope; narrowing (the F4 amplification guard) applies to project/event.
-        $data = null;
+        //
+        // The filter compares exactly. Its miss is final only when exact text
+        // equality is all the rule asks for of every constrained value: no
+        // letters under a rule that ignores case, and no field that compares
+        // numbers by value. Otherwise the miss is confirmed by the full read.
         if ($narrow && $scope !== 'dag') {
             $fl = self::collisionFilterLogic($need, $target);
             if ($fl !== null) {
                 try {
                     $n = \REDCap::getData($params + ['filterLogic' => $fl]);
-                    if (is_array($n)) $data = $n;
+                    if (is_array($n)) {
+                        $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId);
+                        if ($hit !== null || self::narrowIsFinal($target, $marks, $fold)) return $hit;
+                        if ($mayFullRead !== null && !call_user_func($mayFullRead)) return null;
+                    }
                 } catch (\Throwable $e) {
                     // filterLogic unsupported/malformed here — fall back below.
                 }
             }
         }
-        if ($data === null) $data = \REDCap::getData($params);
+        $data = \REDCap::getData($params);
         if (!is_array($data)) return null;
+        return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId);
+    }
 
+    /**
+     * Whether an exact filterLogic read that found nothing settles a
+     * findCollision lookup: every non-blank component is compared as exact
+     * text (no letters while $fold, and a field that holds text).
+     */
+    private static function narrowIsFinal(array $target, array $marks, $fold)
+    {
+        foreach ($target as $f => $tv) {
+            if ($tv === '') continue;
+            if ($marks[$f] !== null || ($fold && preg_match('/[A-Za-z]/', $tv))) return false;
+        }
+        return true;
+    }
+
+    /** findCollision's comparison over one exported data set: the colliding ['record','dag'], or null. */
+    private static function collisionIn(array $data, array $target, array $keys, array $marks, $fold, $scope, $excludeRecord, $groupId)
+    {
         $currentDag = null;
         if ($scope === 'dag') {
             if ($excludeRecord !== null && $excludeRecord !== '' && isset($data[$excludeRecord]) && is_array($data[$excludeRecord])) {
@@ -7671,8 +7900,9 @@ class UniversalValidator extends AbstractExternalModule
                 $row = $ctx['values'];
                 $match = true;
                 foreach ($target as $f => $tv) {
-                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? trim((string) $row[$f]) : '';
-                    if ($rv !== $tv) { $match = false; break; }
+                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
+                    if ($rv === $tv) continue;
+                    if ($tv === '' || $rv === '' || Logic::lookupKey($rv, $fold, $marks[$f]) !== $keys[$f]) { $match = false; break; }
                 }
                 if ($match) return ['record' => (string) $rec, 'dag' => $dag];
             }
