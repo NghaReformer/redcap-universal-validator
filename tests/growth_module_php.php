@@ -466,9 +466,13 @@ namespace {
         'wt_blk' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} '
             . substr(tag('who-acfa', $AGE), 0, -1) . ',"soft":[-4,4]} ' . tag('who-wfa', $AGE), 'number_1dp'),
         'wt_blk1' => f('anthro_form', substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} ' . tag('who-wfa', $AGE), 'number_1dp'),
+        // the fixed limits set aside, who-wfa judged; and every group set aside
+        'wt_lim' => f('anthro_form', '@UVRANGE={"hard":[1,40],"when":"[grp_r]=\'2\'"} ' . tag('who-wfa', $AGE), 'number_1dp'),
+        'wt_all' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp_r]=\'2\'"} '
+            . '@UVRANGE={"hard":[1,40],"when":"[grp_r]=\'1\'"}', 'number_1dp'),
     ];
     $blk = $DATA;
-    $blk['2'][351]['wt_blk'] = '6.6'; $blk['2'][351]['wt_blk1'] = '6.6';
+    $blk['2'][351]['wt_blk'] = '6.6'; $blk['2'][351]['wt_blk1'] = '6.6'; $blk['2'][351]['wt_lim'] = '6.6'; $blk['2'][351]['wt_all'] = '6.6';
     $blk['2']['repeat_instances'] = [351 => ['visit_rep' => [1 => ['grp_r' => '2'], 2 => ['grp_r' => '1']]]];
     $pb = page(mod($BLK, $blk, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     $rb = ruleFor($pb, 'wt_blk');
@@ -485,7 +489,17 @@ namespace {
     $ug = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_blk: ') === 0; }));
     check('audit: ... and the reference set aside is named (got ' . json_encode($ug) . ')', count($ug) === 1
         && strpos($ug[0], 'a branch "when" condition for the reference "who-acfa" references "[grp_r]"') !== false
-        && strpos($ug[0], 'No branch of it can be chosen, so it is not checked here; the rest of the field is.') !== false);
+        && strpos($ug[0], 'No branch of it can be chosen, so that reference is not checked here; the rest of the field is.') !== false);
+    $ul = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_lim: ') === 0; }));
+    check('audit: the fixed limits set aside are called limits, who-wfa judges (got ' . json_encode([$ul, $by['wt_lim'] ?? null]) . ')',
+        count($ul) === 1 && ($by['wt_lim'] ?? null) === 'soft-low'
+        && strpos($ul[0], 'a branch "when" condition for the limits without a reference references "[grp_r]"') !== false
+        && strpos($ul[0], 'No branch of it can be chosen, so those limits are not checked here; the rest of the field is.') !== false);
+    $ua = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_all: ') === 0; }));
+    check('audit: every group set aside: each says the field is not checked (got ' . json_encode($ua) . ')',
+        count($ua) === 2 && !isset($by['wt_all'])
+        && count(array_filter($ua, function ($u) { return strpos($u, 'No branch can be chosen, so the field is not checked here.') !== false
+            && strpos($u, 'the rest of the field') === false; })) === 2);
     $u1 = array_values(array_filter($un, function ($u) { return strpos($u, 'wt_blk1: ') === 0; }));
     check('audit: one reference: the whole field, in the words it had (got ' . json_encode($u1) . ')', count($u1) === 1 && !isset($by['wt_blk1'])
         && strpos($u1[0], 'wt_blk1: a branch "when" condition references "[grp_r]"') === 0
@@ -637,15 +651,17 @@ namespace {
     $row = \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, \INSPIRE\UniversalValidator\ScanColumns::all($dims));
     check('scan: values withheld, the detail has no z-score (got ' . json_encode($row['problem'] ?? null) . ')',
         ($row['problem'] ?? '') === 'The value is lower than usual for this field. Expected z-score -2 to 2.');
-    // identifiers withheld: the value of an identifier field is redacted, and its z-score with it
-    $IDD = $DICT; $IDD['weight']['identifier'] = 'y';
+    // identifiers withheld: no z-score at all. The value of an identifier field
+    // is redacted, and the z-score of any other one, with its value and the sex,
+    // gives back the age, so a date of birth that is an identifier.
+    $IDD = $DICT; $IDD['weight']['identifier'] = 'y'; $IDD['dob']['identifier'] = 'y';
     $m = mod($IDD, $DATA, $FULL, 'nurse');
     $m->projectSettings['scan-value-storage'] = 'identifier-redacted';
     $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
     $zs = [];
-    foreach ($res['violations'] as $v) if (in_array($v['field'], ['weight', 'bmi'], true)) $zs[$v['field']] = [$v['value'], $v['z'] ?? null];
-    check('scan: identifiers withheld, an identifier field\'s z-score goes with its value (got ' . json_encode($zs) . ')',
-        ($zs['weight'] ?? null) === ['[identifier withheld]', null] && ($zs['bmi'] ?? null) === ['30', '5.03']);
+    foreach ($res['violations'] as $v) if (in_array($v['field'], ['weight', 'bmi'], true)) $zs[$v['field']] = [$v['value'], $v['z'] ?? null, $v['reference'] ?? null];
+    check('scan: identifiers withheld, no z-score beside any value, the reference kept (got ' . json_encode($zs) . ')',
+        ($zs['weight'] ?? null) === ['[identifier withheld]', null, 'who-wfa'] && ($zs['bmi'] ?? null) === ['30', null, 'who2007-bfa']);
     $m = mod($DICT, $weird, $FULL, 'nurse');
     $res = $m->scanProject(149);
     $np = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'wt_h'; }));

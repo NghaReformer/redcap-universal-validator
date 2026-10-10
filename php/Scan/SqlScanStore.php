@@ -1266,12 +1266,20 @@ final class SqlScanStore implements ScanStore
 
     // -- reads --------------------------------------------------------------
 
-    /** One keyset page. Never OFFSET: it degrades quadratically over a run. */
+    /**
+     * One keyset page. Never OFFSET: it degrades quadratically over a run.
+     *
+     * z_score comes back only beside value_bin: a growth z-score gives the
+     * measurement back, so a row whose value preview expired, was revoked or
+     * was never stored has no z-score either. A reader that may not see
+     * value_bin must not be shown z_score.
+     */
     public function findings($projectId, $generationId, array $filter, $afterId, $limit)
     {
         $limit = max(1, min(100, (int) $limit));
         $sql = 'SELECT finding_id, record_id_bin, event_id, instance, host_form, field,
-                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated, as_of, z_score,
+                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated, as_of,
+                       CASE WHEN value_bin IS NULL THEN NULL ELSE z_score END AS z_score,
                        growth_reference
                 FROM ' . Schema::table('finding') . '
                 WHERE project_id = ? AND generation_id = ? AND active_slot = 1

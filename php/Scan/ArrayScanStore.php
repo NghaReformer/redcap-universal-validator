@@ -611,6 +611,8 @@ final class ArrayScanStore implements ScanStore
                     && (!isset($f[$k]) || $f[$k] !== $filter[$k])) { $skip = true; break; }
             }
             if ($skip) continue;
+            // z_score only beside value_bin, as SqlScanStore::findings.
+            if (!isset($f['value_bin'])) $f['z_score'] = null;
             $out[] = $f;
             if (count($out) >= max(1, min(100, (int) $limit))) break;
         }

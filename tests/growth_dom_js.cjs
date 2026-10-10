@@ -256,6 +256,13 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   check('saved inputs: never block', save(env) === 'saved');
 }
 {
+  // A saved value that chose the branch (snapshotGate) is not an input: "based on".
+  const env = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ snapshotGate: true, snapshotFields: ['grp'] }, LIVE))] });
+  check('a saved value that chose the branch: "based on" it (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /\(based on grp, read when this page was opened/.test(nMsg(env, 'weight').innerHTML)
+    && !/worked out with/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'saved');
+}
+{
   const w = el('weight', '16');
   const env = boot([w], { growth: GROWTH, rules: [rule({ rangeSexOp: ['withheld'], rangeAgeDobOp: ['withheld'],
     rangeAgeAtOp: ['lit', '2026-01-03'] })] });
@@ -530,15 +537,20 @@ function twoRefs(extraA, extraB) {
   const env = boot(els, { missingCodes: ['UNK'], growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
     br({ deferred: true, deferredWhy: WHY }), br({ rangeReference: 't-days2' })] }] });
   const msg = nMsg(env, 'weight');
-  const LINE = '&#9888; This rule is not being checked — references &quot;[ht]&quot;, which is not collected in this event.'
+  const LINE = '&#9888; Reference &quot;t-days&quot;: This rule is not being checked — references &quot;[ht]&quot;, which is not collected in this event.'
     + ' It is not checked after saving either; the study team needs to correct the rule.';
-  check('two references, one not checked: its line in the notice\'s words (got ' + msg.innerHTML + ')',
+  check('two references, one not checked: its line names it, in the notice\'s words (got ' + msg.innerHTML + ')',
     msg.innerHTML === LINE + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).');
   w.value = '11'; w.fire('change');
   check('... the other passes: the line alone, amber, one icon, saved (got ' + msg.innerHTML + ')',
     msg.innerHTML === LINE && /#7a5c00/.test(msg.style.cssText) && save(env) === 'saved');
   w.value = 'UNK'; w.fire('change');
   check('... a Missing Data Code: the line stays (got ' + msg.innerHTML + ')', msg.innerHTML === LINE && save(env) === 'saved');
+  // the fixed limits not checked, beside a reference: the line calls them limits
+  const envL = boot(inputs('1', '16'), { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    { when: null, deferred: true, deferredWhy: WHY, rangeHardLo: '1', rangeHardHi: '40' }, br({ rangeReference: 't-days2' })] }] });
+  check('... the fixed limits not checked: their line names them (got ' + nMsg(envL, 'weight').innerHTML + ')',
+    /^&#9888; Limits without a reference: This rule is not being checked — references &quot;\[ht\]&quot;/.test(nMsg(envL, 'weight').innerHTML));
 }
 {
   // The server could not resolve one reference's selector (selectorBlocked): that
@@ -552,14 +564,32 @@ function twoRefs(extraA, extraB) {
     br({ rangeReference: 't-days2' })] }] });
   const msg = nMsg(env, 'weight');
   check('selector blocked on one reference: its deferral, and the other\'s verdict (got ' + msg.innerHTML + ')',
-    /^&#9888; This rule is not being checked — references &quot;\[grp\]&quot;/.test(msg.innerHTML)
+    /^&#9888; Reference &quot;t-days&quot;: This rule is not being checked — references &quot;\[grp\]&quot;/.test(msg.innerHTML)
     && /<br>&#9888; This value is higher than usual \(z-score 4\.55 on Second test/.test(msg.innerHTML) && save(env) === 'asked');
+  // ... and when its conditions read true here (the server folds each unresolved
+  // comparison to false, so "not [grp]='1'" reads true): still its line, not a conflict
+  const envN = boot(inputs('1', '16'), { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: "not [grp]='1'", whenAst: ['not', ['const', false]], deferred: true, selectorBlocked: true, deferredWhy: WHY }),
+    br({ when: "not [grp]='2'", whenAst: ['not', ['const', false]], deferred: true, selectorBlocked: true, deferredWhy: WHY, rangeSoftHi: '9' }),
+    br({ rangeReference: 't-days2' })] }] });
+  check('... two of its conditions true: no conflict, its line and the other\'s verdict (got ' + nMsg(envN, 'weight').innerHTML + ')',
+    /^&#9888; Reference &quot;t-days&quot;: This rule is not being checked — references &quot;\[grp\]&quot;/.test(nMsg(envN, 'weight').innerHTML)
+    && /<br>&#9888; This value is higher than usual \(z-score 4\.55 on Second test/.test(nMsg(envN, 'weight').innerHTML)
+    && save(envN) === 'asked' && envN.NS.validators.weight.test() === false);
   // A selector this page cannot resolve (an event/instance reference): the same, with "checked after saving".
   const env2 = boot(inputs('1', '16'), { growth: { 't-days': T_DAYS, 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
     br({ when: '[visit_1][grp]=1', whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] }),
     br({ rangeReference: 't-days2' })] }] });
   check('a selector this page cannot resolve: that reference\'s line, the other judges (got ' + nMsg(env2, 'weight').innerHTML + ')',
-    /^&#9888; This rule is not being checked — Current values cannot resolve this comparison\. Save and reload to refresh matched data\. It is checked after the record is saved\.<br>&#9888; This value is higher than usual \(z-score 4\.55/.test(nMsg(env2, 'weight').innerHTML));
+    /^&#9888; Reference &quot;t-days&quot;: This rule is not being checked — Current values cannot resolve this comparison\. Save and reload to refresh matched data\. It is checked after the record is saved\.<br>&#9888; This value is higher than usual \(z-score 4\.55/.test(nMsg(env2, 'weight').innerHTML));
+  // ... and with two of that reference's other conditions true: the unknown one decides, no conflict
+  const env2u = boot(inputs('1', '16'), { growth: { 't-days': T_DAYS, 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: '[visit_1][grp]=1', whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] }),
+    br({ when: "[sex]='1'" }), br({ when: "[sex]<>'2'", rangeSoftHi: '9' }),
+    br({ rangeReference: 't-days2' })] }] });
+  check('... an unknown condition beside two true ones: its line, no conflict (got ' + nMsg(env2u, 'weight').innerHTML + ')',
+    /^&#9888; Reference &quot;t-days&quot;: This rule is not being checked — Current values cannot resolve/.test(nMsg(env2u, 'weight').innerHTML)
+    && !/conflict/.test(nMsg(env2u, 'weight').innerHTML));
   // ... and alone, when the other reference does not apply: the notice, which says the save checks it
   const env3 = boot(inputs('1', '16'), { growth: { 't-days': T_DAYS, 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
     br({ when: '[visit_1][grp]=1', whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] }),
@@ -634,10 +664,19 @@ function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w
   const env2 = boot(inputs('1', '16'), { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
     br({ deferred: true, deferredOnSave: true, deferredWhy: CAP }), br({ rangeReference: 't-days2' })] }] });
   check('cap, one reference of two: its grey line beside the other\'s verdict (got ' + nMsg(env2, 'weight').innerHTML + ')',
-    nMsg(env2, 'weight').innerHTML === '&#8505; Not checked on this page: ' + CAP[0]
+    nMsg(env2, 'weight').innerHTML === '&#8505; Reference &quot;t-days&quot;: Not checked on this page: ' + CAP[0]
       + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).'
     || nMsg(env2, 'weight').innerHTML === '&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).'
-      + '<br>&#8505; Not checked on this page: ' + CAP[0]);
+      + '<br>&#8505; Reference &quot;t-days&quot;: Not checked on this page: ' + CAP[0]);
+  // A Missing Data Code is not checked on save either: no grey line, alone or beside another reference
+  const envM = boot([el('sex', '1'), el('dob', '01-01-2026'), el('visit_date', '2026-01-03'), el('weight', 'UNK')],
+    { missingCodes: ['UNK'], rules: [rule(Object.assign({ deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
+  check('cap, a Missing Data Code: no note (got ' + nMsg(envM, 'weight').innerHTML + ')', !shown(nMsg(envM, 'weight')) && save(envM) === 'saved');
+  const envM2 = boot([el('sex', '1'), el('dob', '01-01-2026'), el('visit_date', '2026-01-03'), el('weight', 'UNK')],
+    { missingCodes: ['UNK'], growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+      br({ deferred: true, deferredOnSave: true, deferredWhy: CAP }), br({ rangeReference: 't-days2' })] }] });
+  check('cap, one reference of two, a Missing Data Code: no note (got ' + nMsg(envM2, 'weight').innerHTML + ')',
+    !shown(nMsg(envM2, 'weight')) && save(envM2) === 'saved');
   const env3 = boot(inputs('1', 'abc'), { context: 'survey', rules: [rule(Object.assign({ deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
   check('cap, survey: not a number is still held', save(env3) === 'held');
 }

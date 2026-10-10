@@ -482,12 +482,18 @@ class UniversalValidator extends AbstractExternalModule
                 return $out;
             }
             $groupName = ModeRegistry::branchGroupName($groupMode) ?: 'group';
+            // Every group set aside: no part of the field is checked, and each
+            // message says so. Otherwise each names the part it leaves out.
+            $none = count($broken) === count($groups);
             foreach ($broken as $g => $bk) {
                 $which = $g === '' ? 'the limits without a ' . $groupName : 'the ' . $groupName . ' "' . $g . '"';
+                $part = $g === '' ? 'those limits are' : 'that ' . $groupName . ' is';
                 $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $bk[1] === null
-                    ? 'a branch "when" condition for ' . $which . ' cannot be evaluated — that ' . $groupName . ' is skipped'
+                    ? 'a branch "when" condition for ' . $which . ' cannot be evaluated — '
+                      . ($none ? 'field skipped' : $part . ' skipped')
                     : 'a branch "when" condition for ' . $which . ' ' . self::resolutionProblem($bk[0], $bk[1])
-                      . ' No branch of it can be chosen, so it is not checked here; the rest of the field is.'];
+                      . ($none ? ' No branch can be chosen, so the field is not checked here.'
+                               : ' No branch of it can be chosen, so ' . $part . ' not checked here; the rest of the field is.')];
             }
             foreach ($active as $g => $list) {
                 if (isset($broken[$g])) continue;
@@ -6624,10 +6630,10 @@ class UniversalValidator extends AbstractExternalModule
                 'value_expires_at' => ($blob === null) ? null : $valueExpiry,
                 // The day a @UVWINDOW verdict was judged against, for the report.
                 'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
-                // A growth finding's z-score. It gives the measurement back, so
-                // scanRecord passes it only beside a value the report shows: it
-                // is stored only beside a value preview, and cleared with it
-                // (ScanRetention). And its reference, which is the rule's and
+                // A growth finding's z-score. It gives the measurement back (and
+                // an age), so scanRecord passes it only when values are shown
+                // raw: it is stored only beside a raw value preview, and cleared
+                // with it (ScanRetention). And its reference, which is the rule's and
                 // not participant data; a rule with branches per reference has
                 // no one reference, so the finding carries its own.
                 'z_score' => isset($v['z']) ? (string) $v['z'] : null,
@@ -7332,10 +7338,12 @@ class UniversalValidator extends AbstractExternalModule
                           // the day a today-relative @UVWINDOW part was judged against
                           + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
                           // A growth finding's reference, and its z-score only
-                          // beside a value the report shows: the z-score gives
-                          // the measurement back, so it is withheld wherever
-                          // the value is.
-                          + (isset($v['z']) && is_string($rv) && $rv !== self::REPORT_REDACTED
+                          // when the scan shows values raw, as the audit log
+                          // does. The z-score gives the measurement back, and
+                          // with the measurement and the sex it gives back the
+                          // age, so a date of birth the identifier mode
+                          // withholds as well.
+                          + (isset($v['z']) && is_string($rv) && isset($plan['valueMode']) && $plan['valueMode'] === 'raw'
                               ? ['z' => (string) $v['z']] : [])
                           + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : []));
                     }

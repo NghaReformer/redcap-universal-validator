@@ -281,6 +281,10 @@ final class TemporalRules
         }
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
+        // Whether this rule reads anything that is not live on this page: a saved value, a set, a
+        // value withheld from this viewer, or one that could not be resolved.
+        $offPage=$browser&&($snapshot||$denied||$problems);
+        if($browser&&!$offPage)foreach(ModeRegistry::operandKeys() as $rk)if(($compiled[$rk['op']]??null)===['withheld']){$offPage=true;break;}
         // extendedAdvisory: the same "never blocks here" for a mode with no blockSave of its own (@UVRANGE).
         // A mode whose page turns only its snapshot parts advisory (ModeRegistry::snapshotAdvisory:
         // @UVWINDOW, whose "notFuture" reads the live field alone) keeps its blockSave when no
@@ -292,6 +296,6 @@ final class TemporalRules
         }
         // stale: a condition read a value from when the page was built, or one this
         // viewer may not read; a branch chosen by it may be the wrong branch.
-        return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems)),'stale'=>$browser&&($condSnapshot||$denied)];
+        return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems)),'stale'=>$browser&&($condSnapshot||$denied),'offPage'=>$offPage];
     }
 }

@@ -97,21 +97,28 @@ check('stamps: the record is claimed', is_array($claim) && count($claim) === 1);
 $c = $claim[0];
 $batch = ['bytes' => 0, 'records' => [['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
     'state' => ScanStore::REC_DONE, 'version' => 'v1', 'claim' => $c['claim']]], 'findings' => []];
-foreach (['w_past' => '2026-10-02', 'v_end' => null, 'x_wt' => null] as $field => $asOf) {
+foreach (['w_past' => '2026-10-02', 'v_end' => null, 'x_wt' => null, 'y_wt' => null] as $field => $asOf) {
     $batch['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $PID, 'generation_id' => $gen,
         'identity' => hash('sha256', 'stamps-' . $field, true), 'valid_from_seq' => uv_run_seq($dbA, $runId),
         'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'], 'event_id' => 41, 'instance' => 1,
         'host_form' => 'visit_form', 'field' => $field, 'rule_source_id' => 'r-' . $field,
         'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1, 'check_type' => 'window',
-        'reason_code' => 'past', 'as_of' => $asOf] + ($field === 'x_wt' ? ['z_score' => '-3.40', 'growth_reference' => 'who-wfa'] : []);
+        'reason_code' => 'past', 'as_of' => $asOf]
+        // x_wt keeps its value preview; y_wt has none, so its z-score never reads back
+        + ($field === 'x_wt' ? ['value_bin' => '25', 'z_score' => '-3.40', 'growth_reference' => 'who-wfa'] : [])
+        + ($field === 'y_wt' ? ['z_score' => '-1.00', 'growth_reference' => 'who-wfa'] : []);
 }
 check('stamps: the batch commits', $store->commitBatch($runId, 'stamps-worker', $epoch, $batch) === true);
 $rows = $ca->query('SELECT field, as_of, z_score, growth_reference FROM ' . Schema::table('finding') . ' WHERE project_id = ? ORDER BY field', [$PID]);
 check('stamps: as_of, z_score and growth_reference are written, and NULL where there is none (got ' . json_encode($rows) . ')',
-    $rows === [['v_end', null, null, null], ['w_past', '2026-10-02', null, null], ['x_wt', null, '-3.40', 'who-wfa']]);
+    $rows === [['v_end', null, null, null], ['w_past', '2026-10-02', null, null], ['x_wt', null, '-3.40', 'who-wfa'],
+               ['y_wt', null, '-1.00', 'who-wfa']]);
 // read back by the report's page query, with both columns
 $page = $store->findings($PID, $gen, [], 0, 10);
 // in the select's column order: field is 6th, z_score 14th, growth_reference 15th
 $px = array_values(array_filter(array_map('array_values', $page), function ($r) { return $r[5] === 'x_wt'; }));
 check('stamps: the report reads z_score and growth_reference back (got ' . json_encode($px) . ')',
     count($px) === 1 && $px[0][13] === '-3.40' && $px[0][14] === 'who-wfa');
+$py = array_values(array_filter(array_map('array_values', $page), function ($r) { return $r[5] === 'y_wt'; }));
+check('stamps: ... and no z-score where there is no value preview (got ' . json_encode($py) . ')',
+    count($py) === 1 && $py[0][13] === null && $py[0][14] === 'who-wfa');

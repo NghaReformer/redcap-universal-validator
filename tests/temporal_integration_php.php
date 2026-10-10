@@ -691,6 +691,25 @@ namespace {
     $marks=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['snapshotGate']),$b['snapshotFields']??null];},$r['branches']??[]):[];
     check('a stale selector of one group, on the page: only that group is advisory (got '.json_encode([$marks,$r['snapshotFields']??null]).')',
         $r&&!isset($r['snapshotFields'])&&$marks[0][0]==='who-wfa'&&$marks[0][1]===true&&$marks[1]===['',false,null]);
+    $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null];},$r['branches']??[]):[];
+    check('... and the fixed limits, which read nothing off this page, are not event/instance advisory (got '.json_encode($adv).')',
+        $adv===[['who-wfa',true,'off'],['',false,null]]);
+    // No selector at all: who-wfa reads saved event/instance inputs and is advisory, the fixed limits are not.
+    $r=ruleOf(render($withHt($wfa.'} @UVRANGE={"hard":[5,40]}'),'fa'),'a_val');
+    $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null];},$r['branches']??[]):[];
+    check('two references, one reading event/instance values: only that one is advisory (got '.json_encode($adv).')',
+        $adv===[['who-wfa',true,'off'],['',false,null]]);
+    // ... and one whose inputs are withheld from this viewer, read nowhere on this page, is advisory too
+    $m=$withHt($wfa.'} @UVRANGE={"hard":[5,40]}');REDCap::$rights['nurse']['forms']['fb']='0';$r=ruleOf(render($m,'fa'),'a_val');REDCap::$rights['nurse']['forms']['fb']='1';
+    $adv=$r?array_map(function($b){return [$b['rangeReference']??'',!empty($b['extendedAdvisory']),$b['blockSave']??null,$b['rangeSexOp']??null];},$r['branches']??[]):[];
+    check('... inputs withheld from this viewer: that reference is advisory, the fixed limits are not (got '.json_encode($adv).')',
+        $adv===[['who-wfa',true,'off',['withheld']],['',false,null,null]]);
+    // Every group with a problem: no part of the field is judged, and the problems are the rule's.
+    $m=$withHt($wfa.',"when":"[baseline_arm_1][ht]=\'80\'"}'.$wfh);$res=$m->scanProject(PID);
+    $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
+    check('every group with a problem, extended: the field as a whole is named (got '.json_encode([$res['violations'],$why]).')',
+        !$res['violations']&&$why&&count(array_filter($why,function($w){return strpos($w,'part of this field')===false
+            &&strpos($w,'reference "who-wfa": unresolved branch selector; reference "who-wfh": ')!==false;}))===count($why));
 
     // A branched extended rule: each scan finding names the branch that judged
     // it, so the report shows that branch's message and not the first one's.

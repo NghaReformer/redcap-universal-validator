@@ -54,12 +54,24 @@ namespace {
                 'record_id_bin' => 'R1', 'identity' => hash('sha256', 'wt', true), 'valid_from_seq' => (int) $run['run_seq'],
                 'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
                 'value_bin' => '6.6', 'value_fingerprint' => 'fp', 'z_score' => '-3.40', 'growth_reference' => 'who-wfa',
-                'value_expires_at' => '2000-01-01 00:00:00']]]);
+                'value_expires_at' => '2000-01-01 00:00:00'],
+               ['ordinal' => $c['ordinal'], 'project_id' => 700, 'generation_id' => (int) $run['generation_id'],
+                'host_form' => 'fa', 'field' => 'wt2', 'check_type' => 'range', 'reason_code' => 'soft-low',
+                'record_id_bin' => 'R1', 'identity' => hash('sha256', 'wt2', true), 'valid_from_seq' => (int) $run['run_seq'],
+                'record_hash' => $c['hash'], 'rule_source_id' => 'r1', 'rule_revision' => str_repeat('c', 64),
+                'z_score' => '-1.00', 'growth_reference' => 'who-wfa']]]);
+        $f = $s->findings(700, (int) $run['generation_id'], [], 0, 10);
+        check('array-store: the z-score reads back beside its value only (got ' . json_encode($f) . ')',
+            count($f) === 2 && $f[0]['z_score'] === '-3.40' && $f[1]['z_score'] === null && $f[1]['growth_reference'] === 'who-wfa');
         check('array-store: an overdue value expires', $s->expireValues('2026-01-01 00:00:00') === 1);
         $f = $s->findings(700, (int) $run['generation_id'], [], 0, 10);
         check('array-store: the value, its fingerprint and the z-score go; the finding and its reference stay (got ' . json_encode($f) . ')',
-            count($f) === 1 && $f[0]['value_bin'] === null && $f[0]['value_fingerprint'] === null
+            count($f) === 2 && $f[0]['value_bin'] === null && $f[0]['value_fingerprint'] === null
             && $f[0]['z_score'] === null && $f[0]['growth_reference'] === 'who-wfa');
+        // and from the stored row itself, not only from what findings() reads back
+        $kept = array_values(array_filter($s->allFindings(), function ($r) { return $r['field'] === 'wt'; }));
+        check('array-store: expiry clears the stored z-score (got ' . json_encode($kept) . ')',
+            count($kept) === 1 && $kept[0]['z_score'] === null && $kept[0]['value_bin'] === null);
     }
 
     echo "scan_store_php: $n checks, $fail failure(s)\n";

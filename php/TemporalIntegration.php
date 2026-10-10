@@ -71,7 +71,7 @@ trait TemporalIntegration
             // A selector that cannot be resolved, or was read when the page was built, belongs to its own
             // group then: the other groups are still judged (UniversalValidator::ruleFindings, QRID_activeVariants).
             $groupMode=ModeRegistry::modeOfType($rule['type']??'');
-            $groupKey=ModeRegistry::branchGroup($groupMode);$group=[];$picks=[];$unknownGroup=[];$staleGroup=[];
+            $groupKey=ModeRegistry::branchGroup($groupMode);$group=[];$picks=[];$unknownGroup=[];$staleGroup=[];$offGroup=[];
             foreach($rule['branches'] as $i=>$branch)$group[$i]=Branching::groupOf($branch,$groupKey);
             $grouped=count(array_unique($group))>1;
             $groupName=ModeRegistry::branchGroupName($groupMode)?:'group';
@@ -91,6 +91,7 @@ trait TemporalIntegration
                         if(isset($g['rule']['whenAst']))$b['rule']['whenAst']=$g['rule']['whenAst'];
                     }
                     $out['branches'][$i]=$b['rule'];
+                    if($b['problems']||!empty($b['offPage']))$offGroup[$group[$i]]=true;
                     if($g['problems']){$selectorUnknown=true;$unknownGroup[$group[$i]]=true;}
                     if(!empty($g['stale'])){$selectorStale=true;$staleGroup[$group[$i]]=true;}
                 }else{
@@ -117,6 +118,13 @@ trait TemporalIntegration
                             $out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;
                             if(empty($out['branches'][$i]['snapshotFields']))$out['branches'][$i]['snapshotFields']=['saved event/instance values'];
                         }
+                        // compile makes every branch of an event/instance rule advisory. A group that reads
+                        // nothing off this page is judged as any rule on this page is, and blocks as it says.
+                        if(!isset($offGroup[$group[$i]])&&!isset($unknownGroup[$group[$i]])&&!isset($staleGroup[$group[$i]])){
+                            unset($out['branches'][$i]['extendedAdvisory']);
+                            $own=array_merge($rule,$rule['branches'][$i]);
+                            if(isset($own['blockSave']))$out['branches'][$i]['blockSave']=$own['blockSave'];else unset($out['branches'][$i]['blockSave']);
+                        }
                     }
                 }elseif($selectorStale){
                     foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
@@ -142,6 +150,9 @@ trait TemporalIntegration
                     $b=$res['rule'];unset($b['type'],$b['fields']);if(($b['when']??null)!=='1=0')unset($b['when']);
                     $flatOut['branches'][$pick]=$b;
                 }
+                // Every group named a problem: no part of the field is judged, so the problems are the
+                // rule's, as when every selector is unresolved.
+                if($groupProblems&&count($groupProblems)===count(array_unique($group)))return ['rule'=>$out,'problems'=>[implode('; ',$groupProblems)]];
                 if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[],'groupProblems'=>$groupProblems];}
                 return ['rule'=>$flatOut,'problems'=>[],'groupProblems'=>$groupProblems];
             }

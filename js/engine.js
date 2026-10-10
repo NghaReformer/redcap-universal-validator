@@ -3019,7 +3019,10 @@ function QRID_activeVariants(vs){
     for(gi = 0; gi < vs.groups.length; gi++){
       gk = vs.groups[gi];
       var list = byGroup[gk];
-      if(list && list.length > 1){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
+      /* A group set aside (blocked, or a gate that answers "unknown") defers
+         as a whole: its conditions choose nothing, so two of them true is not
+         a conflict, as the server skips it too (ruleFindings). */
+      if(list && list.length > 1 && !blocked[gk] && !unknown[gk]){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
     }
     act = [];
     for(gi = 0; gi < vs.groups.length; gi++){
@@ -4218,7 +4221,7 @@ function QRIDRangeInit(QRID_CONFIG){
              blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.extendedAdvisory === true) ? "off" : HARD,
              measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
-             deferred: DEFERRED, onSave: ON_SAVE, snapshot: SNAPSHOT,
+             deferred: DEFERRED, onSave: ON_SAVE, snapshot: SNAPSHOT, snapshotGate: cfg.snapshotGate === true,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
                         : (ON_SAVE && QRID_CONFIG.deferredWhy && QRID_CONFIG.deferredWhy.length) ? QRID_CONFIG.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
@@ -4391,8 +4394,10 @@ function QRIDRangeInit(QRID_CONFIG){
        staff), or "warn" / "bad" (html, block). */
     function judge(V, typed){
       if(V.onSave){
-        /* not judged here, but the measurement is (L1) */
-        var mo = QRID_isMissingCode(typed) ? null : measureOnly(V, typed);
+        /* not judged here, but the measurement is (L1). A Missing Data Code
+           is not checked on save either, so it gets no note. */
+        if(QRID_isMissingCode(typed)) return { kind: "none" };
+        var mo = measureOnly(V, typed);
         if(mo) return { kind: "bad", html: describe(V, mo), block: blockFor(V, mo.tier, mo.reason) };
         return (V.deferredWhy && !QRID_IS_SURVEY)
           ? { kind: "info", html: "Not checked on this page: " + QRID_escapeHtml(V.deferredWhy.join(" ")) } : { kind: "none" };
@@ -4417,8 +4422,9 @@ function QRIDRangeInit(QRID_CONFIG){
       /* "not a number" and "0 or below" use none of the saved values */
       if(V.snapshot && !QRID_IS_SURVEY && !measureReason(r)){
         /* A growth rule's saved values are its inputs (sex, dates, age, length),
-           not a choice of limits. */
-        base += ' <span style="opacity:.8">(' + (V.growth ? "worked out with " : "limits chosen from ") +
+           not a choice of limits; when a saved value also chose the branch
+           (snapshotGate), the note says "based on", as @UVWINDOW does. */
+        base += ' <span style="opacity:.8">(' + (V.growth ? (V.snapshotGate ? "based on " : "worked out with ") : "limits chosen from ") +
           QRID_escapeHtml(V.snapshot.join(", ")) +
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
@@ -4426,6 +4432,11 @@ function QRIDRangeInit(QRID_CONFIG){
       return { kind: r.tier === "soft" ? "warn" : "bad", html: base, block: blockFor(V, r.tier, r.reason) };
     }
     var ICON = { warn: "&#9888; ", bad: "&#10007; ", info: "&#8505; ", deferral: "&#9888; " };
+    /* With several references, a line that is not a verdict says which
+       reference it is about; a verdict names its table already. */
+    function refLabel(V){
+      return QRID_escapeHtml(V.group === "" ? "Limits without a reference: " : 'Reference "' + V.group + '": ');
+    }
     var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
     function check(){
       var act = QRID_activeVariants(VS);
@@ -4464,7 +4475,9 @@ function QRIDRangeInit(QRID_CONFIG){
       for(var ai = 0; ai < act.length; ai++){
         var one = (act[ai].deferred || !missing) ? judge(act[ai], typed) : { kind: "none" };
         if(one.kind === "none") continue;
-        var line = ICON[one.kind] + (one.kind === "deferral" ? QRID_deferralText(one.why, one.checkedOnSave) : one.html);
+        var named = one.kind === "deferral" || (act[ai].onSave && one.kind === "info");
+        var line = ICON[one.kind] + (named ? refLabel(act[ai]) : "")
+          + (one.kind === "deferral" ? QRID_deferralText(one.why, one.checkedOnSave) : one.html);
         if(!seen[line]){ seen[line] = true; lines.push(line); }
         if(one.kind === "deferral") deferral = true;
         if(one.kind === "bad") worst = "bad";
