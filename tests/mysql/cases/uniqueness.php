@@ -383,6 +383,69 @@ $NEIGHBOUR = uv_neighbour($PID);
     }
 }
 
+// -- LOOKUPS: VALUES A RULE LOOKS IN, NEVER REPORTS ---------------------------
+//
+// uv_unique_candidate.lookup, schema version 4. A @UVUNIQUE rule with "also"
+// fields, or a "when", files values it looks in beside the values it checks.
+// They count towards a group's records and are re-read with it; a group of
+// lookups alone has nothing to report and is settled at discovery.
+{
+    $KEY = 'finalizer-test-key';
+    $GENL = uv_generation('lookups');
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+    $putL = function ($group, $rec, $field, $lookup) use ($A, $GENL, $KEY, $PID) {
+        $g = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_UNIQUE, $PID, $group, $KEY));
+        $h = bin2hex(\INSPIRE\UniversalValidator\Scan\Hmac::raw(\INSPIRE\UniversalValidator\Scan\Hmac::P_RECORD, $PID, $rec, $KEY));
+        $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+            (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+             record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned, lookup)
+            VALUES (" . $PID . ", " . $GENL . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . $g . "'),
+                    'project', UNHEX('" . $h . "'), '" . $rec . "', 1, 1, 'f', '" . $field . "', NULL, " . (int) $lookup . ")");
+    };
+    $putL('L1', 'R1', 'typed_id', 0);   // the value a rule checks
+    $putL('L1', 'R2', 'scan_id', 1);    // the same value in another record's "also" field
+    $putL('L2', 'R3', 'scan_id', 1);    // two records, lookups only
+    $putL('L2', 'R4', 'scan_id', 1);
+    $reread = array();
+    $readerL = function ($locs) use (&$reread) {
+        $out = array();
+        foreach ($locs as $l) {
+            $reread[] = $l['record'];
+            $out[\INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l)] = array('=p-001');
+        }
+        return array('ok' => true, 'values' => $out, 'why' => null);
+    };
+    $finL = new \INSPIRE\UniversalValidator\Scan\UniqueFinalizer($dbA, array('pid' => $PID, 'hmacKey' => $KEY, 'read' => $readerL));
+    check('lookup: both groups are discovered', $finL->discover($GENL, 100) === 2);
+    $st = $finL->status($GENL);
+    check('lookup: a group of lookups only is settled at discovery, not verified',
+        $st['groups'] === 2 && $st['pending'] === 1);
+    $k = 0; while ($k++ < 50) { if ($finL->step($GENL, 10)['done']) break; }
+    $st = $finL->status($GENL);
+    check('lookup: the group with a checked value is published', $st['done'] === true
+        && $st['published'] === 1 && $st['blocking'] === 0);
+    sort($reread);
+    check('lookup: every row of it was re-read, the lookup included, and no other group was',
+        array_values(array_unique($reread)) === array('R1', 'R2'));
+    $fl = $dbA->select('SELECT record_id_bin, field FROM ' . Schema::table('finding')
+        . ' WHERE project_id = ? AND generation_id = ?', array($PID, $GENL));
+    check('lookup: the checked value is reported, the lookup is not',
+        count($fl) === 1 && $fl[0][0] === 'R1' && $fl[0][1] === 'typed_id');
+    $A->query('INSERT INTO ' . Schema::table('unique_candidate') . "
+        (project_id, generation_id, rule_source_id, rule_revision, group_hmac, scope_key,
+         record_hash, record_id_bin, event_id, instance, host_form, field, version_scanned)
+        VALUES (" . $PID . ", " . $GENL . ", 'r1', '" . str_repeat('c', 64) . "', UNHEX('" . str_repeat('ab', 32) . "'),
+                'project', UNHEX('" . str_repeat('cd', 32) . "'), 'R9', 1, 1, 'f', 'typed_id', NULL)");
+    $dflt = $dbA->select('SELECT lookup FROM ' . Schema::table('unique_candidate')
+        . " WHERE project_id = ? AND generation_id = ? AND record_id_bin = 'R9'", array($PID, $GENL));
+    check('lookup: a row written without the column is a checked value', isset($dflt[0][0]) && (int) $dflt[0][0] === 0);
+    foreach (array('finding', 'unique_candidate', 'unique_group') as $t) {
+        $A->query('DELETE FROM ' . Schema::table($t));
+    }
+}
+
 // -- WHAT THE FINALIZER COSTS, MEASURED RATHER THAN ASSUMED -------------------
 //
 // Two defects the assertions above cannot see, because both are about the shape
