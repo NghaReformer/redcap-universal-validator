@@ -454,13 +454,53 @@ final class GrowthReference
     /**
      * What a page needs of a reference to compute z-scores in the browser: the
      * index fields QRID_growth* reads, and the rows.
+     *
+     * $need limits the rows to what the page's rules can read (pageNeed):
+     * 'sexes' => ['male' => bool, 'female' => bool] sends the other sex's rows
+     * empty, and 'xs' => [axis value, ...] sends only the rows lms() reads at
+     * those values, one more either side, with "first" moved to match; 'xs'
+     * null sends every row. Without $need the whole table travels.
      */
-    public static function pageCopy(array $entry, array $table)
+    public static function pageCopy(array $entry, array $table, array $need = null)
     {
         $out = [];
         foreach (['title', 'measure', 'unit', 'axis', 'axisUnit', 'lookup', 'valid', 'adjust'] as $k) $out[$k] = $entry[$k];
         foreach (['scale', 'first', 'male', 'female'] as $k) $out[$k] = $table[$k];
+        if ($need === null) return $out;
+        if (isset($need['xs']) && is_array($need['xs'])) {
+            $lo = null;
+            $hi = null;
+            foreach ($need['xs'] as $x) {
+                list($key, $share) = self::position($entry['lookup'], $table['scale'], (float) $x);
+                $top = $share > 0 ? $key + 1 : $key;
+                $lo = $lo === null ? $key : min($lo, $key);
+                $hi = $hi === null ? $top : max($hi, $top);
+            }
+            foreach (['male', 'female'] as $s) {
+                $rows = $table[$s];
+                if ($lo === null) { $out[$s] = []; continue; }
+                $a = max(0, $lo - 1 - $table['first']);
+                $b = min(count($rows) - 1, $hi + 1 - $table['first']);
+                $out[$s] = $b >= $a ? array_slice($rows, $a, $b - $a + 1) : [];
+            }
+            if ($lo !== null) $out['first'] = $table['first'] + max(0, $lo - 1 - $table['first']);
+        }
+        foreach (['male', 'female'] as $s) {
+            if (isset($need['sexes']) && empty($need['sexes'][$s])) $out[$s] = [];
+        }
         return $out;
+    }
+
+    /**
+     * How much of a page's table cap one copy uses: every row of both sexes
+     * is 1, every row of one sex 0.5, and rows limited to a few axis values
+     * (pageCopy 'xs') nothing.
+     */
+    public static function pageWeight(array $need)
+    {
+        if (isset($need['xs']) && is_array($need['xs'])) return 0.0;
+        $sexes = isset($need['sexes']) ? $need['sexes'] : ['male' => true, 'female' => true];
+        return 0.5 * ((empty($sexes['male']) ? 0 : 1) + (empty($sexes['female']) ? 0 : 1));
     }
 
     /**

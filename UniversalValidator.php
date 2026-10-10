@@ -2903,13 +2903,14 @@ class UniversalValidator extends AbstractExternalModule
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
         if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
-        $config = $this->attachGrowthTables($config);
         // The project's Missing Data Codes (codes only, never their labels): a
         // field marked with one holds the code, which the checks leave alone.
         if ($config['rules']) {
             $codes = $pid !== null ? $this->missingDataCodes($pid) : [];
             if ($codes) $config['missingCodes'] = array_map('strval', array_keys($codes));
         }
+        // after the codes: a saved input holding one is blank (growthPageNeed)
+        $config = $this->attachGrowthTables($config);
         // The date fields of this form shown day- or month-first: a condition on
         // the page compares the value REDCap stores (Y-M-D), as the server does.
         if ($config['rules'] && $pid !== null && is_string($instrument) && $instrument !== '') {
@@ -2988,75 +2989,164 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The growth tables the @UVRANGE rules on this page read, as
-     * config.growth: reference id => GrowthReference::pageCopy. Only tables in
-     * use travel, and at most the catalog's "pageTables" of them (a table is
-     * tens of kilobytes). A rule that needs one more, or whose reference can no
-     * longer be read, is deferred with the reason: the post-save audit and the
-     * scan still check it.
+     * config.growth: reference id => GrowthReference::pageCopy. Only the rows
+     * the page can read travel (growthPageNeed): one sex's when the sex is a
+     * saved value, a few rows when the age or length is, none for a branch
+     * whose condition is settled false. The catalog's "pageTables" caps them,
+     * counted by GrowthReference::pageWeight (a whole table is tens of
+     * kilobytes). A rule, or a branch, that needs more, or whose reference can
+     * no longer be read, is deferred with the reason (deferredOnSave): the
+     * page still checks the measurement itself, and the post-save audit and
+     * the scan check the rest.
      */
     private function attachGrowthTables(array $config)
     {
         $dir = null;
         $cap = null;
-        $tables = [];
+        $need = [];     // reference id => what the page reads of it
+        $entries = [];  // reference id => [entry, table]
         foreach ($config['rules'] as $i => $r) {
             if (!is_array($r) || !empty($r['configError']) || !empty($r['deferred'])) continue;
-            $nodes = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
-            $why = null;
-            $want = [];
-            foreach ($nodes as $n) {
+            $branched = isset($r['branches']) && is_array($r['branches']);
+            foreach ($branched ? $r['branches'] : [$r] as $bi => $n) {
                 if (!is_array($n) || !isset($n['rangeReference']) || !is_string($n['rangeReference'])) continue;
                 // An input withheld from this page means no z-score here: the
                 // browser only judges the measurement itself, so the table
-                // would be dead weight against the page cap.
-                if ($this->anyOperandWithheld($n)) continue;
-                $want[$n['rangeReference']] = true;
-            }
-            if (!$want) continue;
-            if ($cap === null) {
-                $dir = $this->referenceDir();
-                $cap = GrowthReference::catalog($dir)['pageTables'];
-            }
-            $add = [];
-            foreach (array_keys($want) as $id) {
-                if (isset($tables[$id])) continue;
-                $entry = GrowthReference::entry($id, $dir);
-                if ($entry === null) {
-                    $gone = GrowthReference::unavailableWhy($id, $dir);
-                    $why = 'the growth reference "' . $id . '" is not available on this server' . ($gone !== null ? ' (' . $gone . ')' : '') . '.';
-                    break;
+                // would be dead weight against the page cap. A branch deferred
+                // for another reason is not judged here either.
+                if ($this->anyOperandWithheld($n) || !empty($n['deferred'])) continue;
+                // A branch whose condition the server settled false can never
+                // apply on this page.
+                if (isset($n['whenAst']) && is_array($n['whenAst']) && self::settledFalse($n['whenAst'], $n)) continue;
+                if ($cap === null) {
+                    $dir = $this->referenceDir();
+                    $cap = GrowthReference::catalog($dir)['pageTables'];
                 }
-                try {
-                    $add[$id] = GrowthReference::pageCopy($entry, GrowthReference::table($entry));
-                } catch (\Throwable $e) {
-                    $why = 'the growth reference "' . $id . '" cannot be used: ' . $e->getMessage();
-                    break;
-                }
-            }
-            if ($why === null && count($tables) + count($add) > $cap) {
-                $why = 'this form already carries ' . count($tables) . ' growth reference table'
-                    . (count($tables) === 1 ? '' : 's') . ', the most one page may carry (' . $cap . '), so this check '
-                    . 'runs when the record is saved.';
-            }
-            if ($why !== null) {
-                // Only a rule nothing else deferred gets here, and the save's
-                // audit reads its table on the server: deferredOnSave tells the
-                // browser to say "checked when saved", not "not checked at all".
-                $config['rules'][$i]['deferred'] = true;
-                $config['rules'][$i]['deferredOnSave'] = true;
-                $config['rules'][$i]['deferredWhy'] = [$why];
-                // a branch is built on its own in the browser, so it is marked too
-                if (isset($r['branches']) && is_array($r['branches'])) {
-                    foreach ($r['branches'] as $bi => $b) {
-                        if (is_array($b)) $config['rules'][$i]['branches'][$bi]['deferred'] = true;
+                $id = $n['rangeReference'];
+                $why = null;
+                if (!isset($entries[$id])) {
+                    $entry = GrowthReference::entry($id, $dir);
+                    if ($entry === null) {
+                        $gone = GrowthReference::unavailableWhy($id, $dir);
+                        $why = 'the growth reference "' . $id . '" is not available on this server' . ($gone !== null ? ' (' . $gone . ')' : '') . '.';
+                    } else {
+                        try {
+                            $entries[$id] = [$entry, GrowthReference::table($entry)];
+                        } catch (\Throwable $e) {
+                            $why = 'the growth reference "' . $id . '" cannot be used: ' . $e->getMessage();
+                        }
                     }
                 }
-                continue;
+                if ($why === null) {
+                    $want = $this->growthPageNeed($n, $entries[$id][0], $config);
+                    $merged = isset($need[$id]) ? self::mergePageNeed($need[$id], $want) : $want;
+                    $before = 0.0;
+                    foreach ($need as $nid => $nn) $before += GrowthReference::pageWeight($nn);
+                    $after = $before - (isset($need[$id]) ? GrowthReference::pageWeight($need[$id]) : 0.0) + GrowthReference::pageWeight($merged);
+                    if ($after > $cap + 1e-9) {
+                        $num = function ($w) { return floor($w) == $w ? (string) (int) $w : rtrim(sprintf('%.1f', $w), '0'); };
+                        $why = 'this form already carries the rows of ' . $num($before) . ' growth reference table'
+                            . ($before == 1 ? '' : 's') . ', and this one would take it past the most one page may carry ('
+                            . $cap . '), so this check runs when the record is saved.';
+                    } else {
+                        $need[$id] = $merged;
+                    }
+                }
+                if ($why !== null) {
+                    // The save's audit reads the table on the server:
+                    // deferredOnSave tells the browser to say "checked when
+                    // saved", not "not checked at all". A branch is built on
+                    // its own in the browser, so only it is marked.
+                    $mark = ['deferred' => true, 'deferredOnSave' => true, 'deferredWhy' => [$why]];
+                    if ($branched) $config['rules'][$i]['branches'][$bi] = $mark + $config['rules'][$i]['branches'][$bi];
+                    else $config['rules'][$i] = $mark + $config['rules'][$i];
+                }
             }
-            $tables += $add;
+        }
+        $tables = [];
+        foreach ($need as $id => $nn) {
+            $full = $nn['xs'] === null && !empty($nn['sexes']['male']) && !empty($nn['sexes']['female']);
+            $tables[$id] = GrowthReference::pageCopy($entries[$id][0], $entries[$id][1], $full ? null : $nn);
         }
         if ($tables) $config['growth'] = $tables;
         return $config;
+    }
+
+    /**
+     * Whether a folded condition (Logic::fold) is false whatever the page
+     * does: every comparison in it was settled on the server.
+     */
+    private static function settledFalse(array $ast, array $node)
+    {
+        $live = function ($a) use (&$live) {
+            if (!is_array($a) || !isset($a[0])) return true;
+            if ($a[0] === 'const') return false;
+            if ($a[0] === 'not') return $live($a[1]);
+            if ($a[0] === 'and' || $a[0] === 'or') {
+                foreach ($a[1] as $c) if ($live($c)) return true;
+                return false;
+            }
+            return true;   // a comparison the page reads, or a node not known here
+        };
+        if ($live($ast)) return false;
+        return !Logic::evaluate($ast, [], Logic::BLANK_INERT, !empty($node['caseSensitive']));
+    }
+
+    /**
+     * What a page reads of one rule's reference: ['sexes' => [male, female
+     * => bool], 'xs' => null (every row) | [axis value, ...]]. A sex saved on
+     * another form (a literal input) needs that sex's rows only, or none when
+     * it is neither code; an age or length worked out from saved inputs needs
+     * the rows at that value only, or none when it cannot be worked out. The
+     * reading is the browser's (growthVerdict): trimmed, a Missing Data Code
+     * blank, a saved date read as Y-M-D.
+     */
+    private function growthPageNeed(array $n, array $entry, array $config)
+    {
+        $codes = isset($config['missingCodes']) && is_array($config['missingCodes']) ? $config['missingCodes'] : [];
+        $lit = function ($key) use ($n, $codes) {
+            $op = isset($n[$key]) ? $n[$key] : null;
+            if (!is_array($op) || !isset($op[0]) || $op[0] !== 'lit') return null;
+            $v = trim(is_scalar($op[1] ?? null) ? (string) $op[1] : '', " \t\r\n");
+            return in_array($v, $codes, true) ? '' : $v;
+        };
+        $out = ['sexes' => ['male' => true, 'female' => true], 'xs' => null];
+        $sex = $lit('rangeSexOp');
+        if ($sex !== null) {
+            $out['sexes'] = ['male' => $sex === (string) ($n['rangeMale'] ?? ''), 'female' => $sex === (string) ($n['rangeFemale'] ?? '')];
+        }
+        $in = ['comma' => !empty($n['rangeAxisComma'])];
+        if (isset($n['rangeAgeDobOp']) || isset($n['rangeAgeAtOp'])) {
+            foreach (['dob' => 'rangeAgeDobOp', 'at' => 'rangeAgeAtOp'] as $w => $k) {
+                $v = $lit($k);
+                if ($v === null) return $out;   // read live on the page: every row
+                $type = isset($n['range' . ucfirst($w) . 'Type']) ? $n['range' . ucfirst($w) . 'Type'] : 'date';
+                $p = TemporalValue::parse($v, $type, 'ymd');
+                if ($p['state'] !== 'ok') { $out['xs'] = []; return $out; }
+                $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
+            }
+        } else {
+            $one = null;
+            foreach (['days' => 'rangeAgeDaysOp', 'months' => 'rangeAgeMonthsOp', 'by' => 'rangeByOp'] as $w => $k) {
+                if (!isset($n[$k])) continue;
+                $one = $w;
+                $v = $lit($k);
+                if ($v === null) return $out;
+                $in[$w] = $v;
+            }
+            if ($one === null) return $out;
+        }
+        $a = GrowthReference::axisValue($entry, $in);
+        $out['xs'] = $a['state'] === 'ok' ? [$a['x']] : [];
+        return $out;
+    }
+
+    /** Two pages' reads of one reference together: every row either needs. */
+    private static function mergePageNeed(array $a, array $b)
+    {
+        return ['sexes' => ['male' => !empty($a['sexes']['male']) || !empty($b['sexes']['male']),
+                            'female' => !empty($a['sexes']['female']) || !empty($b['sexes']['female'])],
+                'xs' => ($a['xs'] === null || $b['xs'] === null) ? null : array_merge($a['xs'], $b['xs'])];
     }
 
     /** True when foldOperand withheld one of this rule's or branch's operands. */
@@ -4874,6 +4964,14 @@ class UniversalValidator extends AbstractExternalModule
                         . 'validation, or to be a calc.');
                 }
                 if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $comma = true;
+                // Whole months on a table read by day: an infant of 1 month and
+                // 29 days is judged as 1 month old, and an underweight one
+                // passes (a z-score off by up to 2 in the first months).
+                if ($k === 'rangeAgeMonths' && $entry['axisUnit'] === 'days' && in_array($validation, ['int', 'integer'], true)) {
+                    return $refuse('"age" "months" field "' . $f . '" holds whole months, but "' . $id . '" is read by day, '
+                        . 'so an infant of 1 month and 29 days would be judged as 1 month old. Give "dob" and "at", an age '
+                        . 'in days, or a number field or calc that keeps the part month (datediff with "M", not rounded).');
+                }
             }
         }
         if ($comma) $frag['rangeAxisComma'] = true;

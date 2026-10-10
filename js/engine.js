@@ -2923,7 +2923,10 @@ function QRID_configErrorNotice(message){
    tests/branching_php.php and tests/hook_php.php lock server-side. */
 function QRID_buildVariants(cfg, makeVariant){
   var variants = [], elseVariant = null;
-  var unresolved = !!cfg.deferred;
+  /* A rule deferred only because the page could not carry its data
+     (deferredOnSave: checked when the record is saved) still has active
+     variants, so a mode can check what needs no such data. */
+  var unresolved = !!cfg.deferred && cfg.deferredOnSave !== true;
   /* Branch groups (php/Branching.php): a mode whose branches split by the
      value of one key (@UVRANGE: its reference) resolves them once per group,
      with an else per group. The dispatcher names the key (cfgFor). */
@@ -4131,6 +4134,10 @@ function QRIDRangeInit(QRID_CONFIG){
                  comma: cfg.rangeAxisComma === true };
     }
     var DEFERRED = !configError && !!cfg.deferred;
+    /* deferred only because the page could not carry the table (or the rule's
+       rule-level mark says so): the save checks it, and the measurement itself
+       is still checked here */
+    var ON_SAVE = DEFERRED && (cfg.deferredOnSave === true || QRID_CONFIG.deferredOnSave === true);
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
     /* An input on this page re-checks the value when it changes. */
@@ -4150,11 +4157,20 @@ function QRIDRangeInit(QRID_CONFIG){
        (TemporalRules::compile): it never blocks here, and the save re-checks it.
        cfg.blockSave itself is never read: @UVRANGE refuses the key, so the
        value here is the page-wide default ("off"), which cfgFor fills in. */
+    /* "Not a number" and "0 or below" need no input, table or limit: they keep
+       the rule's hard setting when its inputs are saved values from another
+       form or its table could not be sent. Not when what decides whether the
+       rule applies at all was read when the page opened (snapshotGate), nor
+       for a calc or an event/instance rule, which never block. */
+    var MEASURE_BLOCK = (cfg.rangeComputed === true || cfg.extendedAdvisory === true || cfg.snapshotGate === true
+      || (DEFERRED && !ON_SAVE)) ? "off" : HARD;
     return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
              blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.extendedAdvisory === true) ? "off" : HARD,
+             measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
-             deferred: DEFERRED, snapshot: SNAPSHOT,
-             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             deferred: DEFERRED, onSave: ON_SAVE, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy
+                        : (ON_SAVE && QRID_CONFIG.deferredWhy && QRID_CONFIG.deferredWhy.length) ? QRID_CONFIG.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: spec,
@@ -4167,11 +4183,24 @@ function QRIDRangeInit(QRID_CONFIG){
   var configError = VS.configError;
   var ANY_BLOCK = false;
   for(var abi = 0; abi < VS.all.length; abi++){
-    if(VS.all[abi].blockSave !== "off"){ ANY_BLOCK = true; break; }
+    if(VS.all[abi].blockSave !== "off" || VS.all[abi].measureBlock !== "off"){ ANY_BLOCK = true; break; }
   }
-  function blockFor(V, tier){
+  function measureReason(r){ return r.reason === "not-a-number" || r.reason === "not-positive"; }
+  function blockFor(V, tier, reason){
+    if(reason === "not-a-number" || reason === "not-positive") return V.measureBlock;
     if(V.blockSave === "off") return "off";
     return tier === "soft" ? V.softBlock : V.hardBlock;
+  }
+  /* The measurement alone, for a variant that cannot be judged further on
+     this page: { tier: "hard", reason } when it is not a number or 0 or
+     below, else null. A plain rule's number check is QRID_rangeVerdict's. */
+  function measureOnly(V, typed){
+    if(V.growth){
+      var m = QRID_growthMeasure(typed, V.spec.decimalComma);
+      return (m.state === "not-a-number" || m.state === "not-positive") ? { tier: "hard", reason: m.state } : null;
+    }
+    var r = QRID_rangeVerdict({ decimalComma: V.spec.decimalComma }, typed);
+    return (r.tier === "hard" && r.reason === "not-a-number") ? r : null;
   }
   function describe(V, r){
     if(V.message) return QRID_escapeHtml(V.message);
@@ -4292,6 +4321,13 @@ function QRIDRangeInit(QRID_CONFIG){
        (nothing to show), "deferral" (why), "info" (html, a grey note for
        staff), or "warn" / "bad" (html, block). */
     function judge(V, typed){
+      if(V.onSave){
+        /* not judged here, but the measurement is (L1) */
+        var mo = QRID_isMissingCode(typed) ? null : measureOnly(V, typed);
+        if(mo) return { kind: "bad", html: describe(V, mo), block: blockFor(V, mo.tier, mo.reason) };
+        return (V.deferredWhy && !QRID_IS_SURVEY)
+          ? { kind: "info", html: "Not checked on this page: " + QRID_escapeHtml(V.deferredWhy.join(" ")) } : { kind: "none" };
+      }
       if(V.deferred){
         return (V.deferredWhy && !QRID_IS_SURVEY) ? { kind: "deferral", why: V.deferredWhy } : { kind: "none" };
       }
@@ -4308,7 +4344,8 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       if(r.tier !== "soft" && r.tier !== "hard") return { kind: "none" };
       var base = describe(V, r);
-      if(V.snapshot && !QRID_IS_SURVEY){
+      /* "not a number" and "0 or below" use none of the saved values */
+      if(V.snapshot && !QRID_IS_SURVEY && !measureReason(r)){
         /* A growth rule's saved values are its inputs (sex, dates, age, length),
            not a choice of limits. */
         base += ' <span style="opacity:.8">(' + (V.growth ? "worked out with " : "limits chosen from ") +
@@ -4316,7 +4353,7 @@ function QRIDRangeInit(QRID_CONFIG){
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
       }
-      return { kind: r.tier === "soft" ? "warn" : "bad", html: base, block: blockFor(V, r.tier) };
+      return { kind: r.tier === "soft" ? "warn" : "bad", html: base, block: blockFor(V, r.tier, r.reason) };
     }
     var ICON = { warn: "&#9888; ", bad: "&#10007; ", info: "&#8505; ", deferral: "&#9888; " };
     var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
@@ -4330,7 +4367,7 @@ function QRIDRangeInit(QRID_CONFIG){
       if(act.conflict || (act.length > 1 && !VS.grouped)){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
       var typed = QRID_WHEN.readRef(fieldName, null);
       if(act.length === 1){
-        var j = act[0].deferred ? judge(act[0], typed) : QRID_isMissingCode(typed) ? { kind: "none" } : judge(act[0], typed);
+        var j = (act[0].deferred || !QRID_isMissingCode(typed)) ? judge(act[0], typed) : { kind: "none" };
         if(j.kind === "deferral"){
           QRID_renderDeferralNotice(msg, input, j.why, "n");
           setGuard(false); QRID_setModeState(input, "n", null);
@@ -4397,7 +4434,10 @@ function QRIDRangeInit(QRID_CONFIG){
         /* every reference must pass; one that cannot judge leaves the answer open */
         var open = false;
         for(var ti = 0; ti < a.length; ti++){
-          if(a[ti].deferred){ open = true; continue; }
+          if(a[ti].deferred){
+            if(a[ti].onSave && measureOnly(a[ti], QRID_WHEN.readRef(f, null))) return false;
+            open = true; continue;
+          }
           var t;
           try { t = verdictOf(a[ti], QRID_WHEN.readRef(f, null)).tier; } catch(e){ open = true; continue; }   /* fail open, as check() */
           if(t === "soft" || t === "hard") return false;

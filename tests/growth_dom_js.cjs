@@ -27,7 +27,12 @@
  *   - several references on one field (branch groups): each judges, the note
  *     has a line for each that has something to say, the worst decides the
  *     colour and the guard, and two active branches of one reference are a
- *     conflict.
+ *     conflict,
+ *   - "not a number" and "0 or below" keep the rule's hard setting when its
+ *     inputs are saved values from another form, or its table was left off
+ *     the page (deferredOnSave), and say nothing about the saved values; not
+ *     when the rule's condition was read when the page opened, for a calc, or
+ *     for an event/instance rule.
  *
  * The z-score itself is parity-locked by tests/growth_js.cjs + growth_php.php.
  *
@@ -485,6 +490,79 @@ function twoRefs(extraA, extraB) {
   const msg = nMsg(env, 'weight');
   check('one reference, two active branches: a conflict (got ' + msg.innerHTML + ')',
     /Validation conflict/.test(msg.innerHTML) && save(env) === 'saved' && env.NS.validators.weight.test() === null);
+}
+
+// ---- 9) the measurement alone keeps the rule's hard setting -------------------------------------
+/* sex and the date of birth saved on another form: folded to literals, named in snapshotFields */
+const SAVED = { rangeSexOp: ['lit', '1'], rangeAgeDobOp: ['lit', '2026-01-01'], rangeAgeAtOp: ['ref', 'visit_date', null],
+  rangeDobType: 'date', rangeDobFormat: 'ymd', rangeAtType: 'date', rangeAtFormat: 'ymd', snapshotFields: ['sex', 'dob'] };
+function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w)]; }
+{
+  const els = savedInputs('abc');
+  const w = els[1];
+  const env = boot(els, { growth: GROWTH, rules: [rule(SAVED)] });
+  const msg = nMsg(env, 'weight');
+  check('saved inputs: not a number is held, and the note names no saved value (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#10007; This is not a number.' && save(env) === 'held');
+  w.value = '0'; w.fire('change');
+  check('saved inputs: 0 is held', msg.innerHTML === '&#10007; A measurement must be above 0.' && save(env) === 'held');
+  w.value = '16'; w.fire('change');
+  check('saved inputs: a z-score verdict still never blocks, and says what it was worked out with (got ' + msg.innerHTML + ')',
+    /above the plausible range \(z-score 6\.00/.test(msg.innerHTML) && /worked out with sex, dob/.test(msg.innerHTML)
+    && save(env) === 'saved');
+  w.value = 'abc';
+  check('saved inputs: test() is false for not a number', env.NS.validators.weight.test() === false);
+}
+{
+  // hardBlock "confirm" is the rule's hard setting: it asks
+  const env = boot(savedInputs('-1'), { growth: GROWTH, rules: [rule(Object.assign({ rangeHardBlock: 'confirm' }, SAVED))] });
+  check('saved inputs: hardBlock confirm asks for 0 or below', save(env) === 'asked');
+}
+{
+  // a condition read when the page opened decides whether the rule applies: nothing blocks
+  const env = boot(savedInputs('abc'), { growth: GROWTH, rules: [rule(Object.assign({ snapshotGate: true }, SAVED))] });
+  check('saved condition (snapshotGate): not a number is shown, not held', /not a number/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'saved');
+  const env2 = boot(savedInputs('abc'), { growth: GROWTH, rules: [rule(Object.assign({ rangeComputed: true }, SAVED))] });
+  check('a calc: not a number never blocks', save(env2) === 'saved');
+  const env3 = boot(savedInputs('abc'), { growth: GROWTH, rules: [rule(Object.assign({ extendedAdvisory: true }, SAVED))] });
+  check('an event/instance rule: not a number never blocks', save(env3) === 'saved');
+}
+{
+  // left off the page by the table cap: the measurement is still checked
+  const CAP = ['this form already carries the rows of 4 growth reference tables, the most one page may carry, so this check runs when the record is saved.'];
+  const els = inputs('1', 'abc');
+  const w = els[3];
+  const env = boot(els, { rules: [rule(Object.assign({ deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
+  const msg = nMsg(env, 'weight');
+  check('cap: not a number is held (got ' + msg.innerHTML + ')', msg.innerHTML === '&#10007; This is not a number.' && save(env) === 'held');
+  check('cap: test() false', env.NS.validators.weight.test() === false);
+  w.value = '0'; w.fire('change');
+  check('cap: 0 is held', /must be above 0/.test(msg.innerHTML) && save(env) === 'held');
+  w.value = '16'; w.fire('change');
+  check('cap: a number gets the grey note, not a verdict, and is saved (got ' + msg.innerHTML + ')',
+    /^&#8505; Not checked on this page: this form already carries the rows of 4/.test(msg.innerHTML) && save(env) === 'saved'
+    && env.NS.validators.weight.test() === null);
+  // branch-level: one reference left off, the other judged
+  const env2 = boot(inputs('1', '16'), { growth: { 't-days2': T_DAYS2 }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ deferred: true, deferredOnSave: true, deferredWhy: CAP }), br({ rangeReference: 't-days2' })] }] });
+  check('cap, one reference of two: its grey line beside the other\'s verdict (got ' + nMsg(env2, 'weight').innerHTML + ')',
+    nMsg(env2, 'weight').innerHTML === '&#8505; Not checked on this page: ' + CAP[0]
+      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
+    || nMsg(env2, 'weight').innerHTML === '&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
+      + '<br>&#8505; Not checked on this page: ' + CAP[0]);
+  const env3 = boot(inputs('1', 'abc'), { context: 'survey', rules: [rule(Object.assign({ deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
+  check('cap, survey: not a number is still held', save(env3) === 'held');
+}
+
+// ---- 10) a table cut to what the page reads (UniversalValidator::growthPageNeed) -------------------
+{
+  // The sex and both dates saved: the server sends the boys' rows at day 2, one either side.
+  const CUT = Object.assign({}, T_DAYS, { first: 1, male: ROWS_M.slice(1, 4), female: [] });
+  const ALL_SAVED = { rangeSexOp: ['lit', '1'], rangeAgeDobOp: ['lit', '2026-01-01'], rangeAgeAtOp: ['lit', '2026-01-03'],
+    rangeDobType: 'date', rangeDobFormat: 'ymd', rangeAtType: 'date', rangeAtFormat: 'ymd', snapshotFields: ['sex', 'dob', 'visit_date'] };
+  const env = boot([el('weight', '13')], { growth: { 't-days': CUT }, rules: [rule(ALL_SAVED)] });
+  check('cut table: the rows at the saved age give the same z-score (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /higher than usual \(z-score 3\.00 on Test, age in days/.test(nMsg(env, 'weight').innerHTML));
 }
 
 console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

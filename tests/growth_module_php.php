@@ -260,6 +260,10 @@ namespace {
         'b_calcsex' => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_calc]","male":"1","female":"2",' . $AGE . ',"hard":[-5,5]}', 'number'),
         'b_calcage' => f('anthro_form', tag('who-hcfa', '"age":{"days":"[age_calc]"}'), 'number'),
         'b_dts'     => f('anthro_form', tag('who-wfa', '"age":{"dob":"[dob_dts]","at":"[at_dt]"}'), 'number'),
+        'b_monint'  => f('anthro_form', tag('who-wfa', '"age":{"months":"[age_mi]"}'), 'number'),
+        'b_monint7' => f('anthro_form', tag('who2007-bfa', '"age":{"months":"[age_mi]"}'), 'number'),
+        'b_monnum'  => f('anthro_form', tag('who-wfa', '"age":{"months":"[age_months]"}'), 'number'),
+        'age_mi'    => f('anthro_form', '', 'integer'),
         'chk'       => f('enrol_form', '', '', 'checkbox', '1, M | 2, F'),
         'yn'        => f('enrol_form', '', '', 'yesno'),
         'tf'        => f('enrol_form', '', '', 'truefalse'),
@@ -288,6 +292,8 @@ namespace {
         'b_tfbad'    => '"female" is "2", which is not a choice of "sex" field "tf" (its codes are 1, 0).',
         // a limit no measurement can pass: below -6.97 for triceps skinfold
         'b_reach'    => '"reference" "who-tsfa": its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at ',
+        // whole months on a table read by day
+        'b_monint'   => '"age" "months" field "age_mi" holds whole months, but "who-wfa" is read by day, so an infant of 1 month and 29 days',
     ];
     foreach ($cases as $f => $want) {
         check('dictionary: ' . $f . ' (got ' . json_encode($err($p, $f)) . ')', strpos($err($p, $f), $want) !== false
@@ -297,7 +303,8 @@ namespace {
     check('dictionary: a limit just inside the reach is taken', $err($p, 'b_reachok') === '');
     foreach (['b_tf' => 'a true/false sex field with 1 and 0', 'b_sqlsex' => 'an SQL sex field takes any codes',
               'b_calcsex' => 'a calc sex field takes any codes', 'b_calcage' => 'a calc age in days',
-              'b_dts' => 'datetime-with-seconds and datetime dates'] as $f => $label) {
+              'b_dts' => 'datetime-with-seconds and datetime dates',
+              'b_monint7' => 'whole months on a table read by month', 'b_monnum' => 'months as a number on a table read by day'] as $f => $label) {
         check('dictionary: ' . $label . ' (got ' . json_encode($err($p, $f)) . ')', ruleFor($p, $f) !== null && $err($p, $f) === '');
     }
     $r = ruleFor($p, 'b_dts');
@@ -327,21 +334,68 @@ namespace {
     check('page: the tables in use, and only those, at most 4 (got ' . json_encode($ids) . ')',
         $ids === ['who-hcfa', 'who-wfa', 'who-wfh', 'who2007-bfa']);
     $wfa = $g['who-wfa'] ?? [];
-    check('page: a table copy carries the index fields and the rows', ($wfa['title'] ?? '') === 'Weight-for-age, WHO 2006 (birth to 5 years)'
+    // The sex is saved on enrol_form (a boy): only the boys' rows travel.
+    check('page: a table copy carries the index fields and the rows of the saved sex', ($wfa['title'] ?? '') === 'Weight-for-age, WHO 2006 (birth to 5 years)'
         && $wfa['axis'] === 'age' && $wfa['axisUnit'] === 'days' && $wfa['lookup'] === 'round' && $wfa['adjust'] === 'who-restricted'
         && $wfa['valid'] === ['min' => '0', 'below' => '1826.25'] && $wfa['scale'] === 1 && $wfa['first'] === 0
-        && count($wfa['male']) === 1827 && count($wfa['female']) === 1827 && !isset($wfa['sha256']) && !isset($wfa['file']));
+        && count($wfa['male']) === 1827 && $wfa['female'] === [] && !isset($wfa['sha256']) && !isset($wfa['file']));
     $deferred = array_filter($p['cfg']['rules'], function ($x) { return !empty($x['rangeReference']) && !empty($x['deferred']); });
     check('page: four tables fit, nothing deferred', !$deferred);
     $five = $DICT + ['muac' => f('anthro_form', tag('who-acfa', '"age":{"days":"[age_days]"}'), 'number_1dp')];
     $p5 = page(mod($five, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     $r5 = ruleFor($p5, 'muac');
-    check('page: a fifth table is one too many, its rule deferred with the reason (got ' . json_encode($r5['deferredWhy'] ?? null) . ')',
+    check('page: with the sex saved each table is half a table, so five fit (got ' . json_encode(array_keys($p5['cfg']['growth'] ?? [])) . ')',
+        $r5 && empty($r5['deferred']) && count($p5['cfg']['growth']) === 5);
+    // The sex on this form: every row of both sexes, a whole table each.
+    $LIVESEX = ['sex' => f('anthro_form', '', '', 'radio', $SEXES)] + $five;
+    $p5 = page(mod($LIVESEX, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r5 = ruleFor($p5, 'muac');
+    check('page: a fifth whole table is one too many, its rule deferred with the reason (got ' . json_encode($r5['deferredWhy'] ?? null) . ')',
         $r5 && !empty($r5['deferred']) && count($p5['cfg']['growth']) === 4 && !isset($p5['cfg']['growth']['who-acfa'])
-        && strpos(implode(' ', $r5['deferredWhy'] ?? []), 'already carries 4 growth reference tables, the most one page may carry (4)') !== false);
+        && implode(' ', $r5['deferredWhy'] ?? []) === 'this form already carries the rows of 4 growth reference tables, and this one '
+            . 'would take it past the most one page may carry (4), so this check runs when the record is saved.');
     check('page: the cap deferral is marked as checked on save', $r5 && ($r5['deferredOnSave'] ?? null) === true);
     $wt = ruleFor($p5, 'weight');
     check('page: a rule that fits is not marked', $wt && !isset($wt['deferredOnSave']));
+    check('page: a whole table carries both sexes', count($p5['cfg']['growth']['who-wfa']['female'] ?? []) === 1827);
+    // An age saved on another form: only the rows at that age travel, and they use none of the cap.
+    $FIXED = $LIVESEX;
+    $FIXED['age_days'] = f('enrol_form', '', 'integer');
+    $p6 = page(mod($FIXED, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $hc = $p6['cfg']['growth']['who-hcfa'] ?? [];
+    $entry = GrowthReference::entry('who-hcfa');
+    $tbl = GrowthReference::table($entry);
+    $want = GrowthReference::lms($entry, $tbl, 'male', 365.0);
+    check('page: an age saved on another form sends the rows at that age, one either side (got ' . json_encode([$hc['first'] ?? null, count($hc['male'] ?? [])]) . ')',
+        ($hc['first'] ?? null) === 364 && count($hc['male'] ?? []) === 3 && count($hc['female'] ?? []) === 3
+        // == : the page copy went through JSON, which writes 1.0 as 1
+        && $want !== null && GrowthReference::lms($entry, $hc, 'male', 365.0) == $want);
+    $r6 = ruleFor($p6, 'muac');
+    check('page: ... and use none of the cap: the fifth rule, at that age too, fits (got ' . json_encode(array_keys($p6['cfg']['growth'] ?? [])) . ')',
+        $r6 && empty($r6['deferred']) && isset($p6['cfg']['growth']['who-acfa']));
+    $NOAGE = $DATA; $NOAGE['2'][351]['age_days'] = '';
+    $p7 = page(mod($FIXED, $NOAGE, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: a saved age that is blank needs no rows at all', ($p7['cfg']['growth']['who-hcfa']['male'] ?? null) === []);
+    // A branch whose condition the server settled false never applies on this page: no table.
+    $SET = $DICT + [
+        'grp'    => f('enrol_form', '', '', 'radio', '1, A | 2, B'),
+        'wt_set' => f('anthro_form', substr(tag('who-acfa', $AGE), 0, -1) . ',"when":"[grp]=\'2\'"} ' . tag('who-wfa', $AGE), 'number_1dp'),
+    ];
+    $set = $DATA; $set['2'][351]['grp'] = '1';
+    $p8 = page(mod($SET, $set, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: a branch settled false by a saved value gets no table (got ' . json_encode(array_keys($p8['cfg']['growth'] ?? [])) . ')',
+        !isset($p8['cfg']['growth']['who-acfa']) && isset($p8['cfg']['growth']['who-wfa']));
+    $set['2'][351]['grp'] = '2';
+    $p8 = page(mod($SET, $set, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: ... and settled true, it does', isset($p8['cfg']['growth']['who-acfa']));
+    // Only the branch that does not fit is deferred; the rule and its other branch stay.
+    $BR5 = $LIVESEX + ['wt_b5' => f('anthro_form', tag('who-wfa', $AGE) . ' ' . tag('who-lhfa', $AGE), 'number_1dp')];
+    unset($BR5['muac']);
+    $p9 = page(mod($BR5, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r9 = ruleFor($p9, 'wt_b5');
+    $marks = $r9 ? array_map(function ($b) { return [$b['rangeReference'], !empty($b['deferred']), !empty($b['deferredOnSave'])]; }, $r9['branches'] ?? []) : [];
+    check('page: of two references on one field, only the one past the cap is deferred (got ' . json_encode($marks) . ')',
+        $r9 && empty($r9['deferred']) && $marks === [['who-wfa', false, false], ['who-lhfa', true, true]]);
     $none = ['record_id' => f('enrol_form'), 'x' => f('anthro_form', '@UVRANGE={"hard":[0,10]}', 'number')];
     $p0 = page(mod($none, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: no growth rule, no tables', !isset($p0['cfg']['growth']));
@@ -656,8 +710,9 @@ namespace {
     file_put_contents($dir . '/index.json', json_encode(['format' => 'uv-references-1', 'pageTables' => 1, 'references' => new \stdClass()]));
     $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
     $kept = array_filter($p['cfg']['rules'], function ($x) { return !empty($x['rangeReference']) && empty($x['deferred']); });
-    check('extra folder: "pageTables" sets the cap (1 table, so 1 kept and the rules of the others deferred)',
-        count($p['cfg']['growth'] ?? []) === 1 && count($kept) === 1);
+    // the sex is saved, so half tables: two fit, and wt_c reads the who-wfh already sent
+    check('extra folder: "pageTables" sets the cap (1 table: two half tables, three rules kept, the others deferred)',
+        count($p['cfg']['growth'] ?? []) === 2 && count($kept) === 3);
     rmtree($dir);
 
     fwrite(STDOUT, "growth_module_php: $n checks, $fail failure(s)\n");
