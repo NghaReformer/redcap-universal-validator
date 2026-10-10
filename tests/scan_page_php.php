@@ -153,6 +153,14 @@ namespace ExternalModules {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled
                     ? (string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION : null]]);
             }
+            // Schema::health() asks for every table in one read (M11) and is
+            // answered with the names that exist; a capability probe still
+            // asks COUNT(*) of one.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                $rows = [];
+                if ($this->tablesInstalled) foreach ($params as $t) $rows[] = [$t];
+                return new \ExternalModules\FakeRes($rows);
+            }
             if (strpos($sql, 'information_schema.tables') !== false) {
                 return new \ExternalModules\FakeRes([[$this->tablesInstalled ? '1' : '0']]);
             }
@@ -1515,6 +1523,19 @@ namespace {
         check('PANEL: and the panel says it is busy',
             strpos($live, 'aria-busy="true"') !== false);
 
+        // P10, through the real page and the real status(): the run row's own
+        // storage counters reach the panel before any script runs.
+        check('PANEL P10: a run that has stored rows says how many, and how much they hold',
+            preg_match('/<div id="uv-scan-stored" style="margin-top[^"]*">Stored: 2 finding rows, '
+                     . 'with 400 bytes of values<\/div>/', $live) === 1);
+        check('PANEL P10: with no run the line is there for the client, hidden and empty',
+            preg_match('/<div id="uv-scan-stored" style="display:none;[^"]*"><\/div>/', $html) === 1);
+        list($none, ) = render($U(), $D, $data, [], $on([
+            'activeRun' => 55, 'runRow' => uv_run_row(['detail_rows' => '0', 'detail_bytes' => '0'] + $LIVE),
+            'recordStates' => [['100', '3'], ['0', '7']]]));
+        check('PANEL P10: and a run that has stored nothing says nothing about storage',
+            preg_match('/<div id="uv-scan-stored" style="display:none;[^"]*"><\/div>/', $none) === 1);
+
         // L5, through the real page and the real status(): the run row's own
         // progress clock decides whether the watcher is told anything.
         check('PANEL: a run that is moving carries the stalled node hidden and empty',
@@ -1959,12 +1980,41 @@ namespace {
             $V::panelPrefill(array_merge($ended, ['findings' => 0]))['found'] === 'Nothing found yet'
             && $V::panelPrefill(array_merge($ended, ['findings' => 2]))['found'] === '2 findings so far');
 
+        // P10: WHAT THE RUN HAS STORED. tests/scan_client_js.cjs asks the
+        // client the same table and expects the same strings, digit for digit.
+        $sizes = [0 => '0 bytes', 1 => '1 byte', 400 => '400 bytes', 1023 => '1023 bytes',
+                  1024 => '1.0 KB', 1075 => '1.0 KB', 1076 => '1.1 KB', 1048575 => '1.0 MB',
+                  3565158 => '3.4 MB', 3617587 => '3.4 MB', 3617588 => '3.5 MB', 1073741824 => '1.0 GB',
+                  2199023255552 => '2.0 TB', 1125899906842624 => '1,024.0 TB'];
+        $badSize = [];
+        foreach ($sizes as $b => $want) {
+            if ($V::sizeText($b) !== $want) $badSize[] = $b . ' => ' . $V::sizeText($b);
+        }
+        check('PREFILL P10: sizes read as a person reads them, rounded the way the client rounds',
+            $badSize === []);
+        $stored = function ($rows, $bytes) use ($V) {
+            return $V::panelPrefill(['ok' => true, 'phase' => 'scanning', 'terminal' => null,
+                'total' => 10, 'done' => 3, 'findings' => 1, 'active' => true,
+                'detailRows' => $rows, 'detailBytes' => $bytes])['stored'];
+        };
+        check('PREFILL P10: rows and the size of the values kept with them',
+            $stored(12345, 3565158) === 'Stored: 12,345 finding rows, with 3.4 MB of values');
+        check('PREFILL P10: one row, and no values kept, says only the row',
+            $stored(1, 0) === 'Stored: 1 finding row');
+        check('PREFILL P10: a run that stored nothing says nothing about storage',
+            $stored(0, 0) === null && $stored(null, 500) === null && $stored(-3, 10) === null
+            && $stored('12abc', 10) === null);
+        check('PREFILL P10: a count that arrives as digits is still a count',
+            $stored('7', '2048') === 'Stored: 7 finding rows, with 2.0 KB of values');
+        check('PREFILL P10: and an unreadable status says nothing at all',
+            $V::panelPrefill(null)['stored'] === null);
+
         // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
         // the two: js/scan.js holds a fallback for each and no other copy.
         $L = $V::labels();
         $sentences = ['stalled', 'paused', 'stopping', 'planningStopped',
                       'plain', 'checked', 'excluded', 'removed',
-                      'foundUnknown',
+                      'foundUnknown', 'stored', 'storedValues',
                       'notCertified', 'ruleProblem', 'ruleProblems'];
         $all = '';
         foreach ($sentences as $k) {
@@ -1975,7 +2025,7 @@ namespace {
         check('LABELS: none of them carries an apostrophe into the script block',
             strpos($all, "'") === false);
         $js = file_get_contents(__DIR__ . '/../js/scan.js');
-        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified'] as $k) {
+        foreach (['plain', 'checked', 'excluded', 'removed', 'notCertified', 'stored', 'storedValues'] as $k) {
             check("LABELS: and the client's fallback for '$k' is the page's own wording",
                 strpos($js, "L.$k || '" . $L[$k] . "'") !== false);
         }

@@ -5485,8 +5485,36 @@ class UniversalValidator extends AbstractExternalModule
      *               formStatusFields: array<string,string> gateable host form => its status field,
      *               formStartFields: array<string,string[]> gateable host form => the fields whose
      *               value says it was started (its status field, then the read fields it owns)}
+     *
+     * ONCE PER REQUEST, WHEN THE CALLER HANDS OVER A MEMO (M12). The durable scan
+     * rebuilt this whole plan - rule discovery, the dictionary, host resolution,
+     * the capability probes, every cross-project rights check - twice in every
+     * work request, once for the work and once for the status it returns.
+     * $opts['memo'] is an \ArrayObject the CALLER owns: ScanService makes one
+     * per instance, and an instance lives for one request. The memo is never
+     * kept on this object, because a cron process runs many projects through
+     * one module instance and a plan from an earlier pass would describe rules
+     * and rights as they were then. The key is every input that changes the
+     * answer: the project, the group scope, the value ceiling, the rights gate,
+     * and the reader - crossRefused, the instrument rights and the disclosure
+     * cap are all about who is asking.
+     *
+     * $opts['capabilities']: ScanCapabilities::all() as the caller already
+     * probed it in this request, so the probes are not sent twice (P1).
      */
     private function scanPlan($pid, array $opts = [], $dagFilter = null)
+    {
+        $memo = (isset($opts['memo']) && $opts['memo'] instanceof \ArrayObject) ? $opts['memo'] : null;
+        if ($memo === null) return $this->buildScanPlan($pid, $opts, $dagFilter);
+        $key = json_encode([(int) $pid, $dagFilter === null ? null : (string) $dagFilter,
+            isset($opts['valueCeiling']) ? (string) $opts['valueCeiling'] : null,
+            !empty($opts['enforceFormRights']), $this->currentUsername()]);
+        if (!isset($memo[$key])) $memo[$key] = $this->buildScanPlan($pid, $opts, $dagFilter);
+        return $memo[$key];
+    }
+
+    /** @see scanPlan() - the plan itself, built every time it is called. */
+    private function buildScanPlan($pid, array $opts = [], $dagFilter = null)
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
                 // Empty means "no started-form gate": every designated context is
@@ -5531,7 +5559,8 @@ class UniversalValidator extends AbstractExternalModule
         // call it - which is worse than not having written it, because the suite
         // reported the property as covered.
         try {
-            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid));
+            $out['policy'] = ScanCapabilities::policy(ScanCapabilities::all($this, $pid,
+                (isset($opts['capabilities']) && is_array($opts['capabilities'])) ? $opts['capabilities'] : []));
         } catch (\Throwable $e) {
             // A probe layer that fails cannot license a claim. Cap at the
             // weakest coverage rather than assume the strongest.

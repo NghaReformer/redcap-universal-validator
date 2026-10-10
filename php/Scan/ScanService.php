@@ -81,10 +81,34 @@ final class ScanService
     /** @var array project id => RecordManifestSource|null, opened at most once per request */
     private $sources = [];
 
+    // -- answers kept for the life of this object, which is one request ------
+    //
+    // ONE INSTANCE, ONE REQUEST, and that is the whole safety argument for
+    // keeping anything (P1, M12). The endpoint and the page each build a
+    // ScanService per request, so nothing below can describe a configuration,
+    // a schema or a user's rights from an earlier one. Every key carries the
+    // project, because a cron pass may work several projects through one
+    // instance. Nothing here is static: a static would outlive the request in
+    // exactly the long-lived worker where that matters.
+
+    /** @var array project id => available()'s answer */
+    private $availability = [];
+    /** @var array project id => ScanCapabilities::recordEnumeration()'s answer */
+    private $enumeration = [];
+    /** @var array project id => ScanCapabilities::all()'s answer, or null when it threw */
+    private $capabilities = [];
+    /** @var array project id => the change log as a fence, or null when there is none */
+    private $fences = [];
+    /** @var array entitlement key (see entitlement()) => its answer */
+    private $entitlements = [];
+    /** @var \ArrayObject the plans durableScanContext() built for this request */
+    private $plans;
+
     public function __construct($module)
     {
         $this->module = $module;
         $this->db = is_callable([$module, 'query']) ? new ModuleDb($module) : null;
+        $this->plans = new \ArrayObject();
     }
 
     /**
@@ -96,9 +120,23 @@ final class ScanService
      * existing; then the capability gate, which is the one that decides whether
      * a scan can be bounded at all.
      *
+     * ASKED ONCE PER REQUEST. The flags, the schema and the capability gate do
+     * not change between two questions in one request, and the health check is
+     * two statements that every work request pays (M11).
+     *
      * @return array{ok:bool, why:?string, detail:?string}
      */
     public function available($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->availability)) {
+            $this->availability[$k] = $this->availableNow($pid);
+        }
+        return $this->availability[$k];
+    }
+
+    /** @see available() — the answer, worked out. */
+    private function availableNow($pid)
     {
         if ($this->db === null) {
             return self::no('this REDCap build does not give modules their own database access, '
@@ -114,7 +152,7 @@ final class ScanService
             return self::no('the scan\'s own tables are not ready on this installation',
                 isset($health['why']) ? $health['why'] : null);
         }
-        $caps = ScanCapabilities::recordEnumeration($this->module, $pid);
+        $caps = $this->recordEnumeration($pid);
         if ($caps['state'] !== ScanCapabilities::OK) {
             return self::no('this installation cannot list the project\'s records without '
                 . 'exporting the whole project, so a bounded scan is not possible here',
@@ -178,8 +216,8 @@ final class ScanService
         // back a context with no evaluator rather than one silently bound to
         // generation 1, which is what every run of every project used to write.
         $ctx = $this->module->durableScanContext($pid,
-            ['valueCeiling' => $policy['valueMode'], 'generation' => null,
-             'policy' => $policy], $dag);
+            $this->planOptions($pid, ['valueCeiling' => $policy['valueMode'], 'generation' => null,
+                                      'policy' => $policy]), $dag);
         if (empty($ctx['ok'])) return self::noStart($ctx['why']);
 
         // Every instrument the run will read, from the plan rather than from a
@@ -306,11 +344,15 @@ final class ScanService
         // one predicate - while not asking at all is how a run ends up complete
         // in every respect except the row that says so.
         $u = $this->finalizer($pid, $ctx)->status((int) $run['generation_id']);
-        ScanPromotion::promote($store, $pid, $runId, [
-            'blockingAggregates' => $store->blockingAggregates($runId),
-            // WHAT WAS FOUND IS NOT PASSED. Violations, rule problems and gaps
-            // are read from the store by promote() itself - ScanPromotion::tally()
-            // - so no caller can feed the verdict a number from the wrong place.
+        $p = ScanPromotion::promote($store, $pid, $runId, [
+            // WHAT WAS FOUND IS NOT PASSED. Violations, rule problems, gaps,
+            // what blocks coverage and the window's changes are read from the
+            // store by promote() itself - ScanPromotion::tally() - so no caller
+            // can feed the verdict a number from the wrong place, and a pass
+            // that cannot promote reads none of them. The last two were read
+            // here on every pass; the window's was a call to a method this
+            // class no longer had, so every work request that reached this
+            // line died with an Error (W8-N1).
             // The gap count is still permanently zero: nothing in the shipped
             // tree writes a 'collection-gap' aggregate, because no gap detector
             // exists. Do not infer from a green suite that gaps are being counted.
@@ -322,9 +364,18 @@ final class ScanService
             // A @UVEXISTS verdict depends on other records, which the catch-up
             // does not re-check when one of them changes (ScanPromotion::facts).
             'crossRecordLookups' => !empty($ctx['plan']['crossRecordLookups']),
-            'windowChanges'  => $this->aggregateTotal($store, $runId, CatchUp::K_WINDOW),
         ]);
-        return array_merge($r, ['status' => $this->status($pid, $runId)]);
+
+        // THE CENSUS PROMOTION READ IS THE ONE THE STATUS NEEDS (P11), and it
+        // was asked for twice: once by promote(), once by status() straight
+        // after it - an O(manifest) count, twice, on every work request.
+        // promote() read it after the worker's last commit, so it describes
+        // the run as the worker left it. It stands in for status()'s own read
+        // ONLY when promote() wrote nothing after taking it: a promotion that
+        // sent finish() ended the run, and a census taken before that write
+        // must not describe the run after it - so then status() reads again.
+        $known = empty($p['wrote']) ? ['run' => $p['run'], 'census' => $p['census']] : [];
+        return array_merge($r, ['status' => $this->statusOf($pid, $runId, $known)]);
     }
 
     /**
@@ -378,11 +429,31 @@ final class ScanService
      * marked - carries no `final`, and a watching page keeps asking on its
      * ladder. It used to treat every refusal as the last word, so one blip
      * left a tab that never learned the run had finished.
+     *
+     * WHAT THE RUN HAS STORED (P10). `detailRows` and `detailBytes` are the
+     * counters commitBatch() keeps on the run row - finding rows written and the
+     * bytes of the values kept with them - so an operator can see what a run is
+     * adding to the installation's tables while it runs. Nothing rendered them.
+     * They are not the findings count: the finalizer's duplicates are not in
+     * them and superseded rows still are.
      */
     public function status($pid, $runId)
     {
+        return $this->statusOf($pid, $runId, []);
+    }
+
+    /**
+     * status(), with what this request has already read about the run.
+     *
+     * $known: `run`, the row as ScanStore::run() returns it, and `census`, its
+     * recordStates(), each used in place of reading it again. advanceRun()
+     * passes what promotion read, and only when nothing was written since; see
+     * there. Anything absent or not an array is read here.
+     */
+    private function statusOf($pid, $runId, array $known)
+    {
         $store = $this->store();
-        $run = $store->run($pid, $runId);
+        $run = (isset($known['run']) && is_array($known['run'])) ? $known['run'] : $store->run($pid, $runId);
         if ($run === null) return ['ok' => false, 'why' => self::NO_RUN, 'final' => true];
 
         $ent = $this->entitlement($pid, $run);
@@ -414,7 +485,9 @@ final class ScanService
         if (!array_key_exists('lease_expires_at', $run)) {
             $run['lease_expires_at'] = $this->leaseOf($pid, $runId);
         }
-        $progress = self::progressOf($run, $store->recordStates($runId), time(),
+        $census = (isset($known['census']) && is_array($known['census']))
+                ? $known['census'] : $store->recordStates($runId);
+        $progress = self::progressOf($run, $census, time(),
             self::STALL_SECONDS, $this->planningSeconds());
         // cancelForms, NOT forms - see entitlement(). A run nobody may stop
         // holds the project's only slot with no reaper behind it.
@@ -444,6 +517,8 @@ final class ScanService
             'planningStopped' => $progress['planningStopped'],
             'idleSeconds' => $progress['idleSeconds'],
             'findings'  => ScanPromotion::findingsOf($store, $run),
+            'detailRows'  => isset($run['detail_rows']) ? max(0, (int) $run['detail_rows']) : 0,
+            'detailBytes' => isset($run['detail_bytes']) ? max(0, (int) $run['detail_bytes']) : 0,
             'scope'     => ($run['scope_dag'] === null ? 'project' : 'group'),
             'active'    => ScanPhase::isActive((string) $run['phase']),
             'mayCancel' => !empty($cancel['ok']),
@@ -913,8 +988,30 @@ final class ScanService
      * Every read and every work request goes through this rather than trusting
      * the run: rights revoked during a run stop further reads, and the run id
      * does not restore them.
+     *
+     * ONCE PER REQUEST FOR ONE READER OF ONE RUN (M12). A work request asked
+     * twice - for the work, and for the status it returns - and each answer
+     * rebuilt the plan. "Re-derived now" means per request, and a second answer
+     * one call later is the same request. The key is everything the answer is
+     * made of: the project, the run's scope and the generation and sequence
+     * the evaluator is bound to, and the reader, whose rights, value ceiling
+     * and cross-project answers (`crossRefused`) are all in it.
      */
     private function entitlement($pid, array $run)
+    {
+        $key = json_encode([(int) $pid,
+            isset($run['scope_dag']) ? (string) $run['scope_dag'] : null,
+            isset($run['generation_id']) ? (int) $run['generation_id'] : null,
+            isset($run['run_seq']) ? (int) $run['run_seq'] : null,
+            $this->username()]);
+        if (!array_key_exists($key, $this->entitlements)) {
+            $this->entitlements[$key] = $this->entitlementNow($pid, $run);
+        }
+        return $this->entitlements[$key];
+    }
+
+    /** @see entitlement() — the answer, worked out. */
+    private function entitlementNow($pid, array $run)
     {
         $scope = ScanPageView::scanScope($this->module, $pid);
         if (empty($scope['ok'])) {
@@ -927,12 +1024,12 @@ final class ScanService
         // The run is in hand, so the evaluator is bound to THIS run's
         // generation and sequence - the numbers its findings are written under
         // and the interval they open.
-        $ctx = $this->module->durableScanContext($pid, [
+        $ctx = $this->module->durableScanContext($pid, $this->planOptions($pid, [
             'valueCeiling' => $policy['valueMode'],
             'generation'   => (int) $run['generation_id'],
             'runSeq'       => (int) $run['run_seq'],
             'policy'       => $policy,
-        ], $run['scope_dag']);
+        ]), $run['scope_dag']);
         // Never final: the commonest reason is a rule list or a dictionary that
         // could not be read just now.
         if (empty($ctx['ok'])) return ['ok' => false, 'why' => $ctx['why'], 'final' => false];
@@ -998,11 +1095,70 @@ final class ScanService
         return new SqlScanStore($this->db);
     }
 
-    /** The project's change log, or null when this installation has none. */
+    /**
+     * The project's change log, or null when this installation has none.
+     *
+     * OPENED ONCE PER REQUEST. Opening it is two reads - the table name and the
+     * top of the log - and a work request opened it four times: for the
+     * worker, for catch-up, and for the uniqueness finalizer twice. Whether a
+     * project has a change log does not change inside a request; where its top
+     * is does, and that is read through the fence each time it is asked.
+     */
     private function fence($pid)
     {
-        $f = SourceFence::forProject($this->db, $pid);
-        return empty($f['ok']) ? null : $f['fence'];
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->fences)) {
+            $f = SourceFence::forProject($this->db, $pid);
+            $this->fences[$k] = empty($f['ok']) ? null : $f['fence'];
+        }
+        return $this->fences[$k];
+    }
+
+    /**
+     * The record-enumeration probe, asked once per request: available() gates
+     * on it, and the capability census the plan needs contains it.
+     */
+    private function recordEnumeration($pid)
+    {
+        $k = (int) $pid;
+        if (!isset($this->enumeration[$k])) {
+            $this->enumeration[$k] = ScanCapabilities::recordEnumeration($this->module, $pid);
+        }
+        return $this->enumeration[$k];
+    }
+
+    /**
+     * Every capability probe, once per request, reusing the enumeration answer
+     * available() already has. Null when the probes threw: the plan then asks
+     * for itself, and its own catch caps the run at the weakest coverage.
+     */
+    private function capabilities($pid)
+    {
+        $k = (int) $pid;
+        if (!array_key_exists($k, $this->capabilities)) {
+            try {
+                $known = isset($this->enumeration[$k])
+                       ? ['recordEnumeration' => $this->enumeration[$k]] : [];
+                $this->capabilities[$k] = ScanCapabilities::all($this->module, $pid, $known);
+                $this->enumeration[$k] = $this->capabilities[$k]['recordEnumeration'];
+            } catch (\Throwable $e) {
+                $this->capabilities[$k] = null;
+            }
+        }
+        return $this->capabilities[$k];
+    }
+
+    /**
+     * What durableScanContext() is asked with: the caller's options, plus this
+     * request's plan memo and capability census, so neither is rebuilt for a
+     * second question in the same request.
+     */
+    private function planOptions($pid, array $opts)
+    {
+        $opts['memo'] = $this->plans;
+        $caps = $this->capabilities($pid);
+        if ($caps !== null) $opts['capabilities'] = $caps;
+        return $opts;
     }
 
     /**

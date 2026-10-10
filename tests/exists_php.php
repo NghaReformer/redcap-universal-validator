@@ -693,12 +693,17 @@ namespace {
     check('promotion: lookups with no change in the window keep the fence', $O::derive($f['facts'])['coverage'] === $O::FENCED);
     $f = $P::facts($run, [\INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE => 3], $ok + ['windowChanges' => 5]);
     check('promotion: changes without lookups keep the fence', $O::derive($f['facts'])['coverage'] === $O::FENCED);
-    // Wiring pin: the durable worker hands both facts to promotion (the path
-    // needs a database, so the matrix runs it; this keeps the hand-off honest).
+    // Wiring pin: the durable worker hands promotion the lookups fact, and
+    // promotion counts the window's changes from the store itself (the path
+    // needs a database, so tests/mysql/cases/perf.php runs it, and
+    // tests/scan_service_php.php drives promote() over a window aggregate).
+    // The window count used to be the service's call to a method it no longer
+    // had, which this pin - a string match - could not see (W8-N1).
     $svcSrc = file_get_contents(__DIR__ . '/../php/Scan/ScanService.php');
+    $proSrc = file_get_contents(__DIR__ . '/../php/Scan/ScanPromotion.php');
     check('durable scan: promotion is told about cross-record lookups and window changes',
         strpos($svcSrc, "'crossRecordLookups' => !empty(\$ctx['plan']['crossRecordLookups'])") !== false
-        && strpos($svcSrc, "'windowChanges'  => \$this->aggregateTotal(\$store, \$runId, CatchUp::K_WINDOW)") !== false);
+        && strpos($proSrc, "'windowChanges' => self::kindTotal(\$aggregates, self::WINDOW_KINDS)") !== false);
 
     // S7: the record a DAG user names must be in their group.
     $m = mod();

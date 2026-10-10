@@ -57,7 +57,7 @@ function makeEl(id) {
 const els = {};
 ['uv-scan-panel', 'uv-scan-start', 'uv-scan-cancel', 'uv-scan-resume', 'uv-scan-phase',
  'uv-scan-bar-track', 'uv-scan-bar', 'uv-scan-counts', 'uv-scan-found', 'uv-scan-done',
- 'uv-scan-note', 'uv-scan-announce', 'uv-scan-stalled'].forEach((id) => {
+ 'uv-scan-note', 'uv-scan-announce', 'uv-scan-stalled', 'uv-scan-stored'].forEach((id) => {
   els[id] = makeEl(id);
 });
 
@@ -138,6 +138,8 @@ UV.labels = {
   excluded: '{n} could not be checked',
   removed: '{n} deleted during the scan',
   foundUnknown: 'Findings not counted, because the scan ended before it could total them',
+  stored: 'Stored: {rows}',
+  storedValues: 'Stored: {rows}, with {size} of values',
   notCertified: 'This result does not certify the project.',
   ruleProblem: '1 rule could not be evaluated, so this result does not certify the project.',
   ruleProblems: '{n} rules could not be evaluated, so this result does not certify the project.',
@@ -936,6 +938,43 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   check('found: with no vocabulary handed over it still does not say nothing was found',
     els['uv-scan-found'].textContent.indexOf('not counted') !== -1);
   UV.labels = keptLabels;
+
+  // -- P10: what the run has stored ------------------------------------------
+  //
+  // The run row's storage counters, which nothing rendered. The size table is
+  // tests/scan_page_php.php's, string for string: the panel's first paint and
+  // the client's first poll must not disagree by a digit.
+  await show(Object.assign(counted({}), { detailRows: 12345, detailBytes: 3565158 }));
+  check('stored: a run that has stored rows says how many, and how much the values take',
+    els['uv-scan-stored'].textContent === 'Stored: 12,345 finding rows, with 3.4 MB of values'
+    && els['uv-scan-stored'].style.display === '');
+  await show(Object.assign(counted({}), { detailRows: 1, detailBytes: 0 }));
+  check('stored: one row and no values says only the row',
+    els['uv-scan-stored'].textContent === 'Stored: 1 finding row');
+  await show(Object.assign(counted({}), { detailRows: 0, detailBytes: 0 }));
+  check('stored: a run that stored nothing hides the line and empties it',
+    els['uv-scan-stored'].textContent === '' && els['uv-scan-stored'].style.display === 'none');
+  await show(Object.assign(counted({}), { detailRows: '<b>9</b>', detailBytes: 10 }));
+  check('stored: a count that is not a number is not a count, and is never written as markup',
+    els['uv-scan-stored'].textContent === '' && els['uv-scan-stored'].style.display === 'none');
+  const sizes = { 0: '0 bytes', 1: '1 byte', 400: '400 bytes', 1023: '1023 bytes', 1024: '1.0 KB',
+    1075: '1.0 KB', 1076: '1.1 KB', 1048575: '1.0 MB', 3565158: '3.4 MB', 3617587: '3.4 MB',
+    3617588: '3.5 MB', 1073741824: '1.0 GB', 2199023255552: '2.0 TB', 1125899906842624: '1,024.0 TB' };
+  const badSizes = [];
+  for (const b of Object.keys(sizes)) {
+    // Through the line, with one row, so the size is what follows "with ".
+    await show(Object.assign(counted({}), { detailRows: 1, detailBytes: Number(b) }));
+    const got = Number(b) === 0 ? 'Stored: 1 finding row'
+      : 'Stored: 1 finding row, with ' + sizes[b] + ' of values';
+    if (els['uv-scan-stored'].textContent !== got) badSizes.push(b + ' => ' + els['uv-scan-stored'].textContent);
+  }
+  check('stored: every size reads as the page writes it', badSizes.length === 0);
+  const keptStoredLabels = UV.labels;
+  UV.labels = {};
+  await show(Object.assign(counted({}), { detailRows: 2, detailBytes: 400 }));
+  check('stored: with no vocabulary handed over the line is still the wording of the page',
+    els['uv-scan-stored'].textContent === 'Stored: 2 finding rows, with 400 bytes of values');
+  UV.labels = keptStoredLabels;
 
   // SETTLED IS PROGRESS. A pass that excluded a record moved the run on as much
   // as one that examined it; read from `done` alone, a run working through a

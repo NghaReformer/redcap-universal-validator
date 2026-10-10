@@ -102,6 +102,14 @@ namespace {
                 if ($this->version === null) throw new \Exception("Table doesn't exist");
                 return [[$this->version]];
             }
+            // Schema::health() asks about every table in one read (M11) and is
+            // answered with the ones that exist; a capability probe still asks
+            // COUNT(*) of one.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                $out = [];
+                foreach ($params as $t) if (in_array($t, $this->tables, true)) $out[] = [$t];
+                return $out;
+            }
             if (strpos($sql, 'information_schema.tables') !== false) {
                 $t = isset($params[0]) ? $params[0] : '';
                 return [[in_array($t, $this->tables, true) ? 1 : 0]];
@@ -302,8 +310,11 @@ namespace {
         public $rights = ['design' => true, 'data_export_tool' => '1', 'group_id' => null,
                           'forms' => ['fa' => '1']];
         public $design = true;
+        /** @var ?string who this is; the request memo keys on it */
+        public $name = null;
         public function hasDesignRights() { return $this->design; }
         public function getRights($pid = null) { return $this->rights; }
+        public function getUsername() { return $this->name; }
     }
 
     /**
@@ -409,6 +420,54 @@ namespace {
                 return true;
             }
             return [];
+        }
+    }
+
+    /**
+     * VerbModule on an installation that also passes available(), with a
+     * count of everything asked (P1, M11, M12).
+     *
+     * The work a request does is observed from OUTSIDE the service - the
+     * statements that reach the module and the plans it is asked for - rather
+     * than through a counter the service keeps for a test, so what is counted
+     * is what production would send.
+     */
+    class CountingVerbModule extends VerbModule
+    {
+        /** @var string[] every statement */
+        public $log = [];
+        /** @var int how many times a plan was asked for */
+        public $plans = 0;
+        /** @var array the options the last plan was asked with */
+        public $lastOpts = [];
+
+        public function durableScanContext($pid, array $opts = [], $dag = null)
+        {
+            $this->plans++;
+            $this->lastOpts = $opts;
+            return parent::durableScanContext($pid, $opts, $dag);
+        }
+
+        public function query($sql, $params = [])
+        {
+            $this->log[] = $sql;
+            if (strpos($sql, 'MAX(version)') !== false) {
+                return [[(string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION]];
+            }
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                return array_map(function ($t) { return [$t]; }, $params);
+            }
+            if (strpos($sql, 'information_schema.tables') !== false) return [[1]];
+            if (strpos($sql, 'FROM redcap_record_list') !== false) return [['R1']];
+            return parent::query($sql, $params);
+        }
+
+        /** How many statements so far contain $needle. */
+        public function sent($needle)
+        {
+            $n = 0;
+            foreach ($this->log as $s) if (strpos($s, $needle) !== false) $n++;
+            return $n;
         }
     }
 }
@@ -1296,6 +1355,196 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R2O-5 verb: a run a worker holds is only asked to stop',
         $r2['ok'] === true && $r2['stopped'] === false && $vm2->runRow['phase'] === 'cancelling'
         && $vm2->runRow['terminal'] === null);
+}
+
+/* =====================================================================
+ * P1 / M11 / M12  ONE REQUEST ASKS EACH QUESTION ONCE
+ *
+ * A work request built the entitlement and the whole plan twice - for the work
+ * and for the status it returns - ran every capability probe twice, and opened
+ * the change log four times. One ScanService is one request, so its answers
+ * are kept for its life and for nobody else's. Counted from outside: the
+ * statements that reach the module, and the plans it is asked for.
+ * ===================================================================== */
+{
+    $cm = new \CountingVerbModule();
+    $cm->runRow = \VerbModule::row([]);
+    $svc = new ScanService($cm);
+
+    $a1 = $svc->available(149);
+    $a2 = $svc->available(149);
+    check('P1: the fixture passes the gate, so what follows is counted past it',
+        $a1['ok'] === true && $a2 === $a1);
+    check('M11: available() asked twice in one request checks the schema once',
+        $cm->sent('MAX(version)') === 1
+        && $cm->sent('SELECT table_name FROM information_schema.tables') === 1);
+
+    $s1 = $svc->status(149, 77);
+    $s2 = $svc->status(149, 77);
+    check('M12: two answers about one run in one request build the plan once',
+        $s1['ok'] === true && $s2['ok'] === true && $cm->plans === 1);
+    check('P1: the record-enumeration probe available() made is the one the plan is handed',
+        $cm->sent('FROM redcap_record_list WHERE project_id = ? LIMIT 1') === 1
+        && isset($cm->lastOpts['capabilities']['recordEnumeration']['state'])
+        && $cm->lastOpts['capabilities']['recordEnumeration']['state'] === \INSPIRE\UniversalValidator\ScanCapabilities::OK);
+    check('P1: and the rest of the capability census is taken once', $cm->sent('SHOW GRANTS') === 1);
+    check('M12: the plan is asked with this request\'s memo, so a second plan is never built either',
+        isset($cm->lastOpts['memo']) && $cm->lastOpts['memo'] instanceof \ArrayObject);
+    // NOT KEPT: the census. Two status() calls are two moments, and the second
+    // must see what the first could not.
+    check('P11: the census is never kept between two status() calls',
+        $cm->sent('SELECT state, COUNT(*)') === 2);
+
+    // Every input that changes the answer is in the key.
+    $cm->user->name = 'bob';
+    $svc->status(149, 77);
+    check('M12: another reader in the same service is a new entitlement - rights, ceiling and '
+        . 'cross-project answers are theirs', $cm->plans === 2);
+    $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6]);
+    $svc->status(149, 77);
+    check('M12: so is another generation of the run', $cm->plans === 3);
+    $cm->runRow = \VerbModule::row(['generation_id' => 6, 'run_seq' => 6, 'scope_dag' => '7']);
+    $cm->user->rights['group_id'] = 7;
+    \REDCap::$groupNames = [7 => 'north'];
+    $svc->status(149, 77);
+    check('M12: and another scope', $cm->plans === 4);
+    $cm->user->rights['group_id'] = null;
+    \REDCap::$groupNames = [];
+
+    // NEVER ACROSS REQUESTS: a new service asks again.
+    $cm->runRow = \VerbModule::row([]);
+    $cm->user->name = null;
+    $fresh = new ScanService($cm);
+    $fresh->available(149);
+    $fresh->status(149, 77);
+    check('P1: a new request asks every question again',
+        $cm->plans === 5 && $cm->sent('MAX(version)') === 2 && $cm->sent('SHOW GRANTS') === 2);
+
+    // The change log, opened once however many parts of the request need it.
+    $fence = new \ReflectionMethod(ScanService::class, 'fence');
+    $fence->setAccessible(true);
+    $fm = new \CountingVerbModule();
+    $fs = new ScanService($fm);
+    $fence->invoke($fs, 149);
+    $fence->invoke($fs, 149);
+    $fence->invoke($fs, 149);
+    check('P1: the change log is opened once per request, not once per caller',
+        $fm->sent('SELECT log_event_table') === 1);
+    $fence->invoke($fs, 150);
+    check('P1: and per project', $fm->sent('SELECT log_event_table') === 2);
+}
+
+/* =====================================================================
+ * P11  THE STATUS A WORK REQUEST RETURNS REUSES WHAT PROMOTION READ
+ *
+ * advanceRun() hands statusOf() the run row and census promote() read, and
+ * only when promote() wrote nothing after reading them; tests/mysql/cases/
+ * perf.php drives that over a real store, both ways. Here: statusOf() uses
+ * what it is handed and reads what it is not.
+ * ===================================================================== */
+{
+    $statusOf = new \ReflectionMethod(ScanService::class, 'statusOf');
+    $statusOf->setAccessible(true);
+    $km = new \CountingVerbModule();
+    $km->runRow = \VerbModule::row([]);
+    $ks = new ScanService($km);
+    $row = $ks->status(149, 77);                  // warms the entitlement
+    $before = count($km->log);
+    $given = $statusOf->invoke($ks, 149, 77, ['run' => \VerbModule::row(['manifest_total' => 10]),
+        'census' => [ScanStore::REC_DONE => 4, ScanStore::REC_PENDING => 6]]);
+    $sent = array_slice($km->log, $before);
+    $reads = function ($needle) use (&$sent) {
+        return count(array_filter($sent, function ($s) use ($needle) { return strpos($s, $needle) !== false; }));
+    };
+    check('P11: a status handed the census promotion read does not count the records again',
+        $row['ok'] === true && $given['ok'] === true && $given['done'] === 4
+        && $reads('SELECT state, COUNT(*)') === 0);
+    check('P11: nor read the run row again', $reads('SELECT run_id, project_id, scope_dag') === 0);
+    $before = count($km->log);
+    $statusOf->invoke($ks, 149, 77, ['run' => null, 'census' => null]);
+    $sent = array_slice($km->log, $before);
+    check('P11: and one handed nothing reads both, as status() does',
+        $reads('SELECT state, COUNT(*)') === 1 && $reads('SELECT run_id, project_id, scope_dag') === 1);
+}
+
+/* =====================================================================
+ * W8-N1  PROMOTION COUNTS THE WINDOW AND THE BLOCKING ITSELF
+ *
+ * The rebase that brought @UVEXISTS in kept `windowChanges =>
+ * $this->aggregateTotal(...)` in advanceRun() after B4a had removed that
+ * method, so every work request that reached promotion died with an Error and
+ * the endpoint answered "could not be reached". Both of the inputs the service
+ * read there on every pass are promote()'s own reads now, sent once, by the
+ * pass that can promote - and a number the caller passes for either is
+ * overridden, as violations already were.
+ * ===================================================================== */
+{
+    check('W8-N1: the kind promotion counts is the kind catch-up writes',
+        ScanPromotion::WINDOW_KINDS === CatchUp::K_WINDOW);
+    $h = function ($id) { return hash('sha256', $id, true); };
+    $finished = function ($pid, array $aggs) use ($h) {
+        $store = new ArrayScanStore();
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $store->writeManifest($runId, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null]]);
+        $epoch = (int) $store->run($pid, $runId)['lease_epoch'];
+        $c = $store->claim($runId, 'w1', $epoch, 1);
+        $store->commitBatch($runId, 'w1', $epoch, ['bytes' => 0, 'findings' => [], 'records' => [[
+            'ordinal' => $c[0]['ordinal'], 'state' => ScanStore::REC_DONE, 'version' => '100',
+            'claim' => $c[0]['claim'], 'record_hash' => $c[0]['hash']]]]);
+        $store->setProgressState($runId, $epoch, ['fenceTarget' => '500']);
+        foreach ($aggs as $a) $store->addAggregate($runId, $a[0], 'x', 'y', $a[1], $a[2]);
+        return [$store, $runId];
+    };
+    $ready = ['uniqueDone' => true, 'rollupDone' => true, 'crossRecordLookups' => true,
+              // What a caller might still pass. Both are overridden.
+              'windowChanges' => 0, 'blockingAggregates' => 0];
+
+    list($store, $runId) = $finished(830, [[CatchUp::K_WINDOW, 2, 0]]);
+    $p = ScanPromotion::promote($store, 830, $runId, $ready);
+    check('W8-N1: a run with lookups and changes in its window is capped at its list, from the store',
+        $p['promoted'] === true && $p['outcome']['coverage'] === ScanOutcome::MANIFEST);
+    list($store, $runId) = $finished(831, []);
+    check('W8-N1: and the same run with no change in its window keeps the fence',
+        ScanPromotion::promote($store, 831, $runId, $ready)['outcome']['coverage'] === ScanOutcome::FENCED);
+    list($store, $runId) = $finished(832, [['reconcile-unsettled', 1, 1]]);
+    check('W8-N1: an aggregate that blocks coverage blocks it, whatever the caller said',
+        ScanPromotion::promote($store, 832, $runId, $ready)['outcome']['coverage'] === ScanOutcome::COV_PARTIAL);
+
+    // WHAT PROMOTION READ GOES BACK, and whether it wrote after reading it.
+    list($store, $runId) = $finished(833, []);
+    $done = ScanPromotion::promote($store, 833, $runId, $ready);
+    check('P11: a promotion that finished the run says it wrote',
+        $done['wrote'] === true && is_array($done['census']) && is_array($done['run']));
+    $waiting = new ArrayScanStore();
+    $wid = (int) $waiting->startRun(834, ['created_by' => 'alice'])['run']['run_id'];
+    $waiting->writeManifest($wid, [['id_bin' => 'A', 'hash' => $h('A'), 'dag' => null]]);
+    $np = ScanPromotion::promote($waiting, 834, $wid, $ready);
+    check('P11: one that could not promote wrote nothing, and hands back the census it read',
+        $np['promoted'] === false && $np['wrote'] === false
+        && $np['census'] === $waiting->recordStates($wid)
+        && (int) $np['run']['run_id'] === $wid);
+    $over = ScanPromotion::promote($store, 833, $runId, $ready);
+    check('P11: one asked about a finished run read the row and no census',
+        $over['wrote'] === false && $over['census'] === null && is_array($over['run']));
+}
+
+/* =====================================================================
+ * P10  WHAT A RUN HAS STORED
+ *
+ * commitBatch() keeps detail_rows and detail_bytes on the run row, and
+ * nothing reported them, so nobody watching a scan could see what it was
+ * adding to the installation's tables.
+ * ===================================================================== */
+{
+    $pm = new \VerbModule();
+    $pm->runRow = \VerbModule::row(['detail_rows' => '12345', 'detail_bytes' => '3565158']);
+    $ps = (new ScanService($pm))->status(149, 77);
+    check('P10: status reports the finding rows and value bytes the run has stored',
+        $ps['ok'] === true && $ps['detailRows'] === 12345 && $ps['detailBytes'] === 3565158);
+    $pm->runRow = \VerbModule::row(['detail_rows' => null, 'detail_bytes' => '-4']);
+    $pz = (new ScanService($pm))->status(149, 77);
+    check('P10: and an absent or negative counter as zero, never a negative size',
+        $pz['detailRows'] === 0 && $pz['detailBytes'] === 0);
 }
 }
 

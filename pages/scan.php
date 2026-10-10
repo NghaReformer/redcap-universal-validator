@@ -260,6 +260,12 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
     <span id="uv-scan-counts"><?php echo ScanPageView::h($prefill['counts']); ?></span> &nbsp;
     <span id="uv-scan-found"><?php echo ScanPageView::h($prefill['found']); ?></span>
   </div>
+  <?php // P10: what the run has written to the installation's shared tables, for
+        // whoever has to watch them grow. Not a live region, for the reason the
+        // spans above are not: it changes on every poll. Hidden until the run has
+        // stored a row - "Stored: 0" is nothing to report. ?>
+  <div id="uv-scan-stored" style="<?php echo $prefill['stored'] === null ? 'display:none;' : ''; ?>margin-top:4px;font-size:12px;color:#666"><?php
+     echo $prefill['stored'] === null ? '' : ScanPageView::h($prefill['stored']); ?></div>
   <?php // One atomic live region for the whole panel, written on a change rather
         // than on every poll. The visible spans above are deliberately NOT live:
         // a poll lands every few seconds, and announcing each one makes the page

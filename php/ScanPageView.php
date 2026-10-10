@@ -367,6 +367,20 @@ class ScanPageView
      */
     const FOUND_UNKNOWN = 'Findings not counted, because the scan ended before it could total them';
 
+    /**
+     * What a run has written to the installation's tables (P10).
+     *
+     * One scan of a large project writes hundreds of megabytes into tables
+     * every project shares, and nothing on the page said so. These read the run
+     * row's own counters - finding rows stored and the bytes of the values kept
+     * with them - which are NOT the findings count above: the finalizer's
+     * duplicates are not in them and rows a later pass superseded still are, so
+     * the line says rows, not findings. {rows} is "1 finding row" or
+     * "12,345 finding rows"; {size} is "400 bytes" or "3.4 MB".
+     */
+    const STORED        = 'Stored: {rows}';
+    const STORED_VALUES = 'Stored: {rows}, with {size} of values';
+
     /** The vocabulary the browser half renders from, so it holds no copy of its own. */
     public static function labels()
     {
@@ -384,6 +398,8 @@ class ScanPageView
             'excluded'        => self::COUNT_EXCLUDED,
             'removed'         => self::COUNT_REMOVED,
             'foundUnknown'    => self::FOUND_UNKNOWN,
+            'stored'          => self::STORED,
+            'storedValues'    => self::STORED_VALUES,
             'notCertified'    => self::NOT_CERTIFIED,
             'ruleProblem'     => self::RULE_PROBLEM,
             'ruleProblems'    => self::RULE_PROBLEMS,
@@ -404,6 +420,53 @@ class ScanPageView
         if (!is_int($f) && !(is_string($f) && ctype_digit($f))) return self::FOUND_UNKNOWN;
         $f = (int) $f;
         return $f === 0 ? 'Nothing found yet' : ($f . ' finding' . ($f === 1 ? '' : 's') . ' so far');
+    }
+
+    /**
+     * "Stored: 12,345 finding rows, with 3.4 MB of values", or null when the
+     * run has stored no row.
+     *
+     * A counter that is absent, not a whole number, or not above zero says
+     * nothing - the line is about what IS stored, and a run that wrote nothing
+     * has nothing to report. js/scan.js builds the same string.
+     */
+    public static function storedText($status)
+    {
+        $n = function ($k) use ($status) {
+            if (!is_array($status) || !isset($status[$k])) return 0;
+            $v = $status[$k];
+            return (is_int($v) || (is_string($v) && ctype_digit($v))) ? (int) $v : 0;
+        };
+        $rows = $n('detailRows');
+        if ($rows <= 0) return null;
+        $phrase = number_format($rows) . ' finding row' . ($rows === 1 ? '' : 's');
+        $bytes = $n('detailBytes');
+        return $bytes > 0
+            ? str_replace(['{rows}', '{size}'], [$phrase, self::sizeText($bytes)], self::STORED_VALUES)
+            : str_replace('{rows}', $phrase, self::STORED);
+    }
+
+    /**
+     * A byte count as a person reads it: "400 bytes", "3.4 MB".
+     *
+     * Binary units, one decimal, rounded half up - in WHOLE NUMBERS, so that
+     * js/scan.js, which cannot share PHP's round(), lands on the same digit.
+     * A value that rounds up to 1024 of a unit is said in the next one.
+     */
+    public static function sizeText($bytes)
+    {
+        $bytes = max(0, (int) $bytes);
+        if ($bytes < 1024) return $bytes . ' byte' . ($bytes === 1 ? '' : 's');
+        $units = ['KB', 'MB', 'GB', 'TB'];
+        $i = 0;
+        $div = 1024;
+        $tenths = intdiv($bytes * 10 + intdiv($div, 2), $div);
+        while ($tenths >= 10240 && $i < count($units) - 1) {
+            $i++;
+            $div *= 1024;
+            $tenths = intdiv($bytes * 10 + intdiv($div, 2), $div);
+        }
+        return number_format(intdiv($tenths, 10)) . '.' . ($tenths % 10) . ' ' . $units[$i];
     }
 
     /**
@@ -504,13 +567,13 @@ class ScanPageView
      * @param  ?array $status a ScanService::status() array, or null when there is
      *                no run or its status could not be read
      * @return array{phase:string, counts:string, found:string, pct:?int, done:?string,
-     *               active:bool, stalled:?string}
+     *               active:bool, stalled:?string, stored:?string}
      */
     public static function panelPrefill($status)
     {
         if (!is_array($status) || empty($status['ok'])) {
             return ['phase' => '', 'counts' => '', 'found' => '', 'pct' => null,
-                    'done' => null, 'active' => false, 'stalled' => null];
+                    'done' => null, 'active' => false, 'stalled' => null, 'stored' => null];
         }
 
         $total = isset($status['total']) ? (int) $status['total'] : 0;
@@ -526,6 +589,7 @@ class ScanPageView
             // is driving a scan until a button is pressed.
             'stalled' => self::stalledText($status),
             'found'  => self::foundText($status),
+            'stored' => self::storedText($status),
             'pct'    => $pct,
             // ONE STRING, coverage then decision - see verdictText().
             'done'   => empty($status['terminal']) ? null

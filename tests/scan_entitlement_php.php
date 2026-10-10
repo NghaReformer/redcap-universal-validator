@@ -139,6 +139,11 @@ namespace {
             if (strpos($sql, 'MAX(version)') !== false) {
                 return new \UvRes([[(string) \INSPIRE\UniversalValidator\Scan\Schema::VERSION]]);
             }
+            // Schema::health()'s one read (M11) is answered with every name it
+            // asked about; a capability probe still asks COUNT(*) of one table.
+            if (strpos($sql, 'SELECT table_name FROM information_schema.tables') === 0) {
+                return new \UvRes(array_map(function ($t) { return [$t]; }, $params));
+            }
             if (strpos($sql, 'information_schema.tables') !== false) return new \UvRes([['1']]);
             if (strpos($sql, 'SHOW TABLES') !== false)     return new \UvRes([['redcap_record_list']]);
             if (strpos($sql, 'SHOW GRANTS') !== false)     return new \UvRes([['GRANT ALL PRIVILEGES ON `rc`.* TO `u`@`h`']]);
@@ -594,6 +599,61 @@ namespace {
         $s2 = $svc2->start(149);
         check('C5 service: a field that cannot be placed refuses through the real loop too',
             $s2['ok'] === false && strpos($s2['why'], 'could not be located') !== false);
+    }
+
+    /* =====================================================================
+     * M12  THE PLAN IS BUILT ONCE PER REQUEST, AND ONLY FOR ITS READER
+     *
+     * A work request rebuilt the whole plan twice. scanPlan() now keeps what it
+     * built in the memo its CALLER hands over (ScanService makes one per
+     * request), keyed on everything that changes the answer. Proved by
+     * marking the stored plan: a call served from the memo hands the mark
+     * back, and one that rebuilt cannot.
+     * ===================================================================== */
+    {
+        if (!class_exists('UvNamedUser', false)) {
+            class UvNamedUser extends \ExternalModules\RightsUser {
+                public $name;
+                public function __construct(array $r, $name) { parent::__construct($r); $this->name = $name; }
+                public function getUsername() { return $this->name; }
+            }
+        }
+        \REDCap::$dictionary = ['record_id' => fld('fa'), 'a_val' => fld('fa', '@UVREQUIRED')];
+        $full = ['design' => true, 'data_export_tool' => '1', 'group_id' => null, 'forms' => ['fa' => '1']];
+        $v = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $v->projectIdReturn = 149;
+        $v->projectSettings = ['log-values' => ''];
+        $v->userReturn = new \UvNamedUser($full, 'alice');
+        $memo = new \ArrayObject();
+        $ask = function (array $over = [], $dag = null) use ($v, $memo) {
+            return $v->durableScanContext(149, array_merge(['generation' => 1, 'runSeq' => 1,
+                'valueCeiling' => 'locations', 'memo' => $memo], $over), $dag);
+        };
+        $first = $ask();
+        check('M12 plan: the first ask builds a plan and keeps it in the memo it was handed',
+            $first['ok'] === true && count($memo) === 1);
+        // Mark what is kept. A rebuilt plan cannot carry this.
+        foreach ($memo as $k => $p) { $p['fatal'] = 'SERVED FROM THE MEMO'; $memo[$k] = $p; }
+        check('M12 plan: a second ask in the same request is served from the memo',
+            $ask()['why'] === 'SERVED FROM THE MEMO');
+        check('M12 plan: whatever generation it binds the evaluator to - the plan does not depend on it',
+            $ask(['generation' => 9, 'runSeq' => 9])['why'] === 'SERVED FROM THE MEMO');
+        $v->userReturn = new \UvNamedUser($full, 'bob');
+        check('M12 plan: another reader gets a plan of their own - crossRefused and the rights are theirs',
+            $ask()['ok'] === true && count($memo) === 2);
+        check('M12 plan: so does another value ceiling', $ask(['valueCeiling' => 'raw'])['ok'] === true);
+        check('M12 plan: and another rights gate',
+            $ask(['enforceFormRights' => true])['ok'] === true && count($memo) === 4);
+        check('M12 plan: with no memo handed over, nothing is kept and every ask builds',
+            $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations'])['ok']
+            === true && count($memo) === 4);
+        // THE CAPABILITY CENSUS a caller already took is the one the plan uses.
+        $given = ['recordEnumeration' => ['state' => 'unavailable', 'via' => null, 'why' => 'GIVEN']];
+        $capped = $v->durableScanContext(149, ['generation' => 1, 'runSeq' => 1, 'valueCeiling' => 'locations',
+            'capabilities' => $given]);
+        check('P1 plan: a capability answer the caller already has is used, not probed again',
+            $capped['ok'] === true && $capped['plan']['policy']['mayScan'] === false
+            && strpos(implode(' ', $capped['plan']['policy']['limits']), 'GIVEN') !== false);
     }
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";

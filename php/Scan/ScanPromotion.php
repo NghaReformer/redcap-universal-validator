@@ -57,6 +57,12 @@ final class ScanPromotion
     const GAP_KINDS = 'collection-gap';
     /** Aggregate kinds that are rule problems: they forbid clean but do not cap coverage. */
     const RULE_KINDS = 'rule-problem';
+    /**
+     * Records the change log listed inside the run's window. CatchUp::K_WINDOW
+     * writes it; tests/scan_service_php.php holds the two names equal, because
+     * this file must load without CatchUp (the database harness does).
+     */
+    const WINDOW_KINDS = 'window-changes';
 
     /**
      * Record that this run knows of rules it cannot evaluate.
@@ -215,6 +221,18 @@ final class ScanPromotion
         foreach (RollupBuilder::KINDS as $kind) $violations = max($violations, $of($kind));
         return ['violations' => $violations, 'ruleProblems' => $of(self::RULE_KINDS),
                 'gaps' => $of(self::GAP_KINDS)];
+    }
+
+    /** The summed count of one aggregate kind, over rows as ScanStore::aggregates() returns them. */
+    private static function kindTotal(array $aggregates, $kind)
+    {
+        $n = 0;
+        foreach ($aggregates as $a) {
+            if (isset($a['kind']) && (string) $a['kind'] === $kind) {
+                $n += isset($a['cnt']) ? max(0, (int) $a['cnt']) : 0;
+            }
+        }
+        return $n;
     }
 
     /**
@@ -444,7 +462,16 @@ final class ScanPromotion
      * holds its project slot, so a retried finaliser cannot reopen or rewrite a
      * run that a report has already been exported against.
      *
-     * @return array{promoted:bool, outcome:?array, why:?string}
+     * WHAT IT READ GOES BACK WITH THE ANSWER (P11). The caller's next step is
+     * nearly always status(), which needs the same run row and the same census;
+     * reading them twice was a second O(manifest) count on every work request.
+     * `run` and `census` are the reads this call made - null when it made none -
+     * and `wrote` says whether it sent finish() after reading them. A caller may
+     * stand them in for its own reads only when `wrote` is false: a census taken
+     * before a write must never describe the run after it.
+     *
+     * @return array{promoted:bool, outcome:?array, why:?string, run:?array,
+     *               census:?array, wrote:bool}
      */
     public static function promote(ScanStore $store, $pid, $runId, array $in = [])
     {
@@ -454,31 +481,41 @@ final class ScanPromotion
             // "not here" from "not yours" is an oracle for anyone holding a
             // project link.
             return ['promoted' => false, 'outcome' => null,
-                    'why' => 'no scan with that reference is running for this project'];
+                    'why' => 'no scan with that reference is running for this project',
+                    'run' => null, 'census' => null, 'wrote' => false];
         }
         if (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL) {
             return ['promoted' => false, 'outcome' => null,
-                    'why' => 'this scan has already finished'];
+                    'why' => 'this scan has already finished',
+                    'run' => $run, 'census' => null, 'wrote' => false];
         }
 
         $states = $store->recordStates($runId);
         $f = self::facts($run, $states, $in);
         if (!$f['ready']) {
-            return ['promoted' => false, 'outcome' => null, 'why' => $f['why']];
+            return ['promoted' => false, 'outcome' => null, 'why' => $f['why'],
+                    'run' => $run, 'census' => $states, 'wrote' => false];
         }
 
         // THE STORE IS ASKED HERE, NOT BY THE CALLER. What was found used to
         // arrive in $in, so the verdict was as good as whichever caller built
         // the array, and the one production caller fed `violations` from a
         // counter the finalizer never touches. A number a caller supplies for
-        // any of these three is overridden.
+        // any of these five is overridden: what was found, the rule problems,
+        // the gaps, what blocks coverage, and the window's changes.
         //
         // AFTER `ready`, because promotion is attempted on every pass and
         // readiness needs none of it: a run with work left costs no read here.
-        $t = self::tally($store->aggregates($runId));
+        // What blocks coverage and the window's changes were the CALLER's
+        // reads, sent on every pass although neither decides readiness; asked
+        // here they are sent once, by the pass that can promote. The window is
+        // counted from the rows tally() already has.
+        $aggregates = $store->aggregates($runId);
+        $t = self::tally($aggregates);
         $f = self::facts($run, $states, array_merge($in, [
             'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
-            'gapCount' => $t['gaps']]));
+            'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
+            'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
 
         $outcome = ScanOutcome::derive($f['facts']);
         $outcome['suffix'] = ScanOutcome::suffix($outcome);
@@ -487,6 +524,9 @@ final class ScanPromotion
         $outcome['notExamined'] = (int) $f['notExamined'];
         $ok = $store->finish($runId, $outcome);
         return ['promoted' => $ok, 'outcome' => $outcome,
-                'why' => $ok ? null : 'another worker finished this scan first'];
+                'why' => $ok ? null : 'another worker finished this scan first',
+                // A refused finish is still a write somebody made: the run
+                // ended under another worker, after these reads.
+                'run' => $run, 'census' => $states, 'wrote' => true];
     }
 }

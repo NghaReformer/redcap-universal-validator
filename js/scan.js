@@ -177,6 +177,50 @@
         return f === 0 ? 'Nothing found yet' : (f + ' finding' + (f === 1 ? '' : 's') + ' so far');
     }
 
+    /** "12345" as "12,345", as PHP's number_format() writes it. */
+    function grouped(n) {
+        return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    }
+
+    /** A whole, non-negative count from the status, or 0. */
+    function whole(v) {
+        return (typeof v === 'number' && v > 0 && v === Math.floor(v)) ? v : 0;
+    }
+
+    /**
+     * "400 bytes", "3.4 MB". ScanPageView::sizeText() decides the same way, in
+     * whole numbers on both sides so the two land on the same digit: binary
+     * units, one decimal, rounded half up, and a value that rounds up to 1024
+     * of a unit is said in the next one.
+     */
+    function sizeText(bytes) {
+        if (bytes < 1024) return bytes + ' byte' + (bytes === 1 ? '' : 's');
+        var units = ['KB', 'MB', 'GB', 'TB'], i = 0, div = 1024;
+        var tenths = Math.floor((bytes * 10 + div / 2) / div);
+        while (tenths >= 10240 && i < units.length - 1) {
+            i++;
+            div *= 1024;
+            tenths = Math.floor((bytes * 10 + div / 2) / div);
+        }
+        return grouped(Math.floor(tenths / 10)) + '.' + (tenths % 10) + ' ' + units[i];
+    }
+
+    /**
+     * "Stored: 12,345 finding rows, with 3.4 MB of values", or null when the
+     * run has stored no row (P10). These are the run row's storage counters,
+     * not the findings count. ScanPageView::storedText() builds the same string.
+     */
+    function storedText(st) {
+        var rows = whole(st.detailRows), bytes = whole(st.detailBytes), L = labels();
+        if (rows <= 0) return null;
+        var phrase = grouped(rows) + ' finding row' + (rows === 1 ? '' : 's');
+        if (bytes > 0) {
+            return fill(L.storedValues || 'Stored: {rows}, with {size} of values',
+                        { rows: phrase, size: sizeText(bytes) });
+        }
+        return fill(L.stored || 'Stored: {rows}', { rows: phrase });
+    }
+
     /**
      * How a phase reads to somebody who did not design this.
      *
@@ -311,6 +355,14 @@
         var found = foundText(st);
         text(el('uv-scan-counts'), counts);
         text(el('uv-scan-found'), found);
+
+        // What the run has stored, shown once it has stored something. Server
+        // numbers reach the node through textContent only, as everything here.
+        var storedNode = el('uv-scan-stored'), stored = storedText(st);
+        if (storedNode) {
+            storedNode.style.display = stored === null ? 'none' : '';
+            text(storedNode, stored === null ? '' : stored);
+        }
 
         var done = el('uv-scan-done');
         if (st.terminal) {
