@@ -1899,6 +1899,45 @@ namespace INSPIRE\UniversalValidator\Scan {
         is_array($h['row']) && $h['row']['terminal'] === ScanOutcome::CANCELLED && $h['passes'] === 1
         && !empty($h['status']['ok']) && $h['status']['terminal'] === ScanOutcome::CANCELLED);
 }
+
+/* =====================================================================
+ * R3G-4  THE EVALUATOR'S REVISION IS IN EVERY RUN'S FINGERPRINT
+ *
+ * The fingerprint's `engine` input read a UV_ENGINE_VERSION constant that
+ * nothing defined, so it was 'engine-1' on every release, and a durable run
+ * that spanned a verdict-changing upgrade finished as a mix of two
+ * evaluators. ScanService::ENGINE_REVISION is that input now.
+ * ===================================================================== */
+{
+    $gs = new ArrayScanStore();
+    $gm = new \E2eModule($gs);
+    $gst = (new ScanService($gm, $gs))->start(160);
+    $gid = (int) $gst['run_id'];
+    $gctx = $gm->durableScanContext(160, []);
+    $gpol = ScanPolicy::resolve([], []);
+    $gfp = function ($engine) use ($gctx, $gpol) {
+        return ScanPlanner::requestFingerprint(['rules' => $gctx['rules'], 'ownership' => $gctx['ownership'],
+            'structure' => $gctx['structure'], 'policy' => $gpol, 'engine' => $engine]);
+    };
+    check('R3G-4: the evaluator has a revision, and it is not the value every earlier release used',
+        is_string(ScanService::ENGINE_REVISION) && ScanService::ENGINE_REVISION !== ''
+        && ScanService::ENGINE_REVISION !== 'engine-1');
+    check('R3G-4: a different revision is a different fingerprint',
+        !ScanPlanner::fingerprintMatches($gfp('engine-1'), $gfp(ScanService::ENGINE_REVISION)));
+    check('R3G-4: start() fingerprints the run with this revision',
+        !empty($gst['ok']) && ScanPlanner::fingerprintMatches($gs->run(160, $gid)['fingerprint'],
+                                                             $gfp(ScanService::ENGINE_REVISION)));
+    // The same run as if the previous release had started it.
+    $runsProp = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $runsProp->setAccessible(true);
+    $rows = $runsProp->getValue($gs);
+    $rows[$gid]['fingerprint'] = $gfp('engine-1');
+    $runsProp->setValue($gs, $rows);
+    $gw = (new ScanService($gm, $gs))->work(160, $gid);
+    check('R3G-4: a run started under the previous evaluator is refused by this one, not continued',
+        empty($gw['ok']) && strpos((string) $gw['why'], 'changed') !== false
+        && (int) $gs->run(160, $gid)['manifest_done'] === 0 && $gs->run(160, $gid)['terminal'] === null);
+}
 }
 
 namespace {

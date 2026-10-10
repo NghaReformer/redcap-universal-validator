@@ -1351,9 +1351,31 @@ final class ScanService
         return null;
     }
 
+    /**
+     * The evaluator's revision: BUMP IT WHENEVER A VERDICT CAN CHANGE (review
+     * R3G-4).
+     *
+     * It is the `engine` input of every run's fingerprint, so a durable run
+     * started under one evaluator and worked under another is refused ("the
+     * configuration changed") instead of finishing as a report half judged one
+     * way and half the other. A verdict can change when a check judges a value
+     * differently, when a gate admits or drops a different set of rules for a
+     * record, when a reason or a finding's identity moves, or when a rule type
+     * is added or removed. Wording alone is not a verdict.
+     *
+     * engineVersion() read a UV_ENGINE_VERSION constant that nothing defined,
+     * so the input was 'engine-1' on every run of every release, and a run
+     * that spanned an upgrade mixed two evaluators.
+     *
+     *   engine-1  every release before this constant
+     *   engine-2  the started-form gate and its round-3 corrections
+     */
+    const ENGINE_REVISION = 'engine-2';
+
+    /** The fingerprint's `engine` input. One place, so start and work cannot disagree. */
     private function engineVersion()
     {
-        return defined('UV_ENGINE_VERSION') ? UV_ENGINE_VERSION : 'engine-1';
+        return self::ENGINE_REVISION;
     }
 
     private function username()
