@@ -322,6 +322,130 @@ foreach ($cover as $label => $c) {
 }
 check('table: a sex with fewer rows is named', strpos($tableErr($t(['female' => [[1, 10, 0.1]]])),
     'has "female" rows 0 to 0, but its "valid" range needs rows 0 to 1') !== false);
+// The ends are found with lms()'s own floating-point arithmetic, not from the
+// decimal digits of "valid": 0.8999999999999999 (the double just under 0.9)
+// times 10 is 9.0, so "floor" below 0.9 at scale 10 reads row 9 ...
+$rowsOf = function ($count) { return array_fill(0, $count, [1, 10, 0.1]); };
+check('table: 0.8999999999999999 * 10 is 9.0 in floating point', floor(0.8999999999999999 * 10) === 9.0);
+$got = $tableErr($t(['scale' => 10, 'male' => $rowsOf(9), 'female' => $rowsOf(9)]), ['lookup' => 'floor', 'valid' => ['min' => '0', 'below' => '0.9']]);
+check('table: floor, scale 10, below 0.9 needs row 9 (got ' . json_encode($got) . ')', strpos($got, 'needs rows 0 to 9 (a row is 1/10 days)') !== false);
+check('table: floor, scale 10, below 0.9, rows 0 to 9 accepted',
+    $tableErr($t(['scale' => 10, 'male' => $rowsOf(10), 'female' => $rowsOf(10)]), ['lookup' => 'floor', 'valid' => ['min' => '0', 'below' => '0.9']]) === '');
+$e9 = array_merge($base, ['id' => 'x', 'dir' => $dir, 'lookup' => 'floor']);
+check('lms: ... and lms() does read row 9 there', G::lms($e9, ['scale' => 10, 'first' => 0, 'male' => array_merge($rowsOf(9), [[2, 10, 0.1]])],
+    'male', 0.8999999999999999) === [2, 10, 0.1]);
+// ... while "linear" at 1.1 * 100 = 110.00000000000001 reads row 110 alone
+// (its share of the way to row 111 is 0), so rows 0 to 110 are enough.
+check('table: linear, scale 100, max 1.1, rows 0 to 110 accepted',
+    $tableErr($t(['scale' => 100, 'male' => $rowsOf(111), 'female' => $rowsOf(111)]), ['lookup' => 'linear', 'valid' => ['min' => '0', 'max' => '1.1']]) === '');
+$got = $tableErr($t(['scale' => 100, 'male' => $rowsOf(110), 'female' => $rowsOf(110)]), ['lookup' => 'linear', 'valid' => ['min' => '0', 'max' => '1.1']]);
+check('table: linear, scale 100, max 1.1, rows 0 to 109 refused (got ' . json_encode($got) . ')', strpos($got, 'needs rows 0 to 110') !== false);
+// Two entries may share one file with different "valid" ranges: the second is
+// checked although the file was read for the first.
+file_put_contents($dir . '/t2.json', $t([]));
+G::reset();
+$narrow = array_merge($base, ['file' => 't2.json', 'sha256' => hash('sha256', $t([])), 'id' => 'narrow', 'dir' => $dir]);
+G::table($narrow);
+try { G::table(['id' => 'wide', 'valid' => ['min' => '0', 'below' => '5']] + $narrow); $got = ''; } catch (\RuntimeException $ex) { $got = $ex->getMessage(); }
+check('table: a second entry on the same file is checked against its own range (got ' . json_encode($got) . ')',
+    strpos($got, 'needs rows 0 to 5') !== false);
+try { G::table(['id' => 'wide', 'lookup' => 'linear', 'valid' => ['min' => '0', 'max' => '1.5']] + $narrow); $got = ''; } catch (\RuntimeException $ex) { $got = $ex->getMessage(); }
+check('table: ... and against its own lookup (got ' . json_encode($got) . ')', strpos($got, 'needs rows 0 to 2') !== false);
+
+// ---- limits a reference can never pass
+// Without "adjust", L below 0 gives a z-score ceiling of 1/(|L|*S): with L -2 and
+// S 0.13 (as in CDC's BMI tables), even a BMI of a million scores 3.85.
+$limitErr = function ($rowsM, $rowsF, $adjust, $limits, $scale = 1) use ($dir, $base, $t) {
+    $c = $t(['scale' => $scale, 'male' => $rowsM, 'female' => $rowsF]);
+    file_put_contents($dir . '/t3.json', $c);
+    G::reset();
+    $e = array_merge($base, ['file' => 't3.json', 'sha256' => hash('sha256', $c), 'id' => 'mine', 'dir' => $dir, 'adjust' => $adjust,
+                             'valid' => ['min' => '0', 'max' => (string) ((count($rowsM) - 1) / $scale)]]);
+    return G::limitProblem($e, G::table($e), $limits);
+};
+$cdc = [[-2, 17, 0.13], [-2, 17, 0.13]];
+check('limits: z of a BMI of a million is 3.85 with L -2, S 0.13', G::zText(G::zRaw(1e6, [-2, 17, 0.13], false)) === '3.85');
+check('limits: a hard high limit of 5 is out of reach there', $limitErr($cdc, $cdc, 'none', ['hard' => ['-5', '5']])
+    === 'its "hard" high limit 5 is out of reach: with "mine" no measurement scores above 3.85 at 0 days (male). Use a high limit of 3.83 or below.');
+check('limits: 3.84 too (it needs a margin: z stays under 3.8462)', strpos((string) $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.84']]), 'Use a high limit of 3.83') !== false);
+check('limits: 3.83 can be passed', $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.83']]) === null
+    && G::zText(G::zRaw(1e6, [-2, 17, 0.13], false)) > '3.83');
+check('limits: a soft high limit is checked too', strpos((string) $limitErr($cdc, $cdc, 'none', ['soft' => [null, '3.9']]),
+    'its "soft" high limit 3.9 is out of reach') === 0);
+check('limits: open limits and a low limit with no floor are fine', $limitErr($cdc, $cdc, 'none', ['soft' => [null, null], 'hard' => ['-20', null]]) === null);
+// L above 0 gives a floor of -1/(L*S); the row and sex that set it are named.
+$mRows = [[1, 10, 0.1], [1, 10, 0.1]];
+$fRows = [[1, 10, 0.1], [1, 10, 0.2]];
+check('limits: a floor set by one row of one sex is named there', $limitErr($mRows, $fRows, 'none', ['hard' => ['-6', '6']])
+    === 'its "hard" low limit -6 is out of reach: with "mine" no measurement scores below -5.00 at 1 days (female). Use a low limit of -4.99 or above.');
+check('limits: -4.99 can be passed', $limitErr($mRows, $fRows, 'none', ['hard' => ['-4.99', '6']]) === null
+    && G::zText(G::zRaw(1e-9, [1, 10, 0.2], false)) === '-5.00');
+check('limits: the position is in axis units', strpos((string) $limitErr($mRows, $fRows, 'none', ['hard' => ['-6', null]], 10), 'at 0.1 days (female)') !== false);
+// WHO's restricted method has no ceiling and, below -3 SD, the floor
+// -3 - SD-3/(SD-2 - SD-3): with L 0.5 and S 0.1, -11.26.
+$rRows = [[0.5, 10, 0.1], [0.5, 10, 0.1]];
+check('limits: restricted, the floor below -3 SD', strpos((string) $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-12', null]]),
+    'no measurement scores below -11.26') !== false && $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-11.24', '20']]) === null);
+check('limits: restricted, the same row without "adjust" has the floor -20', $limitErr($rRows, $rRows, 'none', ['hard' => ['-19.99', null]]) === null
+    && strpos((string) $limitErr($rRows, $rRows, 'none', ['hard' => ['-20', null]]), 'below -20.00') !== false);
+// The bounds are kept per file and "adjust": a second entry on the same file
+// with another "adjust" gets its own, in the same request.
+$limitErr($rRows, $rRows, 'none', []);   // writes t3.json and resets the memos
+$eN = array_merge($base, ['file' => 't3.json', 'id' => 'mine', 'dir' => $dir, 'adjust' => 'none',
+    'sha256' => hash('sha256', (string) file_get_contents($dir . '/t3.json')), 'valid' => ['min' => '0', 'max' => '1']]);
+$eW = ['adjust' => 'who-restricted'] + $eN;
+check('limits: two entries on one file, without and with "adjust", in one request',
+    G::limitProblem($eN, G::table($eN), ['hard' => ['-19.99', null]]) === null
+    && strpos((string) G::limitProblem($eW, G::table($eW), ['hard' => ['-19.99', null]]), 'below -11.26') !== false);
+// zRange is zRaw's twin: at a measurement near 0, or very large, zRaw lands on
+// the bound from inside, and where zRange says there is none, it goes past 20.
+$zRange = new \ReflectionMethod(G::class, 'zRange');
+$zRange->setAccessible(true);
+$bad = [];
+foreach ([-2, -1, -0.3, 0, 0.3, 1, 2] as $L) {
+    foreach ([0.05, 0.1, 0.13, 0.2] as $S) {
+        foreach ([false, true] as $restricted) {
+            list($floor, $ceil) = $zRange->invoke(null, $L, $S, $restricted);
+            $lo = G::zRaw(10 * 1e-30, [$L, 10, $S], $restricted);
+            $hi = G::zRaw(10 * 1e30, [$L, 10, $S], $restricted);
+            $okLo = $floor === null ? ($lo === null || $lo < -20) : ($lo !== null && $lo > $floor - 1e-9 && $lo - $floor < 1e-6);
+            $okHi = $ceil === null ? ($hi === null || $hi > 20) : ($hi !== null && $hi < $ceil + 1e-9 && $ceil - $hi < 1e-6);
+            if (!$okLo || !$okHi) $bad[] = json_encode([$L, $S, $restricted, $floor, $lo, $ceil, $hi]);
+        }
+    }
+}
+check('limits: zRange agrees with zRaw at the extremes (bad: ' . implode(' ', $bad) . ')', $bad === []);
+// The bundled tables: triceps skinfold-for-age never scores below -6.97 (girls).
+$tsfa = G::entry('who-tsfa');
+check('limits: who-tsfa refuses a hard low limit of -7', strpos((string) G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-7', '5']]),
+    'its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at ') === 0);
+check('limits: who-tsfa takes -6.96', G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.96', '5']]) === null);
+$bad = [];
+foreach (G::catalog()['references'] as $id => $e) {
+    if (G::limitProblem($e, G::table($e), ['soft' => ['-3', '3'], 'hard' => ['-6', '6']]) !== null) $bad[] = $id;
+}
+check('limits: every bundled reference takes soft -3 to 3 and hard -6 to 6 (refused: ' . implode(', ', $bad) . ')', $bad === []);
+// A "linear" lookup also reads between rows; there the bound must not pass the
+// row bounds by anything near the 0.01 margin.
+$worst = 0.0;
+foreach (G::catalog()['references'] as $id => $e) {
+    if ($e['lookup'] !== 'linear') continue;
+    $tb = G::table($e);
+    foreach (['male', 'female'] as $sex) {
+        $rs = $tb[$sex];
+        for ($i = 0; $i + 1 < count($rs); $i++) {
+            $ends = [$zRange->invoke(null, $rs[$i][0], $rs[$i][2], $e['adjust'] === 'who-restricted'),
+                     $zRange->invoke(null, $rs[$i + 1][0], $rs[$i + 1][2], $e['adjust'] === 'who-restricted')];
+            foreach ([0.25, 0.5, 0.75] as $u) {
+                $mid = $zRange->invoke(null, $rs[$i][0] + $u * ($rs[$i + 1][0] - $rs[$i][0]), $rs[$i][2] + $u * ($rs[$i + 1][2] - $rs[$i][2]),
+                                       $e['adjust'] === 'who-restricted');
+                if ($mid[0] !== null) $worst = max($worst, $mid[0] - max($ends[0][0], $ends[1][0]));
+                if ($mid[1] !== null) $worst = max($worst, min($ends[0][1], $ends[1][1]) - $mid[1]);
+            }
+        }
+    }
+}
+check('limits: between the rows of the bundled linear tables the bound moves less than 0.001 past the rows (' . $worst . ')', $worst < 0.001);
 check('table: a sha256 that does not match', $tableErr($t([]), ['sha256' => str_repeat('a', 64)])
     === 'the table t2.json does not match the "sha256" in index.json; it was changed or damaged.');
 @unlink($dir . '/t2.json');

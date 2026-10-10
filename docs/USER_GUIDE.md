@@ -974,10 +974,12 @@ years) ship with the module, and the z-score is the one WHO's anthro software
 gives. `age` can also be a field holding days or months (`{"days":"[age_days]"}`),
 and weight-for-length or weight-for-height takes `"by":"[height_cm]"` instead
 of `age`. The date of birth may sit on another form, or in another event when
-event and instance references are on. Where the page shows those saved values,
-the rule's note does not block. Where it may not (a survey, or a user without
-rights to that form), the page only checks that the value is a number above 0
-and holds the save when it is not; the z-score is checked after saving. A
+event and instance references are on. Where the page shows the saved values
+of another form, the rule's note does not block. Where it may not (a survey,
+or a user without rights to that form), the page only checks that the value
+is a number above 0 and holds the save when it is not; the z-score is checked
+after saving. A rule with an input in another event never blocks on the page,
+on a survey either; the check after saving reports it. A
 blank input or an age outside the reference checks nothing, and on a
 data entry form a grey note says why. To check against CDC 2000 or a national
 reference, your REDCap administrator adds its table in a folder named in the

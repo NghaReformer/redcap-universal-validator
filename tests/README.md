@@ -27,7 +27,7 @@ php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
 node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, 5,000-point parity hash
-php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder
+php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder, limits
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
@@ -266,15 +266,20 @@ run the 2,880 points of `who_golden.json`, which `tools/who_golden.R` (in the
 source repository, not the release package) computed with WHO's own R code (`anthro` and `anthroplus`; the file says which commits),
 and 5,000 random points whose results must hash to the SHA-256 the fixture
 pins, so the two runtimes agree point for point. `growth_php.php` also checks
-every bundled table against its SHA-256 in `data/references/index.json`, and a
-folder of extra references (added, replacing by id, every refusal).
+every bundled table against its SHA-256 in `data/references/index.json`, a
+folder of extra references (added, replacing by id, every refusal), the rows a
+`valid` range needs (found with the lookup's own floating-point arithmetic,
+for each entry on a shared file), and the z-score limits a reference can never
+pass (`limitProblem`: the floor or ceiling of each row, checked against
+`zRaw` at extreme measurements and between the rows of the linear tables).
 
 - `growth_dom_js.cjs` boots the browser rule: the note names the z-score and
   the reference, an input's change re-checks, grey notes say why a check did
   not run (staff only), saved inputs never block, withheld inputs are not
   guessed at, and a rule over the page's table cap says the save checks it.
 - `growth_module_php.php` covers the module: the grammar and its refusals, the
-  dictionary hook (reference, axis, input field kinds, sex codes), the page
+  dictionary hook (reference, axis, input field kinds, sex codes, a limit out
+  of reach), the page
   (folded inputs, tables in use, the cap), the audit and the scan.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
@@ -286,7 +291,8 @@ same seed gives the same file byte for byte.
 with). The engine fills every key a rule lacks from them, `blockSave` "off"
 among them, so a test page without them can pass a rule that a real page
 would not block. `convert_php.php` runs `data/references/convert.php` on
-WHO- and CDC-shaped tables and checks each refusal.
+WHO- and CDC-shaped tables, checks that the index entry it prints is accepted
+as printed, and checks each refusal.
 
 ## `missing_codes_*` — Missing Data Codes
 

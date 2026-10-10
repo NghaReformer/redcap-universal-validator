@@ -50,8 +50,10 @@ national reference) can be added without changing the module's code.
    months, and the whole-month rows at 24 and 240 are left out. The
    sex column defaults to `sex` with 1 for male and 2 for female; change it
    with `--sex`, `--male` and `--female`. The script prints the file's SHA-256
-   and an index entry to start from. Check the first and last rows of the
-   file you convert; the numbers here are an example.
+   and an index entry to start from, covering the rows both sexes have: with
+   `round` for a table on whole units, and with `floor` and an exclusive
+   `below` for one converted with `--x-offset`. Check the first and last rows
+   of the file you convert; the numbers here are an example.
 
 2. **Describe it in an index.json.** Put the table and an `index.json` in a
    folder on the REDCap server, outside the module folder so that an upgrade
@@ -78,6 +80,11 @@ national reference) can be added without changing the module's code.
    Universal Field Validator, Configure, set "@UVRANGE growth references —
    folder of extra growth references" to that folder's full path. Its references are added to the
    ones that ship; one with the same id as a shipped reference replaces it.
+   The folder fails closed. If its index.json cannot be read, no growth
+   reference is used at all, the shipped WHO ones included; if one of its
+   entries is broken, that id is not used, even where a shipped reference has
+   the same id. Every rule naming such a reference shows a configuration error
+   on its form and in the Validation scan; the check after saving skips it.
 
 ### The index entry
 
@@ -100,3 +107,12 @@ rule over that number is checked after saving instead of on the page. A rule
 whose sex, date or axis field is on a form the viewer cannot see (or a survey
 does not show) gets no table and does not count: the page cannot work out its
 z-score, so it only checks that the measurement is a number above 0.
+
+Some rows cap the z-score a measurement can get. With `adjust` `none`, a row
+whose L is below 0 never scores above 1/(|L| × S), and one whose L is above 0
+never below -1/(L × S); with `who-restricted`, a measurement near 0 never
+scores below a floor a few SD under -3. A CDC BMI row with L -2 and S 0.13
+gives 3.85 even for a BMI of a million. A rule whose `soft` or `hard` limit
+lies beyond such a bound anywhere in `valid` is a configuration error that
+names the row and the furthest limit it can take, since an absurd value
+would otherwise pass that limit.

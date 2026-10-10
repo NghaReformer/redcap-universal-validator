@@ -142,9 +142,9 @@ has none, and remove it afterwards.
 
 ## Section I: growth references (WHO z-scores)
 
-Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 22
-fields on two new instruments. `uv_growth_test` (14 fields) holds the inputs
-(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`), five growth rules and five
+Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 23
+fields on two new instruments. `uv_growth_test` (15 fields) holds the inputs
+(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`), five growth rules and six
 broken `ug_bad_*` tags. `uv_growth_more` (8 fields) holds rules that read sex
 and date of birth from `uv_growth_test`. On a data entry form their notes do
 not block; on a survey (I30, I31) the page holds only a value that is not a
@@ -193,11 +193,11 @@ not run; it never blocks.
 | I19 | `ug_oedema` = No. `ug_muac` = 14, then 11, then 9 | No note (-0.58); no note (-3.62, hard limits only); red -5.72 |
 | I20 | `ug_oedema` = Yes | The `ug_muac` note goes away: the rule's `when` switches it off |
 | I21 | `ug_ssf` = 15, leave. `ug_tsf` = 30, leave. Save | `ug_ssf` shows amber 4.33. `ug_tsf` shows grey "Not checked on this page: this form already carries 4 growth reference tables, ... so this check runs when the record is saved." No verdict, no block. Module log after the save: `ug_bmi` `hard-high`, `ug_wfl_c` `hard-low`, `ug_ssf` `soft-high`, `ug_tsf` `hard-high` (z 8.53). The page config's `growth` holds 4 tables (who2007-bfa, who-wfl, who-acfa and who-ssfa) |
-| I22 | `uv_growth_test` for XE-1 on `visit_1_arm_1` (380): `ug_visit` = 2026-01-10, `ug_xev_wt` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...)", followed by "(worked out with saved event/instance values ...)". The page config shows `rangeSexOp` `["lit","1"]` and `blockSave` `off` |
+| I22 | `uv_growth_test` for XE-1 on `visit_1_arm_1` (380): `ug_visit` = 2026-01-10, `ug_xev_wt` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...)", followed by "(worked out with saved event/instance values ...)". The page config shows `rangeSexOp` `["lit","1"]` and `extendedAdvisory` `true` (every page carries `blockSave` `off` at the top level; @UVRANGE ignores it) |
 | I23 | Save | The save goes through. Module log: `ug_xev_wt` `hard-low` with `event_id` 380 |
 | I24 | Back on event 351, set `ug_weight` = 9.6, change `ug_dob` to 11-01-2025 and save | Module log: a new `ug_xev_wt` `hard-low` entry with `event_id` 380, because the save of event 351 re-checks the rule that reads it. The save also re-checks the `uv_growth_more` rules, which read the same sex and date of birth, so the four entries of I21 (`ug_bmi`, `ug_wfl_c`, `ug_ssf`, `ug_tsf`) appear again. Set `ug_dob` back to 10-01-2025 |
 | I25 | On event 351, `ug_xev_wt` = 4.0, leave | Red note; Save is not blocked (an event-qualified rule never blocks). Clear it |
-| I26 | `uv_growth_test`: check the five `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field |
+| I26 | `uv_growth_test`: check the six `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field; `ug_bad_reach` its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at 1826 days (female). Use a low limit of -6.96 or above |
 | I27 | [only if section H added a missing data code] `ug_sex`: choose `UNK` with the "M" button | `ug_weight` turns grey "... the sex is blank." Clear the code |
 | I28 | [only if the durable scan is enabled] Run the Validation scan | The panel counts the findings saved in I15 to I24. The detail lines ("Expected z-score -2 to 2." for a soft finding, "Allowed z-score -5 to 5." for `ug_bmi`) are pinned offline by `tests/growth_module_php.php`, and the labels ("Unusual value", "Implausible value") by `tests/range_module_php.php` |
 | I29 | Enable `uv_growth_test` and `uv_growth_more` as surveys. Open `uv_growth_test` for XE-2 at event 351: `ug_sex` = Male, `ug_dob` = 10-01-2025, `ug_visit` = 2026-01-10, `ug_weight` = 4.0 | Red note as in I3, without field names; Submit is blocked. Set `ug_weight` = 9.6 and submit |

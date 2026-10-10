@@ -133,10 +133,16 @@ $last = function ($sex) use ($rows, $first, $scale, $offset) { return ($first + 
 fwrite(STDOUT, 'wrote ' . $opts['out'] . ': ' . count($rows['male']) . ' male and ' . count($rows['female']) . ' female rows, x '
     . ($first / $scale + $offset) . ' to ' . max($last('male'), $last('female')) . "\n");
 fwrite(STDOUT, 'sha256 ' . hash('sha256', $out) . "\n");
+// The starting entry covers the rows both sexes have. Without an offset a
+// row is read for x near it ("round"); with one, a row keyed k is read for x
+// from k up to the next key ("floor"), as CDC's half-month rows are.
+$lastKey = $first + min(count($rows['male']), count($rows['female'])) - 1;
+$valid = $offset == 0
+    ? ['min' => (string) ($first / $scale), 'max' => (string) ($lastKey / $scale)]
+    : ['min' => (string) ($first / $scale), 'below' => (string) (($lastKey + 1) / $scale)];
 fwrite(STDOUT, "index.json entry to start from (edit title, measure, unit, axis, lookup, valid, adjust):\n");
 fwrite(STDOUT, json_encode([
     'title' => '', 'source' => '', 'file' => basename($opts['out']), 'sha256' => hash('sha256', $out),
-    'measure' => '', 'unit' => '', 'axis' => 'age', 'axisUnit' => 'days', 'lookup' => 'round',
-    'valid' => ['min' => (string) ($first / $scale + $offset), 'max' => (string) max($last('male'), $last('female'))],
-    'adjust' => 'none',
+    'measure' => '', 'unit' => '', 'axis' => 'age', 'axisUnit' => 'days', 'lookup' => $offset == 0 ? 'round' : 'floor',
+    'valid' => $valid, 'adjust' => 'none',
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");

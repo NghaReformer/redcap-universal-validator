@@ -1890,6 +1890,13 @@ one (see `data/references/README.md`).
   `at` are date or datetime fields; `days`, `months` and `by` are Text fields
   with integer or number validation, or calcs. No input may be the measured
   field itself.
+- **Limits the reference can reach.** Near 0, some rows give no z-score below
+  a floor, and some (in a table without `adjust`, with L below 0) none above a
+  ceiling. At 5 years, `who-tsfa` never scores below -6.97, so a hard low limit
+  of -7 would not hold back even 0.1 mm. A `soft` or `hard` limit beyond such a
+  bound anywhere in the reference is a configuration error that names the
+  furthest limit the reference can take. Every shipped reference takes soft
+  limits of -3 to 3 and hard limits of -6 to 6.
 - **Page size.** A page carries a copy of each table it uses (3 to 95 KB) and at
   most four different references. A rule needing a fifth is checked when the
   record is saved, and its note says so. A rule whose inputs are not sent to
@@ -2049,8 +2056,9 @@ These are refused when the rule is saved:
 These are refused once the data dictionary is read, with a configuration error
 under the field: a `reference` this server does not have (the error lists the
 ones it has), `age` on a reference read by length or height (and `by` on one
-read by age), an input field that does not exist or is the wrong kind, and a
-`male` or `female` code that is not among the sex field's choices.
+read by age), an input field that does not exist or is the wrong kind, a
+`male` or `female` code that is not among the sex field's choices, and a limit
+the reference cannot reach (see "Limits the reference can reach" above).
 
 ---
 

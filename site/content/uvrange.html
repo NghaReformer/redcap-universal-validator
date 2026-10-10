@@ -116,8 +116,14 @@ software computes it.</p>
     outside the reference check nothing. On a data entry form a grey note says why.</li>
 <li>Inputs on another form, or in another event, are read when the page opens and the
     rule's note does not block there. A survey, and a user without rights to that form,
-    are not sent their values: the page checks only that the value is a number above 0,
-    and holds the save when it is not; the z-score is checked when the record is saved.</li>
+    are not sent the values of another form: the page checks only that the value is a
+    number above 0, and holds the save when it is not; the z-score is checked when the
+    record is saved. A rule with an input in another event never blocks, on a survey
+    either.</li>
+<li>A limit the reference can never pass is a configuration error. Some references give
+    no z-score below (or above) a point at some ages: at 5 years, WHO triceps
+    skinfold-for-age never goes below -6.97, so a hard low limit of -7 would not hold back
+    even 0.1 mm there.</li>
 <li>WHO's 0.7 cm correction for a length measured standing, or a height measured lying,
     is not applied: pick <code>who-wfl</code> (lying) or <code>who-wfh</code> (standing).
     For a child with oedema, skip weight rules with <code>when</code>.</li>

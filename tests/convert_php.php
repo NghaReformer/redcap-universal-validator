@@ -8,7 +8,8 @@
  *     at both ends that the README's command skips) convert, and
  *     GrowthReference::table() accepts what was written,
  *   - the printed SHA-256 is that of the file, and the printed index entry
- *     names the file and the x range,
+ *     names the file and the x range both sexes have ("floor" up to the next
+ *     key for an offset table) and is accepted by GrowthReference::table(),
  *   - other sex columns and codes,
  *   - every refusal: a row off the grid, a gap, sexes starting apart, a sex
  *     code that is neither, M at or below 0, a second row for one x, a missing
@@ -81,6 +82,21 @@ namespace {
               'lookup' => 'floor', 'valid' => ['min' => '24', 'below' => '27'], 'adjust' => 'none'];
     try { $ok = count(G::table($entry)['female']) === 3; } catch (\RuntimeException $e) { $ok = $e->getMessage(); }
     check('CDC shape: GrowthReference::table() accepts it with floor and valid 24 to under 27 (got ' . json_encode($ok) . ')', $ok === true);
+    // The printed starting entry for an offset table reads each row from its key
+    // up to the next one, and the table accepts it as printed.
+    $printed = json_decode(substr($r['out'], (int) strpos($r['out'], "{\n")), true);
+    check('CDC shape: the printed entry is floor, valid 24 to under 27 (got ' . json_encode($printed) . ')', is_array($printed)
+        && $printed['lookup'] === 'floor' && $printed['valid'] === ['min' => '24', 'below' => '27']);
+    try { $ok = count(G::table(['id' => 'c', 'dir' => $dir] + $printed)['male']) === 3; } catch (\Throwable $e) { $ok = $e->getMessage(); }
+    check('CDC shape: GrowthReference::table() accepts the printed entry (got ' . json_encode($ok) . ')', $ok === true);
+
+    // ---- sexes ending apart: the printed entry stops where both have rows
+    $in = put('apart.csv', "sex,age,l,m,s\n1,0,1,2,0.1\n1,1,1,2,0.1\n1,2,1,2,0.1\n2,0,1,2,0.1\n2,1,1,2,0.1\n");
+    $r = run(['--in', $in, '--out', $dir . '/apart.json', '--x', 'age']);
+    $printed = json_decode(substr($r['out'], (int) strpos($r['out'], "{\n")), true);
+    try { $ok = is_array($printed) && $printed['valid'] === ['min' => '0', 'max' => '1'] && $printed['lookup'] === 'round'
+        && count(G::table(['id' => 'a', 'dir' => $dir] + $printed)['female']) === 2; } catch (\Throwable $e) { $ok = $e->getMessage(); }
+    check('sexes ending apart: the printed entry covers rows 0 to 1 and is accepted (got ' . json_encode($ok) . ')', $ok === true);
 
     // ---- other sex codes
     $in = put('mf.csv', "gender,len,lam,mu,sig\nM,45,1,2.4,0.09\nM,45.1,1,2.42,0.09\nF,45,1,2.3,0.09\nF,45.1,1,2.32,0.09\n");

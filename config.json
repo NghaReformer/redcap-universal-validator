@@ -142,7 +142,7 @@
     },
     {
       "key": "reference-data-dir",
-      "name": "<b>@UVRANGE growth references</b> — folder of extra growth references: the full path of a folder on this server holding an index.json and its tables (see data/references/README.md in the module). Its references are added to the WHO references that ship with the module; one with the same id replaces the shipped one. Keep it outside the module folder so that an upgrade does not remove it. Leave blank to use the shipped references only.",
+      "name": "<b>@UVRANGE growth references</b> — folder of extra growth references: the full path of a folder on this server holding an index.json and its tables (see data/references/README.md in the module). Its references are added to the WHO references that ship with the module; one with the same id replaces the shipped one. Keep it outside the module folder so that an upgrade does not remove it. The folder fails closed: if its index.json cannot be read, no growth reference is used, the shipped WHO ones included, and a broken entry takes its id out of use. Rules naming them then show a configuration error on their form and in the Validation scan. Leave blank to use the shipped references only.",
       "type": "text"
     }
   ],

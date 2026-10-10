@@ -241,6 +241,8 @@ namespace {
     foreach (['weight', 'wt_h', 'hc', 'bmi', 'wt_c'] as $f) check($f . ': no configuration error (got ' . json_encode($err($p, $f)) . ')', ruleFor($p, $f) !== null && $err($p, $f) === '');
     $bad = $DICT + [
         'b_unknown' => f('anthro_form', tag('who-nope', $AGE), 'number'),
+        'b_reach'   => f('anthro_form', tag('who-tsfa', $AGE, '"hard":[-7,5]'), 'number'),
+        'b_reachok' => f('anthro_form', tag('who-tsfa', $AGE, '"hard":[-6.96,5]'), 'number'),
         'b_axis1'   => f('anthro_form', tag('who-wfh', $AGE), 'number'),
         'b_axis2'   => f('anthro_form', tag('who-wfa', '"by":"[height]"'), 'number'),
         'b_nofield' => f('anthro_form', tag('who-wfa', '"age":{"days":"[nope]"}'), 'number'),
@@ -284,12 +286,15 @@ namespace {
         // a Text field with no validation could hold anything: a typo would only switch the check off
         'b_daystxt'  => '"age" "days" field "age_txt" is not a number field — it needs integer or number validation, or to be a calc.',
         'b_tfbad'    => '"female" is "2", which is not a choice of "sex" field "tf" (its codes are 1, 0).',
+        // a limit no measurement can pass: below -6.97 for triceps skinfold
+        'b_reach'    => '"reference" "who-tsfa": its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at ',
     ];
     foreach ($cases as $f => $want) {
         check('dictionary: ' . $f . ' (got ' . json_encode($err($p, $f)) . ')', strpos($err($p, $f), $want) !== false
             && strpos($err($p, $f), '@UVRANGE on "' . $f . '"') === 0);
     }
     check('dictionary: a Text sex field takes any codes', $err($p, 'b_textsex') === '');
+    check('dictionary: a limit just inside the reach is taken', $err($p, 'b_reachok') === '');
     foreach (['b_tf' => 'a true/false sex field with 1 and 0', 'b_sqlsex' => 'an SQL sex field takes any codes',
               'b_calcsex' => 'a calc sex field takes any codes', 'b_calcage' => 'a calc age in days',
               'b_dts' => 'datetime-with-seconds and datetime dates'] as $f => $label) {

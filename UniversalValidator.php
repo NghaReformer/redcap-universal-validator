@@ -4128,10 +4128,16 @@ class UniversalValidator extends AbstractExternalModule
                 . ($catalog['problems'] ? ' Problems reading the references: ' . implode(' ', $catalog['problems']) : ''));
         }
         try {
-            GrowthReference::table($entry);
+            $table = GrowthReference::table($entry);
         } catch (\Throwable $e) {
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
+        $lim = function ($k) use ($frag) { return isset($frag[$k]) && is_string($frag[$k]) ? $frag[$k] : null; };
+        $out = GrowthReference::limitProblem($entry, $table, [
+            'soft' => [$lim('rangeSoftLo'), $lim('rangeSoftHi')],
+            'hard' => [$lim('rangeHardLo'), $lim('rangeHardHi')],
+        ]);
+        if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
         $byAge = $entry['axis'] === 'age';
         if ($byAge && isset($frag['rangeBy'])) {
             return $refuse('"' . $id . '" is read by age — give "age" instead of "by".');
