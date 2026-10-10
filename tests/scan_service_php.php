@@ -622,6 +622,8 @@ namespace {
         public $lease = null;
         /** @var int how many reads of the change log's top fail, as a blip does (H11) */
         public $logFails = 0;
+        /** @var string[] the configuration reads durableScanContext() says failed (R5-4) */
+        public $unread = [];
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -662,7 +664,7 @@ namespace {
             return ['ok' => true, 'why' => null,
                 'rules' => [['type' => 'required', 'fields' => ['a_val']]],
                 'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
-                'problems' => $this->problems,
+                'problems' => $this->problems, 'unread' => $this->unread,
                 'verifyFingerprint' => $this->verifyFingerprint,
                 'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
                            'crossLookups' => $this->crossLookups, 'crossRecordLookups' => false],
@@ -2039,6 +2041,91 @@ namespace INSPIRE\UniversalValidator\Scan {
     $lrow = $ls->run(160, $lrun);
     check('H11 E2E: the next requests run fenced and finish through the fence',
         $lrow['terminal'] === ScanOutcome::COMPLETE && $lrow['coverage'] === ScanOutcome::FENCED);
+
+    // -- a configuration read in part ends nothing (review R5-4) -----------------
+    //
+    // One failed read on an unchanged project - its design, its Missing Data
+    // Codes, another project's settings - moved the fingerprint, and the pass
+    // that compared it ended the run failed. durableScanContext() now names
+    // such reads as `unread`; start refuses, work refuses as one to retry, and
+    // only a configuration read in full may end a run.
+    $us = new ArrayScanStore();
+    $um = new \E2eModule($us);
+    $um->unread = ['the project\'s design'];
+    $u0 = (new ScanService($um, $us))->start(161);
+    check('R5-4 E2E: a scan is not started on a configuration read in part',
+        empty($u0['ok']) && strpos((string) $u0['why'], 'could not be read just now') !== false
+        && strpos((string) $u0['why'], 'the project\'s design') !== false);
+    check('R5-4 E2E: and no run was opened for it', $us->run(161, 1) === null);
+    $um->unread = [];
+    $u1 = (new ScanService($um, $us))->start(161);
+    $urun = (int) $u1['run_id'];
+    $um->unread = ['the missing data codes'];
+    $uw = (new ScanService($um, $us))->work(161, $urun);
+    $urow = $us->run(161, $urun);
+    check('R5-4 E2E: a work request on a configuration read in part is refused as one to retry',
+        $uw['ok'] === false && $uw['stop'] === 'unread'
+        && strpos((string) $uw['why'], 'the missing data codes') !== false);
+    check('R5-4 E2E: and the run is left exactly where it was, not ended',
+        $urow['terminal'] === null && $urow['phase'] !== ScanPhase::TERMINAL
+        && (int) $urow['manifest_done'] === 0);
+    $um->unread = [];
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($um, $us))->work(161, $urun);
+        if (empty($w['ok']) || $us->run(161, $urun)['terminal'] !== null) break;
+    }
+    check('R5-4 E2E: read in full again, the same run finishes complete',
+        $us->run(161, $urun)['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- a finished run is answered with its status (review R5-8) ---------------
+    //
+    // A late request from a second tab, sent after a design edit, was told the
+    // run had been ended for a change, about a run that had finished complete.
+    $um->structure = ['fields' => ['a_val' => ['form' => 'fa', 'type' => 'text', 'validation' => 'integer']]];
+    $late = (new ScanService($um, $us))->work(161, $urun);
+    check('R5-8 E2E: a late request for a finished run is not told the run was ended for a change',
+        $late['ok'] === true && $late['stop'] === null && $late['why'] !== ScanService::CONFIG_CHANGED);
+    check('R5-8 E2E: it is answered with the finished run\'s status',
+        isset($late['status']['terminal']) && $late['status']['terminal'] === ScanOutcome::COMPLETE);
+    check('R5-8 E2E: and the stored run is untouched',
+        $us->run(161, $urun)['terminal'] === ScanOutcome::COMPLETE);
+    $um->unread = ['the project\'s design'];
+    $late = (new ScanService($um, $us))->work(161, $urun);
+    check('R5-8 E2E: nor is a finished run refused for a configuration read in part',
+        $late['ok'] === true && isset($late['status']['terminal'])
+        && $late['status']['terminal'] === ScanOutcome::COMPLETE);
+    $um->unread = [];
+
+    // -- a tightened privacy policy stops the run (review R5-5) -----------------
+    //
+    // advanceRun() ended it FAILED with the rules sentence; the worker's own
+    // guard, which stops it through finishCancelled() with the privacy
+    // sentence, could not be reached because workerDeps() never armed it.
+    $ps5 = new ArrayScanStore();
+    $pm5 = new \E2eModule($ps5);
+    $p5 = (new ScanService($pm5, $ps5))->start(162);
+    $p5run = (int) $p5['run_id'];
+    $pm5->proj['scan-value-retention-days'] = '7';      // the default keeps them longer
+    $pw = (new ScanService($pm5, $ps5))->work(162, $p5run);
+    $prow = $ps5->run(162, $p5run);
+    check('R5-5 E2E: a privacy tightening during a run stops it: cancelled, not failed',
+        $prow['terminal'] === ScanOutcome::CANCELLED);
+    check('R5-5 E2E: and the stored reason is the privacy one',
+        strpos((string) $prow['terminal_reason'], 'privacy settings were tightened') !== false);
+    check('R5-5 E2E: the work answer says so, not that the rules or the design changed',
+        $pw['ok'] === false && strpos((string) $pw['why'], 'privacy settings changed') !== false
+        && $pw['why'] !== ScanService::CONFIG_CHANGED);
+    check('R5-5 E2E: and nothing was examined after the tightening',
+        (int) $prow['manifest_done'] === 0);
+    // The rules moving is still the failed ending, with its own sentence.
+    $rs5 = new ArrayScanStore();
+    $rm5 = new \E2eModule($rs5);
+    $r5 = (new ScanService($rm5, $rs5))->start(163);
+    $r5run = (int) $r5['run_id'];
+    $rm5->structure = ['fields' => ['a_val' => ['form' => 'fa', 'type' => 'text', 'validation' => 'date_ymd']]];
+    $rw = (new ScanService($rm5, $rs5))->work(163, $r5run);
+    check('R5-5 E2E: a design change during a run still ends it failed, as a change',
+        $rs5->run(163, $r5run)['terminal'] === ScanOutcome::FAILED && $rw['stop'] === 'changed');
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();

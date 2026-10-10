@@ -41,9 +41,11 @@ namespace ExternalModules {
         public $settingReads = [];    // [pid, key]
         public $subSettingsThrowFor = [];  // pid => true: that project's settings cannot be read just now
         public $enabledThrowFor = [];      // pid => true: whether the module is enabled there cannot be read
+        public $subSettingThrows = [];     // key => true: that one sub-setting cannot be read just now
         public function getSubSettings($k, $pid = null) {
             $p = ($pid !== null && $pid !== '') ? (int) $pid : (int) $this->projectIdReturn;
             if (isset($this->subSettingsThrowFor[$p])) throw new \RuntimeException('settings unreadable just now');
+            if (isset($this->subSettingThrows[$k])) throw new \RuntimeException('setting unreadable just now');
             $this->settingReads[] = [$p, $k];
             return isset($this->subSettingsBy[$p][$k]) ? $this->subSettingsBy[$p][$k] : [];
         }
@@ -1114,6 +1116,39 @@ namespace {
         $st['ok'] === false && $st['final'] === true
         && strpos($st['why'], 'project 300, which does not answer your lookups') !== false);
     $DICT_A = $keepA; $DICT_B = $keepB;
+
+    // R5-4: A RULE MADE A CONFIGURATION ERROR BY A READ THAT FAILED IS NOTED.
+    // The refusal stands - the lookup cannot be checked - but the rule list is
+    // a fingerprint input, so a scan judged by it would be ended for a change
+    // the project never made. Rule discovery records the failed read, and
+    // durableScanContext() hands it to ScanService as `unread`.
+    $unreadAfterRules = function ($tweak = null) {
+        $m = mod('nurse');
+        if ($tweak !== null) $tweak($m);
+        $rules = new \ReflectionMethod($m, 'getRules');
+        $rules->setAccessible(true);
+        $rules->invoke($m, 149);
+        $prop = new \ReflectionProperty($m, 'configUnread');
+        $prop->setAccessible(true);
+        $u = $prop->getValue($m);
+        \REDCap::$rightsThrowFor = [];
+        return isset($u[149]) ? array_keys($u[149]) : [];
+    };
+    check('R5-4 cross: rules read in full note no failed read', $unreadAfterRules() === []);
+    $failedReads = [
+        'whether the module is enabled there' => function ($m) { $m->enabledThrowFor[300] = true; },
+        'its agreement to answer' => function ($m) { $m->subSettingsThrowFor[300] = true; },
+        'the server switch' => function ($m) { $m->systemThrows = true; },
+        'this project\'s lookup aliases' => function ($m) { $m->subSettingThrows['exists-project-aliases'] = true; },
+    ];
+    foreach ($failedReads as $what => $tweak) {
+        $u = $unreadAfterRules($tweak);
+        $expect = $what === 'this project\'s lookup aliases' ? [$what] : ['another project\'s settings'];
+        check('R5-4 cross: a rule refused on a failed read of ' . $what . ' is noted', $u === $expect);
+    }
+    check('R5-4 cross: a rule refused on what was read is a decision, and is not noted',
+        $unreadAfterRules(function ($m) { $m->enabledIn = [149, 302]; }) === []
+        && $unreadAfterRules(function ($m) { $m->subSettingsBy[300] = ['exists-consumers' => []]; }) === []);
 
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

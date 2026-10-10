@@ -1233,6 +1233,7 @@ class UniversalValidator extends AbstractExternalModule
         try {
             $rows = $this->getSubSettings('exists-project-aliases', $pid);
         } catch (\Throwable $e) {
+            $this->noteConfigUnread($pid, 'this project\'s lookup aliases');
             return null;
         }
         foreach (is_array($rows) ? $rows : [] as $row) {
@@ -1414,9 +1415,34 @@ class UniversalValidator extends AbstractExternalModule
             try {
                 if ($pid > 0 && class_exists('\Project')) $this->projectObjects[$pid] = new \Project($pid);
             } catch (\Throwable $e) {
+                $this->noteConfigUnread($pid, 'the project\'s design');
             }
         }
         return $this->projectObjects[$pid];
+    }
+
+    /**
+     * @var array pid => [what => true]: reads this request that a fact of the
+     * project's scan configuration rests on, and that FAILED (review R5-4).
+     */
+    private $configUnread = [];
+
+    /**
+     * Record that a fact of $pid's configuration was built from a read that
+     * failed.
+     *
+     * Every one of these reads degrades instead of throwing: a design that
+     * could not be read is "unreadable", Missing Data Codes that could not be
+     * read are none, another project's settings that could not be read refuse
+     * the lookup as a configuration error. That is right for a form save. For
+     * a scan it is not, because those facts are in the fingerprint a work
+     * request compares, and one blip on an unchanged project read as a change
+     * and ended an hours-long run failed. durableScanContext() hands the list
+     * back as `unread`, and ScanService refuses the request as one to retry.
+     */
+    private function noteConfigUnread($pid, $what)
+    {
+        $this->configUnread[(int) $pid][(string) $what] = true;
     }
 
     /** @var array pid => that project's Missing Data Codes, code => true */
@@ -1442,6 +1468,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         } catch (\Throwable $e) {
             $codes = [];
+            $this->noteConfigUnread($pid, 'the missing data codes');
         }
         return $this->missingCodesMemo[$pid] = $codes;
     }
@@ -3057,7 +3084,12 @@ class UniversalValidator extends AbstractExternalModule
             if (empty($candidate['configError']) && TemporalRules::extended($candidate)) {
                 $dd = $this->dataDictionary($pid) ?: [];
                 $errors = TemporalRules::validate($candidate);
-                if (!isset($extendedShape)) $extendedShape = TemporalMetadata::load($pid, $dd);
+                if (!isset($extendedShape)) {
+                    $extendedShape = TemporalMetadata::load($pid, $dd, $shapeUnread);
+                    // A rule judged against events that could not be read is
+                    // a configuration error the project does not have (R5-4).
+                    if ($shapeUnread) $this->noteConfigUnread($pid, 'the project\'s events');
+                }
                 $errors = array_merge($errors, TemporalRules::validateProject($candidate, $extendedShape));
                 foreach (TemporalRules::fields($candidate) as $f) {
                     if ($dd && !isset($dd[$f])) $errors[] = 'Unknown referenced field: ' . $f . '.';
@@ -3808,7 +3840,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function annotateExistsRemote(array $frag, $name, $types, $pid)
     {
-        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS]; };
+        // A REFUSAL RESTING ON A READ THAT FAILED IS NOTED (review R5-4). It
+        // stays a refusal - the lookup cannot be checked - but it becomes a
+        // configuration error the project does not really have, and the scan
+        // fingerprint carries it.
+        $b = null;
+        $refuse = function ($why) use ($pid, &$b) {
+            if ($this->crossUnread($b === null ? 0 : $b)) {
+                $this->noteConfigUnread($pid, 'another project\'s settings');
+            }
+            return ['error' => $why, '_tag' => AnnotationRules::TAG_EXISTS];
+        };
         if (!$this->crossProjectOn()) {
             return $refuse('looking in another project ("project") is turned off on this REDCap server — an '
                 . 'administrator can turn it on in the module\'s Control Center settings.');
@@ -5276,8 +5318,10 @@ class UniversalValidator extends AbstractExternalModule
      *
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
      *               read:?callable, rules:array, ownership:array, problems:array,
-     *               verifyFingerprint?:bool, structure?:array, choices?:array}
-     *         the last three on success only (scanStructureFacts())
+     *               verifyFingerprint?:bool, structure?:array, choices?:array,
+     *               unread?:string[]}
+     *         the last four on success only (scanStructureFacts()); `unread`
+     *         names the configuration reads that failed (review R5-4)
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
@@ -5410,10 +5454,18 @@ class UniversalValidator extends AbstractExternalModule
         // arrays, so a field's validation or a radio's codes could change
         // between two requests of one run and the run finished against both.
         $facts = $this->scanStructureFacts($pid, $plan);
+        // WHAT THE CONFIGURATION ABOVE COULD NOT READ (review R5-4): the
+        // structure, the codes and the rules' configuration errors are the
+        // fingerprint's inputs, and a fact built from a failed read is not the
+        // project's. Named, so the refusal can say what; ScanService refuses
+        // to start or advance a run on a configuration with any.
+        $pk = (int) $pid;
+        $unread = isset($this->configUnread[$pk]) ? array_keys($this->configUnread[$pk]) : [];
+        sort($unread, SORT_STRING);
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
                 'verifyFingerprint' => true, 'structure' => $facts['structure'],
-                'choices' => $facts['choices'],
+                'choices' => $facts['choices'], 'unread' => $unread,
                 'problems' => self::problemList($plan['unconf'])];
     }
 
@@ -5506,6 +5558,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             } catch (\Throwable $e) {
                 $repeating = 'unreadable';
+                $this->noteConfigUnread($pid, 'the repeating instruments and events');
             }
         }
 

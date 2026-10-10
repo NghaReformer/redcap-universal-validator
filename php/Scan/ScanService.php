@@ -266,6 +266,12 @@ final class ScanService
             if (empty($prove['ok'])) return self::noStart($prove['why']);
         }
 
+        // A RUN IS NOT STARTED ON A CONFIGURATION READ IN PART (review R5-4).
+        // The fingerprint stored here is what every later request compares;
+        // built from a read that failed, it would differ from the project's
+        // real one and end the run at its first fully read request.
+        if (!empty($ctx['unread'])) return self::noStart(self::configUnread($ctx['unread']));
+
         $planner = new ScanPlanner($this->store(), $this->key());
         $r = $planner->plan($pid, [
             'source'    => $src['source'],
@@ -381,9 +387,38 @@ final class ScanService
         // all, and promote() ends the run there. M8 is what makes the
         // fingerprint mean something: the project's structure and its choice
         // codes are in it, from durableScanContext().
+        //
+        // A FINISHED RUN IS ANSWERED WITH ITS STATUS (review R5-8). The
+        // fingerprint was compared first, so a late request from a second tab,
+        // sent after a design edit, was told the run had been ended for a
+        // change, about a run that had finished complete before it.
+        if ((isset($run['terminal']) && $run['terminal'] !== null && $run['terminal'] !== '')
+                || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                    'phase' => ScanPhase::TERMINAL, 'done' => true, 'stop' => null,
+                    'why' => 'this scan has finished', 'status' => $this->statusOf($pid, $runId, [])];
+        }
+        // A CONFIGURATION READ IN PART JUDGES NOTHING (review R5-4). One read
+        // that failed on an unchanged project - its design, its Missing Data
+        // Codes, another project's settings behind a lookup - moved the
+        // fingerprint, and promote() ended an hours-long run failed for a
+        // change that never happened. The request is refused as one to retry;
+        // only a configuration read in full may end a run.
+        if (!empty($ctx['unread'])) {
+            return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                    'phase' => isset($run['phase']) ? $run['phase'] : null, 'done' => false,
+                    'stop' => 'unread', 'why' => self::configUnread($ctx['unread']),
+                    'status' => $this->statusOf($pid, $runId, [])];
+        }
         $config = $this->configurationNow($run, $policy, $ctx);
         $limits = self::limitsOf($policy);
-        if ($config['moved']) {
+        // A TIGHTENED PRIVACY POLICY STOPS THE RUN; IT DOES NOT FAIL IT (review
+        // R5-5). Only the rules and the design moving is a run that describes
+        // two configurations. When the policy revision moved, the worker is
+        // built with it, and its own guard ends the run through
+        // ScanPromotion::finishCancelled() with the privacy sentence - the
+        // guard workerDeps() never armed, so it could not be reached.
+        if ($config['moved'] && !$config['privacyMoved']) {
             ScanPromotion::promote($store, $pid, $runId, array_merge($limits, [
                 'fingerprintNow' => $config['fingerprintNow'],
                 'policyRevisionNow' => $config['policyRevisionNow']]));
@@ -391,7 +426,8 @@ final class ScanService
                     'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'changed',
                     'why' => self::CONFIG_CHANGED, 'status' => $this->statusOf($pid, $runId, [])];
         }
-        $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode));
+        $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode,
+                                                           $config['policyRevisionNow']));
         $r = $worker->work($pid, $runId);
 
         // A RUN WHOSE STORAGE JUST FAILED IS NOT A RUN TO PROMOTE. Promotion
@@ -465,9 +501,10 @@ final class ScanService
      * deleted. tests/scan_service_php.php now builds a worker from this and
      * runs it over such a record.
      */
-    private function workerDeps($pid, ScanStore $store, array $run, array $policy, array $ctx, $mode)
+    private function workerDeps($pid, ScanStore $store, array $run, array $policy, array $ctx, $mode,
+                                $policyRevision = null)
     {
-        return [
+        $deps = [
             'slots'     => new WorkerSlots($this->db),
             'slotTtl'   => self::SLOT_TTL,
             // The limit as the settings say it now (review R4-4, W1-N1).
@@ -507,6 +544,12 @@ final class ScanService
                 $this->note($event, $context);
             },
         ];
+        // The privacy policy revision as the settings make it now (review
+        // R5-5). The worker compares it with the run's and, when it moved,
+        // stops the run before writing anything further. Null when this
+        // context does not ask for the comparison.
+        if ($policyRevision !== null) $deps['policyRevision'] = (int) $policyRevision;
+        return $deps;
     }
 
     /**
@@ -1530,6 +1573,21 @@ final class ScanService
         . 'configurations. Start a new scan.';
 
     /**
+     * What start and work answer when part of the configuration could not be
+     * read (review R5-4). Not the end of anything: the run, if there is one,
+     * is exactly as it was, and the next request reads again.
+     */
+    const CONFIG_UNREAD = 'Part of this project\'s configuration could not be read just now (%s), so '
+        . 'this request did no scan work rather than judge the scan against a configuration it could '
+        . 'not read in full. Nothing was lost; try again in a moment.';
+
+    /** CONFIG_UNREAD, naming what could not be read. */
+    private static function configUnread(array $unread)
+    {
+        return sprintf(self::CONFIG_UNREAD, implode(', ', array_map('strval', $unread)));
+    }
+
+    /**
      * The two inputs promotion judges a moved configuration by (W7-N11), as
      * they are in this request, and whether either differs from the run's.
      *
@@ -1553,7 +1611,8 @@ final class ScanService
     private function configurationNow(array $run, array $policy, array $ctx)
     {
         if (empty($ctx['verifyFingerprint'])) {
-            return ['moved' => false, 'fingerprintNow' => null, 'policyRevisionNow' => null];
+            return ['moved' => false, 'privacyMoved' => false, 'fingerprintNow' => null,
+                    'policyRevisionNow' => null];
         }
         $fp = ScanPlanner::requestFingerprint(['rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
             'structure' => $ctx['structure'] ?? [], 'choices' => $ctx['choices'] ?? [],
@@ -1565,6 +1624,9 @@ final class ScanService
         $revNow = $tighter ? $rev + 1 : $rev;
         return ['moved' => !ScanPlanner::fingerprintMatches(isset($run['fingerprint']) ? $run['fingerprint'] : null, $fp)
                            || $revNow !== $rev,
+                // The privacy policy tightened (review R5-5): a stop, whatever
+                // else moved with it, because the run writes nothing more.
+                'privacyMoved' => $revNow !== $rev,
                 'fingerprintNow' => $fp, 'policyRevisionNow' => $revNow];
     }
 

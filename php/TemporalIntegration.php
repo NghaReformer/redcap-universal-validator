@@ -31,8 +31,11 @@ trait TemporalIntegration
     private function temporalScanStructure($pid, array $rules)
     {
         foreach ($rules as $rule) if (TemporalRules::extended($rule)) {
+            $digest=TemporalMetadata::load($pid,$this->dataDictionary($pid) ?: [],$unread)->digest();
+            // A digest of events that could not be read is not the project's (R5-4).
+            if ($unread) $this->noteConfigUnread($pid,'the project\'s events');
             return ['dialect'=>TemporalRules::VERSION, 'enabled'=>$this->temporalOptions($pid)['qualified'],
-                'project'=>TemporalMetadata::load($pid,$this->dataDictionary($pid) ?: [])->digest()];
+                'project'=>$digest];
         }
         return [];
     }

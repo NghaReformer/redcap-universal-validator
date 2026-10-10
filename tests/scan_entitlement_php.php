@@ -117,6 +117,12 @@ namespace {
             $this->eventsForms = self::$design['eventsForms'];
             $this->repeating = self::$design['repeating'];
             $this->project = ['missing_data_codes' => self::$design['missing']];
+            // R5-4: Missing Data Codes whose read fails, the project otherwise read.
+            if (self::$design['missing'] === 'throw') unset($this->project);
+        }
+        public function __isset($name) {
+            if ($name === 'project') throw new \RuntimeException('project settings unavailable');
+            return false;
         }
         public function getRepeatingFormsEvents() {
             if ($this->repeating === 'throw') throw new \RuntimeException('repeating setup unavailable');
@@ -765,6 +771,32 @@ namespace {
             !$moved($design, $d2));
         check('M8: nor the order REDCap lists an event\'s instruments in',
             !$moved(array_merge($design, ['eventsForms' => [42 => ['fa'], 41 => ['fb', 'fa']]]), $dict));
+
+        // R5-4: THE FINGERPRINT MOVES ON A READ THAT FAILED, SO THE CONTEXT SAYS
+        // WHICH. The two M8 checks above are why: a project that could not be
+        // read, and a repeating setup that could not be read, build fingerprints
+        // of their own, and ScanService would end a run on an unchanged project
+        // for either. Each now comes back named in `unread`, and a project read
+        // in full has none.
+        check('R5-4: a project read in full has no configuration read that failed',
+            $was['ctx']['unread'] === []);
+        $blip = $fpOf(null, $dict);
+        check('R5-4: a project that could not be built is named, design and codes both resting on it',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the project\'s design']);
+        $blip = $fpOf(array_merge($design, ['repeating' => 'throw']), $dict);
+        check('R5-4: a repeating setup that could not be read is named',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the repeating instruments and events']);
+        $blip = $fpOf(array_merge($design, ['missing' => 'throw']), $dict);
+        check('R5-4: Missing Data Codes that could not be read are named, not taken for none',
+            $blip['fp'] !== $was['fp'] && $blip['ctx']['unread'] === ['the missing data codes']);
+        // The event metadata the event/instance rules are checked against.
+        \Project::$design = null;
+        \INSPIRE\UniversalValidator\TemporalMetadata::load(149, $dict, $tmUnread);
+        check('R5-4: event metadata that could not be read says so', $tmUnread === true);
+        \Project::$design = $design;
+        \INSPIRE\UniversalValidator\TemporalMetadata::load(149, $dict, $tmUnread);
+        \Project::$design = null;
+        check('R5-4: and event metadata read in full does not', $tmUnread === false);
     }
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";
