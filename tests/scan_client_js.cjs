@@ -895,6 +895,26 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await show(planning({ planningStopped: false, idleSeconds: 90 }));
   check('planning: a run still inside the window is told nothing, as before',
     els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-resume'].style.display === '');
+  // B10. PLANNING IS A SLICE PER WORK REQUEST NOW, so a planning run nobody is
+  // driving is PAUSED like any other, and Continue resumes the list.
+  await show(planning({ paused: true, idleSeconds: 300 }));
+  check('planning: a planning run nobody is driving reads as paused, with Continue offered',
+    els['uv-scan-stalled'].textContent === UV.labels.paused.replace('{minutes}', '5')
+    && els['uv-scan-resume'].style.display === '');
+  reset([{ ok: true, stop: 'time', worked: 0, requeued: 0, blocked: 0, findings: 0, listed: 1000,
+           phase: 'planning', status: planning({}) },
+         idle('held', 'another request is listing this project\'s records; this one will continue shortly',
+              planning({}))]);
+  UV.resume(7);
+  await ticks(6);
+  check('planning: Continue drives the list, and a slice that listed records is asked again at once',
+    sent.filter((s) => s.action === 'scan-work').length === 1
+    && pending.length === 1 && pending[0].ms === 0);
+  fire(); await ticks(6);
+  check('planning: a slice held off by another planner waits on the ladder, and says why',
+    sent.filter((s) => s.action === 'scan-work').length === 2
+    && pending.length === 1 && pending[0].ms >= 1500
+    && els['uv-scan-note'].textContent.indexOf('another request is listing') === 0);
   // A tab already DRIVING such a run stops asking for work it can never get.
   reset([idle(null, 'this scan is not in a phase that takes work',
               planning({ planningStopped: true, idleSeconds: 3 * 3600 })),

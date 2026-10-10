@@ -410,11 +410,13 @@
         // to stop it and start again, beside the Continue button that was the
         // right answer. ScanPageView::stalledText() picks in the same order.
         //
-        // AND A FOURTH, FOR A RUN WHOSE PLANNING DIED (review R2O-3). It sits
-        // in `planning` holding the project's slot, Continue can never move
-        // it, and the page used to say nothing at all. The server says when it
-        // has been planning longer than any request can, and the sentence
-        // sends the reader to Stop - so Continue is hidden beside it.
+        // AND A FOURTH, FOR A RUN WHOSE LISTING STOPPED (review R2O-3).
+        // Planning is a slice per request since B10, driven by this pump like
+        // any phase, so a quiet planning run is paused or stalled by the same
+        // rule as a scanning one and Continue resumes the list. Past the
+        // planning window with nothing listed, the server says planning
+        // stopped; that sentence sends the reader to Stop, so Continue is
+        // hidden beside it.
         var stalledNode = el('uv-scan-stalled');
         if (stalledNode) {
             var L2 = labels(), quiet = null;
@@ -566,10 +568,11 @@
             text(el('uv-scan-note'), '');
             return;
         }
-        // A RUN WHOSE PLANNING DIED takes no work from anybody (review R2O-3),
-        // so driving it is asking the same refusal on the ladder for ever. Stop
-        // driving; the watch that stop() starts shows the sentence that says
-        // what to do instead, and hides Continue.
+        // A RUN WHOSE LISTING STOPPED (review R2O-3): nothing has been listed
+        // for the whole planning window, and the server's advice is to stop it
+        // and start again. Driving it would keep asking on the ladder against
+        // that advice. Stop driving; the watch that stop() starts shows the
+        // sentence and hides Continue.
         if (st && st.planningStopped) {
             stop('');
             return;

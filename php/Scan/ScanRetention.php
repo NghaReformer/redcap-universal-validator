@@ -314,12 +314,16 @@ final class ScanRetention
      * refreshed it several times a second and could not be reaped at ANY
      * staleHours setting, while this method's own terminal_reason said "no
      * progress within the configured stale-run window". progress_at is written
-     * in exactly two places, both of them real progress: a batch that finished
-     * at least one record, and the manifest freezing.
+     * in three places, each of them real progress: a batch that finished at
+     * least one record, the manifest freezing, and a page of the manifest
+     * appended (B10). The third matters as planning runs across requests: a
+     * planning phase that lists a large project over hours is moving the whole
+     * time, and without it the run was judged on created_at alone and expired
+     * out from under the planner.
      *
-     * COALESCE, because progress_at is NULL until one of those two happens. A
-     * run that wedged during planning has never made progress and created_at is
-     * then the honest measure of how long it has been failing to.
+     * COALESCE, because progress_at is NULL until one of those happens. A run
+     * that wedged before its first page has never made progress and created_at
+     * is then the honest measure of how long it has been failing to.
      *
      * The predicate requires active_slot = 1, so this is idempotent: a run it
      * already expired is no longer a candidate. NOT PAGED, deliberately: it is

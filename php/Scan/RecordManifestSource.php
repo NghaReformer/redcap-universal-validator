@@ -417,7 +417,7 @@ final class RecordManifestSource
                       // THE GROUP ID, VERBATIM. dag_id on the record index and
                       // the __GROUPID__ value on the data table are both
                       // REDCap's numeric group id; neither is the friendly
-                      // name. This is the value ScanPlanner::stream() compares
+                      // name. This is the value ScanPlanner::step() compares
                       // scope_dag against and the value written to
                       // uv_scan_record.dag, so anything that normalised it into
                       // a label here would move the whole manifest onto a second
@@ -544,6 +544,13 @@ final class RecordManifestSource
      *
      * One query per page, in the record column's own collation, bounded by one
      * more than the cap so an unusable project is detected rather than paged.
+     *
+     * LOAD-BEARING, AND THE ONE LEVER IF PLANNING EVER NEEDS TO BE FASTER (P4).
+     * It is half the queries a plan makes, and it is what makes the `>=`
+     * keyset walk skip nothing: without it, ids the collation calls equal to
+     * a page's last id are either listed twice or not at all. Do not remove it
+     * without putting the same guarantee somewhere else. Do not shrink the
+     * page to speed planning up either - see ScanPlanner::step().
      */
     private function boundaryGroup($id)
     {

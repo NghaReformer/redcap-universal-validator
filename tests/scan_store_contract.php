@@ -397,6 +397,22 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
     // twice, by design. It must land once.
     $C('re-offering a record already in the manifest adds nothing',
         $s3->appendManifest($rid3, [$mk('C'), $mk('D')]) === 1);
+    // EVERY APPEND IS A HEARTBEAT (review R3U-2): a planner appending pages
+    // looked, to the page and to the reaper, exactly like one that had died.
+    $C('an append moves the progress clock while the run is still planning',
+        $s3->run(710, $rid3)['progress_at'] !== null
+        && $s3->run(710, $rid3)['phase'] === 'planning');
+
+    // THE FREEZE WAITS FOR THE SOURCE TO SAY DONE (B10). A walk that returned
+    // because its request ran out of time has listed part of the project.
+    $C('a freeze before the walk reached the end of its source is refused',
+        $s3->freezeManifest($rid3) === false && $s3->run(710, $rid3)['phase'] === 'planning');
+    $ep3p = (int) $s3->run(710, $rid3)['lease_epoch'];
+    $cl3 = $s3->claimPlan($rid3, 'p1', $ep3p, 300, 3);
+    $C('the planner takes the lease', is_array($cl3) && $cl3['state'] === 'ok');
+    $C('an empty last page is still a page: zero added, not refused',
+        $s3->appendManifest($rid3, [], ['owner' => 'p1', 'epoch' => $ep3p, 'cursor' => 'D',
+            'carry' => null, 'listed' => 4, 'outOfScope' => 0, 'done' => true]) === 0);
 
     $total = $s3->freezeManifest($rid3);
     $C('freezing publishes the COUNT of what is there', $total === 4);
@@ -404,8 +420,10 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
         (int) $s3->run(710, $rid3)['manifest_total'] === 4);
     $C('freezing moves the run to scanning', $s3->run(710, $rid3)['phase'] === 'scanning');
     // A manifest that could still grow after work started would let a run
-    // redefine what "all" means halfway through.
-    $C('appending after the freeze is refused', $s3->appendManifest($rid3, [$mk('E')]) === 0);
+    // redefine what "all" means halfway through. FALSE, not 0: zero is "nothing
+    // new", and a planner must be able to tell that from "stop".
+    $C('appending after the freeze is refused', $s3->appendManifest($rid3, [$mk('E')]) === false);
+    $C('and so is claiming the planning lease', $s3->claimPlan($rid3, 'p1', $ep3p, 300, 3) === false);
     $C('and freezing twice is refused rather than repeated',
         $s3->freezeManifest($rid3) === false);
     $C('so the total did not move', (int) $s3->run(710, $rid3)['manifest_total'] === 4);
@@ -1285,6 +1303,77 @@ function storeContract(callable $newStore, $label, callable $age, callable $cloc
         && $sd->findings(797, $whole['gen'], [], 0, 100) === []
         && $sd->findings(797, $group['gen'], [], 0, 100) === []
         && count($sd->findings(797, $next['gen'], [], 0, 100)) === 1);
+
+    // -- PLANNING ACROSS REQUESTS: ONE LEASE, ONE TRANSACTION, COUNTED (B10) --
+    //
+    // Planning lists a slice per request. Each page and the walk's position
+    // commit together, one planner holds the walk at a time, and a slice that
+    // dies is counted before it is tried - so these are the claims a resumable
+    // walk stands on, asked of both stores.
+    $sp = $newStore();
+    $rp = (int) $sp->startRun(798, ['created_by' => 'alice'])['run']['run_id'];
+    $epP = (int) $sp->run(798, $rp)['lease_epoch'];
+    $pg = function ($owner, $cursor, $listed, array $over = []) use ($epP) {
+        return array_merge(['owner' => $owner, 'epoch' => $epP, 'cursor' => $cursor,
+            'carry' => 'carry-' . $cursor, 'listed' => $listed, 'outOfScope' => 1,
+            'done' => false, 'release' => false, 'leaseSeconds' => 300], $over);
+    };
+    $c1 = $sp->claimPlan($rp, 'p1', $epP, 300, 3);
+    $C('plan: a fresh walk is at its start, and this claim is its first attempt',
+        is_array($c1) && $c1['state'] === 'ok' && $c1['cursor'] === null && $c1['carry'] === null
+        && $c1['pages'] === 0 && $c1['listed'] === 0 && $c1['attempts'] === 1);
+    $C('plan: another planner is told the walk is held while the lease is live',
+        $sp->claimPlan($rp, 'p2', $epP, 300, 3)['state'] === 'held');
+    $C('plan: the holder appends a page with where the walk stands',
+        $sp->appendManifest($rp, [$mk('A'), $mk('B')], $pg('p1', 'B', 3)) === 2);
+    $C('plan: a planner that does not hold the lease appends nothing',
+        $sp->appendManifest($rp, [$mk('X')], $pg('p2', 'X', 9)) === false
+        && $sp->recordStates($rp) === [ScanStore::REC_PENDING => 2]);
+    $C('plan: nor does one at an epoch the run no longer has',
+        $sp->appendManifest($rp, [$mk('X')], $pg('p1', 'X', 9, ['epoch' => $epP + 1])) === false);
+    $C('plan: nor one that names no owner',
+        $sp->appendManifest($rp, [$mk('X')], $pg('', 'X', 9)) === false);
+    $C('plan: a lease is released only by its holder',
+        $sp->releasePlan($rp, 'p2') === false && $sp->releasePlan($rp, 'p1') === true);
+    $c2 = $sp->claimPlan($rp, 'p2', $epP, 300, 3);
+    $C('plan: once released, the next planner takes it and reads where the last page left the walk',
+        is_array($c2) && $c2['state'] === 'ok' && $c2['cursor'] === 'B' && $c2['carry'] === 'carry-B'
+        && $c2['pages'] === 1 && $c2['listed'] === 3 && $c2['outOfScope'] === 1);
+    $C('plan: and the committed page put the attempt count back to zero before this claim',
+        $c2['attempts'] === 1);
+    $C('plan: a page appended with release hands the lease back in the same write',
+        $sp->appendManifest($rp, [$mk('C')], $pg('p2', 'C', 4, ['release' => true])) === 1
+        && $sp->claimPlan($rp, 'p3', $epP, 300, 3)['state'] === 'ok');
+    // A SLICE THAT DIES IS COUNTED BEFORE IT IS TRIED (I3b). p3 took the lease
+    // and never appended; nothing it could run afterwards counts that.
+    $sp->releasePlan($rp, 'p3');
+    $C('plan: claims that never got a page in keep counting',
+        $sp->claimPlan($rp, 'p4', $epP, 300, 3)['attempts'] === 2
+        && $sp->releasePlan($rp, 'p4') === true
+        && $sp->claimPlan($rp, 'p5', $epP, 300, 3)['attempts'] === 3);
+    $sp->releasePlan($rp, 'p5');
+    $ex = $sp->claimPlan($rp, 'p6', $epP, 300, 3);
+    $C('plan: and at the cap the walk is exhausted, with no lease handed out',
+        is_array($ex) && $ex['state'] === 'exhausted' && $ex['attempts'] === 3
+        && $sp->appendManifest($rp, [$mk('D')], $pg('p6', 'D', 5)) === false);
+    $C('plan: a higher cap lets the same walk try again',
+        $sp->claimPlan($rp, 'p6', $epP, 300, 5)['state'] === 'ok');
+    $C('plan: the source saying done is written with the last page',
+        $sp->appendManifest($rp, [$mk('D')], $pg('p6', 'D', 5, ['done' => true])) === 1
+        && $sp->claimPlan($rp, 'p7', $epP, 300, 5)['state'] === 'done');
+    $C('plan: and then the freeze counts every row, the refused ones not among them',
+        $sp->freezeManifest($rp) === 4);
+    // A STOP FENCES THE PLANNER OUT, whichever request it is in.
+    $sq = $newStore();
+    $rq = (int) $sq->startRun(799, ['created_by' => 'alice'])['run']['run_id'];
+    $epQ = (int) $sq->run(799, $rq)['lease_epoch'];
+    $sq->claimPlan($rq, 'p1', $epQ, 300, 3);
+    $sq->cancel(799, $rq, 'bob');
+    $C('plan: after Stop, the planner holding the lease appends nothing and cannot claim again',
+        $sq->appendManifest($rq, [$mk('A')], ['owner' => 'p1', 'epoch' => $epQ, 'cursor' => 'A',
+            'carry' => null, 'listed' => 1, 'outOfScope' => 0, 'done' => false]) === false
+        && $sq->claimPlan($rq, 'p1', $epQ, 300, 3) === false
+        && $sq->recordStates($rq) === []);
 
     // -- WORKER SLOTS ARE NOT ASSERTED HERE ANY MORE ------------------------
     //

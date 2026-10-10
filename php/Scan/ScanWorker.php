@@ -76,6 +76,11 @@ final class ScanWorker
      *   fingerprint:    string        the configuration as it is NOW
      *   policyRevision: int           the privacy policy as it is NOW
      *   slotTtl:        int
+     *   planner:        ?callable(int $runId, array $slice): array  lists one slice
+     *                   of a run still planning - ScanPlanner::step() with the
+     *                   source bound. $slice carries budget, owner, epoch,
+     *                   attempts, leaseSeconds, keep and limits. Absent, a
+     *                   planning run is "not in a phase that takes work".
      *   note:           ?callable(string $event, array $context): void
      *                                 where a storage failure is recorded. The
      *                                 worker's own answer never carries what
@@ -133,7 +138,15 @@ final class ScanWorker
                            . 'examined'];
         }
 
-        if (!ScanPhase::mayWork($phase)) {
+        // PLANNING TAKES WORK NOW (B10): a slice of the record list, through the
+        // planner the composition root hands in. It is not a phase a worker
+        // may CLAIM records in - mayWork() still says no, and the manifest is
+        // not frozen - so it is let through here by name, and only when there
+        // is a planner to run it. Without one the old answer stands.
+        $planner = (isset($this->deps['planner']) && is_callable($this->deps['planner']))
+            ? $this->deps['planner'] : null;
+        $planning = ($phase === ScanPhase::PLANNING && $planner !== null);
+        if (!ScanPhase::mayWork($phase) && !$planning) {
             return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
                     'phase' => $phase, 'done' => ($phase === ScanPhase::TERMINAL), 'stop' => null,
                     'why' => 'this scan is not in a phase that takes work'];
@@ -232,12 +245,52 @@ final class ScanWorker
                     return $slots->renew($slot['slot_no'], $this->owner(), $slot['epoch'], $ttl);
                 };
             }
+            // One budget for the request, whichever phases it spends it on.
+            if (!isset($this->deps['budget']) || !($this->deps['budget'] instanceof WorkBudget)) {
+                $this->deps['budget'] = new WorkBudget();
+            }
+
+            // THE LIST FIRST, A SLICE PER REQUEST (B10), under the slot and the
+            // renewal every other pass has (W1-N2). A slice is budgeted like a
+            // batch, but one slow page can still outlast the slot's TTL, and
+            // the renewal - asked once per page - is what keeps the semaphore
+            // honest through it. The attempt cap is this worker's own
+            // maxAttempts(): a planning slice that keeps dying is retired by the
+            // rule a record is, not by a second one.
+            $listed = 0;
+            if ($planning) {
+                $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
+                $p = $planner($runId, [
+                    'budget' => $this->deps['budget'], 'owner' => $this->owner(), 'epoch' => $epoch,
+                    'attempts' => $this->maxAttempts(), 'leaseSeconds' => max(1, $ttl),
+                    'keep' => $keep, 'limits' => $this->limits()]);
+                if (!is_array($p) || !isset($p['phase'])) {
+                    // An answer this worker cannot read is not a slice that
+                    // listed nothing and is fine.
+                    return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'listed' => 0, 'phase' => $phase, 'done' => false,
+                            'stop' => 'read', 'why' => 'the project\'s record list could not be read'];
+                }
+                $listed = isset($p['listed']) ? max(0, (int) $p['listed']) : 0;
+                if (empty($p['frozen']) || empty($p['ok'])) {
+                    return ['ok' => !empty($p['ok']), 'worked' => 0, 'requeued' => 0, 'blocked' => 0,
+                            'findings' => 0, 'listed' => $listed, 'phase' => (string) $p['phase'],
+                            'done' => false, 'stop' => isset($p['stop']) ? $p['stop'] : null,
+                            'why' => isset($p['why']) ? $p['why'] : null];
+                }
+                // Frozen in this request: the same request goes on to examine
+                // records with what is left of its budget.
+                $phase = (string) $p['phase'];
+            }
+
             // The run_seq is what a duplicate finding is stamped with, so the
             // finalizer is bound to it below; a row without one binds nothing
             // and the finalizer then writes nothing (review R8-5).
             $seq = isset($run['run_seq']) ? (int) $run['run_seq'] : 0;
-            return $this->loop($pid, $runId, $phase, $epoch,
+            $r = $this->loop($pid, $runId, $phase, $epoch,
                 (int) $run['generation_id'], $seq, $opts, $keep);
+            if ($listed > 0) $r['listed'] = (isset($r['listed']) ? (int) $r['listed'] : 0) + $listed;
+            return $r;
         } catch (ScanStoreUnavailable $e) {
             // THE DATABASE FAILED, WHICH IS NOT THE SAME AS BEING FENCED OUT.
             //

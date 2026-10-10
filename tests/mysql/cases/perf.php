@@ -231,6 +231,11 @@ $RECORDS = 6;
      * -------------------------------------------------------------------- */
     $started = $request(function ($svc) use ($PID) { return $svc->start($PID); });
     $report('start');
+    if (getenv('UV_PERF_DEBUG')) {
+        foreach ($m->log as $i => $s) {
+            echo '    ' . $i . ': ' . preg_replace('/\s+/', ' ', substr($s, 0, 150)) . "\n";
+        }
+    }
     check('perf: the service starts a run over the real store',
         $started['ok'] === true && (int) $started['run_id'] > 0);
     $runId = (int) $started['run_id'];
@@ -353,8 +358,13 @@ $RECORDS = 6;
     // requests sent 49, 8, 107, 106 and 9 statements in all (the two work
     // numbers include any renewal confirm reads) - with aggregateTotal() put
     // back, because without it each work request died at promotion (W8-N1).
+    // Wave 9 put ten statements on the start, all of them B10's: the planning
+    // lease (claimPlan(): begin, the run row and the plan row locked, the plan
+    // row written, the lease written, commit), the page's plan row locked and
+    // its cursor and heartbeat written in the page's own transaction, and the
+    // plan_done gate the freeze reads. A start sent 35 before them.
     $bounds = array(
-        'start'                              => array($startCount, 35),
+        'start'                              => array($startCount, 45),
         'a status poll'                      => array($pollCount, 8),
         'a work request with records left'   => array($workCount, 76),
         'the work request that finishes'     => array($finishCount, 77),

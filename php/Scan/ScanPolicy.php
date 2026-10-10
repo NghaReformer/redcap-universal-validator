@@ -210,6 +210,12 @@ final class ScanPolicy
      * The planning window in seconds: the configured minutes, and never less
      * than the request time limit (review R2O-3).
      *
+     * MEASURED FROM THE LAST PAGE LISTED, NOT FROM THE START (review R3U-2).
+     * Planning lists a budgeted slice per request (B10) and every page it
+     * appends moves the run's progress clock, so a run quiet for this long has
+     * had nobody listing it for this long. Measured from created_at, as it
+     * was, it told a planner still listing a big project that it had stopped.
+     *
      * NOT PART OF resolve(), for the reason ScanService::STALL_SECONDS gives:
      * it decides what a page says about a run, never what a run finds, so it
      * has no business being frozen into one. It is resolved where it is read.

@@ -175,6 +175,23 @@ sit there. Three things make that safer:
 If it fails, the scan page names what failed and the scan stays off. It never
 half-installs.
 
+### Listing a large project takes more than one request
+
+Before a scan checks any record it lists the project's records into its own
+table, and that listing runs a few seconds at a time: Start lists the first
+slice, and each request the open scan page sends after it lists the next, so no
+single request has to outlast PHP's `max_execution_time` however large the
+project is. While it runs, the page shows the phase "Listing the records to
+check" and "Preparing" with no percentage, because the total is not known until
+the last slice is in. Closing the page pauses the listing, and Continue carries
+on from the last slice saved; no record is added twice. Two things end it
+instead. If nothing has been listed for the planning window (the system setting
+**minutes a scan may go without listing any more of a project's records**, 15
+by default), the page says listing stopped and asks for the scan to be stopped
+and started again. If the same slice fails as many times in a row as the
+record-attempts setting allows (3 by default), the scan ends as failed, and the
+run's stored reason says planning could not finish.
+
 
 ## Notes
 

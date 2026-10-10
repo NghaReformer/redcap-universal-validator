@@ -208,8 +208,17 @@ class FaultyStore implements ScanStore
     public function writeManifest($runId, array $records)
     { $this->gate('writeManifest'); return $this->inner->writeManifest($runId, $records); }
 
-    public function appendManifest($runId, array $records)
-    { $this->gate('appendManifest'); return $this->inner->appendManifest($runId, $records); }
+    public function appendManifest($runId, array $records, ?array $plan = null)
+    { $this->gate('appendManifest'); return $this->inner->appendManifest($runId, $records, $plan); }
+
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts)
+    {
+        $this->gate('claimPlan');
+        return $this->inner->claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts);
+    }
+
+    public function releasePlan($runId, $owner)
+    { $this->gate('releasePlan'); return $this->inner->releasePlan($runId, $owner); }
 
     public function freezeManifest($runId)
     { $this->gate('freezeManifest'); return $this->inner->freezeManifest($runId); }

@@ -215,18 +215,22 @@ final class ScanPhase
     /**
      * The phase a cancellation should write, given where the run is now.
      *
-     * A run that has not started working has nothing in flight, so it goes
-     * straight to `terminal`; anything else goes to `cancelling` first so the
-     * epoch bump lands before the terminal write and an evaluating worker
-     * fails its compare-and-set rather than committing into a finished run.
-     * Returning null means the request is refused, and the caller must say so
-     * rather than reporting a cancellation that did not happen.
+     * Every working phase goes to `cancelling` first, so the epoch bump lands
+     * before the terminal write and a worker mid-batch fails its
+     * compare-and-set rather than committing into a finished run. Returning
+     * null means the request is refused, and the caller must say so rather
+     * than reporting a cancellation that did not happen.
+     *
+     * PLANNING INCLUDED, since B10. It went straight to `terminal` on the
+     * grounds that a run still planning had nothing in flight - true while the
+     * whole list was walked inside the start request, false now that a work
+     * request lists a slice of it under a lease. That planner's next append is
+     * fenced on the phase and the epoch, and it ends the stop itself.
      */
     public static function cancelTarget($from)
     {
         if (!self::isPhase($from)) return null;
         if ($from === self::TERMINAL || $from === self::CANCELLING) return null;
-        if ($from === self::PLANNING) return self::TERMINAL;
         return self::CANCELLING;
     }
 

@@ -122,7 +122,7 @@
     },
     {
       "key": "scan-system-planning-minutes",
-      "name": "<b>Validation scan</b> — minutes a scan may spend listing a project's records before the page says listing stopped and asks for the scan to be stopped and started again. Never shorter than PHP's max_execution_time. Default 15.",
+      "name": "<b>Validation scan</b> — minutes a scan may go without listing any more of a project's records before the page says listing stopped and asks for the scan to be stopped and started again. Listing runs a few seconds at a time, in the requests the open scan page sends, so this counts from the last records listed, not from the start. Never shorter than PHP's max_execution_time. Default 15.",
       "type": "text"
     },
     {

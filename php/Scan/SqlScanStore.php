@@ -345,10 +345,22 @@ final class SqlScanStore implements ScanStore
     {
         // Kept as one call for the small synchronous paths and for every test
         // written against it, but implemented in terms of the streaming pair so
-        // there is one code path that can be wrong rather than two.
+        // there is one code path that can be wrong rather than two. The whole
+        // list is in hand, so the source has said it is done: that is what
+        // the freeze is now gated on.
         $this->appendManifest($runId, $records);
+        $this->markPlanDone($runId);
         $n = $this->freezeManifest($runId);
         return $n === false ? 0 : $n;
+    }
+
+    /** The plan row, saying the walk has reached the end of its source. writeManifest() only. */
+    private function markPlanDone($runId)
+    {
+        $now = self::now();
+        $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_plan') . '
+            (run_id, plan_done, updated_at) VALUES (?, 1, ?)
+            ON DUPLICATE KEY UPDATE plan_done = 1, updated_at = ?', [$runId, $now, $now]);
     }
 
     /**
@@ -364,44 +376,202 @@ final class SqlScanStore implements ScanStore
      * walks ordinals in order rather than assuming they are contiguous, and
      * completeness is a predicate over states.
      */
-    public function appendManifest($runId, array $records)
+    public function appendManifest($runId, array $records, ?array $plan = null)
     {
-        if (!$records) return 0;
+        if (!$records && $plan === null) return 0;
         $this->db->begin();
         try {
             // FOR UPDATE, so two planners cannot interleave their ordinals, and
             // so a freeze cannot land between the phase check and the insert.
-            $r = $this->db->select('SELECT phase FROM ' . Schema::table('scan_run')
-                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
-            if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING) {
+            // The rest of the fence is compared here in PHP, never by affected
+            // rows: see the class note.
+            $r = $this->db->select('SELECT phase, lease_epoch, cancel_requested_at, lease_owner FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING
+                    || ($plan !== null && !self::planFence($r[0], $plan))) {
                 $this->db->rollback();
-                return 0;
+                return false;
             }
-            $t = Schema::table('scan_record');
-            $m = $this->db->select('SELECT COALESCE(MAX(ordinal), 0) FROM ' . $t
-                . ' WHERE run_id = ?', [$runId]);
-            $ord = isset($m[0][0]) ? (int) $m[0][0] : 0;
-            $now = self::now();
-            $added = 0;
-            $chunk = [];
-            foreach ($records as $rec) {
-                $ord++;
-                $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
-                            isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
-                if (count($chunk) >= self::MANIFEST_CHUNK) {
-                    $added += $this->insertRecords($t, $chunk);
-                    $chunk = [];
+            if ($plan !== null) {
+                // claimPlan() writes this row before it hands out a lease, so a
+                // lease without one is a lease nobody gave.
+                $p = $this->db->select('SELECT plan_pages FROM ' . Schema::table('scan_plan')
+                    . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+                if (!isset($p[0])) {
+                    $this->db->rollback();
+                    return false;
                 }
             }
-            if ($chunk) {
-                $added += $this->insertRecords($t, $chunk);
+            $t = Schema::table('scan_record');
+            $now = self::now();
+            $added = 0;
+            if ($records) {
+                // One index dive: MAX over the leading prefix of the primary key
+                // (run_id, ordinal). tests/mysql/cases/planning.php asserts the plan.
+                $m = $this->db->select('SELECT COALESCE(MAX(ordinal), 0) FROM ' . $t
+                    . ' WHERE run_id = ?', [$runId]);
+                $ord = isset($m[0][0]) ? (int) $m[0][0] : 0;
+                $chunk = [];
+                foreach ($records as $rec) {
+                    $ord++;
+                    $chunk[] = [$runId, $ord, $rec['id_bin'], $rec['hash'],
+                                isset($rec['dag']) ? $rec['dag'] : null, self::REC_PENDING, $now];
+                    if (count($chunk) >= self::MANIFEST_CHUNK) {
+                        $added += $this->insertRecords($t, $chunk);
+                        $chunk = [];
+                    }
+                }
+                if ($chunk) {
+                    $added += $this->insertRecords($t, $chunk);
+                }
+            }
+            if ($plan !== null) {
+                // WHERE THE WALK STANDS, IN THE PAGE'S TRANSACTION. The attempt
+                // count goes back to zero because this slice got a page in.
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_plan') . '
+                    SET plan_cursor = ?, plan_carry = ?, plan_pages = plan_pages + 1,
+                        plan_listed = ?, plan_out_of_scope = ?, plan_attempts = 0,
+                        plan_done = ?, updated_at = ?
+                    WHERE run_id = ?',
+                    [isset($plan['cursor']) ? (string) $plan['cursor'] : null,
+                     isset($plan['carry']) ? (string) $plan['carry'] : null,
+                     max(0, (int) (isset($plan['listed']) ? $plan['listed'] : 0)),
+                     max(0, (int) (isset($plan['outOfScope']) ? $plan['outOfScope'] : 0)),
+                     empty($plan['done']) ? 0 : 1, $now, $runId]);
+            }
+            // THE HEARTBEAT. progress_at as well as updated_at: the page, the
+            // stall rule and the abandoned-run sweep all read progress_at, and
+            // a page appended IS progress - the third place it is written,
+            // beside commitBatch() and freezeManifest().
+            if ($plan === null) {
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
+                    . ' SET updated_at = ?, progress_at = ? WHERE run_id = ?', [$now, $now, $runId]);
+            } elseif (!empty($plan['release'])) {
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
+                    SET updated_at = ?, progress_at = ?, lease_owner = NULL, lease_expires_at = NULL
+                    WHERE run_id = ?', [$now, $now, $runId]);
+            } else {
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
+                    SET updated_at = ?, progress_at = ?, lease_expires_at = ?
+                    WHERE run_id = ?',
+                    [$now, $now, self::inSeconds(self::leaseFor($plan)), $runId]);
             }
             $this->db->commit();
             return $added;
         } catch (\Throwable $e) {
-            $this->db->rollback();
-            throw $e;
+            throw $this->rolledBack($e);
         }
+    }
+
+    /**
+     * The planner's fence over a locked run row [phase, lease_epoch,
+     * cancel_requested_at, lease_owner]: same epoch, no stop asked for, and
+     * the lease this planner was given. A planner whose lease ran out and was
+     * taken over finds another owner there; one whose slice handed the lease
+     * back finds none. Either way it is not the planner any more.
+     */
+    private static function planFence(array $row, array $plan)
+    {
+        $owner = isset($plan['owner']) ? (string) $plan['owner'] : '';
+        return $owner !== ''
+            && isset($plan['epoch']) && (int) $row[1] === (int) $plan['epoch']
+            && $row[2] === null
+            && $row[3] !== null && (string) $row[3] === $owner;
+    }
+
+    /** Seconds a planning lease lasts, from the caller; never less than one. */
+    private static function leaseFor(array $plan)
+    {
+        return isset($plan['leaseSeconds']) ? max(1, (int) $plan['leaseSeconds']) : 300;
+    }
+
+    /**
+     * Take the planning lease, count the attempt, and say where the walk stands.
+     *
+     * ONE TRANSACTION, fenced on the run row like every other planning write.
+     * The plan row is created here the first time, under that lock, so two
+     * claimers cannot both insert it.
+     */
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts)
+    {
+        $owner = (string) $owner;
+        if ($owner === '') return false;
+        $cap = max(1, (int) $maxAttempts);
+        $this->db->begin();
+        try {
+            $r = $this->db->select('SELECT phase, lease_epoch, cancel_requested_at, lease_owner,
+                lease_expires_at FROM ' . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE',
+                [$runId]);
+            if (!isset($r[0]) || $r[0][0] !== ScanPhase::PLANNING || (int) $r[0][1] !== (int) $epoch
+                    || $r[0][2] !== null) {
+                $this->db->rollback();
+                return false;
+            }
+            $now = self::now();
+            $p = $this->db->select('SELECT plan_cursor, plan_carry, plan_pages, plan_listed,
+                plan_out_of_scope, plan_attempts, plan_done FROM ' . Schema::table('scan_plan')
+                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            // A RUN'S FIRST CLAIM WRITES THE ROW, with this attempt already in
+            // it, below; one statement where an insert and then the update
+            // were two, on every start.
+            $missing = !isset($p[0]);
+            if ($missing) $p = [[null, null, 0, 0, 0, 0, 0]];
+            $state = self::planState($p[0]);
+            // HELD: another owner, and its lease has not run out. Both sides are
+            // UTC 'Y-m-d H:i:s', so the strings compare as the times do.
+            $held = $r[0][3] !== null && (string) $r[0][3] !== $owner
+                    && $r[0][4] !== null && strcmp((string) $r[0][4], $now) > 0;
+            if ((int) $p[0][6] === 1) {
+                $state['state'] = 'done';
+            } elseif ($held) {
+                $state['state'] = 'held';
+            } elseif ($state['attempts'] >= $cap) {
+                $state['state'] = 'exhausted';
+            }
+            if ($state['state'] !== 'ok') {
+                $this->db->commit();
+                return $state;
+            }
+            // LEAST(attempts + 1, 254), as every attempt counter here: the
+            // column is a TINYINT UNSIGNED, and a wrap would un-cap the retry.
+            if ($missing) {
+                $this->db->execNoCount('INSERT INTO ' . Schema::table('scan_plan')
+                    . ' (run_id, plan_attempts, updated_at) VALUES (?, 1, ?)', [$runId, $now]);
+            } else {
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_plan') . '
+                    SET plan_attempts = LEAST(plan_attempts + 1, 254), updated_at = ? WHERE run_id = ?',
+                    [$now, $runId]);
+            }
+            $this->db->execNoCount('UPDATE ' . Schema::table('scan_run') . '
+                SET lease_owner = ?, lease_expires_at = ?, updated_at = ? WHERE run_id = ?',
+                [$owner, self::inSeconds(max(1, (int) $leaseSeconds)), $now, $runId]);
+            $this->db->commit();
+            $state['attempts'] = min(254, $state['attempts'] + 1);
+            return $state;
+        } catch (\Throwable $e) {
+            throw $this->rolledBack($e);
+        }
+    }
+
+    /** A plan row [cursor, carry, pages, listed, out of scope, attempts, done] as claimPlan() answers it. */
+    private static function planState(array $row)
+    {
+        return ['state' => 'ok',
+                'cursor' => $row[0] === null ? null : (string) $row[0],
+                'carry' => $row[1] === null ? null : (string) $row[1],
+                'pages' => (int) $row[2], 'listed' => (int) $row[3],
+                'outOfScope' => (int) $row[4], 'attempts' => (int) $row[5]];
+    }
+
+    public function releasePlan($runId, $owner)
+    {
+        // A single statement decided by affected(): it necessarily changes
+        // lease_owner when it succeeds, which is what makes the count honest.
+        $this->db->exec('UPDATE ' . Schema::table('scan_run') . '
+            SET lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE run_id = ? AND phase = ? AND lease_owner = ?',
+            [self::now(), $runId, ScanPhase::PLANNING, (string) $owner]);
+        return $this->db->affected() === 1;
     }
 
     /**
@@ -422,6 +592,15 @@ final class SqlScanStore implements ScanStore
                 $this->db->rollback();
                 return false;
             }
+            // THE SOURCE SAID DONE, AND SAID IT IN A COMMITTED WRITE. Not the
+            // walk returning: a walk returns when its request runs out of time
+            // too, and a manifest frozen there is part of the project.
+            $d = $this->db->select('SELECT plan_done FROM ' . Schema::table('scan_plan')
+                . ' WHERE run_id = ?', [$runId]);
+            if (!isset($d[0]) || (int) $d[0][0] !== 1) {
+                $this->db->rollback();
+                return false;
+            }
             $c = $this->db->select('SELECT COUNT(*) FROM ' . Schema::table('scan_record')
                 . ' WHERE run_id = ?', [$runId]);
             $total = isset($c[0][0]) ? (int) $c[0][0] : 0;
@@ -438,8 +617,7 @@ final class SqlScanStore implements ScanStore
             $this->db->commit();
             return $total;
         } catch (\Throwable $e) {
-            $this->db->rollback();
-            throw $e;
+            throw $this->rolledBack($e);
         }
     }
 

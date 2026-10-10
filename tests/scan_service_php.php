@@ -251,6 +251,67 @@ namespace {
     }
 
     /**
+     * The record index, slow on its first real page and able to fail every
+     * page after. `slowFor` seconds is spent once, inside the first page
+     * SELECT (not open()'s one-row probe); `broken` makes every page SELECT
+     * throw, as a server that cannot answer the walk does.
+     */
+    class MoodySourceDb extends FakeSourceDb
+    {
+        public $slowFor = 0.0;
+        public $broken = false;
+        public $pages = 0;
+        /** @var ?callable(int $page): void, called as each page is asked for */
+        public $onPage = null;
+
+        public function select($sql, array $params = [])
+        {
+            $page = strpos($sql, 'FROM redcap_record_list') !== false && strpos($sql, 'ORDER BY') !== false
+                    && !preg_match('/LIMIT 1\s*$/', $sql);
+            if ($page) {
+                $this->pages++;
+                if (is_callable($this->onPage)) call_user_func($this->onPage, $this->pages);
+                if ($this->broken) throw new \RuntimeException('the record list could not be read');
+                if ($this->slowFor > 0) { usleep((int) ($this->slowFor * 1e6)); $this->slowFor = 0.0; }
+            }
+            return parent::select($sql, $params);
+        }
+    }
+
+    /**
+     * One installation slot, for WorkerSlots to lease and renew. Renewal
+     * number `loseAt` finds the slot taken by somebody else.
+     */
+    class SlotCounterDb implements \INSPIRE\UniversalValidator\Scan\ScanDb
+    {
+        public $renewals = 0;
+        public $loseAt = PHP_INT_MAX;
+        private $lost = false;
+        private $aff = 0;
+
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'SELECT slot_no, epoch') !== false) return [[1, 0]];
+            if (strpos(ltrim($sql), 'SELECT 1') === 0) return $this->lost ? [] : [[1]];
+            if (strpos($sql, 'COUNT(*)') !== false) return [[1, 0]];
+            return [];
+        }
+        public function exec($sql, array $params = [])
+        {
+            $this->aff = 1;
+            if (strpos($sql, 'SET expires_at = ? WHERE slot_no') !== false) {
+                $this->renewals++;
+                if ($this->renewals >= $this->loseAt) { $this->lost = true; $this->aff = 0; }
+            }
+        }
+        public function execNoCount($sql, array $params = []) {}
+        public function affected() { return $this->aff; }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    }
+
+    /**
      * A module whose database is the record index FakeSourceDb serves, and
      * nothing else: no change log, so no fence, and no scan tables.
      *
@@ -558,7 +619,7 @@ namespace {
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
-        private $index;
+        public $index;
 
         public function __construct(\INSPIRE\UniversalValidator\Scan\ArrayScanStore $store)
         {
@@ -1084,13 +1145,42 @@ namespace INSPIRE\UniversalValidator\Scan {
         $stop['stopping'] === true && $stop['stalled'] === false && $stop['paused'] === false);
     check('CL-2: and a run that was not asked to stop is not stopping',
         $closed['stopping'] === false && $s['stopping'] === false);
-    // CL-3. PLANNING is one synchronous request inside start(), timed from
-    // created_at because progress_at stays NULL until the manifest freezes.
+    // CL-3, RE-DERIVED FOR B10. Planning was one synchronous request that wrote
+    // nothing to the run row until the freeze, so it was exempt from stalled.
+    // It is a slice per request now and every appended page moves progress_at
+    // (review R3U-2), so a planner two and a half minutes into a long listing
+    // has a clock a second old, and is told nothing.
     $plan = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
-        'created_at' => $ago(150), 'updated_at' => $ago(1), 'progress_at' => null,
+        'created_at' => $ago(150), 'updated_at' => $ago(1), 'progress_at' => $ago(1),
         'lease_expires_at' => $held(299)], [ScanStore::REC_PENDING => 400000], $NOW);
     check('CL-3: a run still listing its records for two and a half minutes is not stalled',
-        $plan['stalled'] === false && $plan['paused'] === false && $plan['stopping'] === false);
+        $plan['stalled'] === false && $plan['paused'] === false && $plan['stopping'] === false
+        && $plan['planningStopped'] === false);
+    // AND IT IS READ AS SCANNING IS. A planner holding its lease that has
+    // appended nothing for the stall threshold is stalled; one nobody holds is
+    // paused, because Continue now lists the rest.
+    $planWedged = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+        'created_at' => $ago(400), 'updated_at' => $ago(1), 'progress_at' => $ago(150),
+        'lease_expires_at' => $held(299)], [], $NOW);
+    check('B10: a planner holding its lease with no page appended for the threshold is stalled',
+        $planWedged['stalled'] === true && $planWedged['paused'] === false
+        && $planWedged['planningStopped'] === false);
+    $planLeft = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+        'created_at' => $ago(400), 'updated_at' => $ago(150), 'progress_at' => $ago(150),
+        'lease_expires_at' => null], [], $NOW);
+    check('B10: and a planning run nobody holds is paused, which Continue now resumes',
+        $planLeft['paused'] === true && $planLeft['stalled'] === false
+        && $planLeft['planningStopped'] === false);
+    // R3U-2: THE PLANNING CLOCK IS THE LAST APPEND, NOT THE RUN'S AGE. A run
+    // created three hours ago whose planner appended a page a second ago is a
+    // big project being listed, and the Stop "stopped" sent people to would
+    // have ended it under the request doing the work.
+    $planLive = ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+        'created_at' => $ago(3 * 3600), 'updated_at' => $ago(1), 'progress_at' => $ago(1),
+        'lease_expires_at' => $held(299)], [], $NOW);
+    check('R3U-2: a live planner on a run three hours old is never told it stopped',
+        $planLive['planningStopped'] === false && $planLive['stalled'] === false
+        && $planLive['paused'] === false && $planLive['idleSeconds'] === 1);
 
     // R2O-3. BUT ONLY FOR A WINDOW. When the request that was planning dies,
     // the run sits in `planning` holding the project's slot until the stale
@@ -1391,11 +1481,19 @@ namespace INSPIRE\UniversalValidator\Scan {
         is_string($said) && strpos($said, 'This scan stopped while it was listing the records') === 0
         && strpos($said, 'for 180 minutes') !== false && strpos($said, 'Press Stop') !== false
         && strpos($said, 'Press Continue') === false);
-    // A planner still inside the window is left alone, as CL-3 intended.
-    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 120);
+    // A planner still inside the stall threshold is left alone, as CL-3
+    // intended. Past the threshold and inside the window, a planning run
+    // nobody holds is PAUSED since B10: Continue lists the rest, so the
+    // sentence is the one that names Continue, not silence and not Stop.
+    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 60);
     $fresh = (new ScanService($pm))->status(149, 77);
-    check('R2O-3 status: one planning for two minutes is told nothing',
+    check('R2O-3 status: one planning for a minute is told nothing',
         $fresh['planningStopped'] === false && $V::stalledText($fresh) === null);
+    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 300);
+    $left = (new ScanService($pm))->status(149, 77);
+    check('B10 status: one nobody has listed for five minutes is paused, and told to press Continue',
+        $left['planningStopped'] === false && $left['paused'] === true
+        && strpos((string) $V::stalledText($left), 'Press Continue') !== false);
     // THE WINDOW IS THE SETTING'S, read by the verb.
     $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 40 * 60);
     check('R2O-3 status: forty minutes is past the default window',
@@ -1664,8 +1762,10 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('R2O-5: a run whose planning died is ended by Stop alone',
         $stopRun->invoke($svc, $store, 826, $runId, 'alice', $before, $NOW)['stopped'] === true
         && $isOver($store, 826, $runId) && $store->startRun(826, [])['ok'] === true);
+    // A refused append is FALSE since B10, not 0: zero is "every record was
+    // already there", and a planner must be able to tell that from "stop".
     check('R2O-5: and a planner that wakes up cannot add to it',
-        $store->appendManifest($runId, [['id_bin' => 'Z', 'hash' => $h('Z'), 'dag' => null]]) === 0
+        $store->appendManifest($runId, [['id_bin' => 'Z', 'hash' => $h('Z'), 'dag' => null]]) === false
         && $store->freezeManifest($runId) === false);
 
     // THROUGH cancel() ITSELF, past its gates, over the real SqlScanStore.
@@ -2304,9 +2404,183 @@ namespace INSPIRE\UniversalValidator\Scan {
     $rows[$gid]['fingerprint'] = $gfp('engine-1');
     $runsProp->setValue($gs, $rows);
     $gw = (new ScanService($gm, $gs))->work(160, $gid);
-    check('R3G-4: a run started under the previous evaluator is refused by this one, not continued',
+    // ENDED, NOT MERELY REFUSED (W7-N11). The run used to stay non-terminal,
+    // refused on every pass until the reaper expired it; the configuration
+    // as it is now goes to promotion, which ends it `failed`.
+    check('R3G-4: a run started under the previous evaluator is ended by this one, not continued',
         empty($gw['ok']) && strpos((string) $gw['why'], 'changed') !== false
-        && (int) $gs->run(160, $gid)['manifest_done'] === 0 && $gs->run(160, $gid)['terminal'] === null);
+        && (int) $gs->run(160, $gid)['manifest_done'] === 0
+        && $gs->run(160, $gid)['terminal'] === ScanOutcome::FAILED);
+}
+
+/* =====================================================================
+ * B10  PLANNING IS A SLICE PER REQUEST, DRIVEN BY THE WORK PUMP
+ *
+ * The whole record list used to be walked inside the start request, with no
+ * deadline (review R3U-2): a project too big for one request died
+ * uncatchably and left a run in `planning` that no work request would touch.
+ * Now the start lists what its budget allows, and every work request lists
+ * the next slice through ScanWorker, under the worker's slot and its attempt
+ * cap.
+ * ===================================================================== */
+{
+    $key = str_repeat('k', 32);
+    $spent = function () { return new WorkBudget(['startedAt' => microtime(true) - 3600]); };
+    $wide = function () { return new WorkBudget(['startedAt' => microtime(true) + 3600]); };
+    $rules = ['source' => null, 'rules' => [['type' => 'required', 'fields' => ['a']]],
+              'ownership' => ['a' => 'fa'], 'policy' => [], 'createdBy' => 'u', 'engine' => '1',
+              'pageSize' => 1];
+    $fresh = function ($n, $db = null) use ($key, $spent, $rules) {
+        $db = $db === null ? new \MoodySourceDb() : $db;
+        $db->rows = [];
+        for ($i = 1; $i <= $n; $i++) $db->rows[] = [sprintf('W%03d', $i), null];
+        $open = RecordManifestSource::open($db, 300, ['pk' => null]);
+        $store = new ArrayScanStore();
+        $first = (new ScanPlanner($store, $key))->plan(300, array_merge($rules,
+            ['source' => $open['source'], 'budget' => $spent()]));
+        return [$store, (int) $first['run']['run_id'], $open['source'], $first, $db];
+    };
+    $worker = function (ArrayScanStore $store, $src, $budget, array $more = []) use ($key) {
+        $planner = function ($runId, array $slice) use ($store, $src, $key) {
+            return (new ScanPlanner($store, $key))->step(300, $runId,
+                array_merge($slice, ['source' => $src, 'pageSize' => 1]));
+        };
+        return new ScanWorker($store, array_merge(['planner' => $planner, 'budget' => $budget,
+            'owner' => 'w' . mt_rand(), 'attempts' => 3,
+            'read' => function ($ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+            'evaluate' => function ($id, $node) {
+                return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+            }], $more));
+    };
+
+    list($ps, $pid1, $src1, $first) = $fresh(5);
+    check('B10: a start whose budget is spent lists its one guaranteed page and leaves the run planning',
+        $first['ok'] === true && $first['run']['phase'] === ScanPhase::PLANNING
+        && $first['stats']['listed'] === 1 && $ps->recordStates($pid1) === [ScanStore::REC_PENDING => 1]);
+    $none = (new ScanWorker($ps, ['budget' => $spent(), 'owner' => 'x']))->work(300, $pid1);
+    check('B10: a worker built without a planner still says planning takes no work from it',
+        $none['why'] === 'this scan is not in a phase that takes work' && $none['phase'] === ScanPhase::PLANNING);
+    $w1 = $worker($ps, $src1, $spent())->work(300, $pid1);
+    check('B10: a work request lists the next slice, and reports it as movement the page counts',
+        $w1['ok'] === true && $w1['phase'] === ScanPhase::PLANNING && $w1['listed'] === 1
+        && $w1['stop'] === 'time' && $ps->recordStates($pid1) === [ScanStore::REC_PENDING => 2]);
+    $passes = 1;
+    do {
+        $wn = $worker($ps, $src1, $spent())->work(300, $pid1);
+        $passes++;
+    } while ($wn['phase'] === ScanPhase::PLANNING && $passes < 20);
+    check('B10: the request that reaches the end of the list freezes it and goes on to scanning',
+        $passes === 4 && $wn['ok'] === true && $wn['phase'] === ScanPhase::SCANNING
+        && (int) $ps->run(300, $pid1)['manifest_total'] === 5);
+
+    // THE PAGE THAT ENDS THE LIST HANDS THE LEASE BACK. A start that lists a
+    // small project whole leaves no planner holding it, so a Stop pressed a
+    // second later ends the run then and there (R2O-5), as it did before
+    // planning had a lease at all.
+    $ls = new ArrayScanStore();
+    $ldb = new \MoodySourceDb();
+    $ldb->rows = [['L001', null], ['L002', null]];
+    $lopen = RecordManifestSource::open($ldb, 301, ['pk' => null]);
+    $lfirst = (new ScanPlanner($ls, $key))->plan(301, array_merge($rules,
+        ['source' => $lopen['source'], 'budget' => $wide(), 'pageSize' => 1000]));
+    $lid = (int) $lfirst['run']['run_id'];
+    $lrows = new \ReflectionProperty(ArrayScanStore::class, 'runs');
+    $lrows->setAccessible(true);
+    $lrow = $lrows->getValue($ls)[$lid];
+    check('B10: a start that lists the whole project leaves no planning lease on the frozen run',
+        $lfirst['ok'] === true && $lfirst['run']['phase'] === ScanPhase::SCANNING
+        && $lrow['lease_owner'] === null && $lrow['lease_expires_at'] === null);
+    $lstop = new \ReflectionMethod(ScanService::class, 'stopRun');
+    $lstop->setAccessible(true);
+    $lbefore = $ls->run(301, $lid);
+    $lbefore['lease_expires_at'] = $lrow['lease_expires_at'];
+    $lr = $lstop->invoke(new ScanService(new \NoDbModule()), $ls, 301, $lid, 'bob', $lbefore, time());
+    check('B10: so a Stop pressed straight after that Start ends the run at once',
+        $lr['ok'] === true && $lr['stopped'] === true
+        && $ls->run(301, $lid)['terminal'] === ScanOutcome::CANCELLED);
+
+    // W1-N2: THE SLOT IS RENEWED BETWEEN PAGES, AND A LOST SLOT STOPS THE SLICE.
+    list($rs, $rid2, $src2) = $fresh(6);
+    $slotDb = new \SlotCounterDb();
+    $slotDb->loseAt = 2;
+    $r2 = $worker($rs, $src2, $wide(), ['slots' => new WorkerSlots($slotDb), 'slotTtl' => 300])
+        ->work(300, $rid2);
+    check('W1-N2: a planning slice renews the worker slot before each further page',
+        $slotDb->renewals === 2);
+    check('W1-N2: and stops after the page in hand when the slot was taken',
+        $r2['ok'] === true && $r2['stop'] === 'slot' && $r2['listed'] === 2
+        && $r2['phase'] === ScanPhase::PLANNING && $rs->recordStates($rid2) === [ScanStore::REC_PENDING => 3]);
+    check('W1-N2: handing the planning lease back with that page, so the next request is not held',
+        $rs->claimPlan($rid2, 'next', (int) $rs->run(300, $rid2)['lease_epoch'], 300, 3)['state'] === 'ok');
+
+    // ATTEMPTS: A PAGE THAT CANNOT BE LISTED IS RETIRED AS A RECORD IS, AND
+    // THE RUN ENDS SAYING SO, instead of sitting in `planning` for ever.
+    list($bs, $rid3, $src3, , $db3) = $fresh(4);
+    $db3->broken = true;
+    $answers = [];
+    for ($i = 0; $i < 4; $i++) $answers[] = $worker($bs, $src3, $wide())->work(300, $rid3);
+    check('attempts: each failed slice says the list could not be read, and the run stays planning',
+        $answers[0]['ok'] === false && $answers[0]['stop'] === 'read'
+        && $answers[2]['stop'] === 'read' && $answers[2]['phase'] === ScanPhase::PLANNING);
+    $row3 = $bs->run(300, $rid3);
+    check('attempts: at the cap the next request retires the walk, and the run ends failed with why',
+        $answers[3]['stop'] === 'failed' && $answers[3]['phase'] === ScanPhase::TERMINAL
+        && $answers[3]['why'] === ScanPlanner::PLAN_GAVE_UP
+        && $row3['terminal'] === ScanOutcome::FAILED && $row3['terminal_reason'] === ScanPlanner::PLAN_GAVE_UP);
+    check('attempts: the cap is the worker\'s record cap, one mechanism',
+        ScanPolicy::D_RECORD_ATTEMPTS === 3);
+
+    // R3U-2: A STOP ENDS THE WALK, AND THE WALK SAYS SO.
+    list($ss, $rid4, $src4) = $fresh(5);
+    $ss->cancel(300, $rid4, 'bob');
+    $r4 = $worker($ss, $src4, $wide())->work(300, $rid4);
+    check('R3U-2: a stopped planning run is finished as stopped, with nothing more listed',
+        $r4['ok'] === true && $r4['phase'] === ScanPhase::TERMINAL && $r4['stop'] === 'cancelled'
+        && $ss->run(300, $rid4)['terminal'] === ScanOutcome::CANCELLED
+        && $ss->recordStates($rid4) === [ScanStore::REC_PENDING => 1]);
+    // ... including when the stop lands while the slice is walking: the next
+    // append is refused, the slice ends there, and its answer is the truth.
+    list($ms, $rid5, $src5, , $db5) = $fresh(6);
+    $db5->onPage = function ($n) use ($ms, $rid5) {
+        if ($n === 3) $ms->cancel(300, $rid5, 'bob');      // the start read page 1
+    };
+    $r5 = $worker($ms, $src5, $wide())->work(300, $rid5);
+    check('R3U-2: a Stop that lands mid-slice ends the walk at its next append, said as a stop',
+        $r5['ok'] === true && $r5['phase'] === ScanPhase::TERMINAL && $r5['stop'] === 'cancelled'
+        && $r5['why'] === ScanPlanner::PLAN_STOPPED && $db5->pages === 3
+        && $ms->run(300, $rid5)['terminal'] === ScanOutcome::CANCELLED
+        && $ms->recordStates($rid5) === [ScanStore::REC_PENDING => 2]);
+}
+
+/* =====================================================================
+ * B10 / R3U-2  THE START IS BUDGETED, AND THE WORK PUMP LISTS THE REST
+ *
+ * Through ScanService itself: start() hands the planner a browser budget,
+ * so a first page that takes longer than the budget is the only page the
+ * start lists; work() then lists the rest through the planner workerDeps()
+ * binds, and the run freezes the whole project.
+ * ===================================================================== */
+{
+    $bs = new ArrayScanStore();
+    $bm = new \E2eModule($bs);
+    $bm->records = [];
+    for ($i = 1; $i <= 2500; $i++) $bm->records[] = sprintf('B%04d', $i);
+    $slow = new \MoodySourceDb();
+    $slow->slowFor = 3.2;                     // past the 3 s browser target on its own
+    $bm->index = $slow;
+    $bst = (new ScanService($bm, $bs))->start(161);
+    $bid = (int) $bst['run_id'];
+    check('R3U-2: the start lists the page its budget allows and leaves the rest to the pump',
+        !empty($bst['ok']) && $bs->run(161, $bid)['phase'] === ScanPhase::PLANNING
+        && $bs->recordStates($bid) === [ScanStore::REC_PENDING => 1000]);
+    $listed = 0;
+    for ($i = 0; $i < 10 && $bs->run(161, $bid)['phase'] === ScanPhase::PLANNING; $i++) {
+        $bw = (new ScanService($bm, $bs))->work(161, $bid);
+        $listed += isset($bw['listed']) ? (int) $bw['listed'] : 0;
+    }
+    check('B10: work requests list the rest through the planner the service binds, and freeze it',
+        $listed === 1500 && (int) $bs->run(161, $bid)['manifest_total'] === 2500
+        && $bs->run(161, $bid)['phase'] !== ScanPhase::PLANNING);
 }
 }
 

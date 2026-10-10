@@ -48,6 +48,12 @@ final class ArrayScanStore implements ScanStore
     /** Per-project generation counters, the stand-in for uv_project_seq. */
     private $seq = [];
 
+    /** run_id => the stand-in for its uv_scan_plan row; see plan(). */
+    private $plans = [];
+
+    /** run_id => {max:int, hashes:[hash => true]} while the run plans; see appendManifest(). */
+    private $manifestIndex = [];
+
     /** @var callable|null  seconds as a float; microtime(true) when null. See claimPending(). */
     private $clock;
 
@@ -97,6 +103,9 @@ final class ArrayScanStore implements ScanStore
             'policy_revision' => 1, 'fingerprint' => str_repeat('0', 64),
             'manifest_total' => 0, 'manifest_done' => 0, 'cursor_ordinal' => 0,
             'lease_epoch' => 0, 'generation_id' => $gen, 'run_seq' => $seq,
+            // The planning lease (claimPlan()). Not in RUN_COLUMNS, as the SQL
+            // store's columns are not.
+            'lease_owner' => null, 'lease_expires_at' => null,
             'supersede_cursor' => 0, 'created_by' => '',
             'detail_rows' => 0, 'detail_bytes' => 0, 'active_slot' => 1,
             'cancel_requested_at' => null,
@@ -142,30 +151,62 @@ final class ArrayScanStore implements ScanStore
     public function writeManifest($runId, array $records)
     {
         $this->appendManifest($runId, $records);
+        // The whole list is in hand, so the source has said it is done - the
+        // fact the freeze is gated on, as SqlScanStore::markPlanDone() writes it.
+        if (isset($this->runs[$runId])) $this->plan($runId)['done'] = 1;
         $n = $this->freezeManifest($runId);
         return $n === false ? 0 : $n;
     }
 
-    public function appendManifest($runId, array $records)
+    /** The stand-in for a uv_scan_plan row, created as claimPlan() creates it. */
+    private function &plan($runId)
     {
-        if (!isset($this->runs[$runId])) return 0;
-        if ($this->runs[$runId]['phase'] !== ScanPhase::PLANNING) return 0;
-        $ord = 0;
-        $seen = [];
-        if (isset($this->records[$runId])) {
-            foreach ($this->records[$runId] as $rec) {
-                if ($rec['ordinal'] > $ord) $ord = $rec['ordinal'];
-                $seen[$rec['hash']] = true;
+        if (!isset($this->plans[$runId])) {
+            $this->plans[$runId] = ['cursor' => null, 'carry' => null, 'pages' => 0, 'listed' => 0,
+                                    'outOfScope' => 0, 'attempts' => 0, 'done' => 0];
+        }
+        return $this->plans[$runId];
+    }
+
+    public function appendManifest($runId, array $records, ?array $plan = null)
+    {
+        if (!$records && $plan === null) return 0;
+        if (!isset($this->runs[$runId])) return false;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::PLANNING) return false;
+        if ($plan !== null) {
+            // The SQL store's planFence(): epoch, no stop asked for, this owner's lease.
+            $owner = isset($plan['owner']) ? (string) $plan['owner'] : '';
+            if ($owner === '' || !isset($plan['epoch']) || (int) $r['lease_epoch'] !== (int) $plan['epoch']
+                    || $r['cancel_requested_at'] !== null
+                    || $r['lease_owner'] === null || (string) $r['lease_owner'] !== $owner
+                    || !isset($this->plans[$runId])) {
+                return false;
             }
         }
+        // ONE PASS OVER THE MANIFEST PER RUN, NOT PER PAGE. This rebuilt the
+        // ordinal and the hash set from every row on every call, so a plan
+        // across pages cost O(rows x pages) - quadratic in the project, in the
+        // store the fast suite plans its larger fixtures through. The index is
+        // built once and kept while the run plans; nothing else adds rows then.
+        if (!isset($this->manifestIndex[$runId])) {
+            $ix = ['max' => 0, 'hashes' => []];
+            foreach ($this->records[$runId] as $rec) {
+                if ($rec['ordinal'] > $ix['max']) $ix['max'] = $rec['ordinal'];
+                $ix['hashes'][$rec['hash']] = true;
+            }
+            $this->manifestIndex[$runId] = $ix;
+        }
+        $ix =& $this->manifestIndex[$runId];
         $added = 0;
         foreach ($records as $rec) {
-            $ord++;
+            $ord = ++$ix['max'];
             // The array stand-in for UNIQUE (run_id, record_hash). The record
             // walk re-reads its page boundary, so the same record can be offered
-            // twice and must land once.
-            if (isset($seen[$rec['hash']])) continue;
-            $seen[$rec['hash']] = true;
+            // twice and must land once. The ordinal is spent either way, as the
+            // SQL store spends it.
+            if (isset($ix['hashes'][$rec['hash']])) continue;
+            $ix['hashes'][$rec['hash']] = true;
             $this->records[$runId][$ord] = [
                 'ordinal' => $ord, 'id_bin' => $rec['id_bin'], 'hash' => $rec['hash'],
                 'dag' => isset($rec['dag']) ? $rec['dag'] : null,
@@ -174,18 +215,91 @@ final class ArrayScanStore implements ScanStore
             ];
             $added++;
         }
+        unset($ix);
+        $now = gmdate('Y-m-d H:i:s');
+        if ($plan !== null) {
+            $p =& $this->plan($runId);
+            $p['cursor'] = isset($plan['cursor']) ? (string) $plan['cursor'] : null;
+            $p['carry'] = isset($plan['carry']) ? (string) $plan['carry'] : null;
+            $p['pages']++;
+            $p['listed'] = max(0, (int) (isset($plan['listed']) ? $plan['listed'] : 0));
+            $p['outOfScope'] = max(0, (int) (isset($plan['outOfScope']) ? $plan['outOfScope'] : 0));
+            $p['attempts'] = 0;
+            $p['done'] = empty($plan['done']) ? 0 : 1;
+            unset($p);
+            if (!empty($plan['release'])) {
+                $this->runs[$runId]['lease_owner'] = null;
+                $this->runs[$runId]['lease_expires_at'] = null;
+            } else {
+                $this->runs[$runId]['lease_expires_at'] = gmdate('Y-m-d H:i:s',
+                    time() + (isset($plan['leaseSeconds']) ? max(1, (int) $plan['leaseSeconds']) : 300));
+            }
+        }
+        // The heartbeat, as the SQL store writes it.
+        $this->runs[$runId]['updated_at'] = $now;
+        $this->runs[$runId]['progress_at'] = $now;
         return $added;
+    }
+
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts)
+    {
+        $owner = (string) $owner;
+        if ($owner === '' || !isset($this->runs[$runId])) return false;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::PLANNING || (int) $r['lease_epoch'] !== (int) $epoch
+                || $r['cancel_requested_at'] !== null) {
+            return false;
+        }
+        $now = gmdate('Y-m-d H:i:s');
+        $p =& $this->plan($runId);
+        $state = ['state' => 'ok', 'cursor' => $p['cursor'], 'carry' => $p['carry'],
+                  'pages' => $p['pages'], 'listed' => $p['listed'],
+                  'outOfScope' => $p['outOfScope'], 'attempts' => $p['attempts']];
+        $held = $r['lease_owner'] !== null && (string) $r['lease_owner'] !== $owner
+                && $r['lease_expires_at'] !== null && strcmp((string) $r['lease_expires_at'], $now) > 0;
+        if ((int) $p['done'] === 1) {
+            $state['state'] = 'done';
+        } elseif ($held) {
+            $state['state'] = 'held';
+        } elseif ($p['attempts'] >= max(1, (int) $maxAttempts)) {
+            $state['state'] = 'exhausted';
+        }
+        if ($state['state'] !== 'ok') return $state;
+        $p['attempts'] = min(254, $p['attempts'] + 1);
+        $state['attempts'] = $p['attempts'];
+        unset($p);
+        $this->runs[$runId]['lease_owner'] = $owner;
+        $this->runs[$runId]['lease_expires_at'] = gmdate('Y-m-d H:i:s', time() + max(1, (int) $leaseSeconds));
+        $this->runs[$runId]['updated_at'] = $now;
+        return $state;
+    }
+
+    public function releasePlan($runId, $owner)
+    {
+        if (!isset($this->runs[$runId])) return false;
+        $r = $this->runs[$runId];
+        if ($r['phase'] !== ScanPhase::PLANNING || $r['lease_owner'] === null
+                || (string) $r['lease_owner'] !== (string) $owner) {
+            return false;
+        }
+        $this->runs[$runId]['lease_owner'] = null;
+        $this->runs[$runId]['lease_expires_at'] = null;
+        $this->runs[$runId]['updated_at'] = gmdate('Y-m-d H:i:s');
+        return true;
     }
 
     public function freezeManifest($runId)
     {
         if (!isset($this->runs[$runId])) return false;
         if ($this->runs[$runId]['phase'] !== ScanPhase::PLANNING) return false;
+        // The gate: the source said done, as SqlScanStore reads plan_done.
+        if (!isset($this->plans[$runId]) || (int) $this->plans[$runId]['done'] !== 1) return false;
         $total = isset($this->records[$runId]) ? count($this->records[$runId]) : 0;
         $this->runs[$runId]['manifest_total'] = $total;
         $this->runs[$runId]['phase'] = ScanPhase::SCANNING;
         // The second of the two places progress_at is written.
         $this->runs[$runId]['progress_at'] = gmdate('Y-m-d H:i:s');
+        unset($this->manifestIndex[$runId]);
         return $total;
     }
 

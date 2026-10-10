@@ -176,12 +176,14 @@ namespace INSPIRE\UniversalValidator\Scan {
 
     // -- cancellation --------------------------------------------------------
     //
-    // A run that has not started working has nothing in flight and can finish
-    // outright. Anything else goes through `cancelling` first, so the epoch bump
+    // Every working phase goes through `cancelling` first, so the epoch bump
     // lands BEFORE the terminal write and a worker mid-evaluation fails its
-    // compare-and-set instead of committing into a finished run.
-    check('cancel: a planning run finishes outright',
-        ScanPhase::cancelTarget('planning') === 'terminal');
+    // compare-and-set instead of committing into a finished run. PLANNING
+    // TOO since B10: it finished outright while the list was walked inside
+    // the start request, and a work request now lists a slice of it under a
+    // lease - that planner is the worker in flight.
+    check('cancel: a planning run goes through cancelling, because a planner may be mid-slice',
+        ScanPhase::cancelTarget('planning') === 'cancelling');
     check('cancel: a working run goes through cancelling first',
         ScanPhase::cancelTarget('scanning') === 'cancelling'
         && ScanPhase::cancelTarget('catch-up') === 'cancelling'

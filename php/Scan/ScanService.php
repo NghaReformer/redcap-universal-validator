@@ -273,8 +273,24 @@ final class ScanService
             'dagFilter' => $dag,
             'rules'     => $ctx['rules'],
             'ownership' => $ctx['ownership'],
+            // M8: the two facts the fingerprint guard compares across requests.
+            // advanceRun() rebuilds the fingerprint from the same two keys.
             'structure' => $ctx['structure'] ?? [],
+            'choices'   => $ctx['choices'] ?? [],
             'policy'    => $policy,
+            // THE FIRST SLICE IS BUDGETED (B10, review R3U-2). plan() was given
+            // no deadline and no memory cap here, so the whole list was walked
+            // inside this request: past max_execution_time it died uncatchably,
+            // and with no limit at all it ran on while the page told its reader
+            // the run had stopped. A browser budget is seconds; the rest of the
+            // list is listed by the work requests the page sends next, a slice
+            // each. The start takes no worker slot: one slice is far inside the
+            // slot's TTL, and a start refused for capacity is a start lost.
+            'budget'    => new WorkBudget(['mode' => 'browser']),
+            'owner'     => $this->owner(),
+            'attempts'  => $policy['recordAttempts'],
+            'leaseSeconds' => self::SLOT_TTL,
+            'limits'    => self::limitsOf($policy),
             // Every lookup into another project the rules make, kept on the
             // run for status() (reviews R3U-N1, R4-1). A plan that does not
             // say is passed on as not saying, which status() refuses.
@@ -354,12 +370,26 @@ final class ScanService
                     'status' => $this->statusOf($pid, $runId, [])];
         }
 
-        if (!empty($ctx['verifyFingerprint'])) {
-            $current = ScanPlanner::requestFingerprint(['rules'=>$ctx['rules'], 'ownership'=>$ctx['ownership'],
-                'structure'=>$ctx['structure'] ?? [], 'policy'=>$policy, 'engine'=>$this->engineVersion()]);
-            if (!ScanPlanner::fingerprintMatches($run['fingerprint'], $current)) {
-                return ['ok'=>false, 'why'=>'Validation configuration or project structure changed. Stop this scan and start a new scan.'];
-            }
+        // THE CONFIGURATION AS IT IS NOW, FOR PROMOTION TO JUDGE (W7-N11).
+        //
+        // This compared the fingerprint itself and refused the request, and
+        // gave promote() neither input - so a run whose configuration had moved
+        // was refused work on every pass and sat holding the project until the
+        // reaper expired it, and the `failed` terminal facts() decides for it
+        // was unreachable from production. Both inputs are handed to promote()
+        // now, on every pass; when either has moved the worker is not built at
+        // all, and promote() ends the run there. M8 is what makes the
+        // fingerprint mean something: the project's structure and its choice
+        // codes are in it, from durableScanContext().
+        $config = $this->configurationNow($run, $policy, $ctx);
+        $limits = self::limitsOf($policy);
+        if ($config['moved']) {
+            ScanPromotion::promote($store, $pid, $runId, array_merge($limits, [
+                'fingerprintNow' => $config['fingerprintNow'],
+                'policyRevisionNow' => $config['policyRevisionNow']]));
+            return ['ok' => false, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                    'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'changed',
+                    'why' => self::CONFIG_CHANGED, 'status' => $this->statusOf($pid, $runId, [])];
         }
         $worker = new ScanWorker($store, $this->workerDeps($pid, $store, $run, $policy, $ctx, $mode));
         $r = $worker->work($pid, $runId);
@@ -401,6 +431,11 @@ final class ScanService
             'rollupDone'     => ($r['phase'] === ScanPhase::ROLLUP && !empty($r['done'])),
             'maxFindings'    => $policy['maxFindings'],
             'maxBytes'       => $policy['maxBytes'],
+            // W7-N11: what the configuration is now. They matched above, so on
+            // this pass they decide nothing; they are here so that promotion is
+            // never again judged without them.
+            'fingerprintNow'    => $config['fingerprintNow'],
+            'policyRevisionNow' => $config['policyRevisionNow'],
             // A @UVEXISTS verdict depends on other records, which the catch-up
             // does not re-check when one of them changes (ScanPromotion::facts).
             'crossRecordLookups' => !empty($ctx['plan']['crossRecordLookups']),
@@ -451,6 +486,21 @@ final class ScanService
             // will call a record it could not read a deleted one.
             'exists'    => $this->existsProbe($pid),
             'rollup'    => new RollupBuilder($this->db, $store),
+            // THE REST OF THE RECORD LIST, a slice per request (B10). The
+            // worker supplies the budget, its lease owner and epoch, the attempt
+            // cap and its slot renewal; this binds what only the service has:
+            // the opened source, the key the record hashes are made with, and
+            // the run's scope. A source that cannot be opened is handed over as
+            // null, so the slice counts it as a failed attempt rather than this
+            // closure failing before anything is counted.
+            'planner'   => function ($runId, array $slice) use ($pid, $store, $run) {
+                $planner = new ScanPlanner($store, $this->key());
+                return $planner->step($pid, $runId, array_merge($slice, [
+                    'source'    => $this->openSource($pid),
+                    'dagFilter' => isset($run['scope_dag']) ? $run['scope_dag'] : null,
+                    'pageSize'  => ScanPlanner::PAGE_SIZE,
+                ]));
+            },
             'note'      => function ($event, array $context) {
                 $this->note($event, $context);
             },
@@ -625,8 +675,8 @@ final class ScanService
      *             lease ALONE is not that proof: it outlives the request that
      *             took it by five minutes (SqlScanStore::claim), so a tab closed
      *             three minutes ago still "holds" it. So the lease must be live
-     *             AND taken within the threshold. Nothing outside scanning
-     *             renews a lease, so only scanning can be stalled.
+     *             AND taken within the threshold. Scanning and planning take
+     *             leases; nothing else does, so only those two can be stalled.
      *   paused    nobody is working it. Press Continue. In the three finishing
      *             phases a quiet run cannot be told from an abandoned one, and
      *             this is the reading that sends somebody to Continue rather
@@ -637,22 +687,23 @@ final class ScanService
      *             or one whose finish failed. Never stalled: it is waiting for
      *             exactly that request.
      *
-     * A run still PLANNING is none of them (review CL-3). Planning is one
-     * synchronous request inside start(), progress_at stays NULL until the
-     * manifest freezes, and the clock was therefore created_at: a long listing
-     * read as stalled while appendManifest() was busy writing. Nothing a reader
-     * can press would help it, so nothing is said - FOR A WHILE.
+     * PLANNING IS READ LIKE SCANNING NOW (B10, review R3U-2). It used to be one
+     * synchronous request inside start() that wrote nothing to the run row
+     * until the freeze, so CL-3 exempted it, and R2O-3 bounded the exemption by
+     * the run's AGE - which caught live planners: a big project still being
+     * listed was told it had stopped, and the Stop that sentence asked for
+     * ended it under the request doing the work. Planning is a slice per
+     * request now, every page appended moves `progress_at`, and claimPlan()
+     * takes the same lease claim() does. So a planning run is stalled, paused
+     * or neither by the same rule as a scanning one, on the same clock.
      *
-     *   planningStopped  still planning past the planning window (review
-     *             R2O-3). CL-3's silence had no end: when the request that was
-     *             planning dies, at its time or memory limit, the run stays in
-     *             `planning` holding the project's only slot until the stale
-     *             reaper, Continue is told the run is "not in a phase that takes
-     *             work" for ever, and the page said nothing at all. No request
-     *             can plan for longer than ScanPolicy::planningSeconds(), so a
-     *             run older than that is not being planned by anybody, and the
-     *             only thing that helps it is Stop. Never stalled or paused:
-     *             both of those send the reader to a button that cannot work.
+     *   planningStopped  no page appended for the planning window (review
+     *             R2O-3, keyed on the last append since R3U-2 rather than on
+     *             when the run was created). No slice runs for longer than its
+     *             budget, a few seconds, so a run that has listed nothing for
+     *             ScanPolicy::planningSeconds() is not being listed by anybody,
+     *             and the sentence is the R2O-3 one: press Stop and start
+     *             again. It outranks stalled and paused, as it did.
      *
      * @param array $run    a ScanStore::run() row, plus `lease_expires_at` when
      *                      the caller has it; absent or unreadable is no lease
@@ -689,14 +740,15 @@ final class ScanService
         $threshold = max(1, (int) $stallSeconds);
 
         $stopping = $active && $phase === ScanPhase::CANCELLING;
-        $quiet = $active && !$stopping && $phase !== ScanPhase::PLANNING
-                 && $clock !== null && $idle >= $threshold;
-        // Planning is exempt from the two above for a WINDOW, not for ever. No
-        // readable clock is still not the alarming reading.
+        // THE PLANNING CLOCK IS THE LAST APPEND (review R3U-2): progress_at,
+        // which every appended page moves, and created_at only until the first
+        // page. No readable clock is still not the alarming reading.
         $window = $planningSeconds === null
             ? ScanPolicy::planningSeconds(null, null) : max(1, (int) $planningSeconds);
         $planningStopped = $active && $phase === ScanPhase::PLANNING
                            && $clock !== null && $idle >= $window;
+        $quiet = $active && !$stopping && !$planningStopped
+                 && $clock !== null && $idle >= $threshold;
         // An unreadable lease is no lease, and an unreadable touch is no touch:
         // both fail toward `paused`, the reading that does not tell anybody to
         // throw the run away.
@@ -716,16 +768,22 @@ final class ScanService
      * question, so it is answered once.
      *
      * The proof is the lease claim() takes, LIVE AND TAKEN WITHIN THE
-     * THRESHOLD, in scanning: claim() writes the lease and `updated_at`
-     * together, a lease alone outlives its request by five minutes, and
-     * nothing outside scanning renews one. An unreadable lease or touch is no
-     * worker.
+     * THRESHOLD, in scanning - or the one claimPlan() takes, in planning (B10):
+     * each writes the lease and `updated_at` together, a lease alone outlives
+     * its request by five minutes, and nothing in any other phase renews one.
+     * An unreadable lease or touch is no worker.
+     *
+     * PLANNING COUNTS, AND THAT MATTERS TO Stop AS MUCH AS TO THE PAGE. A
+     * planner mid-slice is a worker: Stop leaves its run `cancelling`, and the
+     * planner's next append is refused and finishes the stop itself (review
+     * R3U-2), instead of Stop ending the run under a request still listing it.
      */
     private static function workerHolds(array $run, $now, $threshold)
     {
         $lease = self::clock($run, 'lease_expires_at');
         $touched = self::clock($run, 'updated_at');
-        return isset($run['phase']) && $run['phase'] === ScanPhase::SCANNING
+        return isset($run['phase'])
+               && ($run['phase'] === ScanPhase::SCANNING || $run['phase'] === ScanPhase::PLANNING)
                && $lease !== null && $lease > (int) $now
                && $touched !== null && ((int) $now - $touched) < max(1, (int) $threshold);
     }
@@ -1480,6 +1538,50 @@ final class ScanService
     private function engineVersion()
     {
         return self::ENGINE_REVISION;
+    }
+
+    /** What a work request answers when the run it was sent for has just been ended for this. */
+    const CONFIG_CHANGED = 'The validation configuration or the project\'s structure changed while '
+        . 'this scan was running, so the scan was ended rather than finished against two '
+        . 'configurations. Start a new scan.';
+
+    /**
+     * The two inputs promotion judges a moved configuration by (W7-N11), as
+     * they are in this request, and whether either differs from the run's.
+     *
+     * THE FINGERPRINT is rebuilt from the same keys openRun() planned with -
+     * rules, ownership, structure, choices, policy, engine - so an unchanged
+     * project matches and a changed one does not.
+     *
+     * THE POLICY REVISION has no stored "current" value to read: a revision is
+     * a run's, bumped in place by ScanRetention::revokePreviews(). So it is
+     * derived: the run's own revision while the policy in the settings is no
+     * stricter than the one the run froze, and one past it once it is - what
+     * revokePreviews() would move every run of the project to. A frozen
+     * policy that cannot be read is treated as tightened: an unreadable
+     * answer is never the reassuring one.
+     *
+     * Both null when the context does not ask for the check - a test's
+     * context, never production's (durableScanContext() always asks).
+     *
+     * @return array{moved:bool, fingerprintNow:?string, policyRevisionNow:?int}
+     */
+    private function configurationNow(array $run, array $policy, array $ctx)
+    {
+        if (empty($ctx['verifyFingerprint'])) {
+            return ['moved' => false, 'fingerprintNow' => null, 'policyRevisionNow' => null];
+        }
+        $fp = ScanPlanner::requestFingerprint(['rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
+            'structure' => $ctx['structure'] ?? [], 'choices' => $ctx['choices'] ?? [],
+            'policy' => $policy, 'engine' => $this->engineVersion()]);
+        $rev = isset($run['policy_revision']) ? (int) $run['policy_revision'] : 0;
+        $frozen = isset($run['policy_json']) && is_string($run['policy_json'])
+            ? json_decode($run['policy_json'], true) : null;
+        $tighter = !is_array($frozen) || ScanPolicy::tightened($frozen, $policy);
+        $revNow = $tighter ? $rev + 1 : $rev;
+        return ['moved' => !ScanPlanner::fingerprintMatches(isset($run['fingerprint']) ? $run['fingerprint'] : null, $fp)
+                           || $revNow !== $rev,
+                'fingerprintNow' => $fp, 'policyRevisionNow' => $revNow];
     }
 
     private function username()

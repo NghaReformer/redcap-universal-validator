@@ -104,7 +104,6 @@ namespace {
         'ScanRetention::revokePreviews'  => 'wave 10 (B6) wires it: a tightened privacy policy revokes nothing today',
         'ScanRetention::preview'         => 'wave 10 (B6) wires it with the rest of retention',
         'ScanPolicy::budgetSpent'        => 'wave 10 (H9): the detail budget never stops storage; it gates in ScanWorker::batch once wired',
-        'ScanPolicy::tightened'          => 'wave 10 (B6): a tightened policy must revoke immediately rather than at the next scan',
         'ScanAuthorization::preFenceStatus' => 'wave 10 (H10 part 1): counts are disclosed before a group-scoped run has proved its scope',
 
         // -- wave 11, the report. It could not have been built earlier:
@@ -143,7 +142,6 @@ namespace {
         'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
         'Hmac::hex'                     => 'no scheduled caller: a hex rendering nothing renders',
-        'RecordManifestSource::via'     => 'no scheduled caller: the run never records which source it walked, so a report cannot say',
     ];
 
     /* =====================================================================

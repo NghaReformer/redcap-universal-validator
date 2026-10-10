@@ -372,8 +372,10 @@ $PUR = 830;
     foreach ([['collection-gap', 'a'], ['collection-gap', 'b'], ['not-checked', 'c']] as $ag) {
         (new SqlScanStore($dbA))->addAggregate($aged['run'], $ag[0], $ag[1], '', 1);
     }
+    // writeManifest() leaves a plan row since wave 9 (plan_done is the
+    // freeze's gate); the statement still makes sure there is one.
     $A->query('INSERT INTO ' . Schema::table('scan_plan') . ' (run_id, updated_at) VALUES ('
-        . (int) $aged['run'] . ", UTC_TIMESTAMP())");
+        . (int) $aged['run'] . ", UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE run_id = run_id");
     foreach (['unique_candidate', 'unique_group', 'scan_dim'] as $t) {
         $cols = ['unique_candidate' => '(project_id, generation_id, rule_source_id, rule_revision, group_hmac,
                      scope_key, record_hash, record_id_bin, event_id, instance, host_form, field)',

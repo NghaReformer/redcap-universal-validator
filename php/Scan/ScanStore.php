@@ -274,9 +274,73 @@ interface ScanStore
      * Refused unless the run is still planning: a manifest that can grow after
      * work has started is a manifest that can redefine what "all" means.
      *
-     * @return int rows actually added
+     * THE PAGE AND WHERE THE WALK STANDS ARE ONE WRITE (B10). Planning runs
+     * across requests, so a request can die anywhere. With $plan the page's
+     * rows, the walk's cursor, carry and counters, and the run's progress
+     * clock commit in one transaction: a request that dies has written both
+     * or neither. Written apart, a page committed without its cursor is read
+     * again by the next request and every later ordinal moves by a page; a
+     * cursor committed without its page skips that page's records for good.
+     *
+     * $plan is ScanPlanner's, and is fenced: the run must still be planning,
+     * at `epoch`, not asked to stop, and leased to `owner` by claimPlan(). It
+     * carries the walk's state as absolute values - `cursor`, `carry` (opaque
+     * to the store), `listed`, `outOfScope` - and `done` when the source said
+     * it had nothing past this page. `release` hands the lease back with the
+     * page, so a slice's last page and the end of its lease are one write;
+     * otherwise the lease is renewed for `leaseSeconds`. A page with no rows
+     * in scope is still a page: the cursor moves and the counters with it.
+     *
+     * EVERY APPEND IS A HEARTBEAT, with or without $plan: `updated_at` and
+     * `progress_at` move with it. Planning used to write neither until the
+     * freeze, so a planner appending its hundredth page looked exactly like
+     * one that had died at the first - to the page, which said "stopped", and
+     * to the abandoned-run sweep (review R3U-2).
+     *
+     * @param array|null $plan {owner:string, epoch:int, cursor:?string, carry:?string,
+     *                          listed:int, outOfScope:int, done:bool, release:bool,
+     *                          leaseSeconds:int}
+     * @return int|false rows actually added, or FALSE when refused. Zero is an
+     *         answer - every record was already there, or none was in scope -
+     *         and a refusal is a different one: the walk must stop on it.
      */
-    public function appendManifest($runId, array $records);
+    public function appendManifest($runId, array $records, ?array $plan = null);
+
+    /**
+     * Take the planning lease and read where the walk stands.
+     *
+     * ONE PLANNER AT A TIME. Two tabs driving the same run would each read the
+     * same cursor and list the same page; the second append would be refused
+     * and its page read wasted. A lease held by another owner and not yet
+     * expired answers `held`, and the caller comes back later.
+     *
+     * THE ATTEMPT IS COUNTED HERE, before the slice is tried (I3b). A planning
+     * request dies at max_execution_time or memory_limit, an uncatchable
+     * fatal, so nothing it runs afterwards can count its failure. Counting at
+     * the claim, in a transaction the slice cannot roll back, is how wave 5
+     * counts a record's attempts for the same reason; appendManifest() puts
+     * the count back to zero with the first page the slice commits. A slice
+     * that dies before its first page leaves its count standing, and when
+     * `maxAttempts` slices in a row have died on the same page the claim
+     * answers `exhausted` instead of letting another try.
+     *
+     * @return array|false FALSE when the run is not planning, its epoch moved
+     *         or it was asked to stop. Otherwise {state: 'ok'|'held'|'exhausted'|'done',
+     *         cursor:?string, carry:?string, pages:int, listed:int, outOfScope:int,
+     *         attempts:int}. Only `ok` holds the lease.
+     */
+    public function claimPlan($runId, $owner, $epoch, $leaseSeconds, $maxAttempts);
+
+    /**
+     * Give the planning lease back without listing anything.
+     *
+     * For a slice whose page read failed: its attempt was counted at the
+     * claim, and the next request should not have to wait out the lease to
+     * try again. Changes nothing unless $owner holds the lease.
+     *
+     * @return bool whether a lease was released
+     */
+    public function releasePlan($runId, $owner);
 
     /**
      * Publish the total and leave planning.
@@ -285,7 +349,13 @@ interface ScanStore
      * them, so a retried or partially applied append cannot make the published
      * total disagree with the manifest it describes.
      *
-     * @return int|false the frozen total, or false when the run was not planning
+     * ONLY ONCE THE SOURCE HAS SAID IT IS DONE (B10). The persisted
+     * `plan_done` is the gate, not the walk having returned: a walk that
+     * returned because its request ran out of time has listed part of the
+     * project, and a manifest frozen there certifies the rest as checked.
+     *
+     * @return int|false the frozen total, or false when the run was not
+     *         planning or its walk has not reached the end of the source
      */
     public function freezeManifest($runId);
 
