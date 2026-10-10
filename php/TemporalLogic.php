@@ -153,6 +153,18 @@ final class TemporalLogic
         return array_merge(array_keys(self::WINDOW_UNITS), array_keys(self::CALENDAR_UNITS));
     }
 
+    /**
+     * The temporal type of a date written in a rule ("from": "2026-01-01"):
+     * date, datetime (to the minute) or datetime_seconds, or null when it is
+     * not a date. Twin of QRID_anchorType.
+     */
+    public static function anchorType($text)
+    {
+        if (!is_string($text)) return null;
+        $type = strlen($text) === 10 ? 'date' : (strlen($text) === 16 ? 'datetime' : 'datetime_seconds');
+        return TemporalValue::parse($text, $type, 'ymd')['state'] === 'ok' ? $type : null;
+    }
+
     /** Whether a field of $type may count a window in $unit: a date field in days, weeks, months or years. */
     public static function unitFits($unit, $type)
     {

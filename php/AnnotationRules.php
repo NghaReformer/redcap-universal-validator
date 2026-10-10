@@ -67,6 +67,10 @@ class AnnotationRules
 
     /** Largest window bound, in units either side of the anchor. */
     const MAX_WINDOW_BOUND = 36500;
+    /** The most periods a @UVWINDOW "offset" moves either way (100 years of months). */
+    const MAX_WINDOW_OFFSET = 1200;
+    /** A date written in a @UVWINDOW "from": Y-M-D, with an optional time to the minute or second. */
+    const WINDOW_LITERAL_RE = '/^\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2}(?::\d{2})?)?$/D';
 
     /*
      * Which tag configures which validation MODE, the field types each mode
@@ -531,12 +535,21 @@ class AnnotationRules
      *   @UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"unit":"days"}
      *   @UVWINDOW={"from":"[dob]","window":[0,null]}          not before the anchor
      *   @UVWINDOW={"notFuture":true}                          not after today
+     *   @UVWINDOW={"notPast":true}                            not before today
+     *   @UVWINDOW={"from":"today","window":[-30,0]}           within the last 30 days
+     *   @UVWINDOW={"from":"[enrol]","window":[0,6],"unit":"months"}
+     *   @UVWINDOW={"period":"month","offset":-1}              last month
+     *   @UVWINDOW={"period":"week","from":"[visit_date]"}     the week of visit_date
      * "window" is [earliest, latest] in whole units from the "from" date,
-     * inclusive; null leaves that side open. "from" may name another event
-     * ([baseline_arm_1][visit_date]) once event and instance references are
-     * enabled. Whether the field and its "from" field are date fields of the
-     * same kind is checked with the data dictionary in hand
-     * (UniversalValidator::annotateWindowField / annotateWindowDictionary).
+     * inclusive; null leaves that side open. "from" is a field reference, which
+     * may name another event ([baseline_arm_1][visit_date]) once event and
+     * instance references are enabled, or "today", "now" or a Y-M-D date
+     * (windowAnchor). A "period" (week, month, quarter, year) is the calendar
+     * period holding the "from" date, today when there is none, moved by
+     * "offset" periods (a whole number or [first, last]). Whether the field
+     * and its "from" field are date fields of the same kind is checked with
+     * the data dictionary in hand (UniversalValidator::annotateWindowField /
+     * annotateWindowDictionary).
      */
     private static function parseWindowValue($val, array $opts = [])
     {
@@ -551,7 +564,8 @@ class AnnotationRules
             return ['error' => self::TAG_WINDOW . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['from', 'window', 'unit', 'notFuture', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+        $allowed = ['from', 'window', 'unit', 'period', 'offset', 'weekStart', 'notFuture', 'notPast',
+                    'when', 'message', 'blockSave', 'caseSensitive', 'references'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_WINDOW . ' option(s): ' . implode(', ', $unknown)
@@ -559,8 +573,43 @@ class AnnotationRules
         }
         $out = ['type' => 'window'];
         if (array_key_exists('from', $cfg)) {
-            if (!is_string($cfg['from'])) return ['error' => '"from" must be a field reference such as "[visit_date]".'];
-            $out['windowFrom'] = trim($cfg['from']);
+            if (!is_string($cfg['from'])) {
+                return ['error' => '"from" must be a field reference such as "[visit_date]", "today", "now" or a date such as "2026-01-01".'];
+            }
+            $from = trim($cfg['from']);
+            $kw = strtolower($from);
+            // "today", "now" and a written date are not fields: they travel
+            // as windowAnchor, so no field-reference path ever reads them.
+            if ($kw === 'today' || $kw === 'now') $out['windowAnchor'] = $kw;
+            elseif (preg_match(self::WINDOW_LITERAL_RE, $from)) $out['windowAnchor'] = $from;
+            else $out['windowFrom'] = $from;
+        }
+        if (array_key_exists('period', $cfg)) {
+            if (!is_string($cfg['period'])) return ['error' => '"period" must be week, month, quarter or year.'];
+            $out['windowPeriod'] = strtolower(trim($cfg['period']));
+            // A period with no "from" is the period holding today.
+            if (!isset($out['windowFrom']) && !isset($out['windowAnchor'])) $out['windowAnchor'] = 'today';
+        }
+        if (array_key_exists('offset', $cfg)) {
+            $o = $cfg['offset'];
+            if (is_array($o)) {
+                if (array_keys($o) !== [0, 1]) {
+                    return ['error' => '"offset" must be a whole number of periods, or [first, last] — e.g. -1 for the last one, [-3,-1] for the three before this one.'];
+                }
+                $out['windowOffLo'] = $o[0];
+                $out['windowOffHi'] = $o[1];
+            } else {
+                $out['windowOffLo'] = $o;
+                $out['windowOffHi'] = $o;
+            }
+            // An offset of 0 is the default, dropped so two spellings of one rule group as one.
+            if (isset($out['windowPeriod']) && $out['windowOffLo'] === 0 && $out['windowOffHi'] === 0) {
+                unset($out['windowOffLo'], $out['windowOffHi']);
+            }
+        }
+        if (array_key_exists('weekStart', $cfg)) {
+            if (!is_string($cfg['weekStart'])) return ['error' => '"weekStart" must be monday or sunday.'];
+            $out['windowWeekStart'] = strtolower(trim($cfg['weekStart']));
         }
         if (array_key_exists('window', $cfg)) {
             $w = $cfg['window'];
@@ -578,11 +627,12 @@ class AnnotationRules
         if (array_key_exists('unit', $cfg)) {
             if (!is_string($cfg['unit'])) return ['error' => '"unit" must be a string.'];
             $out['windowUnit'] = strtolower(trim($cfg['unit']));
-        } elseif (isset($out['windowFrom'])) {
+        } elseif ((isset($out['windowFrom']) || isset($out['windowAnchor'])) && !isset($out['windowPeriod'])) {
             $out['windowUnit'] = 'days';
         }
         // An explicit false IS the default, so it is dropped, as caseSensitive is.
         if (array_key_exists('notFuture', $cfg) && $cfg['notFuture'] !== false) $out['windowNotFuture'] = $cfg['notFuture'];
+        if (array_key_exists('notPast', $cfg) && $cfg['notPast'] !== false) $out['windowNotPast'] = $cfg['notPast'];
         foreach (['when', 'message', 'blockSave'] as $k) {
             if (isset($cfg[$k])) {
                 if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
@@ -1673,19 +1723,58 @@ class AnnotationRules
 
     /**
      * Semantic validation for a window (@UVWINDOW) fragment: a "from" that is
-     * exactly one field reference, whole-number bounds within
-     * MAX_WINDOW_BOUND with earliest <= latest, a known unit, a strict-boolean
-     * notFuture, and at least one of window / notFuture. Field types (is the
+     * exactly one field reference, or "today", "now" or a readable date;
+     * whole-number bounds within MAX_WINDOW_BOUND with earliest <= latest, a
+     * known unit; a known period, never with a window, its offsets within
+     * MAX_WINDOW_OFFSET and first <= last, weekStart only on a week;
+     * strict-boolean notFuture and notPast, and at least one of window /
+     * period / notFuture / notPast. Field types (is the
      * field a date, is the "from" field the same kind of date) are checked in
      * the channel glue, where the data dictionary is in hand.
      */
     public static function checkWindow(array $frag, array $opts = [])
     {
         $errors = [];
-        $hasFrom = isset($frag['windowFrom']);
+        $hasField = isset($frag['windowFrom']);
+        $hasAnchor = isset($frag['windowAnchor']);
+        $hasFrom = $hasField || $hasAnchor;
         $hasBound = array_key_exists('windowLo', $frag) || array_key_exists('windowHi', $frag);
+        $hasPeriod = isset($frag['windowPeriod']);
         $notFuture = array_key_exists('windowNotFuture', $frag);
-        if ($hasFrom) {
+        $notPast = array_key_exists('windowNotPast', $frag);
+        if ($hasAnchor) {
+            $a = $frag['windowAnchor'];
+            if (!is_string($a) || ($a !== 'today' && $a !== 'now' && TemporalLogic::anchorType($a) === null)) {
+                $errors[] = '"from" ' . json_encode($a) . ' is not a date — write it as Y-M-D, e.g. "2026-01-01" or "2026-01-01 08:00".';
+            }
+        }
+        if ($hasPeriod) {
+            if (!in_array($frag['windowPeriod'], TemporalLogic::WINDOW_PERIODS, true)) {
+                $errors[] = '"period" must be week, month, quarter or year.';
+            }
+            if ($hasBound) $errors[] = '"period" and "window" cannot be combined — use one or the other.';
+            if (isset($frag['windowUnit'])) $errors[] = '"unit" only applies to a "window" — a "period" counts whole periods.';
+        }
+        if (array_key_exists('windowOffLo', $frag) || array_key_exists('windowOffHi', $frag)) {
+            $lo = isset($frag['windowOffLo']) ? $frag['windowOffLo'] : null;
+            $hi = isset($frag['windowOffHi']) ? $frag['windowOffHi'] : null;
+            if (!$hasPeriod) $errors[] = '"offset" only applies to a "period".';
+            if (!is_int($lo) || !is_int($hi)) {
+                $errors[] = '"offset" must be a whole number of periods, or [first, last] — got ' . json_encode([$lo, $hi]) . '.';
+            } elseif (abs($lo) > self::MAX_WINDOW_OFFSET || abs($hi) > self::MAX_WINDOW_OFFSET) {
+                $errors[] = '"offset" is limited to ' . self::MAX_WINDOW_OFFSET . ' periods either way.';
+            } elseif ($lo > $hi) {
+                $errors[] = 'the "offset" first period (' . $lo . ') is after its last (' . $hi . ').';
+            }
+        }
+        if (isset($frag['windowWeekStart'])) {
+            if (!in_array($frag['windowWeekStart'], ['monday', 'sunday'], true)) $errors[] = '"weekStart" must be monday or sunday.';
+            if (!$hasPeriod || $frag['windowPeriod'] !== 'week') $errors[] = '"weekStart" only applies to "period": "week".';
+        }
+        if ($hasAnchor && !$hasBound && !$hasPeriod) {
+            $errors[] = '"from" needs a "window" to check against, e.g. "window":[-30,0], or a "period".';
+        }
+        if ($hasField) {
             $from = $frag['windowFrom'];
             if (ModeRegistry::operandRef($from, $opts) === null) {
                 $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($from, ['qualified' => true]) !== null)
@@ -1693,15 +1782,15 @@ class AnnotationRules
                     : '"from" must be exactly one date field reference, e.g. "[visit_date]" or "[baseline_arm_1][visit_date]" '
                       . '(not a checkbox code, a {binding} or a list of instances).';
             }
-            if (!$hasBound) $errors[] = '"from" needs a "window" to check against, e.g. "window":[21,35].';
-        } elseif ($hasBound) {
-            $errors[] = '"window" needs a "from" date to count from.';
+            if (!$hasBound && !$hasPeriod) $errors[] = '"from" needs a "window" to check against, e.g. "window":[21,35], or a "period".';
+        } elseif ($hasBound && !$hasAnchor) {
+            $errors[] = '"window" needs a "from" date to count from — a field, "today" or "now".';
         }
         if (isset($frag['windowUnit']) && !$hasFrom) {
             $errors[] = '"unit" only applies to a "window" — add a "from" date.';
         }
-        if (!$hasFrom && !$hasBound && !$notFuture) {
-            $errors[] = self::TAG_WINDOW . ' needs a "from" date with a "window", or "notFuture": true.';
+        if (!$hasFrom && !$hasBound && !$hasPeriod && !$notFuture && !$notPast) {
+            $errors[] = self::TAG_WINDOW . ' needs a "from" date with a "window", a "period", "notFuture": true or "notPast": true.';
         }
         foreach (['windowLo' => 'earliest', 'windowHi' => 'latest'] as $k => $label) {
             if (!array_key_exists($k, $frag)) continue;
@@ -1724,6 +1813,9 @@ class AnnotationRules
         }
         if ($notFuture && $frag['windowNotFuture'] !== true) {
             $errors[] = '"notFuture" must be true or false (unquoted).';
+        }
+        if ($notPast && $frag['windowNotPast'] !== true) {
+            $errors[] = '"notPast" must be true or false (unquoted).';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
     }
