@@ -31,10 +31,16 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  */
 final class ValueStamps
 {
-    /** Rows read for one record at most. A value last logged further back than this is "unlogged". */
+    /** Rows read for one record at most. A value last logged further back than this is "capped". */
     const MAX_ROWS_PER_RECORD = 5000;
     /** Rows per query. */
     const PAGE = 500;
+    /**
+     * Records kept in memory. A scan asks record by record, so the oldest
+     * record read is dropped once this many are held, and a scan of a large
+     * project holds a few records' log at a time, not the whole log.
+     */
+    const RECORDS_KEPT = 16;
 
     /** @var ScanDb */
     private $db;
@@ -55,6 +61,10 @@ final class ValueStamps
     private $rows = [];
     /** record => true when the log holds any row for it */
     private $any = [];
+    /** record => true when reading stopped at MAX_ROWS_PER_RECORD */
+    private $capped = [];
+    /** record => true, in the order the records were first read */
+    private $kept = [];
 
     private function __construct(ScanDb $db, $pid, $table, \DateTimeZone $logZone, \DateTimeZone $clockZone)
     {
@@ -80,6 +90,8 @@ final class ValueStamps
      *   changed   the newest row for the field logged another value (or an
      *             ambiguous one)
      *   unlogged  the log holds rows for the record, none for this field
+     *   capped    no row for this field among the newest MAX_ROWS_PER_RECORD
+     *             rows of the record; older rows were not read
      *   none      the log holds no row for the record at all
      *   unknown   the log could not be read
      */
@@ -89,6 +101,7 @@ final class ValueStamps
         $eventId = (string) (int) $eventId;
         $instance = max(1, (int) $instance);
         $value = trim((string) $value, " \t\r\n");
+        $this->keep($record);
         while (true) {
             if (isset($this->seen[$record][$eventId][$instance]) && array_key_exists($field, $this->seen[$record][$eventId][$instance])) {
                 list($ts, $logged) = $this->seen[$record][$eventId][$instance][$field];
@@ -97,10 +110,29 @@ final class ValueStamps
                 return $at === null ? ['state' => 'unknown', 'at' => null] : ['state' => 'logged', 'at' => $at];
             }
             if (!empty($this->done[$record])) {
-                return ['state' => empty($this->any[$record]) ? 'none' : 'unlogged', 'at' => null];
+                $state = empty($this->any[$record]) ? 'none' : (empty($this->capped[$record]) ? 'unlogged' : 'capped');
+                return ['state' => $state, 'at' => null];
             }
             if (!$this->readPage($record)) return ['state' => 'unknown', 'at' => null];
         }
+    }
+
+    /** Hold $record, dropping the record read longest ago past RECORDS_KEPT. */
+    private function keep($record)
+    {
+        if (isset($this->kept[$record])) return;
+        $this->kept[$record] = true;
+        if (count($this->kept) <= self::RECORDS_KEPT) return;
+        reset($this->kept);
+        $old = (string) key($this->kept);
+        unset($this->kept[$old], $this->seen[$old], $this->done[$old], $this->cursor[$old],
+              $this->rows[$old], $this->any[$old], $this->capped[$old]);
+    }
+
+    /** How many records are held in memory (for tests). */
+    public function recordsHeld()
+    {
+        return count($this->kept);
     }
 
     /**
@@ -142,7 +174,12 @@ final class ValueStamps
             }
         }
         $this->rows[$record] = (isset($this->rows[$record]) ? $this->rows[$record] : 0) + $n;
-        if ($n < self::PAGE || $this->rows[$record] >= self::MAX_ROWS_PER_RECORD) $this->done[$record] = true;
+        if ($n < self::PAGE) {
+            $this->done[$record] = true;
+        } elseif ($this->rows[$record] >= self::MAX_ROWS_PER_RECORD) {
+            $this->done[$record] = true;
+            $this->capped[$record] = true;
+        }
         return true;
     }
 

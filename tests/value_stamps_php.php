@@ -139,7 +139,21 @@ $db = new FakeLog();
 $db->rows[] = $row(1, '1', 351, '20260101000000', "visit = '2026-01-01'");
 for ($i = 2; $i <= ValueStamps::MAX_ROWS_PER_RECORD + 1; $i++) $db->rows[] = $row($i, '1', 351, '20260102000000', "wt = '" . $i . "'");
 $s = ValueStamps::forProject($db, 149, $utc, $utc);
-check('past the cap the value is "unlogged"', $s->savedAt('1', 351, 1, 'visit', '2026-01-01')['state'] === 'unlogged');
+check('past the cap the value is "capped", not "unlogged"', $s->savedAt('1', 351, 1, 'visit', '2026-01-01')['state'] === 'capped');
+check('...a field logged within the cap is still found', $s->savedAt('1', 351, 1, 'wt', (string) ValueStamps::MAX_ROWS_PER_RECORD + 1)['state'] === 'logged');
+
+// ---- memory: a scan holds a few records at a time ---------------------------------------
+$db = new FakeLog();
+for ($i = 1; $i <= 40; $i++) $db->rows[] = $row($i, 'R' . $i, 351, '20261001090000', "visit = '2026-10-01'");
+$s = ValueStamps::forProject($db, 149, $utc, $utc);
+for ($i = 1; $i <= 40; $i++) $s->savedAt('R' . $i, 351, 1, 'visit', '2026-10-01');
+check('a scan holds at most RECORDS_KEPT records', $s->recordsHeld() === ValueStamps::RECORDS_KEPT);
+$q = $db->queries;
+check('a dropped record is read again, and answers the same', $s->savedAt('R1', 351, 1, 'visit', '2026-10-01')['state'] === 'logged'
+    && $db->queries === $q + 1);
+$q = $db->queries;
+$s->savedAt('R40', 351, 1, 'visit', '2026-10-01');
+check('a kept record is not read again', $db->queries === $q);
 
 // ---- the log cannot be read ----------------------------------------------------------
 $db = new FakeLog();

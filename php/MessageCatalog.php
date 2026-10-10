@@ -150,6 +150,12 @@ final class MessageCatalog
      * lists under scan.detailKeys in php/modes.json). A template with any
      * placeholder the rule does not set is left out whole: half a sentence
      * about a window bound that does not exist would be wrong, not short.
+     * "detail" may also be a list of templates, for rules of one kind that set
+     * different keys: the first one the rule fills in whole is used.
+     *
+     * A finding judged against the day its value was saved (a today-relative
+     * @UVWINDOW part) carries that day as 'asOf'; an "asOf" template on the
+     * entry, or on its type's wildcard entry, adds a sentence naming it.
      */
     public static function detail(array $finding, array $rule)
     {
@@ -165,19 +171,41 @@ final class MessageCatalog
         if ($colon !== false) $code = substr($reason, 0, $colon);
         $vals = (isset($rule['detail']) && is_array($rule['detail'])) ? $rule['detail'] : [];
         $cat = self::catalog();
+        $text = '';
         foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
-            if (!isset($cat[$ck]['detail']) || !is_string($cat[$ck]['detail']) || $cat[$ck]['detail'] === '') continue;
-            $missing = false;
-            $text = preg_replace_callback('/\{(\w+)\}/', function ($m) use ($vals, &$missing) {
-                if (!isset($vals[$m[1]]) || !is_scalar($vals[$m[1]]) || (string) $vals[$m[1]] === '') {
-                    $missing = true;
-                    return '';
-                }
-                return (string) $vals[$m[1]];
-            }, $cat[$ck]['detail']);
-            return $missing ? '' : $text;
+            if (!isset($cat[$ck]['detail'])) continue;
+            $templates = is_array($cat[$ck]['detail']) ? $cat[$ck]['detail'] : [$cat[$ck]['detail']];
+            foreach ($templates as $t) {
+                if (!is_string($t) || $t === '') continue;
+                $filled = self::fillAll($t, $vals);
+                if ($filled !== null) { $text = $filled; break; }
+            }
+            break;
         }
-        return '';
+        $asOf = isset($finding['asOf']) && is_scalar($finding['asOf']) ? (string) $finding['asOf'] : '';
+        if ($asOf !== '') {
+            foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
+                if (!isset($cat[$ck]['asOf']) || !is_string($cat[$ck]['asOf'])) continue;
+                $note = self::fillAll($cat[$ck]['asOf'], ['asOf' => $asOf]);
+                if ($note !== null) $text = $text === '' ? $note : $text . ' ' . $note;
+                break;
+            }
+        }
+        return $text;
+    }
+
+    /** $text with every {placeholder} filled from $vals, or null when any of them has no value. */
+    private static function fillAll($text, array $vals)
+    {
+        $missing = false;
+        $out = preg_replace_callback('/\{(\w+)\}/', function ($m) use ($vals, &$missing) {
+            if (!isset($vals[$m[1]]) || !is_scalar($vals[$m[1]]) || (string) $vals[$m[1]] === '') {
+                $missing = true;
+                return '';
+            }
+            return (string) $vals[$m[1]];
+        }, $text);
+        return $missing ? null : $out;
     }
 
     /** Substitute {placeholders}; anything with no value becomes empty, never raw. */

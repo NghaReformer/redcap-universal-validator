@@ -37,20 +37,35 @@
   "window/window-early": {
     "staff":  "The date is earlier than its allowed window.",
     "survey": "This date is too early.",
-    "detail": "The window opens {windowLo} {windowUnit} from {windowFrom}."
+    "detail": ["The window opens {windowLo} {windowUnit} from {windowFrom}.",
+               "The window opens {windowLo} {windowUnit} from {windowAnchor}.",
+               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowFrom}.",
+               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowAnchor}.",
+               "The rule allows the {windowPeriod} holding {windowFrom}.",
+               "The rule allows the {windowPeriod} holding {windowAnchor}."]
   },
   "window/window-late": {
     "staff":  "The date is later than its allowed window.",
     "survey": "This date is too late.",
-    "detail": "The window closes {windowHi} {windowUnit} from {windowFrom}."
+    "detail": ["The window closes {windowHi} {windowUnit} from {windowFrom}.",
+               "The window closes {windowHi} {windowUnit} from {windowAnchor}.",
+               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowFrom}.",
+               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowAnchor}.",
+               "The rule allows the {windowPeriod} holding {windowFrom}.",
+               "The rule allows the {windowPeriod} holding {windowAnchor}."]
   },
   "window/future": {
     "staff":  "The date is in the future.",
     "survey": "This date cannot be in the future."
   },
+  "window/past": {
+    "staff":  "The date is in the past.",
+    "survey": "This date cannot be in the past."
+  },
   "window/*": {
     "staff":  "The date is outside its allowed window.",
-    "survey": "This date is not allowed here."
+    "survey": "This date is not allowed here.",
+    "asOf":   "Judged against {asOf}, when this value was saved."
   },
   "exists/not-found": {
     "staff":  "The value is not saved where this rule looks for it.",

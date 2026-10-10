@@ -13,7 +13,12 @@
  *   - the server clock reaches the page only when a rule reads it,
  *   - the post-save audit logs window-early / window-late / future, checks
  *     nothing against a blank "from" date, and re-checks a window when only
- *     the form holding its "from" date is saved (reverse dependency).
+ *     the form holding its "from" date is saved (reverse dependency),
+ *   - "from" of today, now or a written date, periods and notPast (2.7.0):
+ *     the dictionary checks, the week start, the time zone refusals, the
+ *     saved values the page compares with (windowSaved), and the audit and
+ *     the scan judging each value against the day it was saved, read from a
+ *     mock of REDCap's log (ValueStamps); an unknown day is not checked.
  *
  * Run:  php tests/window_module_php.php
  */
@@ -74,6 +79,31 @@ namespace {
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
+
+    /** A mock of REDCap's log for ValueStamps: rows [id, pid, pk, event_id, ts, data_values, object_type, event]. */
+    final class WinLog implements \INSPIRE\UniversalValidator\Scan\ScanDb
+    {
+        public $rows = [];
+        public function select($sql, array $params = [])
+        {
+            if (strpos($sql, 'FROM redcap_projects') !== false) return [['redcap_log_event4']];
+            preg_match('/LIMIT (\d+)$/', $sql, $m);
+            $before = isset($params[2]) ? (int) $params[2] : PHP_INT_MAX;
+            $out = [];
+            foreach ($this->rows as $r) {
+                if ($r[1] !== $params[0] || $r[2] !== $params[1] || $r[0] >= $before) continue;
+                if ($r[6] !== 'redcap_data' || !in_array($r[7], ['INSERT', 'UPDATE'], true)) continue;
+                $out[] = [(string) $r[0], $r[4], $r[3], $r[5], $r[2]];
+            }
+            usort($out, function ($a, $b) { return (int) $b[0] - (int) $a[0]; });
+            return array_slice($out, 0, (int) $m[1]);
+        }
+        public function exec($sql, array $params = []) {}
+        public function affected() { return 0; }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    }
     require_once __DIR__ . '/../php/Scan/ArrayScanStore.php';
 
     $n = 0; $fail = 0;
@@ -440,6 +470,158 @@ namespace {
         \INSPIRE\UniversalValidator\MessageCatalog::explain(['type' => 'window', 'reason' => 'future', 'rule' => 1], $dims->rule(1))
         === ['text' => 'The date is in the future.', 'source' => 'catalog']);
 
+
+    // ---- 7) today, now, written dates, periods and notPast ------------------------
+    $P9 = $DICT + [
+        'w_today'     => f('visit_form', '@UVWINDOW={"from":"today","window":[-30,0]}', 'date_ymd'),
+        'w_past'      => f('visit_form', '@UVWINDOW={"notPast":true}', 'date_ymd'),
+        'w_month'     => f('visit_form', '@UVWINDOW={"period":"month","offset":-1}', 'date_ymd'),
+        'w_week'      => f('visit_form', '@UVWINDOW={"period":"week"}', 'date_ymd'),
+        'w_week_mon'  => f('visit_form', '@UVWINDOW={"period":"week","weekStart":"monday"}', 'date_ymd'),
+        'w_lit'       => f('visit_form', '@UVWINDOW={"from":"2026-01-01","window":[0,null]}', 'date_ymd'),
+        'w_now'       => f('visit_form', '@UVWINDOW={"from":"now","window":[-2,0],"unit":"hours"}', 'datetime_ymd'),
+        'w_of_field'  => f('visit_form', '@UVWINDOW={"from":"[v_start]","period":"month"}', 'date_ymd'),
+        'w_lit_dt_p'  => f('visit_form', '@UVWINDOW={"from":"2026-01-01 08:00","period":"month"}', 'date_ymd'),
+        'w_today_dtp' => f('visit_form', '@UVWINDOW={"period":"week"}', 'datetime_ymd'),
+        'bad_now_d'   => f('visit_form', '@UVWINDOW={"from":"now","window":[-1,0]}', 'date_ymd'),
+        'bad_today_dt'=> f('visit_form', '@UVWINDOW={"from":"today","window":[-1,0]}', 'datetime_ymd'),
+        'bad_lit_fam' => f('visit_form', '@UVWINDOW={"from":"2026-01-01 08:00","window":[0,1]}', 'date_ymd'),
+    ];
+    $D9 = $DATA;
+    $D9['2'][351] += ['w_today' => '2026-09-01', 'w_past' => '2026-10-01', 'w_month' => '2026-09-15', 'w_week' => '',
+        'w_week_mon' => '', 'w_lit' => '2025-12-31', 'w_now' => '2026-10-09 12:27', 'w_of_field' => '2026-01-31',
+        'w_lit_dt_p' => '', 'w_today_dtp' => ''];
+    $p = page(mod($P9, $D9, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    $e9 = function ($field) use ($p) { $r = ruleFor($p, $field); return $r && isset($r['configError']) ? $r['configError'] : ''; };
+    check('"from": "now" on a date field: refused', strpos($e9('bad_now_d'), '"from": "now" is a date and time') !== false);
+    check('"from": "today" on a datetime field: refused', strpos($e9('bad_today_dt'), '"from": "today" is a date') !== false);
+    check('a written date of another kind: refused', strpos($e9('bad_lit_fam'), 'is a date with a time and this field holds dates without a time') !== false);
+    foreach (['w_today', 'w_past', 'w_month', 'w_week', 'w_lit', 'w_now', 'w_of_field', 'w_lit_dt_p', 'w_today_dtp'] as $okf) {
+        check($okf . ': configures', ruleFor($p, $okf) !== null && $e9($okf) === '');
+    }
+    $r = ruleFor($p, 'w_today');
+    check('"from": "today" travels as windowAnchor, never as a field', ($r['windowAnchor'] ?? null) === 'today' && !isset($r['windowFrom']));
+    $r = ruleFor($p, 'w_month');
+    check('a period with no "from" is the period holding today', ($r['windowAnchor'] ?? null) === 'today'
+        && ($r['windowPeriod'] ?? null) === 'month' && ($r['windowOffLo'] ?? null) === -1 && ($r['windowOffHi'] ?? null) === -1);
+    check('a week starts on Monday by default', (ruleFor($p, 'w_week')['windowWeekStart'] ?? null) === 'monday');
+    $m9 = mod($P9, $D9, $FULL, 'nurse');
+    $m9->projectSettings['window-week-start'] = 'sunday';
+    $p9 = page($m9, 'form', '2', 'visit_form');
+    check('the project setting moves the week start', (ruleFor($p9, 'w_week')['windowWeekStart'] ?? null) === 'sunday');
+    check('...a rule\'s own weekStart wins', (ruleFor($p9, 'w_week_mon')['windowWeekStart'] ?? null) === 'monday');
+    // The saved values of the fields a today-relative part judges.
+    $ws = isset($p['cfg']['windowSaved']) ? $p['cfg']['windowSaved'] : null;
+    check('windowSaved: the saved value of each today-relative field', is_array($ws) && ($ws['w_today'] ?? null) === '2026-09-01'
+        && ($ws['w_past'] ?? null) === '2026-10-01' && ($ws['w_month'] ?? null) === '2026-09-15' && array_key_exists('w_now', $ws));
+    check('windowSaved: a window counted from a field or a written date is not listed',
+        !array_key_exists('w_lit', $ws ?? []) && !array_key_exists('w_of_field', $ws ?? []) && !array_key_exists('visit_date_2', $ws ?? []));
+    check('windowSaved: notFuture alone is not listed', !array_key_exists('collected', $ws ?? []));
+    $pn = page(mod($P9, $D9, $FULL, 'nurse'), 'form', null, 'visit_form');
+    check('windowSaved: a record not saved yet sends an empty object', strpos($pn['raw'] ?? $pn['html'], '"windowSaved":{}') !== false);
+    $pw = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form');
+    check('windowSaved: no today-relative rule, no windowSaved', is_array($pw['cfg']) && !array_key_exists('windowSaved', $pw['cfg']));
+
+    // Time zones: notPast reads as in the past where the filling zone runs behind.
+    $Z9 = $P9;
+    $Z9['np_utc']   = f('visit_form', '@NOW-UTC @UVWINDOW={"notPast":true}', 'datetime_ymd');
+    $Z9['td_utc']   = f('visit_form', '@TODAY-UTC @UVWINDOW={"from":"today","window":[-7,0]}', 'date_ymd');
+    $Z9['np_win']   = f('visit_form', '@TODAY-UTC @UVWINDOW={"from":"[v_start]","window":[0,7],"notPast":true}', 'date_ymd');
+    $z9 = function ($tz, $field) use ($Z9, $D9, $FULL) {
+        $mz = mod($Z9, $D9, $FULL, 'nurse');
+        if ($tz !== null) $mz->projectSettings['window-timezone'] = $tz;
+        return ruleFor(page($mz, 'form', '2', 'visit_form'), $field);
+    };
+    $r = $z9('Africa/Lagos', 'np_utc');
+    check('@NOW-UTC with notPast and a clock ahead of UTC: refused', strpos($r['configError'] ?? '', '"notPast" cannot be judged on a field filled by @NOW-UTC') !== false
+        && strpos($r['configError'] ?? '', 'runs behind') !== false);
+    check('@NOW-UTC with notPast and a clock behind UTC: allowed', empty($z9('America/New_York', 'np_utc')['configError']));
+    check('@TODAY-UTC with "from": "today" in another zone: refused', strpos($z9('America/New_York', 'td_utc')['configError'] ?? '', '"from": "today" cannot be judged') !== false);
+    $r = $z9('Africa/Lagos', 'np_win');
+    check('@TODAY-UTC with a window from a field and notPast: the window stays, notPast is dropped with a note',
+        $r && empty($r['configError']) && empty($r['windowNotPast']) && ($r['windowLo'] ?? null) === 0
+        && strpos(implode(' ', $r['windowNotFutureOff'] ?? []), '"notPast" cannot be judged') !== false);
+
+    // The audit and the scan judge each value against the day it was saved.
+    $stamps = function ($m, array $rows) {
+        $db = new WinLog();
+        foreach ($rows as $i => $row) $db->rows[] = array_merge([$i + 1, 149, '2', 351], $row);
+        $vs = \INSPIRE\UniversalValidator\ValueStamps::forProject($db, 149, new \DateTimeZone('UTC'), new \DateTimeZone('UTC'));
+        $rp = new \ReflectionProperty($m, 'valueStampsOverride'); $rp->setAccessible(true); $rp->setValue($m, $vs);
+        return $m;
+    };
+    $audit = function ($m) {
+        $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+        $by = []; foreach (findings($m) as $e) $by[$e['field']] = $e;
+        $un = []; foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[$e['fields']][] = $e['why'];
+        return [$by, $un];
+    };
+    $row = function ($ts, $dv, $ev = 'UPDATE') { return [$ts, $dv, 'redcap_data', $ev]; };
+    // w_today 2026-09-01: inside [-30,0] of a save on 2026-09-02, 38 days before today.
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "w_today = '2026-09-01'")]));
+    check('audit: a value saved on 2026-09-02 is judged against that day, not today', !isset($by['w_today']) && !isset($un['w_today']));
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20261009090000', "w_today = '2026-09-01'")]));
+    check('audit: saved today, 38 days back is early', ($by['w_today']['reason'] ?? null) === 'window-early'
+        && ($by['w_today']['as_of'] ?? null) === '2026-10-09');
+    // The log shows another value: this save wrote this one, so it was saved now.
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "w_today = '2026-08-30'")]));
+    check('audit: a value the log does not show yet was saved now', ($by['w_today']['reason'] ?? null) === 'window-early');
+    // The log holds the record but not the field: a first entry this save wrote.
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "wt = '1'")]));
+    check('audit: a field the log never shows for the record was saved now', ($by['w_today']['reason'] ?? null) === 'window-early');
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), []));
+    check('audit: a record with no log yet was saved now', ($by['w_today']['reason'] ?? null) === 'window-early');
+    // notPast and a period, against their save day.
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260930080000', "w_past = '2026-10-01',\nw_month = '2026-09-15'")]));
+    check('audit: notPast judged on the day it was saved', !isset($by['w_past']));
+    check('audit: last month judged on the day it was saved (September 30: August)', ($by['w_month']['reason'] ?? null) === 'window-late');
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20261002080000', "w_past = '2026-10-01',\nw_month = '2026-09-15'")]));
+    check('audit: saved the day after, notPast finds it', ($by['w_past']['reason'] ?? null) === 'past' && ($by['w_past']['as_of'] ?? null) === '2026-10-02');
+    check('audit: last month on October 2 is September', !isset($by['w_month']));
+    // notFuture moves to the save day: a date that was in the future when saved.
+    $DN = $D9; $DN['2'][351]['collected'] = '2026-10-05';
+    list($by, $un) = $audit($stamps(mod($P9, $DN, $FULL, 'nurse'), [$row('20261001080000', "collected = '2026-10-05'")]));
+    check('audit: notFuture on the save day finds a date that was in the future then', ($by['collected']['reason'] ?? null) === 'future');
+    list($by, $un) = $audit($stamps(mod($P9, $DN, $FULL, 'nurse'), [$row('20261001080000', "wt = '1'")]));
+    check('audit: notFuture with no save day falls back to today, never a false finding', !isset($by['collected'])
+        && !isset($un['collected']));
+    // "now": a span of 120 s either side of the save moment.
+    list($by, $un) = $audit($stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:27'")]));
+    check('audit: now [-2,0] hours, 2 h 3 min before the save is early', ($by['w_now']['reason'] ?? null) === 'window-early'
+        && ($by['w_now']['as_of'] ?? null) === '2026-10-09 14:30');
+    $DW = $D9; $DW['2'][351]['w_now'] = '2026-10-09 12:29';
+    list($by, $un) = $audit($stamps(mod($P9, $DW, $FULL, 'nurse'), [$row('20261009143000', "w_now = '2026-10-09 12:29'")]));
+    check('audit: ...2 h 1 min before is inside the margin', !isset($by['w_now']));
+    // The scan: no save in progress, so a value the log does not show is not checked.
+    $ms = $stamps(mod($P9, $D9, $FULL, 'nurse'), [$row('20260902100000', "w_today = '2026-08-30'"), $row('20261009090000', "w_past = '2026-10-01'")]);
+    $res = $ms->scanProject(149);
+    $sv = []; foreach ($res['violations'] as $v) $sv[$v['field']] = $v;
+    check('scan: a value the log shows another value for is not checked', !isset($sv['w_today'])
+        && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_today', $u['fields'], true)
+            && strpos($u['why'], 'the project log shows another value for it') !== false; }));
+    check('scan: a value whose save day is not known is not checked, and the report says why', !isset($sv['w_month'])
+        && (bool) array_filter($res['unconfigurable'], function ($u) { return in_array('w_month', $u['fields'], true)
+            && strpos($u['why'], 'the day this value was saved is not known (the project log does not show when it was saved)') !== false; }));
+    check('scan: the day judged against travels with the finding', ($sv['w_past']['reason'] ?? null) === 'past' && ($sv['w_past']['asOf'] ?? null) === '2026-10-09');
+    // The report names that day.
+    $dims = \INSPIRE\UniversalValidator\ScanDimensions::build(149, $P9, [
+        ['type' => 'window', 'fields' => ['w_today'], 'windowAnchor' => 'today', 'windowLo' => -30, 'windowHi' => 0, 'windowUnit' => 'days'],
+        ['type' => 'window', 'fields' => ['w_month'], 'windowAnchor' => 'today', 'windowPeriod' => 'month', 'windowOffLo' => -1, 'windowOffHi' => -1],
+        ['type' => 'window', 'fields' => ['w_of_field'], 'windowFrom' => '[v_start]', 'windowPeriod' => 'month'],
+    ]);
+    $MC = \INSPIRE\UniversalValidator\MessageCatalog::class;
+    check('report detail: a window from today, with the day it was judged against',
+        $MC::detail(['type' => 'window', 'reason' => 'window-early', 'asOf' => '2026-10-09'], $dims->rule(1))
+        === 'The window opens -30 days from today. Judged against 2026-10-09, when this value was saved.');
+    check('report detail: a period with an offset',
+        $MC::detail(['type' => 'window', 'reason' => 'window-late'], $dims->rule(2)) === 'The rule allows the months -1 to -1 from the one holding today.');
+    check('report detail: the period of a field', $MC::detail(['type' => 'window', 'reason' => 'window-early'], $dims->rule(3))
+        === 'The rule allows the month holding [v_start].');
+    check('report detail: past names the day only', $MC::detail(['type' => 'window', 'reason' => 'past', 'asOf' => '2026-10-02'], $dims->rule(1))
+        === 'Judged against 2026-10-02, when this value was saved.');
+    check('report wording: past', $MC::explain(['type' => 'window', 'reason' => 'past', 'rule' => 1], $dims->rule(1))
+        === ['text' => 'The date is in the past.', 'source' => 'catalog']);
+    check('report issue label: past', \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('window', 'past') === 'Date in the past');
 
     fwrite(STDOUT, "window_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);

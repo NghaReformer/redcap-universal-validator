@@ -376,7 +376,8 @@ class UniversalValidator extends AbstractExternalModule
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
         }
         foreach ($f['invalid'] as $v) {
-            $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason']);
+            $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
+                isset($v['asOf']) ? ['as_of' => (string) $v['asOf']] : []);
         }
     }
 
@@ -2204,9 +2205,11 @@ class UniversalValidator extends AbstractExternalModule
      * When $value was saved, for a today-relative @UVWINDOW part:
      * ['at' => 'Y-m-d H:i:s' in the rule's time zone, or null, 'why' => why not].
      * The post-save audit passes $savedNow for the values the save it audits
-     * wrote: a value whose newest log row shows another value, or a record
-     * with no log yet, was then saved now (REDCap may log the save after this
-     * hook runs). Nothing the browser sends decides it.
+     * wrote: a value whose newest log row shows another value, a field the
+     * record's log never shows, or a record with no log yet, was then saved
+     * now (REDCap may log the save after this hook runs). Nothing the browser
+     * sends decides it. A log read only in part ("capped") never counts as
+     * saved now: the value may be older than the rows read.
      */
     private function valueSavedAt($pid, $record, $eventId, $instance, $field, $value, $savedNow)
     {
@@ -2214,11 +2217,12 @@ class UniversalValidator extends AbstractExternalModule
         if ($stamps === null) return ['at' => null, 'why' => 'the project log could not be read'];
         $r = $stamps->savedAt($record, $eventId, $instance, $field, $value);
         if ($r['state'] === 'logged') return ['at' => $r['at'], 'why' => null];
-        if ($savedNow && ($r['state'] === 'changed' || $r['state'] === 'none')) {
+        if ($savedNow && in_array($r['state'], ['changed', 'unlogged', 'none'], true)) {
             return ['at' => $this->serverClock($pid)['now'], 'why' => null];
         }
         $why = ['changed' => 'the project log shows another value for it',
                 'unlogged' => 'the project log does not show when it was saved',
+                'capped' => 'the project log holds more saves of this record than are read',
                 'none' => 'the project log holds nothing for this record',
                 'unknown' => 'the project log could not be read'];
         return ['at' => null, 'why' => isset($why[$r['state']]) ? $why[$r['state']] : $why['unknown']];
@@ -2586,7 +2590,7 @@ class UniversalValidator extends AbstractExternalModule
      * A keyed hash is pseudonymization, not anonymity: treat the module log as
      * identifying data for access/retention purposes (see README).
      */
-    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason)
+    private function logInvalid($mode, $pid, $record, $field, $value, $algo, $type, $instrument, $event_id, $repeat_instance, $reason, array $extra = [])
     {
         if ($mode === 'off') return; // detection logging disabled entirely
         $entry = [
@@ -2598,6 +2602,8 @@ class UniversalValidator extends AbstractExternalModule
             'event_id'   => (string) $event_id,
             'instance'   => (string) ($repeat_instance ?: 1),
         ];
+        // as_of: the day a today-relative @UVWINDOW part was judged against.
+        foreach ($extra as $k => $v) if (!isset($entry[$k])) $entry[$k] = (string) $v;
         if ($mode === 'none') {
             $h = $this->hashedIdentifier($pid, (string) $record);
             if ($h !== null) $entry['record_hmac'] = $h;
@@ -6854,7 +6860,9 @@ class UniversalValidator extends AbstractExternalModule
                             // repeating-EVENT context (:2320), which between them
                             // is most projects.
                             'instrument' => $hostForm, 'dag' => $recDag,
-                        ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : []));
+                        ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
+                          // the day a today-relative @UVWINDOW part was judged against
+                          + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : []));
                     }
                     foreach ($f['unconfigurable'] as $u) {
                         $key = $i . '|' . $u['why'];
