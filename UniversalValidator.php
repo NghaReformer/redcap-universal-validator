@@ -26,6 +26,7 @@ require_once __DIR__ . '/php/ModeRegistry.php';
 require_once __DIR__ . '/php/Logic.php';
 require_once __DIR__ . '/php/GrowthReference.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
+require_once __DIR__ . '/php/ReturnedValues.php';
 require_once __DIR__ . '/php/ValueStamps.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
@@ -65,6 +66,7 @@ require_once __DIR__ . '/php/Scan/ScanService.php';
 class UniversalValidator extends AbstractExternalModule
 {
     use TemporalIntegration;
+    use ReturnedValues;
     /**
      * Per-request data dictionary cache, keyed BY PROJECT ID.
      *
@@ -135,6 +137,11 @@ class UniversalValidator extends AbstractExternalModule
         // path below can honor it too — an exception must never leak a record
         // ID that the project's mode says to hash or omit (SEC-003).
         $logMode = $this->logMode($project_id);
+        // The module's own write of the values a rule returns is a save of this
+        // record too (ReturnedValues::applyReturns). It changes nothing a person
+        // entered, so it is not audited a second time.
+        if (self::$returnWriting) return;
+        $this->returnQueue = [];
         try {
             // $project_id comes straight from the hook and is reliable in every
             // save context (form, survey, API, import, cron); $this->getProjectId()
@@ -290,25 +297,35 @@ class UniversalValidator extends AbstractExternalModule
             $hostContexts = null;
             $depResolution = [];    // host context key => resolution states, computed once
             if ($dependents) {
-                try {
-                    $whole = \REDCap::getData([
-                        'project_id' => $project_id, 'return_format' => 'array',
-                        'records' => [$record], 'fields' => array_keys($readSet),
-                    ]);
-                    if (is_array($whole) && isset($whole[$record]) && is_array($whole[$record])) {
-                        $hostContexts = [];
-                        foreach (self::recordContexts($whole[$record]) as $hctx) {
-                            // Same event only: a save cannot speak for another event.
-                            if ($event_id && (string) $hctx['event_id'] !== (string) $event_id) continue;
-                            $hostContexts[] = $hctx;
-                        }
-                    }
-                } catch (\Throwable $e) {
-                    $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'dependent contexts');
-                }
+                $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
             }
 
+            // Rules that return values to fields (@UVRANGE "return") go first and
+            // their values are written before the others are judged, so a rule
+            // that reads a returned field sees it in the same save.
+            $order = [[], []];
             foreach ($rules as $ruleIndex => $rule) {
+                $order[ModeRegistry::returnFields($rule) ? 0 : 1][] = $ruleIndex;
+            }
+            $firstOther = count($order[0]);
+            foreach (array_merge($order[0], $order[1]) as $position => $ruleIndex) {
+                $rule = $rules[$ruleIndex];
+                if ($position === $firstOther && $firstOther > 0 && $this->applyReturns($logMode, $project_id, $record, $instrument)) {
+                    // Something was written: read the record again for the rules still to be judged.
+                    $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true, $auditResolution);
+                    foreach ($auditResolution as $rstate) {
+                        if ($rstate === 'unreadable') {
+                            $this->logAuditError($logMode, $project_id, $record, $instrument,
+                                new \RuntimeException('the saved values could not be read after the returned values were written, so no later rule was checked for this save'),
+                                'audit');
+                            return;
+                        }
+                    }
+                    $depResolution = [];
+                    if ($dependents) {
+                        $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
+                    }
+                }
                 if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
                 // Each rule is isolated: one rule blowing up must not silently
                 // abort the audit of every later rule (COR-002).
@@ -357,7 +374,38 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             // Never let an audit failure abort the save or vanish without a trace.
             $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'audit');
+        } finally {
+            // Whatever the audit returned and did not write yet (a lone phase,
+            // the extended rules, an early end): written here, once.
+            $this->applyReturns($logMode, $project_id, $record, $instrument);
         }
+    }
+
+    /**
+     * The contexts of one record the reverse-dependency pass evaluates a rule
+     * in: every row of the record's event (the plain row and each repeat
+     * instance), read once. Null when they could not be read (logged).
+     */
+    private function saveHostContexts($project_id, $record, array $fields, $event_id, $instrument, $logMode)
+    {
+        try {
+            $whole = \REDCap::getData([
+                'project_id' => $project_id, 'return_format' => 'array',
+                'records' => [$record], 'fields' => $fields,
+            ]);
+            if (is_array($whole) && isset($whole[$record]) && is_array($whole[$record])) {
+                $out = [];
+                foreach (self::recordContexts($whole[$record]) as $hctx) {
+                    // Same event only: a save cannot speak for another event.
+                    if ($event_id && (string) $hctx['event_id'] !== (string) $event_id) continue;
+                    $out[] = $hctx;
+                }
+                return $out;
+            }
+        } catch (\Throwable $e) {
+            $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'dependent contexts');
+        }
+        return null;
     }
 
     /**
@@ -369,7 +417,14 @@ class UniversalValidator extends AbstractExternalModule
     private function auditRule(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance, $whenAst = null, array $resolution = [], array $meta = [])
     {
         $meta['instance'] = $repeat_instance;
+        // The save audit also works out the values a rule returns to fields
+        // (the scan, which calls ruleFindings itself, does not): they are
+        // queued and written once the audit is done (applyReturns).
+        $meta['returns'] = true;
         $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution, $meta);
+        if (isset($f['returns']) && is_array($f['returns'])) {
+            $this->queueReturns($f['returns'], (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [], $event_id, $repeat_instance);
+        }
         foreach ($f['unconfigurable'] as $u) {
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
         }
@@ -405,7 +460,10 @@ class UniversalValidator extends AbstractExternalModule
      *   ['invalid'         => [ ['field','value','algo','type','reason'], ... ],
      *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ],
      *    'unevaluated'     => [ ['field', 'why', ...], ... ] (optional: values a
-     *                         growth rule could not work out a z-score for)]
+     *                         growth rule could not work out a z-score for),
+     *    'returns'         => [field => text, ...]]   (only when $meta['returns'] asks, and
+     *                          only for a rule that returns values: "" empties the field, a
+     *                          field not named keeps its value; see ReturnedValues)
      */
     private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null, array $resolution = [], array $meta = [])
     {
@@ -511,11 +569,20 @@ class UniversalValidator extends AbstractExternalModule
             // "locus"), so the findings of two references on one field keep
             // identities of their own (Scan\Hmac::findingIdentity).
             $several = (isset($rule['_groups']) ? (int) $rule['_groups'] : count($groups)) > 1;
+            // What the rule returns to fields (only when the audit asks): each
+            // group owns the fields of all its branches. A group set aside
+            // keeps its fields; one with no branch that applies empties them.
+            $returns = null;
             foreach (array_keys($groups) as $g) {
                 if (isset($broken[$g])) continue;
+                $owned = empty($meta['returns']) ? [] : ModeRegistry::returnFields($rule, $g);
                 if (isset($active[$g])) $pick = $active[$g][0];
                 elseif (isset($else[$g])) $pick = $else[$g];
-                else continue; // no branch of this group applies to this context
+                else {
+                    // no branch of this group applies to this context
+                    if ($owned) $returns = array_merge($returns === null ? [] : $returns, array_fill_keys($owned, ''));
+                    continue;
+                }
                 $branch = $rule['branches'][$pick];
                 unset($branch['when']);
                 $flat = array_merge([
@@ -533,7 +600,14 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 foreach ($r['unconfigurable'] as $u) $out['unconfigurable'][] = $u;
                 foreach ((isset($r['unevaluated']) ? $r['unevaluated'] : []) as $u) $out['unevaluated'][] = $u + ['branch' => $pick];
+                // The picked branch fills its own fields and the group's other
+                // branches' are emptied. No 'returns' (an input that could not
+                // be resolved) keeps them.
+                if ($owned && isset($r['returns']) && is_array($r['returns'])) {
+                    $returns = array_merge($returns === null ? [] : $returns, array_fill_keys($owned, ''), $r['returns']);
+                }
             }
+            if ($returns !== null) $out['returns'] = $returns;
             return $out;
         }
 
@@ -579,7 +653,9 @@ class UniversalValidator extends AbstractExternalModule
                     return $out;
                 }
             }
-            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) return $out;
+            if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) {
+                return $this->withClearedReturns($out, $rule, $meta);   // inert here: nothing to report
+            }
         }
 
         // A field marked with a Missing Data Code holds the code, not an
@@ -587,19 +663,30 @@ class UniversalValidator extends AbstractExternalModule
         // the value (php/modes.json "missingCodes":"skip") leaves it alone.
         // @UVREQUIRED ("answer") counts the code as an answer.
         $codes = $this->missingDataCodes($project_id);
+        $meta['missingCodes'] = $codes;
+
+        // What the rule returns to fields (php/modes.json "returns"), worked out
+        // before the skip below: a measurement marked with a Missing Data Code
+        // has no z-score, but the bounds of its range do not need one.
+        $ret = null;
+        if (!empty($meta['returns'])) {
+            $rt = ModeRegistry::returns($mode);
+            if ($rt !== null) $ret = $this->{$rt['method']}($rule, $values, $dupes, $onForm, $project_id, $resolution, $meta);
+        }
+
         if ($codes && ModeRegistry::missingCodes($mode) === 'skip') {
             $kept = [];
             foreach ($rule['fields'] as $f) {
                 if (!self::isMissingCode(isset($values[$f]) ? $values[$f] : null, $codes)) $kept[] = $f;
             }
-            if (!$kept) return $out;
+            if (!$kept) return $this->withReturned($out, $ret);
             $rule['fields'] = $kept;
         }
-        $meta['missingCodes'] = $codes;
 
         // The mode's own verdict (php/modes.json "evaluator").
         $evaluator = ModeRegistry::evaluator($mode);
-        return $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta);
+        return $this->withReturned(
+            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret);
     }
 
     /**
@@ -3134,7 +3221,8 @@ class UniversalValidator extends AbstractExternalModule
                         $num = function ($w) { return floor($w) == $w ? (string) (int) $w : rtrim(sprintf('%.1f', $w), '0'); };
                         $why = 'this form already carries the rows of ' . $num($before) . ' growth reference table'
                             . ($before == 1 ? '' : 's') . ', and this one would take it past the most one page may carry ('
-                            . $cap . '), so this check runs when the record is saved.';
+                            . $cap . '), so this check runs when the record is saved'
+                            . (empty($n['rangeReturn']) ? '' : ', and the fields it returns are filled then') . '.';
                     } else {
                         $need[$id] = $merged;
                     }

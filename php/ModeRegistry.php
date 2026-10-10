@@ -362,19 +362,24 @@ final class ModeRegistry
      * Every field a rule writes to: the fields its "targets" key names, on the
      * rule and on each branch. These are the fields the rule owns, so the ones
      * it clears when no branch applies. Empty for a mode that writes nothing.
+     * With $group, only the branches of that branch group (the value of the
+     * mode's "branchGroup" key, '' for none): each group owns its own fields.
      *
      * @return string[]
      */
-    public static function returnFields(array $r)
+    public static function returnFields(array $r, $group = null)
     {
-        $ret = self::returns(self::modeOfType(isset($r['type']) ? $r['type'] : ''));
+        $mode = self::modeOfType(isset($r['type']) ? $r['type'] : '');
+        $ret = self::returns($mode);
         if ($ret === null) return [];
         $nodes = [$r];
         if (isset($r['branches']) && is_array($r['branches'])) {
             foreach ($r['branches'] as $b) if (is_array($b)) $nodes[] = $b;
         }
+        $key = $group === null ? null : self::branchGroup($mode);
         $out = [];
         foreach ($nodes as $n) {
+            if ($group !== null && (string) (($key !== null && isset($n[$key]) && is_scalar($n[$key])) ? $n[$key] : '') !== (string) $group) continue;
             if (!isset($n[$ret['targets']]) || !is_array($n[$ret['targets']])) continue;
             foreach ($n[$ret['targets']] as $f) if (is_string($f) && $f !== '') $out[$f] = true;
         }

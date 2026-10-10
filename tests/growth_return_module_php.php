@@ -1,0 +1,520 @@
+<?php
+/**
+ * growth_return_module_php.php — what an @UVRANGE rule returns, written when a
+ * record is saved (2.7.0).
+ *
+ * growth_php.php pins the values (the "outputs" fixture section) and
+ * growth_return_dom_js.cjs the page; this file pins the save:
+ *   - the values a rule with "return" works out are written once, in one
+ *     save, only where a field differs, and the write itself is not audited,
+ *   - a field already holding the same number (another spelling) is left,
+ *     and a second save of the same record writes nothing,
+ *   - a blank input empties the fields (the rule owns them), a rule problem
+ *     leaves them and is logged once,
+ *   - a rule that reads a returned field is judged after the fill,
+ *   - the project setting "range-return-no-save", a failed write, the scan,
+ *   - branches (the active one fills, the others are emptied), repeating
+ *     forms, a form saved for an input on another form, and a rule with an
+ *     input in another event (the extended path),
+ *   - the grammar and the dictionary hook: what is refused, defaults, and
+ *     two rules writing one field.
+ *
+ * Run:  php tests/growth_return_module_php.php
+ */
+
+namespace ExternalModules {
+    class AbstractExternalModule {
+        public $logCalls = []; public $subSettings = []; public $projectSettings = [];
+        public $systemSettings = []; public $projectIdReturn = null;
+        public function getSubSettings($k, $pid = null) {
+            $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
+            return $e ? $this->subSettings : [];
+        }
+        public function getProjectSetting($k, $pid = null) {
+            $e = ($pid !== null && $pid !== '') ? $pid : $this->projectIdReturn;
+            if (!$e) return null;
+            return isset($this->projectSettings[$k]) ? $this->projectSettings[$k] : null;
+        }
+        public function getSystemSetting($k) { return isset($this->systemSettings[$k]) ? $this->systemSettings[$k] : null; }
+        public function setSystemSetting($k, $v) { $this->systemSettings[$k] = $v; }
+        public function getProjectId() { return $this->projectIdReturn; }
+        public function getUrl($p) { return '/x/' . $p; }
+        public function log($m, $p = []) { $this->logCalls[] = [$m, $p]; return count($this->logCalls); }
+        public function initializeJavascriptModuleObject() { return '<script></script>'; }
+        public function getJavascriptModuleObjectName() { return 'ExternalModules.TEST.UniversalValidator'; }
+        public function getUser() {
+            $u = isset($GLOBALS['__TEST_USER']) ? $GLOBALS['__TEST_USER'] : null;
+            return $u === null ? null : new TestUser($u);
+        }
+    }
+    class TestUser {
+        private $n;
+        public function __construct($n) { $this->n = $n; }
+        public function getUsername() { return $this->n; }
+        public function hasDesignRights() { return true; }
+        public function getRights($pid = null) {
+            $all = \REDCap::$rights;
+            return isset($all[$this->n]) ? $all[$this->n] : null;
+        }
+    }
+}
+
+namespace {
+    class REDCap {
+        public static $data = [];
+        public static $dictionary = [];
+        public static $rights = [];
+        public static $repeats = [];
+        public static $eventMappings = null;
+        /** every saveData call: ['data' => ..., 'overwrite' => ...] */
+        public static $saves = [];
+        /** non-empty: saveData answers with these errors and writes nothing */
+        public static $saveErrors = [];
+        /** called after a save is applied, as the hook REDCap fires for it */
+        public static $onSave = null;
+        public static $getDataCalls = 0;
+        public static function getRepeatingFormsEvents($pid) { return self::$repeats; }
+        public static function getInstrumentEventMappings($pid = null) { return self::$eventMappings; }
+        public static function getData($p) {
+            self::$getDataCalls++;
+            $data = self::$data;
+            if (isset($p['records'])) $data = array_intersect_key($data, array_fill_keys($p['records'], true));
+            if (!empty($p['events'])) {
+                $keep = array_fill_keys($p['events'], true);
+                foreach ($data as &$record) {
+                    foreach ($record as $event => $row) {
+                        if ($event !== 'repeat_instances' && !isset($keep[$event])) unset($record[$event]);
+                    }
+                    if (isset($record['repeat_instances'])) $record['repeat_instances'] = array_intersect_key($record['repeat_instances'], $keep);
+                }
+                unset($record);
+            }
+            if (!empty($p['fields'])) {
+                $keep = array_fill_keys($p['fields'], true);
+                foreach ($data as &$record) {
+                    foreach ($record as $event => &$row) {
+                        if ($event === 'repeat_instances') {
+                            foreach ($row as &$forms) foreach ($forms as &$instances) foreach ($instances as &$values) {
+                                $values = array_intersect_key($values, $keep);
+                            }
+                            unset($forms, $instances, $values);
+                        } else {
+                            $row = array_intersect_key($row, $keep);
+                        }
+                    }
+                    unset($row);
+                }
+                unset($record);
+            }
+            return $data;
+        }
+        public static function saveData($pid, $format = 'array', $data = [], $overwrite = 'normal') {
+            self::$saves[] = ['pid' => $pid, 'format' => $format, 'data' => $data, 'overwrite' => $overwrite];
+            if (self::$saveErrors) return ['errors' => self::$saveErrors, 'warnings' => [], 'ids' => [], 'item_count' => 0];
+            foreach ($data as $rec => $nodes) {
+                foreach ($nodes as $evt => $row) {
+                    if ($evt === 'repeat_instances') {
+                        foreach ($row as $e => $forms) foreach ($forms as $form => $insts) foreach ($insts as $i => $vals) {
+                            foreach ($vals as $f => $v) {
+                                if ($v === '') unset(self::$data[$rec]['repeat_instances'][$e][$form][$i][$f]);
+                                else self::$data[$rec]['repeat_instances'][$e][$form][$i][$f] = $v;
+                            }
+                        }
+                    } else {
+                        foreach ($row as $f => $v) {
+                            if ($v === '') unset(self::$data[$rec][$evt][$f]);
+                            else self::$data[$rec][$evt][$f] = $v;
+                        }
+                    }
+                }
+            }
+            if (self::$onSave) { $cb = self::$onSave; $cb($pid, $data); }
+            return ['errors' => [], 'warnings' => [], 'ids' => array_keys($data), 'item_count' => 1];
+        }
+        public static function getDataDictionary($pid, $f = 'array') {
+            if (!$pid) throw new \RuntimeException('needs pid');
+            return self::$dictionary;
+        }
+        public static function getUserRights($pid = null, $user = null) { return self::$rights; }
+        public static function getGroupNames($u = false, $g = null) { return ''; }
+        public static function getRecordIdField() { return 'record_id'; }
+    }
+    class Project {
+        public static $codes = '';
+        public $project;
+        public function __construct($pid) { $this->project = ['missing_data_codes' => self::$codes]; }
+    }
+
+    require_once __DIR__ . '/../UniversalValidator.php';
+
+    use INSPIRE\UniversalValidator\AnnotationRules;
+    use INSPIRE\UniversalValidator\GrowthReference;
+
+    $n = 0; $fail = 0;
+    function check($label, $cond) {
+        global $n, $fail; $n++;
+        if (!$cond) { $fail++; fwrite(STDERR, "FAIL: $label\n"); }
+    }
+
+    const PID = 149;
+    const EVT = 351;
+    function f($form, $ann = '', $validation = '', $type = 'text', $choices = '') {
+        return ['field_type' => $type, 'form_name' => $form, 'field_annotation' => $ann,
+                'text_validation_type_or_show_slider_number' => $validation,
+                'select_choices_or_calculations' => $choices];
+    }
+    /** @UVRANGE on a weight: who-wfa by sex and dates, soft -2..2 and hard -5..5, plus $extra keys. */
+    function tag($extra = '', $sex = '[sex]', $dob = '[dob]') {
+        return '@UVRANGE={"reference":"who-wfa","sex":"' . $sex . '","male":"1","female":"2","age":{"dob":"' . $dob
+            . '","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]' . ($extra === '' ? '' : ',' . $extra) . '}';
+    }
+    const RET_ALL = '"return":{"z":"[wfa_z]","lower":"[wfa_lo]","upper":"[wfa_hi]","range":"[wfa_rng]"}';
+    function dict(array $over = [], $weightAnn = null) {
+        $d = [
+            'record_id'  => f('enrol_form'),
+            'sex'        => f('enrol_form', '', '', 'radio', '1, Male | 2, Female'),
+            'dob'        => f('enrol_form', '', 'date_dmy'),
+            'visit_date' => f('anthro_form', '', 'date_ymd'),
+            'weight'     => f('anthro_form', $weightAnn === null ? tag(RET_ALL) : $weightAnn, 'number_1dp'),
+            'wfa_z'      => f('anthro_form'),
+            'wfa_lo'     => f('anthro_form', '', 'number_1dp'),
+            'wfa_hi'     => f('anthro_form', '', 'number_1dp'),
+            'wfa_rng'    => f('anthro_form'),
+        ];
+        foreach ($over as $k => $v) { if ($v === null) unset($d[$k]); else $d[$k] = $v; }
+        return $d;
+    }
+    /** A boy born 10 Jan 2025 and weighed on 10 Jan 2026 (365 days). */
+    function row(array $over = []) {
+        return array_merge(['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6'], $over);
+    }
+    function mod($dict, $data, array $settings = []) {
+        $GLOBALS['__TEST_USER'] = 'nurse';
+        GrowthReference::reset();
+        $m = new \INSPIRE\UniversalValidator\UniversalValidator();
+        $m->projectSettings = array_merge(['log-values' => 'raw'], $settings);
+        $m->projectIdReturn = PID;
+        \REDCap::$dictionary = $dict;
+        \REDCap::$data = $data;
+        \REDCap::$rights = ['nurse' => ['forms' => ['enrol_form' => '1', 'anthro_form' => '1']]];
+        \REDCap::$repeats = [];
+        \REDCap::$eventMappings = null;
+        \REDCap::$saves = [];
+        \REDCap::$saveErrors = [];
+        \REDCap::$onSave = null;
+        \REDCap::$getDataCalls = 0;
+        return $m;
+    }
+    function save($m, $form = 'anthro_form', $inst = 1, $rec = '2', $evt = EVT) {
+        $m->redcap_save_record(PID, $rec, $form, $evt, null, null, null, $inst);
+    }
+    function logs($m, $type) {
+        return array_values(array_map(function ($c) { return $c[1]; },
+            array_filter($m->logCalls, function ($c) use ($type) { return $c[0] === $type; })));
+    }
+    function store($rec = '2', $evt = EVT) { return isset(\REDCap::$data[$rec][$evt]) ? \REDCap::$data[$rec][$evt] : []; }
+    function written($i = 0) { return isset(\REDCap::$saves[$i]['data']) ? \REDCap::$saves[$i]['data'] : null; }
+    /** What GrowthReference works out for the boy of row() with these inputs. */
+    function expected($y, $lo = '-2', $hi = '2', $dec = 1, $sexKey = 'male', $days = 365, $comma = false) {
+        $entry = GrowthReference::entry('who-wfa', null);
+        $table = GrowthReference::table($entry);
+        $a = GrowthReference::axisValue($entry, ['comma' => false, 'dobDays' => 0, 'atDays' => $days]);
+        return GrowthReference::outputs($entry, $table, $sexKey, $a['x'], $y, ['lo' => $lo, 'hi' => $hi], $dec, $comma);
+    }
+    function wantFields($o) {
+        return ['wfa_z' => (string) $o['z'], 'wfa_lo' => (string) $o['lower'], 'wfa_hi' => (string) $o['upper'], 'wfa_rng' => (string) $o['range']];
+    }
+    function pick(array $row, array $fields) { return array_intersect_key($row, array_flip($fields)); }
+    const TARGETS = ['wfa_z', 'wfa_lo', 'wfa_hi', 'wfa_rng'];
+
+    // ---- 1) a save fills the fields, once ---------------------------------------------------
+    $e = expected(9.6);
+    $want = wantFields($e);
+    check('the example outputs exist (z, bounds, range)', $want['wfa_z'] !== '' && $want['wfa_lo'] !== '' && $want['wfa_hi'] !== ''
+        && preg_match('/^\d+\.\d to \d+\.\d kg$/', $want['wfa_rng']) === 1);
+    check('the range is the bounds in words', $want['wfa_rng'] === $want['wfa_lo'] . ' to ' . $want['wfa_hi'] . ' kg');
+    $m = mod(dict(), ['2' => [EVT => row()]]);
+    $hooked = 0;
+    \REDCap::$onSave = function () use ($m, &$hooked) { $hooked++; save($m); };   // REDCap fires the hook for the write too
+    save($m);
+    check('one save writes the four fields', count(\REDCap::$saves) === 1);
+    check('... in the "overwrite" mode, so an empty value clears', \REDCap::$saves[0]['overwrite'] === 'overwrite' && \REDCap::$saves[0]['format'] === 'array');
+    check('... to the event row of the record (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => $want]]);
+    check('the record now holds them', pick(store(), TARGETS) === $want);
+    check('the hook the write fires is not audited again (' . $hooked . ' nested call)',
+        $hooked === 1 && count(\REDCap::$saves) === 1 && !logs($m, 'uvalidate-audit-error'));
+    check('nothing is logged as invalid or unconfigurable', !logs($m, 'invalid-id-saved') && !logs($m, 'uvalidate-unconfigurable'));
+    // a second save has nothing to write
+    \REDCap::$saves = [];
+    save($m);
+    check('the same record saved again writes nothing', !\REDCap::$saves);
+
+    // ---- 2) a number already there, in another spelling, stays --------------------------------
+    $same = $want;
+    $same['wfa_lo'] = $want['wfa_lo'] . '0';        // 7.80 for 7.8
+    $m = mod(dict(), ['2' => [EVT => row($same)]]);
+    save($m);
+    check('7.80 is not rewritten as 7.8 (nothing else differs: no write)', !\REDCap::$saves && store()['wfa_lo'] === $same['wfa_lo']);
+    $stale = $want;
+    $stale['wfa_hi'] = '99.9';
+    $m = mod(dict(), ['2' => [EVT => row($stale)]]);
+    save($m);
+    check('a field that differs is written alone (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_hi' => $want['wfa_hi']]]]);
+
+    // ---- 3) nothing to report empties the fields; a problem leaves them ------------------------
+    $m = mod(dict(), ['2' => [EVT => row(array_merge($want, ['sex' => '']))]]);
+    save($m);
+    check('no sex: every filled field is emptied, with "" (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_z' => '', 'wfa_lo' => '', 'wfa_hi' => '', 'wfa_rng' => '']]]);
+    check('... and the record holds none', pick(store(), TARGETS) === []);
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => ''])]]);
+    save($m);
+    $noZ = wantFields(expected(null));
+    check('no measurement: the bounds and the range, no z-score (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_lo' => $noZ['wfa_lo'], 'wfa_hi' => $noZ['wfa_hi'], 'wfa_rng' => $noZ['wfa_rng']]]]
+        && $noZ['wfa_z'] === '' && $noZ['wfa_lo'] !== '');
+    $m = mod(dict(), ['2' => [EVT => row(array_merge($want, ['dob' => 'not-a-date']))]]);
+    save($m);
+    // a saved date the rule cannot read says nothing (GrowthReference::inputsFor), as on the page
+    check('a date this rule cannot read: the fields are emptied (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => array_fill_keys(TARGETS, '')]]);
+    check('... and it is not a rule problem', !logs($m, 'uvalidate-unconfigurable'));
+    $m = mod(dict(), ['2' => [EVT => row(array_merge($want, ['weight' => '']))]]);
+    $m2 = null;
+    save($m);
+    $un = logs($m, 'uvalidate-unconfigurable');
+    check('a blank measurement with a good record: no problem logged', !$un);
+
+    // a Missing Data Code in the measurement is a blank one: no z-score, the bounds all the same
+    \Project::$codes = "UNK, Unknown
+NASK, Not asked";
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => 'UNK'])]]);
+    save($m);
+    check('a Missing Data Code in the measurement: the bounds are written, no z-score (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_lo' => $noZ['wfa_lo'], 'wfa_hi' => $noZ['wfa_hi'], 'wfa_rng' => $noZ['wfa_rng']]]]);
+    \Project::$codes = '';
+
+    // a measurement that is a violation is logged once: the write is not audited a second time
+    $m = mod(dict(), ['2' => [EVT => row(['weight' => '3.0'])]]);
+    \REDCap::$onSave = function () use ($m) { save($m); };
+    save($m);
+    $range = array_values(array_filter(logs($m, 'invalid-id-saved'), function ($e) { return $e['type'] === 'range'; }));
+    check('a hard-low weight is logged once although the write fires the hook again (' . count($range) . ')',
+        count($range) === 1 && $range[0]['reason'] === 'hard-low' && count(\REDCap::$saves) === 1);
+    check('... and its z-score is still returned, past the limits',
+        isset(written()['2'][EVT]['wfa_z']) && (float) written()['2'][EVT]['wfa_z'] < -5);
+
+    // "returnLimits":"hard" makes the bounds from the hard limits
+    $m = mod(dict([], tag('"returnLimits":"hard","decimals":1,' . RET_ALL)), ['2' => [EVT => row()]]);
+    save($m);
+    check('returnLimits hard: the bounds come from -5 and 5 (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => wantFields(expected(9.6, '-5', '5'))]]
+        && wantFields(expected(9.6, '-5', '5'))['wfa_lo'] !== $want['wfa_lo']);
+
+    // ---- 4) a rule that reads a returned field is judged after the fill -----------------------------
+    $req = dict(['wfa_z' => f('anthro_form', '@UVREQUIRED')]);
+    $m = mod($req, ['2' => [EVT => row()]]);
+    save($m);
+    check('@UVREQUIRED on the returned z-score: filled first, so not reported (got ' . json_encode(logs($m, 'invalid-id-saved')) . ')',
+        count(\REDCap::$saves) === 1 && !logs($m, 'invalid-id-saved'));
+    $m = mod($req, ['2' => [EVT => row()]], ['range-return-no-save' => true]);
+    save($m);
+    check('with the write off, the blank z-score is reported', !\REDCap::$saves && count(logs($m, 'invalid-id-saved')) === 1);
+
+    // ---- 5) the project setting, a failed write, the scan -----------------------------------------------
+    $m = mod(dict(), ['2' => [EVT => row()]], ['range-return-no-save' => true]);
+    save($m);
+    check('"range-return-no-save": nothing is written, nothing is logged', !\REDCap::$saves && pick(store(), TARGETS) === []
+        && !logs($m, 'uvalidate-audit-error'));
+    $m = mod(dict(), ['2' => [EVT => row()]]);
+    \REDCap::$saveErrors = ['2' => 'the record is locked'];
+    save($m);
+    $err = logs($m, 'uvalidate-audit-error');
+    check('a write REDCap refuses is logged as an audit error, the save is not disturbed', count($err) === 1
+        && $err[0]['stage'] === 'return values');
+    // the scan asks ruleFindings without "returns": it reads
+    $m = mod(dict(), ['2' => [EVT => row()]]);
+    $rf = new \ReflectionMethod($m, 'ruleFindings');
+    $rf->setAccessible(true);
+    $rules = (new \ReflectionMethod($m, 'getRules'));
+    $rules->setAccessible(true);
+    $all = $rules->invoke($m, PID);
+    $rule = null;
+    foreach ($all as $r) if (in_array('weight', $r['fields'], true)) $rule = $r;
+    check('the rule carries its return keys', $rule && isset($rule['rangeReturn']) && $rule['rangeReturn']['z'] === 'wfa_z'
+        && $rule['rangeDecimals'] === 1 && $rule['rangeReturnComma'] === ['z' => false, 'lower' => false, 'upper' => false, 'range' => false]);
+    $vals = ['sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6'];
+    $res = [];
+    $r1 = $rf->invoke($m, $rule, 0, $vals, [], null, PID, '2', EVT, null, $res, []);
+    check('the scan path (no "returns" in meta) works nothing out', !isset($r1['returns']));
+    $r2 = $rf->invoke($m, $rule, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true]);
+    check('the audit path does', isset($r2['returns']) && $r2['returns'] === $want);
+
+    // ---- 6) branches own the fields of every branch ---------------------------------------------------------
+    $both = tag('"when":"[sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' ' . tag('"when":"[sex]=\'2\'","return":{"range":"[wfa_rng]"}');
+    $m = mod(dict([], $both), ['2' => [EVT => row(['wfa_rng' => '1.0 to 2.0 kg'])]]);
+    save($m);
+    check('a boy: the first branch fills the z-score and empties the other branch\'s range (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_z' => $want['wfa_z'], 'wfa_rng' => '']]]);
+    $m = mod(dict([], $both), ['2' => [EVT => row(['sex' => '2', 'wfa_z' => '9.99'])]]);
+    save($m);
+    $girl = expected(9.6, '-2', '2', 1, 'female');
+    check('a girl: the second branch fills the range and empties the z-score (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['wfa_z' => '', 'wfa_rng' => (string) $girl['range']]]] && (string) $girl['range'] !== '');
+    $m = mod(dict([], $both), ['2' => [EVT => row(['sex' => '', 'wfa_z' => '1.50', 'wfa_rng' => '1.0 to 2.0 kg'])]]);
+    save($m);
+    check('neither condition is true: both fields are emptied', written() === ['2' => [EVT => ['wfa_z' => '', 'wfa_rng' => '']]]);
+    $gated = tag('"when":"[sex]=\'1\'",' . RET_ALL);
+    $m = mod(dict([], $gated), ['2' => [EVT => row(array_merge($want, ['sex' => '2']))]]);
+    save($m);
+    check('a rule whose "when" is false empties what it owns', written() === ['2' => [EVT => ['wfa_z' => '', 'wfa_lo' => '', 'wfa_hi' => '', 'wfa_rng' => '']]]);
+
+    // ---- 7) a repeating form: the instance that was saved --------------------------------------------------------
+    \REDCap::$repeats = [];
+    $rep = ['2' => [EVT => ['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10'],
+        'repeat_instances' => [EVT => ['anthro_form' => [
+            1 => ['visit_date' => '2026-01-10', 'weight' => '9.6', 'anthro_form_complete' => '2'],
+            2 => ['visit_date' => '2026-01-10', 'weight' => '11.0', 'anthro_form_complete' => '2'],
+        ]]]]];
+    $m = mod(dict(), $rep);
+    \REDCap::$repeats = [EVT => ['anthro_form' => '']];
+    save($m, 'anthro_form', 2);
+    $w2 = wantFields(expected(11.0));
+    check('instance 2 is written to its own row (got ' . json_encode(written()) . ')',
+        written() === ['2' => ['repeat_instances' => [EVT => ['anthro_form' => [2 => $w2]]]]]);
+    check('... and instance 1 is untouched', !isset(\REDCap::$data['2']['repeat_instances'][EVT]['anthro_form'][1]['wfa_z']));
+
+    // ---- 8) the form of an input is saved: the dependant is recomputed where it lives ----------------------------
+    $m = mod(dict(), ['2' => [EVT => row(array_merge($want, ['sex' => '2']))]]);
+    save($m, 'enrol_form');
+    $gw = wantFields(expected(9.6, '-2', '2', 1, 'female'));
+    check('sex saved on enrol_form: the fields on anthro_form are recomputed for a girl (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => array_diff_assoc($gw, $want)]] && array_diff_assoc($gw, $want) !== []);
+    $m = mod(dict(), ['2' => [EVT => row($want)]]);
+    save($m, 'enrol_form');
+    check('a form no rule depends on and an unchanged record write nothing', !\REDCap::$saves);
+
+    // ---- 9) the dictionary hook and the grammar -------------------------------------------------------------------------
+    $opt = ['decimalComma' => false];
+    function refused($dict, $needle, $label) {
+        $m = mod($dict, ['2' => [EVT => row()]]);
+        ob_start();
+        $m->redcap_data_entry_form_top(PID, '2', 'anthro_form', EVT, null, 1);
+        $html = ob_get_clean();
+        preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
+        $cfg = json_decode(isset($mm[1]) ? $mm[1] : 'null', true);
+        $err = '';
+        foreach ((isset($cfg['rules']) ? $cfg['rules'] : []) as $r) {
+            if (in_array('weight', isset($r['fields']) ? $r['fields'] : [], true) && !empty($r['configError'])) $err = $r['configError'];
+        }
+        check($label . ' (got ' . json_encode($err) . ')', $err !== '' && strpos($err, $needle) !== false);
+    }
+    refused(dict(['wfa_z' => null]), 'is not a field in this project', 'a target that is not a field is refused');
+    refused(dict(['wfa_z' => f('anthro_form', '', '', 'notes')]), 'goes into a Text field', 'a target that is not a Text field is refused');
+    refused(dict(['wfa_z' => f('enrol_form')]), 'must be on that form', 'a target on another form is refused');
+    refused(dict(['wfa_rng' => f('anthro_form', '', 'integer')]), 'would refuse a text such as', 'a range target with validation is refused');
+    refused(dict(['wfa_z' => f('anthro_form', '', 'integer')]), 'cannot hold a number written with decimals', 'an integer z-score target is refused');
+    refused(dict(['wfa_z' => f('anthro_form', '', 'number_1dp')]), 'takes 1 decimal place and this value is written with 2', 'a z-score target with one decimal is refused');
+    refused(dict(['wfa_lo' => f('anthro_form', '', 'number_1dp')], tag('"decimals":2,' . RET_ALL)), 'takes 1 decimal place and this value is written with 2', 'bounds with more decimals than the field takes are refused');
+    refused(dict([], tag('"return":{"z":"[weight]"}')), 'is the measured field itself', 'returning to the measured field is refused');
+    refused(dict([], tag('"return":{"z":"[sex]"}')), 'which this rule reads', 'returning to an input is refused');
+    refused(dict([], tag('"return":{"z":"[record_id]"}')), 'is the record ID', 'returning to the record id is refused');
+    $clash = dict(['other' => f('anthro_form', tag('"return":{"z":"[wfa_z]"}'), 'number_1dp')]);
+    $m = mod($clash, ['2' => [EVT => row()]]);
+    $all = $rules->invoke($m, PID);
+    $msgs = [];
+    foreach ($all as $r) if (!empty($r['configError'])) $msgs[] = $r['configError'];
+    check('two rules returning to one field are both refused, naming each other (' . count($msgs) . ')',
+        count($msgs) === 2 && strpos($msgs[0], 'shares "[wfa_z]"') !== false && strpos($msgs[0], 'the rule on "') !== false);
+    $e = AnnotationRules::parseAllTags(tag('"return":{"z":"[wfa_z]"},"soft":[-1,1]'));
+    $e2 = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"return":{"z":"[a]"}}');
+    check('"return" without a reference is refused', isset($e2[0]['error']) && strpos($e2[0]['error'], 'only apply with a "reference"') !== false);
+    $e3 = AnnotationRules::parseAllTags(tag('"return":{"lower":"[wfa_lo]"}', '[sex]', '[dob]'));
+    check('"return" of a bound needs the limit it comes from (the rule has soft)', !isset($e3[0]['error']));
+    $e4 = AnnotationRules::parseAllTags('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"hard":[-5,5],"return":{"lower":"[wfa_lo]"}}');
+    check('... and refuses one the rule lacks (soft limits are the default)', isset($e4[0]['error']) && strpos($e4[0]['error'], 'low "soft" limit') !== false);
+    $e5 = AnnotationRules::parseAllTags('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"hard":[-5,5],"return":{"lower":"[wfa_lo]"},"returnLimits":"hard"}');
+    check('... unless "returnLimits":"hard" says where they come from', !isset($e5[0]['error']) && $e5[0]['rangeReturnLimits'] === 'hard');
+    $e6 = AnnotationRules::parseAllTags('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"return":{"z":"[wfa_z]"}}');
+    check('a rule returning only the z-score needs no limits', !isset($e6[0]['error']) && !isset($e6[0]['rangeSoftLo']));
+    foreach ([['"return":{"z":"[a]","range":"[a]"}', 'to the same field'], ['"return":{"zz":"[a]"}', 'unknown "return" value'],
+              ['"return":["z"]', 'must say which field gets which value'], ['"return":{"z":"a"}', 'must be one field of this form'],
+              ['"returnLimits":"soft"', 'only applies with "return"'], ['"decimals":2', 'only applies with "return"'],
+              ['"return":{"z":"[a]"},"decimals":9', '"decimals" must be a whole number from 0 to 6'],
+              ['"return":{"z":"[a]"},"returnLimits":"medium"', '"returnLimits" must be "soft" or "hard"']] as $pair) {
+        $p = AnnotationRules::parseAllTags(tag($pair[0]));
+        check('refused ' . $pair[0] . ' (got ' . json_encode(isset($p[0]['error']) ? $p[0]['error'] : null) . ')',
+            isset($p[0]['error']) && strpos($p[0]['error'], $pair[1]) !== false);
+    }
+
+    // ---- 10) what the page is given ---------------------------------------------------------------------------------------------
+    function page($m, $form = 'anthro_form') {
+        ob_start();
+        $m->redcap_data_entry_form_top(PID, '2', $form, EVT, null, 1);
+        $html = ob_get_clean();
+        preg_match('#application/json" id="inspire-validator-config">(.*?)</script>#s', $html, $mm);
+        return json_decode(isset($mm[1]) ? $mm[1] : 'null', true);
+    }
+    $m = mod(dict(['wfa_z' => f('anthro_form', '', 'number_comma_decimal'), 'wfa_hi' => f('anthro_form', '', 'number_1dp_comma_decimal')]),
+        ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    $r = null;
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('the page carries the targets (got ' . json_encode($r['rangeReturn'] ?? null) . ')',
+        $r && $r['rangeReturn'] === ['z' => 'wfa_z', 'lower' => 'wfa_lo', 'upper' => 'wfa_hi', 'range' => 'wfa_rng']);
+    check('... the decimals of the measured field (number_1dp: 1)', $r['rangeDecimals'] === 1);
+    check('... and the decimal mark each field takes', $r['rangeReturnComma'] === ['z' => true, 'lower' => false, 'upper' => true, 'range' => false]);
+    $m = mod(dict(['weight' => f('anthro_form', tag(RET_ALL), 'integer')]), ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('a measured integer field returns bounds with no decimals', $r['rangeDecimals'] === 0);
+    $m = mod(dict(['weight' => f('anthro_form', tag('"decimals":3,' . RET_ALL), 'number_1dp'), 'wfa_lo' => f('anthro_form'), 'wfa_hi' => f('anthro_form')]),
+        ['2' => [EVT => row()]]);
+    $cfg = page($m);
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('"decimals" is kept as written', $r['rangeDecimals'] === 3);
+
+    // ---- 11) the table cap defers the rule; the save still fills it ---------------------------------------------------------------
+    $many = [];
+    foreach (['who-lhfa', 'who-bfa', 'who-hcfa', 'who-acfa'] as $i => $ref) {
+        $many['m' . $i] = f('anthro_form', '@UVRANGE={"reference":"' . $ref . '","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"hard":[-5,5]}', 'number_1dp');
+    }
+    // the rules are taken in dictionary order: the measured weight goes last, past the cap
+    $capDict = dict($many);
+    $w = $capDict['weight'];
+    unset($capDict['weight']);
+    $capDict['weight'] = $w;
+    // a folder of extra references whose index sets the cap to one table's rows
+    $capDir = sys_get_temp_dir() . '/uv_return_cap_' . getmypid();
+    if (!is_dir($capDir)) mkdir($capDir);
+    file_put_contents($capDir . '/index.json', json_encode(['format' => 'uv-references-1', 'pageTables' => 1, 'references' => new \stdClass()]));
+    $m = mod($capDict, ['2' => [EVT => row()]]);
+    $m->systemSettings = ['reference-data-dir' => $capDir];
+    $cfg = page($m);
+    $r = null;
+    foreach ($cfg['rules'] as $x) if (in_array('weight', $x['fields'], true)) $r = $x;
+    check('past the cap the rule is deferred to the save, and says it fills its fields then (got '
+        . json_encode($r['deferredWhy'] ?? null) . ')',
+        $r && !empty($r['deferredOnSave']) && strpos(implode(' ', $r['deferredWhy']), 'and the fields it returns are filled then') !== false);
+    save($m);
+    check('... and the save fills them', count(\REDCap::$saves) >= 1 && pick(store(), TARGETS) === $want);
+    unlink($capDir . '/index.json');
+    rmdir($capDir);
+
+    // ---- 12) an input in another event (the extended path) ---------------------------------------------------------------------------
+    $evdict = dict(['weight' => f('anthro_form', tag(RET_ALL, '[enrol_arm_1][sex]', '[enrol_arm_1][dob]'), 'number_1dp')]);
+    $m = mod($evdict, ['2' => [1 => ['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10'],
+        2 => ['visit_date' => '2026-01-10', 'weight' => '9.6']]], ['enable-event-instance-refs' => true]);
+    \REDCap::$eventMappings = [['event_id' => 1, 'form' => 'enrol_form'], ['event_id' => 2, 'form' => 'anthro_form']];
+    $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => true,
+        'eventInfo' => [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1], 2 => ['unique_event_name' => 'visit_arm_1', 'arm_num' => 1]],
+        'eventsForms' => [1 => ['enrol_form'], 2 => ['anthro_form']]];
+    save($m, 'anthro_form', 1, '2', 2);
+    check('an input read from another event: the fields are filled in the event of the measurement (got ' . json_encode(written()) . ')',
+        written() === ['2' => [2 => $want]] && !logs($m, 'uvalidate-unconfigurable'));
+
+    echo "growth_return_module_php: $n checks, $fail failure(s)\n";
+    exit($fail ? 1 : 0);
+}
