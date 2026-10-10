@@ -600,17 +600,22 @@ final class ArrayScanStore implements ScanStore
      * out of attempts. See ScanStore::noteAttempts for why it is not part of
      * commitBatch: the counter used to move only when the commit succeeded, so
      * the retry cap could not be reached by the path that needed it.
+     *
+     * And hand back what is left, in the same call (review R2S-4) - see
+     * SqlScanStore::noteAttempts(). A counted row that kept its token until a
+     * separate release looked abandoned to the straggler sweep if that release
+     * never came, and was charged for the same failure twice.
      */
     public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted)
     {
+        $none = ['counted' => 0, 'retired' => 0, 'released' => 0];
         $r = isset($this->runs[$runId]) ? $this->runs[$runId] : null;
-        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) {
-            return ['counted' => 0, 'retired' => 0];
-        }
-        if (!$claims || !isset($this->records[$runId])) return ['counted' => 0, 'retired' => 0];
+        if ($r === null || (int) $r['lease_epoch'] !== (int) $epoch) return $none;
+        if (!$claims || !isset($this->records[$runId])) return $none;
         $cap = max(1, (int) $maxAttempts);
         $counted = 0;
         $retired = 0;
+        $released = [];
         foreach ($claims as $ordinal => $token) {
             if ((int) $token < 1) continue;                 // never the unclaimed default
             $o = (int) $ordinal;
@@ -625,13 +630,25 @@ final class ArrayScanStore implements ScanStore
             $counted++;
             if ($now >= $cap) {
                 $this->records[$runId][$o]['state'] = (int) $exhausted;
-                $this->records[$runId][$o]['claim_owner'] = null;
-                $this->records[$runId][$o]['claim_seq'] = 0;
-                $this->records[$runId][$o]['claimed_at'] = null;
                 $retired++;
+            } else {
+                // Handed back: a straggler returns to PENDING, a scanning row
+                // (already PENDING) loses its stamp.
+                $this->records[$runId][$o]['state'] = self::REC_PENDING;
+                $released[] = $o;
+            }
+            $this->records[$runId][$o]['claim_owner'] = null;
+            $this->records[$runId][$o]['claim_seq'] = 0;
+            $this->records[$runId][$o]['claimed_at'] = null;
+        }
+        // Over rows actually released, as releaseClaims() moves it.
+        if ($released) {
+            $low = min($released) - 1;
+            if ($low < (int) $this->runs[$runId]['cursor_ordinal']) {
+                $this->runs[$runId]['cursor_ordinal'] = $low;
             }
         }
-        return ['counted' => $counted, 'retired' => $retired];
+        return ['counted' => $counted, 'retired' => $retired, 'released' => count($released)];
     }
 
     /** A predicate over states, exactly as the SQL store computes it. */

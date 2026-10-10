@@ -1136,28 +1136,40 @@ final class SqlScanStore implements ScanStore
      * for. A takeover does not bump it, which is exactly why the claim token is
      * the other half.
      *
-     * TWO STATEMENTS, NOT ONE PER ROW. The increment saturates in SQL, then the
+     * SET STATEMENTS, NOT ONE PER ROW. The increment saturates in SQL, then the
      * rows that have reached the limit are retired in a second pass over the
      * same predicate - which is also what makes `retired` a count of rows that
-     * really changed rather than an inference from the first statement.
+     * really changed rather than an inference from the first statement - and
+     * a third pass over that predicate hands back what is left.
      *
-     * @return array{counted:int, retired:int}
+     * THE HAND-BACK IS IN THIS TRANSACTION (review R2S-4). It used to be the
+     * caller's next call, releaseClaims(), in a transaction of its own. If that
+     * one failed, or a takeover landed between the two, the row kept this
+     * worker's token after its attempt had been counted - and the straggler
+     * sweep, finding a stale claim on a free row, charged the same failure a
+     * second time. Counting and releasing together leaves no moment in which a
+     * counted row still looks abandoned. The cursor moves back over the rows
+     * released, as releaseClaims() moves it, for the same reason.
+     *
+     * @return array{counted:int, retired:int, released:int}
      */
     public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted)
     {
-        if (!$claims) return ['counted' => 0, 'retired' => 0];
+        if (!$claims) return ['counted' => 0, 'retired' => 0, 'released' => 0];
         $cap = max(1, (int) $maxAttempts);
         $this->db->begin();
         try {
-            $r = $this->db->select('SELECT lease_epoch FROM ' . Schema::table('scan_run')
-                . ' WHERE run_id = ? FOR UPDATE', [$runId]);
+            $r = $this->db->select('SELECT lease_epoch, cursor_ordinal FROM '
+                . Schema::table('scan_run') . ' WHERE run_id = ? FOR UPDATE', [$runId]);
             if (!isset($r[0]) || (int) $r[0][0] !== (int) $epoch) {
                 $this->db->rollback();
-                return ['counted' => 0, 'retired' => 0];
+                return ['counted' => 0, 'retired' => 0, 'released' => 0];
             }
             $t = Schema::table('scan_record');
             $counted = 0;
             $retired = 0;
+            $released = 0;
+            $low = null;
             foreach (self::byToken($claims) as $token => $ords) {
                 $marks = implode(',', array_fill(0, count($ords), '?'));
                 $where = ' WHERE run_id = ? AND state < ? AND claim_owner = ? AND claim_seq = ?'
@@ -1180,9 +1192,30 @@ final class SqlScanStore implements ScanStore
                     . $where . ' AND attempts >= ?',
                     array_merge([(int) $exhausted, self::now()], $args, [$cap]));
                 $retired += $this->db->affected();
+                // WHAT IS LEFT GOES BACK, now. A retired row no longer carries
+                // this worker's token, so the same predicate matches exactly
+                // the rows still held: a straggler (CLAIMED) returns to
+                // PENDING, a scanning row (PENDING, stamped) loses its stamp.
+                // The lowest of them is asked first, for the cursor.
+                $m = $this->db->select('SELECT MIN(ordinal) FROM ' . $t . $where, $args);
+                if (isset($m[0][0]) && $m[0][0] !== null) {
+                    $low = $low === null ? (int) $m[0][0] : min($low, (int) $m[0][0]);
+                }
+                $this->db->exec('UPDATE ' . $t . '
+                    SET state = ?, claim_owner = NULL, claim_seq = 0, updated_at = ?' . $where,
+                    array_merge([self::REC_PENDING, self::now()], $args));
+                $released += $this->db->affected();
+            }
+            // Over rows actually released, as releaseClaims() does: scanning
+            // hands out rows above the cursor, and a row handed back below it
+            // would otherwise wait for the straggler sweep.
+            if ($low !== null && $low - 1 < (int) $r[0][1]) {
+                $this->db->execNoCount('UPDATE ' . Schema::table('scan_run')
+                    . ' SET cursor_ordinal = ?, updated_at = ? WHERE run_id = ? AND lease_epoch = ?',
+                    [$low - 1, self::now(), $runId, $epoch]);
             }
             $this->db->commit();
-            return ['counted' => $counted, 'retired' => $retired];
+            return ['counted' => $counted, 'retired' => $retired, 'released' => $released];
         } catch (\Throwable $e) {
             throw $this->rolledBack($e);
         }

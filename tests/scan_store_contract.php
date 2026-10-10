@@ -851,6 +851,59 @@ function storeContract(callable $newStore, $label, callable $age)
         is_array($t14b) && count($t14b) === 1 && $t14b[0]['id_bin'] === 'B' . ($dead14 + 1)
         && $ret14 === 2);
 
+    // -- THE ATTEMPT AND THE HAND-BACK ARE ONE WRITE (review R2S-4) ----------
+    //
+    // noteAttempts() counted, and the caller's releaseClaims() handed back, in
+    // two transactions. When the second failed - or a takeover landed between
+    // them - the row kept its token on an attempt already counted, aged into
+    // "abandoned", and the straggler sweep charged the same failure again.
+    // Nothing here calls releaseClaims(): the call that could fail is gone.
+    $s15 = $newStore();
+    $rid15 = (int) $s15->startRun(743, [])['run']['run_id'];
+    $s15->writeManifest($rid15, [$mk5('G1'), $mk5('G2')]);
+    $ep15 = (int) $s15->run(743, $rid15)['lease_epoch'];
+    $c15 = $s15->claim($rid15, 'w1', $ep15, 1);
+    $n15 = $s15->noteAttempts($rid15, $ep15, 'w1', [(int) $c15[0]['ordinal'] => (int) $c15[0]['claim']],
+                              3, ScanStore::REC_UNSTORED);
+    $C('give-back: an attempt counted short of the limit is handed back by the same call',
+        $n15['counted'] === 1 && $n15['retired'] === 0
+        && isset($n15['released']) && $n15['released'] === 1);
+    $age($s15, $rid15, 1000);
+    $t15 = $s15->claimPending($rid15, 'w2', $ep15, 10, 900, 3);
+    $C('give-back: so it is never taken for a dead worker\'s row and charged a second time',
+        is_array($t15) && count($t15) === 2 && $t15[0]['id_bin'] === 'G1'
+        && $t15[0]['abandoned'] === false && (int) $t15[0]['attempts'] === 1);
+
+    // A straggler (CLAIMED) goes back to PENDING, so another worker can take
+    // it at once rather than when its claim has aged.
+    $s16 = $newStore();
+    $rid16 = (int) $s16->startRun(744, [])['run']['run_id'];
+    $s16->writeManifest($rid16, [$mk5('H1'), $mk5('H2')]);
+    $ep16 = (int) $s16->run(744, $rid16)['lease_epoch'];
+    $s16->advancePhase($rid16, $ep16, ScanPhase::CATCH_UP);
+    $c16 = $s16->claimPending($rid16, 'w1', $ep16, 1, 900, 3);
+    $s16->noteAttempts($rid16, $ep16, 'w1', [(int) $c16[0]['ordinal'] => (int) $c16[0]['claim']],
+                       3, ScanStore::REC_UNREADABLE);
+    $t16 = $s16->claimPending($rid16, 'w2', $ep16, 10, 900, 3);
+    $C('give-back: a straggler handed back is claimable at once, its attempt remembered',
+        is_array($t16) && count($t16) === 2 && $t16[0]['id_bin'] === 'H1'
+        && (int) $t16[0]['attempts'] === 1);
+
+    // And in scanning the cursor moves back over it, as releaseClaims() moves
+    // it, so the next claim() offers it again rather than leaving it to the
+    // straggler sweep.
+    $s17 = $newStore();
+    $rid17 = (int) $s17->startRun(745, [])['run']['run_id'];
+    $s17->writeManifest($rid17, [$mk5('J1'), $mk5('J2')]);
+    $ep17 = (int) $s17->run(745, $rid17)['lease_epoch'];
+    $c17 = $s17->claim($rid17, 'w1', $ep17, 1);
+    $s17->noteAttempts($rid17, $ep17, 'w1', [(int) $c17[0]['ordinal'] => (int) $c17[0]['claim']],
+                       3, ScanStore::REC_UNREADABLE);
+    $t17 = $s17->claim($rid17, 'w2', $ep17, 1);
+    $C('give-back: in scanning the next claim offers the handed-back record again',
+        is_array($t17) && count($t17) === 1 && $t17[0]['id_bin'] === 'J1'
+        && (int) $t17[0]['attempts'] === 1);
+
     // A RELEASED row is not abandoned, and a caller that gives no attempt
     // limit keeps the old behaviour exactly.
     $s10 = $newStore();

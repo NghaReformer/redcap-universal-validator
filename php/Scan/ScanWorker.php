@@ -889,17 +889,18 @@ final class ScanWorker
         // WHAT THE CUT LEFT, settled after the commit and outside it. A record
         // set aside WAS attempted: its attempt is counted in a transaction of
         // its own (noteAttempts, the same door a failed read or a refused
-        // commit uses), so a record whose findings never fit runs out of
-        // attempts and ends as one that could not be examined - reported and
-        // blocking - instead of being handed back for ever. Records never
-        // reached are handed back as they were.
+        // commit uses, which hands it back in that same write), so a record
+        // whose findings never fit runs out of attempts and ends as one that
+        // could not be examined - reported and blocking - instead of being
+        // handed back for ever. Records never reached are handed back as they
+        // were, with no attempt.
         if ($setAside) {
             $note = $this->store->noteAttempts($runId, $epoch, $this->owner(), $setAside,
                                                $maxAttempts, ScanStore::REC_UNREADABLE);
             if (is_array($note) && isset($note['retired'])) $blocked += (int) $note['retired'];
         }
-        if ($setAside || $untouched) {
-            $this->store->releaseClaims($runId, $epoch, $this->owner(), $setAside + $untouched);
+        if ($untouched) {
+            $this->store->releaseClaims($runId, $epoch, $this->owner(), $untouched);
         }
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
@@ -940,40 +941,40 @@ final class ScanWorker
         return $gone;
     }
 
-    /**
-     * Nothing was committed. Count the attempt, then hand the records back.
-     *
-     * THE ORDER IS THE FIX. Counting first means the count is written by a
-     * transaction the failed one cannot roll back - which is the whole of B8:
-     * `attempts` was incremented only inside commitBatch, so it moved only when
-     * the commit had already succeeded. The retry cap was therefore unreachable
-     * by the one path that needed it, and any persistent write error retried
-     * without bound while holding the project's only scan slot.
-     *
-     * Releasing second means a record that has just run out of attempts is
-     * already terminal by the time the release looks at it, so it is not handed
-     * back into a loop it can no longer leave.
-     *
-     * BOTH PATHS COME HERE - a whole-batch read failure and a refused commit -
-     * because they are the same shape: work was attempted, nothing was stored,
-     * and the rows must not be left looking untouched.
-     */
     /** How many attempts a record gets before it is retired as one that could not be examined. */
     private function maxAttempts()
     {
         return isset($this->deps['attempts']) ? max(1, (int) $this->deps['attempts']) : 3;
     }
 
+    /**
+     * Nothing was committed. Count the attempt and hand the records back.
+     *
+     * COUNTING IS THE FIX. It is written by a transaction the failed one cannot
+     * roll back - which is the whole of B8: `attempts` was incremented only
+     * inside commitBatch, so it moved only when the commit had already
+     * succeeded. The retry cap was therefore unreachable by the one path that
+     * needed it, and any persistent write error retried without bound while
+     * holding the project's only scan slot.
+     *
+     * AND THE HAND-BACK IS THE SAME WRITE (review R2S-4). A record that has
+     * just run out of attempts is retired, and whatever is left is released so
+     * another worker can take it now rather than in fifteen minutes' time -
+     * both inside noteAttempts(). They were two transactions, and a release
+     * that failed, or a takeover between them, left a counted row still
+     * stamped: the straggler sweep later found it stale and charged the same
+     * failure a second time.
+     *
+     * BOTH PATHS COME HERE - a whole-batch read failure and a refused commit -
+     * because they are the same shape: work was attempted, nothing was stored,
+     * and the rows must not be left looking untouched.
+     */
     private function giveBack($runId, $epoch, array $claims, $maxAttempts, $exhausted, $stop, $why)
     {
         $retired = 0;
         $note = $this->store->noteAttempts($runId, $epoch, $this->owner(), $claims,
                                            $maxAttempts, $exhausted);
         if (is_array($note) && isset($note['retired'])) $retired = (int) $note['retired'];
-        // Whatever is left is handed straight back, so another worker can take
-        // it now rather than in fifteen minutes' time. A row this call just
-        // retired is terminal and is not released - see the method note.
-        $this->store->releaseClaims($runId, $epoch, $this->owner(), $claims);
         return ['ok' => false, 'stop' => $stop, 'worked' => 0, 'requeued' => 0,
                 'blocked' => $retired, 'findings' => 0, 'candidates' => 0, 'why' => $why];
     }

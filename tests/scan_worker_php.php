@@ -3062,6 +3062,26 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('storage: a cancelled run is still a cancellation, not a storage failure',
         $res['stop'] === 'cancelled');
 
+    // A FAILURE IS CHARGED ONCE (review R2S-4). A failed read counted the
+    // attempt in one transaction and handed the records back in a second; when
+    // the second failed, the rows kept their token on an attempt already
+    // counted, aged into "abandoned", and the straggler sweep charged the same
+    // failure again. The hand-back is now part of the counting write, so a
+    // release that would have failed is never asked for.
+    list($store6, $runId6, $inner6) = $faulty('releaseClaims');
+    $w = new ScanWorker($store6, ['fence' => new Versions(), 'owner' => 'w1', 'attempts' => 3,
+        'read' => function ($ids) { return ['ok' => false, 'data' => [], 'why' => 'export hiccup']; },
+        'evaluate' => $finder(1), 'budget' => $wide(), 'finalizer' => $fin()]);
+    $res6 = $w->work(800, $runId6);
+    check('give-back: a failed read is reported as a failed read, not a storage failure',
+        $res6['ok'] === false && $res6['stop'] === 'read');
+    ageClaims($inner6, $runId6, 1000);
+    $ep6 = (int) $inner6->run(800, $runId6)['lease_epoch'];
+    $again6 = $inner6->claimPending($runId6, 'w2', $ep6, 10, 900, 3);
+    check('give-back: and its records come back charged once, not taken for a dead worker\'s',
+        is_array($again6) && count($again6) === 5 && $again6[0]['abandoned'] === false
+        && (int) $again6[0]['attempts'] === 1 && (int) $again6[4]['attempts'] === 1);
+
     // -- THE SEMAPHORE FAILS THE SAME WAY ------------------------------------
     //
     // WorkerSlots::acquire() is a compare-and-set like everything else, and it

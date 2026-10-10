@@ -424,12 +424,22 @@ interface ScanStore
      * somehow reached 255 must not roll over to 0 and start again, nor be
      * silently clamped by a permissive sql_mode.
      *
+     * AND IT HANDS THE REST BACK, in the same transaction (review R2S-4). A row
+     * counted here and not retired is released exactly as releaseClaims()
+     * would release it: a straggler returns to PENDING, the claim is cleared,
+     * the cursor moves back over it. The caller used to call releaseClaims()
+     * next, in a transaction of its own; when that failed, or a takeover
+     * landed between the two, the row kept a token on an attempt already
+     * counted, aged into "abandoned", and the straggler sweep charged the same
+     * failure again. Every caller released straight after, so the two are one
+     * write now and a caller does not release these claims itself.
+     *
      * @param array $claims   ordinal => claim token, as claim() reported them
      * @param int   $maxAttempts  the run's configured limit
      * @param int   $exhausted    the terminal state for rows that reach it -
      *                            REC_UNSTORED for a refused commit,
      *                            REC_UNREADABLE for a failed read
-     * @return array{counted:int, retired:int}
+     * @return array{counted:int, retired:int, released:int}
      * @throws ScanStoreUnavailable when the storage failed rather than refused
      */
     public function noteAttempts($runId, $epoch, $owner, array $claims, $maxAttempts, $exhausted);
