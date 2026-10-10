@@ -4471,9 +4471,12 @@ class UniversalValidator extends AbstractExternalModule
             // provision() had no caller anywhere outside its own tests - the
             // same shape as the migration it now sits beside.
             //
-            // Additive: raising the limit adds rows here on the next save;
-            // lowering it never deletes one, because a row being deleted may be
-            // leased right now.
+            // Raising the limit adds rows here on the next save. LOWERING it
+            // takes effect at once, because acquire() takes no slot numbered
+            // above the limit (review R4-4), and the free rows above it are
+            // removed here; a row still leased is removed by the reap cron once
+            // its holder lets go (W1-N1). A leased row is never deleted under
+            // its worker.
             $limitKey = 'scan-system-max-concurrent-projects';
             // Through ScanPolicy so an unset or malformed setting lands on the
             // documented default rather than on zero, which would provision
@@ -4482,10 +4485,12 @@ class UniversalValidator extends AbstractExternalModule
                 [$limitKey => $this->getSystemSetting($limitKey)], []);
             $slots = new Scan\WorkerSlots(new Scan\ModuleDb($this));
             $added = $slots->provision($policy['maxProjects']);
+            $removed = $slots->shrinkTo($policy['maxProjects']);
             $census = $slots->census();
             $this->log('scan-slots-provision', [
                 'limit' => (int) $policy['maxProjects'],
                 'added' => (int) $added,
+                'removed' => (int) $removed,
                 'total' => (int) $census['total'],
             ]);
         } catch (\Throwable $e) {

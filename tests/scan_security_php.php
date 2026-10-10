@@ -958,6 +958,8 @@ namespace INSPIRE\UniversalValidator\Scan {
      * ----------------------------------------------------------------- */
     {
         require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+        require_once __DIR__ . '/../php/Scan/WorkBudget.php';
+        require_once __DIR__ . '/../php/Scan/ScanWorker.php';
         $slotDb = function ($max, array $affected = []) {
             return new class($max, $affected) implements ScanDb {
                 public $max; public $affectedQueue; public $inserts = []; private $last = 0;
@@ -1011,6 +1013,83 @@ namespace INSPIRE\UniversalValidator\Scan {
         $d = $slotDb(5);
         check('R8-4 slots: a table already at the limit sends nothing',
             (new WorkerSlots($d))->provision(5) === 0 && $d->inserts === []);
+
+        // R4-4 / W1-N1: THE LIMIT REACHES acquire(), AND SHRINKING DELETES ONLY
+        // WHAT IS IDLE. A slot table as rows: slot_no => held?. The fake answers
+        // the free-slot read as the server would, so a limit that never reached
+        // the statement shows up as a slot above it being taken.
+        $table = function (array $held, $count) {
+            return new class($held, $count) implements ScanDb {
+                public $rows = []; public $log = []; private $last = 0;
+                public function __construct(array $held, $count) {
+                    for ($i = 1; $i <= $count; $i++) $this->rows[$i] = in_array($i, $held, true);
+                }
+                public function select($sql, array $params = []) {
+                    $this->log[] = [$sql, $params];
+                    $out = [];
+                    if (strpos($sql, 'COUNT(*)') !== false) {
+                        return [[count($this->rows), count(array_filter($this->rows))]];
+                    }
+                    if (strpos($sql, 'slot_no <= ?') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h && $no <= $params[0]) $out[] = [$no, 0];
+                    } elseif (strpos($sql, 'slot_no > ?') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h && $no > $params[0]) $out[] = [$no];
+                    } elseif (strpos($sql, 'SELECT slot_no, epoch') !== false) {
+                        foreach ($this->rows as $no => $h) if (!$h) $out[] = [$no, 0];
+                    }
+                    return $out;
+                }
+                public function exec($sql, array $params = []) {
+                    $this->log[] = [$sql, $params];
+                    $this->last = 0;
+                    if (strpos(ltrim($sql), 'UPDATE') === 0 && count($params) === 7) {
+                        // acquire()'s compare-and-set; renew and release are
+                        // answered as no change, which is all this needs.
+                        $no = $params[4];
+                        if (isset($this->rows[$no]) && !$this->rows[$no]) { $this->rows[$no] = true; $this->last = 1; }
+                    } elseif (strpos(ltrim($sql), 'DELETE') === 0) {
+                        $limit = $params[count($params) - 2];
+                        foreach (array_slice($params, 0, count($params) - 2) as $no) {
+                            if (isset($this->rows[$no]) && !$this->rows[$no] && $no > $limit) {
+                                unset($this->rows[$no]);
+                                $this->last++;
+                            }
+                        }
+                    }
+                }
+                public function execNoCount($sql, array $params = []) {}
+                public function affected() { return $this->last; }
+                public function begin() {}
+                public function commit() {}
+                public function rollback() {}
+            };
+        };
+        $t = $table([1, 2], 5);
+        check('R4-4 slots: with the limit at 2 and both places held, a free slot 3 is not taken',
+            (new WorkerSlots($t))->acquire('w', 1, 60, 2) === null);
+        check('R4-4 slots: without a limit the free row would have been taken, which is the defect',
+            (new WorkerSlots($table([1, 2], 5)))->acquire('w', 1, 60)['slot_no'] === 3);
+        $t = $table([4], 6);
+        check('W1-N1 slots: shrinking to 2 removes the free rows above it and keeps the held one',
+            (new WorkerSlots($t))->shrinkTo(2) === 3 && array_keys($t->rows) === [1, 2, 4]);
+        check('W1-N1 slots: and the delete repeats the free test, so a row leased meanwhile stays',
+            strpos($t->log[count($t->log) - 1][0], 'owner IS NULL OR expires_at < ?') !== false);
+
+        // The worker hands the limit over. A ScanWorker built with slotLimit 2
+        // over a table whose two places are held takes nothing, and says the
+        // server is at its limit rather than that it is unprovisioned.
+        $t = $table([1, 2], 5);
+        $store = new \INSPIRE\UniversalValidator\Scan\ArrayScanStore();
+        $run = $store->startRun(41, ['created_by' => 'x']);
+        $rid = (int) $run['run']['run_id'];
+        $store->writeManifest($rid, [['id_bin' => 'R1', 'hash' => hash('sha256', 'R1', true), 'dag' => null]]);
+        $w = new \INSPIRE\UniversalValidator\Scan\ScanWorker($store, [
+            'slots' => new WorkerSlots($t), 'slotLimit' => 2, 'owner' => 'w1',
+            'read' => function ($ids) { return ['ok' => true, 'data' => [], 'why' => null]; },
+            'evaluate' => function ($id, $node) { return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null]; }]);
+        $res = $w->work(41, $rid);
+        check('R4-4 slots: a worker given the limit is held to it',
+            $res['stop'] === 'capacity' && $t->rows[3] === false);
     }
 
     echo "scan_security_php: $n checks, $fail failure(s)\n";

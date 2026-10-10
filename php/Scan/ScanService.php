@@ -470,6 +470,8 @@ final class ScanService
         return [
             'slots'     => new WorkerSlots($this->db),
             'slotTtl'   => self::SLOT_TTL,
+            // The limit as the settings say it now (review R4-4, W1-N1).
+            'slotLimit' => $policy['maxProjects'],
             'fence'     => $this->fence($pid),
             'read'      => $ctx['read'],
             'evaluate'  => $ctx['evaluate'],

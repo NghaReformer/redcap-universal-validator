@@ -76,6 +76,9 @@ final class ScanWorker
      *   fingerprint:    string        the configuration as it is NOW
      *   policyRevision: int           the privacy policy as it is NOW
      *   slotTtl:        int
+     *   slotLimit:      ?int          scan-system-max-concurrent-projects as resolved
+     *                                 now; no slot numbered above it is taken. Absent
+     *                                 is no limit beyond the rows the table holds.
      *   planner:        ?callable(int $runId, array $slice): array  lists one slice
      *                   of a run still planning - ScanPlanner::step() with the
      *                   source bound. $slice carries budget, owner, epoch,
@@ -192,7 +195,11 @@ final class ScanWorker
         try {
             if ($slots instanceof WorkerSlots) {
                 $ttl = isset($this->deps['slotTtl']) ? (int) $this->deps['slotTtl'] : 300;
-                $slot = $slots->acquire($this->owner(), $runId, $ttl);
+                // The installation's limit as it is NOW, so a lowered setting
+                // holds from the next request (review R4-4): no slot numbered
+                // above it is taken, whatever rows the table still has.
+                $limit = isset($this->deps['slotLimit']) ? (int) $this->deps['slotLimit'] : null;
+                $slot = $slots->acquire($this->owner(), $runId, $ttl, $limit);
                 if ($slot === null) {
                     // TWO DIFFERENT FAULTS LOOK IDENTICAL HERE, and only one of them
                     // is contention.

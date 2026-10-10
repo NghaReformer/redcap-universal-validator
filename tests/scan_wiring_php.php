@@ -137,7 +137,6 @@ namespace {
         'ScanStore::writeManifest'      => 'no scheduled caller: production streams appendManifest() then freezeManifest(), so this is a test convenience living on the production contract',
         'ArrayScanStore::writeManifest' => 'no scheduled caller, with the contract',
         'SqlScanStore::writeManifest'   => 'no scheduled caller, with the contract',
-        'WorkerSlots::idleAbove'        => 'no scheduled caller: a lowered concurrency limit therefore never takes effect',
         'ScanPhase::consistent'         => 'no scheduled caller: the phase/state agreement it checks is never checked',
         'ScanPhase::cancelTarget'       => 'no scheduled caller: cancellation picks its target elsewhere',
         'UniqueFinalizer::sweep'        => 'no scheduled caller: the duplicate-group sweep runs only when a test runs it',
