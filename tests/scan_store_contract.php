@@ -26,8 +26,13 @@ namespace INSPIRE\UniversalValidator\Scan;
  *                            worker is a claim that has aged (review R2S-1), and
  *                            the contract cannot wait fifteen minutes to show one;
  *                            each store's harness knows where its clock is kept.
+ * @param callable|null $clocked (callable $clock) => ScanStore, fresh and empty,
+ *                            reading elapsed time from $clock: how long one
+ *                            straggler sweep may hold the run row is a matter of
+ *                            seconds (review R3S-1), and the contract steps a
+ *                            clock rather than waiting. Null skips those cases.
  */
-function storeContract(callable $newStore, $label, callable $age)
+function storeContract(callable $newStore, $label, callable $age, callable $clocked = null)
 {
     $C = function ($what, $cond) use ($label) { \check("$label: $what", $cond); };
 
@@ -850,6 +855,41 @@ function storeContract(callable $newStore, $label, callable $age)
     $C('sweep: and the next call carries on to the live row behind them',
         is_array($t14b) && count($t14b) === 1 && $t14b[0]['id_bin'] === 'B' . ($dead14 + 1)
         && $ret14 === 2);
+
+    // AND WITHIN A TIME (review R3S-1). Sixteen windows is a count of
+    // statements, not of seconds: each window used to walk every finished row
+    // in front of the free ones, and sixteen of them held the run row for 13 s
+    // at 500,000 records. A later window starts only while the call is younger
+    // than SWEEP_SECONDS. The clock here moves 0.6 of that per reading, so the
+    // first window runs, the second starts at 0.6 and the third would start at
+    // 1.2: two windows of five dead rows are retired, and the call answers []
+    // for the caller to ask again - which carries on from there.
+    if ($clocked !== null) {
+        $tick = 0.0;
+        $s16 = $clocked(function () use (&$tick) {
+            $now = $tick;
+            $tick += 0.6 * ScanStore::SWEEP_SECONDS;
+            return $now;
+        });
+        $rid16 = (int) $s16->startRun(744, [])['run']['run_id'];
+        $recs16 = [];
+        for ($i = 1; $i <= 6; $i++) $recs16[] = $mk5('K' . $i);
+        $s16->writeManifest($rid16, $recs16);
+        $ep16 = (int) $s16->run(744, $rid16)['lease_epoch'];
+        $s16->claim($rid16, 'dead', $ep16, 5);
+        $age($s16, $rid16, 1000);
+        $ret16 = -1;
+        $t16 = $s16->claimPending($rid16, 'w2', $ep16, 1, 900, 1, ScanStore::REC_UNREADABLE, $ret16);
+        $C('sweep: a later window starts only while the call is younger than SWEEP_SECONDS',
+            $t16 === [] && $ret16 === 2);
+        $tick = 0.0;
+        $t16b = $s16->claimPending($rid16, 'w2', $ep16, 1, 900, 1, ScanStore::REC_UNREADABLE, $ret16);
+        $tick = 0.0;
+        $t16c = $s16->claimPending($rid16, 'w2', $ep16, 1, 900, 1, ScanStore::REC_UNREADABLE, $ret16);
+        $C('sweep: and asking again carries on to the live row behind them',
+            $t16b === [] && is_array($t16c) && count($t16c) === 1 && $t16c[0]['id_bin'] === 'K6'
+            && $ret16 === 1);
+    }
 
     // -- THE ATTEMPT AND THE HAND-BACK ARE ONE WRITE (review R2S-4) ----------
     //

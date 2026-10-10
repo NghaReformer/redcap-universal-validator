@@ -63,9 +63,18 @@ final class SqlScanStore implements ScanStore
     /** @var ScanDb */
     private $db;
 
-    public function __construct(ScanDb $db)
+    /** @var callable|null  seconds as a float; microtime(true) when null. See claimPending(). */
+    private $clock;
+
+    /**
+     * @param callable|null $clock what claimPending() reads the time from, so
+     *        a test can step it rather than wait. Anything not callable is
+     *        ignored: a stale caller once passed a key string here.
+     */
+    public function __construct(ScanDb $db, $clock = null)
     {
         $this->db = $db;
+        $this->clock = is_callable($clock) ? $clock : null;
     }
 
     /**
@@ -601,21 +610,66 @@ final class SqlScanStore implements ScanStore
             // all retired answered [] while free rows sat behind it - and the
             // worker, finding the manifest incomplete, said "records are still
             // out with another worker" and backed off, once per window of dead
-            // rows. A retired row is terminal by the time the next SELECT runs,
-            // so each window starts where the last one's retirements ended.
-            // Bounded, so the run row's lock is held for a bounded number of
-            // statements; the in-memory store walks the same windows.
+            // rows. Bounded, so the run row's lock is held for a bounded number
+            // of statements and a bounded time; the in-memory store walks the
+            // same windows.
+            //
+            // EACH WINDOW STARTS AFTER THE LAST ROW OF THE ONE BEFORE, AND IS
+            // READ THROUGH ix_run_state (review R3S-1). The windows used to be
+            // one statement re-run from the start of the run - free rows in
+            // ordinal order, `state = PENDING OR (state = CLAIMED AND stale)` -
+            // and the server served that ORDER BY from PRIMARY (run_id,
+            // ordinal), testing every row on the way. In catch-up nearly every
+            // row is finished, so each window walked the finished prefix:
+            // measured at 98,499 rows a window on 100,000 records and 498,499
+            // on 500,000, sixteen times a call, 13 seconds with the run row
+            // locked FOR UPDATE and every commit, claim and Stop of the run
+            // queued behind it. Now the two free states are two ranges of
+            // (run_id, state, ordinal) - InnoDB keeps the primary key at the
+            // end of every secondary key, so the ordinal order is the index
+            // order - each read from just past the previous window and cut off
+            // at the window size, and the union of the two is sorted: at most
+            // twice the window, whatever is finished in front of it.
+            //
+            // FORCED FOR THE ORDER BY, AND ONLY FOR IT. PRIMARY can serve this
+            // ORDER BY too, and MySQL 8.0 chose it with 90,000 finished rows in
+            // front: the plan above. A plain FORCE INDEX (ix_run_state) is the
+            // obvious cure and is worse on MySQL: with PRIMARY taken out of
+            // the usable keys the optimiser no longer knows run_id is constant
+            // in the primary-key suffix it would sort by, so every branch read
+            // all of its state's rows and sorted them - 100,000 rows a window
+            // with everything pending. FOR ORDER BY keeps PRIMARY usable, which
+            // is what lets MySQL read the range in ordinal order and stop at
+            // the window. MariaDB gets the access path forced as well, in a
+            // comment only MariaDB executes: without it MariaDB planned PRIMARY
+            // with a sort and only switched to the state index while running
+            // the statement, so what it did was not what EXPLAIN said. Both are
+            // asserted, with the rows each window read, in
+            // tests/mysql/cases/store.php. The CLAIMED range is short by
+            // nature: rows a live worker holds are skipped, and they are at
+            // most the batches in flight.
+            $began = $this->clock();
+            $after = 0;
+            $free = 'SELECT ordinal, record_id_bin, record_hash, dag_at_fence, attempts,
+                    version_scanned, claim_seq, (updated_at < ?) AS stale
+                FROM ' . $t . ' FORCE INDEX FOR ORDER BY (ix_run_state)
+                    /*M! FORCE INDEX FOR JOIN (ix_run_state) */
+                WHERE run_id = ? AND state = ? AND ordinal > ?';
             for ($window = 0; $window < self::SWEEP_WINDOWS; $window++) {
+                // AND WITHIN A TIME. The first window always runs, so every
+                // call makes progress; a later one starts only while the run
+                // row has been held for less than SWEEP_SECONDS.
+                if ($window > 0 && $this->clock() - $began >= self::SWEEP_SECONDS) break;
                 // The eighth column says whether the row's claim is as old as
                 // a CLAIMED row must be before it is free: asked of the server,
                 // in the same comparison the WHERE clause makes, so the two can
                 // never disagree about what stale means.
-                $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
-                    attempts, version_scanned, claim_seq, (updated_at < ?)
-                    FROM ' . $t . '
-                    WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
+                $rows = $this->db->select('(' . $free . ' ORDER BY ordinal LIMIT ' . $limit . ')
+                    UNION ALL
+                    (' . $free . ' AND updated_at < ? ORDER BY ordinal LIMIT ' . $limit . ')
                     ORDER BY ordinal LIMIT ' . $limit,
-                    [$stale, $runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
+                    [$stale, $runId, self::REC_PENDING, $after,
+                     $stale, $runId, self::REC_CLAIMED, $after, $stale]);
                 $retire = [];
                 foreach ($rows as $row) {
                     // ABANDONED: free, yet still carrying a claim. Every way a
@@ -684,8 +738,9 @@ final class SqlScanStore implements ScanStore
                 }
                 // Something to hand out, or nothing behind this window: either
                 // way this is the answer. Otherwise every row of a full window
-                // was retired, and the next one is looked at.
+                // was retired, and the next one is looked at from its last row.
                 if ($out || count($rows) < $limit) break;
+                $after = (int) $rows[count($rows) - 1][0];
             }
             if ($out && $out[0]['abandoned']) {
                 // The attempt the dead worker never counted, with the takeover.
@@ -2088,6 +2143,12 @@ final class SqlScanStore implements ScanStore
     }
 
     // -- time, in one place so a test can reason about it --------------------
+
+    /** Seconds, for measuring how long a call has held a lock; see claimPending(). */
+    private function clock()
+    {
+        return $this->clock === null ? microtime(true) : (float) call_user_func($this->clock);
+    }
 
     private static function now() { return gmdate('Y-m-d H:i:s'); }
     private static function inSeconds($s) { return gmdate('Y-m-d H:i:s', time() + (int) $s); }

@@ -48,6 +48,23 @@ final class ArrayScanStore implements ScanStore
     /** Per-project generation counters, the stand-in for uv_project_seq. */
     private $seq = [];
 
+    /** @var callable|null  seconds as a float; microtime(true) when null. See claimPending(). */
+    private $clock;
+
+    /**
+     * @param callable|null $clock what claimPending() reads the time from, as
+     *        SqlScanStore's does, so a test can step it rather than wait.
+     */
+    public function __construct($clock = null)
+    {
+        $this->clock = is_callable($clock) ? $clock : null;
+    }
+
+    private function clock()
+    {
+        return $this->clock === null ? microtime(true) : (float) call_user_func($this->clock);
+    }
+
     public function startRun($pid, array $run)
     {
         foreach ($this->runs as $r) {
@@ -200,10 +217,18 @@ final class ArrayScanStore implements ScanStore
         // store used to retire any number of rows in one call while the SQL
         // store stopped after one window, so the fast suite could not see the
         // call that answered [] with free rows still waiting behind it.
+        //
+        // And bounded the same two ways (review R3S-1): each window starts
+        // after the last row of the one before, and a later window starts only
+        // while the call is younger than SWEEP_SECONDS.
+        $began = $this->clock();
+        $after = 0;
         for ($window = 0; $window < self::SWEEP_WINDOWS; $window++) {
+            if ($window > 0 && $this->clock() - $began >= self::SWEEP_SECONDS) break;
             $rows = [];
             foreach ($this->records[$runId] as $o => $rec) {
                 if (count($rows) >= $limit) break;
+                if ((int) $rec['ordinal'] <= $after) continue;
                 if ($isFree($rec)) $rows[] = $o;
             }
             foreach ($rows as $o) {
@@ -236,6 +261,7 @@ final class ArrayScanStore implements ScanStore
                 if ($abandoned) break;
             }
             if ($out || count($rows) < $limit) break;
+            $after = (int) $this->records[$runId][$rows[count($rows) - 1]]['ordinal'];
         }
         return $out;
     }

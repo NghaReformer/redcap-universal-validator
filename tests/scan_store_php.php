@@ -37,6 +37,8 @@ namespace {
     }, 'array-store', function ($store, $runId, $seconds) {
         // This store keeps a claim's time in claimed_at; see ageClaims().
         \INSPIRE\UniversalValidator\Scan\ageClaims($store, $runId, $seconds);
+    }, function ($clock) {
+        return new \INSPIRE\UniversalValidator\Scan\ArrayScanStore($clock);
     });
 
     // THE STORED ROW, which only this store can show whole. findings() returns

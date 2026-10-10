@@ -722,6 +722,146 @@ $ASKED = 782;
         count($q) === 1 && in_array('ix_run_state', $keys, true) && in_array('PRIMARY', $keys, true));
 }
 
+// THE STRAGGLER SWEEP READS ITS WINDOW, NOT THE FINISHED ROWS IN FRONT OF IT
+// (review R3S-1).
+//
+// claimPending() looks at free rows a window at a time, and every window used
+// to be the same statement run from the start of the run: the server served
+// its ORDER BY from PRIMARY and tested every row on the way, so in catch-up -
+// where nearly every row is finished - each window walked the finished prefix
+// with the run row locked FOR UPDATE. Measured at 98,499 rows a window on
+// 100,000 records. Here 2,950 finished rows stand in front of 30 rows a dead
+// worker left at the attempt limit and 20 free ones; windows of ten retire the
+// dead rows three at a time and the fourth hands out ten free rows.
+//
+// What is asserted is what the server did with the statements the store sent,
+// at the moment it sent them: the plan, EXPLAINed inside the store's
+// transaction just before the window runs; the rows each window actually read
+// (Handler_read_next, taken on the store's own connection around each window -
+// a FLUSH STATUS there would commit the transaction); and where each window
+// started. The rows read are the stronger of the two. Without its own hint
+// MariaDB re-planned this ORDER BY ... LIMIT at execution - at 100,000 rows its
+// EXPLAIN named PRIMARY with a sort while the window read 499 rows of
+// ix_run_state - and a later window may properly take PRIMARY from where it
+// starts, because the range behind that point is short.
+//
+// Not 788: the supersede case below plants its neighbour project there.
+$SWEPT = 795;
+{
+    $probe = new class($dbA, $A) extends UvRecordingDb {
+        /** @var int[] rows read by each window statement, in the order sent */
+        public $reads = [];
+        /** @var string[][] per window, the key of each EXPLAIN row on the record table */
+        public $plans = [];
+        private $conn;
+        private $table;
+        public function __construct($inner, $conn) {
+            parent::__construct($inner);
+            $this->conn = $conn;
+            $this->table = Schema::table('scan_record');
+        }
+        private function readNext() {
+            $r = $this->conn->query("SHOW SESSION STATUS LIKE 'Handler_read_next'");
+            $row = $r->fetch_row();
+            $r->free();
+            return (int) $row[1];
+        }
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'UNION ALL') === false) return parent::select($sql, $params);
+            $keys = [];
+            $e = $this->conn->query('EXPLAIN ' . uv_inline_params($this->conn, $sql, $params));
+            while ($row = $e->fetch_assoc()) {
+                if ((string) $row['table'] === $this->table) $keys[] = (string) $row['key'];
+            }
+            $e->free();
+            $this->plans[] = $keys;
+            $before = $this->readNext();
+            $out = parent::select($sql, $params);
+            $this->reads[] = $this->readNext() - $before;
+            return $out;
+        }
+    };
+    $s = new SqlScanStore($probe);
+    $rid = (int) $s->startRun($SWEPT, ['created_by' => 'alice'])['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 3000; $i++) {
+        $recs[] = ['id_bin' => 'W-' . $i, 'hash' => hash('sha256', 'W-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid, $recs);
+    $t = Schema::table('scan_record');
+    $A->query('UPDATE ' . $t . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid . ' AND ordinal <= 2950');
+    $A->query('UPDATE ' . $t . " SET claim_owner = 'dead', claim_seq = 7,"
+        . ' updated_at = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 2 HOUR)'
+        . ' WHERE run_id = ' . $rid . ' AND ordinal BETWEEN 2951 AND 2980');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . ScanPhase::CATCH_UP
+        . "' WHERE run_id = " . $rid);
+    // Statistics as a table that has been written for a while would have them.
+    $A->query('ANALYZE TABLE ' . $t)->free();
+    $ep = (int) $s->run($SWEPT, $rid)['lease_epoch'];
+    $probe->log = [];
+    $probe->reads = [];
+    $ret = -1;
+    $got = $s->claimPending($rid, 'w2', $ep, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret);
+    $ords = [];
+    foreach ((array) $got as $g) $ords[] = (int) $g['ordinal'];
+    check('sweep plan: the dead rows are retired and the first free rows handed out',
+        $ret === 30 && $ords === range(2981, 2990));
+    $windows = $probe->matching('select', ['UNION ALL', $t]);
+    $starts = [];
+    foreach ($windows as $w) $starts[] = (int) $w[2][3] . '/' . (int) $w[2][7];
+    check('sweep plan: each window starts after the last row of the one before',
+        $starts === ['0/0', '2960/2960', '2970/2970', '2980/2980']);
+    $plans = [];
+    foreach ($probe->plans as $p) $plans[] = implode('+', $p);
+    echo '  sweep window starts: ' . implode(' ', $starts) . ' | rows read per window: '
+        . implode(',', $probe->reads) . ' | plans: ' . implode(' ', $plans) . "\n";
+    // Each window reads at most the free rows behind where it starts - fifty
+    // here, ten of them when the server walks the range in order and stops,
+    // all of them when it chooses to sort so few - and never the finished
+    // rows in front. (At this size the old statement sorted the fifty too; the
+    // walk of the finished rows is pinned by the 2,000-row case below, where
+    // it read 1,009 for a window of ten.)
+    check('sweep plan: and each reads the free rows behind it, not the 2,950 finished rows in front',
+        count($probe->reads) === 4 && max($probe->reads) <= 50 + 4);
+    // THE FIRST WINDOW, the one that starts at the beginning of the run, is
+    // planned through the state index in both branches. MySQL 8.0 may name it
+    // beside PRIMARY (an intersection that uses the primary key only to
+    // filter), never PRIMARY alone - which is the walk of the finished prefix.
+    $first = isset($probe->plans[0]) ? $probe->plans[0] : [];
+    $viaState = count($first) === 2;
+    foreach ($first as $k) {
+        if (!in_array('ix_run_state', explode(',', $k), true)) $viaState = false;
+    }
+    check('sweep plan: the first window reads both free states through ix_run_state', $viaState);
+
+    // AND STOPS AT THE WINDOW WHEN MANY ROWS ARE FREE. 2,000 free rows behind
+    // 1,000 finished ones, a window of ten. The old statement walked PRIMARY
+    // from the start of the run: 1,009 rows. A plain FORCE INDEX
+    // (ix_run_state) reads the state index, and on MySQL then sorts every row
+    // of the state to find the first ten: 2,000 here, and 100,000 a window
+    // with 100,000 pending.
+    $rid2 = (int) $s->startRun($SWEPT + 1, ['created_by' => 'alice'])['run']['run_id'];
+    $recs = [];
+    for ($i = 1; $i <= 3000; $i++) {
+        $recs[] = ['id_bin' => 'X-' . $i, 'hash' => hash('sha256', 'X-' . $i, true), 'dag' => null];
+    }
+    $s->writeManifest($rid2, $recs);
+    $A->query('UPDATE ' . $t . ' SET state = ' . (int) ScanStore::REC_DONE
+        . ' WHERE run_id = ' . $rid2 . ' AND ordinal <= 1000');
+    $A->query('UPDATE ' . Schema::table('scan_run') . " SET phase = '" . ScanPhase::CATCH_UP
+        . "' WHERE run_id = " . $rid2);
+    $A->query('ANALYZE TABLE ' . $t)->free();
+    $ep2 = (int) $s->run($SWEPT + 1, $rid2)['lease_epoch'];
+    $probe->reads = [];
+    $probe->plans = [];
+    $got2 = $s->claimPending($rid2, 'w2', $ep2, 10, 900, 1, ScanStore::REC_UNREADABLE, $ret);
+    echo '  sweep with 2,000 free: rows read ' . implode(',', $probe->reads) . "\n";
+    check('sweep plan: with 2,000 rows free, the window reads about ten of them, not all of them',
+        is_array($got2) && count($got2) === 10 && (int) $got2[0]['ordinal'] === 1001
+        && count($probe->reads) === 1 && $probe->reads[0] <= 2 * 10 + 4);
+}
+
 // THE DECISION IS ON THE ROW (H15), read back RAW.
 //
 // The contract below reads these through run(), and run() goes through a
@@ -1137,4 +1277,10 @@ $age = function ($store, $runId, $seconds) use ($A) {
         . ' SET updated_at = DATE_SUB(updated_at, INTERVAL ' . (int) $seconds . ' SECOND)'
         . ' WHERE run_id = ' . (int) $runId . ' AND claim_seq <> 0');
 };
-\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age);
+// The same tables, cleared the same way, behind a store that reads elapsed
+// time from the contract's clock.
+$clocked = function ($clock) use ($fresh, $dbA) {
+    $fresh();
+    return new SqlScanStore($dbA, $clock);
+};
+\INSPIRE\UniversalValidator\Scan\storeContract($fresh, 'sql-store', $age, $clocked);

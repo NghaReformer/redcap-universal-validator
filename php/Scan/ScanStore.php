@@ -210,6 +210,18 @@ interface ScanStore
     const SWEEP_WINDOWS = 16;
 
     /**
+     * Seconds one claimPending() call may spend walking windows before it
+     * answers (review R3S-1). SWEEP_WINDOWS bounds the number of statements,
+     * and a count of statements is not a bound on time: each window used to
+     * walk every finished row in front of the free ones, 98,499 rows a window
+     * at 100,000 records and 498,499 at 500,000, while every commit, claim and
+     * Stop of the run waited on the row lock behind it. The first window always
+     * runs; a later one starts only while the call is younger than this, so an
+     * answer of [] with rows retired can mean this bound was reached as well.
+     */
+    const SWEEP_SECONDS = 1.0;
+
+    /**
      * The most rows one retention or supersede statement may touch.
      *
      * An unpaged DELETE of 500,000 findings was measured at 160 seconds as one
@@ -357,12 +369,17 @@ interface ScanStore
      * A WINDOW THAT WAS ALL RETIRED IS NOT THE END (review R2S-5). The call
      * looks at free rows a window of $limit at a time, in ordinal order. When
      * every row of a full window was retired and nothing was claimed, it looks
-     * at the next window in the same transaction, up to SWEEP_WINDOWS of them.
-     * The SQL store used to answer [] after the first window while free rows
-     * remained behind it, and the worker read that as "records are still out
-     * with another worker". An answer of [] with $retired > 0 can therefore
-     * still mean the bound was reached: the caller asks again rather than
-     * concluding anything from it.
+     * at the next window in the same transaction, up to SWEEP_WINDOWS of them
+     * and while the call is younger than SWEEP_SECONDS. The SQL store used to
+     * answer [] after the first window while free rows remained behind it, and
+     * the worker read that as "records are still out with another worker". An
+     * answer of [] with $retired > 0 can therefore still mean a bound was
+     * reached: the caller asks again rather than concluding anything from it.
+     *
+     * EACH WINDOW STARTS AFTER THE LAST ROW OF THE ONE BEFORE (review R3S-1).
+     * Every row of that window was retired, so nothing at or below its last
+     * ordinal is free any more; reading from the start of the run again only
+     * made the next window walk the same ground.
      *
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused
