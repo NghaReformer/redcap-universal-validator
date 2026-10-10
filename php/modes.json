@@ -188,7 +188,8 @@
       "dialog": false,
       "js": {"factories": {"window": "QRIDWindowInit"}},
       "scan": {"issueLabels": {"future": "Date in the future", "past": "Date in the past", "*": "Date outside allowed window"},
-               "detailKeys": ["windowFrom", "windowAnchor", "windowLo", "windowHi", "windowUnit", "windowPeriod", "windowOffLo", "windowOffHi"]}
+               "detailKeys": ["windowFrom", "windowAnchor", "windowLo", "windowHi", "windowUnit", "windowPeriod", "windowOffLo", "windowOffHi"],
+               "detailDerive": "TemporalLogic::periodDetail"}
     },
     {
       "mode": "exists",

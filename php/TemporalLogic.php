@@ -125,22 +125,78 @@ final class TemporalLogic
     }
     /** The margin a date and time gets past "now" (twin of QRID_CLOCK_SLACK_S). */
     const CLOCK_SLACK_S = 120;
+    /** The most the page allows each way for a computer clock that is off (twin of QRID_DEVICE_ERROR_MAX_S). */
+    const DEVICE_ERROR_MAX_S = 600;
+    /**
+     * The margin a date and time gets after saving: the page's margin plus the
+     * most it allows for a computer clock that is off. The audit and the scan
+     * cannot know that computer's clock, so they allow the most the page
+     * could have, and never flag a time the page accepted.
+     */
+    const AFTER_SAVE_SLACK_S = self::CLOCK_SLACK_S + self::DEVICE_ERROR_MAX_S;
 
     /**
-     * $clock with the margin a date and time gets: futureNow CLOCK_SLACK_S
-     * after "now" (for notFuture) and pastNow as much before it (for notPast
-     * and the early end of a window counted from "now"). "now" and "today"
-     * are unchanged; $clock comes back as it is when its "now" does not read.
+     * $clock with the margin a date and time gets: futureNow $seconds after
+     * "now" (for notFuture) and pastNow as much before it (for notPast and the
+     * early end of a window counted from "now"). "now" and "today" are
+     * unchanged; $clock comes back as it is when its "now" does not read.
      */
-    public static function clockSlack(array $clock)
+    public static function clockSlack(array $clock, $seconds = self::CLOCK_SLACK_S)
     {
         $now = isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
         if (!$now || $now['state'] !== 'ok') return $clock;
-        $later = TemporalValue::canonical($now['seconds'] + self::CLOCK_SLACK_S, 'datetime');
-        $earlier = TemporalValue::canonical($now['seconds'] - self::CLOCK_SLACK_S, 'datetime');
+        $later = TemporalValue::canonical($now['seconds'] + (int) $seconds, 'datetime');
+        $earlier = TemporalValue::canonical($now['seconds'] - (int) $seconds, 'datetime');
         if ($later !== null) $clock['futureNow'] = $later;
         if ($earlier !== null) $clock['pastNow'] = $earlier;
         return $clock;
+    }
+
+    /**
+     * A period by name, as the page shows it (twin of QRID_windowPeriodLabel):
+     * "last month", "the 3 months before this one", "the month of [visit_date]".
+     * $relative: counted from today or now; otherwise $name is the "from".
+     */
+    public static function periodLabel($period, $offLo, $offHi, $name, $relative)
+    {
+        $p = (string) $period;
+        $a = (int) $offLo;
+        $b = (int) $offHi;
+        $plural = function ($n) use ($p) { return $n . ' ' . $p . ($n === 1 ? '' : 's'); };
+        $one = function ($o) use ($p, $name, $relative, $plural) {
+            if ($relative) {
+                if ($o === 0) return 'this ' . $p;
+                if ($o === -1) return 'last ' . $p;
+                if ($o === 1) return 'next ' . $p;
+                return 'the ' . $p . ' ' . $plural(abs($o)) . ($o < 0 ? ' ago' : ' from now');
+            }
+            $of = 'the ' . $p . ' of ' . $name;
+            return $o === 0 ? $of : $plural(abs($o)) . ($o < 0 ? ' before ' : ' after ') . $of;
+        };
+        if ($a === $b) return $one($a);
+        if ($relative && $b === -1) return 'the ' . $plural(-$a) . ' before this one';
+        if ($relative && $a === 1) return 'the ' . $plural($b) . ' after this one';
+        if ($relative && $b === 0) return 'this ' . $p . ' and the ' . $plural(-$a) . ' before it';
+        if ($relative && $a === 0) return 'this ' . $p . ' and the ' . $plural($b) . ' after it';
+        if (!$relative && $b < 0) return (-$b) . ' to ' . $plural(-$a) . ' before the ' . $p . ' of ' . $name;
+        if (!$relative && $a > 0) return $a . ' to ' . $plural($b) . ' after the ' . $p . ' of ' . $name;
+        return $one($a) . ' to ' . $one($b);
+    }
+
+    /**
+     * The scan report's derived detail of a @UVWINDOW rule (scan.detailDerive
+     * in php/modes.json): windowPeriodText, the period by name, for a rule
+     * with a period.
+     */
+    public static function periodDetail(array $r)
+    {
+        if (!isset($r['windowPeriod']) || !is_string($r['windowPeriod']) || $r['windowPeriod'] === '') return [];
+        $kw = isset($r['windowAnchor']) && is_string($r['windowAnchor']) && $r['windowAnchor'] !== '' ? $r['windowAnchor'] : null;
+        $from = isset($r['windowFrom']) && is_string($r['windowFrom']) && $r['windowFrom'] !== '' ? $r['windowFrom'] : null;
+        $relative = $from === null && ($kw === null || $kw === 'today' || $kw === 'now');
+        $name = $from !== null ? $from : (string) $kw;
+        return ['windowPeriodText' => self::periodLabel($r['windowPeriod'],
+            isset($r['windowOffLo']) ? $r['windowOffLo'] : 0, isset($r['windowOffHi']) ? $r['windowOffHi'] : 0, $name, $relative)];
     }
 
     /**

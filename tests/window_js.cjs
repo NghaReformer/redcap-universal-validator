@@ -146,6 +146,13 @@ check('keywordAnchorType today is a date', W.keywordAnchorType('today') === 'dat
 check('keywordAnchorType now is a date and time to the second', W.keywordAnchorType('now') === 'datetime_seconds');
 check('keywordAnchorType of a written date', W.keywordAnchorType('2026-01-01 08:00') === 'datetime');
 
+// period labels: the fixture's "labels" cases (window_php.php runs them too)
+check('labels fixture loads', Array.isArray(fx.labels) && fx.labels.length > 0);
+for (const c of fx.labels) {
+  const got = W.periodLabel.apply(null, c.args);
+  check('label ' + JSON.stringify(c.args) + ' -> ' + c.out + ' (got ' + got + ')', got === c.out);
+}
+
 // verdictSpread: the fixture's "spread" cases (window_php.php runs them too)
 check('spread fixture loads', Array.isArray(fx.spread) && fx.spread.length > 0);
 for (const c of fx.spread) {

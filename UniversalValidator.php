@@ -348,10 +348,8 @@ class UniversalValidator extends AbstractExternalModule
                         }
                         continue;
                     }
-                    // savedNow: these are the values this save wrote, so one the log
-                    // does not show yet was saved now (valueSavedAt).
                     $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id, 'savedNow' => true]);
+                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
                 } catch (\Throwable $e) {
                     $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
                 }
@@ -2079,7 +2077,8 @@ class UniversalValidator extends AbstractExternalModule
         $clockAnchor = $kw === 'today' || $kw === 'now';
         if ($kw !== null && !$clockAnchor) $anchor = $kw;
         // A "from" date that cannot be read: the window part is not checked
-        // ($fromWhy says why), and "notFuture", which does not need it, still is.
+        // ($fromWhy says why), and notFuture and notPast, which do not need it,
+        // still are.
         $fromWhy = null;
         if (isset($rule['windowFrom']) && is_string($rule['windowFrom']) && $rule['windowFrom'] !== '') {
             if (array_key_exists('windowFromValue', $rule)) {
@@ -2104,7 +2103,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             if ($fromWhy !== null) {
-                if (empty($rule['windowNotFuture'])) {
+                if (empty($rule['windowNotFuture']) && empty($rule['windowNotPast'])) {
                     $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $fromWhy . ' — field skipped'];
                     return $out;
                 }
@@ -2148,13 +2147,20 @@ class UniversalValidator extends AbstractExternalModule
             $clock = null;
             $asOf = null;
             if ($asked && trim((string) $value, " \t\r\n") !== '') {
-                $st = $this->valueSavedAt($project_id, $record, $event_id, isset($meta['instance']) ? $meta['instance'] : 1,
-                    $field, (string) $value, !empty($meta['savedNow']));
+                $server = $this->serverClock($project_id);
+                if (self::windowDayFree($spec, $clockAnchor, (string) $value, $server)) {
+                    // No day it could have been saved on changes the verdict: no log read.
+                    $st = ['at' => null, 'why' => null];
+                    $clock = $server;
+                } else {
+                    $st = $this->valueSavedAt($project_id, $record, $event_id, isset($meta['instance']) ? $meta['instance'] : 1,
+                        $field, (string) $value);
+                }
                 if ($st['at'] !== null) {
                     $asOf = $st['at'];
                     $clock = ['today' => substr($asOf, 0, 10), 'now' => $asOf];
-                } else {
-                    if ($spec['notFuture']) $clock = $this->serverClock($project_id);
+                } elseif ($st['why'] !== null) {
+                    if ($spec['notFuture']) $clock = $server;
                     if ($todayRelative) {
                         // Not checked: the parts that need the day it was saved.
                         $vspec['notPast'] = false;
@@ -2164,28 +2170,36 @@ class UniversalValidator extends AbstractExternalModule
                     }
                 }
             }
-            // A date and time gets the page's 120-second margin (QRID_CLOCK_SLACK_S),
-            // so a time a computer a little off filled in reads the same here as there.
-            if ($clock !== null && $spec['type'] !== 'date') $clock = TemporalLogic::clockSlack($clock);
+            // A date and time gets the most margin the page could have given
+            // (AFTER_SAVE_SLACK_S): its 120 seconds plus up to 600 for a computer
+            // clock that is off, which only the page can measure. A time the page
+            // accepted is then never flagged after saving.
+            if ($clock !== null && $spec['type'] !== 'date') $clock = TemporalLogic::clockSlack($clock, TemporalLogic::AFTER_SAVE_SLACK_S);
             $vanchor = $self === $field ? '' : $anchor;
             $vanchorHi = $vanchor;
             if ($clockAnchor) {
+                // "now" is a span, pastNow to futureNow, except for a period: whole
+                // calendar days, so it takes the plain now, as the page does.
+                $spread = $kw === 'now' && $vspec['period'] === null;
                 $vanchor = $clock === null ? false : ($kw === 'today' ? $clock['today']
-                    : (isset($clock['pastNow']) ? $clock['pastNow'] : $clock['now']));
+                    : ($spread && isset($clock['pastNow']) ? $clock['pastNow'] : $clock['now']));
                 $vanchorHi = $clock === null ? false : ($kw === 'today' ? $clock['today']
-                    : (isset($clock['futureNow']) ? $clock['futureNow'] : $clock['now']));
+                    : ($spread && isset($clock['futureNow']) ? $clock['futureNow'] : $clock['now']));
                 if ($vspec['lo'] === null && $vspec['hi'] === null && $vspec['period'] === null) { $vanchor = null; $vanchorHi = null; }
             }
             $r = TemporalLogic::windowVerdictSpread($vspec, (string) $value, 'ymd', $vanchor, $vanchorHi, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
                 $readable = TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok';
+                // The parts judged against the clock alone, which passed.
+                $held = $clock === null ? '' : ($spec['notFuture'] && $vspec['notPast'] ? ' (the date is neither in the future nor in the past)'
+                    : ($spec['notFuture'] ? ' (the date is not in the future)' : ($vspec['notPast'] ? ' (the date is not in the past)' : '')));
                 if ($fromWhy !== null && $readable) {
-                    $why = $fromWhy . ' — the window was not checked' . ($spec['notFuture'] && $clock !== null ? ' (the date is not in the future)' : '');
+                    $why = $fromWhy . ' — the window was not checked' . $held;
                 } elseif ($fromWhy !== null) {
                     $why = $fromWhy . ', and the saved date is not a date this rule can read — field skipped';
-                } elseif ($spec['notFuture'] && $clock !== null && $readable) {
-                    // The value was read and is not in the future: only the window part is unknown.
-                    $why = 'the "from" date is not a date this rule can read — the window was not checked (the date is not in the future)';
+                } elseif ($held !== '' && $readable) {
+                    // The value was read and passed the clock parts: only the window part is unknown.
+                    $why = 'the "from" date is not a date this rule can read — the window was not checked' . $held;
                 } else {
                     $why = 'the saved date or its "from" date is not a date this rule can read — field skipped';
                 }
@@ -2194,38 +2208,64 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
             $finding = ['field' => $field, 'value' => $value, 'algo' => 'window', 'type' => 'window', 'reason' => $r['verdict']];
-            // The day a today-relative verdict was judged against, for the scan's detail line.
-            if ($asOf !== null) $finding['asOf'] = substr($asOf, 0, $spec['type'] === 'date' ? 10 : 16);
+            // The day the verdict was judged against, for the scan's detail line,
+            // on a verdict that rests on it: not a window counted from a field.
+            $dayBound = $r['verdict'] === 'future' || $r['verdict'] === 'past' || $clockAnchor;
+            if ($asOf !== null && $dayBound) $finding['asOf'] = substr($asOf, 0, $spec['type'] === 'date' ? 10 : 16);
             $out['invalid'][] = $finding;
         }
         return $out;
     }
 
     /**
-     * When $value was saved, for a today-relative @UVWINDOW part:
+     * When $value was saved, for a @UVWINDOW part judged against that day:
      * ['at' => 'Y-m-d H:i:s' in the rule's time zone, or null, 'why' => why not].
-     * The post-save audit passes $savedNow for the values the save it audits
-     * wrote: a value whose newest log row shows another value, a field the
-     * record's log never shows, or a record with no log yet, was then saved
-     * now (REDCap may log the save after this hook runs). Nothing the browser
-     * sends decides it. A log read only in part ("capped") never counts as
-     * saved now: the value may be older than the rows read.
+     * REDCap's log is the only source, for the post-save audit too: REDCap
+     * writes a save's log row before it calls redcap_save_record (checked live
+     * by WINDOW_LIVE_ACCEPTANCE I3), so a value the save wrote is already
+     * there. A value whose newest row shows another value, a field the log
+     * never shows, a record with no rows, or a log read only in part, is a gap
+     * in the history: the day is not known, and the value is not judged
+     * against any day rather than against today. Nothing the browser sends
+     * decides it.
      */
-    private function valueSavedAt($pid, $record, $eventId, $instance, $field, $value, $savedNow)
+    private function valueSavedAt($pid, $record, $eventId, $instance, $field, $value)
     {
         $stamps = $this->valueStamps($pid);
         if ($stamps === null) return ['at' => null, 'why' => 'the project log could not be read'];
         $r = $stamps->savedAt($record, $eventId, $instance, $field, $value);
         if ($r['state'] === 'logged') return ['at' => $r['at'], 'why' => null];
-        if ($savedNow && in_array($r['state'], ['changed', 'unlogged', 'none'], true)) {
-            return ['at' => $this->serverClock($pid)['now'], 'why' => null];
-        }
         $why = ['changed' => 'the project log shows another value for it',
                 'unlogged' => 'the project log does not show when it was saved',
                 'capped' => 'the project log holds more saves of this record than are read',
                 'none' => 'the project log holds nothing for this record',
                 'unknown' => 'the project log could not be read'];
         return ['at' => null, 'why' => isset($why[$r['state']]) ? $why[$r['state']] : $why['unknown']];
+    }
+
+    /**
+     * Whether judging $value against the server's clock gives the verdict it
+     * gets against any earlier day it could have been saved on, so the log
+     * need not be read: with notFuture, a value after now was in the future
+     * then too; with notPast as the only part judged against a day, a value
+     * from now on was never in the past. A window counted from today or now
+     * always needs the day.
+     */
+    private static function windowDayFree(array $spec, $clockAnchor, $value, array $clock)
+    {
+        if (empty($spec['type']) || !isset($clock['today'], $clock['now'])) return false;
+        $v = TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd');
+        $now = TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd');
+        if ($v['state'] !== 'ok' || $now['state'] !== 'ok') return false;
+        $date = $v['type'] === 'date';
+        if (!empty($spec['notFuture'])
+            && ($date ? strcmp($v['value'], (string) $clock['today']) > 0 : $v['seconds'] > $now['seconds'] + TemporalLogic::AFTER_SAVE_SLACK_S)) {
+            return true;
+        }
+        if (!empty($spec['notPast']) && empty($spec['notFuture']) && !$clockAnchor) {
+            return $date ? strcmp($v['value'], (string) $clock['today']) >= 0 : $v['seconds'] >= $now['seconds'];
+        }
+        return false;
     }
 
     /** The project's log reader (ValueStamps), once per request; null when the log cannot be resolved. */
@@ -2861,8 +2901,8 @@ class UniversalValidator extends AbstractExternalModule
         // "from" of today or now, notPast). The page judges those parts only for
         // a value that is new or changed: a saved value is judged against the
         // day it was saved, after saving (findingsWindow). A field whose saved
-        // value could not be read maps to null, and the page judges none of
-        // those parts on it.
+        // value could not be read, or is not valid UTF-8, maps to null, and the
+        // page judges none of those parts on it.
         $todayFields = self::windowTodayFields($config['rules']);
         if ($todayFields) {
             $config['windowSaved'] = $this->windowSavedValues($pid, $record, $instrument, $event_id, $repeat_instance, $todayFields);
@@ -2908,7 +2948,9 @@ class UniversalValidator extends AbstractExternalModule
         foreach ($fields as $f) {
             $ok = (isset($resolution[$f]) ? $resolution[$f] : 'ok') === 'ok';
             $v = isset($values[$f]) ? $values[$f] : '';
-            $out[$f] = ($ok && !is_array($v)) ? (string) $v : null;
+            // A value that is not valid UTF-8 would stop the whole page config
+            // from encoding; it maps to null, as one that could not be read.
+            $out[$f] = ($ok && !is_array($v) && preg_match('//u', (string) $v) === 1) ? (string) $v : null;
         }
         return $out;
     }
@@ -6204,6 +6246,8 @@ class UniversalValidator extends AbstractExternalModule
                 // wired. Participant data was retained indefinitely in a table
                 // any user with design rights can read.
                 'value_expires_at' => ($blob === null) ? null : $valueExpiry,
+                // The day a @UVWINDOW verdict was judged against, for the report.
+                'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
             ];
         }
 

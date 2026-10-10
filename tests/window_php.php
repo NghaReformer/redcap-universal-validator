@@ -54,6 +54,25 @@ foreach ($fx['spread'] as $c) {
     check('spread ' . $c['name'] . ' -> ' . json_encode($want) . ' (got ' . json_encode($got) . ')', $got === $want);
 }
 
+// period labels, the same cases as window_js.cjs (the scan report names a period as the page does)
+check('labels fixture loads', !empty($fx['labels']));
+foreach ($fx['labels'] as $c) {
+    $got = call_user_func_array([TemporalLogic::class, 'periodLabel'], $c['args']);
+    check('label ' . json_encode($c['args']) . ' -> ' . $c['out'] . ' (got ' . $got . ')', $got === $c['out']);
+}
+check('periodDetail: last month', TemporalLogic::periodDetail(['windowPeriod' => 'month', 'windowAnchor' => 'today',
+    'windowOffLo' => -1, 'windowOffHi' => -1]) === ['windowPeriodText' => 'last month']);
+check('periodDetail: the month of a field', TemporalLogic::periodDetail(['windowPeriod' => 'month', 'windowFrom' => '[v_start]'])
+    === ['windowPeriodText' => 'the month of [v_start]']);
+check('periodDetail: a written date', TemporalLogic::periodDetail(['windowPeriod' => 'week', 'windowAnchor' => '2026-01-01'])
+    === ['windowPeriodText' => 'the week of 2026-01-01']);
+check('periodDetail: no period, nothing', TemporalLogic::periodDetail(['windowLo' => 0]) === []);
+
+// the after-save margin: the page's 120 s plus the 600 s it allows for a computer clock
+check('AFTER_SAVE_SLACK_S', TemporalLogic::AFTER_SAVE_SLACK_S === 720);
+$cs = TemporalLogic::clockSlack(['today' => '2026-10-09', 'now' => '2026-10-09 14:30:00'], TemporalLogic::AFTER_SAVE_SLACK_S);
+check('clockSlack after save', $cs['futureNow'] === '2026-10-09 14:42:00' && $cs['pastNow'] === '2026-10-09 14:18:00');
+
 // clockSlack: futureNow and pastNow 120 s either side of "now", which stays
 $cs = TemporalLogic::clockSlack(['today' => '2026-10-09', 'now' => '2026-10-09 14:30:00']);
 check('clockSlack futureNow', $cs['futureNow'] === '2026-10-09 14:32:00');

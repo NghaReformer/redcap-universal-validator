@@ -343,6 +343,25 @@ final class ModeRegistry
     }
 
     /**
+     * Placeholders worked out from $rule for the catalog's "detail" sentence
+     * (scan.detailDerive of the type's mode: "Class::method" of a class in
+     * this namespace that takes the rule and returns placeholder => text).
+     * Empty when the mode names none or the method is not there.
+     */
+    public static function derivedDetail($type, array $rule)
+    {
+        $scan = self::mode(self::modeOfType($type))['scan'] ?? [];
+        $fn = (isset($scan['detailDerive']) && is_string($scan['detailDerive'])) ? $scan['detailDerive'] : '';
+        if (!preg_match('/^([A-Za-z]\w*)::([A-Za-z]\w*)$/D', $fn, $m)) return [];
+        $cls = __NAMESPACE__ . '\\' . $m[1];
+        if (!class_exists($cls, false) || !is_callable([$cls, $m[2]])) return [];
+        $out = call_user_func([$cls, $m[2]], $rule);
+        $clean = [];
+        if (is_array($out)) foreach ($out as $k => $v) if (is_string($k) && is_scalar($v)) $clean[$k] = (string) $v;
+        return $clean;
+    }
+
+    /**
      * Every refKeys entry across common and all modes, de-duplicated by key,
      * common first. Optionally only one kind and/or role.
      */

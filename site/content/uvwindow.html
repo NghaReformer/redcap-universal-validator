@@ -82,9 +82,9 @@ message shows the allowed dates the way the field shows them.</p>
     across midnight moves to the next day. When the study's time zone differs from
     the server's, name it in the project setting <em>Time zone for @UVWINDOW
     "notFuture"</em>. A date and time may run up to 120 seconds past the server's
-    "now". On the page the margin also covers a computer clock that runs fast, up
-    to 10 minutes, so REDCap's Now button passes there; the audit allows the 120
-    seconds only.</li>
+    "now". On the page the margin also covers a computer clock that is off, up to
+    10 minutes, so REDCap's Now button passes there; after saving, the audit and
+    the scan allow 12 minutes either side of the save.</li>
 <li><strong>One time zone per project.</strong> <code>notFuture</code> on a field
     filled by <code>@NOW-UTC</code>, <code>@TODAY-UTC</code>, <code>@NOW-SERVER</code>
     or <code>@TODAY-SERVER</code> is refused when that zone runs ahead of the rule's;
@@ -128,4 +128,6 @@ synced late from the Mobile App, is saved days after the visit.</p>
 <code>window-early</code>, <code>window-late</code>, <code>future</code> or
 <code>past</code>, and the Validation scan reports it retrospectively. A part judged
 against today uses the day the value was saved, which the log entry names as
-<code>as_of</code> and the scan report as "Judged against &lt;day&gt;".</p>
+<code>as_of</code> and the scan report as "Judged against &lt;day&gt;". A value
+whose save day REDCap's log does not show is reported as not checked, never
+judged against today.</p>

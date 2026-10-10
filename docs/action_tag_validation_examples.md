@@ -1343,8 +1343,12 @@ time of day is kept.
 `today` is the server's date and goes on a date field; `now` is the server's
 time and goes on a datetime field. A fixed date is written Y-M-D, with a time
 (`2026-01-01 08:00`) when the field holds dates with a time. A window counted
-from `now` gets the same small margin as `notFuture` at both ends, so REDCap's
-Now button passes.
+from `now` gets the same small margin as `notFuture` at both ends, and is judged
+again when the form is saved. A window that ends at `now` (`[-2,0]`) accepts a
+time filled in with REDCap's Now button. `notPast`, or a window that starts at
+`now` (`[0,24]`), refuses such a time once the form is saved more than about 2
+minutes after the click. A period counted from `now` is the period holding the
+server's date, with no margin, as a period is whole calendar days.
 
 ### Level 5 — calendar periods
 
@@ -1404,18 +1408,25 @@ Without the feature, `from` must be a field of the same event.
 A window counted from `today` or `now`, a period without `from`, and `notPast`
 are judged against the day the value was saved, not the day someone looks at it.
 
-- On the form, only a value that is new or changed is judged. A saved value
-  shows nothing when the record is opened again, so a visit date entered last
-  month does not turn red because a month has passed. A value filled in by
+- On the form, only a value that is new or changed is judged against today. A
+  saved value shows nothing when the record is opened again, so a visit date
+  entered last month does not turn red because a month has passed. `notFuture`
+  still checks a saved value on the form, against today. A value filled in by
   `@TODAY` or `@NOW` counts as new.
 - After a save, the module reads REDCap's own log to find when each value was
-  saved, and judges the value against that day. Saving another field of the
-  record later does not change the verdict.
+  saved, and judges the value against that day. REDCap writes its log entry for
+  a save before the module's check runs, so a value just saved is found there.
+  Saving another field of the record later does not change the verdict.
 - The Validation scan does the same, and its detail line names the day:
   "Judged against 2026-10-02, when this value was saved."
 - When the log does not show when a value was saved (it came in some way REDCap
-  did not log, or more than 5,000 saves of the record ago), that part of the
-  rule is reported as not checked for the value, with the reason.
+  did not log, its field was renamed, or it was saved more than 5,000 saves of
+  the record ago), that part of the rule is reported as not checked for the
+  value, with the reason. It is never judged against today instead.
+- A verdict that no save day can change needs no log read: with `notFuture`, a
+  date after today; with `notPast` and no window counted from today, a date from
+  today on. Every other value of these rules costs one read of the record's log,
+  after each save and in the scan.
 - `notFuture` uses the same day where the log shows it, so a scan still finds a
   date that was in the future when it was saved. Where the day is not known it
   uses today, which can miss such a date but never reports one that was fine.
@@ -1466,11 +1477,12 @@ warning.
   Put both dates on one page to check the window as they are entered.
 - **A `from` entry that does not exist yet** (no row in that event, no such
   instance) counts as a blank `from` date: nothing is checked until it is saved.
-- **`notFuture` does not need the `from` date.** A `from` date that cannot be
-  read, or a reference that cannot be resolved (an instance of a repeating form
-  that the rule does not name), stops only the window part. `notFuture` is still
-  checked on the page, after saving and in the scan; staff see why the window is
-  not checked, and the post-save audit logs it as not checked.
+- **`notFuture` and `notPast` do not need the `from` date.** A `from` date that
+  cannot be read, or a reference that cannot be resolved (an instance of a
+  repeating form that the rule does not name), stops only the window part.
+  `notFuture` and `notPast` are still checked on the page, after saving and in
+  the scan; staff see why the window is not checked, and the post-save audit
+  logs it as not checked.
 - **A plain `from` field must share an event with the tagged field.** `[field]`
   reads the same event. If no event collects both forms, the rule is refused:
   name the event, as `[baseline_arm_1][visit_date]`.
@@ -1483,13 +1495,14 @@ warning.
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. The same
   setting decides `notPast` and a `from` of `today` or `now`. A page left open
   across a daylight-saving change follows it.
-- **A date and time gets a small margin.** It may run up to 120 seconds past
-  the server's "now", on the page, in the post-save audit and in the scan. On the
-  page the margin also covers how far the computer's clock runs ahead of the
-  server's, up to 10 minutes, so REDCap's Now button and `@NOW`, which use the
-  computer's clock, are not refused on a computer whose clock is a little fast.
-  The audit allows only the 120 seconds and logs a later time as `future`. The
-  computer's time zone adds no margin, and a date has none.
+- **A date and time gets a small margin.** On the page it may run up to 120
+  seconds past the server's "now", plus how far the computer's clock runs ahead
+  of or behind the server's, up to 10 minutes, so REDCap's Now button and `@NOW`,
+  which use the computer's clock, are not refused on a computer whose clock is a
+  little off. After saving, the module cannot see that computer's clock, so the
+  post-save audit and the scan allow the most the page could have: 12 minutes
+  either side of the moment the value was saved. The computer's time zone adds
+  no margin, and a date has none.
 - **One time zone per project.** `@NOW` and `@TODAY` fill in the computer's
   time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
   server's. `notFuture` on a field filled by one of the last four is refused when
@@ -1503,15 +1516,17 @@ warning.
   compares the times as written, so across a daylight-saving change the window
   spans 5 or 7 hours of elapsed time.
 - **The server checks every save.** The post-save audit logs a violation as
-  `type: window` with reason `window-early`, `window-late`, `future` or `past`,
-  and `as_of` names the day a part judged against today used. Saving only the
-  form that holds the `from` date re-checks the windows counted from it.
+  `type: window` with reason `window-early`, `window-late`, `future` or `past`.
+  `as_of` names the day the verdict was judged against, on a verdict that rests
+  on that day. Saving only the form that holds the `from` date re-checks the
+  windows counted from it.
 - **The Validation scan** reports the same findings, with "Date outside allowed
   window", "Date in the future" or "Date in the past" in the Issue column and
-  the missed bound in the detail line. Where the log does not show when a value
-  was saved, `notFuture` is judged against the day the scan runs. Each part of a
-  durable scan reads the clock when that part runs. A durable scan's report
-  leaves out the "Judged against" sentence.
+  the missed bound in the detail line, such as "The window opens 21 days from
+  [visit_date_bl]." or "The date must be in last month.". Where the log does not
+  show when a value was saved, `notFuture` is judged against the day the scan
+  runs. Each part of a durable scan reads the clock when that part runs, and
+  stores the day each finding was judged against (`as_of`) for its report.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys

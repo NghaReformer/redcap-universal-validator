@@ -179,7 +179,10 @@ date against a datetime, and `notFuture` exactly at today, at the next minute
 and one second ahead of now. The clock is an input, so no case depends on the
 day the tests run. `window_js.cjs` also checks `QRID_clockNow`: the page clock
 moves forward with `Date.now()`, never backwards, and is null without a valid
-server clock.
+server clock. The fixture's `calendar` cases lock the month, week and period
+arithmetic, its `spread` cases a window counted from the span of "now", and its
+`labels` cases the name of a period, which the page shows and the scan report
+repeats.
 
 - `window_dom_js.cjs` boots the browser rule on a stub page: the message names
   the bounds in the field's format, the survey message leaves out the `from`
@@ -194,8 +197,10 @@ server clock.
   the audit and the scan judging each value against the day it was saved.
 - `value_stamps_php.php` reads a mock of REDCap's log through
   `php/ValueStamps.php`: the `data_values` format with repeating instances,
-  checkbox and ambiguous lines, the newest row winning, paging and its cap, the
-  record ID compared as bytes, the time zones, and the records held in memory.
+  checkbox and ambiguous lines, values that span lines, the newest row winning,
+  paging and its cap, the record ID compared as bytes, the time zones, and the
+  records held in memory. `tests/mysql/cases/stamps.php` runs the same reader
+  against a real server, with the durable finding's `as_of` column.
 
 ## `lookup_php.php` and `lookup_js.cjs` — how lookups compare values
 

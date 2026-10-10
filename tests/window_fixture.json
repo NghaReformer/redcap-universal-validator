@@ -125,7 +125,16 @@
     {"name": "pastNow: past the margin", "spec": {"notPast": true, "type": "datetime"}, "value": "2026-10-09 14:27", "anchor": null, "clock": {"today": "2026-10-09", "now": "2026-10-09 14:30:00", "futureNow": "2026-10-09 14:32:00", "pastNow": "2026-10-09 14:28:00"}, "verdict": "past", "earliest": null, "latest": null},
     {"name": "futureNow does not move a date field's today", "spec": {"notFuture": true, "type": "date"}, "value": "2026-10-10", "anchor": null, "clock": {"today": "2026-10-09", "now": "2026-10-09 14:30:00", "futureNow": "2026-10-10 14:30:00"}, "verdict": "future", "earliest": null, "latest": null},
     {"name": "an unreadable futureNow falls back to now", "spec": {"notFuture": true, "type": "datetime"}, "value": "2026-10-09 14:31", "anchor": null, "clock": {"today": "2026-10-09", "now": "2026-10-09 14:30:00", "futureNow": "soon"}, "verdict": "future", "earliest": null, "latest": null},
-    {"name": "an unreadable pastNow falls back to now", "spec": {"notPast": true, "type": "datetime"}, "value": "2026-10-09 14:29", "anchor": null, "clock": {"today": "2026-10-09", "now": "2026-10-09 14:30:00", "pastNow": "2026-13-01 00:00:00"}, "verdict": "past", "earliest": null, "latest": null}
+    {"name": "an unreadable pastNow falls back to now", "spec": {"notPast": true, "type": "datetime"}, "value": "2026-10-09 14:29", "anchor": null, "clock": {"today": "2026-10-09", "now": "2026-10-09 14:30:00", "pastNow": "2026-13-01 00:00:00"}, "verdict": "past", "earliest": null, "latest": null},
+    {"name": "notPast with a period: earlier this week is past", "spec": {"period": "week", "notPast": true, "type": "date", "fromType": "date"}, "value": "2026-10-05", "anchor": "2026-10-09", "verdict": "past", "earliest": "2026-10-05", "latest": "2026-10-11"},
+    {"name": "notPast with a period: today passes", "spec": {"period": "week", "notPast": true, "type": "date", "fromType": "date"}, "value": "2026-10-09", "anchor": "2026-10-09", "verdict": "ok", "earliest": "2026-10-05", "latest": "2026-10-11"},
+    {"name": "period last week (Sunday): its Sunday is in", "spec": {"period": "week", "offLo": -1, "offHi": -1, "weekStart": "sunday", "type": "date", "fromType": "date"}, "value": "2026-09-27", "anchor": "2026-10-09", "verdict": "ok", "earliest": "2026-09-27", "latest": "2026-10-03"},
+    {"name": "period last week (Sunday): this Sunday is late", "spec": {"period": "week", "offLo": -1, "offHi": -1, "weekStart": "sunday", "type": "date", "fromType": "date"}, "value": "2026-10-04", "anchor": "2026-10-09", "verdict": "window-late", "earliest": "2026-09-27", "latest": "2026-10-03"},
+    {"name": "months on datetime_seconds: clamped to the month end, time kept", "spec": {"lo": 0, "hi": 1, "unit": "months", "type": "datetime_seconds", "fromType": "datetime_seconds"}, "value": "2026-02-28 08:00:00", "anchor": "2026-01-31 08:00:00", "verdict": "ok", "earliest": "2026-01-31 08:00:00", "latest": "2026-02-28 08:00:00"},
+    {"name": "months on datetime_seconds: a second after the month end", "spec": {"lo": 0, "hi": 1, "unit": "months", "type": "datetime_seconds", "fromType": "datetime_seconds"}, "value": "2026-02-28 08:00:01", "anchor": "2026-01-31 08:00:00", "verdict": "window-late", "earliest": "2026-01-31 08:00:00", "latest": "2026-02-28 08:00:00"},
+    {"name": "years on datetime_seconds: 29 February plus a year", "spec": {"lo": 0, "hi": 1, "unit": "years", "type": "datetime_seconds", "fromType": "datetime_seconds"}, "value": "2025-02-28 12:00:01", "anchor": "2024-02-29 12:00:00", "verdict": "window-late", "earliest": "2024-02-29 12:00:00", "latest": "2025-02-28 12:00:00"},
+    {"name": "notPast on datetime_seconds: a second ago is past", "spec": {"notPast": true, "type": "datetime_seconds"}, "value": "2026-10-09 14:29:59", "anchor": null, "verdict": "past", "earliest": null, "latest": null},
+    {"name": "notPast on datetime_seconds: now is fine", "spec": {"notPast": true, "type": "datetime_seconds"}, "value": "2026-10-09 14:30:00", "anchor": null, "verdict": "ok", "earliest": null, "latest": null}
   ],
   "calendar": [
     {"fn": "shiftMonths", "args": ["2026-01-31", 1], "out": "2026-02-28"},
@@ -186,6 +195,25 @@
     {"name": "today [-30,0] days: a day too early", "spec": {"lo": -30, "hi": 0, "type": "date", "fromType": "date"}, "value": "2026-09-08", "anchorLo": "2026-10-09", "anchorHi": "2026-10-09", "verdict": "window-early", "earliest": "2026-09-09", "latest": "2026-10-09"},
     {"name": "now [-1,0] months: the bounds keep each anchor's time", "spec": {"lo": -1, "hi": 0, "unit": "months", "type": "datetime", "fromType": "datetime_seconds"}, "value": "2026-09-09 14:28", "anchorLo": "2026-10-09 14:28:00", "anchorHi": "2026-10-09 14:32:00", "verdict": "ok", "earliest": "2026-09-09 14:28:00", "latest": "2026-10-09 14:32:00"},
     {"name": "now [-1,0] months: a minute before the early bound", "spec": {"lo": -1, "hi": 0, "unit": "months", "type": "datetime", "fromType": "datetime_seconds"}, "value": "2026-09-09 14:27", "anchorLo": "2026-10-09 14:28:00", "anchorHi": "2026-10-09 14:32:00", "verdict": "window-early", "earliest": "2026-09-09 14:28:00", "latest": "2026-10-09 14:32:00"},
-    {"name": "now with a period: the same week either way", "spec": {"period": "week", "type": "datetime", "fromType": "datetime_seconds"}, "value": "2026-10-05 00:00", "anchorLo": "2026-10-09 14:28:00", "anchorHi": "2026-10-09 14:32:00", "verdict": "ok", "earliest": "2026-10-05 00:00:00", "latest": "2026-10-11 23:59:59"}
+    {"name": "now with a period: the same week either way", "spec": {"period": "week", "type": "datetime", "fromType": "datetime_seconds"}, "value": "2026-10-05 00:00", "anchorLo": "2026-10-09 14:28:00", "anchorHi": "2026-10-09 14:32:00", "verdict": "ok", "earliest": "2026-10-05 00:00:00", "latest": "2026-10-11 23:59:59"},
+    {"name": "a period across the margin takes both periods (callers pass one anchor for a period)", "spec": {"period": "month", "type": "datetime", "fromType": "datetime_seconds"}, "value": "2026-09-15 10:00", "anchorLo": "2026-09-30 23:58:00", "anchorHi": "2026-10-01 00:02:00", "verdict": "ok", "earliest": "2026-09-01 00:00:00", "latest": "2026-10-31 23:59:59"}
+  ],
+  "labels": [
+    {"args": ["month", -1, -1, "", true], "out": "last month"},
+    {"args": ["week", 0, 0, "", true], "out": "this week"},
+    {"args": ["week", 1, 1, "", true], "out": "next week"},
+    {"args": ["month", -2, -2, "", true], "out": "the month 2 months ago"},
+    {"args": ["year", 3, 3, "", true], "out": "the year 3 years from now"},
+    {"args": ["month", -3, -1, "", true], "out": "the 3 months before this one"},
+    {"args": ["month", 1, 3, "", true], "out": "the 3 months after this one"},
+    {"args": ["quarter", -1, 0, "", true], "out": "this quarter and the 1 quarter before it"},
+    {"args": ["year", 0, 2, "", true], "out": "this year and the 2 years after it"},
+    {"args": ["month", -1, 1, "", true], "out": "last month to next month"},
+    {"args": ["month", 0, 0, "[visit_date]", false], "out": "the month of [visit_date]"},
+    {"args": ["week", -1, -1, "[visit_date]", false], "out": "1 week before the week of [visit_date]"},
+    {"args": ["month", -3, -1, "[visit_date]", false], "out": "1 to 3 months before the month of [visit_date]"},
+    {"args": ["week", 1, 2, "[x]", false], "out": "1 to 2 weeks after the week of [x]"},
+    {"args": ["month", -1, 2, "[x]", false], "out": "1 month before the month of [x] to 2 months after the month of [x]"},
+    {"args": ["month", 0, 0, "2026-01-01", false], "out": "the month of 2026-01-01"}
   ]
 }

@@ -152,6 +152,7 @@ $cases = array(
     'walk',         // RecordManifestSource over REDCap-shaped tables
     'dag',          // one group axis, and the two halves of a run agreeing about a record
     'fence',        // SourceFence: versions, retention of the log, catch-up paging
+    'stamps',       // ValueStamps: the day a value was saved, from the log; a finding's as_of
     'planning',     // ScanPlanner: a project to a frozen manifest
     'worker',       // ScanWorker against the real store and a real fence
     'uniqueness',   // UniqueFinalizer: duplicates without holding the project

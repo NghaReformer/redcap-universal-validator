@@ -641,9 +641,9 @@ const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
     dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' };
   const env = boot([v], { clock: CLK, windowSaved: { seen: null }, rules: [rule] });
   const msg = wMsg(env, 'seen');
-  check('saved value unreadable: notPast is not judged', /OK/.test(msg.innerHTML) && !/before today/.test(msg.innerHTML));
+  check('saved value unreadable: notPast is not judged, and a pass shows nothing', !shown(msg));
   v.value = '2026-10-07'; v.fire('change');
-  check('saved value unreadable: not judged even when changed', /OK/.test(msg.innerHTML) && !/before today/.test(msg.innerHTML));
+  check('saved value unreadable: not judged even when changed', !shown(msg));
   v.value = '2026-10-10'; v.fire('change');
   check('saved value unreadable: notFuture still judges', /after today \(2026-10-09\)/.test(msg.innerHTML));
 }
@@ -805,6 +805,74 @@ const CLK = { today: '2026-10-09', now: '2026-10-09 12:00:00' };
   const v4 = dateEl('d', '2026-10-01');
   env = boot([v4], { clock: CLK, rules: [{ type: 'window', fields: ['d'], windowNotPast: true, dateType: 'date', dateFormat: 'ymd' }] });
   check('notPast alone has something to check', !cfgErr(env, 'd'));
+}
+
+// ---- 23) unchanged values, "now" with a period, the save-time check ----------------
+{
+  // notFuture still judges an unchanged value, but a pass shows nothing: the
+  // window counted from today was left out.
+  const v = dateEl('seen', '01-10-2026');
+  const rule = { type: 'window', fields: ['seen'], windowAnchor: 'today', windowLo: -7, windowHi: 0, windowUnit: 'days',
+    windowNotFuture: true, dateType: 'date', dateFormat: 'dmy', blockSave: 'hard' };
+  let env = boot([v], { clock: CLK, windowSaved: { seen: '2026-10-01' }, rules: [rule] });
+  check('unchanged value with notFuture: a pass shows nothing', !shown(wMsg(env, 'seen')));
+  check('unchanged value with notFuture: test() has no verdict', env.NS.validators.seen.test() === null);
+  const v2 = dateEl('seen', '20-10-2026');
+  env = boot([v2], { clock: CLK, windowSaved: { seen: '2026-10-20' }, rules: [rule] });
+  check('unchanged value with notFuture: a future date is still shown', /after today \(09-10-2026\)/.test(wMsg(env, 'seen').innerHTML));
+}
+{
+  // A "from" that cannot be resolved: the note promises notPast only for a new value.
+  const rule = { type: 'window', fields: ['appt'], windowFrom: '[enrol_date]', windowFromOp: ['withheld'],
+    windowFromOpWhy: ['Extended reference unavailable: ambiguous.'], windowLo: 0, windowHi: 30, windowUnit: 'days',
+    windowNotPast: true, dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd' };
+  const v = dateEl('appt', '2026-10-12');
+  let env = boot([v], { clock: CLK, windowSaved: { appt: '2026-10-12' }, rules: [rule] });
+  let msg = wMsg(env, 'appt');
+  check('withheld "from", unchanged value: the note does not promise notPast', /not checked on this page/.test(msg.innerHTML)
+    && !/still flagged/.test(msg.innerHTML));
+  v.value = '2026-10-13'; v.fire('change');
+  check('withheld "from", changed value: the note says notPast still runs', /A date before today is still flagged/.test(msg.innerHTML));
+}
+{
+  // "now" with a period names the period holding the server's time, with no
+  // margin: a computer 10 minutes slow does not reach back into September.
+  const SRV = Date.UTC(2026, 9, 1, 0, 1, 0);
+  Date.now = () => SRV - 600000;
+  const v = dateEl('seen_at', '2026-09-30 23:59');
+  const env = boot([v], { clock: { today: '2026-10-01', now: '2026-10-01 00:01:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['seen_at'], windowAnchor: 'now', windowPeriod: 'month', windowOffLo: 0, windowOffHi: 0,
+      dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'seen_at');
+  check('"now" with a period: a minute before the month is early', /in this month: 2026-10-01 to 2026-10-31/.test(msg.innerHTML));
+  v.value = '2026-10-01 00:00'; v.fire('change');
+  check('"now" with a period: the month itself passes', /OK/.test(msg.innerHTML));
+  Date.now = realNow;
+}
+{
+  // notPast on a date and time is judged again when the form is saved: a time
+  // filled in with the Now button 5 minutes before saving is in the past.
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV;
+  const v = dateEl('appt_at', '2026-10-09 14:30');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['appt_at'], windowNotPast: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
+  check('notPast datetime: the Now button passes when clicked', /OK/.test(wMsg(env, 'appt_at').innerHTML));
+  Date.now = () => SRV + 300000;
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('notPast datetime: saved 5 minutes later, the save finds it past', ev._prevented === true
+    && /in the past/.test(wMsg(env, 'appt_at').innerHTML));
+  Date.now = realNow;
+}
+{
+  // A date and time shown D-M-Y is compared with its saved Y-M-D form.
+  const v = dateEl('seen_at', '09-10-2026 14:00');
+  const env = boot([v], { clock: CLK, windowSaved: { seen_at: '2026-10-09 14:00' }, rules: [{ type: 'window', fields: ['seen_at'],
+    windowNotPast: true, dateType: 'datetime', dateFormat: 'dmy', blockSave: 'hard' }] });
+  const msg = wMsg(env, 'seen_at');
+  check('datetime D-M-Y: the saved value in its own format is unchanged', !shown(msg));
+  v.value = '09-10-2026 11:00'; v.fire('change');
+  check('datetime D-M-Y: a changed time is judged', /in the past/.test(msg.innerHTML));
 }
 
 Date.now = realNow;

@@ -39,20 +39,14 @@
     "survey": "This date is too early.",
     "detail": ["The window opens {windowLo} {windowUnit} from {windowFrom}.",
                "The window opens {windowLo} {windowUnit} from {windowAnchor}.",
-               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowFrom}.",
-               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowAnchor}.",
-               "The rule allows the {windowPeriod} holding {windowFrom}.",
-               "The rule allows the {windowPeriod} holding {windowAnchor}."]
+               "The date must be in {windowPeriodText}."]
   },
   "window/window-late": {
     "staff":  "The date is later than its allowed window.",
     "survey": "This date is too late.",
     "detail": ["The window closes {windowHi} {windowUnit} from {windowFrom}.",
                "The window closes {windowHi} {windowUnit} from {windowAnchor}.",
-               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowFrom}.",
-               "The rule allows the {windowPeriod}s {windowOffLo} to {windowOffHi} from the one holding {windowAnchor}.",
-               "The rule allows the {windowPeriod} holding {windowFrom}.",
-               "The rule allows the {windowPeriod} holding {windowAnchor}."]
+               "The date must be in {windowPeriodText}."]
   },
   "window/future": {
     "staff":  "The date is in the future.",

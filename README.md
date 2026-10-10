@@ -545,8 +545,8 @@ that it is not after today or not before it:
 - **Judged on the day it was saved.** A part counted from today or now, a period
   without `from`, and `notPast` are judged on the form only for a new or changed
   value, and after saving against the day REDCap's log shows the value was
-  saved. Use them for timeliness; count clinical windows from a date in the
-  record.
+  saved; a value the log does not show is reported as not checked. Use them for
+  timeliness; count clinical windows from a date in the record.
 - **Date fields only:** Text fields with date, datetime or datetime-with-seconds
   validation, in any display format. The `from` field must be the same kind of
   date. The message names the allowed dates in the field's own format.

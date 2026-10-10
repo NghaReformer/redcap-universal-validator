@@ -185,21 +185,34 @@ final class ValueStamps
 
     /**
      * data_values as instance => field => value. A field logged twice in one
-     * row maps to null (ambiguous). Lines of another shape (a checkbox code,
-     * a file, a DAG change) are skipped.
+     * row maps to null (ambiguous), and so does a value that spans lines (a
+     * notes field): its later lines belong to it and are never read as
+     * entries, up to the line that ends with ',. Lines of another shape (a
+     * checkbox code, a file, a DAG change) are skipped.
      */
     public static function parseDataValues($text)
     {
         $out = [];
         if (!is_string($text) || $text === '') return $out;
         $instance = 1;
+        $open = false;   // inside a value that spans lines
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
+            if ($open) {
+                if (preg_match("/',$/D", $line)) $open = false;
+                continue;
+            }
             if ($i === 0 && preg_match('/^\[instance = (\d+)\],?$/D', $line, $m)) {
                 $instance = max(1, (int) $m[1]);
                 continue;
             }
-            if (!preg_match("/^([a-z][a-z0-9_]*) = '(.*)',?$/D", $line, $m)) continue;
-            $out[$instance][$m[1]] = (isset($out[$instance]) && array_key_exists($m[1], $out[$instance])) ? null : $m[2];
+            if (preg_match("/^([a-z][a-z0-9_]*) = '(.*)',?$/D", $line, $m)) {
+                $out[$instance][$m[1]] = (isset($out[$instance]) && array_key_exists($m[1], $out[$instance])) ? null : $m[2];
+                continue;
+            }
+            if (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
+                $out[$instance][$m[1]] = null;
+                $open = true;
+            }
         }
         return $out;
     }

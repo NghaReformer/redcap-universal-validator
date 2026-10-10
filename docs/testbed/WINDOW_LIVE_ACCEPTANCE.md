@@ -7,11 +7,12 @@ D-M-Y and M-D-Y date fields that ships with it. The automated suites
 real REDCap date inputs, real save paths and the real server clock.
 
 Target: chpr-redcap.org pid 149 (longitudinal, event and instance references
-enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 31
+enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 32
 fields on one new instrument `uv_window_test`. Every annotation in it was run
 through the module offline before this sheet was written: the 26 other fields
 configure (`uw_utc` only while the project's time zone is not behind UTC, see
 H5), and the 5 `uw_bad_*` fields show the errors listed in section F.
+`uw_notes` has no rule; I12 uses it.
 
 ---
 
@@ -19,8 +20,8 @@ H5), and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 1. Deploy the release that contains `@UVWINDOW` and confirm the version in
    Control Center.
-2. **Append, never replace.** Download the current dictionary, append the 31
-   rows of the CSV, upload. The diff must report one new instrument and 31 new
+2. **Append, never replace.** Download the current dictionary, append the 32
+   rows of the CSV, upload. The diff must report one new instrument and 32 new
    fields, and nothing else.
 3. Designate `uv_window_test` on `event_1_arm_1` (same event as `xe_enrol`,
    so `uw_offpage` reads the consent date from another form of the same event).
@@ -143,15 +144,16 @@ fields saved, such as a new record created for this section.
 |---|---|---|
 | I1 | `uw_today` = 8 days before today, press Save | Red "This date must be between ... and ..." (7 days back to today) with "(-7 to 0 days from today)"; save blocked |
 | I2 | `uw_today` = 5 days before today, press Save. Reopen the record | Saved. On reopening, `uw_today` shows no message, since an unchanged value is not judged against today on the form |
-| I3 | Open the module log for the save in I2 | No `uvalidate-unconfigurable` entry saying "the day this value was saved is not known": the post-save audit found the save day. Note whether REDCap's log row for the save existed when the hook ran (live check of the log timing) |
-| I4 | `uw_lastmonth` = today's date (advisory), press Save | Red "This date must be in last month: 01-MM-YYYY to ..." with last month's first and last days; saved. The module log has reason `window-late` and `as_of` = today |
+| I3 | Open the module log for the save in I2 | No `uvalidate-unconfigurable` entry saying "the day this value was saved is not known": REDCap logged the save before the module's audit ran, and the audit read it. If every save of `uw_today` gets that entry, REDCap logs after the audit on this version: stop and report it, because the audit then cannot judge a value just saved |
+| I4 | `uw_lastmonth` = today's date (advisory), press Save | Red "This date must be in last month: YYYY-MM-01 to YYYY-MM-DD." with last month's first and last days (`uw_lastmonth` shows Y-M-D); saved. The module log has reason `window-late` and `as_of` = today |
 | I5 | `uw_thisweek` = next Monday | Red "This date must be in this week: <Monday> to <Sunday>." |
 | I6 | Project setting "First day of the week for @UVWINDOW" = Sunday, reload; `uw_thisweek` = the coming Sunday, then the Sunday just past | Red, then OK. Set the setting back to Monday after |
 | I7 | `uw_notpast` (D-M-Y) = yesterday, press Save | "This date is before today (DD-MM-YYYY)."; save blocked. Today: OK |
 | I8 | Click REDCap's Now button beside `uw_now_win`; then type the server's time minus 3 hours | OK; then red, window early |
 | I9 | `uw_fixed` = 2025-12-31, then 2026-01-01 | Red "This date must be on or after 2026-01-01." with "(at least 0 days from 2026-01-01)"; then OK |
-| I10 | Run the Validation scan | `uw_lastmonth` from I4 is listed as "Date outside allowed window", and the "What is wrong" column ends with "Judged against <today>, when this value was saved." `uw_today` from I2 is not listed |
+| I10 | Run the Validation scan | `uw_lastmonth` from I4 is listed as "Date outside allowed window", and the "What is wrong" column reads "The date is later than its allowed window. The date must be in last month. Judged against <today>, when this value was saved." `uw_today` from I2 is not listed |
 | I11 | **[repeating instrument, optional]** Make `uv_window_test` repeating, save `uw_lastmonth` = today's date on instance 2, open the module log | The entry for instance 2 has `as_of` = today and no "not known" entry: the log's `[instance = 2]` line was read |
+| I12 | Save `uw_notes` with two lines, the second exactly `uw_today = '2020-01-01'`. Run the Validation scan, and open REDCap's Logging page for that save | `uw_today` keeps the verdict and the day it had before: the line inside the notes value is not read as a save of `uw_today`. Note how the Logging page shows the two lines |
 
 ## Sign-off
 
@@ -165,7 +167,7 @@ fields saved, such as a new record created for this section.
 | 6 | Section G: the D-M-Y duplicate is found live | ☐ |
 | 7 | Section H: the Now button passes, D-M-Y conditions compare stored dates, a UTC default is refused where it would read as future | ☐ |
 | 8 | H6 to H8: a record-scope D-M-Y duplicate is found live, the @TODAY-UTC note reaches every branch, a condition read at page load never blocks and says so | ☐ |
-| 9 | Section I: periods and today-relative windows work, an unchanged value is not judged on reopening, the audit and the scan find the save day in REDCap's log | ☐ |
+| 9 | Section I: periods and today-relative windows work, an unchanged value is not judged on reopening, REDCap logs a save before the audit runs and the audit and the scan find the save day in its log, a notes value is not read as a save of another field | ☐ |
 
 ## Cleanup
 

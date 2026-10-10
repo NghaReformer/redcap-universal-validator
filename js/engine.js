@@ -1688,6 +1688,27 @@ function QRID_clockLenient(clock,errorSeconds){
 function QRID_deviceClockError(base){
   return (base&&typeof base==='object'&&QRID_finiteNumber(base.utc))?(QRID_CLOCK_T0-base.utc)/1000:null;
 }
+/* A period by name: "last month", "the 3 months before this one", "the month
+   of [visit_date]". rel: counted from today or now; otherwise name is the
+   "from". Twin of TemporalLogic::periodLabel, which names it in the scan
+   report; the "labels" cases of tests/window_fixture.json lock both. */
+function QRID_windowPeriodLabel(p, a, b, name, rel){
+  function plural(n){ return n + " " + p + (n === 1 ? "" : "s"); }
+  function one(o){
+    if(rel) return o === 0 ? "this " + p : o === -1 ? "last " + p : o === 1 ? "next " + p
+                 : "the " + p + " " + plural(Math.abs(o)) + (o < 0 ? " ago" : " from now");
+    var of = "the " + p + " of " + name;
+    return o === 0 ? of : plural(Math.abs(o)) + (o < 0 ? " before " : " after ") + of;
+  }
+  if(a === b) return one(a);
+  if(rel && b === -1) return "the " + plural(-a) + " before this one";
+  if(rel && a === 1) return "the " + plural(b) + " after this one";
+  if(rel && b === 0) return "this " + p + " and the " + plural(-a) + " before it";
+  if(rel && a === 0) return "this " + p + " and the " + plural(b) + " after it";
+  if(!rel && b < 0) return (-b) + " to " + plural(-a) + " before the " + p + " of " + name;
+  if(!rel && a > 0) return a + " to " + plural(b) + " after the " + p + " of " + name;
+  return one(a) + " to " + one(b);
+}
 /* The verdict for a window counted from a moment known only to within a
    margin (a "from" of "now", which a computer a little off fills in): a value
    passes when some anchor between anchorLo and anchorHi accepts it. The
@@ -3778,15 +3799,19 @@ function QRIDWindowInit(QRID_CONFIG){
      field itself (the extended path folds [baseline_arm_1][visit_date] to a live
      ref on the baseline visit) is not an anchor: no window applies there. A
      "from" of "now" is the span QRID_clockLenient gives, so the window's early
-     end counts from pastNow and its late end from futureNow. */
+     end counts from pastNow and its late end from futureNow. A period counted
+     from "now" takes the plain now: a period is whole calendar days, and a
+     margin would let it reach into the period before or after. r.skipped marks
+     a value whose today-relative parts were left out (an unchanged value). */
   function verdictOf(V, fieldName){
     var val = QRID_WHEN.readRef(fieldName, null);
-    var spec = V.spec, op = V.fromOp, anchor = null, anchorHi;
+    var spec = V.spec, op = V.fromOp, anchor = null, anchorHi, skipped = false;
     if(V.todayRelative && !isNewValue(V, fieldName, val)){
       spec = {};
       for(var k in V.spec) if(Object.prototype.hasOwnProperty.call(V.spec, k)) spec[k] = V.spec[k];
       spec.notPast = false;
       if(V.clockAnchor){ spec.lo = null; spec.hi = null; spec.period = null; }
+      skipped = true;
     }
     var windowed = spec.lo !== null || spec.hi !== null || spec.period !== null;
     var clock = (spec.notFuture || spec.notPast || (V.clockAnchor && windowed))
@@ -3800,6 +3825,7 @@ function QRIDWindowInit(QRID_CONFIG){
     anchorHi = anchor;
     if(op && op[0] === "anchor" && windowed){
       if(op[1] === "today"){ anchor = judge ? judge.today : false; anchorHi = anchor; }
+      else if(op[1] === "now" && spec.period !== null){ anchor = judge ? judge.now : false; anchorHi = anchor; }
       else if(op[1] === "now"){
         anchor = judge ? (judge.pastNow != null ? judge.pastNow : judge.now) : false;
         anchorHi = judge ? (judge.futureNow != null ? judge.futureNow : judge.now) : false;
@@ -3809,27 +3835,12 @@ function QRIDWindowInit(QRID_CONFIG){
     var r = QRID_windowVerdictSpread(spec, val, V.dateFormat, anchor, anchorHi, V.fromFormat, judge);
     r.clock = clock;
     r.anchor = anchor;
+    r.skipped = skipped;
     return r;
   }
   /* A period by name: "last month", "the month of [visit_date]". */
   function periodLabel(V){
-    var p = V.spec.period, a = V.spec.offLo, b = V.spec.offHi, name = V.fromName;
-    var rel = V.clockAnchor;
-    function plural(n){ return n + " " + p + (n === 1 ? "" : "s"); }
-    function one(o){
-      if(rel) return o === 0 ? "this " + p : o === -1 ? "last " + p : o === 1 ? "next " + p
-                   : "the " + p + " " + plural(Math.abs(o)) + (o < 0 ? " ago" : " from now");
-      var of = "the " + p + " of " + name;
-      return o === 0 ? of : plural(Math.abs(o)) + (o < 0 ? " before " : " after ") + of;
-    }
-    if(a === b) return one(a);
-    if(rel && b === -1) return "the " + plural(-a) + " before this one";
-    if(rel && a === 1) return "the " + plural(b) + " after this one";
-    if(rel && b === 0) return "this " + p + " and the " + plural(-a) + " before it";
-    if(rel && a === 0) return "this " + p + " and the " + plural(b) + " after it";
-    if(!rel && b < 0) return (-b) + " to " + plural(-a) + " before the " + p + " of " + name;
-    if(!rel && a > 0) return a + " to " + plural(b) + " after the " + p + " of " + name;
-    return one(a) + " to " + one(b);
+    return QRID_windowPeriodLabel(V.spec.period, V.spec.offLo, V.spec.offHi, V.fromName, V.clockAnchor);
   }
   /* The default wording names the allowed dates the way the field shows them.
      Survey respondents are not told which field the window counts from; a
@@ -3888,18 +3899,20 @@ function QRIDWindowInit(QRID_CONFIG){
     function inert(){ msg.style.display = "none"; setGuard(false); QRID_setModeState(input, "w", null); }
     /* The window part was not sent to this page. Staff are told it is checked
        on save; a survey respondent is told nothing. */
-    function withheld(V){
+    function withheld(V, r){
       if(QRID_IS_SURVEY){ inert(); return; }
       if(V.withheldWhy){
         /* The "from" date cannot be resolved: the window part is checked
-           nowhere, but a date after today is still judged. */
+           nowhere, but a date after today is still judged, and a date before
+           today too when the value is new (an unchanged one skips notPast). */
+        var np = V.spec.notPast && !r.skipped;
         msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
           "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
         msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
           " is not checked on this page — " + QRID_escapeHtml(V.withheldWhy.join(" ")) +
-          (V.spec.notFuture && V.spec.notPast ? " A date other than today is still flagged."
+          (V.spec.notFuture && np ? " A date other than today is still flagged."
            : V.spec.notFuture ? " A date after today is still flagged."
-           : V.spec.notPast ? " A date before today is still flagged." : "");
+           : np ? " A date before today is still flagged." : "");
         setGuard(false); QRID_setModeState(input, "w", null);
         return;
       }
@@ -3947,10 +3960,13 @@ function QRIDWindowInit(QRID_CONFIG){
       if(!clockHit && V.windowWithheld){
         /* inert here can only mean "nothing else to check": the value is typed */
         if(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === ""){ inert(); return; }
-        withheld(V); return;
+        withheld(V, r); return;
       }
       if(r.verdict !== "ok" && !clockHit && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
       var ok = r.verdict === "ok";
+      /* An unchanged value had its today-relative parts left out: a green OK
+         would claim a check that did not run, so a pass shows nothing. */
+      if(ok && r.skipped){ inert(); return; }
       styleMsg(msg, ok);
       QRID_setModeState(input, "w", ok ? "ok" : "bad");
       setGuard(!ok, clockHit ? V.futureBlock : V.blockSave);
@@ -3991,8 +4007,8 @@ function QRIDWindowInit(QRID_CONFIG){
         var a = QRID_activeVariants(VS);
         if(a.length !== 1 || a[0].deferred) return null;
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var v = verdictOf(a[0], f).verdict;
-        if(v === "ok" && a[0].windowWithheld) return null;   /* the window part was never checked */
+        var r = verdictOf(a[0], f), v = r.verdict;
+        if(v === "ok" && (a[0].windowWithheld || r.skipped)) return null;   /* a part was never checked */
         return v === "ok" ? true : (v === "future" || v === "past" || v === "window-early" || v === "window-late") ? false : null;
       } };
   });
@@ -6275,6 +6291,7 @@ window.INSPIREUniversalValidator = {
     keywordAnchorType: QRID_keywordAnchorType, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
     clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS, calendarUnits: QRID_CALENDAR_UNITS,
+    periodLabel: QRID_windowPeriodLabel,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
   },

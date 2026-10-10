@@ -1136,8 +1136,8 @@ final class SqlScanStore implements ScanStore
              record_id_bin, event_id, arm_id, instance, host_form, field, rule_source_id,
              rule_revision, rule_ord, check_type, reason_code, reason_bits, severity, dag_key,
              status_key, value_bin, value_len, value_fingerprint, value_truncated, value_binary,
-             value_expires_at, group_hmac, stage_epoch)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
+             value_expires_at, group_hmac, stage_epoch, as_of)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', [
             self::mustProject($f),
             $f['generation_id'], $f['identity'],
             // The RUN's sequence number. It used to be a per-record
@@ -1164,6 +1164,7 @@ final class SqlScanStore implements ScanStore
             isset($f['value_expires_at']) ? $f['value_expires_at'] : null,
             isset($f['group_hmac']) ? $f['group_hmac'] : null,
             $staged ? $f['stage_epoch'] : null,
+            isset($f['as_of']) ? (string) $f['as_of'] : null,
         ]);
     }
 
@@ -1266,7 +1267,7 @@ final class SqlScanStore implements ScanStore
     {
         $limit = max(1, min(100, (int) $limit));
         $sql = 'SELECT finding_id, record_id_bin, event_id, instance, host_form, field,
-                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated
+                       check_type, reason_code, rule_ord, dag_key, value_bin, value_truncated, as_of
                 FROM ' . Schema::table('finding') . '
                 WHERE project_id = ? AND generation_id = ? AND active_slot = 1
                   AND finding_id > ?';

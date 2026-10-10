@@ -302,7 +302,7 @@ function uv_resolve_schema($conn, $name) {
  * database job's last step fails the build on exactly that.
  */
 function uv_redcap_tables() {
-    return array('redcap_log_event', 'redcap_record_list', 'redcap_data', 'redcap_projects',
+    return array('redcap_log_event', 'redcap_log_event4', 'redcap_record_list', 'redcap_data', 'redcap_projects',
                  'uv_readonly_probe');
 }
 

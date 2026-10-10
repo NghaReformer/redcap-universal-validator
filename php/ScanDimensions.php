@@ -3,6 +3,7 @@
 namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/ModeRegistry.php';
+require_once __DIR__ . '/TemporalLogic.php';
 
 /**
  * Every LABEL a scan report needs, read once per scan.
@@ -197,6 +198,7 @@ final class ScanDimensions
         foreach (ModeRegistry::detailKeys($type) as $k) {
             if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
         }
+        $detail += ModeRegistry::derivedDetail($type, $r);
         return [
             'label'   => isset($r['note']) ? (string) $r['note'] : '',
             'message' => isset($r['message']) ? (string) $r['message'] : '',

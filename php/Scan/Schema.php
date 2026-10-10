@@ -540,6 +540,11 @@ final class Schema
         $f = $T('finding');
         $col($f, 'project_id',
             'ALTER TABLE ' . $f . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER finding_id');
+        // The day a @UVWINDOW verdict was judged against (the day the value
+        // was saved), for the report's "Judged against" sentence. NULL for
+        // every other finding.
+        $col($f, 'as_of',
+            'ALTER TABLE ' . $f . ' ADD COLUMN as_of VARCHAR(16) NULL');
 
         // Every key rebuilt with project_id LEADING, so a project-scoped query
         // can use it. Dropped and added in one statement each, so the table is

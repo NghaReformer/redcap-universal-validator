@@ -74,6 +74,11 @@ check('parse: a checkbox line is skipped', ValueStamps::parseDataValues("sym(2) 
 check('parse: a blank value', ValueStamps::parseDataValues("visit = ''") === [1 => ['visit' => '']]);
 check('parse: a field logged twice in one row is ambiguous', ValueStamps::parseDataValues("notes = 'x',\nvisit = '2026-10-01',\nvisit = '2026-01-01'")
     === [1 => ['notes' => 'x', 'visit' => null]]);
+check('parse: a value that spans lines is one entry, and its lines are not read as fields',
+    ValueStamps::parseDataValues("visit = '2026-10-01',\nnotes = 'first line\nw_past = '2026-10-09'\nlast line',\nwt = '1'")
+    === [1 => ['visit' => '2026-10-01', 'notes' => null, 'wt' => '1']]);
+check('parse: a value that spans lines to the end of the row', ValueStamps::parseDataValues("notes = 'a\nb = 'c'")
+    === [1 => ['notes' => null]]);
 check('parse: an instance line only counts first', ValueStamps::parseDataValues("visit = '2026-10-01',\n[instance = 3],\nwt = '1'")
     === [1 => ['visit' => '2026-10-01', 'wt' => '1']]);
 check('parse: nothing', ValueStamps::parseDataValues('') === [] && ValueStamps::parseDataValues(null) === []);
