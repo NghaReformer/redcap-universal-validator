@@ -302,24 +302,70 @@ function asText(o) { return JSON.stringify(o); }
   check('when false: emptied', by(els, 'wfa_z').value === '');
 }
 
-// ---- 7) what the page cannot judge leaves the fields as they are -------------------------
 {
+  // a branch that returns nothing owns no field, but the rule does: the other branch's fields are emptied
+  const els = form('1', '11', ['wfa_z']);
+  els.push(el('grp', 'a'));
+  const A = rule({ when: "[grp]='a'", rangeReturn: { z: 'wfa_z' } });
+  const B = rule({ when: "[grp]<>'a'" });
+  delete B.rangeReturn;
+  const env = boot(els, { growth: GROWTH, rules: [{ type: 'range', fields: ['weight'], branches: [A, B] }] });
+  check('branch a: the z-score is filled', by(els, 'wfa_z').value === '1.00');
+  by(els, 'grp').value = 'b'; by(els, 'grp').fire('change');
+  check('branch b returns nothing: the z-score of branch a is emptied (got ' + by(els, 'wfa_z').value + ')', by(els, 'wfa_z').value === '');
+  by(els, 'weight').value = '13'; by(els, 'weight').fire('change');
+  check('... branch b still judges, and still writes nothing (got ' + by(els, 'wfa_z').value + ')',
+    /higher than usual/.test(nMsg(env, 'weight').innerHTML) && by(els, 'wfa_z').value === '');
+}
+
+// ---- 7) what the page cannot judge leaves the fields as they are -------------------------
+/* a page whose fields already hold a value: every box says "kept". Each page of a test is
+   built from fresh elements: a field a page has bound is not bound a second time. */
+function keptForm() {
   const els = form('1', '11');
   for (const f of Object.values(ALL)) by(els, f).value = 'kept';
-  const env = boot(els, { rules: [rule({ rangeSexOp: ['withheld'], rangeAgeDobOp: ['withheld'], rangeAgeAtOp: ['lit', '2026-01-03'] })] });
-  check('an input withheld from this page: fields keep their value (got ' + asText(vals(els)) + ')',
+  return els;
+}
+{
+  const WITHHELD = { rangeSexOp: ['withheld'], rangeAgeDobOp: ['withheld'], rangeAgeAtOp: ['lit', '2026-01-03'] };
+  const els = keptForm();
+  const env = boot(els, { rules: [rule(WITHHELD)] });
+  check('an input withheld from this page, no table sent: fields keep their value (got ' + asText(vals(els)) + ')',
     Object.values(vals(els)).every((x) => x === 'kept'));
   check('... and no configuration error', !cfgErr(env, 'weight'));
-  const env2 = boot(els, { growth: GROWTH, rules: [rule({ rangeSexOp: ['withheld'], rangeAgeDobOp: ['withheld'], rangeAgeAtOp: ['lit', '2026-01-03'] })] });
-  check('... with a table too', Object.values(vals(els)).every((x) => x === 'kept') && !cfgErr(env2, 'weight'));
+  const els2 = keptForm();
+  const env2 = boot(els2, { growth: GROWTH, rules: [rule(WITHHELD)] });
+  check('... with a table too (got ' + asText(vals(els2)) + ')', Object.values(vals(els2)).every((x) => x === 'kept') && !cfgErr(env2, 'weight'));
+  // the same rule with every input readable does write: the keep above is the withheld input's doing
+  const els3 = keptForm();
+  boot(els3, { growth: GROWTH, rules: [rule({})] });
+  check('... and with the inputs readable the fields are written', vals(els3).wfa_z === '1.00');
 }
 {
   const CAP = ['this form already carries 4 growth reference tables, the most one page may carry (4), so this check runs when the record is saved.'];
-  const els = form('1', '11');
-  for (const f of Object.values(ALL)) by(els, f).value = 'kept';
+  const els = keptForm();
   const env = boot(els, { rules: [rule({ deferred: true, deferredOnSave: true, deferredWhy: CAP })] });
   check('deferred for the table cap: fields keep their value (the save fills them)', Object.values(vals(els)).every((x) => x === 'kept')
     && !cfgErr(env, 'weight'));
+  // with the table there too (the page was given it), a deferred rule still writes nothing
+  const els2 = keptForm();
+  boot(els2, { growth: GROWTH, rules: [rule({ deferred: true, deferredOnSave: true, deferredWhy: CAP })] });
+  check('... with the table on the page too', Object.values(vals(els2)).every((x) => x === 'kept'));
+}
+{
+  // one branch deferred by the server (the table is on the page for the other branch): the branch is
+  // not judged here, so the fields are left to the save
+  const WHY = ['this form already carries 4 growth reference tables, the most one page may carry (4), so this check runs when the record is saved.'];
+  const A = rule({ when: "[grp]='a'", rangeReturn: { z: 'wfa_z' } });
+  const els = keptForm(); els.push(el('grp', 'b'));
+  const env = boot(els, { growth: GROWTH, rules: [{ type: 'range', fields: ['weight'], branches: [A,
+    rule({ when: "[grp]<>'a'", deferred: true, deferredWhy: WHY })] }] });
+  check('a deferred branch: the fields keep their value (got ' + asText(vals(els)) + ')',
+    Object.values(vals(els)).every((x) => x === 'kept') && !cfgErr(env, 'weight'));
+  // the same branch not deferred does write: the keep above is the deferral's doing
+  const els2 = keptForm(); els2.push(el('grp', 'b'));
+  boot(els2, { growth: GROWTH, rules: [{ type: 'range', fields: ['weight'], branches: [A, rule({ when: "[grp]<>'a'" })] }] });
+  check('... the same branch, not deferred, writes (got ' + asText(vals(els2)) + ')', vals(els2).wfa_z === '1.00');
 }
 {
   // a branch conflict (two conditions true at once) judges and returns nothing
@@ -329,6 +375,44 @@ function asText(o) { return JSON.stringify(o); }
   boot(els, { growth: GROWTH, rules: [{ type: 'range', fields: ['weight'], branches: [
     rule({ when: "[grp]='a'", rangeReturn: { z: 'wfa_z' } }), rule({ when: "[grp]<>''", rangeReturn: { z: 'wfa_z' } })] }] });
   check('a branch conflict: the field keeps its value', by(els, 'wfa_z').value === 'kept');
+}
+
+// ---- 7b) a write sets off the rules that read the field, to a bounded depth ----------------
+/* a table where z = y - 1: the z-score of a z-score is a positive number again, so a chain of
+   rules, each reading the field the one before returned into, keeps going (a z-score is
+   written up to 999.99, so the numbers stay small) */
+const ROWS_U = ROWS_M.map(() => [1, 1, 1]);
+const T_UNIT = Object.assign({}, T_DAYS, { title: 'Test, unit table', male: ROWS_U, female: ROWS_U });
+function link(from, to) {
+  return Object.assign({ type: 'range', fields: [from], rangeReference: 't-unit', rangeMale: '1', rangeFemale: '2',
+    rangeDecimals: 1, rangeReturn: { z: to } }, LIVE);
+}
+{
+  const names = ['f1', 'f2', 'f3', 'f4', 'f5', 'f6'];
+  const els = form('1', '20', names);
+  boot(els, { growth: { 't-unit': T_UNIT }, rules: names.map((to, i) => link(i === 0 ? 'weight' : names[i - 1], to)) });
+  const got = () => names.map((f) => by(els, f).value);
+  check('opening: every link of the chain is filled (got ' + got() + ')',
+    same(got(), ['19.00', '18.00', '17.00', '16.00', '15.00', '14.00']));
+  by(els, 'weight').value = '30'; by(els, 'weight').fire('change');
+  // a write that sets off a write that sets off a write... goes 4 deep; the 5th and 6th link wait for the save
+  check('a change runs down the chain as far as the depth bound (got ' + got() + ')',
+    same(got(), ['29.00', '28.00', '27.00', '26.00', '15.00', '14.00']));
+}
+{
+  // two rules that return into each other's measured field settle only when the value reaches 0
+  // (each hop takes 1 off, from 500): the depth bound ends the loop long before. The stub gives up
+  // after 100 events on a field, so that a missing bound shows as a tripped breaker, not as a hang.
+  const els = form('1', '30', ['f1']);
+  let tripped = false;
+  const breaker = (e) => { const orig = e.dispatchEvent; let left = 100;
+    e.dispatchEvent = function (ev) { if (left-- <= 0) { tripped = true; throw new Error('runaway'); } return orig.call(this, ev); }; };
+  breaker(by(els, 'weight')); breaker(by(els, 'f1'));
+  boot(els, { growth: { 't-unit': T_UNIT }, rules: [link('weight', 'f1'), link('f1', 'weight')] });
+  by(els, 'weight')._events.length = 0; by(els, 'f1')._events.length = 0;
+  by(els, 'weight').value = '500'; by(els, 'weight').fire('change');
+  const heard = by(els, 'weight')._events.length + by(els, 'f1')._events.length;
+  check('two rules feeding each other: the loop is cut short (' + heard + ' events)', heard > 0 && !tripped);
 }
 
 // ---- 8) the rest -------------------------------------------------------------------------
@@ -344,6 +428,16 @@ function asText(o) { return JSON.stringify(o); }
   boot(els, { missingCodes: ['UNK'], growth: GROWTH, rules: [rule()] });
   check('a Missing Data Code in the measurement is blank: no z-score, the bounds stay (got ' + asText(vals(els)) + ')',
     vals(els).wfa_z === '' && vals(els).wfa_rng === '8.0 to 12.0 kg');
+}
+{
+  // a Missing Data Code that is a number is no measurement either
+  const els = form('1', '999');
+  boot(els, { missingCodes: ['999'], growth: GROWTH, rules: [rule()] });
+  check('a numeric Missing Data Code is blank: no z-score, the bounds stay (got ' + asText(vals(els)) + ')',
+    vals(els).wfa_z === '' && vals(els).wfa_rng === '8.0 to 12.0 kg');
+  const els2 = form('1', '999');
+  boot(els2, { growth: GROWTH, rules: [rule()] });
+  check('... with no such code configured, 999 is a weight (got ' + vals(els2).wfa_z + ')', vals(els2).wfa_z === '989.00');
 }
 {
   const els = form('1', '11');
