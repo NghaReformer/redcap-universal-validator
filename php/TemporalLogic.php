@@ -142,30 +142,59 @@ final class TemporalLogic
 
     /** Seconds in one window unit. */
     const WINDOW_UNITS = ['minutes' => 60, 'hours' => 3600, 'days' => 86400, 'weeks' => 604800];
+    /** Calendar units: months in one. A month is not a fixed number of seconds. */
+    const CALENDAR_UNITS = ['months' => 1, 'years' => 12];
+    /** The periods a window may name. */
+    const WINDOW_PERIODS = ['week', 'month', 'quarter', 'year'];
+
+    /** Every unit name a window takes, in the order a message lists them. */
+    public static function windowUnitNames()
+    {
+        return array_merge(array_keys(self::WINDOW_UNITS), array_keys(self::CALENDAR_UNITS));
+    }
+
+    /** Whether a field of $type may count a window in $unit: a date field in days, weeks, months or years. */
+    public static function unitFits($unit, $type)
+    {
+        if (!is_string($unit) || (!isset(self::WINDOW_UNITS[$unit]) && !isset(self::CALENDAR_UNITS[$unit]))) return false;
+        return TemporalValue::family($type) !== 'date' || ($unit !== 'minutes' && $unit !== 'hours');
+    }
 
     /**
      * The @UVWINDOW verdict for one value. Pure: no clock is read here, the
-     * caller passes the server's wall-clock time. Twin of QRID_windowVerdict
+     * caller passes the clock to judge by (the server's wall-clock time, or
+     * the time the value was saved). Twin of QRID_windowVerdict
      * (js/engine.js); tests/window_fixture.json drives both.
      *
      * $spec: lo / hi (whole numbers or null = open), unit (minutes, hours,
-     * days, weeks), notFuture (bool), type (the field's temporal type) and
-     * fromType (the anchor's; null when the rule has no anchor).
+     * days, weeks, months, years), or period (week, month, quarter, year)
+     * with offLo / offHi (whole periods, default 0) and weekStart (monday or
+     * sunday); notFuture and notPast (bool); type (the field's temporal type)
+     * and fromType (the anchor's; null when the rule has no anchor).
      * $value and $anchor are written in $valueFormat / $anchorFormat (ymd for
      * saved data, the field's own format for what the browser reads). $anchor
-     * is null when the rule has no anchor. $clock is ['today' => 'Y-m-d',
-     * 'now' => 'Y-m-d H:i:s'], only read for notFuture.
+     * is null when the rule has no anchor, and false when it has one that is
+     * not available (unresolved, or not sent to the page). $clock is
+     * ['today' => 'Y-m-d', 'now' => 'Y-m-d H:i:s'], read for notFuture and
+     * notPast; optional 'futureNow' / 'pastNow' replace 'now' for one of them
+     * (the page's margin for a computer clock that is a little off).
      *
-     * Arithmetic is in whole seconds of UTC wall-clock time, so a daylight
-     * saving change never moves a bound. verdict:
+     * Minutes to weeks count whole seconds of UTC wall-clock time, so a
+     * daylight saving change never moves a bound. Months and years move the
+     * calendar date and keep the time, the day clamped to the end of the
+     * month. A period runs from the first day of the anchor's week, month,
+     * quarter or year, moved by offLo periods, to the last day of the period
+     * offHi periods on; a datetime field takes it from 00:00:00 to 23:59:59.
+     * verdict:
      *   inert          the field is blank, or nothing applied: the anchor is
-     *                  blank and there is no notFuture (a green "OK" would claim
-     *                  a check that never ran)
+     *                  blank and there is no notFuture or notPast (a green "OK"
+     *                  would claim a check that never ran)
      *   unknown        a value cannot be read as a date (partly typed, 31-02,
-     *                  a type mismatch, no usable clock)
+     *                  a type mismatch, no usable clock, a bound past 9999)
      *   future         after today (date) or now (datetime)
-     *   window-early   before anchor + lo units
-     *   window-late    after anchor + hi units
+     *   past           before today (date) or now (datetime)
+     *   window-early   before the earliest bound
+     *   window-late    after the latest bound
      *   ok             none of the above
      * earliest / latest: the bounds in canonical form, null when open or when
      * the anchor is blank (a blank anchor switches the window off).
@@ -179,37 +208,55 @@ final class TemporalLogic
         if ($v['state'] !== 'ok') { $out['verdict'] = 'unknown'; return $out; }
         $lo = isset($spec['lo']) ? $spec['lo'] : null;
         $hi = isset($spec['hi']) ? $spec['hi'] : null;
+        $period = isset($spec['period']) ? $spec['period'] : null;
+        $unit = isset($spec['unit']) ? $spec['unit'] : 'days';
+        $hasWindow = $lo !== null || $hi !== null || $period !== null;
         $windowReason = null;
         $checked = false;
         // The window part cannot be judged: its anchor is unavailable ($anchor
         // false: unresolved, or not sent), unreadable, or of another kind. That
-        // never stops "notFuture", which does not depend on it.
+        // never stops "notFuture" or "notPast", which do not depend on it.
         $windowUnknown = false;
-        if (($lo !== null || $hi !== null) && $anchor === false) {
+        $a = null;
+        if ($hasWindow && $anchor === false) {
             $windowUnknown = true;
-        } elseif (($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
+        } elseif ($hasWindow && is_string($anchor) && !self::blank($anchor)) {
             $fromType = isset($spec['fromType']) ? $spec['fromType'] : null;
             $a = TemporalValue::parse(trim($anchor, " \t\r\n"), $fromType, $anchorFormat);
-            $unit = isset($spec['unit']) ? $spec['unit'] : 'days';
-            if ($a['state'] !== 'ok' || TemporalValue::family($type) !== TemporalValue::family($fromType)
-                || !is_string($unit) || !isset(self::WINDOW_UNITS[$unit])
-                || (TemporalValue::family($type) === 'date' && !in_array($unit, ['days', 'weeks'], true))) {
+            // A period reads only the anchor's day, so it may count from either kind of date.
+            if ($a['state'] !== 'ok' || ($period === null
+                    && (TemporalValue::family($type) !== TemporalValue::family($fromType) || !self::unitFits($unit, $type)))) {
                 $windowUnknown = true;
             }
         }
-        if (!$windowUnknown && ($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
-            $checked = true;
-            $u = self::WINDOW_UNITS[$unit];
+        if (!$windowUnknown && $hasWindow && is_string($anchor) && !self::blank($anchor)) {
             // A field without seconds reads its anchor to the minute too, so the
             // bounds it is judged by are the bounds its message can show.
             if ($type === 'datetime') $a['seconds'] -= (($a['seconds'] % 60) + 60) % 60;
-            $diff = $v['seconds'] - $a['seconds'];
-            if ($lo !== null) $out['earliest'] = TemporalValue::canonical($a['seconds'] + (int) $lo * $u, $v['type']);
-            if ($hi !== null) $out['latest'] = TemporalValue::canonical($a['seconds'] + (int) $hi * $u, $v['type']);
-            if ($lo !== null && $diff < (int) $lo * $u) $windowReason = 'window-early';
-            elseif ($hi !== null && $diff > (int) $hi * $u) $windowReason = 'window-late';
+            if ($period !== null || isset(self::CALENDAR_UNITS[$unit])) {
+                $b = self::calendarBounds($spec, $a, $v['type']);
+                if ($b === null) {
+                    $windowUnknown = true;
+                } else {
+                    $checked = true;
+                    $out['earliest'] = $b[0];
+                    $out['latest'] = $b[1];
+                    if ($b[0] !== null && strcmp($v['value'], $b[0]) < 0) $windowReason = 'window-early';
+                    elseif ($b[1] !== null && strcmp($v['value'], $b[1]) > 0) $windowReason = 'window-late';
+                }
+            } else {
+                $checked = true;
+                $u = self::WINDOW_UNITS[$unit];
+                $diff = $v['seconds'] - $a['seconds'];
+                if ($lo !== null) $out['earliest'] = TemporalValue::canonical($a['seconds'] + (int) $lo * $u, $v['type']);
+                if ($hi !== null) $out['latest'] = TemporalValue::canonical($a['seconds'] + (int) $hi * $u, $v['type']);
+                if ($lo !== null && $diff < (int) $lo * $u) $windowReason = 'window-early';
+                elseif ($hi !== null && $diff > (int) $hi * $u) $windowReason = 'window-late';
+            }
         }
-        if (!empty($spec['notFuture'])) {
+        $notFuture = !empty($spec['notFuture']);
+        $notPast = !empty($spec['notPast']);
+        if ($notFuture || $notPast) {
             $today = is_array($clock) && isset($clock['today']) ? $clock['today'] : null;
             $now = is_array($clock) && isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
             if (!is_string($today) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $today) || !$now || $now['state'] !== 'ok') {
@@ -218,12 +265,67 @@ final class TemporalLogic
                 return $out;
             }
             $checked = true;
-            $future = $v['type'] === 'date' ? strcmp($v['value'], $today) > 0 : $v['seconds'] > $now['seconds'];
-            if ($future) { $out['verdict'] = 'future'; return $out; }
+            if ($notFuture) {
+                $limit = self::clockMoment($clock, 'futureNow', $now);
+                if ($v['type'] === 'date' ? strcmp($v['value'], $today) > 0 : $v['seconds'] > $limit) {
+                    $out['verdict'] = 'future';
+                    return $out;
+                }
+            }
+            if ($notPast) {
+                $limit = self::clockMoment($clock, 'pastNow', $now);
+                if ($v['type'] === 'date' ? strcmp($v['value'], $today) < 0 : $v['seconds'] < $limit) {
+                    $out['verdict'] = 'past';
+                    return $out;
+                }
+            }
         }
         if ($windowUnknown) $out['verdict'] = 'unknown';
         elseif ($windowReason !== null) $out['verdict'] = $windowReason;
         elseif (!$checked) $out['verdict'] = 'inert';
+        return $out;
+    }
+
+    /** The clock's $key moment in seconds, or 'now' when it has none that reads. */
+    private static function clockMoment(array $clock, $key, array $now)
+    {
+        if (isset($clock[$key])) {
+            $m = TemporalValue::parse((string) $clock[$key], 'datetime_seconds', 'ymd');
+            if ($m['state'] === 'ok') return $m['seconds'];
+        }
+        return $now['seconds'];
+    }
+
+    /**
+     * [earliest, latest] of a months/years window or a period, in the value's
+     * canonical form (null for an open end), or null when a bound falls
+     * outside the years 1-9999 or the spec cannot be read.
+     */
+    private static function calendarBounds(array $spec, array $a, $valueType)
+    {
+        $anchor = TemporalValue::canonical($a['seconds'], 'datetime');
+        if ($anchor === null) return null;
+        $day = substr($anchor, 0, 10);
+        if (isset($spec['period'])) {
+            $period = $spec['period'];
+            $start = TemporalValue::periodStart($day, $period, isset($spec['weekStart']) ? $spec['weekStart'] : 'monday');
+            $offLo = isset($spec['offLo']) ? $spec['offLo'] : 0;
+            $offHi = isset($spec['offHi']) ? $spec['offHi'] : 0;
+            $first = $start === null ? null : TemporalValue::periodShift($start, $period, $offLo);
+            $lastStart = $start === null ? null : TemporalValue::periodShift($start, $period, $offHi);
+            $last = $lastStart === null ? null : TemporalValue::periodEnd($lastStart, $period);
+            if ($first === null || $last === null) return null;
+            return $valueType === 'date' ? [$first, $last] : [$first . ' 00:00:00', $last . ' 23:59:59'];
+        }
+        $k = self::CALENDAR_UNITS[$spec['unit']];
+        $time = $valueType === 'date' ? '' : substr($anchor, 10);
+        $out = [null, null];
+        foreach (['lo' => 0, 'hi' => 1] as $key => $i) {
+            if (!isset($spec[$key])) continue;
+            $d = TemporalValue::shiftMonths($day, (int) $spec[$key] * $k);
+            if ($d === null) return null;
+            $out[$i] = $d . $time;
+        }
         return $out;
     }
 

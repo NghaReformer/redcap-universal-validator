@@ -1718,8 +1718,8 @@ class AnnotationRules
                 . $frag['windowHi'] . ').';
         }
         if (isset($frag['windowUnit'])
-                && (!is_string($frag['windowUnit']) || !isset(TemporalLogic::WINDOW_UNITS[$frag['windowUnit']]))) {
-            $units = array_keys(TemporalLogic::WINDOW_UNITS);
+                && (!is_string($frag['windowUnit']) || !in_array($frag['windowUnit'], TemporalLogic::windowUnitNames(), true))) {
+            $units = TemporalLogic::windowUnitNames();
             $errors[] = '"unit" must be ' . implode(', ', array_slice($units, 0, -1)) . ' or ' . end($units) . '.';
         }
         if ($notFuture && $frag['windowNotFuture'] !== true) {

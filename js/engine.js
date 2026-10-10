@@ -1543,47 +1543,91 @@ function QRID_temporalFormat(canonical,type,format){
   if(type==='datetime_seconds')time+=':'+(m[6]!==undefined&&m[6]!==''?m[6]:'00');
   return date+' '+time;
 }
-/* The @UVWINDOW verdict: inert (blank, or nothing applied) | unknown | future | window-early | window-late | ok,
+/* The @UVWINDOW verdict: inert (blank, or nothing applied) | unknown | future | past | window-early | window-late | ok,
    with the window's earliest / latest bound (canonical, null when open). Pure:
    the caller passes the clock. See TemporalLogic::windowVerdict. */
+var QRID_CALENDAR_UNITS=Object.create(null);QRID_CALENDAR_UNITS.months=1;QRID_CALENDAR_UNITS.years=12;
+function QRID_unitFits(unit,type){
+  if(typeof unit!=='string'||(QRID_WINDOW_UNITS[unit]===undefined&&QRID_CALENDAR_UNITS[unit]===undefined))return false;
+  return QRID_temporalFamily(type)!=='date'||(unit!=='minutes'&&unit!=='hours');
+}
 function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
   var out={verdict:'ok',earliest:null,latest:null};
   if(typeof value!=='string'||QRID_whenTrim(value)===''){out.verdict='inert';return out;}
   var type=spec.type==null?null:spec.type;
   var v=QRID_temporalDate(QRID_whenTrim(value),type,valueFormat);
   if(!v){out.verdict='unknown';return out;}
-  var lo=spec.lo==null?null:spec.lo,hi=spec.hi==null?null:spec.hi,windowReason=null,checked=false;
+  var lo=spec.lo==null?null:spec.lo,hi=spec.hi==null?null:spec.hi,period=spec.period==null?null:spec.period;
+  var unit=spec.unit==null?'days':spec.unit,hasWindow=lo!==null||hi!==null||period!==null,windowReason=null,checked=false;
   /* The window part cannot be judged (anchor false: unresolved or not sent;
-     unreadable; of another kind). That never stops "notFuture". */
-  var windowUnknown=false,a=null,unit=null;
-  if((lo!==null||hi!==null)&&anchor===false)windowUnknown=true;
-  else if((lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
-    var fromType=spec.fromType==null?null:spec.fromType;unit=spec.unit==null?'days':spec.unit;
+     unreadable; of another kind). That never stops "notFuture" or "notPast". */
+  var windowUnknown=false,a=null,anchored=typeof anchor==='string'&&QRID_whenTrim(anchor)!=='';
+  if(hasWindow&&anchor===false)windowUnknown=true;
+  else if(hasWindow&&anchored){
+    var fromType=spec.fromType==null?null:spec.fromType;
     a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
-    if(!a||QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||typeof unit!=='string'||QRID_WINDOW_UNITS[unit]===undefined
-       ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks'))windowUnknown=true;
+    /* A period reads only the anchor's day, so it may count from either kind of date. */
+    if(!a||(period===null&&(QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||!QRID_unitFits(unit,type))))windowUnknown=true;
   }
-  if(!windowUnknown&&(lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
-    checked=true;
-    var u=QRID_WINDOW_UNITS[unit];
+  if(!windowUnknown&&hasWindow&&anchored){
     if(type==='datetime')a.seconds-=((a.seconds%60)+60)%60;   /* read to the minute, as the field is */
-    var diff=v.seconds-a.seconds;
-    if(lo!==null)out.earliest=QRID_temporalCanonical(a.seconds+(lo|0)*u,v.date);
-    if(hi!==null)out.latest=QRID_temporalCanonical(a.seconds+(hi|0)*u,v.date);
-    if(lo!==null&&diff<(lo|0)*u)windowReason='window-early';
-    else if(hi!==null&&diff>(hi|0)*u)windowReason='window-late';
+    if(period!==null||QRID_CALENDAR_UNITS[unit]!==undefined){
+      var b=QRID_calendarBounds(spec,a,v.date);
+      if(b===null)windowUnknown=true;
+      else{
+        checked=true;out.earliest=b[0];out.latest=b[1];
+        if(b[0]!==null&&v.value<b[0])windowReason='window-early';
+        else if(b[1]!==null&&v.value>b[1])windowReason='window-late';
+      }
+    }else{
+      checked=true;
+      var u=QRID_WINDOW_UNITS[unit];
+      var diff=v.seconds-a.seconds;
+      if(lo!==null)out.earliest=QRID_temporalCanonical(a.seconds+(lo|0)*u,v.date);
+      if(hi!==null)out.latest=QRID_temporalCanonical(a.seconds+(hi|0)*u,v.date);
+      if(lo!==null&&diff<(lo|0)*u)windowReason='window-early';
+      else if(hi!==null&&diff>(hi|0)*u)windowReason='window-late';
+    }
   }
-  if(spec.notFuture){
+  if(spec.notFuture||spec.notPast){
     var today=clock&&typeof clock==='object'&&clock.today!=null?clock.today:null;
     var now=clock&&typeof clock==='object'&&clock.now!=null?QRID_temporalDate(String(clock.now),'datetime_seconds','ymd'):null;
     /* No clock: a window the value broke is still a finding. */
     if(typeof today!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(today)||!now){out.verdict=windowReason!==null?windowReason:'unknown';return out;}
     checked=true;
-    if(v.date==='date'?v.value>today:v.seconds>now.seconds){out.verdict='future';return out;}
+    if(spec.notFuture&&(v.date==='date'?v.value>today:v.seconds>QRID_clockMoment(clock,'futureNow',now))){out.verdict='future';return out;}
+    if(spec.notPast&&(v.date==='date'?v.value<today:v.seconds<QRID_clockMoment(clock,'pastNow',now))){out.verdict='past';return out;}
   }
   if(windowUnknown)out.verdict='unknown';
   else if(windowReason!==null)out.verdict=windowReason;
-  else if(!checked)out.verdict='inert';   /* a blank anchor and no notFuture: nothing was checked */
+  else if(!checked)out.verdict='inert';   /* a blank anchor and no notFuture or notPast: nothing was checked */
+  return out;
+}
+/* The clock's key moment in seconds, or now's when it has none that reads. */
+function QRID_clockMoment(clock,key,now){
+  if(clock[key]!=null){var m=QRID_temporalDate(String(clock[key]),'datetime_seconds','ymd');if(m)return m.seconds;}
+  return now.seconds;
+}
+/* [earliest, latest] of a months/years window or a period, or null when a
+   bound falls outside the years 1-9999. Twin of TemporalLogic::calendarBounds. */
+function QRID_calendarBounds(spec,a,valueType){
+  var anchor=QRID_temporalCanonical(a.seconds,'datetime');if(anchor===null)return null;
+  var day=anchor.slice(0,10);
+  if(spec.period!=null){
+    var period=spec.period,start=QRID_periodStart(day,period,spec.weekStart==null?'monday':spec.weekStart);
+    var offLo=spec.offLo==null?0:spec.offLo,offHi=spec.offHi==null?0:spec.offHi;
+    var first=start===null?null:QRID_periodShift(start,period,offLo);
+    var lastStart=start===null?null:QRID_periodShift(start,period,offHi);
+    var last=lastStart===null?null:QRID_periodEnd(lastStart,period);
+    if(first===null||last===null)return null;
+    return valueType==='date'?[first,last]:[first+' 00:00:00',last+' 23:59:59'];
+  }
+  var k=QRID_CALENDAR_UNITS[spec.unit],time=valueType==='date'?'':anchor.slice(10),out=[null,null],keys=['lo','hi'];
+  for(var i=0;i<2;i++){
+    if(spec[keys[i]]==null)continue;
+    var d=QRID_shiftMonths(day,(spec[keys[i]]|0)*k);if(d===null)return null;
+    out[i]=d+time;
+  }
   return out;
 }
 /* The server's wall-clock time now: config.clock, stamped when the page was
@@ -6083,7 +6127,7 @@ window.INSPIREUniversalValidator = {
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
     verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
-    clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS,
+    clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS, calendarUnits: QRID_CALENDAR_UNITS,
     calendar: { shiftMonths: QRID_shiftMonths, shiftDays: QRID_shiftDays, isoWeekday: QRID_isoWeekday,
                 periodStart: QRID_periodStart, periodShift: QRID_periodShift, periodEnd: QRID_periodEnd }
   },
