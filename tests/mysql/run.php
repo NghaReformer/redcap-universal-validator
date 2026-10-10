@@ -157,6 +157,7 @@ $cases = array(
     'uniqueness',   // UniqueFinalizer: duplicates without holding the project
     'rollup',       // RollupBuilder: the summary and the two ways it lies
     'promotion',    // ScanPromotion: which terminal state a run has earned
+    'perf',         // ScanService: how many statements one request sends
 );
 
 $only = getenv('UV_CASES');
