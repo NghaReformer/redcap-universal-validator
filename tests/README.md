@@ -26,7 +26,7 @@ node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, coul
 php  tests/lookup_php.php         # @UVEXISTS/@UVUNIQUE comparison key vs lookup_fixture.json
 node tests/lookup_js.cjs          # the same comparison key, JS twin, same fixture
 node tests/unique_dom_js.cjs      # @UVUNIQUE browser rule (transport, fail-open, cache, "also" message)
-php  tests/unique_also_scan_php.php  # @UVUNIQUE "also" in the durable scan: also values are never findings
+php  tests/unique_also_scan_php.php  # @UVUNIQUE lookups in the durable scan: settled, re-read by form, never findings
 node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
@@ -248,7 +248,7 @@ older value is dropped, the message follows an autocomplete widget, surveys are
 opt-in and never see a reason.
 
 `@UVUNIQUE` `"also"` (the value is looked for in other fields of the other
-records too) is covered in five suites. `annotation_php.php` pins the grammar:
+records too) is covered in seven suites. `annotation_php.php` pins the grammar:
 a list of at most 5 field names, none twice, none also in `with`, and not under
 `"scope":"record"`. `branching_php.php` refuses rules on one field that list
 different `also` fields, compared as sets. `hook_php.php` runs a registration
@@ -258,10 +258,23 @@ and letter case, the survey answer, DAG masking, form rights on the `also`
 fields, the narrowed read that ORs the fields and the full read that confirms a
 miss), the refusals in both channels, the page config without the `also` list,
 the post-save audit, the scan (an `also` value is evidence, never a finding),
-and the durable plan's letter-case set. `unique_also_scan_php.php` runs
-`UniqueFinalizer::emit` with a recording database: a candidate from an `also`
-field moves the cursor and writes no finding. `missing_codes_php.php` checks
-that a code saved in an `also` field matches nothing.
+and the durable plan's letter-case set and lookup specs. A second block there
+holds the scan to the endpoint where the two used to part: branches that differ
+in letter case or in `with`, a record whose `when` is false, `"caseSensitive"`,
+`dag` and `event` scope (the `getData` stub now honours `events`), decimal
+marks, the survey opt-in with an `also` field off the survey's instrument, both
+survey refusals at the request for a dictionary edited after the rules were
+read, and the lookup flags `durableEvaluateRecord` writes. `hosting_php.php`
+runs the repeat layout: an `also` value on a base form beside a repeating `with`
+value (endpoint, scan, and where the durable lookup is stored), and the
+placements refused because they can never match. `unique_also_scan_php.php`
+drives `UniqueFinalizer` with a recording database: a group of lookups only is
+settled at discovery, emit reads checked values only, verify passes each
+location's form, and the re-read finds instance 1 of a repeating instrument in
+`repeat_instances`. `temporal_integration_php.php` checks that saving an `also`
+field's form does not re-audit an extended rule. `missing_codes_php.php` checks
+that a code saved in an `also` field matches nothing. The SQL (the `lookup`
+column, discovery and emit) is in `tests/mysql/cases/uniqueness.php`.
 
 `exists_cross_php.php` covers `"project"`, a lookup in another project. Its
 mocks keep settings, dictionaries, data, rights and `\Project` per project id,

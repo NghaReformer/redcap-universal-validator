@@ -926,9 +926,10 @@ never compared with itself: to allow typing only when nothing was scanned, add
 `@UVASSERT={"assert":"[study_id_scan]=''","message":"An ID was scanned; leave this blank"}`
 to `study_id_typed`. The fields must store values the same way (both text, both
 dates of the same kind, or both numbers with the same decimal mark), and staff
-get an answer only when they may open the forms that hold them. A Unique rule
-in the Configure dialog has the same option ("other fields to look for the
-value in"). The post-save audit and the
+get an answer only when they may open the forms that hold them. On a survey
+(`"surveys":true`) every `also` field must be on the survey's own instrument.
+A Unique rule in the Configure dialog has the same option ("other fields to
+look for the value in"). The post-save audit and the
 Validation scan look in the `also` fields as well; the scan reports the field
 whose rule found the value, never the `also` field itself.
 

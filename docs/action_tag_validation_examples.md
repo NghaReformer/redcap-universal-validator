@@ -1089,6 +1089,12 @@ Respondents always receive a **boolean** — never a record id.
 @UVUNIQUE={"with":["site"],"scope":"dag","when":"[specimen_collected]='1'","message":"Specimen barcode already registered in this DAG","blockSave":"hard","surveys":false}
 ```
 
+`when` decides whether this record's value is checked. The other records are
+searched whatever their own `when` says: a barcode saved on a record with
+`specimen_collected` = 0 still counts as used. The form, the post-save audit and the
+Validation scan all read it this way; the scan reports the record that was checked,
+not the one whose `when` is false.
+
 ### Level 7 — look in other fields too (`also`)
 
 ```text
@@ -1121,9 +1127,17 @@ value: "This value is already recorded in field **study_id_scan** (record **12**
 
 - Every `@UVUNIQUE` tag on one field must list the same `also` fields, and `also`
   cannot be used with `"scope":"record"`.
-- Staff get an answer only when they may open the forms that hold the `also` fields.
-  With `"surveys":true`, no `also` field may be an Identifier. The list of `also`
-  fields is never sent to the page.
+- A placement that could never match is refused: an `also` field and a `with` field
+  on two different repeating instruments (no record holds them side by side), an
+  `also` field on an instrument no event collects, and under `"scope":"event"` an
+  `also` field in no event with the tagged field. An `also` field on a form that does
+  not repeat is found beside `with` values on a repeating one.
+- Staff get an answer only when they may open the forms that hold the `also` fields,
+  and the field is named only beside a record they may be told about: a record in
+  another Data Access Group is named by neither. With `"surveys":true`, no `also`
+  field may be an Identifier, and every `also` field must be on the tagged field's
+  instrument, so a respondent is only told about fields of the survey they are
+  filling in. The list of `also` fields is never sent to the page.
 - The post-save audit and the Validation scan look in the `also` fields too. The scan
   reports the tagged field whose value was found elsewhere, never the `also` field.
 
@@ -3733,10 +3747,10 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Key               | Type            | Default      | Notes                                                          |
 | ----------------- | --------------- | ------------ | -------------------------------------------------------------- |
 | `with`          | list of strings | *(none)*   | Composite key fields; max 5, no duplicates, must exist         |
-| `also`          | list of strings | *(none)*   | Other fields the value is looked for in; max 5, not in `with`, stored the way the field is; not with `record` scope; the same on every tag of one field |
+| `also`          | list of strings | *(none)*   | Other fields the value is looked for in; max 5, not in `with`, stored the way the field is; not with `record` scope; the same on every tag of one field; with `surveys`, on the field's own instrument |
 | `scope`         | string          | `project`  | `project`, `dag`, `event`, `record` (record needs event and instance references enabled); the bare short form sets this |
 | `surveys`       | boolean         | `false`    | Opt in to the check on surveys; boolean answer only            |
-| `when`          | string          | *(none)*   | Check only while true                                          |
+| `when`          | string          | *(none)*   | Check this record's value only while true; other records are searched whatever their `when` says |
 | `message`       | string          | generic line | Your own wording                                               |
 | `blockSave`     | string          | `off`      | `off`, `confirm`, `hard`                                 |
 | `caseSensitive` | boolean         | `false`    | Exact-case text in`when` and the duplicate check             |

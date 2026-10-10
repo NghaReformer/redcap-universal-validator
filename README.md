@@ -452,9 +452,15 @@ call — no page reload), with the usual message/confirm/block enforcement:
   values the way the field does: both text, both dates of the same kind, or both
   numbers with the same decimal mark. Every `@UVUNIQUE` tag on one field must list
   the same `also` fields, and `also` cannot be used with `"scope":"record"`.
-  Staff are told which field the value was found in; they get an answer only when
-  they may open the forms that hold the `also` fields. The list of `also` fields
-  is not sent to the page.
+  A placement that could never match is refused when the rule is read: an
+  `also` field and a `with` field on two different repeating instruments, an
+  `also` field on an instrument no event collects, or, under `"scope":"event"`,
+  an `also` field in no event with the tagged field. Staff are told which field
+  the value was found in, unless the record is in another Data Access Group;
+  they get an answer only when they may open the forms that hold the `also`
+  fields. The list of `also` fields is not sent to the page. Each `also` field
+  adds entries to the Validation scan's duplicate groups, one per tagged field
+  and per `with`/scope/letter-case combination of the tag's branches.
 - **Under `dag`, records in no group form one group of their own.** They are
   compared against each other, not exempted: "no DAG" is a scope like any other,
   and the alternative reading — that an ungrouped record has nothing to be
@@ -477,7 +483,9 @@ call — no page reload), with the usual message/confirm/block enforcement:
   Identifier** — there it would let a stranger test whether a named person is
   enrolled, so the module makes that a configuration error rather than trusting
   a warning to be read. The same refusal applies when a `with` or `also` field
-  is an Identifier. Reasonable use: a non-identifying response token, to
+  is an Identifier, and with `also` every `also` field must sit on the tagged
+  field's own instrument, so a respondent is only told about fields of the
+  survey they are filling in. Reasonable use: a non-identifying response token, to
   stop the same person submitting twice. Leaving it off costs no data quality —
   survey submissions are still covered by the post-save audit and the scan.
 - **The race is audited, not denied.** Two near-simultaneous saves can both
@@ -1009,7 +1017,7 @@ node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/co
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
 node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fail-open, cache)
-php  tests/unique_also_scan_php.php  # @UVUNIQUE "also" in the durable scan: also values are never findings
+php  tests/unique_also_scan_php.php  # @UVUNIQUE lookups in the durable scan: settled, re-read by form, never findings
 node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
 php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
 node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)

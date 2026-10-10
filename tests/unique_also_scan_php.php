@@ -7,7 +7,7 @@
  * (collectUniqueLookups). It joins the duplicate groups of the rule: it counts
  * towards a group's records and is re-read with them, and it is never a
  * finding. The store marks it in uv_unique_candidate.lookup (schema version
- * 3), so:
+ * 4), so:
  *
  *   - discover() settles a group with no checked value without verifying it;
  *   - emit() writes findings for checked values only (lookup = 0);

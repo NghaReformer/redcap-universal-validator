@@ -29,8 +29,14 @@ runs one way, so tag <code>typed_id</code> with <code>{"also":["scan_id"]}</code
 well to stop a typed ID that was scanned earlier. The record being saved is never
 compared with itself; use <code>@UVASSERT</code> to keep two fields of one record
 apart. Each field must store the same kind of value as the tagged field, and
-<code>also</code> cannot be combined with <code>"scope":"record"</code>.</li>
+<code>also</code> cannot be combined with <code>"scope":"record"</code>. A placement
+that could never match is refused, such as an <code>also</code> field and a
+<code>with</code> field on two different repeating instruments.</li>
 </ul>
+
+<p><code>when</code> decides whether this record's value is checked. Other records are
+searched whatever their own <code>when</code> says, on the form, in the post-save audit
+and in the Validation scan.</p>
 
 <div class="note">
 <p><strong>Under <code>dag</code> scope, records in no group form one group of their
@@ -45,7 +51,8 @@ everything.</p>
 
 <p>The endpoint answers only for fields that carry a unique rule, so it cannot be used
 to probe arbitrary fields for the existence of a value. Staff see the colliding record
-id only when it is inside their own Data Access Group.</p>
+id, and the <code>also</code> field that holds the value, only when the record is inside
+their own Data Access Group.</p>
 
 <h2>What counts as the same value</h2>
 
@@ -73,7 +80,10 @@ whole field, which a survey makes only within a read budget it shares with <code
 except that an "already used" the page held before Save asked again still stands.</li>
 <li><strong>Refused outright on any field REDCap flags as an Identifier</strong> —
 there it would let a stranger test whether a named person is enrolled, so the module
-makes that a configuration error rather than trusting a warning to be read.</li>
+makes that a configuration error rather than trusting a warning to be read. The same
+holds for a <code>with</code> or <code>also</code> field.</li>
+<li>With <code>also</code>, limited to fields on the tagged field's own instrument, so a
+respondent is only told about fields of the survey they are filling in.</li>
 </ul>
 
 <p>A reasonable use is a non-identifying response token, to stop the same person
