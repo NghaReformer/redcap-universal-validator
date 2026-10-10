@@ -990,8 +990,16 @@ namespace INSPIRE\UniversalValidator\Scan {
         'first' => 25, 'startedAt' => microtime(true), 'probe' => $pw->fn]);
     check('wedge: the reserve line itself has not moved', $bw->mustStop() === 'memory');
     check('wedge: but the first unit of a request past it is let through', $bw->admit() === null);
-    check('wedge: and it is ONE unit, whatever kind it turns out to be',
-        $bw->claim('records') === 1 && $bw->claim('groups') === 1);
+    // ONE RECORD, NOT ONE ROW (review R2S-2). The let-through spends a margin
+    // sized for one record. It used to hand out one unit of ANY kind, so a
+    // squeezed request summarised one finding, or read one change-log row, and
+    // stopped; a run with thousands of findings needed thousands of requests
+    // and the abandoned-run sweep expired it first. A page of rows costs a
+    // kilobyte a row, so those kinds take their ordinary first claim.
+    check('wedge: and it is ONE record - a kind that reads records takes one',
+        $bw->claim('records') === 1 && $bw->claim('') === 1);
+    check('wedge: but a page of rows is not a record, and takes its ordinary first claim',
+        $bw->claim('rows') === 25 && $bw->claim('changes') === 25 && $bw->claim('groups') === 25);
     $ow = $bw->observe($bw->mark('records'), 1);
     check('wedge: after which the request stops, and says why it is going slowly',
         $ow['stop'] === 'memory' && strpos($ow['why'], 'before the scan began') !== false);
@@ -1981,6 +1989,68 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('neighbours: and is charged there, so the run reaches an end rather than a loop',
         $store->recordState($runId, 1) === ScanStore::REC_UNREADABLE);
 
+    // -- a squeezed request summarises a page, and says it moved (R2S-2) ------
+    //
+    // A request that starts past the 60% reserve is let through for one unit.
+    // In rollup-finalize that unit was ONE finding: forty findings took
+    // forty-one requests, every one of which reported worked=0, findings=0,
+    // blocked=0 in an unchanged phase - which js/scan.js progressed() reads as
+    // "nothing moved" and answers by backing off to 30 s. Now the page is the
+    // ordinary first claim, and what it summarised is reported as `listed`,
+    // which the browser already counts as movement.
+    $findingPage = new class implements ScanDb {
+        public $page = [];
+        public function select($sql, array $params = []) {
+            if (strpos($sql, 'finding_id > ?') === false) return [];
+            $after = (int) $params[2];
+            $lim = preg_match('/LIMIT (\d+)/', $sql, $m) ? (int) $m[1] : PHP_INT_MAX;
+            $out = [];
+            foreach ($this->page as $r) {
+                if ($r[0] > $after && count($out) < $lim) $out[] = $r;
+            }
+            return $out;
+        }
+        public function exec($sql, array $params = []) {}
+        public function execNoCount($sql, array $params = []) {}
+        public function affected() { return 0; }
+        public function begin() {}
+        public function commit() {}
+        public function rollback() {}
+    };
+    for ($i = 1; $i <= 40; $i++) $findingPage->page[] = [$i, 'f' . ($i % 3), 'required-blank', null, 'required'];
+    list($store, $runId) = $fixture(['A'], 825);
+    $ep = (int) $store->run(825, $runId)['lease_epoch'];
+    foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE, ScanPhase::ROLLUP] as $p) {
+        $store->advancePhase($runId, $ep, $p);
+    }
+    $requests = 0;
+    $silent = 0;
+    $res = null;
+    while ($requests < 100) {
+        $requests++;
+        // 66 MiB of a 100 MiB limit before the scan does anything: past the
+        // reserve, with room for the one unit the let-through allows.
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+            'rollup' => new RollupBuilder($findingPage, $store),
+            'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB,
+                'timeLimit' => null, 'startedAt' => microtime(true),
+                'probe' => $scripted([[65, 65, 66]])->fn])]);
+        $res = $w->work(825, $runId);
+        $moved = ($res['worked'] + $res['requeued'] + $res['blocked'] + $res['findings']
+                  + (isset($res['listed']) ? $res['listed'] : 0)) > 0;
+        if (!$res['done'] && !$moved) $silent++;
+        if ($res['done']) break;
+    }
+    $summarised = 0;
+    foreach ($store->aggregates($runId) as $a) {
+        if ($a['kind'] === RollupBuilder::K_FORM) $summarised += (int) $a['cnt'];
+    }
+    check('squeezed: a request past the reserve summarises a page of findings, not one',
+        $requests <= 3 && $res['done'] === true && $summarised === 40);
+    check('squeezed: and no request that summarised something reports that nothing moved',
+        $silent === 0);
+
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
     /** Just enough of the database for one verify page of one group. */
@@ -2319,6 +2389,25 @@ namespace INSPIRE\UniversalValidator\Scan {
     $cu->step(800, $runId, $epoch, 100);
     check('catchup: the target fence is captured once and does not chase the project',
         $store->progressState($runId)['fenceTarget'] === $first);
+
+    // A SQUEEZED REQUEST READS A PAGE OF THE CHANGE LOG, NOT ONE ROW, and says
+    // it moved (review R2S-2). Past the reserve the let-through used to hand
+    // catch-up one change-log row per request, reported as nothing at all.
+    $thirty = [];
+    for ($i = 1; $i <= 30; $i++) $thirty[] = sprintf('C%02d', $i);
+    list($store, $runId, $epoch) = $inCatchUp($thirty, '900');
+    $log = new Log();
+    foreach ($thirty as $id) $log->changed[$id] = '400';    // all inside the reading we have
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $fin(),
+        'catchup' => new CatchUp($store, ['fence' => $log, 'hash' => $hash]),
+        'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB,
+            'timeLimit' => null, 'startedAt' => microtime(true),
+            'probe' => $scripted([[65, 65, 66]])->fn])]);
+    $res = $w->work(800, $runId);
+    check('squeezed: catch-up reads its ordinary first page of the change log, and reports it',
+        $res['ok'] === true && $res['phase'] === ScanPhase::CATCH_UP
+        && isset($res['listed']) && $res['listed'] === 25);
 
     // -- promotion: the one place a run may become finished -------------------
     //

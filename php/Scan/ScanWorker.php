@@ -91,8 +91,13 @@ final class ScanWorker
     /**
      * Do one request's worth of work.
      *
+     * `listed` counts what the finishing phases walked - change-log rows,
+     * duplicate groups, summarised findings - so a request that moved a phase
+     * along without examining a record still reads as movement (see loop()).
+     * It is absent from the answers given before the loop starts.
+     *
      * @return array{ok:bool, worked:int, requeued:int, blocked:int, findings:int,
-     *               phase:string, done:bool, stop:?string, why:?string}
+     *               listed?:int, phase:string, done:bool, stop:?string, why:?string}
      */
     public function work($pid, $runId, array $opts = [])
     {
@@ -291,6 +296,15 @@ final class ScanWorker
         $budget = isset($this->deps['budget']) ? $this->deps['budget'] : new WorkBudget();
         $worked = 0; $requeued = 0; $blocked = 0; $found = 0; $stop = null; $why = null;
         $done = false;
+        // WHAT THE FINISHING PHASES WALKED (review R2S-2): change-log rows,
+        // duplicate groups and the records a verify page checked, findings
+        // summarised. None of them is a record examined, so none moved worked,
+        // findings or blocked, and a request that summarised a page and stayed
+        // in the same phase looked to the browser like one that did nothing -
+        // js/scan.js progressed() backed off to 30 s between requests. It
+        // already counts `listed` as movement (planning lists records and
+        // examines none), so the movement is reported there.
+        $listed = 0;
 
         while (true) {
             // admit(), not mustStop() (review BU-2). Asked before the first
@@ -305,8 +319,9 @@ final class ScanWorker
             if ($gate !== null) {
                 if (empty($gate['resumable'])) {
                     return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
-                            'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                            'done' => false, 'stop' => $gate['stop'], 'why' => $gate['why']];
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => $gate['stop'],
+                            'why' => $gate['why']];
                 }
                 $stop = $gate['stop'];
                 $why = $gate['why'];
@@ -322,8 +337,8 @@ final class ScanWorker
             // and resumable, which is what `ok:true` says.
             if (is_callable($keep) && !$keep()) {
                 return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                        'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                        'done' => false, 'stop' => 'slot',
+                        'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                        'phase' => $phase, 'done' => false, 'stop' => 'slot',
                         'why' => 'this scan lost its place in the server queue to another '
                                . 'scan while it was working; it will continue shortly'];
             }
@@ -338,8 +353,8 @@ final class ScanWorker
                     // make "we checked and found no duplicates" and "nobody
                     // checked" the same stored fact. Stop instead.
                     return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
-                            'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                            'done' => false, 'stop' => 'unconfigured',
+                            'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                            'phase' => $phase, 'done' => false, 'stop' => 'unconfigured',
                             'why' => 'this scan has no way to decide duplicate values, so it '
                                    . 'stopped rather than reporting that it found none'];
                 }
@@ -355,6 +370,10 @@ final class ScanWorker
                 $r = $fin->step($generationId, $budget->claim('groups'), $budget->claim('records'));
                 $found += $r['emitted'];
                 $blocked += $r['collisions'];
+                // Groups discovered, candidates verified, groups published:
+                // movement that is neither a finding nor an exclusion.
+                $listed += max(0, (int) $r['groups']) + max(0, (int) $r['verified'])
+                         + (isset($r['published']) ? max(0, (int) $r['published']) : 0);
                 if ($r['done']) {
                     $next = ScanPhase::next($phase);
                     if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -387,14 +406,16 @@ final class ScanWorker
                 if ($roll instanceof RollupBuilder) {
                     $mark = $budget->mark('rows');
                     $r = $roll->step($pid, $runId, $epoch, $generationId, $budget->claim('rows'));
+                    $listed += max(0, (int) $r['rows']);
                     if (!$r['done']) {
                         if ($r['rows'] === 0 && $r['why'] !== null) {
                             // The lease moved under us. Its page was discarded
                             // rather than counted twice; stopping is the rest of
                             // that decision.
                             return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
-                                    'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                                    'done' => false, 'stop' => 'fenced', 'why' => $r['why']];
+                                    'blocked' => $blocked, 'findings' => $found,
+                                    'listed' => $listed, 'phase' => $phase, 'done' => false,
+                                    'stop' => 'fenced', 'why' => $r['why']];
                         }
                         $adj = $budget->observe($mark, max(1, $r['rows']));
                         if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
@@ -432,7 +453,7 @@ final class ScanWorker
                     $this->noteRetired($runId, (int) $retired);
                 }
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
-                                                             $found, $phase);
+                                                             $found, $phase, $listed);
                 if (!$claimed && (int) $retired > 0) {
                     // A CALL THAT ONLY RETIRED SAYS NOTHING ABOUT WHAT IS LEFT
                     // (review R2S-5). The store walks a bounded number of
@@ -452,12 +473,14 @@ final class ScanWorker
                     // pilot reached rollup-finalize with 3 of 39 examined and
                     // told the client it was done.
                     if (!$this->store->manifestComplete($runId)) {
-                        return self::waiting($worked, $requeued, $blocked, $found, $phase);
+                        return self::waiting($worked, $requeued, $blocked, $found, $phase,
+                                             $listed);
                     }
                     $cu = isset($this->deps['catchup']) ? $this->deps['catchup'] : null;
                     if ($cu instanceof CatchUp) {
                         $mark = $budget->mark('changes');
                         $r = $cu->step($pid, $runId, $epoch, $budget->claim('changes'));
+                        $listed += max(0, (int) $r['scanned']);
                         if (!$r['done']) {
                             $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }
@@ -478,7 +501,7 @@ final class ScanWorker
             }
 
             if ($claimed === false) {
-                return self::refused($worked, $requeued, $blocked, $found, $phase);
+                return self::refused($worked, $requeued, $blocked, $found, $phase, $listed);
             }
             if (!$claimed) {
                 // Nothing left to hand out here. Whether the run may move on is
@@ -493,7 +516,7 @@ final class ScanWorker
                 // catch-up sweeps them by state - which is exactly why catch-up
                 // refuses to advance while any remain.
                 if ($phase !== ScanPhase::SCANNING && !$this->store->manifestComplete($runId)) {
-                    return self::waiting($worked, $requeued, $blocked, $found, $phase);
+                    return self::waiting($worked, $requeued, $blocked, $found, $phase, $listed);
                 }
                 $next = ScanPhase::next($phase);
                 if ($next !== null && $this->store->advancePhase($runId, $epoch, $next)) {
@@ -528,7 +551,7 @@ final class ScanWorker
                 // the operator as the same sentence.
                 return ['ok' => false, 'worked' => $worked, 'requeued' => $requeued,
                         'blocked' => $blocked + (int) $r['blocked'], 'findings' => $found,
-                        'phase' => $phase, 'done' => false,
+                        'listed' => $listed, 'phase' => $phase, 'done' => false,
                         'stop' => isset($r['stop']) && $r['stop'] !== null ? $r['stop'] : 'fenced',
                         'why' => $r['why']];
             }
@@ -565,7 +588,7 @@ final class ScanWorker
         }
 
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued, 'blocked' => $blocked,
-                'findings' => $found, 'phase' => $phase, 'done' => $done,
+                'findings' => $found, 'listed' => $listed, 'phase' => $phase, 'done' => $done,
                 'stop' => $stop, 'why' => $why];
     }
 
@@ -577,21 +600,21 @@ final class ScanWorker
      * them means the run is finished, and saying `done` over any of them is how
      * a scan certifies a project it barely looked at.
      */
-    private static function refused($worked, $requeued, $blocked, $found, $phase)
+    private static function refused($worked, $requeued, $blocked, $found, $phase, $listed = 0)
     {
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                'done' => false, 'stop' => 'fenced',
+                'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                'phase' => $phase, 'done' => false, 'stop' => 'fenced',
                 'why' => 'this scan could not take more work just now; it will continue where '
                        . 'it stopped'];
     }
 
     /** Records are still out with another worker. Resumable, and honest about why. */
-    private static function waiting($worked, $requeued, $blocked, $found, $phase)
+    private static function waiting($worked, $requeued, $blocked, $found, $phase, $listed = 0)
     {
         return ['ok' => true, 'worked' => $worked, 'requeued' => $requeued,
-                'blocked' => $blocked, 'findings' => $found, 'phase' => $phase,
-                'done' => false, 'stop' => 'waiting',
+                'blocked' => $blocked, 'findings' => $found, 'listed' => $listed,
+                'phase' => $phase, 'done' => false, 'stop' => 'waiting',
                 'why' => 'some records are still being examined, or were left behind by a worker '
                        . 'that stopped; this scan will pick them up shortly'];
     }

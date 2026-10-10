@@ -114,6 +114,14 @@ final class WorkBudget
     const FIRST_UNIT = 0.10;
 
     /**
+     * Kinds whose unit is a row of this module's own tables - a page of the
+     * change log, of candidate groups, of findings to summarise - a kilobyte
+     * or so each, and never a whole record. See claim(): the one unit let past
+     * the reserve is a record's worth, and a page of these is far less.
+     */
+    const ROW_KINDS = ['rows' => true, 'changes' => true, 'groups' => true];
+
+    /**
      * Fraction of memory_limit a batch in flight may grow to before it stops
      * taking on units. Half the reserve is left for committing what it holds.
      * See sample().
@@ -444,10 +452,21 @@ final class WorkBudget
      */
     public function claim($kind = '')
     {
-        // The one unit admit() let past the reserve. One, of any kind, and
-        // below the configured minimum on purpose - see admit().
-        if ($this->squeezed && $this->observed === 0) return 1;
         $kind = (string) $kind;
+        // The one unit admit() let past the reserve: one RECORD, below the
+        // configured minimum on purpose - see admit().
+        //
+        // NOT ONE ROW (review R2S-2). It used to be one unit of any kind, so a
+        // request past the reserve summarised one finding, read one change-log
+        // row or discovered one duplicate group, and stopped. A run with a few
+        // thousand findings then needed as many requests to summarise them,
+        // the browser saw nothing move and backed off to 30 s between them,
+        // and the abandoned-run sweep expired the run first. FIRST_UNIT, the
+        // margin the let-through spends, is a guess at one record; a first
+        // page of rows costs a kilobyte a row and fits in it many times over,
+        // so those kinds take their ordinary first claim. A kind that reads
+        // records - and an unnamed one, which might - still takes one.
+        if ($this->squeezed && $this->observed === 0 && !isset(self::ROW_KINDS[$kind])) return 1;
         // Pinned by alone() for the rest of the request.
         if (isset($this->pinned[$kind])) return $this->pinned[$kind];
         return isset($this->claims[$kind]) ? $this->claims[$kind] : $this->first;
@@ -505,8 +524,10 @@ final class WorkBudget
      * rule at the door. So when nothing has been done yet, one unit is let
      * through if the arena plus a generous guess at one unit (FIRST_UNIT of the
      * limit) is still under the limit itself - the reserve is spent on that
-     * one unit, which is what it is for. claim() then answers 1 until the unit
-     * has been observed, and the request stops after it.
+     * one unit, which is what it is for. claim() then answers 1 for a kind
+     * that reads records until the unit has been observed, and the request
+     * stops after it; a page of rows is not a record's worth and takes its
+     * ordinary first claim (review R2S-2).
      *
      * AND WHEN EVEN ONE UNIT WILL NOT FIT, IT SAYS SO. That is not a pause: the
      * next request would arrive with the same footprint. It is reported as a
