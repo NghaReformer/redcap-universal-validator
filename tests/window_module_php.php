@@ -173,6 +173,36 @@ namespace {
     check('"from" itself at [current-instance]: refused', strpos($serr('self_in'), 'names this field itself') !== false);
     check('"from" itself at [previous-instance]: another entry, not refused as itself', strpos($serr('self_prev'), 'names this field itself') === false);
 
+    // A default filled in another zone that runs ahead of the rule's clock
+    // would always read as in the future.
+    $Z = $DICT;
+    $Z['nf_utc']  = f('visit_form', '@NOW-UTC @UVWINDOW={"notFuture":true}', 'datetime_ymd');
+    $Z['nf_tday'] = f('visit_form', '@TODAY-UTC @UVWINDOW={"notFuture":true}', 'date_ymd');
+    $Z['nf_srv']  = f('visit_form', '@NOW-SERVER @UVWINDOW={"notFuture":true}', 'datetime_ymd');
+    $Z['nf_now']  = f('visit_form', '@NOW @UVWINDOW={"notFuture":true}', 'datetime_ymd');
+    $Z['win_utc'] = f('visit_form', '@NOW-UTC @UVWINDOW={"from":"[v_start]","window":[0,7]}', 'date_ymd');
+    $zoneErr = function ($tz, $field) use ($Z, $DATA, $FULL) {
+        $mz = mod($Z, $DATA, $FULL, 'nurse');
+        if ($tz !== null) $mz->projectSettings['window-timezone'] = $tz;
+        $r = ruleFor(page($mz, 'form', '2', 'visit_form'), $field);
+        return $r && isset($r['configError']) ? $r['configError'] : '';
+    };
+    check('@NOW-UTC with a clock behind UTC: refused, names both zones',
+        strpos($zoneErr('America/New_York', 'nf_utc'), 'filled by @NOW-UTC: that value is UTC time') !== false
+        && strpos($zoneErr('America/New_York', 'nf_utc'), '(America/New_York)') !== false);
+    check('@TODAY-UTC with a clock behind UTC: refused', strpos($zoneErr('America/New_York', 'nf_tday'), '@TODAY-UTC') !== false);
+    check('@NOW-UTC with a clock never behind UTC: allowed', $zoneErr('Africa/Lagos', 'nf_utc') === '');
+    check('@NOW-UTC with a clock behind UTC for part of the year: refused',
+        strpos($zoneErr('Atlantic/Azores', 'nf_utc'), 'runs ahead') !== false);
+    check('@NOW-UTC with a clock level with or ahead of UTC all year: allowed', $zoneErr('Europe/London', 'nf_utc') === '');
+    check('@NOW (the computer\'s time) is not judged here', $zoneErr('America/New_York', 'nf_now') === '');
+    check('a window without notFuture is not refused for it', $zoneErr('America/New_York', 'win_utc') === '');
+    $tzWas = date_default_timezone_get();
+    date_default_timezone_set('Europe/Paris');
+    check('@NOW-SERVER ahead of the rule\'s clock: refused', strpos($zoneErr('UTC', 'nf_srv'), 'Europe/Paris time') !== false);
+    check('@NOW-SERVER on the server\'s own clock: allowed', $zoneErr(null, 'nf_srv') === '');
+    date_default_timezone_set($tzWas);
+
     // ---- 2) the fold: live, snapshot, and nothing shipped when not entitled ---
     $r = ruleFor($p, 'visit_date_2');
     check('types and formats travel on the rule', $r && $r['dateType'] === 'date' && $r['dateFormat'] === 'dmy'

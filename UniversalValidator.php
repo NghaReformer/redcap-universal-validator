@@ -4337,9 +4337,47 @@ class UniversalValidator extends AbstractExternalModule
             return ['error' => '"unit" "' . $unit . '" needs a datetime field — this field holds dates without a time, '
                 . 'so use days or weeks.', '_tag' => AnnotationRules::TAG_WINDOW];
         }
+        // "notFuture" compares with the project's clock. A default filled in
+        // by @NOW-UTC / @TODAY-UTC (UTC) or @NOW-SERVER / @TODAY-SERVER (the
+        // server's zone) is in another zone; where that zone runs ahead, the
+        // value it fills in would read as in the future.
+        if (!empty($frag['windowNotFuture']) && isset($meta['field_annotation']) && is_string($meta['field_annotation'])
+                && preg_match('/@(NOW|TODAY)-(UTC|SERVER)(?![A-Za-z0-9_-])/', $meta['field_annotation'], $tm)) {
+            $serverZone = new \DateTimeZone(date_default_timezone_get());
+            $fillZone = $tm[2] === 'UTC' ? new \DateTimeZone('UTC') : $serverZone;
+            $compZone = $this->clockZone($pid);
+            if ($compZone === null) $compZone = $serverZone;
+            if (self::zoneAhead($fillZone, $compZone, time())) {
+                return ['error' => '"notFuture" cannot be judged on a field filled by @' . $tm[1] . '-' . $tm[2] . ': that value is '
+                    . $fillZone->getName() . ' time, which runs ahead of the time this rule compares with ('
+                    . $compZone->getName() . '), so it would read as in the future. Fill the field with @' . $tm[1]
+                    . ', or set the project setting "Time zone for @UVWINDOW notFuture" to ' . $fillZone->getName() . '.',
+                    '_tag' => AnnotationRules::TAG_WINDOW];
+            }
+        }
         $frag['dateType'] = $tv['type'];
         $frag['dateFormat'] = $tv['format'];
         return $frag;
+    }
+
+    /**
+     * Whether $zone's clock is ahead of $than's at $from, or after any change
+     * of either zone within the next year.
+     */
+    private static function zoneAhead(\DateTimeZone $zone, \DateTimeZone $than, $from)
+    {
+        $points = [(int) $from];
+        foreach ([$zone, $than] as $z) {
+            $changes = $z->getTransitions((int) $from, (int) $from + 366 * 86400);
+            if (is_array($changes)) {
+                foreach ($changes as $c) if ($c['ts'] > $from) $points[] = (int) $c['ts'];
+            }
+        }
+        foreach ($points as $ts) {
+            $at = new \DateTimeImmutable('@' . $ts);
+            if ($zone->getOffset($at) > $than->getOffset($at)) return true;
+        }
+        return false;
     }
 
     /**
@@ -4532,6 +4570,20 @@ class UniversalValidator extends AbstractExternalModule
             return $refuse('"from" field "' . $from . '" holds ' . ($tv['type'] === 'date' ? 'dates' : 'dates with a time')
                 . ' and this field holds ' . ($own === 'date' ? 'dates' : 'dates with a time')
                 . ' — a window counts a date from a date, or a datetime from a datetime.');
+        }
+        // A plain [field] is read in the same event. Where no event collects
+        // both forms, the "from" date is blank on every entry of this field.
+        if ($op[0] === 'ref' && isset($dd[$name]['form_name'], $meta['form_name'])
+                && $dd[$name]['form_name'] !== $meta['form_name']) {
+            $sets = $this->formEventSets($pid);
+            $hostForm = $dd[$name]['form_name'];
+            $fromForm = $meta['form_name'];
+            if ($sets !== null && isset($sets[$hostForm], $sets[$fromForm])
+                    && !array_intersect_key($sets[$hostForm], $sets[$fromForm])) {
+                return $refuse('"from" field "' . $from . '" is on the form "' . $fromForm . '", which no event of this '
+                    . 'field collects, so it would always be blank here — name its event, as [event_name][' . $from
+                    . '] (this needs event and instance references, a project setting).');
+            }
         }
         $frag['fromType'] = $tv['type'];
         $frag['fromFormat'] = $tv['format'];
@@ -8571,6 +8623,49 @@ class UniversalValidator extends AbstractExternalModule
             $out = null;
         }
         $this->mappedFormsCache[$project_id] = $out;
+        return $out;
+    }
+
+    /**
+     * form_name => [event => true] from the instrument-event mapping, or NULL
+     * when it cannot be read, names nothing (a classic project), or keys its
+     * rows in more than one way (event id on some, unique name on others), so
+     * that two forms cannot be compared reliably.
+     */
+    private $formEventsCache = [];
+    private function formEventSets($project_id)
+    {
+        $ck = (string) $project_id;
+        if (array_key_exists($ck, $this->formEventsCache)) return $this->formEventsCache[$ck];
+        $out = null;
+        try {
+            if (is_callable(['\REDCap', 'getInstrumentEventMappings'])) {
+                $map = \REDCap::getInstrumentEventMappings($project_id);
+                if (is_array($map)) {
+                    // the same two row shapes formsForEvent() accepts
+                    $acc = [];
+                    $kinds = [];
+                    foreach ($map as $entry) {
+                        if (!is_array($entry)) continue;
+                        $rows = (isset($entry['form']) || isset($entry['form_name'])) ? [$entry] : $entry;
+                        foreach ($rows as $row) {
+                            if (!is_array($row)) continue;
+                            $fm = isset($row['form']) ? $row['form']
+                                : (isset($row['form_name']) ? $row['form_name'] : null);
+                            if (!is_string($fm) || $fm === '') continue;
+                            if (isset($row['unique_event_name'])) { $ev = 'n:' . $row['unique_event_name']; $kinds['n'] = true; }
+                            elseif (isset($row['event_id'])) { $ev = 'i:' . $row['event_id']; $kinds['i'] = true; }
+                            else continue;
+                            $acc[$fm][$ev] = true;
+                        }
+                    }
+                    if ($acc && count($kinds) === 1) $out = $acc;
+                }
+            }
+        } catch (\Throwable $e) {
+            $out = null;
+        }
+        $this->formEventsCache[$ck] = $out;
         return $out;
     }
 

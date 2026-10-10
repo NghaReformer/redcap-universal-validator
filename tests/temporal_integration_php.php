@@ -489,6 +489,23 @@ namespace {
     $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}');
     REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2099-01-01';$m->redcap_save_record(PID,'1','fa',1,1);
     check('plain "from" on another repeating form: the audit flags a future date',array_map(function($c){return $c[1]['reason'];},invalid($m))===['future']);
+    // A plain "from" on a form no event of the field collects: always blank, so refused.
+    $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35]}');
+    REDCap::$eventMappings=[['event_id'=>1,'form'=>'fa'],['event_id'=>2,'form'=>'fb']];
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('plain "from" on a form in none of the field\'s events: refused, with the event syntax',
+        $r&&strpos((string)($r['configError']??''),'which no event of this field collects')!==false
+        &&strpos((string)$r['configError'],'[event_name][b_open]')!==false);
+    $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35]}');
+    REDCap::$eventMappings=[['event_id'=>1,'form'=>'fa'],['unique_event_name'=>'followup_arm_1','form'=>'fb']];
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('...a mapping keyed two ways proves nothing: not refused',
+        $r&&strpos((string)($r['configError']??''),'which no event of this field collects')===false);
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35]}');
+    REDCap::$eventMappings=[['event_id'=>1,'form'=>'fa'],['event_id'=>2,'form'=>'fb']];
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('...an event-qualified "from" is not refused for it',
+        $r&&strpos((string)($r['configError']??''),'which no event of this field collects')===false);
     // A "when" that reads another event is a stale gate: then the whole rule is advisory.
     $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"notFuture":true,"blockSave":"hard","when":"[baseline_arm_1][b_open][2]<>\'\'"}');
     $r=ruleOf(render($m,'fa'),'a_val');
