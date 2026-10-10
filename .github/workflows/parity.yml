@@ -69,6 +69,8 @@ jobs:
         run: |
           node tests/range_js.cjs
           node tests/range_dom_js.cjs
+      - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
+        run: node tests/silent_change_dom_js.cjs
       - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract)
         run: |
           node tests/growth_js.cjs

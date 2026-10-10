@@ -2491,6 +2491,45 @@ var QRID_WHEN = (function(){
       try { cbs[i](); } catch(e){}
     }
   }
+  /* A value REDCap writes from script raises no event at all on 17.x: a calc
+     result, the number of a slider, @CALCTEXT/@SETVALUE output. The input
+     never fires input/change/blur, so a rule reading it (its own verdict, or
+     a "when" gate) went on judging the old value until something else was
+     typed. Each bound value element is compared with the value its last event
+     (or its last poll) saw; a difference nobody announced fires its field.
+     Typing is heard by the element's own input events, which record the value
+     as known, so the poll never judges a number half typed. REDCap's Today and
+     Now buttons set the value of a field that keeps the focus, and raise no
+     change either. */
+  var silent = [], silentTimer = null;
+  function watchSilent(el, field){
+    var ty = (el.type || "").toLowerCase();
+    if(ty === "radio" || ty === "checkbox" || ty === "file" || ty === "submit" || ty === "button") return;
+    if(typeof el.value !== "string" || el.__qridSilent) return;
+    el.__qridSilent = true;
+    el.__qridLast = el.value;
+    silent.push({ el: el, field: field });
+    if(silentTimer === null && typeof setInterval === "function"){
+      silentTimer = setInterval(pollSilent, 400);
+      if(silentTimer && typeof silentTimer.unref === "function") silentTimer.unref();
+    }
+  }
+  function pollSilent(){
+    var live = [];
+    var doc = typeof document !== "undefined" ? document : null;
+    for(var i = 0; i < silent.length; i++){
+      var s = silent[i], el = s.el;
+      /* a node REDCap rebuilt leaves a stale element behind: drop it, the
+         sweep binds the new one */
+      if(doc && doc.body && typeof doc.body.contains === "function" && !doc.body.contains(el)){ continue; }
+      live.push(s);
+      var v = el.value;
+      if(v === el.__qridLast) continue;
+      el.__qridLast = v;
+      fire(s.field);
+    }
+    silent = live;
+  }
   /* Bind the recheck trigger to every element carrying this target name.
      Returns true once at least one element is hooked (or was already). */
   function tryBind(t){
@@ -2504,9 +2543,13 @@ var QRID_WHEN = (function(){
       el.__qridWhenBound = true;
       bound = true;
       var handler = function(){
+        /* an event heard the new value: the silent-change poll must not
+           announce it a second time */
+        if(this && typeof this.value === "string") this.__qridLast = this.value;
         if(t.id) setTimeout(function(){ fire(t.field); }, 0);
         else fire(t.field);
       };
+      watchSilent(el, t.field);
       /* REDCap's autocomplete can trigger jQuery change without a native
          event. jQuery handles both, so use one listener path, never both. */
       var jq = typeof window !== "undefined" && window.jQuery;
@@ -2698,7 +2741,13 @@ function QRID_registerBlocker(input, fieldName, blockMode){
   if(input.readOnly || input.disabled) return;
   input.__qridBlockMode = blockMode;
   input.__qridFieldName = fieldName;
-  input.__qridFieldLabel = QRID_fieldLabel(input, fieldName);
+  /* a guard item is a plain object that arrives with the label its factory
+     read from the field's row: asking the object (it has no DOM) would
+     overwrite that label with the field name, and the save dialog would
+     list "uw_live" instead of the question the person sees */
+  if(!input.__qridFieldLabel || input.__qridFieldLabel === fieldName){
+    input.__qridFieldLabel = QRID_fieldLabel(input, fieldName);
+  }
   UV_guard.items.push(input);
   if(UV_guard.armed) return;
   UV_guard.armed = true;
