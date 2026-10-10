@@ -164,6 +164,9 @@ final class WorkBudget
     private $batchBase = 0;    // real usage before the first unit: what the units hold is above it
     private $batchLast = 0;    // real usage at the last sample, for the growth of one unit
     private $batchStep = 0;    // the most one unit of this batch has grown real usage by
+    private $pinned = [];      // kind => the claim it keeps for the rest of the request; see alone()
+    private $retryPass = false; // alone() owes the next admit() one unit, whatever it measures
+    private $retried = false;  // ... and owes it once per request
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
@@ -269,8 +272,12 @@ final class WorkBudget
      *   'drop'  the unit just finished cannot be kept: the arena plus a copy of
      *           everything the units hold, this one included, reaches the limit
      *           itself. The caller lets this unit's result go, which returns its
-     *           share, and counts an attempt against it, so a record that always
-     *           does this ends in a terminal state instead of a loop.
+     *           share. When the unit was the only thing the batch had read, it
+     *           counts an attempt against it, so a record that always does this
+     *           ends in a terminal state instead of a loop. When other units'
+     *           read data was held beside it, the arena is partly theirs, so it
+     *           hands the unit back uncharged and retries it alone - see
+     *           alone() (review R2S-3).
      *   'stop'  keep this unit and take on no more: one more unit growing like
      *           the largest so far, with a copy of it and of what is held,
      *           would reach the limit, or the arena would pass IN_BATCH of it.
@@ -303,6 +310,60 @@ final class WorkBudget
             return 'stop';
         }
         return null;
+    }
+
+    /**
+     * A unit of $kind was dropped while other units' read data was held: take
+     * this kind one at a time for the rest of the request, and let the next
+     * unit through whatever admit() would measure.
+     *
+     * WHY THE DROP WAS NOT THE UNIT'S FAULT (review R2S-3). sample() compares
+     * the arena with the limit, and the arena holds the read data of every
+     * record in the batch, not only the one just evaluated. Charging that one
+     * an attempt charged it for its neighbours: the rest went back uncharged,
+     * the cursor rewound, the next request rebuilt the same batch and charged
+     * the same first record, and healthy records were excluded one after
+     * another - one needing 57 MB of 128 MB was retired after three requests.
+     * The caller now hands it back uncharged, frees the batch's read data, and
+     * asks again for ONE record, so the next unit is examined alone and a drop
+     * there is the record's own.
+     *
+     * THE RETRY IS LET THROUGH ONCE, AND NOT GATED. The request has already
+     * evaluated this record with more held beside it and survived, so retrying
+     * it alone needs less than that. Gating it on the reserve or the clock
+     * would end a request that had just read a batch it could not keep; the
+     * next request would start from the first claim again, read the same
+     * batch, and drop the same record uncharged - a loop with no attempt
+     * counted and no end. One pass per request, because after it the kind is
+     * pinned at one and every later drop is a drop of a record alone.
+     */
+    public function alone($kind)
+    {
+        $kind = (string) $kind;
+        $this->pinned[$kind] = 1;
+        $this->claims[$kind] = 1;
+        if (!$this->retried) {
+            $this->retried = true;
+            $this->retryPass = true;
+        }
+    }
+
+    /**
+     * The caller has let go of a batch's read data: have PHP say so.
+     *
+     * Freeing returns memory to the allocator at once - memory_get_usage()
+     * drops - but an emptied 2 MiB chunk may be kept in PHP's cache rather
+     * than given back, and a cached chunk still counts in the arena that the
+     * limit and sample() are measured against. The retry alone() arranges
+     * would then be measured as though the neighbours' data were still held,
+     * and charged for it. gc_mem_caches() hands cached chunks back, so the
+     * arena reads what is really free. A probe stands in for PHP's figures,
+     * so with one there is nothing to ask.
+     */
+    public function reclaim()
+    {
+        if ($this->probe !== null) return;
+        if (function_exists('gc_mem_caches')) gc_mem_caches();
     }
 
     /**
@@ -387,6 +448,8 @@ final class WorkBudget
         // below the configured minimum on purpose - see admit().
         if ($this->squeezed && $this->observed === 0) return 1;
         $kind = (string) $kind;
+        // Pinned by alone() for the rest of the request.
+        if (isset($this->pinned[$kind])) return $this->pinned[$kind];
         return isset($this->claims[$kind]) ? $this->claims[$kind] : $this->first;
     }
 
@@ -453,6 +516,11 @@ final class WorkBudget
      */
     public function admit($now = null, $usage = null)
     {
+        // The retry alone() owes. See there for why it is not measured.
+        if ($this->retryPass) {
+            $this->retryPass = false;
+            return null;
+        }
         $now = $now === null ? microtime(true) : (float) $now;
         $usage = $usage === null ? $this->read(false)['arena'] : (int) $usage;
         $stop = $this->mustStop($now, $usage);
@@ -517,6 +585,8 @@ final class WorkBudget
             if ($want > $ceiling) $want = $ceiling;
         }
         $want = max($this->min, min($this->max, $want));
+        // One at a time once alone() has said so, below the minimum on purpose.
+        if (isset($this->pinned[$kind])) $want = $this->pinned[$kind];
 
         // NOTHING EXACT, ONLY A BOUND (review BU-3). Below 8.2 a batch that
         // stayed under the request's high-water mark measured only what it

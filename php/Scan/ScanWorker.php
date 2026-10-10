@@ -539,6 +539,16 @@ final class ScanWorker
 
             $adj = $budget->observe($mark,
                 max(1, isset($r['examined']) ? (int) $r['examined'] : count($claimed)));
+            // A RECORD DROPPED BESIDE OTHERS IS TRIED AGAIN ALONE, now (review
+            // R2S-3). It went back uncharged and the batch's read data is
+            // gone; the budget takes records one at a time for the rest of the
+            // request and lets the next one through whatever it measures, so
+            // the retry cannot be lost to the stop this batch would otherwise
+            // have earned - see WorkBudget::alone().
+            if (isset($r['cut']) && $r['cut'] === 'retry') {
+                $budget->alone('records');
+                continue;
+            }
             // A batch memory cut short ends the request: what it examined is
             // committed and the rest is back in the queue, and this request is
             // the one that is short of memory.
@@ -671,8 +681,10 @@ final class ScanWorker
         // claimed, and the first batch of a request has nothing behind it, so
         // the budget is asked after every record whether the next one still
         // fits - see WorkBudget::sample(). 'stop' keeps this record and takes
-        // no more; 'drop' lets this record's result go as well. Both shapes are
-        // ordinal => claim token, as giveBack() and releaseClaims() take them.
+        // no more; 'drop' lets this record's result go as well, and becomes
+        // 'retry' when other records' read data was held beside it (R2S-3).
+        // Both shapes are ordinal => claim token, as giveBack() and
+        // releaseClaims() take them.
         $cut = null;
         $setAside = [];    // evaluated, not kept: an attempt is counted against it
         $untouched = [];   // never reached: handed straight back, no attempt
@@ -746,9 +758,23 @@ final class ScanWorker
             $verdict = ($budget !== null) ? $budget->sample() : null;
             if ($verdict === 'drop') {
                 // Its findings go first, before anything else asks for memory.
-                // It is not written as examined, so it cannot be certified;
-                // it is counted as attempted, so it cannot loop. See below.
+                // It is not written as examined, so it cannot be certified.
                 $ev = null;
+                if (count($data) > 1) {
+                    // NOT ALONE, SO NOT ITS FAULT ALONE (review R2S-3). The
+                    // arena sample() compared with the limit holds every
+                    // record this batch read, and charging this one for its
+                    // neighbours' data excluded healthy records one request
+                    // at a time: the batch was rebuilt the same way each time
+                    // and the same first record charged. It goes back
+                    // uncharged with the rest, the read data is freed below,
+                    // and the loop retries it alone - see WorkBudget::alone().
+                    $untouched[(int) $c['ordinal']] = $claim;
+                    $cut = 'retry';
+                    continue;
+                }
+                // ALONE, the drop is the record's own: it is counted as
+                // attempted, so it cannot loop. See below.
                 $setAside[(int) $c['ordinal']] = $claim;
                 $cut = 'drop';
                 continue;
@@ -819,6 +845,15 @@ final class ScanWorker
         // what the batch cost when it is observed; the request is not told a
         // batch was cut short that was not.
         if ($cut === 'stop' && !$untouched) $cut = null;
+
+        // THE READ DATA IS NOT NEEDED PAST HERE, and it is the largest thing
+        // this batch holds: let it go before the commit asks for memory, and
+        // before a record the batch dropped is retried alone (R2S-3). $got
+        // holds the same array, so it goes too.
+        $ev = null;
+        $data = null;
+        $got = null;
+        if ($cut === 'retry' && $budget !== null) $budget->reclaim();
 
         $batch['marks'] = array_values($marks);
         // null when the store does not say how many records it still held (a
@@ -902,6 +937,8 @@ final class ScanWorker
         if ($untouched) {
             $this->store->releaseClaims($runId, $epoch, $this->owner(), $untouched);
         }
+        // 'retry' carries no sentence: the request is not stopping, it is
+        // taking the dropped record again, alone.
         return ['ok' => true, 'stop' => null, 'worked' => $worked, 'requeued' => $requeued,
                 'blocked' => $blocked, 'findings' => $findings, 'candidates' => $candidates,
                 'examined' => count($claimed) - count($untouched), 'cut' => $cut,

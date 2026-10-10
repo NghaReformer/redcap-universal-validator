@@ -1843,12 +1843,41 @@ namespace INSPIRE\UniversalValidator\Scan {
         && $tries[9] === 0 && $tries[25] === 0);
 
     // ONE RECORD THAT CANNOT BE KEPT. R3's findings take 70 MiB. Kept, the
-    // commit could need as much again while it writes them, and 92 + 70 is
-    // past the 128 MiB limit itself. So it is set aside: its findings are let
-    // go, ONE ATTEMPT is counted against it outside the work that failed, and
-    // it is handed back. A record that does this every time runs out of
-    // attempts and ends in a terminal state - reported, blocking, and not a
-    // loop. The records before it are committed; the ones after it go back.
+    // commit could need as much again while it writes them, and 90 + 70 is
+    // past the 128 MiB limit itself - even with nothing else read beside it.
+    // So it is set aside: its findings are let go, ONE ATTEMPT is counted
+    // against it outside the work that failed, and it is handed back. A record
+    // that does this every time runs out of attempts and ends in a terminal
+    // state - reported, blocking, and not a loop. The records before it are
+    // committed; the ones after it go back.
+    //
+    // THE MODEL LETS GO WHEN THE WORKER DOES (review R2S-3). A record dropped
+    // beside other records is now retried alone before it is charged, and the
+    // retry is measured after the drop has returned its memory - which a heap
+    // that only ever grew could not show. Each evaluation's memory is held by
+    // the result the worker holds, and given back when the worker drops it.
+    class HeldBytes
+    {
+        private $heap;
+        private $bytes;
+        public function __construct(ModelHeap $heap, $bytes)
+        {
+            $this->heap = $heap;
+            $this->bytes = (int) $bytes;
+            $heap->used += $this->bytes;
+        }
+        public function __destruct()
+        {
+            $this->heap->used -= $this->bytes;
+        }
+    }
+    $letGo = function (ModelHeap $h, array $perRecord, $limitBytes, &$died) use ($MB) {
+        return function ($id, $node) use ($h, $perRecord, $limitBytes, &$died, $MB) {
+            $hold = new HeldBytes($h, (isset($perRecord[$id]) ? $perRecord[$id] : $perRecord['*']) * $MB);
+            if ($h->used > $limitBytes) $died = true;      // where PHP would have died
+            return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null, 'held' => $hold];
+        };
+    };
     list($store, $runId) = $fixture(['R1', 'R2', 'R3', 'R4', 'R5', 'R6']);
     $died = false;
     $h = new ModelHeap(20, true);
@@ -1856,7 +1885,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     for ($pass = 0; $pass < 4; $pass++) {
         $h->used = 20 * $MB;
         $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader, 'owner' => 'w1',
-            'evaluate' => $heldFindings($h, ['R3' => 70, '*' => 1], 128 * $MB, $died),
+            'evaluate' => $letGo($h, ['R3' => 70, '*' => 1], 128 * $MB, $died),
             'attempts' => 3, 'finalizer' => $fin(), 'budget' => $budgetOn($h, 6)]);
         $results[] = $w->work(800, $runId);
         if ($pass === 0) {
@@ -1872,6 +1901,85 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('set aside: and every other record is examined',
         $store->manifestComplete($runId) === true
         && $store->recordStates($runId) === [ScanStore::REC_DONE => 5, ScanStore::REC_UNREADABLE => 1]);
+
+    // A RECORD IS NOT CHARGED FOR ITS NEIGHBOURS (review R2S-3). Every record
+    // here needs 57 MiB of a 128 MiB limit on its own: 20 MiB of host, 3 MiB
+    // read, 17 MiB of findings and a copy of them for the commit. A first batch
+    // of 25 reads 75 MiB before the first evaluation, so the first record's
+    // findings reach the line - and it was charged for it. The other 24 went
+    // back uncharged, the next request read the same 25 and charged the same
+    // record, and after three requests a record that fits easily was reported
+    // as one that could not be examined; then the next, and the next. Now it
+    // goes back uncharged, the batch's read data is let go, and it is tried
+    // again alone in the same request, where it fits.
+    $sixty = [];
+    for ($i = 1; $i <= 60; $i++) $sixty[] = sprintf('S%02d', $i);
+    list($store, $runId) = $fixture($sixty);
+    $died = false;
+    $h = new ModelHeap(20, true);
+    $readBytes = function ($ids) use ($h, $MB) {
+        $data = [];
+        foreach ($ids as $id) {
+            // Each record's read data is held for as long as the batch holds it.
+            $data[$id] = ['1' => ['x' => 'v'], 'mem' => new HeldBytes($h, 3 * $MB)];
+        }
+        return ['ok' => true, 'data' => $data, 'why' => null];
+    };
+    $evals = [];
+    $eval17 = $letGo($h, ['*' => 17], 128 * $MB, $died);
+    $states = [];
+    for ($pass = 0; $pass < 3; $pass++) {
+        $h->used = 20 * $MB;                               // each request starts afresh
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $readBytes, 'owner' => 'w1',
+            'evaluate' => function ($id, $node) use ($eval17, &$evals) {
+                $evals[] = $id;
+                return $eval17($id, $node);
+            },
+            'attempts' => 3, 'finalizer' => $fin(),
+            'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 128 * $MB,
+                'timeLimit' => null, 'startedAt' => microtime(true), 'probe' => $h->probe()])]);
+        $w->work(800, $runId);
+    }
+    check('neighbours: a record dropped beside a full batch is not charged for it',
+        !isset($store->recordStates($runId)[ScanStore::REC_UNREADABLE]) && $died === false);
+    check('neighbours: it is tried again alone, in the same request, and examined',
+        array_slice($evals, 0, 2) === ['S01', 'S01'] && $store->recordState($runId, 1) === ScanStore::REC_DONE);
+    check('neighbours: and the run carries on one record at a time until every one is examined',
+        $store->recordStates($runId) === [ScanStore::REC_DONE => 60]);
+
+    // AND WHEN LETTING GO GIVES NOTHING BACK - an arena PHP does not shrink -
+    // the retry still runs. Gated on the reserve, it would have been refused
+    // after the drop; the next request would read the same batch and drop the
+    // same record uncharged, for ever, with no attempt counted and no end. It
+    // is let through once and measured alone, so a request that truly cannot
+    // hold the record charges it, and the run still ends.
+    list($store, $runId) = $fixture(['T1', 'T2', 'T3', 'T4']);
+    $used = 0;
+    $evalsT = [];
+    for ($pass = 0; $pass < 3; $pass++) {
+        $used = 20 * $MB;
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'owner' => 'w1', 'attempts' => 3,
+            'finalizer' => $fin(),
+            'read' => function ($ids) use (&$used, $MB, $reader) {
+                $used += count($ids) * 15 * $MB;
+                return $reader($ids);
+            },
+            'evaluate' => function ($id, $node) use (&$used, $MB, &$evalsT) {
+                $evalsT[] = $id;
+                $used += 25 * $MB;
+                return ['findings' => [], 'bytes' => 0, 'contexts' => 1, 'why' => null];
+            },
+            'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 128 * $MB,
+                'timeLimit' => null, 'startedAt' => microtime(true),
+                'probe' => function ($reset) use (&$used) {
+                    return ['used' => $used, 'peak' => $used, 'arena' => $used];
+                }])]);
+        $w->work(800, $runId);
+    }
+    check('neighbours: with nothing given back, the retry alone is still made in each request',
+        $evalsT === ['T1', 'T1', 'T1', 'T1', 'T1', 'T1']);
+    check('neighbours: and is charged there, so the run reaches an end rather than a loop',
+        $store->recordState($runId, 1) === ScanStore::REC_UNREADABLE);
 
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
