@@ -2337,6 +2337,13 @@ true at once are a branch conflict, which leaves the whole field unchecked,
 every reference included. Each finding in the module log and the
 Validation scan names its reference.
 
+Apart from a conflict, each reference chooses its branch on its own. A `when`
+that reads a value saved on another form makes only its own reference's notes
+advisory. A `when` that names a value the server cannot read (in another event,
+or on another repeating form) leaves only its own reference unchecked. The page
+says so on that reference's line, the audit and the scan log it as a
+configuration problem, and the other references are still judged.
+
 A boy of 300 days measured standing at 75.0 cm and weighing 7.5 kg has a
 corrected length of 75.7 cm and a weight-for-length z-score of -3.16, lower
 than usual. Without the correction it would be -2.98.
@@ -2617,9 +2624,13 @@ case need `caseSensitive`.
   bound anywhere in the reference is a configuration error that names the row
   and the value a limit must clear ("a low limit must be above -6.97"). Every shipped reference takes soft
   limits of -3 to 3 and hard limits of -6 to 6.
-- **The z-score travels with each finding.** The post-save audit's log entry
-  and the Validation scan carry the z-score and the reference, and the scan's
-  detail line reads "Its z-score is -3.40 on the growth reference who-wfa."
+- **The z-score travels with each finding, where the value does.** The
+  post-save audit's log entry and the Validation scan always carry the
+  reference. The z-score, with the sex and the age, gives the measurement back,
+  so it goes only where the value goes. The log entry has it when the audit log
+  setting keeps raw values. The scan has it beside a value the report shows, and
+  the detail line then reads "Its z-score is -3.40 on the growth reference
+  who-wfa."
 
 ### Semantics worth knowing
 
@@ -2668,15 +2679,17 @@ case need `caseSensitive`.
   outside either range as `type: range`, with reason `soft-low`, `soft-high`,
   `hard-low`, `hard-high`, `not-a-number` or, for a growth reference,
   `not-positive`, `plausible-low` or `plausible-high`, whatever `softBlock`
-  says. A growth finding also carries `z` and `reference`. A rule that only
+  says. A growth finding also carries `reference`, and `z` when the log keeps
+  raw values. A rule that only
   shows notes still leaves a record of each unusual value. Every growth value
   with no z-score is logged as `uvalidate-not-evaluated`, with the reason,
   also when a `plausible` range judged it.
 - **The Validation scan** counts these findings. Its report labels them
   "Unusual value", "Implausible value", "Not a number" or "Not a positive
   measurement", with the limits in the detail line ("Expected 12 to 17.5
-  g/dL." or "Allowed 3 to 25 g/dL."). A growth finding adds its z-score ("Its
-  z-score is -3.40 on the growth reference who-wfa."), and a value outside
+  g/dL." or "Allowed 3 to 25 g/dL."). A growth finding shown with its value
+  adds its z-score ("Its z-score is -3.40 on the growth reference who-wfa."),
+  and a value outside
   `plausible` is an "Implausible value" with that range ("Allowed 0.5 to 30
   kg.").
   The report page and its download are not available while the scan is being
@@ -2866,6 +2879,8 @@ The rules:
   that name the same growth reference, and among those with fixed limits. Tags that
   name different references (or a reference and fixed limits) all apply side by side,
   each without a `when` if need be; the worst result decides (see `@UVRANGE` Level 5).
+  A condition that reads a saved value, or one that cannot be resolved, affects only
+  the tags of its own reference.
 - Dialog rules and tags mix freely — a dialog rule and a tag may legally share a field
   as long as the sharing is gated.
 

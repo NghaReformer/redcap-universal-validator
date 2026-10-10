@@ -742,7 +742,9 @@ slip:
 - **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
   `soft-high`, `hard-low`, `hard-high`, `not-a-number` or, for a growth
   reference, `not-positive`, `plausible-low` or `plausible-high`, whatever
-  `softBlock` says; a growth finding carries its z-score and reference. The Validation scan
+  `softBlock` says; a growth finding carries its reference, and its z-score
+  only where the value itself is kept (a raw audit log, a scan that shows
+  values). The Validation scan
   counts the same findings; its report (see below) labels them "Unusual
   value", "Implausible value", "Not a number" or "Not a positive measurement",
   with the limits in the detail line. Configure via field annotation only.
