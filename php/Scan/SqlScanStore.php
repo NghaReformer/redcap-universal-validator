@@ -1631,10 +1631,6 @@ final class SqlScanStore implements ScanStore
     {
         $limit = max(1, min(100, (int) $limit));
         $keys = FindingRowMapper::INPUT_KEYS;
-        $sql = 'SELECT ' . implode(', ', $keys) . '
-                FROM ' . Schema::table('finding') . '
-                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
-                  AND finding_id > ?';
         // PROJECT FIRST, in the predicate and in the index. This method had
         // no production caller at all, which is the only reason a read
         // filtered by generation alone - with the generation the literal 1
@@ -1644,14 +1640,25 @@ final class SqlScanStore implements ScanStore
         $params = [(int) $projectId, $generationId, (int) $afterId];
         // Only allowlisted axes reach the statement; an unknown key is dropped
         // rather than interpolated.
+        $where = '';
         foreach (['host_form' => 'host_form', 'reason_code' => 'reason_code',
                   'dag_key' => 'dag_key', 'check_type' => 'check_type'] as $k => $col) {
             if (isset($filter[$k]) && $filter[$k] !== '') {
-                $sql .= ' AND ' . $col . ' = ?';
+                $where .= ' AND ' . $col . ' = ?';
                 $params[] = $filter[$k];
             }
         }
-        $sql .= ' ORDER BY finding_id LIMIT ' . $limit;
+        // An unfiltered page is ix_page_v2's prefix in ix_page_v2's order, and
+        // is pinned to it: over a small table MySQL 8.0 and MariaDB chose
+        // uq_active_identity_v2 and sorted the generation (see
+        // ScanRetention::slicePage()). A filtered page is left to the
+        // optimiser, which has an ix_filter_* key for each axis.
+        $hint = $where === '' ? ' FORCE INDEX (ix_page_v2)' : '';
+        $sql = 'SELECT ' . implode(', ', $keys) . '
+                FROM ' . Schema::table('finding') . $hint . '
+                WHERE project_id = ? AND generation_id = ? AND active_slot = 1
+                  AND finding_id > ?' . $where . '
+                ORDER BY finding_id LIMIT ' . $limit;
         $out = [];
         foreach ($this->db->select($sql, $params) as $r) {
             $row = array_values((array) $r);

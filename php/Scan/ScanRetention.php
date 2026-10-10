@@ -407,8 +407,15 @@ final class ScanRetention
      */
     private function slicePage($pid, $gen, $slot, $after, $limit)
     {
+        // FORCE INDEX, for the reason UniqueFinalizer::nextUnfinished() gives.
+        // ix_page_v2 is (project_id, generation_id, active_slot, finding_id):
+        // the slice is its prefix and the page is its order, so the read stops
+        // after $limit index entries. Measured on MySQL 8.0 and MariaDB 10.5
+        // and 10.11 over a small table, the optimiser chose
+        // uq_active_identity_v2 instead and sorted the slice; 5.7 chose the
+        // page key. A plan that depends on table statistics is not a bound.
         $r = $this->db->select('SELECT COUNT(*), MAX(finding_id) FROM (SELECT finding_id FROM '
-            . Schema::table('finding') . ' WHERE project_id = ? AND generation_id = ? AND '
+            . Schema::table('finding') . ' FORCE INDEX (ix_page_v2) WHERE project_id = ? AND generation_id = ? AND '
             . self::slot($slot) . ' AND finding_id > ? ORDER BY finding_id LIMIT ' . (int) $limit
             . ') page', [$pid, (int) $gen, (int) $after]);
         if (!isset($r[0][0])) {

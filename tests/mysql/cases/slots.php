@@ -63,8 +63,9 @@ $NEIGHBOUR = uv_neighbour($PID);
     $raced = (new \INSPIRE\UniversalValidator\Scan\WorkerSlots($racing))->provision(7);
     check('slots: a slot another save wrote first is not counted as added',
         $racing->raced === true && $raced === 1 && $slotsA->census()['total'] === 7);
+    // Seven slots by now: the racing save above provisioned up to 7.
     check('slots: and names which are idle above a reduced limit',
-        $slotsA->idleAbove(2) === [3, 4, 5]);
+        $slotsA->idleAbove(2) === [3, 4, 5, 6, 7]);
 
     // BROWSER AND CRON COMPETE FOR THE SAME POOL. That is the point of an
     // installation-wide semaphore: a cron that ignored browser leases would let
