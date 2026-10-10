@@ -155,8 +155,8 @@ to H.
 
 Setup:
 
-1. Append the 22 rows of the CSV to the dictionary, as in setup step 2. The
-   diff must report two new instruments and 22 new fields.
+1. Append the 23 rows of the CSV to the dictionary, as in setup step 2. The
+   diff must report two new instruments and 23 new fields.
 2. Designate `uv_growth_test` on `event_1_arm_1` (351) and `visit_1_arm_1`
    (380). Designate `uv_growth_more` on `event_1_arm_1` (351) only.
 3. Steps I22 to I25 need the project setting for event and instance references
@@ -197,7 +197,7 @@ not run; it never blocks.
 | I23 | Save | The save goes through. Module log: `ug_xev_wt` `hard-low` with `event_id` 380 |
 | I24 | Back on event 351, set `ug_weight` = 9.6, change `ug_dob` to 11-01-2025 and save | Module log: a new `ug_xev_wt` `hard-low` entry with `event_id` 380, because the save of event 351 re-checks the rule that reads it. The save also re-checks the `uv_growth_more` rules, which read the same sex and date of birth, so the four entries of I21 (`ug_bmi`, `ug_wfl_c`, `ug_ssf`, `ug_tsf`) appear again. Set `ug_dob` back to 10-01-2025 |
 | I25 | On event 351, `ug_xev_wt` = 4.0, leave | Red note; Save is not blocked (an event-qualified rule never blocks). Clear it |
-| I26 | `uv_growth_test`: check the six `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field; `ug_bad_reach` its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at 1826 days (female). Use a low limit of -6.96 or above |
+| I26 | `uv_growth_test`: check the six `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field; `ug_bad_reach` its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at 1826 days (female), so a low limit must be above -6.97 |
 | I27 | [only if section H added a missing data code] `ug_sex`: choose `UNK` with the "M" button | `ug_weight` turns grey "... the sex is blank." Clear the code |
 | I28 | [only if the durable scan is enabled] Run the Validation scan | The panel counts the findings saved in I15 to I24. The detail lines ("Expected z-score -2 to 2." for a soft finding, "Allowed z-score -5 to 5." for `ug_bmi`) are pinned offline by `tests/growth_module_php.php`, and the labels ("Unusual value", "Implausible value") by `tests/range_module_php.php` |
 | I29 | Enable `uv_growth_test` and `uv_growth_more` as surveys. Open `uv_growth_test` for XE-2 at event 351: `ug_sex` = Male, `ug_dob` = 10-01-2025, `ug_visit` = 2026-01-10, `ug_weight` = 4.0 | Red note as in I3, without field names; Submit is blocked. Set `ug_weight` = 9.6 and submit |

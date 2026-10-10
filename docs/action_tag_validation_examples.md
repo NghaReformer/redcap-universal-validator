@@ -1892,10 +1892,10 @@ one (see `data/references/README.md`).
   field itself.
 - **Limits the reference can reach.** Near 0, some rows give no z-score below
   a floor, and some (in a table without `adjust`, with L below 0) none above a
-  ceiling. At 5 years, `who-tsfa` never scores below -6.97, so a hard low limit
-  of -7 would not hold back even 0.1 mm. A `soft` or `hard` limit beyond such a
-  bound anywhere in the reference is a configuration error that names the
-  furthest limit the reference can take. Every shipped reference takes soft
+  ceiling. At 5 years, `who-tsfa` never scores below -6.97 for a girl, so a hard
+  low limit of -7 would not hold back even 0.1 mm. A `soft` or `hard` limit beyond such a
+  bound anywhere in the reference is a configuration error that names the row
+  and the value a limit must clear ("a low limit must be above -6.97"). Every shipped reference takes soft
   limits of -3 to 3 and hard limits of -6 to 6.
 - **Page size.** A page carries a copy of each table it uses (3 to 95 KB) and at
   most four different references. A rule needing a fifth is checked when the

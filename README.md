@@ -704,7 +704,10 @@ slip:
   explains how, and `data/references/convert.php` turns a published LMS table
   into the module's format. A measurement at or below 0 is implausible
   (`not-positive`). Blank inputs, an unknown sex code and an age outside the
-  reference check nothing; staff see why. The inputs may sit on another form,
+  reference check nothing; staff see why. A limit the reference can never pass
+  (some rows give no z-score beyond a point: a CDC-style BMI row with L -2 and
+  S 0.13 gives none above 3.85) is a configuration error that says which value
+  to use. The inputs may sit on another form,
   or in another event with event and instance references on.
 
 ## The Validation scan — checking data that is already saved

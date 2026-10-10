@@ -32,6 +32,13 @@ final class GrowthReference
     const PAGE_TABLES = 4;
     /** The largest z-score zText writes (see there). */
     const MAX_Z_TEXT = 999.99;
+    /** The largest axis value a "valid" bound may name (days, months or cm). */
+    const MAX_AXIS = 1000000;
+    /** The smallest S, and the smallest L other than 0, a table row may hold. */
+    const MIN_S = 0.0001;
+    const MIN_L = 0.000001;
+    /** A z-score bound further out than this limits nothing: limits lie within +-20. */
+    const BOUND_LIMIT = 21;
 
     const AXES = ['age' => ['days', 'months'], 'length' => ['cm'], 'height' => ['cm']];
     const LOOKUPS = ['round', 'floor', 'linear'];
@@ -179,6 +186,10 @@ final class GrowthReference
         $hi = $hasMax ? $v['max'] : $v['below'];
         if (!self::isNum($hi)) return 'needs "valid" "' . ($hasMax ? 'max' : 'below') . '" as a number in a string.';
         if ((float) $hi < (float) $v['min']) return 'has a "valid" range that ends before it starts.';
+        // row keys are axis value times "scale" (at most 1000) as whole numbers
+        if (abs((float) $v['min']) > self::MAX_AXIS || abs((float) $hi) > self::MAX_AXIS) {
+            return 'has a "valid" bound beyond ' . self::MAX_AXIS . ' (or -' . self::MAX_AXIS . ').';
+        }
         return null;
     }
 
@@ -226,7 +237,9 @@ final class GrowthReference
         $bad = function ($why) use ($entry) { return new \RuntimeException('the table ' . $entry['file'] . ' ' . $why); };
         if (!is_array($t) || !isset($t['format']) || $t['format'] !== self::TABLE_FORMAT) throw $bad('is not a "' . self::TABLE_FORMAT . '" table.');
         if (!isset($t['scale']) || !is_int($t['scale']) || $t['scale'] < 1 || $t['scale'] > 1000) throw $bad('needs "scale" as a whole number from 1 to 1000.');
-        if (!isset($t['first']) || !is_int($t['first'])) throw $bad('needs "first" as a whole number.');
+        if (!isset($t['first']) || !is_int($t['first']) || abs($t['first']) > self::MAX_AXIS * 1000) {
+            throw $bad('needs "first" as a whole number from -' . (self::MAX_AXIS * 1000) . ' to ' . (self::MAX_AXIS * 1000) . '.');
+        }
         foreach (['male', 'female'] as $sex) {
             if (!isset($t[$sex]) || !is_array($t[$sex]) || !$t[$sex] || array_keys($t[$sex]) !== range(0, count($t[$sex]) - 1)) {
                 throw $bad('needs a list of "' . $sex . '" rows.');
@@ -241,6 +254,14 @@ final class GrowthReference
                     $t[$sex][$i][$j] = (float) $p;
                 }
                 if ($t[$sex][$i][1] <= 0 || $t[$sex][$i][2] <= 0) throw $bad('row ' . $i . ' of "' . $sex . '" has M or S at or below 0.');
+                // A tiny S or L (rounding noise where L is 0) makes L*S vanish:
+                // the z-score divides by it, and the bounds of limitProblem() blow up.
+                if ($t[$sex][$i][2] < self::MIN_S) throw $bad('row ' . $i . ' of "' . $sex . '" has an S below ' . self::MIN_S . '.');
+                $l = abs($t[$sex][$i][0]);
+                if ($l > 0 && $l < self::MIN_L) {
+                    throw $bad('row ' . $i . ' of "' . $sex . '" has an L of ' . $t[$sex][$i][0] . '; write an L of 0 as 0 (any other L must be at least '
+                        . number_format(self::MIN_L, 6) . ' in size).');
+                }
             }
         }
         return ['scale' => $t['scale'], 'first' => $t['first'], 'male' => $t['male'], 'female' => $t['female']];
@@ -327,8 +348,10 @@ final class GrowthReference
      * restricted method (beyond -3 SD) never scores below -3 - q/(1 - q),
      * with q = SD-3 / SD-2. A limit past that point is never crossed, so an
      * absurd value, 0.001 kg or a BMI of 1,000, would pass that tier: the
-     * rule is refused instead. A limit must sit at least 0.01 inside the
-     * bound, so that a two-decimal z-score can still fall beyond it.
+     * rule is refused instead. With b the bound plus 0.01, rounded away from
+     * it to hundredths, a low limit must lie above b - 0.01 and a high limit
+     * below b + 0.01: a two-decimal z-score of b can then still fall beyond
+     * it. A limit of b itself, or of b to three decimals, is accepted.
      */
     public static function limitProblem(array $entry, array $table, array $limits)
     {
@@ -337,21 +360,24 @@ final class GrowthReference
             $lo = isset($limits[$tier][0]) ? (string) $limits[$tier][0] : null;
             $hi = isset($limits[$tier][1]) ? (string) $limits[$tier][1] : null;
             if ($lo !== null && $b['floor'] !== null) {
-                // the lowest limit a score can still fall below, in hundredths
-                // (rounded to 1e-6 first: -19.99 * 100 is -1998.9999999999998)
+                // In hundredths: a score lands at or below "reach" only when the
+                // bound is 0.01 or more away (rounded to 1e-6 first: -19.99 * 100
+                // is -1998.9999999999998), so a limit above reach - 0.01 can be passed.
                 $reach = (int) ceil(round(($b['floor']['z'] + 0.01) * 100, 6));
-                if (Logic::numCompare($lo, self::hundredths($reach)) < 0) {
+                $edge = self::hundredths($reach - 1);
+                if (Logic::numCompare($lo, $edge) <= 0) {
                     return 'its "' . $tier . '" low limit ' . $lo . ' is out of reach: with "' . $entry['id'] . '" no measurement'
-                        . ' scores below ' . self::zText($b['floor']['z']) . ' ' . self::where($entry, $table, $b['floor'])
-                        . '. Use a low limit of ' . self::hundredths($reach) . ' or above.';
+                        . ' scores below ' . self::zText($b['floor']['z'] + 1e-9) . ' ' . self::where($entry, $table, $b['floor'])
+                        . ', so a low limit must be above ' . $edge . '.';
                 }
             }
             if ($hi !== null && $b['ceil'] !== null) {
                 $reach = (int) floor(round(($b['ceil']['z'] - 0.01) * 100, 6));
-                if (Logic::numCompare($hi, self::hundredths($reach)) > 0) {
+                $edge = self::hundredths($reach + 1);
+                if (Logic::numCompare($hi, $edge) >= 0) {
                     return 'its "' . $tier . '" high limit ' . $hi . ' is out of reach: with "' . $entry['id'] . '" no measurement'
-                        . ' scores above ' . self::zText($b['ceil']['z']) . ' ' . self::where($entry, $table, $b['ceil'])
-                        . '. Use a high limit of ' . self::hundredths($reach) . ' or below.';
+                        . ' scores above ' . self::zText($b['ceil']['z'] - 1e-9) . ' ' . self::where($entry, $table, $b['ceil'])
+                        . ', so a high limit must be below ' . $edge . '.';
                 }
             }
         }
@@ -410,15 +436,19 @@ final class GrowthReference
      */
     private static function zRange($l, $s, $restricted)
     {
-        $floor = $l > 0 ? -1 / ($l * $s) : null;
-        $ceil = $l < 0 ? 1 / (-$l * $s) : null;
-        if (!$restricted) return [$floor, $ceil];
-        if ($ceil !== null && $ceil > 3) $ceil = null;
-        if ($floor === null || $floor < -3) {
-            $q = $l == 0 ? exp(-$s) : pow((1 - 3 * $l * $s) / (1 - 2 * $l * $s), 1 / $l);
-            $floor = -3 - $q / (1 - $q);
+        $ls = $l * $s;
+        $floor = ($l > 0 && $ls > 0) ? -1 / $ls : null;
+        $ceil = ($l < 0 && $ls < 0) ? -1 / $ls : null;
+        if ($restricted) {
+            if ($ceil !== null && $ceil > 3) $ceil = null;
+            if ($floor === null || $floor < -3) {
+                $q = $l == 0 ? exp(-$s) : pow((1 - 3 * $ls) / (1 - 2 * $ls), 1 / $l);
+                $floor = (is_finite($q) && $q > 0 && $q < 1) ? -3 - $q / (1 - $q) : null;
+            }
         }
-        return [$floor, $ceil];
+        // a bound past every allowed limit (AnnotationRules::MAX_GROWTH_Z) limits nothing
+        $keep = function ($b) { return ($b !== null && is_finite($b) && abs($b) <= self::BOUND_LIMIT) ? $b : null; };
+        return [$keep($floor), $keep($ceil)];
     }
 
     /**

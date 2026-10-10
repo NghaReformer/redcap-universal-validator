@@ -52,8 +52,11 @@ national reference) can be added without changing the module's code.
    with `--sex`, `--male` and `--female`. The script prints the file's SHA-256
    and an index entry to start from, covering the rows both sexes have: with
    `round` for a table on whole units, and with `floor` and an exclusive
-   `below` for one converted with `--x-offset`. Check the first and last rows
-   of the file you convert; the numbers here are an example.
+   `below` for one converted with `--x-offset`, checked against the module's
+   own row lookup. It refuses a row with an S below 0.0001, or with an L that
+   is not 0 but smaller than 0.000001 in size (write an L of 0 as 0); the module
+   refuses such tables too. Check the first and last rows of the file you
+   convert; the numbers here are an example.
 
 2. **Describe it in an index.json.** Put the table and an `index.json` in a
    folder on the REDCap server, outside the module folder so that an upgrade
@@ -97,7 +100,7 @@ national reference) can be added without changing the module's code.
 | `axis` | `age`, `length` or `height` |
 | `axisUnit` | `days` or `months` for age, `cm` for length and height |
 | `lookup` | How a position on the axis finds its row: `round` to the nearest row (WHO 0 to 5 years, by day), `floor` to the row at or below (CDC half months, after the offset), `linear` between the two rows around it (WHO length and height, WHO 5 to 19 years) |
-| `valid` | `min`, and `max` (inclusive) or `below` (exclusive), in the axis unit, as text. Outside it nothing is checked |
+| `valid` | `min`, and `max` (inclusive) or `below` (exclusive), in the axis unit, as text, within -1000000 to 1000000. Outside it nothing is checked |
 | `adjust` | `who-restricted` measures a z beyond ±3 in units of the distance between 2 and 3 SD, as WHO does for weight-based indicators; `none` uses the LMS formula throughout |
 
 An age given in days and a reference by months (or the other way round) are
@@ -114,5 +117,5 @@ never below -1/(L × S); with `who-restricted`, a measurement near 0 never
 scores below a floor a few SD under -3. A CDC BMI row with L -2 and S 0.13
 gives 3.85 even for a BMI of a million. A rule whose `soft` or `hard` limit
 lies beyond such a bound anywhere in `valid` is a configuration error that
-names the row and the furthest limit it can take, since an absurd value
+names the row and the value the limit must clear, since an absurd value
 would otherwise pass that limit.

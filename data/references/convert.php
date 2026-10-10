@@ -39,6 +39,9 @@ if (PHP_SAPI !== 'cli') {
     exit;
 }
 
+require_once dirname(__DIR__, 2) . '/php/GrowthReference.php';
+$G = 'INSPIRE\UniversalValidator\GrowthReference';
+
 function fail($msg)
 {
     fwrite(STDERR, 'convert.php: ' . $msg . "\n");
@@ -106,6 +109,11 @@ foreach ($lines as $n => $line) {
         $lms[] = (float) $v;
     }
     if ($lms[1] <= 0 || $lms[2] <= 0) fail('line ' . ($n + 2) . ': M and S must be above 0.');
+    // the module refuses these rows (GrowthReference::readTable)
+    if ($lms[2] < $G::MIN_S) fail('line ' . ($n + 2) . ': S must be at least ' . $G::MIN_S . '.');
+    if ($lms[0] != 0 && abs($lms[0]) < $G::MIN_L) {
+        fail('line ' . ($n + 2) . ': L is not 0 but smaller than ' . number_format($G::MIN_L, 6) . ' in size; write an L of 0 as 0.');
+    }
     if (isset($rows[$sex][$key])) fail('line ' . ($n + 2) . ': a second ' . $sex . ' row for x ' . $x . '.');
     $rows[$sex][$key] = $lms;
 }
@@ -137,12 +145,44 @@ fwrite(STDOUT, 'sha256 ' . hash('sha256', $out) . "\n");
 // row is read for x near it ("round"); with one, a row keyed k is read for x
 // from k up to the next key ("floor"), as CDC's half-month rows are.
 $lastKey = $first + min(count($rows['male']), count($rows['female'])) - 1;
-$valid = $offset == 0
-    ? ['min' => (string) ($first / $scale), 'max' => (string) ($lastKey / $scale)]
-    : ['min' => (string) ($first / $scale), 'below' => (string) (($lastKey + 1) / $scale)];
+$lookup = $offset == 0 ? 'round' : 'floor';
+$hiKey = $offset == 0 ? 'max' : 'below';
+$lo = $first / $scale;
+$hi = $offset == 0 ? $lastKey / $scale : ($lastKey + 1) / $scale;
+// the shortest text that reads back as the same double ("24", "51.6")
+$text = function ($f) { return preg_replace('/\.0$/', '', json_encode((float) $f)); };
+// a bound one millionth of a unit inside: the double of 51.6 times 10 can
+// land on 516 itself, so "below" 51.6 would need row 516
+$inward = function ($f, $up) {
+    $n = $up ? ceil(round($f * 1e6, 3)) + 1 : floor(round($f * 1e6, 3)) - 1;
+    return rtrim(rtrim(sprintf('%.6f', $n / 1e6), '0'), '.');
+};
+$accepts = function (array $valid) use ($G, $opts, $out, $lookup) {
+    $G::reset();
+    try {
+        $G::table(['id' => 'new', 'dir' => dirname((string) realpath($opts['out'])), 'file' => basename($opts['out']),
+                   'sha256' => hash('sha256', $out), 'axisUnit' => 'days', 'lookup' => $lookup, 'valid' => $valid]);
+        return null;
+    } catch (\RuntimeException $e) {
+        return $e->getMessage();
+    }
+};
+// Checked with the module's own row lookup, so the entry is accepted as printed.
+$valid = null;
+foreach ([[$text($lo), $text($hi)], [$text($lo), $inward($hi, false)], [$inward($lo, true), $text($hi)],
+          [$inward($lo, true), $inward($hi, false)]] as $try) {
+    if ($accepts(['min' => $try[0], $hiKey => $try[1]]) === null) {
+        $valid = ['min' => $try[0], $hiKey => $try[1]];
+        break;
+    }
+}
+if ($valid === null) {
+    $valid = ['min' => $text($lo), $hiKey => $text($hi)];
+    fwrite(STDERR, 'convert.php: check "valid" before use: ' . $accepts($valid) . "\n");
+}
 fwrite(STDOUT, "index.json entry to start from (edit title, measure, unit, axis, lookup, valid, adjust):\n");
 fwrite(STDOUT, json_encode([
     'title' => '', 'source' => '', 'file' => basename($opts['out']), 'sha256' => hash('sha256', $out),
-    'measure' => '', 'unit' => '', 'axis' => 'age', 'axisUnit' => 'days', 'lookup' => $offset == 0 ? 'round' : 'floor',
+    'measure' => '', 'unit' => '', 'axis' => 'age', 'axisUnit' => 'days', 'lookup' => $lookup,
     'valid' => $valid, 'adjust' => 'none',
 ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . "\n");

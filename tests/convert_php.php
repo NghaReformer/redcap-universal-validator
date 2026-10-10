@@ -98,6 +98,35 @@ namespace {
         && count(G::table(['id' => 'a', 'dir' => $dir] + $printed)['female']) === 2; } catch (\Throwable $e) { $ok = $e->getMessage(); }
     check('sexes ending apart: the printed entry covers rows 0 to 1 and is accepted (got ' . json_encode($ok) . ')', $ok === true);
 
+    // ---- offset tables whose plain bound fails: 51.6 as a double, times 10, is
+    // 516 itself, so "below" 51.6 would need row 516 of a table ending at 515
+    $grid = function ($keys, $scale, $offset) {
+        $csv = "sex,x,l,m,s\n";
+        foreach ([1, 2] as $sex) {
+            foreach ($keys as $k) $csv .= $sex . ',' . sprintf('%.9F', $k / $scale + $offset) . ",1,10,0.1\n";
+        }
+        return $csv;
+    };
+    foreach ([['ends at 51.55, scale 10, offset 0.05', range(450, 515), 10, 0.05],
+              ['ends at 51.65, scale 10, offset 0.05', range(450, 516), 10, 0.05],
+              ['scale 3, offset 0.5', range(1, 40), 3, 0.5],
+              ['scale 7, no offset', range(1, 40), 7, 0]] as $c) {
+        $in = put('grid.csv', $grid($c[1], $c[2], $c[3]));
+        $args = ['--in', $in, '--out', $dir . '/grid.json', '--x', 'x', '--scale', (string) $c[2]];
+        if ($c[3] != 0) $args = array_merge($args, ['--x-offset', (string) $c[3]]);
+        $r = run($args);
+        $printed = json_decode(substr($r['out'], (int) strpos($r['out'], "{\n")), true);
+        try { $ok = is_array($printed) && $r['err'] === '' && count(G::table(['id' => 'g', 'dir' => $dir] + $printed)['male']) === count($c[1]); }
+        catch (\Throwable $e) { $ok = $e->getMessage(); }
+        check('printed entry accepted, ' . $c[0] . ' (got ' . json_encode([$ok, $printed['valid'] ?? null, $r['err']]) . ')', $ok === true);
+    }
+    // the bound moved inward is still past the last row's own key
+    $in = put('grid.csv', $grid(range(450, 515), 10, 0.05));
+    $r = run(['--in', $in, '--out', $dir . '/grid.json', '--x', 'x', '--scale', '10', '--x-offset', '0.05']);
+    $printed = json_decode(substr($r['out'], (int) strpos($r['out'], "{\n")), true);
+    check('51.55 end: "below" moves in by a millionth, to 51.599999 (got ' . json_encode($printed['valid'] ?? null) . ')',
+        ($printed['valid'] ?? null) === ['min' => '45', 'below' => '51.599999']);
+
     // ---- other sex codes
     $in = put('mf.csv', "gender,len,lam,mu,sig\nM,45,1,2.4,0.09\nM,45.1,1,2.42,0.09\nF,45,1,2.3,0.09\nF,45.1,1,2.32,0.09\n");
     $r = run(['--in', $in, '--out', $dir . '/mf.json', '--x', 'len', '--scale', '10', '--sex', 'gender', '--male', 'M',
@@ -115,6 +144,8 @@ namespace {
         'M of 0'                  => ["sex,age,l,m,s\n1,0,1,0,0.1\n", ['--x', 'age'], 'line 2: M and S must be above 0.'],
         'a second row for one x'  => ["sex,age,l,m,s\n1,0,1,2,0.1\n1,0,1,2,0.1\n", ['--x', 'age'], 'line 3: a second male row for x 0.'],
         'L not a number'          => ["sex,age,l,m,s\n1,0,x,2,0.1\n", ['--x', 'age'], 'line 2: L "x" is not a number.'],
+        'S below 0.0001'          => ["sex,age,l,m,s\n1,0,1,2,0.00001\n", ['--x', 'age'], 'line 2: S must be at least 0.0001.'],
+        'L of rounding noise'     => ["sex,age,l,m,s\n1,0,2.22e-16,2,0.1\n", ['--x', 'age'], 'line 2: L is not 0 but smaller than 0.000001 in size; write an L of 0 as 0.'],
         'no x column'             => ["sex,age,l,m,s\n1,0,1,2,0.1\n", ['--x', 'months'], 'no column "months" (the columns are: sex, age, l, m, s).'],
         'no female rows'          => ["sex,age,l,m,s\n1,0,1,2,0.1\n", ['--x', 'age'], 'no female rows.'],
         'the same code twice'     => ["sex,age,l,m,s\n1,0,1,2,0.1\n", ['--x', 'age', '--male', '1', '--female', '1'], '--male and --female must differ.'],

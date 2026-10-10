@@ -221,6 +221,9 @@ $entryCases = [
     'a max of null'           => [['mine' => ['valid' => ['min' => '0', 'max' => null, 'below' => '9']] + $base], 'needs exactly one of "valid" "max" and "below".'],
     'a lone max of null'      => [['mine' => ['valid' => ['min' => '0', 'max' => null]] + $base], 'needs "valid" "max" as a number in a string.'],
     'a range ending early'    => [['mine' => ['valid' => ['min' => '5', 'max' => '1']] + $base], 'has a "valid" range that ends before it starts.'],
+    // a bound past 2^63 / scale wrapped the whole-number row key
+    'a bound past a million'  => [['mine' => ['valid' => ['min' => '0', 'max' => '10000000000000000000']] + $base], 'has a "valid" bound beyond 1000000 (or -1000000).'],
+    'a min below -1000000'    => [['mine' => ['valid' => ['min' => '-1000001', 'max' => '1']] + $base], 'has a "valid" bound beyond 1000000'],
 ];
 foreach ($entryCases as $label => $case) {
     writeIndex($dir, $case[0]);
@@ -283,7 +286,7 @@ $tableCases = [
     'scale 0'                 => [$t(['scale' => 0]), 'needs "scale" as a whole number from 1 to 1000.'],
     'scale 1001'              => [$t(['scale' => 1001]), 'needs "scale" as a whole number from 1 to 1000.'],
     'scale as text'           => [$t(['scale' => '1']), 'needs "scale"'],
-    'first a fraction'        => [$t(['first' => 0.5]), 'needs "first" as a whole number.'],
+    'first a fraction'        => [$t(['first' => 0.5]), 'needs "first" as a whole number from'],
     'no female rows'          => [$t(['female' => []]), 'needs a list of "female" rows.'],
     'rows keyed'              => [$t(['male' => ['a' => [1, 10, 0.1]]]), 'needs a list of "male" rows.'],
     'a row of two'            => [$t(['male' => [[1, 10]]]), 'row 0 of "male" is not [L, M, S].'],
@@ -291,6 +294,10 @@ $tableCases = [
     'a number as text'        => [$t(['female' => [[1, '10', 0.1]]]), 'row 0 of "female" holds something that is not a finite number.'],
     'M of 0'                  => [$t(['male' => [[1, 10, 0.1], [1, 0, 0.1]]]), 'row 1 of "male" has M or S at or below 0.'],
     'S below 0'               => [$t(['male' => [[1, 10, -0.1]]]), 'row 0 of "male" has M or S at or below 0.'],
+    'S of 1e-17'              => [$t(['male' => [[1, 10, 1e-17], [1, 10, 0.1]]]), 'row 0 of "male" has an S below 0.0001.'],
+    'L of 2.22e-16'           => [$t(['female' => [[1, 10, 0.1], [2.22e-16, 10, 0.035]]]), 'row 1 of "female" has an L of 2.22E-16; write an L of 0 as 0 (any other L must be at least 0.000001 in size).'],
+    'an L of 0 is fine'       => [$t(['female' => [[0, 10, 0.1], [0, 10, 0.1]]]), ''],
+    'first past a billion'    => [$t(['first' => 1000000001]), 'needs "first" as a whole number from -1000000000 to 1000000000.'],
 ];
 foreach ($tableCases as $label => $case) {
     $got = $tableErr($case[0]);
@@ -366,10 +373,12 @@ $limitErr = function ($rowsM, $rowsF, $adjust, $limits, $scale = 1) use ($dir, $
 $cdc = [[-2, 17, 0.13], [-2, 17, 0.13]];
 check('limits: z of a BMI of a million is 3.85 with L -2, S 0.13', G::zText(G::zRaw(1e6, [-2, 17, 0.13], false)) === '3.85');
 check('limits: a hard high limit of 5 is out of reach there', $limitErr($cdc, $cdc, 'none', ['hard' => ['-5', '5']])
-    === 'its "hard" high limit 5 is out of reach: with "mine" no measurement scores above 3.85 at 0 days (male). Use a high limit of 3.83 or below.');
-check('limits: 3.84 too (it needs a margin: z stays under 3.8462)', strpos((string) $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.84']]), 'Use a high limit of 3.83') !== false);
-check('limits: 3.83 can be passed', $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.83']]) === null
-    && G::zText(G::zRaw(1e6, [-2, 17, 0.13], false)) > '3.83');
+    === 'its "hard" high limit 5 is out of reach: with "mine" no measurement scores above 3.85 at 0 days (male), so a high limit must be below 3.84.');
+// z stays under 3.8462: the edge is 3.84 (3.8462 - 0.01, to hundredths, + 0.01)
+check('limits: 3.84 is refused', strpos((string) $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.84']]), 'must be below 3.84.') !== false);
+check('limits: 3.839 and 3.83 can be passed', $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.839']]) === null
+    && $limitErr($cdc, $cdc, 'none', ['hard' => [null, '3.83']]) === null
+    && G::zText(G::zRaw(1e6, [-2, 17, 0.13], false)) > '3.839');
 check('limits: a soft high limit is checked too', strpos((string) $limitErr($cdc, $cdc, 'none', ['soft' => [null, '3.9']]),
     'its "soft" high limit 3.9 is out of reach') === 0);
 check('limits: open limits and a low limit with no floor are fine', $limitErr($cdc, $cdc, 'none', ['soft' => [null, null], 'hard' => ['-20', null]]) === null);
@@ -377,15 +386,19 @@ check('limits: open limits and a low limit with no floor are fine', $limitErr($c
 $mRows = [[1, 10, 0.1], [1, 10, 0.1]];
 $fRows = [[1, 10, 0.1], [1, 10, 0.2]];
 check('limits: a floor set by one row of one sex is named there', $limitErr($mRows, $fRows, 'none', ['hard' => ['-6', '6']])
-    === 'its "hard" low limit -6 is out of reach: with "mine" no measurement scores below -5.00 at 1 days (female). Use a low limit of -4.99 or above.');
-check('limits: -4.99 can be passed', $limitErr($mRows, $fRows, 'none', ['hard' => ['-4.99', '6']]) === null
+    === 'its "hard" low limit -6 is out of reach: with "mine" no measurement scores below -5.00 at 1 days (female), so a low limit must be above -5.00.');
+check('limits: -5 is refused, -4.999 and -4.99 can be passed', $limitErr($mRows, $fRows, 'none', ['hard' => ['-5', '6']]) !== null
+    && $limitErr($mRows, $fRows, 'none', ['hard' => ['-4.999', '6']]) === null
+    && $limitErr($mRows, $fRows, 'none', ['hard' => ['-4.99', '6']]) === null
     && G::zText(G::zRaw(1e-9, [1, 10, 0.2], false)) === '-5.00');
 check('limits: the position is in axis units', strpos((string) $limitErr($mRows, $fRows, 'none', ['hard' => ['-6', null]], 10), 'at 0.1 days (female)') !== false);
 // WHO's restricted method has no ceiling and, below -3 SD, the floor
 // -3 - SD-3/(SD-2 - SD-3): with L 0.5 and S 0.1, -11.26.
 $rRows = [[0.5, 10, 0.1], [0.5, 10, 0.1]];
 check('limits: restricted, the floor below -3 SD', strpos((string) $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-12', null]]),
-    'no measurement scores below -11.26') !== false && $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-11.24', '20']]) === null);
+    'no measurement scores below -11.26') !== false && $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-11.24', '20']]) === null
+    && $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-11.249', null]]) === null
+    && strpos((string) $limitErr($rRows, $rRows, 'who-restricted', ['hard' => ['-11.25', null]]), 'must be above -11.25.') !== false);
 check('limits: restricted, the same row without "adjust" has the floor -20', $limitErr($rRows, $rRows, 'none', ['hard' => ['-19.99', null]]) === null
     && strpos((string) $limitErr($rRows, $rRows, 'none', ['hard' => ['-20', null]]), 'below -20.00') !== false);
 // The bounds are kept per file and "adjust": a second entry on the same file
@@ -419,7 +432,18 @@ check('limits: zRange agrees with zRaw at the extremes (bad: ' . implode(' ', $b
 $tsfa = G::entry('who-tsfa');
 check('limits: who-tsfa refuses a hard low limit of -7', strpos((string) G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-7', '5']]),
     'its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at ') === 0);
-check('limits: who-tsfa takes -6.96', G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.96', '5']]) === null);
+check('limits: who-tsfa takes -6.96, -6.961 and -6.9605', G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.96', '5']]) === null
+    && G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.961', '5']]) === null
+    && G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.9605', '5']]) === null);
+check('limits: who-tsfa refuses -6.97 (a score must fall below it)', strpos((string) G::limitProblem($tsfa, G::table($tsfa), ['hard' => ['-6.97', '5']]),
+    '(female), so a low limit must be above -6.97.') !== false);
+// Rows that would make the bounds meaningless are refused when the table is
+// read, and a bound past every allowed limit limits nothing.
+check('limits: zRange with L*S vanishing, or S near 0 under the restriction, gives no bound',
+    $zRange->invoke(null, 1e-300, 1e-20, true) === [null, null] && $zRange->invoke(null, 2.22e-16, 0.035, false) === [null, null]
+    && $zRange->invoke(null, 1, 1e-17, true) === [null, null] && $zRange->invoke(null, 1, 0.04, false) === [null, null]
+    // 1e-300 * 1e-30 underflows to 0: no division by it
+    && $zRange->invoke(null, 1e-300, 1e-30, false) === [null, null] && $zRange->invoke(null, -1e-300, 1e-30, false) === [null, null]);
 $bad = [];
 foreach (G::catalog()['references'] as $id => $e) {
     if (G::limitProblem($e, G::table($e), ['soft' => ['-3', '3'], 'hard' => ['-6', '6']]) !== null) $bad[] = $id;

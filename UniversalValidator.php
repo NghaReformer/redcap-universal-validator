@@ -4127,16 +4127,16 @@ class UniversalValidator extends AbstractExternalModule
                 . ($known ? 'it has ' . implode(', ', $known) . '.' : 'it has none.')
                 . ($catalog['problems'] ? ' Problems reading the references: ' . implode(' ', $catalog['problems']) : ''));
         }
+        $lim = function ($k) use ($frag) { return isset($frag[$k]) && is_string($frag[$k]) ? $frag[$k] : null; };
         try {
             $table = GrowthReference::table($entry);
+            $out = GrowthReference::limitProblem($entry, $table, [
+                'soft' => [$lim('rangeSoftLo'), $lim('rangeSoftHi')],
+                'hard' => [$lim('rangeHardLo'), $lim('rangeHardHi')],
+            ]);
         } catch (\Throwable $e) {
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
-        $lim = function ($k) use ($frag) { return isset($frag[$k]) && is_string($frag[$k]) ? $frag[$k] : null; };
-        $out = GrowthReference::limitProblem($entry, $table, [
-            'soft' => [$lim('rangeSoftLo'), $lim('rangeSoftHi')],
-            'hard' => [$lim('rangeHardLo'), $lim('rangeHardHi')],
-        ]);
         if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
         $byAge = $entry['axis'] === 'age';
         if ($byAge && isset($frag['rangeBy'])) {

@@ -981,7 +981,11 @@ is a number above 0 and holds the save when it is not; the z-score is checked
 after saving. A rule with an input in another event never blocks on the page,
 on a survey either; the check after saving reports it. A
 blank input or an age outside the reference checks nothing, and on a
-data entry form a grey note says why. To check against CDC 2000 or a national
+data entry form a grey note says why. A limit the reference can never pass is
+a configuration error. Near 0, or at very large values, some rows give no
+z-score beyond a point (a CDC-style BMI row with L -2 and S 0.13 gives none
+above 3.85), and the error says which value the limit must clear. To check
+against CDC 2000 or a national
 reference, your REDCap administrator adds its table in a folder named in the
 module's system settings (`data/references/README.md` in the module explains
 how). WHO's 0.7 cm correction for a length measured standing, or a height
