@@ -13,7 +13,10 @@
  *   - other sex columns and codes,
  *   - every refusal: a row off the grid, a gap, sexes starting apart, a sex
  *     code that is neither, M at or below 0, a second row for one x, a missing
- *     column, missing options.
+ *     column, missing options,
+ *   - --check: a z-score from a shipped reference and from a folder of extra
+ *     ones, and why there is none (an unknown id, x outside the reference, a
+ *     bad --sex, --y or table).
  *
  * Run:  php tests/convert_php.php
  */
@@ -158,6 +161,45 @@ namespace {
     }
     $r = run(['--in', $dir . '/bad.csv']);
     check('refused: no --out', $r['code'] === 1 && strpos($r['err'], '--out is required') !== false);
+
+    // ---- --check: one z-score, read by the module's own code
+    $r = run(['--check', 'who-wfa', '--sex', 'male', '--x', '365', '--y', '6.6']);
+    check('check: a shipped reference, the worked example of the docs (got ' . json_encode($r) . ')', $r['code'] === 0
+        && strpos($r['out'], 'age 365 days: L 0.0645, M 9.646, S 0.10925') !== false && strpos($r['out'], "z-score -3.40 for 6.6 kg\n") !== false);
+    $r = run(['--check', 'who-wfh', '--sex', 'female', '--x', '80', '--y', '10']);
+    check('check: a height axis (got ' . json_encode($r) . ')', $r['code'] === 0 && strpos($r['out'], "z-score -0.26 for 10 kg\n") !== false);
+    // the CDC-shaped table converted above, in a folder of extra references
+    $cdcEntry = ['title' => 'Test weight-for-age', 'file' => 'cdc.json', 'sha256' => hash('sha256', (string) file_get_contents($dir . '/cdc.json')),
+                 'measure' => 'weight', 'unit' => 'kg', 'axis' => 'age', 'axisUnit' => 'months', 'lookup' => 'floor',
+                 'valid' => ['min' => '24', 'below' => '27'], 'adjust' => 'none'];
+    put('index.json', json_encode(['format' => 'uv-references-1', 'references' => [
+        'test-wfa' => $cdcEntry,
+        'test-badsha' => ['sha256' => str_repeat('0', 64)] + $cdcEntry,
+        'test-nounit' => array_diff_key($cdcEntry, ['unit' => 1]),
+    ]]));
+    // row 25 (25.5 months in the CDC file): L -0.239, M 12.885, S 0.108; ((13/12.885)^-0.239 - 1) / (-0.239 * 0.108) = 0.0822
+    $r = run(['--check', 'test-wfa', '--folder', $dir, '--sex', 'male', '--x', '25.9', '--y', '13']);
+    check('check: a reference from a folder, a floor lookup (got ' . json_encode($r) . ')', $r['code'] === 0
+        && strpos($r['out'], 'Test weight-for-age, male, age 25.9 months: L -0.239, M 12.885, S 0.108') !== false
+        && strpos($r['out'], "z-score 0.08 for 13 kg\n") !== false);
+    $r = run(['--check', 'who-wfa', '--folder', $dir, '--sex', 'male', '--x', '365', '--y', '6.6']);
+    check('check: the shipped references stay beside a folder, whose broken entries are listed (got ' . json_encode($r) . ')', $r['code'] === 0
+        && strpos($r['out'], 'z-score -3.40') !== false && strpos($r['err'], 'reference "test-nounit" needs "unit".') !== false);
+    $fails = [
+        'an unknown id'            => [['--check', 'nope', '--sex', 'male', '--x', '1', '--y', '1'], 'no usable reference "nope" among the shipped references.'],
+        'an unknown id, a folder'  => [['--check', 'nope', '--folder', $dir, '--sex', 'male', '--x', '1', '--y', '1'], 'no usable reference "nope" among the shipped references or in ' . $dir . '.'],
+        'a broken entry'           => [['--check', 'test-nounit', '--folder', $dir, '--sex', 'male', '--x', '25', '--y', '13'], 'no usable reference "test-nounit": the reference folder in the module settings: reference "test-nounit" needs "unit".'],
+        'a table that is not its SHA-256' => [['--check', 'test-badsha', '--folder', $dir, '--sex', 'male', '--x', '25', '--y', '13'], 'cdc.json'],
+        'x outside the reference'  => [['--check', 'who-wfa', '--sex', 'male', '--x', '2000', '--y', '6.6'], 'the age is outside the reference (0 to under 1826.25 days).'],
+        'a sex code, not a sex'    => [['--check', 'who-wfa', '--sex', '1', '--x', '365', '--y', '6.6'], '--check needs --sex male or --sex female.'],
+        'no --y'                   => [['--check', 'who-wfa', '--sex', 'male', '--x', '365'], '--check needs --x'],
+        '--x not a number'         => [['--check', 'who-wfa', '--sex', 'male', '--x', 'a year', '--y', '6.6'], '--check needs --x'],
+        '--y of 0'                 => [['--check', 'who-wfa', '--sex', 'male', '--x', '365', '--y', '0'], '--y must be a number above 0.'],
+    ];
+    foreach ($fails as $label => $c) {
+        $r = run($c[0]);
+        check('check refused: ' . $label . ' (got ' . json_encode($r['err']) . ')', $r['code'] === 1 && $r['out'] === '' && strpos($r['err'], $c[1]) !== false);
+    }
 
     foreach (glob($dir . DIRECTORY_SEPARATOR . '*') ?: [] as $f) unlink($f);
     rmdir($dir);

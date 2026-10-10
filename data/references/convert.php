@@ -31,6 +31,19 @@
  * number), and both sexes must start at the same key. The script prints the
  * SHA-256 of what it wrote, for the "sha256" of the entry in index.json, and
  * a starting entry to edit. See README.md in this folder.
+ *
+ * To check a converted table once its entry is in an index.json, work out
+ * one z-score the way the module will:
+ *
+ *   php convert.php --check cdc-wfa --folder /path/to/folder --sex male --x 30 --y 12.5
+ *
+ *   --check ID       the reference's id in that folder's index.json (or a shipped one)
+ *   --folder DIR     the folder of extra references. Default: the shipped ones only
+ *   --sex male|female
+ *   --x N            the age, length or height, in the reference's axis unit
+ *   --y N            the measurement, in the reference's unit
+ *
+ * It prints the row's L, M and S and the z-score, or why there is none.
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -49,7 +62,45 @@ function fail($msg)
 }
 
 $opts = getopt('', ['in:', 'out:', 'x:', 'scale:', 'x-offset:', 'min-x:', 'max-x:',
-                    'sex:', 'male:', 'female:', 'l:', 'm:', 's:']);
+                    'sex:', 'male:', 'female:', 'l:', 'm:', 's:', 'check:', 'folder:', 'y:']);
+
+// --check: one z-score from an index.json and its table, read by the
+// module's own code (GrowthReference), so a table that converts but does not
+// say what its source says is found before a rule uses it.
+if (isset($opts['check'])) {
+    $id = is_string($opts['check']) ? $opts['check'] : '';
+    $folder = isset($opts['folder']) && is_string($opts['folder']) ? $opts['folder'] : null;
+    $sex = isset($opts['sex']) && is_string($opts['sex']) ? $opts['sex'] : '';
+    if (!in_array($sex, ['male', 'female'], true)) fail('--check needs --sex male or --sex female.');
+    foreach (['x', 'y'] as $k) {
+        if (!isset($opts[$k]) || !is_string($opts[$k]) || !is_numeric($opts[$k])) {
+            fail('--check needs --x (the age, length or height, in the reference\'s axis unit) and --y (the measurement) as numbers.');
+        }
+    }
+    foreach ($G::catalog($folder)['problems'] as $p) fwrite(STDERR, 'convert.php: ' . $p . "\n");
+    $entry = $G::entry($id, $folder);
+    if ($entry === null) {
+        $why = $G::unavailableWhy($id, $folder);
+        fail('no usable reference "' . $id . '"' . ($why !== null ? ': ' . $why
+            : ($folder === null ? ' among the shipped references.' : ' among the shipped references or in ' . $folder . '.')));
+    }
+    try {
+        $table = $G::table($entry);
+    } catch (\RuntimeException $e) {
+        fail($e->getMessage());
+    }
+    $a = $G::axisValue($entry, $entry['axis'] === 'age' ? [$entry['axisUnit'] => $opts['x']] : ['by' => $opts['x']]);
+    if ($a['state'] !== 'ok') fail($a['why'] . '.');
+    $m = $G::measure($opts['y']);
+    if ($m['state'] !== 'ok') fail('--y must be a number above 0.');
+    $lms = $G::lms($entry, $table, $sex, $a['x']);
+    $z = $G::zScore($entry, $table, $sex, $a['x'], $m['y']);
+    if ($lms === null || $z['state'] !== 'ok') fail('the table has no row at ' . $entry['axis'] . ' ' . $opts['x'] . '.');
+    fwrite(STDOUT, $entry['title'] . ', ' . $sex . ', ' . $entry['axis'] . ' ' . $opts['x'] . ' ' . $entry['axisUnit']
+        . ': L ' . $lms[0] . ', M ' . $lms[1] . ', S ' . $lms[2] . "\n");
+    fwrite(STDOUT, 'z-score ' . $z['z'] . ' for ' . $opts['y'] . ' ' . $entry['unit'] . "\n");
+    exit(0);
+}
 foreach (['in', 'out', 'x'] as $k) {
     if (!isset($opts[$k]) || !is_string($opts[$k]) || $opts[$k] === '') fail('--' . $k . ' is required (see the comment at the top of this file).');
 }
