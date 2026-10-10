@@ -409,6 +409,14 @@ namespace {
     $r6 = ruleFor($p6, 'muac');
     check('page: ... and use none of the cap: the fifth rule, at that age too, fits (got ' . json_encode(array_keys($p6['cfg']['growth'] ?? [])) . ')',
         $r6 && empty($r6['deferred']) && isset($p6['cfg']['growth']['who-acfa']));
+    // One reference read at a live age by one rule and at a saved age by another: every row travels.
+    $MIX = $DICT + ['age_fix' => f('enrol_form', '', 'integer'),
+                    'hc_fix' => f('anthro_form', tag('who-hcfa', '"age":{"days":"[age_fix]"}'), 'number_1dp')];
+    $mix = $DATA; $mix['2'][351]['age_fix'] = '365';
+    $pm = page(mod($MIX, $mix, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: a live age and a saved age on one reference: every row of the saved sex travels (got '
+        . json_encode([count($pm['cfg']['growth']['who-hcfa']['male'] ?? []), $pm['cfg']['growth']['who-hcfa']['first'] ?? null]) . ')',
+        count($pm['cfg']['growth']['who-hcfa']['male'] ?? []) === 1827 && ($pm['cfg']['growth']['who-hcfa']['first'] ?? null) === 0);
     $NOAGE = $DATA; $NOAGE['2'][351]['age_days'] = '';
     $p7 = page(mod($FIXED, $NOAGE, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     check('page: a saved age that is blank needs no rows at all', ($p7['cfg']['growth']['who-hcfa']['male'] ?? null) === []);
@@ -692,6 +700,19 @@ namespace {
         count($nel) === 1 && $nel[0]['reference'] === 'who-wfh' && $nel[0]['why'] === 'the height is blank');
     list($sev) = $sevAudit($TWO, $nh);
     check('audit: ... and who-wfa still judges', ($sev['wt_two'] ?? null) === ['soft-low']);
+    // Two branches of ONE reference whose conditions are both true: a conflict, nothing judged.
+    $CONF = $TWO + ['wt_conf' => f('anthro_form', substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[age_days]>0"} '
+        . substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[age_days]>1"}', 'number_1dp')];
+    $cf = $two; $cf['2'][351]['wt_conf'] = '6.6';
+    list($sev, $un) = $sevAudit($CONF, $cf);
+    check('audit: two true conditions on one reference are a branch conflict, nothing judged (got ' . json_encode([$sev['wt_conf'] ?? null, $un]) . ')',
+        !isset($sev['wt_conf']) && count(array_filter($un, function ($u) { return strpos($u, 'wt_conf: more than one "when" condition is true') === 0; })) === 1);
+    // Each scan finding of a field with several references names its reference (its locus).
+    $res = mod($TWO, $two, $FULL, 'nurse')->scanProject(149);
+    $loci = [];
+    foreach ($res['violations'] as $v) if ($v['field'] === 'wt_two') $loci[] = $v['locus'];
+    sort($loci);
+    check('scan: each finding names its reference as its locus (got ' . json_encode($loci) . ')', $loci === ['who-wfa', 'who-wfh']);
     $two['2'][351]['wt_two'] = '12.5';
     list($sev) = $sevAudit($TWO, $two);
     check('audit: one reference out of range is one finding', ($sev['wt_two'] ?? null) === ['soft-high']);

@@ -72,11 +72,12 @@ check('stamps: found on the second page, by the log_event_id cursor (got ' . jso
 // none of the later versions' columns) gains the column on the way up.
 $A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN as_of');
 $A->query('ALTER TABLE ' . Schema::table('unique_candidate') . ' DROP COLUMN lookup');
+$A->query('ALTER TABLE ' . Schema::table('finding') . ' DROP COLUMN z_score');
 $A->query('DELETE FROM ' . Schema::table('schema_version') . ' WHERE version > 2');
 $mig = Schema::migrate($ca);
 check('stamps: an installation at version 2 migrates to 3 and on (got ' . json_encode($mig) . ')',
     $mig['ok'] === true && $mig['from'] === 2 && $mig['to'] === Schema::VERSION
-    && $mig['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)));
+    && $mig['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5)));
 check('stamps: and health says so', Schema::health($ca)['ok'] === true);
 
 // A durable finding keeps the day it was judged against.
@@ -95,15 +96,15 @@ check('stamps: the record is claimed', is_array($claim) && count($claim) === 1);
 $c = $claim[0];
 $batch = ['bytes' => 0, 'records' => [['ordinal' => $c['ordinal'], 'record_hash' => $c['hash'],
     'state' => ScanStore::REC_DONE, 'version' => 'v1', 'claim' => $c['claim']]], 'findings' => []];
-foreach (['w_past' => '2026-10-02', 'v_end' => null] as $field => $asOf) {
+foreach (['w_past' => '2026-10-02', 'v_end' => null, 'x_wt' => null] as $field => $asOf) {
     $batch['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $PID, 'generation_id' => $gen,
         'identity' => hash('sha256', 'stamps-' . $field, true), 'valid_from_seq' => uv_run_seq($dbA, $runId),
         'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'], 'event_id' => 41, 'instance' => 1,
         'host_form' => 'visit_form', 'field' => $field, 'rule_source_id' => 'r-' . $field,
         'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1, 'check_type' => 'window',
-        'reason_code' => 'past', 'as_of' => $asOf];
+        'reason_code' => 'past', 'as_of' => $asOf] + ($field === 'x_wt' ? ['z_score' => '-3.40'] : []);
 }
 check('stamps: the batch commits', $store->commitBatch($runId, 'stamps-worker', $epoch, $batch) === true);
-$rows = $ca->query('SELECT field, as_of FROM ' . Schema::table('finding') . ' WHERE project_id = ? ORDER BY field', [$PID]);
-check('stamps: as_of is written, and NULL where there is none (got ' . json_encode($rows) . ')',
-    $rows === [['v_end', null], ['w_past', '2026-10-02']]);
+$rows = $ca->query('SELECT field, as_of, z_score FROM ' . Schema::table('finding') . ' WHERE project_id = ? ORDER BY field', [$PID]);
+check('stamps: as_of and z_score are written, and NULL where there is none (got ' . json_encode($rows) . ')',
+    $rows === [['v_end', null, null], ['w_past', '2026-10-02', null], ['x_wt', null, '-3.40']]);

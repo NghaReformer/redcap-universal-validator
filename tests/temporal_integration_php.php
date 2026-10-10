@@ -641,6 +641,20 @@ namespace {
     check('range with a qualified "when": the scan judges by it (got '.json_encode($hit).')',$hit===['1/3:hard-high']&&!$res['unconfigurable']);
     REDCap::$data[1]['repeat_instances'][1]['fb'][2]['key_b']='B';$res=$m->scanProject(PID);
     check('... and a false "when" checks nothing',!$res['violations']);
+    // Two references on one field (branch groups) on the extended path: each group picks its
+    // own branch. Here the fixed-limit group's "when" is false, so only who-wfa judges, and its
+    // findings still name it, the rule having two groups.
+    $wfa='@UVRANGE={"reference":"who-wfa","sex":"[baseline_arm_1][key_b][2]","male":"A","female":"B",'
+        .'"age":{"dob":"[baseline_arm_1][b_open][2]","at":"[visit]"},"soft":[-2,2],"hard":[-5,5]';
+    $m=$growth($wfa.'} @UVRANGE={"hard":[5,40],"when":"[visit]<>\'2026-01-10\'"}');$res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'].':'.$v['locus'];sort($hit);
+    check('two references, extended: each group picks its branch, findings name the reference (got '.json_encode([$hit,$res['unconfigurable']]).')',
+        $hit===['1/1:soft-low:who-wfa','2/1:hard-low:who-wfa']&&!$res['unconfigurable']);
+    // with a second group, so the choice is made per group
+    $m=$growth($wfa.',"when":"[visit]=\'2026-01-10\'"} '.$wfa.',"when":"[a_val]>0"} @UVRANGE={"hard":[5,40]}');$res=$m->scanProject(PID);
+    $why=[];foreach($res['unconfigurable'] as $u)$why[]=$u['why'];
+    check('two true branches of one reference, extended: a problem, nothing judged (got '.json_encode([$res['violations'],$why]).')',
+        !$res['violations']&&count(array_filter($why,function($w){return strpos($w,'multiple active branches')!==false;}))>=1);
 
     // A branched extended rule: each scan finding names the branch that judged
     // it, so the report shows that branch's message and not the first one's.
