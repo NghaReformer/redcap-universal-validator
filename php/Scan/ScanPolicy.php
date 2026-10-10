@@ -71,6 +71,19 @@ final class ScanPolicy
      */
     const D_PLANNING_MINUTES = 15;
 
+    /**
+     * The longest planning window a setting may ask for: a year (review R3U-4).
+     *
+     * The minutes had no upper bound, and they are multiplied by 60. A value
+     * past PHP_INT_MAX / 60 made the product a float, and the `(int)` that
+     * progressOf() puts on the window turns an out-of-range float into 0 or
+     * into PHP_INT_MIN (measured on 7.4.33 and 8.3.32 alike), which max(1, ...)
+     * then made a window of one second. Every planning run read "stopped" five
+     * seconds after it began. Capped before the multiplication, so the product
+     * is always an int; a year is longer than any planning request can live.
+     */
+    const MAX_PLANNING_MINUTES = 525600;
+
     /** Value modes, least disclosing first. Order is the safety ordering. */
     private static $modes = ['locations', 'identifier-redacted', 'raw'];
 
@@ -195,7 +208,7 @@ final class ScanPolicy
      */
     public static function planningSeconds($minutes, $timeLimit)
     {
-        $window = self::posInt($minutes, self::D_PLANNING_MINUTES) * 60;
+        $window = min(self::MAX_PLANNING_MINUTES, self::posInt($minutes, self::D_PLANNING_MINUTES)) * 60;
         $limit = self::posInt($timeLimit, 0);
         return $limit > $window ? $limit : $window;
     }

@@ -885,6 +885,19 @@ namespace INSPIRE\UniversalValidator\Scan {
         ScanPolicy::planningSeconds('5', '3600') === 3600 && ScanPolicy::planningSeconds(null, 7200) === 7200);
     check('R2O-3 policy: no limit at all leaves the minutes alone',
         ScanPolicy::planningSeconds('20', '0') === 1200);
+    // R3U-4: minutes past PHP_INT_MAX / 60 made the window a float, which the
+    // (int) in progressOf() turned into 0 or PHP_INT_MIN, and max(1, ...) into
+    // one second: every planning run read "stopped" five seconds in.
+    foreach (['9999999999999999999', '153722867280912931', '999999999999999', PHP_INT_MAX] as $huge) {
+        $w = ScanPolicy::planningSeconds($huge, '0');
+        check('R3U-4: a huge planning setting (' . $huge . ') is held at a year, as an int',
+            $w === ScanPolicy::MAX_PLANNING_MINUTES * 60 && is_int($w));
+        check('R3U-4: and under it a run five seconds into planning is still planning (' . $huge . ')',
+            ScanService::progressOf($planRow(5), [], $NOW, ScanService::STALL_SECONDS, $w)['planningStopped'] === false);
+    }
+    check('R3U-4: the cap is a year, and a setting under it is untouched',
+        ScanPolicy::MAX_PLANNING_MINUTES === 525600
+        && ScanPolicy::planningSeconds('525599', '0') === 525599 * 60);
     check('R2O-3 policy: a sentence threshold, so it is not frozen into the run\'s policy',
         !array_key_exists('planningSeconds', ScanPolicy::resolve([], []))
         && !array_key_exists('planningMinutes', ScanPolicy::resolve([], [])));
