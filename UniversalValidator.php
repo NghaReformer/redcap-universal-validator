@@ -4788,13 +4788,10 @@ class UniversalValidator extends AbstractExternalModule
             // The record-id field rides along, as in durableScanContext(): without
             // it a record whose every read field is blank is omitted by getData
             // and reported as "requested but not returned" instead of examined.
+            // So do the host forms' status fields, which say where each host was
+            // started (R2O-2); see scanReadParams().
             try {
-                $data = \REDCap::getData([
-                    'project_id' => $pid, 'return_format' => 'array',
-                    'records' => $chunk,
-                    'fields' => array_keys($readSet + [$pk => true]),
-                    'exportDataAccessGroups' => true,
-                ]);
+                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $chunk, $pk));
             } catch (\Throwable $e) {
                 $result['incomplete'][] = 'reading ' . count($chunk) . ' record(s) failed: '
                     . get_class($e);
@@ -5259,20 +5256,17 @@ class UniversalValidator extends AbstractExternalModule
         // The record id is stored for every record and is never blank. It is
         // added to the READ only: $plan['readSet'] also keys the entitlement,
         // and the record id is not form data the scan reports on.
-        $fields = array_keys($plan['readSet']);
+        //
+        // PLUS THE HOST FORMS' STATUS FIELDS (R2O-2), on the same terms and for
+        // the reason scanPlan() gives: they say where each host was started.
         $pk = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
-        if ($pk !== '' && !in_array($pk, $fields, true)) $fields[] = $pk;
-        $read = function (array $recordIds) use ($pid, $fields) {
+        $read = function (array $recordIds) use ($pid, $plan, $pk) {
             try {
                 if (!is_callable(['\REDCap', 'getData'])) {
                     return ['ok' => false, 'data' => [],
                             'why' => 'this installation does not expose a record read'];
                 }
-                $data = \REDCap::getData([
-                    'project_id' => $pid, 'return_format' => 'array',
-                    'records' => array_values($recordIds), 'fields' => $fields,
-                    'exportDataAccessGroups' => true,
-                ]);
+                $data = \REDCap::getData(self::scanReadParams($plan, $pid, $recordIds, $pk));
                 if (!is_array($data)) {
                     return ['ok' => false, 'data' => [], 'why' => 'the records could not be read'];
                 }
@@ -5485,11 +5479,18 @@ class UniversalValidator extends AbstractExternalModule
      *               ownership: array<string,?string> field => owning instrument, NULL when it
      *               could not be placed - the fail-closed encoding ScanService reads as
      *               unknown ownership and mayStart() refuses on,
-     *               readSet: array, dupes: array, unconf: array}
+     *               readSet: array, dupes: array, unconf: array,
+     *               formStatusFields: array<string,string> host form => its status field,
+     *               formStartFields: array<string,string[]> host form => the fields whose
+     *               value says it was started (its status field, then the read fields it owns),
+     *               statusRefs: string[] status fields a rule itself reads}
      */
     private function scanPlan($pid, array $opts = [], $dagFilter = null)
     {
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
+                // Empty means "no started-form gate": every designated context is
+                // kept, which is the behaviour before R2O-2. Filled at the end.
+                'formStatusFields' => [], 'formStartFields' => [], 'statusRefs' => [],
                 // Present on EVERY return, including the refusals. An entitlement
                 // key that exists only on the success path is one a caller reads as
                 // "no forms" on the path where it should read as "no answer".
@@ -5935,7 +5936,174 @@ class UniversalValidator extends AbstractExternalModule
                     ? (string) $ddOwn[$f]['form_name'] : null;
         }
         $out['ownership'] = $ownership;
+
+        // WHERE EACH HOST INSTRUMENT WAS STARTED (review R2O-2).
+        //
+        // Both scan reads ask for the record-id field (EE-2), and REDCap stores
+        // a record-id row on every event the record has any data in. So every
+        // such event became a context, and hostContextsFor() kept it whenever
+        // the host form was designated there: an adverse-event form designated
+        // on every visit produced a @UVREQUIRED finding on every visit without
+        // an adverse event, and the project could never certify clean.
+        //
+        // The decision: a rule's host instrument counts in a context only where
+        // it was STARTED there - its <form>_complete holds a value, or a field
+        // the scan reads from that form holds one. That is when the form path
+        // enforces the rule (on save) and what REDCap's own missing-value checks
+        // look at. The record-id field is not evidence, because it is stored on
+        // every event whatever was opened.
+        //
+        // The status fields are added to the READ only, never to $readSet: the
+        // read set keys the entitlement, and every host form is entitled
+        // already through the rule's own fields.
+        //
+        // The per-form list of start signals is built HERE, once per plan:
+        // the gate runs per record per context, on projects with hundreds of
+        // thousands of records, and must not re-derive ownership each time.
+        //
+        // A STATUS FIELD A RULE ITSELF READS keeps the value it had. REDCap
+        // reports a never-started form's status as '0' unless getData is asked
+        // for blanks (returnBlankForGrayFormStatus), and the scan must ask, or
+        // every designated form looks started. But a status field in the read
+        // set - today a temporal rule's existence marker; the dictionary check
+        // refuses [x_complete] in a condition - was '0' there before, and the
+        // form path reads '0'. So scanRecord() puts the '0' back on exactly
+        // those fields before any rule sees the record, and only the gate
+        // reads the blank. A referenced value does not move because of the gate.
+        $statusFields = [];
+        foreach ($hostFields as $forms) {
+            foreach (array_keys($forms) as $form) $statusFields[(string) $form] = $form . '_complete';
+        }
+        $startFields = [];
+        foreach ($statusFields as $form => $sf) $startFields[$form] = [$sf];
+        $statusRefs = [];
+        $pkOwn = (string) $out['recordIdField'];
+        foreach ($ownership as $f => $form) {
+            $f = (string) $f;
+            if (!isset($ddOwn[$f]) && substr($f, -9) === '_complete') { $statusRefs[] = $f; continue; }
+            if ($form === null || $f === $pkOwn || !isset($startFields[$form])) continue;
+            $startFields[$form][] = $f;
+        }
+        $out['formStatusFields'] = $statusFields;
+        $out['formStartFields'] = $startFields;
+        $out['statusRefs'] = $statusRefs;
         return $out;
+    }
+
+    /**
+     * The getData fields of one scan read: the read set, the record-id field
+     * (EE-2) and the host forms' status fields (R2O-2). ONE derivation for both
+     * reads, so the legacy chunk read and the durable read cannot drift.
+     */
+    private static function scanReadFields(array $plan, $pk)
+    {
+        $fields = isset($plan['readSet']) && is_array($plan['readSet']) ? $plan['readSet'] : [];
+        if ((string) $pk !== '') $fields[(string) $pk] = true;
+        foreach (isset($plan['formStatusFields']) ? (array) $plan['formStatusFields'] : [] as $sf) {
+            $fields[(string) $sf] = true;
+        }
+        return array_keys($fields);
+    }
+
+    /**
+     * The getData parameters of one scan read, for both reads.
+     *
+     * returnBlankForGrayFormStatus is what makes the status fields worth
+     * reading: without it REDCap reports a form nobody opened as '0'
+     * (Incomplete), the same as one saved incomplete, and every designated
+     * form looks started. It is asked for only when the plan carries status
+     * fields; a status field a rule reads gets its '0' back in scanRecord()
+     * (see grayStatusAsZero()). A build that ignores the key returns '0' and
+     * the scan keeps every designated context, which flags more rather than
+     * less.
+     */
+    private static function scanReadParams(array $plan, $pid, array $records, $pk)
+    {
+        $p = ['project_id' => $pid, 'return_format' => 'array',
+              'records' => array_values($records), 'fields' => self::scanReadFields($plan, $pk),
+              'exportDataAccessGroups' => true];
+        if (!empty($plan['formStatusFields'])) $p['returnBlankForGrayFormStatus'] = true;
+        return $p;
+    }
+
+    /**
+     * One record node with the blank that returnBlankForGrayFormStatus put on
+     * each of $fields turned back into the '0' REDCap reports without it.
+     *
+     * Only for the status fields a rule itself reads (plan 'statusRefs'): the
+     * read asks for blanks so the started-form gate can see a form nobody
+     * opened (R2O-2), and that must not change what a rule referencing
+     * [x_complete] is compared against. A field the row does not carry stays
+     * absent, as it would have been without the key.
+     */
+    private static function grayStatusAsZero(array $node, array $fields)
+    {
+        $fix = function (array $row) use ($fields) {
+            foreach ($fields as $f) {
+                if (array_key_exists($f, $row) && $row[$f] === '') $row[$f] = '0';
+            }
+            return $row;
+        };
+        foreach ($node as $k => $row) {
+            if ($k === 'repeat_instances' || !is_array($row)) continue;
+            $node[$k] = $fix($row);
+        }
+        if (isset($node['repeat_instances']) && is_array($node['repeat_instances'])) {
+            foreach ($node['repeat_instances'] as $evt => $byKey) {
+                if (!is_array($byKey)) continue;
+                foreach ($byKey as $rk => $byInst) {
+                    if (!is_array($byInst)) continue;
+                    foreach ($byInst as $inst => $row) {
+                        if (is_array($row)) $node['repeat_instances'][$evt][$rk][$inst] = $fix($row);
+                    }
+                }
+            }
+        }
+        return $node;
+    }
+
+    /**
+     * Whether $form was STARTED in one context (R2O-2): its status field, or a
+     * field the scan reads from it, holds a value in the context's OWN row.
+     *
+     * $gate is ['fields' => the plan's formStartFields for $form, 'node' => the
+     * record node AS READ]. The row comes from that node, never from the
+     * context's 'values': a repeat context's values are the event's base row
+     * with the instance merged over it, so a status or value on the base row
+     * would pass for this instance's own; and grayStatusAsZero() has already
+     * turned the blank status a rule reads into '0'.
+     *
+     * A row that cannot be found keeps the context, because a context dropped
+     * in error is a finding nobody sees. A row that does not carry a signal
+     * field at all reads it as blank, as cleanRow() does: getData leaves a
+     * blank out, and the read asked for every signal field.
+     */
+    private static function formStartedIn(array $ctx, array $gate)
+    {
+        $rec = (isset($gate['node']) && is_array($gate['node'])) ? $gate['node']
+             : ((isset($ctx['node']) && is_array($ctx['node'])) ? $ctx['node'] : []);
+        $evt = $ctx['event_id'];
+        $rk = array_key_exists('repeatKey', $ctx) ? $ctx['repeatKey'] : null;
+        if ($rk === null) {
+            $row = isset($rec[$evt]) ? $rec[$evt] : null;
+        } else {
+            $inst = $ctx['instance'];
+            $row = isset($rec['repeat_instances'][$evt][$rk][$inst])
+                 ? $rec['repeat_instances'][$evt][$rk][$inst] : null;
+        }
+        if (!is_array($row)) return true;
+        foreach ($gate['fields'] as $f) {
+            if (!array_key_exists($f, $row)) continue;
+            $v = $row[$f];
+            if (is_array($v)) {
+                // A checkbox arrives as code => '0'/'1' on every row that exists,
+                // ticked or not. Only a ticked box is something somebody entered.
+                foreach ($v as $c) if ((string) $c === '1') return true;
+                continue;
+            }
+            if ($v !== null && trim((string) $v) !== '') return true;
+        }
+        return false;
     }
 
     /**
@@ -5953,6 +6121,12 @@ class UniversalValidator extends AbstractExternalModule
                                 array &$uniqueSeen, array &$unconf)
     {
         $this->temporalBegin($pid);
+        // The node AS READ is kept for the started-form gate (R2O-2); the
+        // rules see the status fields they reference as the form path does.
+        $asRead = $node;
+        if (!empty($plan['formStatusFields']) && !empty($plan['statusRefs'])) {
+            $node = self::grayStatusAsZero($node, $plan['statusRefs']);
+        }
         $ctxAll = self::recordContexts($node);
         if (!$ctxAll) {
             // REDCap returned the record with no event row at all. There is
@@ -5968,7 +6142,8 @@ class UniversalValidator extends AbstractExternalModule
         // happens to be asking. Computing it per rule re-derived the same
         // ownership map contexts x rules times (M-05).
         $resCache = [];
-        $hostCache = [];    // host form => its contexts in THIS record; rules share hosts
+        $hostCache = [];    // host form (+ gated?) => its contexts in THIS record; rules share hosts
+        $pkField = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
         foreach ($plan['live'] as $i => $r) {
             // Reported as not evaluated by scanPlan(); evaluating it anyway would
             // add findings the same report says it cannot vouch for.
@@ -5976,10 +6151,23 @@ class UniversalValidator extends AbstractExternalModule
             $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
-                if (!isset($hostCache[$hostForm])) {
-                    $hostCache[$hostForm] = $this->hostContextsFor($ctxAll, $hostForm, $pid);
+                // Only where the host was STARTED (R2O-2), when the plan can
+                // tell: a plan that did not ask for the host's status field
+                // keeps every designated context, as before. NOT for a rule on
+                // the record-id field itself: the record id is stored wherever
+                // the record exists, so it is always entered, and gating it
+                // would stop checking the record id of a record whose first
+                // instrument was never saved (an import).
+                $gate = null;
+                if (isset($plan['formStatusFields'][$hostForm], $plan['formStartFields'][$hostForm])
+                        && ($pkField === '' || !isset($onForm[$pkField]))) {
+                    $gate = ['fields' => $plan['formStartFields'][$hostForm], 'node' => $asRead];
                 }
-                foreach ($hostCache[$hostForm] as $ck => $ctx) {
+                $hk = $hostForm . ($gate === null ? '|all' : '|started');
+                if (!isset($hostCache[$hk])) {
+                    $hostCache[$hk] = $this->hostContextsFor($ctxAll, $hostForm, $pid, $gate);
+                }
+                foreach ($hostCache[$hk] as $ck => $ctx) {
                     if (!isset($resCache[$ck])) {
                         $resCache[$ck] = $this->contextResolution($ctx, array_keys($plan['readSet']), $pid);
                     }
@@ -6189,8 +6377,13 @@ class UniversalValidator extends AbstractExternalModule
      * Three questions, answered from the SAME signals resolveOne() uses so the
      * two can never disagree: is $form designated for this event at all; does
      * the EVENT repeat; does $form itself repeat here.
+     *
+     * A fourth, for the scan only: was $form STARTED here (R2O-2). $gate is
+     * what formStartedIn() takes, and null asks nothing - the save audit
+     * passes none, because a save speaks for the form being saved and its
+     * reverse-dependency read does not carry status fields.
      */
-    private function hostContextsFor(array $contexts, $form, $pid)
+    private function hostContextsFor(array $contexts, $form, $pid, ?array $gate = null)
     {
         $out = [];
         $shape = [];    // event id => ['repeats' => bool|null, 'eventRepeats' => bool, 'mapped' => bool]
@@ -6229,6 +6422,8 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 if ($rk !== null) continue;                    // base row only
             }
+            // Designated is not started. Only the scan asks (see the docblock).
+            if ($gate !== null && !self::formStartedIn($ctx, $gate)) continue;
             $out[$k] = $ctx;
         }
         return $out;

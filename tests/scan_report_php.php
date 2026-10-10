@@ -587,7 +587,8 @@ namespace {
      * ===================================================================== */
     {
         $dict = dict(['record_id' => [], 'req' => ['@UVREQUIRED']]);
-        $data = ['PATIENT-0042' => [1 => ['record_id' => 'PATIENT-0042', 'req' => '']]];
+        // fa saved blank (status '0'): the scan checks started forms only (R2O-2).
+        $data = ['PATIENT-0042' => [1 => ['record_id' => 'PATIENT-0042', 'req' => '', 'fa_complete' => '0']]];
         $m = mkMod($dict, $data, [], ['log-values' => 'none']);
         $legacy = $m->scanProject(PID, null, 200, null, ['valueCeiling' => 'raw']);
         $shown = isset($legacy['violations'][0]['record']) ? $legacy['violations'][0]['record'] : null;

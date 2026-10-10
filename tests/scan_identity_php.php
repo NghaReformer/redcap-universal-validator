@@ -391,7 +391,8 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'x_val' => ['fa'], 'y_val' => ['fa']]);
-        $data = [1 => [1 => ['record_id' => '1', 'x_val' => '', 'y_val' => '']]];
+        // fa saved blank (status '0'): the scan checks started forms only (R2O-2).
+        $data = [1 => [1 => ['record_id' => '1', 'x_val' => '', 'y_val' => '', 'fa_complete' => '0']]];
         // Two rows identical in everything revision() hashes, differing only in
         // the field - which is precisely what revision() throws away.
         $rowX = ['rule-type' => 'required', 'fields' => ['x_val']];

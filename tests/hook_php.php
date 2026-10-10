@@ -2232,7 +2232,9 @@ namespace {
         'good' => ['field_type' => 'text', 'form_name' => 'f', 'identifier' => '',
                    'field_annotation' => '@UVREQUIRED'],
     ];
-    $m = newModule([], $m5Dict, ['1' => [351 => ['record_id' => '1', 'code' => 'ABC', 'good' => '']]], 149);
+    // Form f was saved (status '0'): the scan checks started forms only (R2O-2),
+    // and 'code' is not read because its rule is not live.
+    $m = newModule([], $m5Dict, ['1' => [351 => ['record_id' => '1', 'code' => 'ABC', 'good' => '', 'f_complete' => '0']]], 149);
     $res = $m->scanProject(149);
     check('M-05: a config-error rule is surfaced in the scan, not silently skipped',
         count(array_filter($res['unconfigurable'], function ($u) {
