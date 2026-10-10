@@ -133,6 +133,11 @@ final class GrowthReference
         self::$boundsMemo = [];
     }
 
+    private static function stripBom($raw)
+    {
+        return strncmp($raw, "\xEF\xBB\xBF", 3) === 0 ? (string) substr($raw, 3) : $raw;
+    }
+
     private static function readIndex($dir)
     {
         $path = $dir . DIRECTORY_SEPARATOR . 'index.json';
@@ -140,7 +145,8 @@ final class GrowthReference
         // of a configuration error, and the administrator knows the setting.
         if (!is_file($path) || !is_readable($path)) return ['error' => 'the folder has no readable index.json.'];
         $raw = @file_get_contents($path);
-        $j = is_string($raw) ? json_decode($raw, true) : null;
+        // a byte-order mark, as Windows Notepad saves UTF-8, is not JSON
+        $j = is_string($raw) ? json_decode(self::stripBom($raw), true) : null;
         if (!is_array($j)) return ['error' => 'index.json is not valid JSON.'];
         if (!isset($j['format']) || $j['format'] !== self::INDEX_FORMAT) {
             return ['error' => 'index.json must say "format": "' . self::INDEX_FORMAT . '".'];
@@ -233,7 +239,8 @@ final class GrowthReference
         if (!hash_equals($entry['sha256'], hash('sha256', $raw))) {
             throw new \RuntimeException('the table ' . $entry['file'] . ' does not match the "sha256" in index.json; it was changed or damaged.');
         }
-        $t = json_decode($raw, true);
+        // the checksum covers the file as it is; the mark goes only for decoding
+        $t = json_decode(self::stripBom($raw), true);
         $bad = function ($why) use ($entry) { return new \RuntimeException('the table ' . $entry['file'] . ' ' . $why); };
         if (!is_array($t) || !isset($t['format']) || $t['format'] !== self::TABLE_FORMAT) throw $bad('is not a "' . self::TABLE_FORMAT . '" table.');
         if (!isset($t['scale']) || !is_int($t['scale']) || $t['scale'] < 1 || $t['scale'] > 1000) throw $bad('needs "scale" as a whole number from 1 to 1000.');

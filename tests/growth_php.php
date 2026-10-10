@@ -257,6 +257,11 @@ check('extra: a broken replacement removes the bundled reference', G::entry('who
     && G::unavailableWhy('who-lhfa', $dir) === null && G::entry('who-lhfa', $dir) !== null);
 writeIndex($dir, [], ['pageTables' => 0]);
 check('extra index: pageTables 0 is allowed and taken', G::catalog($dir)['pageTables'] === 0);
+// Notepad saves UTF-8 with a byte-order mark; the index reads the same.
+file_put_contents($dir . '/index.json', "\xEF\xBB\xBF" . json_encode(['format' => 'uv-references-1', 'references' => ['mine' => $base]]));
+G::reset();
+check('extra index: a byte-order mark is read past (got ' . json_encode(G::catalog($dir)['problems']) . ')',
+    G::catalog($dir)['problems'] === [] && G::entry('mine', $dir) !== null);
 G::reset();
 $missing = $dir . DIRECTORY_SEPARATOR . 'nowhere';
 // Fail closed: the folder may hold replacements for any bundled id, so a folder
@@ -281,6 +286,8 @@ $t = function (array $over) use ($rows) {
 };
 $tableCases = [
     'a good table'            => [$t([]), ''],
+    // the checksum is of the file as saved, the mark included
+    'a byte-order mark'       => ["\xEF\xBB\xBF" . $t([]), ''],
     'not the format'          => [$t(['format' => 'lms']), 'the table t2.json is not a "uv-lms-1" table.'],
     'not JSON'                => ['{', 'is not a "uv-lms-1" table.'],
     'scale 0'                 => [$t(['scale' => 0]), 'needs "scale" as a whole number from 1 to 1000.'],

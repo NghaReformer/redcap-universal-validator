@@ -2027,8 +2027,14 @@ class AnnotationRules
                     . $word . '":"' . ($word === 'male' ? '1' : '2') . '".';
             }
         }
-        if (isset($frag['rangeMale'], $frag['rangeFemale']) && $frag['rangeMale'] === $frag['rangeFemale']) {
-            $errors[] = '"male" and "female" are the same code ("' . $frag['rangeMale'] . '").';
+        if (isset($frag['rangeMale'], $frag['rangeFemale']) && is_string($frag['rangeMale']) && is_string($frag['rangeFemale'])) {
+            if ($frag['rangeMale'] === $frag['rangeFemale']) {
+                $errors[] = '"male" and "female" are the same code ("' . $frag['rangeMale'] . '").';
+            } elseif (empty($frag['caseSensitive']) && Logic::foldAscii($frag['rangeMale']) === Logic::foldAscii($frag['rangeFemale'])) {
+                // sex codes are matched with letter case ignored (growthSexOf)
+                $errors[] = '"male" "' . $frag['rangeMale'] . '" and "female" "' . $frag['rangeFemale'] . '" differ only in letter case, '
+                    . 'which this rule ignores. Add "caseSensitive": true to tell them apart.';
+            }
         }
         $age = array_key_exists('rangeAgeDob', $frag) || array_key_exists('rangeAgeAt', $frag)
             || array_key_exists('rangeAgeDays', $frag) || array_key_exists('rangeAgeMonths', $frag);

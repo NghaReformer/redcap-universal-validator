@@ -2368,6 +2368,21 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * 'male', 'female' or null for a sex code under a rule (or branch): letter
+     * case ignored unless its "caseSensitive" is true, the fold Logic::compare
+     * uses. Twin: growthVerdict in js/engine.js.
+     */
+    private static function growthSexOf($code, array $rule)
+    {
+        $fold = empty($rule['caseSensitive']);
+        $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
+        $c = $key($code);
+        if ($c === $key($rule['rangeMale'] ?? '')) return 'male';
+        if ($c === $key($rule['rangeFemale'] ?? '')) return 'female';
+        return null;
+    }
+
+    /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
      * ['state' => 'inert'] when an input is blank (or a Missing Data Code),
@@ -2410,9 +2425,10 @@ class UniversalValidator extends AbstractExternalModule
             return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" cannot be used: ' . $e->getMessage()];
         }
         $sexCode = isset($read['rangeSex']) ? $read['rangeSex'] : '';
-        if ($sexCode === (string) $rule['rangeMale']) $sex = 'male';
-        elseif ($sexCode === (string) $rule['rangeFemale']) $sex = 'female';
-        else return ['state' => 'inert'];
+        // Letter case is ignored unless the rule is caseSensitive, the fold of
+        // @UVASSERT (twin: growthVerdict in js/engine.js).
+        $sex = self::growthSexOf($sexCode, $rule);
+        if ($sex === null) return ['state' => 'inert'];
         $in = ['comma' => !empty($rule['rangeAxisComma'])];
         if (isset($rule['rangeAgeDob'])) {
             foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
@@ -3103,6 +3119,7 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function growthPageNeed(array $n, array $entry, array $config)
     {
+        if (!isset($n['rangeMale'], $n['rangeFemale'])) return ['sexes' => ['male' => true, 'female' => true], 'xs' => null];
         $codes = isset($config['missingCodes']) && is_array($config['missingCodes']) ? $config['missingCodes'] : [];
         $lit = function ($key) use ($n, $codes) {
             $op = isset($n[$key]) ? $n[$key] : null;
@@ -3113,7 +3130,8 @@ class UniversalValidator extends AbstractExternalModule
         $out = ['sexes' => ['male' => true, 'female' => true], 'xs' => null];
         $sex = $lit('rangeSexOp');
         if ($sex !== null) {
-            $out['sexes'] = ['male' => $sex === (string) ($n['rangeMale'] ?? ''), 'female' => $sex === (string) ($n['rangeFemale'] ?? '')];
+            $which = self::growthSexOf($sex, $n);
+            $out['sexes'] = ['male' => $which === 'male', 'female' => $which === 'female'];
         }
         $in = ['comma' => !empty($n['rangeAxisComma'])];
         if (isset($n['rangeAgeDobOp']) || isset($n['rangeAgeAtOp'])) {
@@ -4937,10 +4955,20 @@ class UniversalValidator extends AbstractExternalModule
                 $codes = in_array($ftype, ['yesno', 'truefalse'], true) ? ['1', '0']
                     : (isset($choices[$f]) && in_array($ftype, ['radio', 'dropdown'], true) ? $choices[$f] : null);
                 if ($codes !== null) {
+                    // matched as the rule matches a value: letter case ignored
+                    // unless caseSensitive (growthSexOf)
+                    $fold = empty($frag['caseSensitive']);
+                    $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
                     foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $ck => $word) {
-                        if (!in_array((string) $frag[$ck], array_map('strval', $codes), true)) {
+                        $want = $key($frag[$ck]);
+                        $hits = array_values(array_filter(array_map('strval', $codes), function ($c) use ($key, $want) { return $key($c) === $want; }));
+                        if ($hits === []) {
                             return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which is not a choice of "sex" field "'
                                 . $f . '" (its codes are ' . implode(', ', $codes) . ').');
+                        }
+                        if (count($hits) > 1) {
+                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which matches the codes ' . implode(' and ', $hits)
+                                . ' of "sex" field "' . $f . '" when letter case is ignored. Add "caseSensitive": true to tell them apart.');
                         }
                     }
                 }

@@ -4128,7 +4128,9 @@ function QRIDRangeInit(QRID_CONFIG){
           configError = "@UVRANGE cannot read the inputs of its growth reference.";
         }
       }
+      /* sex codes: letter case ignored unless caseSensitive (twin: UniversalValidator::growthSexOf) */
       growth = { ref: gref, ops: ops, male: String(cfg.rangeMale), female: String(cfg.rangeFemale),
+                 fold: cfg.caseSensitive !== true,
                  dobType: cfg.rangeDobType || "date", dobFormat: cfg.rangeDobFormat || "ymd",
                  atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
                  comma: cfg.rangeAxisComma === true };
@@ -4253,7 +4255,8 @@ function QRIDRangeInit(QRID_CONFIG){
       if(ins[k] === null) withheld = true;
     }
     if(withheld) return { tier: "withheld" };
-    var sex = ins.Sex === g.male ? "male" : (ins.Sex === g.female ? "female" : null);
+    var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
+    var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
     if(sex === null){
       return { tier: "inert", why: ins.Sex === "" ? "the sex is blank"
         : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };

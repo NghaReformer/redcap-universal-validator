@@ -207,6 +207,7 @@ namespace {
         'female blank'              => ['@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":" ",' . $AGE . ',"hard":[-5,5]}', '"female" must be the code'],
         'male a list'               => ['@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":["1"],"female":"2",' . $AGE . ',"hard":[-5,5]}', '"male" must be the code'],
         'male and female the same'  => ['@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"1",' . $AGE . ',"hard":[-5,5]}', 'are the same code ("1")'],
+        'male and female by case'   => ['@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"M","female":"m",' . $AGE . ',"hard":[-5,5]}', '"male" "M" and "female" "m" differ only in letter case, which this rule ignores. Add "caseSensitive": true'],
         'neither age nor by'        => [tag('who-wfa', '"message":"x"'), 'needs "age"'],
         'both age and by'           => [tag('who-wfa', $AGE . ',"by":"[height]"'), 'give "age" or "by", not both'],
         'age with dob only'         => [tag('who-wfa', '"age":{"dob":"[dob]"}'), '"age" must be {"dob":"[dob]","at":"[visit_date]"}'],
@@ -234,6 +235,8 @@ namespace {
         strpos(errOf(tag('who-wfa', '"age":{"dob":"[dob][all-instances]","at":"[visit_date]"}'), ['qualified' => true]),
             '"age" "dob" must be exactly one field reference') !== false);
     check('z limits of exactly -20 and 20 are fine', errOf(tag('who-wfa', $AGE, '"hard":[-20,20]')) === '');
+    check('male and female differing in case are fine with caseSensitive',
+        errOf('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"M","female":"m",' . $AGE . ',"hard":[-5,5],"caseSensitive":true}') === '');
 
     // ---- 2) the dictionary hook --------------------------------------------------------
     $p = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
@@ -264,6 +267,13 @@ namespace {
         'b_monint7' => f('anthro_form', tag('who2007-bfa', '"age":{"months":"[age_mi]"}'), 'number'),
         'b_monnum'  => f('anthro_form', tag('who-wfa', '"age":{"months":"[age_months]"}'), 'number'),
         'age_mi'    => f('anthro_form', '', 'integer'),
+        // sex codes are matched with letter case ignored unless caseSensitive
+        'b_sexfold'  => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_mf]","male":"m","female":"f",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_sexcs'    => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_mf]","male":"m","female":"F",' . $AGE . ',"hard":[-5,5],"caseSensitive":true}', 'number'),
+        'b_sexamb'   => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_amb]","male":"M","female":"F",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_sexambcs' => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_amb]","male":"M","female":"F",' . $AGE . ',"hard":[-5,5],"caseSensitive":true}', 'number'),
+        'sex_mf'    => f('enrol_form', '', '', 'radio', 'M, Male | F, Female'),
+        'sex_amb'   => f('enrol_form', '', '', 'radio', 'm, male | M, Male | F, Female'),
         'chk'       => f('enrol_form', '', '', 'checkbox', '1, M | 2, F'),
         'yn'        => f('enrol_form', '', '', 'yesno'),
         'tf'        => f('enrol_form', '', '', 'truefalse'),
@@ -294,6 +304,8 @@ namespace {
         'b_reach'    => '"reference" "who-tsfa": its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at ',
         // whole months on a table read by day
         'b_monint'   => '"age" "months" field "age_mi" holds whole months, but "who-wfa" is read by day, so an infant of 1 month and 29 days',
+        'b_sexcs'    => '"male" is "m", which is not a choice of "sex" field "sex_mf" (its codes are M, F).',
+        'b_sexamb'   => '"male" is "M", which matches the codes m and M of "sex" field "sex_amb" when letter case is ignored. Add "caseSensitive": true to tell them apart.',
     ];
     foreach ($cases as $f => $want) {
         check('dictionary: ' . $f . ' (got ' . json_encode($err($p, $f)) . ')', strpos($err($p, $f), $want) !== false
@@ -304,7 +316,8 @@ namespace {
     foreach (['b_tf' => 'a true/false sex field with 1 and 0', 'b_sqlsex' => 'an SQL sex field takes any codes',
               'b_calcsex' => 'a calc sex field takes any codes', 'b_calcage' => 'a calc age in days',
               'b_dts' => 'datetime-with-seconds and datetime dates',
-              'b_monint7' => 'whole months on a table read by month', 'b_monnum' => 'months as a number on a table read by day'] as $f => $label) {
+              'b_monint7' => 'whole months on a table read by month', 'b_monnum' => 'months as a number on a table read by day',
+              'b_sexfold' => 'sex codes in another letter case', 'b_sexambcs' => 'codes differing in case, told apart with caseSensitive'] as $f => $label) {
         check('dictionary: ' . $label . ' (got ' . json_encode($err($p, $f)) . ')', ruleFor($p, $f) !== null && $err($p, $f) === '');
     }
     $r = ruleFor($p, 'b_dts');
@@ -443,6 +456,36 @@ namespace {
     $noin['2'][351]['sex'] = '3';
     list($by, $un) = audit($DICT, $noin);
     check('audit: a sex code neither male nor female checks nothing', !$by && !$un);
+    // A Text sex field: letter case is ignored unless the rule is caseSensitive.
+    $TXT = $DICT;
+    $TXT['sex_t'] = f('enrol_form');
+    $txtTag = '@UVRANGE={"reference":"who-wfa","sex":"[sex_t]","male":"M","female":"F",' . $AGE . ',"soft":[-2,2],"hard":[-5,5]';
+    $TXT['weight'] = f('anthro_form', $txtTag . '}', 'number_1dp');
+    $txt = $DATA; $txt['2'][351]['sex_t'] = 'm';
+    list($by, $un) = audit($TXT, $txt);
+    check('audit: sex "m" is the male code "M" (got ' . json_encode([$by, $un]) . ')', ($by['weight'] ?? null) === 'soft-low' && !$un);
+    $txt['2'][351]['sex_t'] = 'f'; $txt['2'][351]['weight'] = '7.5';
+    list($by, $un) = audit($TXT, $txt);
+    check('audit: sex "f" is the female code "F" (7.5 kg usual for a girl)', !isset($by['weight']) && !$un);
+    $txt['2'][351]['weight'] = '6.0';
+    list($by) = audit($TXT, $txt);
+    check('audit: ... and judged on the female rows', ($by['weight'] ?? null) === 'soft-low');
+    $TXT['weight'] = f('anthro_form', $txtTag . ',"caseSensitive":true}', 'number_1dp');
+    list($by, $un) = audit($TXT, $txt);
+    check('audit: with caseSensitive "f" is not "F", and nothing is checked', !isset($by['weight']) && !$un);
+    $txt['2'][351]['sex_t'] = 'F';
+    list($by) = audit($TXT, $txt);
+    check('audit: ... "F" is', ($by['weight'] ?? null) === 'soft-low');
+    $TXT['weight'] = f('anthro_form', $txtTag . '}', 'number_1dp');
+    $txt['2'][351]['sex_t'] = 'm';
+    $pt = page(mod($TXT, $txt, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: a saved sex "m" sends the rows of the male code "M" only (got ' . json_encode([count($pt['cfg']['growth']['who-wfa']['male'] ?? []),
+        count($pt['cfg']['growth']['who-wfa']['female'] ?? [])]) . ')',
+        count($pt['cfg']['growth']['who-wfa']['male'] ?? []) === 1827 && ($pt['cfg']['growth']['who-wfa']['female'] ?? null) === []);
+    $TXT['weight'] = f('anthro_form', $txtTag . ',"caseSensitive":true}', 'number_1dp');
+    $pt = page(mod($TXT, $txt, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: ... with caseSensitive, "m" is neither code: no rows', ($pt['cfg']['growth']['who-wfa']['male'] ?? null) === []
+        && ($pt['cfg']['growth']['who-wfa']['female'] ?? null) === []);
     $noin['2'][351]['sex'] = '3'; $noin['2'][351]['weight'] = 'abc';
     list($by) = audit($DICT, $noin);
     check('audit: a value that is not a number is reported whatever the inputs', ($by['weight'] ?? null) === 'not-a-number');

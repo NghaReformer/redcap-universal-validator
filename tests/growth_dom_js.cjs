@@ -565,5 +565,25 @@ function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w
     /higher than usual \(z-score 3\.00 on Test, age in days/.test(nMsg(env, 'weight').innerHTML));
 }
 
+// ---- 11) sex codes ignore letter case unless caseSensitive (UniversalValidator::growthSexOf) -------
+{
+  const MF = { rangeMale: 'M', rangeFemale: 'F' };
+  const env = boot(inputs('m', '16'), { growth: GROWTH, rules: [rule(Object.assign({}, MF, LIVE))] });
+  check('sex "m" is the male code "M" (got ' + nMsg(env, 'weight').innerHTML + ')', /plausible/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'held');
+  const env2 = boot(inputs('f', '11'), { growth: GROWTH, rules: [rule(Object.assign({}, MF, LIVE))] });
+  check('sex "f" is the female code "F": the female rows (got ' + nMsg(env2, 'weight').innerHTML + ')', /z-score 3\.75/.test(nMsg(env2, 'weight').innerHTML));
+  const env3 = boot(inputs('m', '16'), { growth: GROWTH, rules: [rule(Object.assign({ caseSensitive: true }, MF, LIVE))] });
+  check('caseSensitive: "m" is neither code (got ' + nMsg(env3, 'weight').innerHTML + ')',
+    /the sex code is neither M \(male\) nor F \(female\)\./.test(nMsg(env3, 'weight').innerHTML) && save(env3) === 'saved');
+  const env4 = boot(inputs('M', '16'), { growth: GROWTH, rules: [rule(Object.assign({ caseSensitive: true }, MF, LIVE))] });
+  check('caseSensitive: "M" is', save(env4) === 'held');
+  // a saved sex folded to a literal reads the same
+  const env5 = boot([el('dob', '01-01-2026'), el('visit_date', '2026-01-03'), el('weight', '16')],
+    { growth: GROWTH, rules: [rule(Object.assign({}, MF, LIVE, { rangeSexOp: ['lit', 'm'], snapshotFields: ['sex'] }))] });
+  // a verdict on saved inputs never blocks (section 9), so read the note
+  check('a saved sex "m" is the male code too (got ' + nMsg(env5, 'weight').innerHTML + ')',
+    /above the plausible range \(z-score 6\.00/.test(nMsg(env5, 'weight').innerHTML));
+}
+
 console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);
