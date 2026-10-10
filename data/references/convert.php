@@ -26,7 +26,9 @@
  *   --female CODE    the code of female rows. Default 2
  *   --l NAME, --m NAME, --s NAME   the L, M and S columns. Default l, m and s
  *
- * Column names match without regard to case. The rows of each sex must form
+ * Column names match without regard to case, and a line that repeats the
+ * header row (CDC files repeat it before the female rows) is skipped. The
+ * rows of each sex must form
  * one unbroken run of keys (x minus the offset, times the scale, a whole
  * number), and both sexes must start at the same key. The script prints the
  * SHA-256 of what it wrote, for the "sha256" of the entry in index.json, and
@@ -138,6 +140,8 @@ $rows = ['male' => [], 'female' => []];
 foreach ($lines as $n => $line) {
     if (trim($line) === '') continue;
     $cells = str_getcsv($line, $sep, '"', '');
+    // the header again, as CDC's files have it before the female rows
+    if (array_map(function ($h) { return strtolower(trim($h, " \t\"")); }, $cells) === $names) continue;
     $cell = function ($role) use ($cells, $at, $n) {
         $v = isset($cells[$at[$role]]) ? trim($cells[$at[$role]], " \t\"") : '';
         return $v;
@@ -231,7 +235,7 @@ if ($valid === null) {
     $valid = ['min' => $text($lo), $hiKey => $text($hi)];
     fwrite(STDERR, 'convert.php: check "valid" before use: ' . $accepts($valid) . "\n");
 }
-fwrite(STDOUT, "index.json entry to start from (edit title, measure, unit, axis, lookup, valid, adjust):\n");
+fwrite(STDOUT, "index.json entry to start from (edit title, measure, unit, axis, axisUnit, lookup, valid, adjust):\n");
 fwrite(STDOUT, json_encode([
     'title' => '', 'source' => '', 'file' => basename($opts['out']), 'sha256' => hash('sha256', $out),
     'measure' => '', 'unit' => '', 'axis' => 'age', 'axisUnit' => 'days', 'lookup' => $lookup,

@@ -47,13 +47,16 @@ national reference) can be added without changing the module's code.
    rows per unit (10 for a table with a row every 0.1 cm). `--x-offset`,
    `--min-x` and `--max-x` handle tables whose rows sit between whole units:
    CDC 2000 ages are half months, where row 24.5 covers ages from 24 up to 25
-   months, and the whole-month rows at 24 and 240 are left out. The
+   months, and the whole-month rows at 24 and 240 are left out. A line that
+   repeats the header row, as some CDC files do before the female rows, is
+   skipped. The
    sex column defaults to `sex` with 1 for male and 2 for female; change it
    with `--sex`, `--male` and `--female`. The script prints the file's SHA-256
    and an index entry to start from, covering the rows both sexes have: with
    `round` for a table on whole units, and with `floor` and an exclusive
    `below` for one converted with `--x-offset`, checked against the module's
-   own row lookup. It refuses a row with an S below 0.0001, or with an L that
+   own row lookup. Edit `axisUnit` in that entry when x is not in days
+   (`months` for CDC). It refuses a row with an S below 0.0001, or with an L that
    is not 0 but smaller than 0.000001 in size (write an L of 0 as 0); the module
    refuses such tables too. Check the first and last rows of the file you
    convert; the numbers here are an example.
@@ -109,13 +112,13 @@ national reference) can be added without changing the module's code.
 
 | Key | Meaning |
 |---|---|
-| `title` | Shown to staff in notes and in the data dictionary check |
+| `title` | Shown to staff in the notes on the form, and printed by `convert.php --check` |
 | `file` | The table, relative to the folder |
 | `sha256` | The table's SHA-256. A table that does not match is not used, and every rule naming it reports a configuration error |
 | `measure`, `unit` | What is measured, for the notes |
 | `axis` | `age`, `length` or `height` |
 | `axisUnit` | `days` or `months` for age, `cm` for length and height |
-| `lookup` | How a position on the axis finds its row: `round` to the nearest row (WHO 0 to 5 years, by day), `floor` to the row at or below (CDC half months, after the offset), `linear` between the two rows around it (WHO length and height, WHO 5 to 19 years) |
+| `lookup` | How a position on the axis finds its row: `round` to the nearest row (WHO 0 to 5 years, by day), `floor` to the row at or below (CDC half months, after the offset), `linear` between the two rows around it (WHO weight-for-length and weight-for-height, WHO 5 to 19 years) |
 | `valid` | `min`, and `max` (inclusive) or `below` (exclusive), in the axis unit, as text, within -1000000 to 1000000. Outside it nothing is checked |
 | `adjust` | `who-restricted` measures a z beyond ±3 in units of the distance between 2 and 3 SD, as WHO does for weight-based indicators; `none` uses the LMS formula throughout |
 
@@ -125,7 +128,7 @@ converted with 30.4375 days to the month, as WHO does.
 `pageTables` at the top of an index.json (0 to 50, default 4) sets how many
 tables one page may carry. A table sent whole counts 1. When the sex is a
 value saved on another form, only that sex's rows travel, and the table
-counts 0.5. When the age or length is a saved value too, only the few rows
+counts 0.5. When the age or length is a saved value, only the few rows
 around it travel, and the table counts nothing. A rule whose `when` saved
 values already make false carries nothing. A rule past the cap is checked
 after saving instead of on the page, and the page still checks that the
@@ -167,9 +170,10 @@ where `ga_days` is a calculated field such as `[ga_weeks]*7 + [ga_extra_days]`.
 `dob` and `at` give the age since birth, so leave them out here.
 
 **References that are not L, M and S.** Curves fitted with four parameters
-(Box-Cox t or Box-Cox power exponential, as used for some INTERGROWTH-21st
-standards) cannot be written as L, M and S, and the module does not support
-them.
+(Box-Cox t, Box-Cox power exponential or skew t, as used for some
+INTERGROWTH-21st standards) cannot be written as L, M and S, and the module
+does not support them. A standard published as a mean and SD for each week
+or day can be added as a normal table, as above.
 
 **CDC 2000.**
 

@@ -1039,9 +1039,9 @@ Yes. Several `@UVRANGE` tags that name different references on one field all
 apply, each with its own `when` if it has one. The worst result decides the
 note and the save, and the note has one line per reference. Tags that name
 the same reference branch: the one whose `when` is true applies. Each page
-carries at most four reference tables; a rule past that is checked when the
-record is saved. With the sex saved on an enrolment form, each table counts
-half.
+carries at most four whole reference tables by default (an administrator can
+change the number); a rule past that is checked when the record is saved.
+With the sex saved on an enrolment form, each table counts half.
 
 **What if the date of birth is blank, or the weight is in grams?**
 Without every input there is no z-score, and the value is logged as not

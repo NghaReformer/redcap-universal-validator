@@ -10,7 +10,8 @@
  *   - the printed SHA-256 is that of the file, and the printed index entry
  *     names the file and the x range both sexes have ("floor" up to the next
  *     key for an offset table) and is accepted by GrowthReference::table(),
- *   - other sex columns and codes,
+ *   - other sex columns and codes, and a header row repeated before the
+ *     female rows,
  *   - every refusal: a row off the grid, a gap, sexes starting apart, a sex
  *     code that is neither, M at or below 0, a second row for one x, a missing
  *     column, missing options,
@@ -137,6 +138,14 @@ namespace {
     $t = json_decode((string) @file_get_contents($dir . '/mf.json'), true);
     check('other column names and sex codes, rows per mm (got ' . json_encode($r['err']) . ')', $r['code'] === 0
         && $t['scale'] === 10 && $t['first'] === 450 && $t['female'][1] === [1, 2.32, 0.09]);
+
+    // ---- the header repeated before the female rows, as CDC's files have it
+    $in = put('rep.csv', "Sex,Agemos,L,M,S\n1,0,1,2,0.1\n1,1,1,2.1,0.1\nSex,Agemos,L,M,S\n2,0,1,1.9,0.1\n2,1,1,2,0.1\n");
+    $r = run(['--in', $in, '--out', $dir . '/rep.json', '--x', 'agemos']);
+    $t = json_decode((string) @file_get_contents($dir . '/rep.json'), true);
+    check('a repeated header row is skipped (got ' . json_encode($r['err']) . ')', $r['code'] === 0
+        && $t['female'] === [[1, 1.9, 0.1], [1, 2, 0.1]] && count($t['male']) === 2);
+    check('the printed hint names axisUnit', strpos($r['out'], 'edit title, measure, unit, axis, axisUnit, lookup, valid, adjust') !== false);
 
     // ---- refusals
     $bad = [

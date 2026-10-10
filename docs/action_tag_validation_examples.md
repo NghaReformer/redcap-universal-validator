@@ -2153,7 +2153,7 @@ The references that ship with the module:
 The z-score is the one WHO's own software (the `anthro` and `anthroplus` R
 packages) computes: the same tables, the same restricted method beyond 3 SD for
 the weight, BMI, arm circumference and skinfold indicators, and the same
-rounding to two decimals. The module's tests compare 2,880 points with WHO's
+rounding to two decimals (half away from zero). The module's tests compare 2,880 points with WHO's
 code. An administrator can add other references, such as CDC 2000 or a national
 one (see [A reference of your own](#a-reference-of-your-own) below).
 
@@ -2333,7 +2333,8 @@ Tags that name different references all apply, each when its own `when` is
 true (or always, without one). The worst result decides the note and the
 save, and the note has one line per reference. Tags that name the same
 reference branch as in Level 3: the one whose `when` is true applies, and two
-true at once are a branch conflict. Each finding in the module log and the
+true at once are a branch conflict, which leaves the whole field unchecked,
+every reference included. Each finding in the module log and the
 Validation scan names its reference.
 
 A boy of 300 days measured standing at 75.0 cm and weighing 7.5 kg has a
@@ -2379,22 +2380,24 @@ page carries at most four, a number the administrator can change
 (`pageTables`, see `data/references/README.md`). A table counts as one when
 the sex is a field on the page. When the sex is a value saved on another
 form, such as an enrolment form, only that sex's rows travel and the table
-counts as one half. When the age or length is saved as well, only the few
+counts as one half. When the age or length is a saved value, only the few
 rows around it travel and the table counts as nothing. A rule whose `when`
 the saved values already make false carries no table.
 
 A rule past the limit is checked when the record is saved, with a note
 saying so. The page still checks that the value is a number above 0. The
-weight rules above use up to five references; with the sex on an enrolment
-form they count as two and a half.
+weight rules above use four references (`who-wfa`, `who-wfl`, `who-wfh` and
+`who2007-wfa`), as many as a page carries by default; with the sex on an
+enrolment form they count as two.
 
 #### Surveys
 
 A growth rule works on a survey. Inputs on the survey page are read as the
 respondent types. Inputs on another form, or in another event, are not sent
 to a survey. The page then checks only that the value is a number above 0
-and shows no note, and the post-save audit checks the z-score once the
-survey is submitted.
+and shows no z-score note, and the post-save audit checks the z-score once
+the survey is submitted. With an input in another event, the survey does not
+hold the save even for a value that is not a number.
 
 On a multi-page survey the page reads an input only on the page being shown.
 With the date of birth on an earlier page, the z-score is not worked out while
@@ -2495,10 +2498,15 @@ with a blank date of birth is still caught:
 
 > ✗ This value is above the plausible range (allowed 0.5 to 30 kg; no z-score on Weight-for-age, WHO 2006 (birth to 5 years): the date of birth or the date of the measurement is blank).
 
-It applies when the sex is blank or neither code, a date is blank or cannot be
-read, or the age or length is blank or outside the reference. A value outside
-it is implausible and follows `hardBlock`. Once the z-score can be worked
-out, `plausible` plays no part.
+It applies when the sex is blank or neither code, a date is blank or a saved
+date cannot be read, or the age or length is blank, not a number or outside
+the reference. A date still being typed on the page gives no verdict at all.
+A value outside the range is implausible and follows `hardBlock`, except that
+a rule whose inputs come from another form or event never blocks on the page.
+Once the z-score can be worked out, `plausible` plays no part. It is not
+judged on a page that was not sent an input (a survey, a form the user cannot
+see), nor for a rule past the page's table limit; the post-save audit judges
+those.
 
 #### Grams (`measureScale`)
 
@@ -2565,17 +2573,21 @@ case need `caseSensitive`.
 - **The age.** From two dates, the age is the whole number of days between
   them (a date with a time counts its date only). A month is 30.4375 days.
   The WHO 2006 tables have a row per day and use the nearest day; the WHO 2007
-  tables and the length and height tables interpolate between rows.
+  tables and the weight-for-length and weight-for-height tables interpolate
+  between rows. On the WHO 2006 tables an age between two days is read at the
+  nearest day, so arm circumference and the skinfolds start at 90.5 days.
 - **What checks nothing.** A blank input, a sex code that is neither `male`
   nor `female`, an age or a length outside the reference, a measurement
   dated before the birth, and a saved date the rule cannot read ("the date of
-  birth is not a date this rule can read"), unless `plausible` judges the
-  value. On a data entry form a grey note tells the user why ("Not checked
-  against Weight-for-age, WHO 2006 (birth to 5 years): the age is outside the
-  reference (0 to under 1826.25 days)."); a survey shows nothing. A missing
-  data code in an input counts as blank. The post-save audit logs each such
-  value as `uvalidate-not-evaluated`, with the rule, the field, the reason and
-  the reference; the Validation scan does not count them yet.
+  birth is not a date this rule can read"). A `plausible` range still judges
+  such a value. On a data entry form a grey note tells the user why ("Not
+  checked against Weight-for-age, WHO 2006 (birth to 5 years): the age is
+  outside the reference (0 to under 1826.25 days)."); a survey shows nothing.
+  A missing data code in an input counts as blank. The post-save audit logs
+  each such value as `uvalidate-not-evaluated`, with the rule, the field, the
+  reason and the reference, also when a `plausible` range judged it (a value
+  outside that range is logged as a finding too). The Validation scan does not
+  count them yet.
 - **What is implausible whatever the inputs say.** A value that is not a number,
   and a measurement of 0 or below (reason `not-positive`).
 - **Inputs on another form** are read when the page opens. The z-score note
@@ -2590,8 +2602,10 @@ case need `caseSensitive`.
   blocks on the page; the post-save audit and the scan check every entry.
 - **What the dictionary must hold.** The reference must exist, and its axis
   decides between `age` and `by`. `sex` is a radio, dropdown, yes/no,
-  true/false, Text, calc or SQL field, and when it has choices, `male` and
-  `female` must be among them (yes/no and true/false store 1 and 0). `dob` and
+  true/false, Text, calc or SQL field. On a radio or dropdown, `male` and
+  `female` must be among its codes, each matching only one of them once letter
+  case is ignored; yes/no and true/false store 1 and 0; the codes of a Text,
+  calc or SQL field are not checked. `dob` and
   `at` are date or datetime fields; `days`, `months` and `by` are Text fields
   with integer or number validation, or calcs. A whole-number `months` field
   on a reference read by day is refused. No input may be the measured field
@@ -2655,9 +2669,9 @@ case need `caseSensitive`.
   `hard-low`, `hard-high`, `not-a-number` or, for a growth reference,
   `not-positive`, `plausible-low` or `plausible-high`, whatever `softBlock`
   says. A growth finding also carries `z` and `reference`. A rule that only
-  shows notes still leaves a record of each unusual value. A growth value with
-  no z-score and no `plausible` range is logged as `uvalidate-not-evaluated`,
-  with the reason.
+  shows notes still leaves a record of each unusual value. Every growth value
+  with no z-score is logged as `uvalidate-not-evaluated`, with the reason,
+  also when a `plausible` range judged it.
 - **The Validation scan** counts these findings. Its report labels them
   "Unusual value", "Implausible value", "Not a number" or "Not a positive
   measurement", with the limits in the detail line ("Expected 12 to 17.5
@@ -2783,9 +2797,11 @@ These are refused when the rule is saved:
 These are refused once the data dictionary is read, with a configuration error
 under the field: a `reference` this server does not have (the error lists the
 ones it has), `age` on a reference read by length or height (and `by` on one
-read by age), an input field that does not exist or is the wrong kind, a
-`male` or `female` code that is not among the sex field's choices, and a limit
-the reference cannot reach (see "Limits the reference can reach" above).
+read by age), an input field that does not exist, is the wrong kind or is the
+measured field itself, a whole-number `months` field on a reference read by
+day, a `male` or `female` code that is not among the sex field's choices or
+matches two of them once letter case is ignored, and a limit the reference
+cannot reach (see "Limits the reference can reach" above).
 
 ---
 
@@ -2846,6 +2862,10 @@ The rules:
   once, the field shows a "Validation conflict" notice naming both, validates nothing,
   and **never** blocks the save; the server logs the same conflict. Mutually exclusive
   conditions (`='2'` vs `<>'2'`) can never conflict.
+- **`@UVRANGE` branches per reference.** These rules hold among the `@UVRANGE` tags
+  that name the same growth reference, and among those with fixed limits. Tags that
+  name different references (or a reference and fixed limits) all apply side by side,
+  each without a `when` if need be; the worst result decides (see `@UVRANGE` Level 5).
 - Dialog rules and tags mix freely — a dialog rule and a tag may legally share a field
   as long as the sharing is gated.
 
@@ -3912,9 +3932,9 @@ counts as the same value), `scope` narrows the **search** (which records are com
 #### Child growth
 
 ```text
-# on: weight_kg — weight-for-age and weight-for-height for under-fives (different references on one field all apply)
+# on: weight_kg — weight-for-age for under-fives, and weight-for-height from 2 years (age_days: a calc, datediff([dob],[visit_date],"d"))
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
-@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[height_cm]","soft":[-3,3],"hard":[-5,5]}
+@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[height_cm]","soft":[-3,3],"hard":[-5,5],"when":"[age_days] >= 731"}
 
 # on: height_cm — the date of birth is saved once, at enrolment, in another event
 @UVRANGE={"reference":"who-lhfa","sex":"[enrolment_arm_1][sex]","male":"1","female":"2","age":{"dob":"[enrolment_arm_1][dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,6]}
@@ -4245,9 +4265,16 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `softBlock`     | string          | `confirm`    | `off`, `confirm`: for a value outside `soft`                       |
 | `hardBlock`     | string          | `hard`       | `confirm`, `hard`: for a value outside `hard` or not a number; a calc never blocks |
 | `unit`          | string          | *(none)*     | Label shown after the limits in the notes, up to 20 characters         |
-| `when`          | string          | *(none)*     | Check only while true; fields of this entry only                       |
+| `when`          | string          | *(none)*     | Check only while true; another event or instance needs event and instance references |
 | `message`       | string          | generic line   | Replaces the generated note for both levels                            |
-| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`, and exact sex codes for a growth reference  |
+| `reference`     | string          | *(none)*     | A growth reference id, such as `who-wfa`; `soft` and `hard` are then z-scores, from -20 to 20 |
+| `sex`           | string          | *(none)*     | With `reference`: the field holding the sex, e.g. `"[sex]"`            |
+| `male`, `female` | string         | *(none)*     | With `reference`: the codes that field stores for male and for female  |
+| `age`           | object          | *(none)*     | With a reference read by age: `{"dob":"[dob]","at":"[visit_date]"}`, `{"days":"[age_days]"}` or `{"months":"[age_months]"}` |
+| `by`            | string          | *(none)*     | With a reference read by length or height: the field holding it, in cm |
+| `plausible`     | list of two     | *(none)*     | With `reference`: `[low, high]` in the reference's unit, judged when no z-score can be worked out |
+| `measureScale`  | number          | *(none)*     | With `reference`: multiplies the typed value before the z-score, 0.000001 to 1000000 |
 
 A limit is a JSON number, or a decimal in quotes for more digits than a JSON
 number keeps. `blockSave` is refused.
