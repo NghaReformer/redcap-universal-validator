@@ -748,6 +748,26 @@ namespace INSPIRE\UniversalValidator\Scan {
                 $att($junk) === ScanPolicy::D_RECORD_ATTEMPTS);
         }
 
+        // R8-4. The concurrent-projects limit is the number of slot rows a
+        // settings save writes, one placeholder each. It had no ceiling: 70000
+        // was a statement the server refused (no slot written, every worker
+        // refused as busy) and a billion was a fatal out-of-memory in range().
+        $proj = function ($raw) {
+            return ScanPolicy::resolve(['scan-system-max-concurrent-projects' => $raw], [])['maxProjects'];
+        };
+        check('policy R8-4: limits up to the ceiling are taken as given',
+            $proj('2') === 2 && $proj('999') === 999 && $proj(ScanPolicy::MAX_PROJECTS) === ScanPolicy::MAX_PROJECTS);
+        check('policy R8-4: and anything past it is held at the ceiling',
+            $proj('1001') === ScanPolicy::MAX_PROJECTS && $proj('70000') === ScanPolicy::MAX_PROJECTS
+            && $proj('1000000000') === ScanPolicy::MAX_PROJECTS && $proj('99999999999999999999') === ScanPolicy::MAX_PROJECTS
+            && $proj(PHP_INT_MAX) === ScanPolicy::MAX_PROJECTS);
+        check('policy R8-4: the ceiling fits the SMALLINT UNSIGNED slot number and one statement\'s placeholders',
+            ScanPolicy::MAX_PROJECTS >= 1 && ScanPolicy::MAX_PROJECTS <= 65535);
+        foreach (['0', '-5', 'abc', '', null, '3.5'] as $junk) {
+            check('policy R8-4: a malformed limit is the default, never 0',
+                $proj($junk) === ScanPolicy::D_MAX_PROJECTS);
+        }
+
         foreach (['', 'wat', null, 'RAW'] as $junk) {
             check('policy: an unrecognised value mode discloses nothing',
                 ScanPolicy::resolve([], ['scan-value-storage' => $junk])['valueMode'] === 'locations');
@@ -925,6 +945,72 @@ namespace INSPIRE\UniversalValidator\Scan {
         // --- and it never returns nothing. An empty message is the one input
         // that used to hand a bare class name to a page.
         check('S-10: an empty message still answers', $D::safe($err('', 1213)) !== '');
+    }
+
+    /* -----------------------------------------------------------------
+     * R8-4  PROVISIONING A LIMIT TYPED INTO A TEXT BOX
+     *
+     * One INSERT with a placeholder a slot: above 65535 placeholders the
+     * statement is refused and no slot is written, and a billion made
+     * range() exhaust memory. provision() writes CHUNK rows a statement and
+     * holds whatever it is handed to the slot_no range. Over a recording
+     * ScanDb, so the statements themselves are seen.
+     * ----------------------------------------------------------------- */
+    {
+        require_once __DIR__ . '/../php/Scan/WorkerSlots.php';
+        $slotDb = function ($max, array $affected = []) {
+            return new class($max, $affected) implements ScanDb {
+                public $max; public $affectedQueue; public $inserts = []; private $last = 0;
+                public function __construct($max, $q) { $this->max = $max; $this->affectedQueue = $q; }
+                public function select($sql, array $params = []) {
+                    return strpos($sql, 'MAX(slot_no)') !== false ? [[$this->max]] : [];
+                }
+                public function exec($sql, array $params = []) {
+                    $this->inserts[] = [substr_count($sql, '(?, 0)'), $params];
+                    $this->last = $this->affectedQueue ? array_shift($this->affectedQueue) : count($params);
+                    return true;
+                }
+                public function execNoCount($sql, array $params = []) { return true; }
+                public function affected() { return $this->last; }
+                public function begin() {}
+                public function commit() {}
+                public function rollback() {}
+            };
+        };
+        $byChunks = function ($db) {
+            $ok = true; $next = null;
+            foreach ($db->inserts as $ins) {
+                list($marks, $params) = $ins;
+                $ok = $ok && $marks === count($params) && $marks <= WorkerSlots::CHUNK && $marks > 0
+                    && ($next === null || $params[0] === $next);
+                $next = (int) end($params) + 1;
+            }
+            return $ok;
+        };
+        $d = $slotDb(0);
+        $added = (new WorkerSlots($d))->provision(1200);
+        check('R8-4 slots: 1200 slots go in three statements of at most CHUNK rows, in order',
+            $added === 1200 && count($d->inserts) === 3 && $byChunks($d)
+            && $d->inserts[0][1][0] === 1 && end($d->inserts)[1][count(end($d->inserts)[1]) - 1] === 1200);
+        $d = $slotDb(0, [500, 3, 200]);
+        check('R8-4 slots: the answer is every statement\'s affected count added up',
+            (new WorkerSlots($d))->provision(1200) === 703);
+        $d = $slotDb(499);
+        check('R8-4 slots: a gap from 500 to 1000 is two statements, 500 and 1',
+            (new WorkerSlots($d))->provision(1000) === 501 && count($d->inserts) === 2
+            && $d->inserts[0][0] === 500 && $d->inserts[1][1] === [1000]);
+        $d = $slotDb(0);
+        $big = (new WorkerSlots($d))->provision(1000000000);
+        $last = end($d->inserts);
+        check('R8-4 slots: a billion handed straight to provision() stops at the slot_no range',
+            $big === WorkerSlots::MAX_SLOT_NO && $byChunks($d)
+            && $last[1][count($last[1]) - 1] === WorkerSlots::MAX_SLOT_NO
+            && count($d->inserts) === (int) ceil(WorkerSlots::MAX_SLOT_NO / WorkerSlots::CHUNK));
+        check('R8-4 slots: no statement ever carries more placeholders than a server accepts',
+            WorkerSlots::CHUNK <= 65535 && WorkerSlots::MAX_SLOT_NO === 65535);
+        $d = $slotDb(5);
+        check('R8-4 slots: a table already at the limit sends nothing',
+            (new WorkerSlots($d))->provision(5) === 0 && $d->inserts === []);
     }
 
     echo "scan_security_php: $n checks, $fail failure(s)\n";

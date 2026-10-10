@@ -67,6 +67,34 @@ $NEIGHBOUR = uv_neighbour($PID);
     check('slots: and names which are idle above a reduced limit',
         $slotsA->idleAbove(2) === [3, 4, 5, 6, 7]);
 
+    // A LIMIT TYPED INTO A TEXT BOX (R8-4). The setting had no ceiling, and
+    // provisioning sent one placeholder a slot in one statement: 70000 was
+    // refused by the server ("Prepared statement contains too many
+    // placeholders") and no slot was written. The policy now holds it at
+    // MAX_PROJECTS and the rows go in WorkerSlots::CHUNK at a time, so the
+    // gap here takes more than one statement and every row is counted.
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+    $cap = \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve(
+        ['scan-system-max-concurrent-projects' => '70000'], [])['maxProjects'];
+    check('slots R8-4: a limit of 70000 is held at the ceiling',
+        $cap === \INSPIRE\UniversalValidator\Scan\ScanPolicy::MAX_PROJECTS
+        && $cap > \INSPIRE\UniversalValidator\Scan\WorkerSlots::CHUNK);
+    check('slots R8-4: and provisions exactly that many rows, counted across statements',
+        $slotsA->provision($cap) === $cap && $slotsA->census()['total'] === $cap);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot') . ' WHERE slot_no > 250');
+    check('slots R8-4: a gap that crosses a statement boundary is filled and counted',
+        $slotsA->provision($cap) === $cap - 250 && $slotsA->census()['total'] === $cap);
+    // Handed straight to provision(), past the policy: the column's range,
+    // never a refused statement or a fatal error.
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot') . ' WHERE slot_no > 10');
+    $big = $slotsA->provision(1000000000);
+    $top = $A->query('SELECT COUNT(*), MAX(slot_no) FROM ' . Schema::table('scan_worker_slot'))->fetch_row();
+    check('slots R8-4: a billion handed to provision() stops at the slot_no range',
+        $big === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO - 10
+        && (int) $top[0] === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO
+        && (int) $top[1] === \INSPIRE\UniversalValidator\Scan\WorkerSlots::MAX_SLOT_NO);
+    $A->query('DELETE FROM ' . Schema::table('scan_worker_slot'));
+
     // BROWSER AND CRON COMPETE FOR THE SAME POOL. That is the point of an
     // installation-wide semaphore: a cron that ignored browser leases would let
     // the server run 2N workers whenever someone had a tab open.

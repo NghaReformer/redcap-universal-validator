@@ -54,6 +54,23 @@ final class ScanPolicy
     const MAX_RECORD_ATTEMPTS = 254;
 
     /**
+     * The most projects the installation may scan at once (wave 8 review
+     * R8-4), because it is the number of worker-slot rows a settings save
+     * writes.
+     *
+     * scan-system-max-concurrent-projects is free text and had no upper bound.
+     * WorkerSlots::provision() turns it into one row per slot: above 65535 the
+     * insert needed more placeholders than a prepared statement may carry, so
+     * it failed and no slot was written - every worker was then refused as if
+     * the server were busy - and near 1e9 range() exhausted memory, a fatal
+     * error no catch around the settings save can stop. slot_no is a
+     * SMALLINT UNSIGNED, so the column's own ceiling is 65535; a server that
+     * could run a thousand scans at once is not one this rations. The ceiling
+     * is said in the setting's text.
+     */
+    const MAX_PROJECTS = 1000;
+
+    /**
      * How long a run may sit in `planning` before the page says planning has
      * stopped (review R2O-3). The system setting of the same name overrides it.
      *
@@ -112,8 +129,10 @@ final class ScanPolicy
                                               $system, 'scan-system-max-detail-bytes',
                                               self::D_MAX_BYTES),
             // System-only: a project cannot grant itself more of the server.
-            'maxProjects'    => self::posInt(isset($system['scan-system-max-concurrent-projects'])
-                                ? $system['scan-system-max-concurrent-projects'] : null, self::D_MAX_PROJECTS),
+            // Clamped, not merely parsed - see MAX_PROJECTS.
+            'maxProjects'    => min(self::MAX_PROJECTS,
+                                self::posInt(isset($system['scan-system-max-concurrent-projects'])
+                                ? $system['scan-system-max-concurrent-projects'] : null, self::D_MAX_PROJECTS)),
             'staleHours'     => self::posInt(isset($system['scan-system-stale-run-hours'])
                                 ? $system['scan-system-stale-run-hours'] : null, self::D_STALE_HOURS),
             // Clamped, not merely parsed - see MAX_RECORD_ATTEMPTS. posInt()

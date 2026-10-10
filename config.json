@@ -112,7 +112,7 @@
     },
     {
       "key": "scan-system-max-concurrent-projects",
-      "name": "<b>Validation scan</b> \u2014 how many projects may be scanned at the same time on this server. This rations the SERVER, so a project cannot raise it. Default 2.",
+      "name": "<b>Validation scan</b> \u2014 how many projects may be scanned at the same time on this server. This rations the SERVER, so a project cannot raise it. Default 2; at most 1000 (a larger number is treated as 1000).",
       "type": "text"
     },
     {
