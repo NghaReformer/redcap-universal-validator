@@ -105,14 +105,21 @@ final class CatchUp
     /**
      * One bounded page of reconciliation.
      *
+     * `scanned` is every change-log row the page walked, which is what the
+     * page cost and what the budget is told. `listed` is the part of it
+     * inside the run's scope, and it is the only count a reader is shown
+     * (review R5-1): for a group-scoped run the log holds every group's
+     * activity, and `scanned` reported to the page told one group's reader
+     * how busy the others had been.
+     *
      * @return array{done:bool, fenced:bool, added:int, requeued:int, gone:int,
-     *               scanned:int, why:?string}
+     *               scanned:int, listed:int, why:?string}
      */
     public function step($pid, $runId, $epoch, $limit = 500)
     {
         $limit = max(1, min(5000, (int) $limit));
         $out = ['done' => false, 'fenced' => false, 'added' => 0, 'requeued' => 0,
-                'gone' => 0, 'scanned' => 0, 'why' => null];
+                'gone' => 0, 'scanned' => 0, 'listed' => 0, 'why' => null];
 
         $st = $this->store->progressState($runId);
         if ($st === null) {
@@ -193,8 +200,11 @@ final class CatchUp
         $add = [];
         $requeue = [];
         $gone = [];
+        $listed = 0;
         foreach ($ids as $id) {
             $onManifest = isset($known[$id]);
+            // In scope: on the run's own list, or a record the scope admits.
+            if ($onManifest || !empty($scope[$id])) $listed++;
             // GONE ONLY ON AN EXPLICIT false FOR THIS ID - the rule
             // ScanWorker::confirmedGone() already applies (W7-N4). This was
             // empty(), so a resolver answering null, 0, '' or '0' for a record
@@ -246,6 +256,7 @@ final class CatchUp
         $this->store->setProgressState($runId, $epoch,
             ['catchupCursor' => $last, 'catchupDirty' => $dirty]);
         $out['scanned'] = count($page);
+        $out['listed'] = $listed;
         return $out;
     }
 

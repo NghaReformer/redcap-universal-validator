@@ -550,7 +550,10 @@ final class ScanWorker
                     if ($cu instanceof CatchUp) {
                         $mark = $budget->mark('changes');
                         $r = $cu->step($pid, $runId, $epoch, $budget->claim('changes'));
-                        $listed += max(0, (int) $r['scanned']);
+                        // What the reader is shown is the in-scope part of
+                        // the page; the budget is told the whole page, which
+                        // is what it cost (review R5-1).
+                        $listed += max(0, (int) $r['listed']);
                         if (!$r['done']) {
                             $adj = $budget->observe($mark, max(1, $r['scanned']));
                             if ($adj['stop'] !== null) { $stop = $adj['stop']; $why = $adj['why']; break; }

@@ -2662,6 +2662,47 @@ namespace INSPIRE\UniversalValidator\Scan {
         $res['ok'] === true && $res['phase'] === ScanPhase::CATCH_UP
         && isset($res['listed']) && $res['listed'] === 25);
 
+    // A GROUP-SCOPED RUN REPORTS ONLY ITS OWN SCOPE'S ACTIVITY (review R5-1).
+    // The change log holds every group's rows, and catch-up's page count was
+    // the `listed` a work answer carries, so one group's reader watched the
+    // other groups' activity. Two of the run's records changed; five records
+    // of another group changed too, and one record moved INTO the group.
+    list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+    $log = new Log();
+    $log->changed = ['A' => '400', 'B' => '400', 'IN1' => '300',
+                     'X1' => '300', 'X2' => '300', 'X3' => '300', 'X4' => '300', 'X5' => '300'];
+    $ownGroup = function (array $ids) {
+        $out = [];
+        foreach ($ids as $id) $out[$id] = ($id[0] !== 'X');
+        return $out;
+    };
+    $scoped = new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $ownGroup]);
+    $r = $scoped->step(800, $runId, $epoch, 100);
+    check('R5-1 catchup: a scoped page lists only the rows inside the run\'s scope',
+        $r['listed'] === 3 && $r['scanned'] === 8);
+    // Through the worker, to the end: the same scoped run, once with the other
+    // group's activity in the log and once without it, lists the same.
+    $listedBy = function (array $changed) use ($inCatchUp, $reader, $finder, $wide, $fin, $hash, $ownGroup) {
+        list($store, $runId, $epoch) = $inCatchUp(['A', 'B'], '900');
+        $log = new Log();
+        $log->changed = $changed;
+        $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+            'finalizer' => $fin(),
+            'catchup' => new CatchUp($store, ['fence' => $log, 'hash' => $hash, 'scope' => $ownGroup])]);
+        $seen = 0;
+        for ($i = 0; $i < 10; $i++) {
+            $res = $w->work(800, $runId);
+            $seen += isset($res['listed']) ? (int) $res['listed'] : 0;
+            if (!empty($res['done']) || empty($res['ok'])) break;
+        }
+        return $seen;
+    };
+    $own = ['A' => '400', 'B' => '400', 'IN1' => '300'];
+    $withOthers = $listedBy($log->changed);
+    check('R5-1 catchup: a scoped run\'s work answers never list more than its own scope moved',
+        $withOthers > 0 && $withOthers === $listedBy($own));
+
     // -- promotion: the one place a run may become finished -------------------
     //
     // This is the file the whole rebuild is for. The legacy scan assigned
