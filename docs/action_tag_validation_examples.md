@@ -2343,9 +2343,9 @@ advisory. A `when` that names a value the server cannot read (in another event,
 or on another repeating form) leaves only its own reference unchecked. The page
 says so on a line that names the reference, the audit and the scan log it as a
 configuration problem, and the other references are still judged. In the same
-way, a reference whose inputs are read in another event or instance never
-blocks on the page, while the fixed limits or other references beside it block
-as they say.
+way, a reference whose inputs or `when` name another event or instance never
+blocks on the page, as such a rule alone does, while the fixed limits or other
+references beside it block as they say.
 
 A boy of 300 days measured standing at 75.0 cm and weighing 7.5 kg has a
 corrected length of 75.7 cm and a weight-for-length z-score of -3.16, lower
@@ -2627,7 +2627,7 @@ case need `caseSensitive`.
   bound anywhere in the reference is a configuration error that names the row
   and the value a limit must clear ("a low limit must be above -6.97"). Every shipped reference takes soft
   limits of -3 to 3 and hard limits of -6 to 6.
-- **The z-score travels with each finding, where the value does.** The
+- **The z-score travels with each finding where values are kept raw.** The
   post-save audit's log entry and the Validation scan always carry the
   reference. The z-score, with the sex and the age, gives the measurement back,
   and with the measurement and the sex it gives back the age, so a date of
