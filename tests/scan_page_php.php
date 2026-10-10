@@ -516,17 +516,17 @@ namespace {
         if ($caseArg === 'chrome') {
             // S-04. REDCap has already emitted its page into an output buffer by
             // the time this file runs. A real CSV must contain none of it.
-            $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+            $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             ob_start(); echo CHROME;
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
         } elseif ($caseArg === 'formula') {
             // The formula-injection defusing must survive the rewrite to streaming.
-            $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '']]];
+            $data = ['=cmd' => [1 => ['record_id' => '=cmd', 'val' => '', 'fa_complete' => '0']]];
             render(new \ExternalModules\PlainUser(true, null), $D, $data, ['csv' => '1']);
         } elseif ($caseArg === 'export') {
             // TASK 1. pages/export.php must refuse without reading anything. It
             // runs in a child because it sets headers and its own status code.
-            $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+            $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
             $m = new \INSPIRE\UniversalValidator\UniversalValidator();
             $m->projectIdReturn = PID;
             $m->projectSettings = ['log-values' => ''];
@@ -549,8 +549,8 @@ namespace {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
         // Two records in two different DAGs; only 'north' belongs to the user.
         $data = [
-            1 => [1 => ['record_id' => '1', 'val' => '', 'redcap_data_access_group' => 'north']],
-            2 => [1 => ['record_id' => '2', 'val' => '', 'redcap_data_access_group' => 'south']],
+            1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'north']],
+            2 => [1 => ['record_id' => '2', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'south']],
         ];
         \REDCap::$groupNames = [7 => 'north'];
 
@@ -618,7 +618,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
 
         list($html, $m) = render(new \ExternalModules\PlainUser(false, null), $D, $data, ['run' => '1']);
         check('no design rights: the page refuses', strpos($html, W_NO_DESIGN) !== false);
@@ -639,7 +639,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'redcap_data_access_group' => 'north']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0', 'redcap_data_access_group' => 'north']]];
         \REDCap::$groupNames = [];          // group 7 resolves to nothing
 
         list($html, $m) = render(new \ExternalModules\PlainUser(true, 7), $D, $data, ['run' => '1']);
@@ -731,7 +731,7 @@ namespace {
         check('verdict: with nothing to list', !$rC['violations']);
 
         // A violation: not clean, and the finding is carried.
-        list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '']]]);
+        list(, $rV) = scanOf($U(), $D, [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]]);
         check('verdict: a violation is listed', count($rV['violations']) === 1);
         check('verdict: and the project is not clean', $cleanOf($rV) === false);
 
@@ -762,7 +762,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
         \REDCap::$groupNames = [];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
 
@@ -1120,7 +1120,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [7 => ['record_id' => '1', 'val' => '',
+        $data = [1 => [7 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0',
                              'redcap_data_access_group' => 'north']]];
         $RAW = ['settings' => ['scan-value-storage' => 'raw']];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
@@ -1303,7 +1303,7 @@ namespace {
      * ===================================================================== */
     {
         $D = dict(['record_id' => ['fa'], 'val' => ['fa', '@UVREQUIRED']]);
-        $data = [1 => [1 => ['record_id' => '1', 'val' => '']]];
+        $data = [1 => [1 => ['record_id' => '1', 'val' => '', 'fa_complete' => '0']]];
         \REDCap::$groupNames = [];
         $U = function () { return new \ExternalModules\PlainUser(true, null); };
         $on = function ($extra = []) {

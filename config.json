@@ -121,6 +121,11 @@
       "type": "text"
     },
     {
+      "key": "scan-system-planning-minutes",
+      "name": "<b>Validation scan</b> — minutes a scan may spend listing a project's records before the page says listing stopped and asks for the scan to be stopped and started again. Never shorter than PHP's max_execution_time. Default 15.",
+      "type": "text"
+    },
+    {
       "key": "scan-system-record-attempts",
       "name": "<b>Validation scan</b> \u2014 how many times a record that cannot be read, or cannot be held still long enough to read, is retried before the run records it as unread and reports itself incomplete. Default 3.",
       "type": "text"
