@@ -1816,8 +1816,9 @@ final class SqlScanStore implements ScanStore
             // that group's records and no others, and closing every older
             // generation closed the other groups' findings too, as superseded
             // by a run that never read them. Why not the group's share alone:
-            // ScanStore::supersedePrevious().
-            if ($r[0][4] !== null) {
+            // ScanStore::supersedePrevious(). A row that does not say what its
+            // scope was is not taken for a whole-project one.
+            if (!array_key_exists(4, $r[0]) || $r[0][4] !== null) {
                 $this->db->rollback();
                 return self::superseded(true, 0, $cursor, self::SUPERSEDE_SCOPED);
             }

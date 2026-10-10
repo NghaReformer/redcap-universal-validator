@@ -1059,12 +1059,12 @@ namespace INSPIRE\UniversalValidator\Scan {
 
     // -- W4-D1: supersedePrevious fails closed --------------------------------
     //
-    // run row: generation 7, run_seq 7, complete, cursor 0. One older
-    // generation, 3, with active rows to close.
+    // run row: generation 7, run_seq 7, complete, cursor 0, whole project. One
+    // older generation, 3, with active rows to close.
     $supDb = function ($older) use ($paramDb) {
         $db = $paramDb();
         $db->rows = [
-            'FOR UPDATE' => [[7, 7, ScanOutcome::COMPLETE, 0]],
+            'FOR UPDATE' => [[7, 7, ScanOutcome::COMPLETE, 0, null]],
             'MIN(generation_id)' => $older,
         ];
         return $db;
@@ -1103,12 +1103,24 @@ namespace INSPIRE\UniversalValidator\Scan {
         count($capped) === 1 && strpos($capped[0][0], 'LIMIT ' . ScanStore::PAGE) !== false);
     foreach ([null => false, ScanOutcome::PARTIAL => true] as $terminal => $done) {
         $db = $paramDb();
-        $db->rows = ['FOR UPDATE' => [[7, 7, $terminal === '' ? null : $terminal, 0]]];
+        $db->rows = ['FOR UPDATE' => [[7, 7, $terminal === '' ? null : $terminal, 0, null]]];
         $r = (new SqlScanStore($db))->supersedePrevious(70, 1, 10);
         check('supersede: a run ' . ($terminal === '' ? 'still in progress' : 'that ended ' . $terminal)
             . ' closes nothing' . ($done ? ', and that is final' : ', and is not done'),
             $r['done'] === $done && $r['rows'] === 0 && is_string($r['why'])
             && $db->with(['UPDATE ']) === []);
+    }
+    // ONE GROUP'S SCAN SUPERSEDES NOTHING (review R8-1), and a run row that
+    // does not say what its scope was is not read as a whole-project one.
+    foreach (['scoped to a group' => [[7, 7, ScanOutcome::COMPLETE, 0, '12']],
+              'whose scope did not come back' => [[7, 7, ScanOutcome::COMPLETE, 0]]] as $how => $row) {
+        $db = $paramDb();
+        $db->rows = ['FOR UPDATE' => $row, 'MIN(generation_id)' => [[3]]];
+        $db->affectedNext = 10;
+        $r = (new SqlScanStore($db))->supersedePrevious(70, 1, 10);
+        check('supersede: a complete run ' . $how . ' closes nothing, and that is final',
+            $r === ['done' => true, 'rows' => 0, 'cursor' => 0, 'why' => ScanStore::SUPERSEDE_SCOPED]
+            && $db->with(['UPDATE ']) === [] && $db->with(['MIN(generation_id)']) === []);
     }
 
     // -- P6: the paged retention, statement by statement ----------------------
@@ -1199,9 +1211,10 @@ namespace INSPIRE\UniversalValidator\Scan {
     $vdb->affectedNext = 2;
     $rv = (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2);
     $clear = $vdb->with(['UPDATE ' . $T('finding')]);
+    $issued = $rv['cursor'];
     check('revoke: the bump first, and a full page leaves the cursor inside the slice',
-        $rv === ['runs' => 2, 'rows' => 2, 'done' => false,
-                 'cursor' => ['gen' => 3, 'slot' => 1, 'after' => 41]]
+        $rv['runs'] === 2 && $rv['rows'] === 2 && $rv['done'] === false
+        && is_array($issued) && $issued['gen'] === 3 && $issued['slot'] === 1 && $issued['after'] === 41
         && count($clear) === 1 && $clear[0][1] === [70, 3, 0, 41]
         && strpos($clear[0][0], 'AND active_slot = 1') !== false
         && strpos($clear[0][0], 'AND finding_id > ? AND finding_id <= ?') !== false);
@@ -1213,9 +1226,37 @@ namespace INSPIRE\UniversalValidator\Scan {
     $vdb->affectedNext = 1;
     $rv = (new ScanRetention($vdb))->revokePreviews(70, 5, null, 2);
     check('revoke: a short page is one UPDATE, and the cursor moves to the next slice',
-        $rv === ['runs' => 1, 'rows' => 1, 'done' => false,
-                 'cursor' => ['gen' => 3, 'slot' => 0, 'after' => 0]]
+        $rv['runs'] === 1 && $rv['rows'] === 1 && $rv['done'] === false
+        && $rv['cursor']['gen'] === 3 && $rv['cursor']['slot'] === 0 && $rv['cursor']['after'] === 0
         && count($vdb->with(['UPDATE ' . $T('finding')])) === 1);
+
+    // A CURSOR IS THIS PROJECT'S, FOR THESE GENERATIONS, OR IT STARTS AGAIN
+    // (review R8-3). It skips every row of its slice at or below `after`, and
+    // it was a bare {gen, slot, after}: another project's cursor named a
+    // generation number this one also has, and the revocation answered done
+    // with every preview still stored. The cursor issued above, for project 70
+    // walking generations 3 and 8, resumes at 41 for project 70 - and starts
+    // from 0 for project 71, for project 70 once the generations it walks have
+    // changed, and for a cursor that names no project at all.
+    $resume = function ($pid, array $gens, $cursor) use ($paramDb) {
+        $db = $paramDb();
+        $rows = [];
+        foreach ($gens as $g) $rows[] = [$g];
+        $db->rows = ['SELECT DISTINCT generation_id' => $rows,
+                     'SELECT COUNT(*), MAX(finding_id)' => [[2, 90]]];
+        $db->affectedNext = 0;
+        (new ScanRetention($db))->revokePreviews($pid, 5, $cursor, 2);
+        $read = $db->with(['SELECT COUNT(*), MAX(finding_id)']);
+        return $read ? $read[0][1] : null;
+    };
+    check('revoke: the cursor this project was given resumes where it stopped',
+        $resume(70, [3, 8], $issued) === [70, 3, 41]);
+    check('revoke: another project\'s cursor starts again from the first slice',
+        $resume(71, [3, 8], $issued) === [71, 3, 0]);
+    check('revoke: so does this project\'s, once the generations it walks have changed',
+        $resume(70, [3, 8, 9], $issued) === [70, 3, 0]);
+    check('revoke: and a cursor that names no project',
+        $resume(70, [3, 8], ['gen' => 3, 'slot' => 1, 'after' => 41]) === [70, 3, 0]);
     $vdb = $paramDb();
     $vdb->rows = ['SELECT DISTINCT generation_id' => [[3]],
                   'SELECT COUNT(*), MAX(finding_id)' => [[2, 41]]];

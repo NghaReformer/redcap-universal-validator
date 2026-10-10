@@ -329,6 +329,37 @@ $REV = 820;
         $bkey !== '' && $prefix($bkey, 'scan_run', 1) === ['project_id']);
 }
 
+// -- A REVOKE CURSOR IS GOOD ONLY FOR THE PROJECT IT WAS ISSUED FOR (R8-3) ----
+//
+// Project 824's previews are planted first, so every one of its finding ids
+// sits below project 826's, in a generation of the same number. A cursor
+// issued by 826's first page, handed to 824's sweep, must not let that sweep
+// skip 824's rows at or below the cursor's position: it starts 824 over.
+{
+    $Q = 824; $P = 826;
+    $q = $plantRun($dbA, $Q, 4, '2999-01-01 00:00:00');
+    $p = $plantRun($dbA, $P, 4, '2999-01-01 00:00:00');
+    check('revoke cursor: the two projects\' previews share a generation number',
+        is_array($q) && is_array($p) && $q['gen'] === $p['gen']);
+    $ret = new ScanRetention($dbA);
+    $first = $ret->revokePreviews($P, 3, null, 2);
+    check('revoke cursor: the other project\'s first page stops inside its slice',
+        $first['done'] === false && is_array($first['cursor']) && (int) $first['cursor']['after'] > 0);
+    $cur = $first['cursor'];
+    $calls = 0;
+    do {
+        $r = $ret->revokePreviews($Q, 3, $cur, 2);
+        $cur = $r['cursor'];
+        $calls++;
+    } while (!$r['done'] && $calls < 20);
+    check('revoke cursor: a cursor issued for another project starts this one over, so every preview goes',
+        $r['done'] === true
+        && $count($dbA, 'project_id = ? AND (value_bin IS NOT NULL OR value_fingerprint IS NOT NULL'
+            . ' OR value_expires_at IS NOT NULL)', [$Q]) === 0);
+    check('revoke cursor: and the project that issued it keeps the previews its sweep has not reached',
+        $count($dbA, 'project_id = ? AND value_bin IS NOT NULL', [$P]) === 2);
+}
+
 // -- PURGE: CHILDREN FIRST, A PAGE AT A TIME, THE RUN ROW LAST ----------------
 $PUR = 830;
 {

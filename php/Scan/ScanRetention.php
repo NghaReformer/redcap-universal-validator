@@ -163,7 +163,9 @@ final class ScanRetention
      * string, where `//` is query text and MySQL answered ERROR 1064: the
      * cross-project fix it described had never once run. Comments stay in PHP.)
      *
-     * @param array|null $cursor what the previous call returned, or null to start
+     * @param array|null $cursor what the previous call FOR THIS PROJECT returned,
+     *                           or null to start; any other cursor starts again
+     *                           (review R8-3, see revokeAt())
      * @param int        $limit  rows per page, at most PAGE
      * @return array{runs:int, rows:int, done:bool, cursor:?array} `runs` whose
      *         previews this call revoked (0 once the bump has been made),
@@ -185,7 +187,7 @@ final class ScanRetention
                 [$pid, 'expired']) as $g) {
             $gens[] = (int) $g[0];
         }
-        $at = self::revokeAt($cursor, $gens);
+        $at = self::revokeAt($cursor, $pid, $gens);
         $rows = 0;
         while ($at !== null) {
             list($n, $last) = $this->slicePage($pid, $at['gen'], $at['slot'], $at['after'], $limit);
@@ -204,7 +206,8 @@ final class ScanRetention
             $at = self::nextSlice($at, $gens);
             if ($n > 0) break;                 // one UPDATE per call
         }
-        return ['runs' => $runs, 'rows' => $rows, 'done' => $at === null, 'cursor' => $at];
+        return ['runs' => $runs, 'rows' => $rows, 'done' => $at === null,
+                'cursor' => $at === null ? null : self::issued($at, $pid, $gens)];
     }
 
     /**
@@ -446,25 +449,51 @@ final class ScanRetention
     /**
      * Where a revocation picks up: the caller's cursor, or the first slice.
      *
-     * A cursor naming a generation no longer on the list (its run was purged
-     * in between) moves to the next one; a cursor that is not one of ours
-     * starts again, which clears nothing twice that is still there to clear.
+     * A CURSOR IS TRUSTED ONLY FOR THE PROJECT AND THE GENERATIONS IT WAS
+     * ISSUED FOR (review R8-3). Every row of a slice at or below `after` is
+     * skipped, and the cursor was a bare {gen, slot, after}: another project's
+     * cursor named a generation number this project also has, its `after` was
+     * a finding id above all of this project's rows in it, and the walk
+     * answered done after one call with every preview still stored - unread,
+     * the bump saw to that, but at rest. Likewise a cursor whose generation
+     * had gone moved on past every generation below it. So the cursor carries
+     * the project and a digest of the generation list it was walking, and one
+     * that does not match both starts again from the first slice. Starting
+     * again clears nothing twice and skips nothing: rows already cleared are
+     * walked past, a page at a time.
+     *
+     * The digest is a check against a cursor handed to the wrong project or
+     * kept past a change in what is being revoked, not against forgery: the
+     * cursor is the caller's own server-side state.
      */
-    private static function revokeAt($cursor, array $gens)
+    private static function revokeAt($cursor, $pid, array $gens)
     {
         if (!$gens) return null;
-        if (!is_array($cursor) || !isset($cursor['gen'], $cursor['slot'], $cursor['after'])) {
-            return ['gen' => $gens[0], 'slot' => 1, 'after' => 0];
+        $first = ['gen' => $gens[0], 'slot' => 1, 'after' => 0];
+        if (!is_array($cursor) || !isset($cursor['pid'], $cursor['set'], $cursor['gen'],
+                                         $cursor['slot'], $cursor['after'])) {
+            return $first;
         }
-        $gen = (int) $cursor['gen'];
-        foreach ($gens as $g) {
-            if ($g === $gen) {
-                return ['gen' => $g, 'slot' => (int) $cursor['slot'] ? 1 : 0,
-                        'after' => max(0, (int) $cursor['after'])];
-            }
-            if ($g > $gen) return ['gen' => $g, 'slot' => 1, 'after' => 0];
+        if ((int) $cursor['pid'] !== (int) $pid || !is_string($cursor['set'])
+                || !hash_equals(self::genSet($pid, $gens), $cursor['set'])
+                || !in_array((int) $cursor['gen'], $gens, true)) {
+            return $first;
         }
-        return null;
+        return ['gen' => (int) $cursor['gen'], 'slot' => (int) $cursor['slot'] ? 1 : 0,
+                'after' => max(0, (int) $cursor['after'])];
+    }
+
+    /** A cursor as this class hands it out: where to resume, and what for. */
+    private static function issued(array $at, $pid, array $gens)
+    {
+        return ['pid' => (int) $pid, 'set' => self::genSet($pid, $gens),
+                'gen' => $at['gen'], 'slot' => $at['slot'], 'after' => $at['after']];
+    }
+
+    /** The digest of the generations a revocation of $pid is walking. */
+    private static function genSet($pid, array $gens)
+    {
+        return substr(hash('sha256', (int) $pid . ':' . implode(',', $gens)), 0, 16);
     }
 
     /** Active rows, then closed rows, then the next generation; null at the end. */
