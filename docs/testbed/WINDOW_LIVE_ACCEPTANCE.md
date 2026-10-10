@@ -7,10 +7,11 @@ D-M-Y and M-D-Y date fields that ships with it. The automated suites
 real REDCap date inputs, real save paths and the real server clock.
 
 Target: chpr-redcap.org pid 149 (longitudinal, event and instance references
-enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 19
+enabled). Fixture: [`uvwindow_test_fields.csv`](uvwindow_test_fields.csv), 22
 fields on one new instrument `uv_window_test`. Every annotation in it was run
-through the module offline before this sheet was written: the 14 rule fields
-configure, and the 5 `uw_bad_*` fields show the errors listed in section F.
+through the module offline before this sheet was written: the 17 other fields
+configure (`uw_utc` only while the project's time zone is not behind UTC, see
+H5), and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 ---
 
@@ -18,8 +19,8 @@ configure, and the 5 `uw_bad_*` fields show the errors listed in section F.
 
 1. Deploy the release that contains `@UVWINDOW` and confirm the version in
    Control Center.
-2. **Append, never replace.** Download the current dictionary, append the 19
-   rows of the CSV, upload. The diff must report one new instrument and 19 new
+2. **Append, never replace.** Download the current dictionary, append the 22
+   rows of the CSV, upload. The diff must report one new instrument and 22 new
    fields, and nothing else.
 3. Designate `uv_window_test` on `event_1_arm_1` (same event as `xe_enrol`,
    so `uw_offpage` reads the consent date from another form of the same event).
@@ -118,6 +119,16 @@ Each field shows a visible error and checks nothing:
 | G2 | On XE-2, type 15-03-2026 in `uw_uniq_dmy` and leave the field | "This value is already recorded (record XE-1)." Before this release the answer was "Not used before." |
 | G3 | On XE-2, type 16-03-2026 | "Not used before." |
 
+## Section H: clock margin, stored dates in conditions, time zones
+
+| # | Action | Expect |
+|---|---|---|
+| H1 | Set the computer clock 5 minutes fast, reload, click REDCap's Now button beside `uw_now_hard`, press Save | Green OK, and the save goes through: the page allows a date and time up to the computer's own time. Restore the clock after |
+| H2 | `uw_now_hard` = the server's time plus 10 minutes, press Save | "This date and time is in the future."; save blocked |
+| H3 | `uw_anchor` = 2026-03-01, `uw_dmy` = 06-03-2026, `uw_when_dmy` = 2026-03-12 | Red, window late: the condition reads 06-03-2026 as 2026-03-06, as REDCap stores it. Before this release the rule stayed off |
+| H4 | `uw_dmy` = 31-12-2025 | The `uw_when_dmy` message disappears |
+| H5 | Set the project setting Time zone for @UVWINDOW "notFuture" to `America/New_York` and open the form | `uw_utc` shows a configuration error naming UTC and America/New_York. Set `Africa/Douala` and reload, and the error is gone. Clear the setting after |
+
 ---
 
 ## Sign-off
@@ -130,6 +141,7 @@ Each field shows a visible error and checks nothing:
 | 4 | D5/D6: no anchor value reaches a survey or a user without rights | ☐ |
 | 5 | Section E: audit and scan agree with the browser | ☐ |
 | 6 | Section G: the D-M-Y duplicate is found live | ☐ |
+| 7 | Section H: the Now button passes, D-M-Y conditions compare stored dates, a UTC default is refused where it would read as future | ☐ |
 
 ## Cleanup
 

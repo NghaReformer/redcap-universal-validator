@@ -1368,13 +1368,35 @@ Without the feature, `from` must be a field of the same event.
   Put both dates on one page to check the window as they are entered.
 - **A `from` entry that does not exist yet** (no row in that event, no such
   instance) counts as a blank `from` date: nothing is checked until it is saved.
+- **`notFuture` does not need the `from` date.** A `from` date that cannot be
+  read, or a reference that cannot be resolved (an instance of a repeating form
+  that the rule does not name), stops only the window part. `notFuture` is still
+  checked on the page, after saving and in the scan; staff see why the window is
+  not checked, and the post-save audit logs it as not checked.
+- **A plain `from` field must share an event with the tagged field.** `[field]`
+  reads the same event. If no event collects both forms, the rule is refused:
+  name the event, as `[baseline_arm_1][visit_date]`.
 - **Today is the server's date.** The page gets the server clock when it opens
   and moves it forward while it stays open, so a wrong computer clock cannot
   accept tomorrow's date and a form left open past midnight moves to the next
   day. A computer clock moved forward while the form is open moves it too; the
   post-save audit reads the server clock and still logs the date. The date is
   taken in the server's time zone unless the project setting **Time zone for
-  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`.
+  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. A page left
+  open across a daylight-saving change follows it.
+- **A date and time gets a small margin on the page.** It may run up to 120
+  seconds past the server's "now", or up to the computer's own time when that is
+  later (by at most 26 hours), so REDCap's Now button and `@NOW`, which use the
+  computer's clock, are not refused on a computer whose clock is a little fast.
+  A date has no margin, and the post-save audit and the scan compare exactly.
+- **One time zone per project.** `@NOW` and `@TODAY` fill in the computer's
+  time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
+  server's. `notFuture` on a field filled by one of the last four is refused when
+  that zone runs ahead of the rule's time zone at any time of the year: in New
+  York, a UTC "now" is five hours in the future.
+- **Hours and minutes count wall-clock time.** `"window":[0,6],"unit":"hours"`
+  compares the times as written, so across a daylight-saving change the window
+  spans 5 or 7 hours of elapsed time.
 - **The server checks every save.** The post-save audit logs a violation as
   `type: window` with reason `window-early`, `window-late` or `future`. Saving
   only the form that holds the `from` date re-checks the windows counted from it.

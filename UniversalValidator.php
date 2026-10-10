@@ -4351,7 +4351,7 @@ class UniversalValidator extends AbstractExternalModule
                 return ['error' => '"notFuture" cannot be judged on a field filled by @' . $tm[1] . '-' . $tm[2] . ': that value is '
                     . $fillZone->getName() . ' time, which runs ahead of the time this rule compares with ('
                     . $compZone->getName() . '), so it would read as in the future. Fill the field with @' . $tm[1]
-                    . ', or set the project setting "Time zone for @UVWINDOW notFuture" to ' . $fillZone->getName() . '.',
+                    . ', or set the project setting Time zone for @UVWINDOW "notFuture" to ' . $fillZone->getName() . '.',
                     '_tag' => AnnotationRules::TAG_WINDOW];
             }
         }
