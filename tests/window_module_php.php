@@ -235,6 +235,29 @@ namespace {
         (bool) array_filter($u, function ($e) { return $e['fields'] === 'v_end' && strpos($e['why'], 'not a date this rule can read') !== false; }));
     check('audit: ...and never logged as a violation', !array_filter(findings($m), function ($e) { return $e['field'] === 'v_end'; }));
 
+    // An unreadable "from" date stops the window part only: "notFuture" does not
+    // need it, so a future date is still a finding.
+    $NF = $DICT;
+    $NF['nf_end'] = f('visit_form', '@UVWINDOW={"from":"[v_start]","window":[0,7],"notFuture":true}', 'date_ymd');
+    $nfData = $DATA; $nfData['2'][351]['v_start'] = '2026-02-30'; $nfData['2'][351]['nf_end'] = '2026-10-10';
+    $m = mod($NF, $nfData, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    $nf = array_values(array_filter(findings($m), function ($e) { return $e['field'] === 'nf_end'; }));
+    check('audit: an unreadable "from" date still lets notFuture flag a future date', count($nf) === 1 && $nf[0]['reason'] === 'future');
+    $nfData['2'][351]['nf_end'] = '2026-01-05';
+    $m = mod($NF, $nfData, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    check('audit: ...a past date is reported as not checked, not passed',
+        !array_filter(findings($m), function ($e) { return $e['field'] === 'nf_end'; })
+        && (bool) array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) {
+            return $e['fields'] === 'nf_end' && strpos($e['why'], 'the window was not checked (the date is not in the future)') !== false; }));
+    $nfData['2'][351]['nf_end'] = '2026-02-31';
+    $m = mod($NF, $nfData, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    check('audit: ...an unreadable value too is skipped, without claiming it is not in the future',
+        (bool) array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) {
+            return $e['fields'] === 'nf_end' && strpos($e['why'], 'field skipped') !== false; }));
+
     // ---- 4) reverse dependency: saving only the "from" form re-checks the window ---
     $m = mod($DICT, $DATA, $FULL, 'nurse');
     $m->redcap_save_record(149, '2', 'baseline_form', 351, null, null, null, 1);

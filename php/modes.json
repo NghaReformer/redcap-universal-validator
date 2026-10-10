@@ -8,7 +8,12 @@
     "refKeys kinds: cond = a condition string (role gate = decides whether the rule applies, role test =",
     "the verdict itself); fieldList = a list of field names the rule reads; operand = one field reference whose",
     "value the verdict reads (op = the key the browser gets the folded operand under, value = the key the",
-    "server's extended compile writes the resolved value to).",
+    "server's extended compile writes the resolved value to). An operand's optional withholdIf names a rule key:",
+    "when that key is true and the operand cannot be resolved, only the operand is withheld (the page checks what",
+    "does not need it and says why the rest is not checked, under <op>Why; the audit judges the rest and logs",
+    "the operand's part as not checked) instead of the whole rule being switched off.",
+    "snapshotAdvisory (optional): the mode's page factory turns only the parts that read a snapshot advisory",
+    "(snapshotFields), so the extended path keeps the rule's blockSave unless a condition read a snapshot.",
     "serverKeys (optional): keys the server needs and the page must not carry; they are removed from every",
     "rule and branch before the page config is written (ModeRegistry::clientShape)."
   ],
@@ -166,11 +171,13 @@
       "evaluator": "findingsWindow",
       "missingCodes": "skip",
       "refKeys": [
-        {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue"}
+        {"key": "windowFrom", "kind": "operand", "role": "test", "op": "windowFromOp", "value": "windowFromValue",
+         "withholdIf": "windowNotFuture"}
       ],
+      "snapshotAdvisory": true,
       "branchKeys": ["windowFrom", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
                      "dateType", "dateFormat", "fromType", "fromFormat"],
-      "clientKeys": ["windowFrom", "windowFromOp", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
+      "clientKeys": ["windowFrom", "windowFromOp", "windowFromOpWhy", "windowLo", "windowHi", "windowUnit", "windowNotFuture",
                      "dateType", "dateFormat", "fromType", "fromFormat",
                      "blockSave", "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields"],
       "needs": ["clock"],

@@ -86,7 +86,8 @@ final class ModeRegistry
             foreach ($m['refKeys'] as $rk) {
                 if (!isset($rk['key'], $rk['kind']) || !in_array($rk['kind'], ['cond', 'fieldList', 'operand'], true)
                     || ($rk['kind'] === 'operand' && (!isset($rk['op'], $rk['value'])
-                        || !is_string($rk['op']) || !is_string($rk['value'])))) {
+                        || !is_string($rk['op']) || !is_string($rk['value'])))
+                    || (isset($rk['withholdIf']) && (!is_string($rk['withholdIf']) || $rk['kind'] !== 'operand'))) {
                     throw new \RuntimeException('mode "' . $m['mode'] . '" has a malformed refKeys entry');
                 }
             }
@@ -294,6 +295,26 @@ final class ModeRegistry
     public static function hasAlgorithm($mode)
     {
         return !empty(self::mode($mode)['hasAlgorithm']);
+    }
+
+    /**
+     * Whether an operand that cannot be resolved is withheld rather than
+     * switching the rule off: its refKeys entry names a rule key
+     * ("withholdIf") that is true on $rule (a rule or one branch).
+     */
+    public static function withholds(array $rk, array $rule)
+    {
+        return isset($rk['withholdIf']) && !empty($rule[$rk['withholdIf']]);
+    }
+
+    /**
+     * Whether a mode's page factory turns only the parts of a rule that read a
+     * snapshot advisory (modes.json "snapshotAdvisory"), so the extended path
+     * need not turn the whole rule's blockSave off.
+     */
+    public static function snapshotAdvisory($mode)
+    {
+        return !empty(self::mode($mode)['snapshotAdvisory']);
     }
 
     /** Whether the module's Configure dialog can set up rules of this mode. */

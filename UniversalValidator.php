@@ -2069,33 +2069,36 @@ class UniversalValidator extends AbstractExternalModule
     {
         $out = ['invalid' => [], 'unconfigurable' => []];
         $anchor = null;
+        // A "from" date that cannot be read: the window part is not checked
+        // ($fromWhy says why), and "notFuture", which does not need it, still is.
+        $fromWhy = null;
         if (isset($rule['windowFrom']) && is_string($rule['windowFrom']) && $rule['windowFrom'] !== '') {
             if (array_key_exists('windowFromValue', $rule)) {
                 // Compiled on the extended (event/instance) path, which resolved it.
                 $anchor = $rule['windowFromValue'];
-                if (!is_string($anchor)) {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                        'why' => 'the "from" date ' . $rule['windowFrom'] . ' could not be resolved — field skipped'];
-                    return $out;
-                }
+                if (!is_string($anchor)) $fromWhy = 'the "from" date ' . $rule['windowFrom'] . ' could not be resolved';
             } else {
                 $op = ModeRegistry::operandRef($rule['windowFrom']);
+                $state = $op === null ? null : (isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok');
                 if ($op === null) {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => 'the "from" date cannot be evaluated — field skipped'];
+                    $fromWhy = 'the "from" date cannot be evaluated';
+                } elseif ($state !== 'ok') {
+                    $fromWhy = 'the "from" date ' . self::resolutionProblem($state, $op[1]);
+                } else {
+                    $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
+                    $anchor = is_array($v) ? '' : (string) $v;
+                }
+            }
+            if ($fromWhy !== null) {
+                if (empty($rule['windowNotFuture'])) {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'], 'why' => $fromWhy . ' — field skipped'];
                     return $out;
                 }
-                $state = isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok';
-                if ($state !== 'ok') {
-                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                        'why' => 'the "from" date ' . self::resolutionProblem($state, $op[1])];
-                    return $out;
-                }
-                $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
-                $anchor = is_array($v) ? '' : (string) $v;
+                $anchor = false;
             }
             // A "from" date marked with a Missing Data Code was not entered:
             // there is nothing to count from, as with a blank one.
-            if (self::isMissingCode($anchor, $this->missingDataCodes($project_id))) $anchor = '';
+            if (is_string($anchor) && self::isMissingCode($anchor, $this->missingDataCodes($project_id))) $anchor = '';
         }
         $spec = [
             'lo' => isset($rule['windowLo']) ? $rule['windowLo'] : null,
@@ -2117,8 +2120,16 @@ class UniversalValidator extends AbstractExternalModule
             if ($value === null || is_array($value)) continue;
             $r = TemporalLogic::windowVerdict($spec, (string) $value, 'ymd', $self === $field ? '' : $anchor, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
-                $out['unconfigurable'][] = ['fields' => [$field],
-                    'why' => 'the saved date or its "from" date is not a date this rule can read — field skipped'];
+                if ($fromWhy !== null) {
+                    $why = $fromWhy . ' — the window was not checked (the date is not in the future)';
+                } elseif ($spec['notFuture'] && $clock !== null
+                          && TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok') {
+                    // The value was read and is not in the future: only the window part is unknown.
+                    $why = 'the "from" date is not a date this rule can read — the window was not checked (the date is not in the future)';
+                } else {
+                    $why = 'the saved date or its "from" date is not a date this rule can read — field skipped';
+                }
+                $out['unconfigurable'][] = ['fields' => [$field], 'why' => $why];
                 continue;
             }
             if ($r['verdict'] === 'ok' || $r['verdict'] === 'inert') continue;
@@ -2946,13 +2957,21 @@ class UniversalValidator extends AbstractExternalModule
         //                      The rule stays live for what does not need it
         //                      ("notFuture"); the browser says the rest is
         //                      checked after saving.
-        $foldOperand = function ($text) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
+        // $withhold (ModeRegistry::withholds): the rule checks something that
+        // does not need this operand (@UVWINDOW "notFuture"), so an unresolved
+        // one is withheld, with its reason ('withheldWhy'), and the rule stays live.
+        $foldOperand = function ($text, $withhold = false) use ($live, $values, $disclosable, $unresolved, $unknownForm) {
             $out = ['op' => null, 'deferred' => true, 'why' => [], 'snapshot' => []];
             $op = ModeRegistry::operandRef($text);
             if ($op === null) return $out;
             $f = (string) $op[1];
             if (isset($unresolved[$f])) {
                 $out['why'][$f . '|' . $unresolved[$f]] = self::resolutionProblem($unresolved[$f], $f);
+                if ($withhold) {
+                    $out['op'] = ['withheld'];
+                    $out['deferred'] = false;
+                    $out['withheldWhy'] = true;
+                }
                 return $out;
             }
             if ($unknownForm) return $out;
@@ -3007,10 +3026,11 @@ class UniversalValidator extends AbstractExternalModule
             }
             foreach (ModeRegistry::operandKeys() as $rk) {
                 if (!isset($r[$rk['key']])) continue;
-                $fo = $foldOperand($r[$rk['key']]);
+                $fo = $foldOperand($r[$rk['key']], ModeRegistry::withholds($rk, $r));
                 if ($fo['op'] !== null) $rules[$i][$rk['op']] = $fo['op'];
                 if ($fo['deferred']) $rules[$i]['deferred'] = true;
-                foreach ($fo['why'] as $wk => $wt) $notes[$i][$wk] = $wt;
+                if (!empty($fo['withheldWhy'])) $rules[$i][$rk['op'] . 'Why'] = array_values($fo['why']);
+                else foreach ($fo['why'] as $wk => $wt) $notes[$i][$wk] = $wt;
                 foreach ($fo['snapshot'] as $sf => $_) $snapFields[$sf] = true;
             }
             if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
@@ -3058,10 +3078,11 @@ class UniversalValidator extends AbstractExternalModule
                     }
                     foreach (ModeRegistry::operandKeys() as $rk) {
                         if (!isset($b[$rk['key']])) continue;
-                        $fo = $foldOperand($b[$rk['key']]);
+                        $fo = $foldOperand($b[$rk['key']], ModeRegistry::withholds($rk, $b));
                         if ($fo['op'] !== null) $rules[$i]['branches'][$bi][$rk['op']] = $fo['op'];
                         if ($fo['deferred']) $rules[$i]['branches'][$bi]['deferred'] = true;
-                        foreach ($fo['why'] as $wk => $wt) { $bWhy[$wk] = $wt; $notes[$i][$wk] = $wt; }
+                        if (!empty($fo['withheldWhy'])) $rules[$i]['branches'][$bi][$rk['op'] . 'Why'] = array_values($fo['why']);
+                        else foreach ($fo['why'] as $wk => $wt) { $bWhy[$wk] = $wt; $notes[$i][$wk] = $wt; }
                         foreach ($fo['snapshot'] as $sf => $_) $bSnap[$sf] = true;
                     }
                     // M-01: branch configs never inherit rule-level keys on the

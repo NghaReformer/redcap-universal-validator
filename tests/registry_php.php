@@ -92,7 +92,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'uniqueWith', 'uniqueScope', 'uniqueSurveys', 'uniqueRecordAsts',
     'choicesShow', 'choicesHide', 'choicesAll',
     // 2.2.0 @UVWINDOW
-    'windowFrom', 'windowFromOp', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
+    'windowFrom', 'windowFromOp', 'windowFromOpWhy', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
     'existsLocal', 'existsSurveys',

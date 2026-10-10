@@ -241,10 +241,21 @@ final class TemporalRules
         //    browser checks only what does not depend on it.
         //  - One that is the host field itself, in this same entry, is marked: a field is
         //    never judged against its own value (on the browser the live ref names it).
+        // Whether a condition read a snapshot: then the whole rule's verdict may be stale.
+        $condSnapshot=$snapshot;
         foreach(self::operands($rule) as list($rk,$op)){
             if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $r=$resolver->resolve($op,$context);
             if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
+            //  - One that cannot be resolved, of a rule that checks something without it
+            //    (ModeRegistry::withholds: @UVWINDOW "notFuture"), is withheld with its
+            //    reason, and the rule stays live for the rest.
+            if(!isset($r['members'])&&($r['state']??null)!=='ok'&&ModeRegistry::withholds($rk,$rule)){
+                $why='Extended reference unavailable: '.($r['state']??'unreadable').'.';
+                if($browser){$compiled[$rk['op']]=['withheld'];$compiled[$rk['op'].'Why']=[$why];}
+                else{$compiled[$rk['value']]=null;$compiled[$rk['value'].'Why']=$why;}
+                continue;
+            }
             if(isset($r['members'])){$problems[]='invalid';$node=['unknown'];}
             elseif(($r['state']??null)==='ok'&&$browser&&empty($r['self'])&&$mayRead&&!$mayRead($r['location']['instrument']??null))$node=['withheld'];
             else $node=$member($r);
@@ -261,8 +272,15 @@ final class TemporalRules
         }
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
-        // extendedAdvisory: the same "never blocks here" for a mode with no blockSave of its own (@UVRANGE)
-        if($browser){unset($compiled['references']);$compiled['blockSave']='off';$compiled['extendedAdvisory']=true;}
+        // extendedAdvisory: the same "never blocks here" for a mode with no blockSave of its own (@UVRANGE).
+        // A mode whose page turns only its snapshot parts advisory (ModeRegistry::snapshotAdvisory:
+        // @UVWINDOW, whose "notFuture" reads the live field alone) keeps its blockSave when no
+        // condition read a snapshot.
+        if($browser){
+            unset($compiled['references']);
+            if(!(ModeRegistry::snapshotAdvisory(ModeRegistry::modeOfType($rule['type']??''))&&!$condSnapshot&&!$denied))$compiled['blockSave']='off';
+            $compiled['extendedAdvisory']=true;
+        }
         return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];
     }
 }

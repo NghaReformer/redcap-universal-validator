@@ -400,6 +400,28 @@ const realNow = Date.now;
     v.value = '2026-10-10'; v.fire('change');
     check('withheld on a survey: notFuture still judged', /after today/.test(msg.innerHTML) && !/enrol_date/.test(msg.innerHTML));
   }
+  {
+    // A "from" the server could not resolve: the reason is shown, and notFuture still runs.
+    const v = dateEl('fu_date', '2026-01-01');
+    const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
+      rules: [withheldRule({ windowNotFuture: true, windowFromOpWhy: ['Extended reference unavailable: ambiguous.'] })] });
+    const msg = wMsg(env, 'fu_date');
+    check('unresolved "from": staff see why the window is not checked', /is not being checked/.test(msg.innerHTML)
+      && /ambiguous/.test(msg.innerHTML) && /not checked after saving either/.test(msg.innerHTML)
+      && /after today is still flagged/.test(msg.innerHTML) && !/This rule is not being checked/.test(msg.innerHTML));
+    let ev = submitEv(); env.doc.fire('submit', ev);
+    check('unresolved "from": the window part never blocks', ev._prevented === false && v.getAttribute('aria-invalid') === null);
+    v.value = '2026-10-10'; v.fire('change');
+    check('unresolved "from": notFuture is still judged', /after today \(2026-10-09\)/.test(msg.innerHTML));
+    ev = submitEv(); env.doc.fire('submit', ev);
+    check('unresolved "from": a future date is still blocked', ev._prevented === true);
+  }
+  {
+    const v = dateEl('fu_date', '2026-01-01');
+    const env = boot([v], { context: 'survey', clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
+      rules: [withheldRule({ windowNotFuture: true, windowFromOpWhy: ['Extended reference unavailable: ambiguous.'] })] });
+    check('unresolved "from" on a survey: silent', !shown(wMsg(env, 'fu_date')));
+  }
 }
 
 // ---- 13) "future" keeps its block when the window part is a snapshot ------------

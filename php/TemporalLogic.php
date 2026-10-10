@@ -164,17 +164,24 @@ final class TemporalLogic
         $hi = isset($spec['hi']) ? $spec['hi'] : null;
         $windowReason = null;
         $checked = false;
-        if (($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
-            $checked = true;
+        // The window part cannot be judged: its anchor is unavailable ($anchor
+        // false: unresolved, or not sent), unreadable, or of another kind. That
+        // never stops "notFuture", which does not depend on it.
+        $windowUnknown = false;
+        if (($lo !== null || $hi !== null) && $anchor === false) {
+            $windowUnknown = true;
+        } elseif (($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
             $fromType = isset($spec['fromType']) ? $spec['fromType'] : null;
             $a = TemporalValue::parse(trim($anchor, " \t\r\n"), $fromType, $anchorFormat);
             $unit = isset($spec['unit']) ? $spec['unit'] : 'days';
             if ($a['state'] !== 'ok' || TemporalValue::family($type) !== TemporalValue::family($fromType)
                 || !is_string($unit) || !isset(self::WINDOW_UNITS[$unit])
                 || (TemporalValue::family($type) === 'date' && !in_array($unit, ['days', 'weeks'], true))) {
-                $out['verdict'] = 'unknown';
-                return $out;
+                $windowUnknown = true;
             }
+        }
+        if (!$windowUnknown && ($lo !== null || $hi !== null) && $anchor !== null && is_string($anchor) && !self::blank($anchor)) {
+            $checked = true;
             $u = self::WINDOW_UNITS[$unit];
             // A field without seconds reads its anchor to the minute too, so the
             // bounds it is judged by are the bounds its message can show.
@@ -189,14 +196,16 @@ final class TemporalLogic
             $today = is_array($clock) && isset($clock['today']) ? $clock['today'] : null;
             $now = is_array($clock) && isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
             if (!is_string($today) || !preg_match('/^\d{4}-\d{2}-\d{2}$/D', $today) || !$now || $now['state'] !== 'ok') {
-                $out['verdict'] = 'unknown';
+                // No clock: a window the value broke is still a finding.
+                $out['verdict'] = $windowReason !== null ? $windowReason : 'unknown';
                 return $out;
             }
             $checked = true;
             $future = $v['type'] === 'date' ? strcmp($v['value'], $today) > 0 : $v['seconds'] > $now['seconds'];
             if ($future) { $out['verdict'] = 'future'; return $out; }
         }
-        if ($windowReason !== null) $out['verdict'] = $windowReason;
+        if ($windowUnknown) $out['verdict'] = 'unknown';
+        elseif ($windowReason !== null) $out['verdict'] = $windowReason;
         elseif (!$checked) $out['verdict'] = 'inert';
         return $out;
     }

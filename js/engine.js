@@ -1465,12 +1465,18 @@ function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
   var v=QRID_temporalDate(QRID_whenTrim(value),type,valueFormat);
   if(!v){out.verdict='unknown';return out;}
   var lo=spec.lo==null?null:spec.lo,hi=spec.hi==null?null:spec.hi,windowReason=null,checked=false;
-  if((lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
-    checked=true;
-    var fromType=spec.fromType==null?null:spec.fromType,unit=spec.unit==null?'days':spec.unit;
-    var a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
+  /* The window part cannot be judged (anchor false: unresolved or not sent;
+     unreadable; of another kind). That never stops "notFuture". */
+  var windowUnknown=false,a=null,unit=null;
+  if((lo!==null||hi!==null)&&anchor===false)windowUnknown=true;
+  else if((lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
+    var fromType=spec.fromType==null?null:spec.fromType;unit=spec.unit==null?'days':spec.unit;
+    a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
     if(!a||QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||typeof unit!=='string'||QRID_WINDOW_UNITS[unit]===undefined
-       ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks')){out.verdict='unknown';return out;}
+       ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks'))windowUnknown=true;
+  }
+  if(!windowUnknown&&(lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
+    checked=true;
     var u=QRID_WINDOW_UNITS[unit];
     if(type==='datetime')a.seconds-=((a.seconds%60)+60)%60;   /* read to the minute, as the field is */
     var diff=v.seconds-a.seconds;
@@ -1482,11 +1488,13 @@ function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
   if(spec.notFuture){
     var today=clock&&typeof clock==='object'&&clock.today!=null?clock.today:null;
     var now=clock&&typeof clock==='object'&&clock.now!=null?QRID_temporalDate(String(clock.now),'datetime_seconds','ymd'):null;
-    if(typeof today!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(today)||!now){out.verdict='unknown';return out;}
+    /* No clock: a window the value broke is still a finding. */
+    if(typeof today!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(today)||!now){out.verdict=windowReason!==null?windowReason:'unknown';return out;}
     checked=true;
     if(v.date==='date'?v.value>today:v.seconds>now.seconds){out.verdict='future';return out;}
   }
-  if(windowReason!==null)out.verdict=windowReason;
+  if(windowUnknown)out.verdict='unknown';
+  else if(windowReason!==null)out.verdict=windowReason;
   else if(!checked)out.verdict='inert';   /* a blank anchor and no notFuture: nothing was checked */
   return out;
 }
@@ -3465,6 +3473,9 @@ function QRIDWindowInit(QRID_CONFIG){
                 anchor (which turns blockSave off) does not soften it. */
              futureBlock: BLOCK,
              windowWithheld: !!(fromOp && fromOp[0] === "withheld"),
+             /* why a withheld "from" date was withheld when it was not for rights:
+                it could not be resolved (the server's windowFromOpWhy) */
+             withheldWhy: (cfg.windowFromOpWhy && cfg.windowFromOpWhy.length) ? cfg.windowFromOpWhy : null,
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
@@ -3548,6 +3559,18 @@ function QRIDWindowInit(QRID_CONFIG){
        on save; a survey respondent is told nothing. */
     function withheld(V){
       if(QRID_IS_SURVEY){ inert(); return; }
+      if(V.withheldWhy){
+        /* The "from" date cannot be resolved: the window part is checked
+           nowhere, but a date after today is still judged. */
+        msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+          "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+        msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
+          " is not being checked — " + QRID_escapeHtml(V.withheldWhy.join(" ")) +
+          " It is not checked after saving either; the study team needs to correct the rule." +
+          " A date after today is still flagged.";
+        setGuard(false); QRID_setModeState(input, "w", null);
+        return;
+      }
       msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
         "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
       msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
@@ -5704,16 +5727,17 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
                       "message", "deferred", "deferredWhy", "snapshotFields", "uniqueWith",
                       "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
-                      "choicesHide", "choicesAll", "windowFrom", "windowFromOp", "windowLo",
-                      "windowHi", "windowUnit", "windowNotFuture", "dateType", "dateFormat",
-                      "fromType", "fromFormat", "existsLocal", "existsSurveys", "rangeSoftLo",
-                      "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock",
-                      "rangeHardBlock", "rangeUnit", "rangeSoftText", "rangeHardText",
-                      "decimalComma", "rangeComputed", "rangeReference", "rangeSexOp",
-                      "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
-                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
-                      "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
-                      "deferredOnSave", "extendedAdvisory"];
+                      "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
+                      "windowFromOpWhy", "windowLo", "windowHi", "windowUnit",
+                      "windowNotFuture", "dateType", "dateFormat", "fromType", "fromFormat",
+                      "existsLocal", "existsSurveys", "rangeSoftLo", "rangeSoftHi",
+                      "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
+                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",
+                      "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
+                      "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
+                      "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
+                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "deferredOnSave",
+                      "extendedAdvisory"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

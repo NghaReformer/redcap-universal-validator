@@ -436,7 +436,10 @@ namespace {
     $m=$win();$p=render($m,'fa');$r=ruleOf($p,'a_val');
     check('window from another event: no configuration error, not deferred',$r&&empty($r['configError'])&&empty($r['deferred']));
     check('window from another event: the saved anchor is a snapshot literal',($r['windowFromOp']??null)===['lit','2026-01-01']);
-    check('window from another event: advisory in the browser',($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
+    // The page turns the window part advisory (snapshotFields); "notFuture" reads the
+    // live field, so the rule keeps its blockSave for it.
+    check('window from another event: the window part is advisory in the browser, notFuture keeps the block',
+        ($r['blockSave']??null)==='hard'&&!empty($r['snapshotFields']));
     $res=$m->scanProject(PID);
     $reasons=array_column($res['violations'],'reason');sort($reasons);
     check('window from another event: the scan finds the early and the late entry',$reasons===['window-early','window-late']&&!$res['unconfigurable']);
@@ -462,6 +465,34 @@ namespace {
     check('...nor on save',!invalid($m)&&!unconf($m));
     $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$r=ruleOf(render($m,'fa'),'a_val');
     check('...and the page gets a blank anchor, not a deferral',$r&&empty($r['deferred'])&&($r['windowFromOp']??null)===['lit','']);
+    // "notFuture" does not need the "from" date. A "from" that cannot be resolved
+    // ([baseline_arm_1][b_open] names a repeating form with no instance) leaves the
+    // rule live for "notFuture", on the page and after saving.
+    $amb='@UVWINDOW={"from":"[baseline_arm_1][b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}';
+    $m=$win($amb);$r=ruleOf(render($m,'fa'),'a_val');
+    check('unresolved "from" with notFuture: the rule stays live, the "from" withheld with its reason',
+        $r&&empty($r['deferred'])&&($r['windowFromOp']??null)===['withheld']&&!empty($r['windowFromOpWhy'])&&($r['blockSave']??null)==='hard');
+    $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2099-01-01';
+    $res=$m->scanProject(PID);
+    check('unresolved "from" with notFuture: the scan still finds a future date',array_column($res['violations'],'reason')===['future']);
+    check('...and says the window was not checked for the other entries',count($res['unconfigurable'])>=1
+        &&strpos(json_encode($res['unconfigurable']),'window was not checked')!==false);
+    $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2099-01-01';$m->redcap_save_record(PID,'1','fa',1,1);
+    check('unresolved "from" with notFuture: the audit flags the future date',array_map(function($c){return $c[1]['reason'];},invalid($m))===['future']);
+    $m=$win(str_replace(',"notFuture":true','',$amb));$r=ruleOf(render($m,'fa'),'a_val');
+    check('unresolved "from" without notFuture: deferred, as before',$r&&!empty($r['deferred']));
+    // A plain "from" on another repeating form: the same, on the page path.
+    $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}');$r=ruleOf(render($m,'fa'),'a_val');
+    check('plain "from" on another repeating form, with notFuture: withheld with its reason, rule live',
+        $r&&empty($r['deferred'])&&($r['windowFromOp']??null)===['withheld']
+        &&strpos(json_encode($r['windowFromOpWhy']??[]),'different repeating instrument')!==false);
+    $m=$win('@UVWINDOW={"from":"[b_open]","window":[21,35],"notFuture":true,"blockSave":"hard"}');
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2099-01-01';$m->redcap_save_record(PID,'1','fa',1,1);
+    check('plain "from" on another repeating form: the audit flags a future date',array_map(function($c){return $c[1]['reason'];},invalid($m))===['future']);
+    // A "when" that reads another event is a stale gate: then the whole rule is advisory.
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"notFuture":true,"blockSave":"hard","when":"[baseline_arm_1][b_open][2]<>\'\'"}');
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('window with a "when" from another event: advisory in the browser',$r&&($r['blockSave']??null)==='off');
     // A "from" that is the host field itself on one of its entries: that entry is
     // never judged against its own value; the other entries are.
     $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');
