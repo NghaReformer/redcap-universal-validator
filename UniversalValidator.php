@@ -5270,7 +5270,9 @@ class UniversalValidator extends AbstractExternalModule
      * looks like good news.
      *
      * @return array{ok:bool, why:?string, plan:?array, evaluate:?callable,
-     *               read:?callable, rules:array, ownership:array, problems:array}
+     *               read:?callable, rules:array, ownership:array, problems:array,
+     *               verifyFingerprint?:bool, structure?:array, choices?:array}
+     *         the last three on success only (scanStructureFacts())
      */
     public function durableScanContext($pid, array $opts = [], $dagFilter = null)
     {
@@ -5394,10 +5396,138 @@ class UniversalValidator extends AbstractExternalModule
         // `ruleProblems` term had nothing to read and `clean` quietly meant "no
         // findings". array_values because the keys are the dedupe (rule|reason),
         // not data anything downstream should depend on.
+        //
+        // THE PROJECT'S DESIGN TRAVELS TOO (review M8): the structure and the
+        // choice sets are two of the fingerprint's inputs, and this return
+        // carried only the temporal digest - [] on a project with no
+        // event/instance rule - and no choices at all. The guard that ends a
+        // run when the project changes underneath it compared two empty
+        // arrays, so a field's validation or a radio's codes could change
+        // between two requests of one run and the run finished against both.
+        $facts = $this->scanStructureFacts($pid, $plan);
         return ['ok' => true, 'why' => null, 'plan' => $plan, 'evaluate' => $evaluate,
                 'read' => $read, 'rules' => $plan['live'], 'ownership' => $ownership,
-                'verifyFingerprint' => true, 'structure' => $this->temporalScanStructure($pid, $plan['live']),
+                'verifyFingerprint' => true, 'structure' => $facts['structure'],
+                'choices' => $facts['choices'],
                 'problems' => self::problemList($plan['unconf'])];
+    }
+
+    /**
+     * The project's design as the fingerprint guard compares it (review M8):
+     * the structure and the choice sets a work request rebuilds and
+     * ScanService::configurationNow() checks against the run's stored
+     * fingerprint.
+     *
+     * WHAT DECIDES A FINDING, AND NOTHING ELSE. Per field, only the fields the
+     * run reads: a field it reads cannot move instrument, change type or
+     * change validation, and a choice field it reads cannot change its codes,
+     * without ending the run; a field it never reads can be added or edited
+     * freely. The instrument-event mapping and the repeating setup are the
+     * project's, because they decide which contexts every rule is judged in.
+     * The Missing Data Codes are the project's, because a value that is one is
+     * not entered. Labels are left out; codes are sorted, because their order
+     * on the form decides nothing.
+     *
+     * FROM \Project, NOT FROM THE REDCap STATICS. getInstrumentEventMappings()
+     * and its siblings answer from the request's ambient project, which a cron
+     * request does not have; two requests of one run that read the same design
+     * two ways would end it for nothing.
+     *
+     * UNREADABLE IS A VALUE, never an empty list. A part of the project object
+     * that could not be read is recorded as 'unreadable', so a run started on
+     * a read that failed and worked on one that succeeded ends - the
+     * fail-closed direction - while an empty list stays what a project with
+     * nothing there reads as. The dictionary needs no such marker: scanPlan()
+     * has refused the run already when it cannot be read.
+     *
+     * The temporal digest stays as temporalScanStructure() gives it, at the top
+     * level: it covers the whole dictionary, and only for a project that has an
+     * event/instance rule.
+     *
+     * @return array{structure:array, choices:array}
+     */
+    private function scanStructureFacts($pid, array $plan)
+    {
+        $readSet = (isset($plan['readSet']) && is_array($plan['readSet'])) ? array_keys($plan['readSet']) : [];
+        // The dictionary was read: scanPlan() refuses the run when it cannot
+        // be, and dataDictionary() keeps a successful read for the request.
+        $dd = $this->dataDictionary($pid) ?: [];
+        $fields = [];
+        foreach ($readSet as $f) {
+            $f = (string) $f;
+            // A form's status field (fb_complete) is read and is not in the
+            // dictionary; neither is a field that was deleted.
+            if (!isset($dd[$f]) || !is_array($dd[$f])) {
+                $fields[$f] = 'absent';
+                continue;
+            }
+            $meta = $dd[$f];
+            $fields[$f] = [
+                'form' => isset($meta['form_name']) ? (string) $meta['form_name'] : '',
+                'type' => isset($meta['field_type']) ? (string) $meta['field_type'] : '',
+                'validation' => self::validationOf($meta)];
+        }
+
+        $longitudinal = 'unreadable';
+        $events = 'unreadable';
+        $repeating = 'unreadable';
+        $project = $this->projectObject($pid);
+        if ($project !== null) {
+            if (isset($project->longitudinal)) $longitudinal = (bool) $project->longitudinal;
+            // event id => the instruments designated to it.
+            if (isset($project->eventsForms) && is_array($project->eventsForms)) {
+                $events = [];
+                foreach ($project->eventsForms as $ev => $forms) {
+                    $events[(string) $ev] = self::sortedNames(is_array($forms) ? $forms : []);
+                }
+            }
+            // event id => 'WHOLE' for a repeating event, else its repeating
+            // instruments ([form => custom label] in REDCap's answer).
+            try {
+                if (is_callable([$project, 'getRepeatingFormsEvents'])) {
+                    $map = $project->getRepeatingFormsEvents();
+                    if (is_array($map)) {
+                        $repeating = [];
+                        foreach ($map as $ev => $node) {
+                            if (!is_array($node)) {
+                                $repeating[(string) $ev] = is_scalar($node) ? (string) $node : 'unreadable';
+                                continue;
+                            }
+                            $forms = [];
+                            foreach ($node as $k => $v) $forms[] = is_int($k) ? $v : $k;
+                            $repeating[(string) $ev] = self::sortedNames($forms);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                $repeating = 'unreadable';
+            }
+        }
+
+        $sets = $this->projectFieldChoices($pid) ?: [];
+        $codes = [];
+        foreach ($readSet as $f) {
+            if (isset($sets[$f]) && is_array($sets[$f])) $codes[(string) $f] = self::sortedNames($sets[$f]);
+        }
+        $missing = (isset($plan['missingCodes']) && is_array($plan['missingCodes']))
+                 ? array_keys($plan['missingCodes']) : [];
+
+        return [
+            'structure' => array_merge($this->temporalScanStructure($pid, $plan['live']), [
+                'fields' => $fields, 'longitudinal' => $longitudinal,
+                'events' => $events, 'repeating' => $repeating]),
+            'choices' => ['fields' => $codes, 'missing' => self::sortedNames($missing)],
+        ];
+    }
+
+    /** Scalar names as distinct strings in byte order, so a list's order is no part of a comparison. */
+    private static function sortedNames(array $names)
+    {
+        $out = [];
+        foreach ($names as $n) if (is_scalar($n)) $out[(string) $n] = true;
+        $out = array_map('strval', array_keys($out));
+        sort($out, SORT_STRING);
+        return $out;
     }
 
     /**

@@ -610,6 +610,10 @@ namespace {
         public $problems = [];
         /** @var bool whether the context asks the service to compare fingerprints */
         public $verifyFingerprint = true;
+        /** @var array the project's design as durableScanContext() reports it (M8) */
+        public $structure = [];
+        /** @var array the choice sets it reports beside it */
+        public $choices = [];
         /** @var array the lookups into other projects the plan says the rules make */
         public $crossLookups = [];
         /** @var array pid => true: the other project refuses the reader, by decision */
@@ -655,7 +659,7 @@ namespace {
             $self = $this;
             return ['ok' => true, 'why' => null,
                 'rules' => [['type' => 'required', 'fields' => ['a_val']]],
-                'ownership' => ['a_val' => 'fa'], 'structure' => [],
+                'ownership' => ['a_val' => 'fa'], 'structure' => $this->structure, 'choices' => $this->choices,
                 'problems' => $this->problems,
                 'verifyFingerprint' => $this->verifyFingerprint,
                 'plan' => ['hostFields' => ['a_val' => ['fa' => true]], 'crossRefused' => [], 'crossUnread' => [],
@@ -2581,6 +2585,54 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('B10: work requests list the rest through the planner the service binds, and freeze it',
         $listed === 1500 && (int) $bs->run(161, $bid)['manifest_total'] === 2500
         && $bs->run(161, $bid)['phase'] !== ScanPhase::PLANNING);
+}
+
+/* =====================================================================
+ * M8  A PROJECT REDESIGNED UNDER A RUNNING SCAN ENDS IT
+ *
+ * Through ScanService: start() fingerprints the structure and choice sets
+ * durableScanContext() reports (tests/scan_entitlement_php.php proves where
+ * they come from), and every work request builds them again. A design that
+ * moved between two requests ends the run failed, with the sentence; one
+ * that did not lets the run finish.
+ * ===================================================================== */
+{
+    $design = ['fields' => ['a_val' => ['form' => 'fa', 'type' => 'text', 'validation' => '']],
+               'longitudinal' => false, 'events' => ['1' => ['fa']], 'repeating' => []];
+    $codes = ['fields' => [], 'missing' => ['UNK']];
+    $drive = function ($pid, $change) use ($design, $codes) {
+        $store = new ArrayScanStore();
+        $m = new \E2eModule($store);
+        $m->structure = $design;
+        $m->choices = $codes;
+        $runId = (int) (new ScanService($m, $store))->start($pid)['run_id'];
+        $change($m);
+        $first = null;
+        for ($i = 0; $i < 10 && $store->run($pid, $runId)['terminal'] === null; $i++) {
+            $w = (new ScanService($m, $store))->work($pid, $runId);
+            if ($first === null) $first = $w;
+        }
+        return [$store->run($pid, $runId), $first];
+    };
+    list($same, ) = $drive(170, function ($m) {});
+    check('M8: an unchanged project lets the run finish',
+        $same['terminal'] === ScanOutcome::COMPLETE && (int) $same['manifest_done'] === 3);
+    list($row, $w) = $drive(171, function ($m) {
+        $m->structure['fields']['a_val']['validation'] = 'integer';
+    });
+    check('M8: a read field given a validation between two requests ends the run failed, with the sentence',
+        empty($w['ok']) && $w['why'] === ScanService::CONFIG_CHANGED && $w['phase'] === ScanPhase::TERMINAL
+        && $row['terminal'] === ScanOutcome::FAILED && (int) $row['manifest_done'] === 0);
+    list($row, $w) = $drive(172, function ($m) {
+        $m->choices['missing'][] = 'NA';
+    });
+    check('M8: so does a Missing Data Code added between them',
+        $w['why'] === ScanService::CONFIG_CHANGED && $row['terminal'] === ScanOutcome::FAILED);
+    list($row, $w) = $drive(173, function ($m) {
+        $m->structure['events']['2'] = ['fa'];
+    });
+    check('M8: and an instrument designated to a new event',
+        $w['why'] === ScanService::CONFIG_CHANGED && $row['terminal'] === ScanOutcome::FAILED);
 }
 }
 

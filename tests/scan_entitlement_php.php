@@ -100,6 +100,30 @@ namespace {
         public static function getUserRights($pid = null, $u = null) { return []; }
     }
 
+    /**
+     * REDCap's \Project, for the M8 block. It refuses to be built until a case
+     * hands it a design, so every other block sees what it saw before this
+     * stub existed: no project object.
+     */
+    class Project {
+        public static $design = null;
+        public $longitudinal;
+        public $eventsForms;
+        public $project = [];
+        private $repeating;
+        public function __construct($pid) {
+            if (self::$design === null) throw new \RuntimeException('no project in this block');
+            $this->longitudinal = self::$design['longitudinal'];
+            $this->eventsForms = self::$design['eventsForms'];
+            $this->repeating = self::$design['repeating'];
+            $this->project = ['missing_data_codes' => self::$design['missing']];
+        }
+        public function getRepeatingFormsEvents() {
+            if ($this->repeating === 'throw') throw new \RuntimeException('repeating setup unavailable');
+            return $this->repeating;
+        }
+    }
+
     require_once __DIR__ . '/../UniversalValidator.php';
     require_once __DIR__ . '/scan_run_row.php';
 
@@ -657,6 +681,90 @@ namespace {
         check('P1 plan: a capability answer the caller already has is used, not probed again',
             $capped['ok'] === true && $capped['plan']['policy']['mayScan'] === false
             && strpos(implode(' ', $capped['plan']['policy']['limits']), 'GIVEN') !== false);
+    }
+
+    /* =====================================================================
+     * M8  THE FINGERPRINT GUARD COMPARES THE PROJECT'S DESIGN
+     *
+     * durableScanContext() handed the guard a structure that was [] on every
+     * project without an event/instance rule, and no choice sets at all, so a
+     * work request rebuilt the same two empty arrays whatever had changed.
+     * Each case changes one thing about the project between two contexts and
+     * asks whether the fingerprint ScanService::configurationNow() builds from
+     * them moved: it must for what decides a finding, and must not for
+     * anything else.
+     * ===================================================================== */
+    {
+        $design = ['longitudinal' => true,
+                   'eventsForms' => [41 => ['fa', 'fb'], 42 => ['fa']],
+                   'repeating' => [42 => ['fa' => null]],
+                   'missing' => 'UNK, Unknown'];
+        $radio = function ($choices) {
+            return array_merge(fld('fb', '', 'radio'), ['select_choices_or_calculations' => $choices]);
+        };
+        $dict = ['record_id' => fld('fa'),
+                 'a_val' => fld('fa', '@UVREQUIRED={"when":"[b_pick] = \'1\'"}'),
+                 'b_pick' => $radio('1, Yes | 2, No'),
+                 'c_other' => fld('fc')];
+        $fpOf = function ($d, array $dict) {
+            \Project::$design = $d;
+            $p = planOf($dict);
+            \Project::$design = null;
+            $ctx = $p['ctx'];
+            return ['ctx' => $ctx, 'fp' => \INSPIRE\UniversalValidator\Scan\ScanPlanner::requestFingerprint([
+                'rules' => $ctx['rules'], 'ownership' => $ctx['ownership'],
+                'structure' => isset($ctx['structure']) ? $ctx['structure'] : [],
+                'choices' => isset($ctx['choices']) ? $ctx['choices'] : [],
+                'policy' => [], 'engine' => 'e'])];
+        };
+        $was = $fpOf($design, $dict);
+        $moved = function ($d, array $dict) use ($fpOf, $was) { return $fpOf($d, $dict)['fp'] !== $was['fp']; };
+        $s = $was['ctx']['structure'];
+        $c = $was['ctx']['choices'];
+        check('M8: the context carries the design of the fields the run reads',
+            $was['ctx']['ok'] === true && $s['fields']['a_val'] === ['form' => 'fa', 'type' => 'text', 'validation' => '']
+            && $s['fields']['b_pick']['type'] === 'radio' && !isset($s['fields']['c_other']));
+        check('M8: and the project\'s events, their instruments and what repeats',
+            $s['longitudinal'] === true && $s['events'] === ['41' => ['fa', 'fb'], '42' => ['fa']]
+            && $s['repeating'] === ['42' => ['fa']]);
+        check('M8: and the codes of the choice fields it reads, and the Missing Data Codes',
+            $c === ['fields' => ['b_pick' => ['1', '2']], 'missing' => ['UNK']]);
+        check('M8: an unchanged project builds the same fingerprint', !$moved($design, $dict));
+
+        $d2 = $dict;
+        $d2['a_val']['text_validation_type_or_show_slider_number'] = 'integer';
+        check('M8: a read field given a validation moves it', $moved($design, $d2));
+        $d2 = $dict;
+        $d2['a_val']['field_type'] = 'notes';
+        check('M8: so does a read field changing type', $moved($design, $d2));
+        $d2 = $dict;
+        $d2['b_pick'] = $radio('1, Yes | 2, No | 3, Maybe');
+        check('M8: so does a code added to a choice field the run reads', $moved($design, $d2));
+        check('M8: so does an instrument added to an event',
+            $moved(array_merge($design, ['eventsForms' => [41 => ['fa', 'fb'], 42 => ['fa', 'fb']]]), $dict));
+        check('M8: so does an event made to repeat whole',
+            $moved(array_merge($design, ['repeating' => [42 => 'WHOLE']]), $dict));
+        check('M8: so does an instrument that stops repeating',
+            $moved(array_merge($design, ['repeating' => []]), $dict));
+        check('M8: so does a Missing Data Code added',
+            $moved(array_merge($design, ['missing' => "UNK, Unknown\nNA, Not applicable"]), $dict));
+        check('M8: so does a project that could not be read at one end',
+            $moved(null, $dict) && $fpOf(null, $dict)['fp'] === $fpOf(null, $dict)['fp']);
+        check('M8: and a repeating setup that could not be read is not one where nothing repeats',
+            $fpOf(array_merge($design, ['repeating' => []]), $dict)['fp']
+            !== $fpOf(array_merge($design, ['repeating' => 'throw']), $dict)['fp']);
+
+        $d2 = $dict;
+        $d2['c_other']['text_validation_type_or_show_slider_number'] = 'date_ymd';
+        $d2['d_new'] = fld('fc');
+        check('M8: a field the run never reads can be edited, or added, without moving it',
+            !$moved($design, $d2));
+        $d2 = $dict;
+        $d2['b_pick'] = $radio('2, No | 1, Yes, please');
+        check('M8: nor do a choice field\'s labels, or the order its codes are shown in',
+            !$moved($design, $d2));
+        check('M8: nor the order REDCap lists an event\'s instruments in',
+            !$moved(array_merge($design, ['eventsForms' => [42 => ['fa'], 41 => ['fb', 'fa']]]), $dict));
     }
 
     echo "scan_entitlement_php: $n checks, $fail failure(s)\n";
