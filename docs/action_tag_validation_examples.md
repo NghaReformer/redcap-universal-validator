@@ -1,6 +1,6 @@
 # Action Tag Validation Examples
 
-A worked, parameter-by-parameter guide to the five action tags of the **Universal
+A worked, parameter-by-parameter guide to the action tags of the **Universal
 Field Validator** module (current implementation). Every tag is shown from its
 simplest form to its most complete, with the meaning of each option and what the
 person entering data will see.
@@ -8,20 +8,23 @@ person entering data will see.
 **Where you type these:** the *Action Tags / Field Annotation* box of a field in the
 Online Designer, or the `field_annotation` column of a data dictionary CSV. Tagging
 50 fields is one spreadsheet column and one upload. Everything here is also available
-in the module's Configure dialog — the tags and the dialog are the same rules through
-different doors, and they mix freely.
+in the module's Configure dialog, except `@UVCHOICES`, `@UVWINDOW`, `@UVEXISTS` and `@UVRANGE`. The tags and
+the dialog are the same rules through different doors, and they mix freely.
 
 ---
 
 ## Contents
 
-- [The five tags at a glance](#the-five-tags-at-a-glance)
+- [The tags at a glance](#the-tags-at-a-glance)
 - [Rules that apply to every tag](#rules-that-apply-to-every-tag)
 - [`@UVALIDATE` — check characters and format](#uvalidate--check-characters-and-format)
 - [`@UVASSERT` — cross-field constraints](#uvassert--cross-field-constraints)
 - [`@UVREQUIRED` — conditional required](#uvrequired--conditional-required)
 - [`@UVUNIQUE` — no duplicates across records](#uvunique--no-duplicates-across-records)
 - [`@UVCHOICES` — dropdowns and autocomplete](#uvchoices--dropdowns-autocomplete-radio-and-checkbox-choices)
+- [`@UVWINDOW` — dates within a window](#uvwindow--dates-within-a-window)
+- [`@UVEXISTS` — values that must already exist](#uvexists--values-that-must-already-exist)
+- [`@UVRANGE` — numbers within plausible limits](#uvrange--numbers-within-plausible-limits)
 - [Several ID formats (`alternates`)](#several-formats-on-one-field-alternates)
 - [Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)
 - [Combining tags on one field](#combining-tags-on-one-field)
@@ -32,6 +35,9 @@ different doors, and they mix freely.
   - [`@UVASSERT` recipes](#uvassert-recipes)
   - [`@UVREQUIRED` recipes](#uvrequired-recipes)
   - [`@UVUNIQUE` recipes](#uvunique-recipes)
+  - [`@UVWINDOW` recipes](#uvwindow-recipes)
+  - [`@UVEXISTS` recipes](#uvexists-recipes)
+  - [`@UVRANGE` recipes](#uvrange-recipes)
   - [Combination recipes](#combination-recipes)
 - [Tags the module refuses](#tags-the-module-refuses)
 - [The Configure dialog, setting by setting](#the-configure-dialog-setting-by-setting)
@@ -40,7 +46,7 @@ different doors, and they mix freely.
 
 ---
 
-## The five tags at a glance
+## The tags at a glance
 
 | Tag             | What it checks                                                                  | Field types it may sit on                                      |
 | --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
@@ -49,6 +55,9 @@ different doors, and they mix freely.
 | `@UVREQUIRED` | The field is**not blank**, optionally only while a condition is true      | Same as above,**minus calc**                             |
 | `@UVUNIQUE`   | The value is**not used by another record**                                | Same as above,**minus calc**                             |
 | `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
+| `@UVWINDOW`   | A date falls **within a window** around another date, or is not after today | Text with date, datetime or datetime-with-seconds validation   |
+| `@UVEXISTS`   | The value is **already saved** in the project: a record ID, or a value of another field | Text, dropdown, radio, SQL                                     |
+| `@UVRANGE`    | A number lies **within usual and plausible limits** (two levels of warning) | Text with no, integer or number validation, calc, slider       |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -58,7 +67,7 @@ by condition). Both are covered below.
 
 ## Rules that apply to every tag
 
-Learn these once and all five tags behave predictably.
+Learn these once and every tag behaves predictably.
 
 **Three value forms.** Every tag accepts a bare form, a short form, and a JSON form:
 
@@ -78,7 +87,8 @@ quotes *inside* a JSON string, which is exactly why the outer quoting must be do
 non-compiling regex — each shows a configuration error on the tagged field and names
 the problem. The module never fails silently.
 
-**`blockSave` is how strongly you enforce.** Available on all five tags:
+**`blockSave` is how strongly you enforce.** Available on every tag except
+`@UVRANGE`, which sets each of its two levels with `softBlock` and `hardBlock`:
 
 | Value                 | Behavior                                         | Dialog label  |
 | --------------------- | ------------------------------------------------ | ------------- |
@@ -211,6 +221,12 @@ Pattern rules worth knowing:
   quantifiers (`.*.*`, `[0-9]*[0-9]*`). The fix: put a required, non-overlapping piece
   between quantifiers, or use bounded `{n}` counts. `.*x.*`, `[A-Z]+[0-9]+`, `FC[0-9]{4}`
   all pass.
+- **`{,n}` and quantifiers with spaces are rejected** (`FC[0-9]{,4}`, `[0-9]{2, 3}`).
+  The browser reads them as literal text and PHP 8.4 reads them as counts, so the two
+  would disagree. Write `{0,4}` or `{2,3}`, or escape the brace (`\{`) when you mean
+  the text.
+- **Escaped separators count.** In a pooled rule, a character the pattern spells out
+  is kept while the field is cleaned, whether it is written plain or escaped (`\/`, `\:`).
 
 ### Level 5 — pattern *and* check character together
 
@@ -249,8 +265,7 @@ slash, space, underscore, pipe and backslash — so `TBABC-00239` checks as `TBA
 without configuration. Unicode dashes in *values* are unified automatically; `strip`
 itself must be printable ASCII.
 
-`keepChars` (pooled rules only) lists extra characters to keep while a pooled field is
-cleaned. Before splitting, a pooled value keeps only `A-Z`, `0-9`, the characters the
+`keepChars` lists extra characters to keep while a pooled field is cleaned. Before splitting, a pooled value keeps only `A-Z`, `0-9`, the characters the
 pattern itself spells out (such as `-`), and the check algorithm's own special
 characters. Everything else, including spaces, commas and new lines, is removed.
 Name a character in `keepChars` when it is part of an ID and nothing else protects it:
@@ -267,7 +282,15 @@ Name a character in `keepChars` when it is part of an ID and nothing else protec
 ]}
 ```
 
-`keepChars` takes up to 64 printable ASCII characters.
+```text expect
+OL00029* NW00042U     =>  valid: OL00029*, NW00042U
+OL12345M              =>  valid: OL12345M
+OL12345*              =>  refused: check-character
+```
+
+`keepChars` takes up to 64 printable ASCII characters. The save check also compares
+kept characters in a one-ID `alternates` rule, so such a rule may need `keepChars` too,
+even though a one-ID field is never split (see [Recipe 5](#recipe-5-formats-with-different-separators)).
 
 ### Level 8 — pooled fields (many IDs in one box)
 
@@ -290,6 +313,8 @@ A pooled rule reads several IDs from one field.
 two real IDs, and the parser could not tell the difference. The same applies to exact
 lengths: `[4,5,9]` is rejected because 9 = 4 + 5. Narrow the range, set exact lengths,
 or split into separate fields. This is checked when you save, not discovered on a form.
+With `alternates`, the check runs over the lengths of every entry together; see
+[When IDs cannot share one pooled field](#when-ids-cannot-share-one-pooled-field).
 
 ### Level 9 — conditional, labeled, with a fix hint
 
@@ -306,52 +331,538 @@ or split into separate fields. This is checked when you save, not discovered on 
 
 ### Several formats on one field (`alternates`)
 
-Use one `alternates` list when the **entered ID itself** determines its format.
-Each entry has its own regex and check-character algorithm; a value is valid when
-one complete alternate passes. This differs from repeated tags with `when`, where
-another answer chooses the rule. Do not create several unconditional `@UVALIDATE`
-tags to express alternatives: those tags conflict.
+Use one `alternates` list when the entered ID itself shows which format it is.
+Each entry has its own pattern and its own check-character algorithm, and a value is
+valid when one complete entry accepts it. When another answer decides the format
+(the country, the study arm), write one tag per answer with `when` instead; see
+[Recipe 10](#recipe-10-another-answer-picks-the-format-list). Several unconditional
+`@UVALIDATE` tags on one field conflict, so never use them as alternatives.
+
+#### How a value is matched to a format
+
+1. **Check-bearing entries come first.** If the value fits the pattern of any entry
+   that has a check character, it must pass that check character. A wrong check
+   character is reported as a check-character error, and the value is not tried
+   against the format-only entries.
+2. **Format-only entries are tried only when no check-bearing pattern fits.** When
+   several format-only patterns fit, the first one listed is credited.
+3. **Order cannot weaken rule 1.** Listing a format-only entry first does not let it
+   take a value that a check-bearing pattern fits.
+4. **A pooled field applies the same rules to each member**, separately at each
+   declared length.
+
+The rule is checked when it is saved. A format-only pattern that can match a value a
+check-bearing pattern also matches is refused (in a pooled rule, only at a length both
+entries declare). Rule 1 catches a mis-scan that keeps the check-bearing shape. A
+mis-scan that breaks the shape, such as an `O` read for a `0` or a dropped character,
+would otherwise fall into the overlapping format-only pattern and pass on format
+alone. [Rules refused when saved](#rules-refused-when-saved) lists every refusal with
+its message.
+
+#### Reading the tested values
+
+Each recipe is followed by a block of tested values. The left side of `=>` is what is
+typed or scanned, with `\n` marking a new line. The right side is the verdict:
+
+| Result                       | Meaning                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `valid`                      | A one-ID field accepted the value.                                                        |
+| `valid: ID, ID, ...`         | A pooled field accepted the value. These are the members it read, in order.               |
+| `refused: format`            | One-ID field: no entry's pattern fits.                                                    |
+| `refused: check-character`   | The value fits a check-bearing pattern but its check character is wrong (pooled: at least one member). |
+| `refused: junk`              | Pooled: characters that belong to no ID were left over.                                   |
+| `refused: duplicate`         | Pooled: the same ID appears twice.                                                        |
+| `refused: no-id`             | Pooled: no ID could be read at all.                                                       |
+| `refused: count`             | Pooled: the number of IDs differs from `expectedIds`.                                     |
+
+CI runs every tested value through the server verdict and through the browser engine,
+and fails when either result differs from the one printed here.
+
+#### Recipe 1: one ID per field, several studies
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736"},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736"}
+]}
+```
+
+```text expect
+FC1-0589      =>  valid
+SK2-0019I     =>  valid
+DT1-00151N    =>  valid
+ST3-00042S    =>  valid
+dt1-00151n    =>  valid
+SK2-0019A     =>  refused: check-character
+DT1-00151     =>  refused: format
+FC1-05899     =>  refused: format
+XX1-0001      =>  refused: format
+```
+
+`GHIT` checks format only. The other three also verify ISO 7064 Mod 37,36, so a value
+that fits their pattern with the wrong last character is refused. `strip:"-"` removes
+the hyphen before the check character is computed; the pattern still sees it. A
+one-ID rule needs no `lengths`.
+
+#### Recipe 2: the same studies, many IDs in one field
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+]}
+```
+
+```text expect
+FC1-0589 SK2-0019I DT1-00151N ST3-00042S        =>  valid: FC1-0589, SK2-0019I, DT1-00151N, ST3-00042S
+FC1-0589SK2-0019IDT1-00151N                     =>  valid: FC1-0589, SK2-0019I, DT1-00151N
+FC1-0589, SK2-0019I; DT1-00151N\nST3-00042S     =>  valid: FC1-0589, SK2-0019I, DT1-00151N, ST3-00042S
+FC1-0589 SK2-0019A                              =>  refused: check-character
+FC1-0589 SK2-0019I FC1-0589                     =>  refused: duplicate
+FC1-0589 SK2-001 DT1-00151N                     =>  refused: junk
+FC1-0589-SK2-0019I                              =>  refused: junk
+hello                                           =>  refused: no-id, junk
+```
+
+Every pooled entry needs `lengths`: the length of its IDs including the characters
+its pattern spells out, such as the hyphen. The lengths here are 8, 9, 10 and 10.
+IDs may be separated by spaces, commas, semicolons or new lines, or scanned back to
+back. A character that any pattern contains (the `-` here) is kept while the field is
+cleaned, so typing it between IDs leaves junk.
+
+#### Recipe 3: same length, with and without a check character
+
+A viral-load field takes three kinds of ID: `C`-`Z` codes that carry a check character,
+legacy `A`/`B` codes that do not, and retired `VLB-` barcodes. The first two are both
+six characters long. They can share that length because no value fits both patterns.
 
 One ID per field:
 
 ```text
 @UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
-  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
-  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736"},
-  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736"}
+  {"label":"Viral load ID (check character)","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"Legacy viral load ID (A/B)","pattern":"[AB][0-9]{5}","algorithm":"none"},
+  {"label":"Retired VLB barcode","pattern":"VLB-[0-9]{5}","algorithm":"none"}
 ]}
 ```
 
-Several IDs in a Text or Notes field, including a mixture of studies:
+```text expect
+C12348        =>  valid
+Z0007D        =>  valid
+A12345        =>  valid
+B00001        =>  valid
+VLB-00012     =>  valid
+VLB–00012     =>  valid
+vlb-00012     =>  valid
+C1234A        =>  refused: check-character
+C12345        =>  refused: check-character
+O12345        =>  refused: check-character
+VLB00012      =>  refused: format
+AB1234        =>  refused: format
+```
+
+`O12345` is a legacy ID mis-scanned with the letter `O` for the digit `0`. It fits
+the `C`-`Z` pattern, so it must pass that check character, and it does not. The
+en dash in `VLB–00012` is read as a hyphen.
+
+Several IDs in one field:
 
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
-  {"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB","pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB","pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+  {"label":"Viral load ID (check character)","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},
+  {"label":"Legacy viral load ID (A/B)","pattern":"[AB][0-9]{5}","algorithm":"none","lengths":[6]},
+  {"label":"Retired VLB barcode","pattern":"VLB-[0-9]{5}","algorithm":"none","lengths":[9]}
 ]}
 ```
 
-`GHIT` checks format only; the other three also verify ISO 7064 MOD 37,36.
-A matching regex alone does not make their final character valid.
+```text expect
+C12348 A12345 VLB-00012      =>  valid: C12348, A12345, VLB-00012
+C12348Z0007D                 =>  valid: C12348, Z0007D
+A12345B00001                 =>  valid: A12345, B00001
+VLB-00012VLB-00013           =>  valid: VLB-00012, VLB-00013
+VLB–00012,C12348             =>  valid: VLB-00012, C12348
+C12348;C1234A                =>  refused: check-character
+C12348 O12345                =>  refused: check-character
+A12345 A12345                =>  refused: duplicate
+VLB00012 A12345              =>  refused: junk
+C12348-A12345                =>  refused: junk
+```
 
-| Alternate key         | Meaning                                                                                                                                                               |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `label`             | Human-readable format name in validation feedback.                                                                                                                    |
-| `pattern`           | Required whole-ID regex, checked before separator stripping.                                                                                                          |
-| `algorithm`         | This format's algorithm; inherits the rule's algorithm when omitted. Use`none` explicitly for format-only IDs.                                                      |
-| `source`, `strip` | Optional per-format overrides of the rule's normalization settings.                                                                                                   |
-| `lengths`           | Required for each pooled alternate: candidate lengths including characters retained by its pattern, such as the hyphen in these examples. Omit for a single-ID field. |
+`VLB00012` lost its hyphen, so it fits no pattern and is reported as junk. To accept
+VLB codes without the hyphen, write that entry as `"pattern":"VLB-?[0-9]{5}"` with
+`"lengths":[8,9]`.
 
-The lengths above are **8, 9, 10 and 10**, including the hyphen. `strip:"-"`
-removes that hyphen for the check-character calculation, not for the regex or pooled
-candidate length. Keep lengths inside the alternates; do not also set rule-level
-`idLengths`, `idMinLen`, `idMaxLen`, or `pattern`. An optional rule-level
-`expectedIds` requires that many valid members. Use a Notes field for longer lists.
-Put the most specific formats first if patterns overlap; each accepted member must
-pass one complete format. The existing pooled work limits and ambiguity checks apply.
+#### Recipe 4: one study, legacy IDs and checked IDs
+
+GHIT Cameroon IDs were first printed without a check character (`FC1-0589`); newer
+labels add one (`FC1-0589C`). Keep both readable:
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT (check character)","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}
+]}
+```
+
+```text expect
+FC1-0589C     =>  valid
+FC3-0179J     =>  valid
+FC9-1200      =>  valid
+FC1-0589A     =>  refused: check-character
+```
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT (check character)","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}
+]}
+```
+
+```text expect
+FC1-0589C FC3-0179J     =>  valid: FC1-0589C, FC3-0179J
+FC9-1200 FC1-0589C      =>  valid: FC9-1200, FC1-0589C
+FC1-0589A               =>  refused: junk
+FC1-0589                =>  valid: FC1-0589
+```
+
+The cost of keeping legacy IDs valid: a checked ID whose last character was dropped
+(`FC1-0589`) is itself a valid legacy ID, so it passes. In a pooled field, a checked
+ID with a wrong last character reads as the legacy ID plus one junk character, so the
+field is still refused, as junk rather than as a check-character error. Remove the
+legacy entry once every label in use carries a check character.
+
+#### Recipe 5: formats with different separators
+
+GHIT Nigeria IDs use a slash (`ZRC2/0123V`) where Cameroon IDs use a hyphen:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT Cameroon (legacy)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"GHIT Nigeria (legacy)","pattern":"ZRC[1-3]/[0-9]{4}","algorithm":"none","lengths":[9]}
+]}
+```
+
+```text expect
+FC1-0589C ZRC2/0123V        =>  valid: FC1-0589C, ZRC2/0123V
+ZRC1/0042U ZRC3/0001        =>  valid: ZRC1/0042U, ZRC3/0001
+FC9-1200,ZRC2/0123V         =>  valid: FC9-1200, ZRC2/0123V
+ZRC2/0123A                  =>  refused: junk
+FC1-0589C/ZRC2/0123V        =>  refused: junk
+ZRC1-0042U                  =>  refused: no-id, junk
+```
+
+Two settings make this work:
+
+- `strip:"-/"` removes both separators before the check character is computed. The
+  Nigeria check character was minted over `ZRC20123`, without the slash.
+- `keepChars:"/"` keeps the slash while the field is cleaned. Without it the rule is
+  refused, because cleaning runs once over the whole field and the Cameroon entries
+  would not otherwise keep `/`.
+
+A kept character cannot separate IDs: `/` between two IDs is junk.
+
+The one-ID version needs the same `keepChars`. A one-ID field is never split, but the
+save check compares the characters each entry keeps in every `alternates` rule:
+
+```text
+@UVALIDATE={"strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"}
+]}
+```
+
+```text expect
+FC1-0589C      =>  valid
+ZRC2/0123V     =>  valid
+ZRC2/0123A     =>  refused: check-character
+ZRC2-0123V     =>  refused: format
+```
+
+#### Recipe 6: a check alphabet with an extra character
+
+ISO 7064 Mod 37,2 can end an ID in `*`. When it shares a pooled field with an
+algorithm that cannot, declare `*` in `keepChars`; see the example under
+[Level 7](#level-7--separators-strip-keepchars).
+
+#### Recipe 7: more formats than the 8-entry limit
+
+A rule holds at most 8 entries. Several families with the same algorithm can share one
+entry through alternation (`(?:A|B)`). This field holds lab sample IDs from Wave11
+testing, RapidTB, Start4All, the three Phase 2 studies and GHIT Cameroon and Nigeria:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-/","keepChars":"/","blockSave":"hard","alternates":[
+  {"label":"Wave11 testing","pattern":"[1-8][A-Z]{3}-[0-9]{5}","algorithm":"none","lengths":[10]},
+  {"label":"RapidTB","pattern":"PP[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"Start4All","pattern":"SC[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"GHIT (check character)","pattern":"(?:FC[1-9]-[0-9]{4}|ZRC[1-3]/[0-9]{4})[0-9A-Z]","algorithm":"3736","lengths":[9,10]},
+  {"label":"GHIT (legacy, no check)","pattern":"FC[1-9]-[0-9]{4}|ZRC[1-3]/[0-9]{4}","algorithm":"none","lengths":[8,9]}
+]}
+```
+
+```text expect
+1KUM-00123 SC1-0001 PP6-1234 DT1-00151N ST3-00042S SK2-0019I FC1-0589C ZRC2/0123V FC3-0179 ZRC1/0042  =>  valid: 1KUM-00123, SC1-0001, PP6-1234, DT1-00151N, ST3-00042S, SK2-0019I, FC1-0589C, ZRC2/0123V, FC3-0179, ZRC1/0042
+1KUM-00123DT1-00151NFC1-0589CZRC1/0042PP2-0002SK2-0019I    =>  valid: 1KUM-00123, DT1-00151N, FC1-0589C, ZRC1/0042, PP2-0002, SK2-0019I
+1KUM-00123, DT1-00151N; ST3-00042S\nSK2-0019I  SC3-0042    =>  valid: 1KUM-00123, DT1-00151N, ST3-00042S, SK2-0019I, SC3-0042
+pp1-0001 1kum-00123 dt1-00151n                             =>  valid: PP1-0001, 1KUM-00123, DT1-00151N
+1KUM-00123 DT1-00151A SK2-0019A                            =>  refused: check-character
+1KUM-00123X                                                =>  refused: junk
+PP7-0001 SC0-0001                                          =>  refused: no-id, junk
+1KUM-00123 HSK1-0019                                       =>  refused: junk
+1KUM-00123 1KUM-00123                                      =>  refused: duplicate
+```
+
+Things to know about this rule:
+
+- An entry's `lengths` lists every length its pattern can produce. The GHIT entries
+  declare two each, one per country.
+- A merged entry has one label, so the field reports `GHIT (check character)` without
+  naming the country.
+- Wave11 testing IDs and DARE-TB/SCREEN-TB IDs are all 10 characters long. They share
+  that length safely because a Wave11 ID starts with a digit.
+- Healthcare-worker IDs (`HSK1-0019`) and pool IDs (`PXDT1-00011`) are refused as
+  junk. They need their own field, or the free entries of a smaller rule.
+- `1KUM-00123X` is a Wave11 screening ID. This field is for testing IDs, so the
+  extra `X` is junk.
+
+#### Recipe 8: per-format `source` and `strip`
+
+An entry's `source` and `strip` replace the rule-level value for that entry only. Here
+a lab number's Mod 11,10 check digit covers only its digits, while a TB register
+number's Mod 37,36 check covers the whole ID:
+
+```text
+@UVALIDATE={"blockSave":"hard","alternates":[
+  {"label":"Lab number","pattern":"LB-[0-9]{7}","algorithm":"mod11_10","source":"digits_only"},
+  {"label":"TB register","pattern":"TB[A-Z]{3}-[0-9]{5}[0-9A-Z]","algorithm":"3736","strip":"-"}
+]}
+```
+
+```text expect
+LB-1234568      =>  valid
+LB-1234567      =>  refused: check-character
+TBABC-002397    =>  valid
+TBABC-00239K    =>  refused: check-character
+LB-123456       =>  refused: format
+```
+
+#### Recipe 9: a fixed number of IDs (`expectedIds`)
+
+A pooled sample of exactly three Phase 2 participants:
+
+```text
+@UVALIDATE={"type":"pooled","strip":"-","expectedIds":3,"blockSave":"hard","alternates":[
+  {"label":"DARE-TB","pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREEN-TB","pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}
+]}
+```
+
+```text expect
+DT1-00151N DT7-00320B ST3-00042S              =>  valid: DT1-00151N, DT7-00320B, ST3-00042S
+DT1-00151N ST3-00042S                         =>  refused: count
+DT1-00151N DT7-00320B ST3-00042S ST9-10077Y   =>  refused: count
+DT1-00151N DT7-00320B ST3-00042A              =>  refused: check-character
+```
+
+#### Recipe 10: another answer picks the format list
+
+When the site's country, not the ID, decides which formats are allowed, write one tag
+per answer. Each tag can carry its own `alternates`:
+
+```text
+@UVALIDATE={"when":"[country]='1'","strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Cameroon (legacy)","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}
+]}
+@UVALIDATE={"when":"[country]='2'","strip":"-/","blockSave":"hard","alternates":[
+  {"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Nigeria (legacy)","pattern":"ZRC[1-3]/[0-9]{4}","algorithm":"none"}
+]}
+```
+
+A Nigerian ID entered for a Cameroon site is then refused, which one combined rule
+could not do. See [Branching](#branching--several-tags-of-the-same-kind).
+
+#### When IDs cannot share one pooled field
+
+A pooled field splits a run of characters by length. If one declared length equals the
+sum of two or more others, two short IDs scanned back to back could read as one long
+ID, so the rule is refused. GHIT Vietnam IDs are 10 to 21 characters long
+(`HN-PED-123Y` is 11, `GHIT-HCM-OPC-BTH-045W` is 21), and their own lengths already
+collide: 20 = 10 + 10. They can only be validated one ID per field:
+
+```text
+@UVALIDATE={"strip":"-","blockSave":"hard","alternates":[
+  {"label":"GHIT Vietnam (check character)","pattern":"(?:GHIT-CT-ACF-BT-[0-9]{3}|GHIT-HCM-OPC-(?:BTH|BD|BC|BT|CLA|CL|CK|THO|TH|TD|TP|AL|GV|HH|LX|MK|NL|PL|XC)-[0-9]{3}|HN-(?:HLH|NLH)-[0-9]{3}-[AB]|HN-PED-[0-9]{3}|HP-HPLH-[0-9]{3})[0-9A-Z]","algorithm":"3736"},
+  {"label":"GHIT Vietnam (legacy)","pattern":"GHIT-CT-ACF-BT-[0-9]{3}|GHIT-HCM-OPC-(?:BTH|BD|BC|BT|CLA|CL|CK|THO|TH|TD|TP|AL|GV|HH|LX|MK|NL|PL|XC)-[0-9]{3}|HN-(?:HLH|NLH)-[0-9]{3}-[AB]|HN-PED-[0-9]{3}|HP-HPLH-[0-9]{3}","algorithm":"none"}
+]}
+```
+
+```text expect
+HN-PED-123Y               =>  valid
+HN-HLH-007-AJ             =>  valid
+HP-HPLH-045G              =>  valid
+GHIT-HCM-OPC-BTH-045W     =>  valid
+GHIT-CT-ACF-BT-210X       =>  valid
+HN-PED-123                =>  valid
+HN-PED-123A               =>  refused: check-character
+GHIT-HCM-OPC-ZZ-045       =>  refused: format
+```
+
+#### Rules refused when saved
+
+Each of these shows a configuration error under the field and validates nothing until
+it is fixed. The `# refused:` line quotes the start of the message; CI checks that
+each rule is refused for that reason.
+
+```text invalid
+# A format-only pattern that can match a check-bearing ID. Narrow OLD to [AB][0-9]{5}.
+# refused: its pattern also accepts values meant for NEW
+@UVALIDATE={"alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"[A-Z][0-9]{5}","algorithm":"none"}]}
+
+# The same overlap in a pooled rule, at the length both entries declare.
+# refused: its pattern also accepts values meant for NEW
+@UVALIDATE={"type":"pooled","alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},{"label":"OLD","pattern":"[A-Z][0-9]{5}","algorithm":"none","lengths":[6]}]}
+
+# A backreference or lookaround the overlap test cannot settle. Write explicit classes.
+# refused: too complex to prove
+@UVALIDATE={"alternates":[{"label":"NEW","pattern":"(?=C)[A-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"(?!C)[A-Z][0-9]{5}","algorithm":"none"}]}
+
+# Pooled lengths where one is the sum of others (18 = 8 + 10). Split into separate fields.
+# refused: could swallow
+@UVALIDATE={"type":"pooled","alternates":[{"label":"RapidTB","pattern":"PP[1-6]-[0-9]{4}","algorithm":"none","lengths":[8]},{"label":"Vietnam PED","pattern":"HN-PED-[0-9]{3}","algorithm":"none","lengths":[10]},{"label":"Vietnam ACF","pattern":"GHIT-CT-ACF-BT-[0-9]{3}","algorithm":"none","lengths":[18]}]}
+
+# Nine entries. Merge families that share an algorithm (Recipe 7).
+# refused: at most 8 are supported
+@UVALIDATE={"alternates":[{"pattern":"A1[0-9]{4}","algorithm":"none"},{"pattern":"A2[0-9]{4}","algorithm":"none"},{"pattern":"A3[0-9]{4}","algorithm":"none"},{"pattern":"A4[0-9]{4}","algorithm":"none"},{"pattern":"A5[0-9]{4}","algorithm":"none"},{"pattern":"A6[0-9]{4}","algorithm":"none"},{"pattern":"A7[0-9]{4}","algorithm":"none"},{"pattern":"A8[0-9]{4}","algorithm":"none"},{"pattern":"A9[0-9]{4}","algorithm":"none"}]}
+
+# Pooled entries that keep different characters. Add "keepChars":"/" (Recipe 5).
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"type":"pooled","strip":"-/","alternates":[{"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},{"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+
+# One-ID rules are compared the same way. Add "keepChars":"/".
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"strip":"-/","alternates":[{"label":"GHIT Cameroon","pattern":"FC[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"GHIT Nigeria","pattern":"ZRC[1-3]/[0-9]{4}[0-9A-Z]","algorithm":"3736"}]}
+
+# An escaped separator is kept like a plain one, so the same rule applies.
+# refused: disagree about which characters survive cleaning
+@UVALIDATE={"type":"pooled","alternates":[{"label":"SK","pattern":"SK[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[7]},{"label":"LG","pattern":"LG\\/[0-9]{5}","algorithm":"none","lengths":[8]}]}
+
+# {,n} and quantifiers with spaces. PHP 8.4 and the browser read them differently. Write {0,4} or {2,3}.
+# refused: quantifier with spaces
+@UVALIDATE={"algorithm":"none","pattern":"FC[0-9]{,4}"}
+# refused: quantifier with spaces
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{2, 3}","algorithm":"none"}]}
+
+# A pooled entry without "lengths".
+# refused: needs "lengths"
+@UVALIDATE={"type":"pooled","alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}]}
+
+# Rule-level lengths or pattern beside alternates. Put them inside each entry.
+# refused: must not also set rule-level "idLengths"
+@UVALIDATE={"type":"pooled","idLengths":[8],"alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[8]}]}
+# refused: must not also set a rule-level "pattern"
+@UVALIDATE={"pattern":"FC[0-9]{4}","alternates":[{"pattern":"FC[1-9]-[0-9]{4}","algorithm":"none"}]}
+
+# An empty list, an entry without a pattern, an unknown entry key, an unknown algorithm.
+# refused: non-empty list
+@UVALIDATE={"alternates":[]}
+# refused: needs a non-empty "pattern"
+@UVALIDATE={"alternates":[{"label":"X","algorithm":"3736"}]}
+# refused: unknown option(s): prefix
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{4}","algorithm":"none","prefix":"FC"}]}
+# refused: unknown algorithm "mod99"
+@UVALIDATE={"alternates":[{"pattern":"FC[0-9]{4}","algorithm":"mod99"}]}
+```
+
+#### Rules that save but may not do what you meant
+
+The save check cannot know your intent. These rules are accepted:
+
+- **A pooled `lengths` value the pattern cannot produce.** `FC[1-9]-[0-9]{4}` is 8
+  characters long, so `"lengths":[7]` never matches and every ID reads as junk:
+
+  ```text
+  @UVALIDATE={"type":"pooled","strip":"-","alternates":[{"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[7]}]}
+  ```
+
+  ```text expect
+  FC1-0589    =>  refused: no-id, junk
+  ```
+
+  Count the characters of a real ID, separators included, before you save.
+- **Two format-only patterns that overlap.** A value both fit is credited to the first
+  one listed. The verdict is the same; only the label differs.
+- **Two check-bearing patterns that overlap.** A value both fit passes when either
+  check character matches, which gives a mis-scan two chances. Keep check-bearing
+  patterns disjoint, by prefix or by length. Here `C`-`M` codes fit both entries, so
+  `C12348` (right for Mod 37,36) and `C12349` (right for Mod 37,2) both pass. Mod 37,2
+  can produce `*`, which Mod 37,36 cannot, so the rule declares `keepChars:"*"`.
+
+  ```text
+  @UVALIDATE={"keepChars":"*","alternates":[{"label":"NEW","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736"},{"label":"OLD","pattern":"[C-M][0-9]{4}[0-9A-Z*]","algorithm":"372"}]}
+  ```
+
+  ```text expect
+  C12348    =>  valid
+  C12349    =>  valid
+  C12347    =>  refused: check-character
+  ```
+
+- **Legacy and checked forms of one family** (Recipe 4). A checked ID with its last
+  character dropped is a valid legacy ID.
+- **`lengths` in a one-ID rule** is accepted and ignored:
+
+  ```text
+  @UVALIDATE={"strip":"-","alternates":[{"label":"GHIT","pattern":"FC[1-9]-[0-9]{4}","algorithm":"none","lengths":[7]}]}
+  ```
+
+  ```text expect
+  FC1-0589    =>  valid
+  ```
+
+#### Keys
+
+| Entry key   | Meaning                                                                                                                         |
+| ----------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `label`     | Format name shown in validation feedback. Without one, the entry is named by its position in the list.                         |
+| `pattern`   | Required. Whole-ID regex, matched before separators are stripped.                                                               |
+| `algorithm` | This format's check algorithm. Inherits the rule's `algorithm` when omitted; write `none` for a format-only entry.              |
+| `source`    | What the check runs over for this entry; replaces the rule's `source`.                                                          |
+| `strip`     | Separators removed before this entry's check; replaces the rule's `strip`.                                                      |
+| `lengths`   | Pooled rules: required. Every length this entry's IDs can have, counting the characters its pattern keeps. Ignored in a one-ID rule. |
+
+Rule-level keys that work with `alternates`: `type`, `algorithm` (the default for
+entries that omit theirs), `source`, `strip`, `keepChars`, `expectedIds`,
+`blockSave`, `when`, `suggestFix`, `caseSensitive`, `note`. Rule-level `pattern`,
+`idLengths`, `idMinLen` and `idMaxLen` are refused; put patterns and lengths inside
+the entries. A rule holds at most 8 entries. The pooled work limits and ambiguity
+checks apply as for any pooled rule.
+
+One rule using every rule-level key. The `Lab` entry has no `algorithm`, so it uses
+the rule's Damm check over the digits only; `Legacy` overrides it with `none`:
+
+```text
+@UVALIDATE={"type":"pooled","algorithm":"damm","source":"digits_only","strip":"-","keepChars":"#","expectedIds":2,"blockSave":"confirm","when":"[sample_type]='2'","suggestFix":true,"caseSensitive":true,"note":"Pooled sputum pair","alternates":[
+  {"label":"Lab","pattern":"LB-[0-9]{7}","lengths":[10]},
+  {"label":"Legacy","pattern":"OLD#[0-9]{4}","algorithm":"none","lengths":[8]}
+]}
+```
+
+```text expect
+LB-1234566 OLD#0042     =>  valid: LB-1234566, OLD#0042
+LB-1234565 OLD#0042     =>  refused: check-character
+LB-1234566              =>  refused: count
+```
 
 ### Full `@UVALIDATE` JSON keys
 
@@ -726,6 +1237,688 @@ tag can also create a branch configuration error. Save the dictionary change and
 reload the data-entry/survey page before testing. The Online Designer defines the
 rule; test its live filtering on the actual data-entry form or survey.
 
+## `@UVWINDOW` — dates within a window
+
+REDCap's date validation takes a fixed minimum and maximum date, and only warns.
+It cannot say "21 to 35 days after this participant's baseline visit", and it has
+no idea what today is. `@UVWINDOW` checks a date against a window counted from
+another date, and/or that the date is not after today. JSON form only.
+
+### Level 1 — not in the future
+
+```text
+# on: visit_date — a visit cannot be recorded before it happens
+@UVWINDOW={"notFuture":true}
+```
+
+"Today" is the server's date, never the date on the user's computer, so a
+laptop whose clock runs a day ahead cannot accept tomorrow's date. The page gets
+the server's clock when it opens and moves it forward while it stays open, so a
+form left open across midnight moves to the next day. On a datetime field the
+limit is the current time, not the end of the day.
+
+### Level 2 — a window after another date
+
+```text
+# on: visit_date_wk4 — the week-4 visit falls 21 to 35 days after baseline
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}
+```
+
+`window` is `[earliest, latest]`, counted from the `from` date in whole units,
+**both ends included**. The unit is days unless you say otherwise. With a baseline
+of 2026-01-01 the rule accepts 2026-01-22 to 2026-02-05, and the message names
+those dates in the field's own format:
+
+> ✗ This date must be between 22-01-2026 and 05-02-2026. (21 to 35 days from [visit_date_bl])
+
+The part in brackets is shown to staff only; a survey respondent sees the dates
+without the other field's name. The example assumes a D-M-Y field.
+
+### Level 3 — open ends, negative bounds, other units
+
+```text
+# on: diagnosis_date — not before birth, no upper limit
+@UVWINDOW={"from":"[dob]","window":[0,null]}
+
+# on: screening_date — at most 28 days BEFORE enrolment, and not after it
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}
+
+# on: followup_date — weeks 10 to 14 after randomisation
+@UVWINDOW={"from":"[rand_date]","window":[10,14],"unit":"weeks"}
+
+# on: sample_taken_at (datetime) — within 6 hours after the dose
+@UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours"}
+```
+
+`null` leaves that end open; one end must be a number. A negative bound counts
+back from the `from` date. `unit` is `days` or `weeks` on a date field, and also
+`minutes` or `hours` on a datetime field. Bounds are whole numbers up to 36,500
+either way.
+
+### Level 4 — both checks, message and enforcement
+
+```text
+# on: screening_date — within a week of enrolment, never in the future, hard block
+@UVWINDOW={"from":"[enrol_date]","window":[-7,7],"notFuture":true,
+           "message":"Screening must be within a week of enrolment, and not in the future.",
+           "blockSave":"hard"}
+```
+
+When both checks fail, the page shows the "future" message, because a date in the
+future is the more likely typing slip.
+
+### Level 5 — gated, or counted from another event
+
+```text
+# on: visit_date — the window applies to scheduled visits only
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"when":"[visit_type]='1'"}
+
+# on: visit_date in the week-4 event — counted from the baseline event's date
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
+```
+
+The second form, a `from` date in another event or instance, needs **event and
+instance references** enabled in the project settings (see
+[Validation across events and repeating instruments](#validation-across-events-and-repeating-instruments)).
+Without the feature, `from` must be a field of the same event.
+
+### Semantics worth knowing
+
+- **Eligible fields:** Text fields with date, datetime or datetime-with-seconds
+  validation, in any display format (Y-M-D, M-D-Y or D-M-Y). Any other field shows a
+  configuration error.
+- **The `from` field must be the same kind of date.** A date window counts from a
+  date field, a datetime window from a datetime field. A `from` field that does
+  not exist, is not a date field, or is the tagged field itself is a configuration
+  error.
+- **Blank means nothing to check.** A blank field checks nothing, and so does a
+  blank `from` date: the visit that anchors the window may not have happened yet.
+  `notFuture` still applies while `from` is blank.
+- **A date still being typed shows no verdict.** REDCap's own date check covers
+  half-typed values.
+- **A `from` date on another form is read when the page opens.** If the user may
+  read that form, its saved value is used and the check is **advisory**: it shows
+  the verdict but never blocks the save, because that form could change while
+  this one is open. On a survey, or without rights to that form, the value is not
+  sent to the page at all. The browser then checks only `notFuture`; staff see a
+  note that the window is checked when the record is saved, and a survey
+  respondent sees nothing about it.
+- **`notFuture` keeps its `blockSave`.** "After today" does not depend on the
+  `from` date, so a hard rule still blocks a future date when the window part is
+  advisory or not sent. A rule whose `from` names another event is advisory as a
+  whole on the page, like every rule with an event or instance reference.
+- **Multi-page surveys.** The browser reads a `from` date only on the page being
+  shown. If the `from` field is on an earlier page of the survey, the window is
+  not checked while the respondent types; the post-save audit still checks it.
+  Put both dates on one page to check the window as they are entered.
+- **A `from` entry that does not exist yet** (no row in that event, no such
+  instance) counts as a blank `from` date: nothing is checked until it is saved.
+- **Today is the server's date.** The page gets the server clock when it opens
+  and moves it forward while it stays open, so a wrong computer clock cannot
+  accept tomorrow's date and a form left open past midnight moves to the next
+  day. A computer clock moved forward while the form is open moves it too; the
+  post-save audit reads the server clock and still logs the date. The date is
+  taken in the server's time zone unless the project setting **Time zone for
+  @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`.
+- **The server checks every save.** The post-save audit logs a violation as
+  `type: window` with reason `window-early`, `window-late` or `future`. Saving
+  only the form that holds the `from` date re-checks the windows counted from it.
+- **The Validation scan** reports the same findings, with "Date outside allowed
+  window" or "Date in the future" in the Issue column and the missed bound in the
+  detail line. A scan judges "future" against the day it runs, so it flags only
+  dates that are still in the future on that day. Each part of a durable scan
+  reads the clock when that part runs.
+- **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
+
+### `@UVWINDOW` JSON keys
+
+`from`, `window`, `unit`, `notFuture`, `when`, `message`, `blockSave`,
+`caseSensitive`, and `references` (named bindings that `when` reads as `{alias}`;
+needs event and instance references). A rule needs `from` with `window`, or
+`"notFuture":true`, or both. Any other key is a configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Shorthand. The tag takes JSON only.
+# refused: needs its settings as JSON
+@UVWINDOW=21
+
+# A window with nothing to count from.
+# refused: "window" needs a "from" date
+@UVWINDOW={"window":[21,35]}
+
+# A "from" date with nothing to check.
+# refused: "from" needs a "window"
+@UVWINDOW={"from":"[visit_date_bl]"}
+
+# Both ends open.
+# refused: needs at least one bound
+@UVWINDOW={"from":"[visit_date_bl]","window":[null,null]}
+
+# Earliest after latest. Swap the numbers.
+# refused: is after its latest bound
+@UVWINDOW={"from":"[visit_date_bl]","window":[35,21]}
+
+# Fractions. Use a smaller unit.
+# refused: must be a whole number
+@UVWINDOW={"from":"[visit_date_bl]","window":[0,1.5]}
+
+# More than 100 years either way.
+# refused: limited to 36500 units
+@UVWINDOW={"from":"[dob]","window":[0,40000]}
+
+# Months and years vary in length. Use days or weeks.
+# refused: "unit" must be minutes, hours, days or weeks
+@UVWINDOW={"from":"[visit_date_bl]","window":[1,3],"unit":"months"}
+
+# A quoted boolean.
+# refused: "notFuture" must be true or false
+@UVWINDOW={"notFuture":"true"}
+
+# Two dates in "from". A window counts from one date.
+# refused: exactly one date field reference
+@UVWINDOW={"from":"[visit_date_bl] [enrol_date]","window":[0,7]}
+
+# A checkbox option is not a date.
+# refused: exactly one date field reference
+@UVWINDOW={"from":"[symptoms(1)]","window":[0,7]}
+
+# Neither check.
+# refused: needs a "from" date with a "window", or "notFuture": true
+@UVWINDOW={"message":"Check the date"}
+```
+
+## `@UVEXISTS` — values that must already exist
+
+REDCap checks that a value has the right shape. It cannot check that a specimen ID
+typed on a lab result was ever registered, or that a record ID named on a transfer
+form belongs to a real participant. `@UVEXISTS` asks the server, as the value is
+entered, whether the value is already saved in the project.
+
+### Level 1 — a record ID of this project
+
+```text
+# on: mother_record_id — the mother must already be enrolled
+@UVEXISTS=record
+```
+
+The value must be the ID of a saved record. The answer is "found" or "not found";
+a record-ID lookup never names another record.
+
+### Level 2 — a value saved in another field
+
+```text
+# on: result_specimen_id — the specimen must be registered on the collection form
+@UVEXISTS=[specimen_id]
+```
+
+The value must be saved in `specimen_id` in some record, in any event or repeat
+instance. Staff see the record it was found in, unless they are in a Data Access
+Group and that record is not.
+
+### Level 3 — one event, one group, one site
+
+```text
+# on: result_specimen_id — registered at enrolment, by the same site
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","match":{"site_code":"[site]"}}
+
+# on: referral_id — only among records of the same Data Access Group
+@UVEXISTS={"in":"[referral_id]","scope":"dag"}
+
+# on: kit_number — a kit dispensed in the same event as this entry
+@UVEXISTS={"in":"[kit_dispensed]","scope":"event"}
+```
+
+`event` names one event by its unique name. `scope` is `project` (the default),
+`dag` (records of the same Data Access Group as this record; records in no group
+form one group) or `event` (the event of the entry being checked). `match` looks
+only at saved entries whose target field holds the same value as a field of this
+record: `{"site_code":"[site]"}` reads "where `site_code` equals this record's
+`[site]`". Up to 5 pairs. The target values must be saved in the same entry as the
+searched value: one event row, or one repeat instance together with its event row.
+
+### Level 4 — message, enforcement, condition, surveys
+
+```text
+# on: result_specimen_id — hard block, with a message the lab understands
+@UVEXISTS={"in":"[specimen_id]","message":"Register this specimen on the collection form first.",
+           "blockSave":"hard"}
+
+# on: partner_id — checked only when a partner is reported
+@UVEXISTS={"in":"[participant_id]","when":"[has_partner]='1'"}
+
+# on: voucher_code — also checked on the survey
+@UVEXISTS={"in":"[voucher_issued]","surveys":true}
+```
+
+### Level 5 — a value saved in another project
+
+```text
+# on: result_specimen_id — the specimen is registered in the lab project (project 412)
+@UVEXISTS={"in":"[specimen_id]","project":412}
+
+# the same, with an alias this project's settings map to the lab project
+@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"}}
+
+# on: lab_record_id — a record ID of the lab project
+@UVEXISTS={"in":"record","project":"lab"}
+```
+
+`project` names another project on the same REDCap server, by its project id or
+by an alias. An alias is set in this project's module settings ("@UVEXISTS
+project aliases"), so the data dictionary can move between a test and a
+production server unchanged; only the alias row differs. `in`, `event` and the
+`match` targets then name fields and events of that project; the `match` values
+stay fields of this record. Three switches must all be on:
+
+1. **The server.** An administrator turns on "@UVEXISTS in other projects" in the
+   module's Control Center settings. It is off by default.
+2. **The searched project.** It must have this module enabled and list this
+   project under "Projects that may look up values here", with the fields it may
+   search (`record` for its record ID) and who gets an answer:
+   - *Only users who have rights to those fields in this project* (the default):
+     the user needs a current rights row there and access to the form of each
+     searched field. A user in a Data Access Group there is answered from their
+     own group only.
+   - *Any signed-in user of the asking project*: found / not found only, and no
+     searched field may be an Identifier there. Any value typed in the asking
+     project can then be tested against the searched one, which is why this is
+     the searched project's choice.
+3. **Surveys,** only when the searched project answers any signed-in user, also
+   ticks "Also answer survey respondents", and the rule says `"surveys":true`.
+
+### Semantics worth knowing
+
+- **Eligible fields:** Text, dropdown, radio and SQL fields. The searched field and
+  each `match` target must exist and hold one value (no checkbox, file or
+  descriptive field).
+- **The comparison is exact.** Values are trimmed and compared letter for letter,
+  case included. A date is compared as REDCap stores it (Y-M-D), whatever format
+  the field shows, so the field and the field searched must be stored the same
+  way: two dates, two datetimes to the minute, two datetimes to the second, two
+  times of the same precision, or neither a date nor a time. Dropdown and radio
+  values are compared by code, so the two fields need the same codes.
+- **Asked when the value is entered, not per keystroke.** The page asks when the
+  field is changed or left, and once when the form opens. Typing clears the last
+  answer, so a half-typed value never reads "not found"; typing in a text field
+  a `when` condition reads counts too.
+- **Save waits for the answer.** Clicking Save re-checks the field first: a value
+  typed and saved at once is asked before the save is decided, and the save is
+  held while the answer is on its way. After 10 seconds without one, the value
+  counts as *could not check*.
+- **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
+  and *could not check* (amber; never blocks). A failed read, a `match` field that
+  is blank on another form, a busy server and missing rights all answer *could not
+  check*, and staff see the reason. The post-save audit checks the value again,
+  except when a `match` field is still blank: then there is nothing to check
+  until that field is saved, and saving its form checks the lookup again.
+- **Blank checks nothing.** A blank value is not looked up. A blank `match` field
+  on the same page means there is nothing to narrow by yet, so nothing is asked.
+- **Branches.** With several `when` branches the page sends the values its
+  conditions read, and the server answers from that branch, also on a new record.
+- **Where the rule looks stays on the server.** The page config holds the rule's
+  message and enforcement but not `in`, `event`, `scope` or `match`; the server
+  reads them from the stored rule. On a survey, a configuration error shows as a
+  general notice, and the "no access" reason does not name a form or field.
+- **Rights.** A signed-in user is answered only when they may open the forms that
+  hold the searched field and the `match` fields. A record-ID lookup needs no extra
+  form. At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
+  user in a Data Access Group is answered only on records of their own group.
+- **Data Access Groups.** A group user's reads may be confined to their group. A
+  *not found* from a rule that looks across groups is kept only when the module
+  sees other groups' records in the same request; otherwise it is *could not
+  check*, and the audit reports a rule problem rather than a violation.
+- **Surveys: opt-in.** `"surveys":true` turns the check on for surveys, with a
+  found / not found answer only and the survey rate limit. It is refused when any
+  field the lookup touches is an Identifier, including the record-ID field for
+  `@UVEXISTS=record`, because a "found" answer would let anyone holding the survey
+  link test whether a value is in the study. A *not found* costs a read of the
+  whole searched field, so survey lookups may cause at most 60 such reads a
+  minute per project; past that they answer *could not check* (shown as nothing).
+- **The server checks every save.** The post-save audit logs a violation as
+  `type: exists` with reason `not-found`. A lookup that cannot be completed is
+  logged as a rule problem, never as a pass.
+- **The Validation scan** reads the searched field once per rule per scan request
+  and checks every record against it, with "Not found in its source" in the Issue
+  column. A scan confined to one Data Access Group skips rules whose `scope` is
+  not `dag`, and reports them as not evaluated, because a value saved only in
+  another group would read as not found. A durable scan with `@UVEXISTS` rules
+  claims coverage through its change fence only when no record changed during
+  the run.
+- **Configure dialog:** none. `@UVEXISTS` exists only as an action tag.
+
+### Semantics in another project
+
+- **One refusal for every reason.** Until the searched project's agreement
+  passes, every problem shows the same setup error: the project does not exist,
+  is deleted, does not have the module, does not list this project, or does not
+  list a searched field. Neither its dictionary nor its data is read before
+  then, so the error tells a designer nothing about that project. An `event`
+  that is not one of its events gets the same error, because the agreement
+  lists fields, not events. Field errors (a field missing there, a different
+  kind of date) come only after the agreement passes. A withdrawn agreement
+  shows up the same way on the form, and a survey shows its generic notice.
+- **The record found there is never shown.** Staff get found / not found and,
+  for *could not check*, a reason.
+- **Lookups are logged in the searched project.** Once the module can read that
+  project's agreement, its module log gets one `uv-exists-probe` line per
+  lookup, answered or refused: the asking project, the channel (staff, survey,
+  audit), the user ("survey" for a respondent, "(no user)" for a save nobody
+  was signed in for, such as a data import), the field, the result, and the
+  value as a keyed hash under that project's key. The value is left out when
+  that project's "How to log invalid values" is "none" or "off", and is never
+  logged raw. When a *not found* needed a read of that project's record IDs,
+  the line says `extra_read: record ids`. Nothing is written there while the
+  Control Center switch is off or the module is not enabled in that project.
+  Over a budget, only the first refused lookup of the minute is logged, so a
+  flood of refused lookups is not a flood of log lines.
+- **Budgets.** Each searched project keeps three counters, so no kind of caller
+  can use up another's: staff lookups (1,200 a minute from every project
+  together, plus 30 a minute per signed-in session), survey lookups (120 a
+  minute from every project together, plus the session window), and post-save
+  audits with scans (1,200 a minute). Administrators can change the 1,200 and
+  the 30 in the Control Center settings; the survey limit is fixed. Over a
+  limit, or when the counter cannot be kept, the lookup answers *could not
+  check*.
+- **An empty read is not "not found".** When the searched project returns no
+  records at all to the lookup (or, for a user confined to a group there, none
+  of that group), the answer is *could not check*. A record-ID lookup that
+  finds nothing reads that project's record IDs to tell the two apart; a survey
+  lookup does so only within the survey read budget.
+- **The audit** asks as the user who saved. A save with no signed-in user (a
+  survey) is checked only when the searched project answers survey respondents.
+  A saver who is in a Data Access Group of the searched project, under "Only
+  users who have rights", is not checked after the save: their lookups see only
+  their group there, and a value saved in another group would be logged as
+  missing. Anything else is logged as a rule problem.
+- **The Validation scan** reads the searched project once per searched field per
+  scan request and leaves one `uv-exists-index-read` line in its log. A rule is
+  reported as not evaluated when the person running the scan would not be
+  answered, or is in a Data Access Group of the searched project; in a rule
+  with several branches only those branches are reported, and the others are
+  checked. A stored scan that searched another project is shown only to people
+  that project would answer. Changes saved in the searched project do not
+  re-open a scan of this one, and the report says so. A scan confined to one
+  group of this project still checks these rules: this project's groups mean
+  nothing in the other one.
+- **A field named `record`** cannot be searched or matched: `record` stands for
+  the record ID, in this tag and in the other project's agreement.
+
+### `@UVEXISTS` JSON keys
+
+`in`, `project`, `event`, `scope`, `match`, `surveys`, `when`, `message`,
+`blockSave` and `caseSensitive`. Any other key is a configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Nothing to look in.
+# refused: needs to know where to look
+@UVEXISTS=
+
+# Two fields. The lookup searches one.
+# refused: is not a place to look
+@UVEXISTS=[specimen_id][aliquot_id]
+
+# The JSON form needs "in".
+# refused: needs "in"
+@UVEXISTS={"scope":"dag"}
+
+# Another project: a project id, or an alias that starts with a letter.
+# refused: "project" must be a project id
+@UVEXISTS={"in":"[specimen_id]","project":"12-lab"}
+
+# Groups and events of this record mean nothing in another project.
+# refused: not shared between projects
+@UVEXISTS={"in":"[specimen_id]","project":"lab","scope":"dag"}
+
+# "record" is the record ID. A field of that name cannot be searched.
+# refused: a field named "record" cannot be used
+@UVEXISTS=[record]
+
+# Nor matched.
+# refused: a field named "record" cannot be used
+@UVEXISTS={"in":"[specimen_id]","match":{"record":"[site]"}}
+
+# Scopes are project, dag and event.
+# refused: "scope" must be project, dag or event
+@UVEXISTS={"in":"[specimen_id]","scope":"site"}
+
+# "event" takes the unique event name.
+# refused: unique event name
+@UVEXISTS={"in":"[specimen_id]","event":"Enrolment visit"}
+
+# One event, or the entry's own event. Not both.
+# refused: cannot be combined
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"event"}
+
+# A record ID belongs to the whole record.
+# refused: does not apply to "in":"record"
+@UVEXISTS={"in":"record","event":"enrolment_arm_1"}
+
+# A record ID has nothing to match.
+# refused: a record ID has nothing to match
+@UVEXISTS={"in":"record","match":{"site_code":"[site]"}}
+
+# "match" maps a target field to a field of this record.
+# refused: "match" must be an object
+@UVEXISTS={"in":"[specimen_id]","match":["[site]"]}
+
+# The match value must be a field reference.
+# refused: must be one field reference
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"A"}}
+
+# The searched field already holds the value looked up.
+# refused: is the field named in "in"
+@UVEXISTS={"in":"[specimen_id]","match":{"specimen_id":"[site]"}}
+
+# A quoted boolean.
+# refused: "surveys" must be true or false
+@UVEXISTS={"in":"[voucher_issued]","surveys":"true"}
+```
+
+## `@UVRANGE` — numbers within plausible limits
+
+REDCap's number validation takes one minimum and one maximum, and only warns.
+Lab and clinical numbers need two levels. A value outside the usual range is
+worth a second look before saving; a value outside what is physically possible
+is a typing slip. `@UVRANGE` checks a number against both levels. JSON form only.
+
+### Level 1 — usual and plausible limits
+
+```text
+# on: hb — haemoglobin, a number field
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+```
+
+```text expect
+14.2   => ok
+12     => ok
+17.50  => ok
+11.4   => soft-low
+19     => soft-high
+2.5    => hard-low
+31     => hard-high
+1.5E1  => ok
+1e1    => soft-low
+n/a    => not-a-number
+```
+
+`soft` is the usual range. A value outside it is unusual. Its note is amber,
+and the save asks "save anyway?" first. `hard` is the plausible range. A value
+outside it, or text that is not a number, is implausible. Its note is red,
+and the save is blocked until the value is fixed. Both ends of each range are
+included. The notes name the limits:
+
+> ⚠ This value is lower than usual (expected 12 to 17.5 g/dL).
+>
+> ✗ This value is above the plausible range (allowed 3 to 25 g/dL).
+
+The note appears when the user leaves the field, not while a number is being
+typed, so "1" on the way to "12" is never flagged.
+
+### Level 2 — how strongly each level enforces
+
+```text
+# on: sbp — systolic pressure, no usual minimum, and only a note above 140
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+
+# on: weight_kg — ask before saving an implausible weight instead of refusing it
+@UVRANGE={"soft":[30,150],"hard":[2,300],"hardBlock":"confirm","unit":"kg"}
+```
+
+| Key           | Values               | Default     | Applies to                               |
+| ------------- | -------------------- | ----------- | ---------------------------------------- |
+| `softBlock` | `off`, `confirm`  | `confirm` | A value outside `soft`                 |
+| `hardBlock` | `confirm`, `hard` | `hard`    | A value outside `hard`, or not a number |
+
+`blockSave` does not apply to this tag and is refused; these two keys take its
+place. `null` leaves one end of a range open. A rule may have only `soft`, only
+`hard`, or both. With both, the soft limits must lie inside the hard ones.
+
+### Level 3 — limits by sex, age group or anything else
+
+```text
+# on: hb — different usual limits for women and men
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}
+```
+
+Several `@UVRANGE` tags on one field branch, and the one whose `when` is true
+applies (see [Branching](#branching--several-tags-of-the-same-kind)). One of
+them may leave out `when` to give the limits for everyone else. While `sex` is
+blank, neither branch above applies and nothing is checked.
+
+### Level 4 — your own message
+
+```text
+# on: temp_c
+@UVRANGE={"soft":[36,37.5],"hard":[30,43],"unit":"°C","message":"Check the temperature and the unit (°C, not °F)."}
+```
+
+`message` replaces the generated note for both levels and for a value that is
+not a number.
+
+### Semantics worth knowing
+
+- **Eligible fields.** Text fields with no validation, integer validation or
+  number validation (any number of decimal places, with a point or a comma),
+  calc fields and sliders. A Text field with any other validation, such as a
+  date or an email, shows a configuration error.
+- **What counts as a number.** Digits with at most one decimal point and an
+  optional sign, such as `12`, `-0.5`, `.5` or `+14`, and the exponent form
+  REDCap's number validation also accepts: `1.5E1` is 15 and `2e-3` is 0.002.
+  Thousands separators (`1,200`) and a unit typed into the box (`12 g/dL`) are
+  not numbers and count as implausible, even on a rule with only `soft`
+  limits. REDCap's own validation stops these on a number field; on a Text
+  field with no validation, `@UVRANGE` is the only check.
+- **Exact comparison.** Limits and values are compared as decimals, digit by
+  digit, so `17.50` equals `17.5` and very long numbers keep every digit. A
+  limit is kept exactly as written, quoted or not: `0.12345678901234567890`
+  keeps all twenty digits. A limit may be up to 64 characters long once any
+  exponent is written out.
+- **Missing data codes.** A field marked with one of the project's missing
+  data codes (REDCap's "M" button, or an import) holds the code itself, such as
+  `UNK` or `-99`. REDCap does not validate it and neither does `@UVRANGE`: the
+  field is treated as blank, on the page, in the post-save audit and in the
+  scan. Every other tag does the same, except `@UVREQUIRED`, which counts a
+  missing data code as an answer. A `when` condition reads the code as itself,
+  as REDCap's branching logic does.
+- **Comma decimals.** On a field with comma-decimal validation
+  (`number_1dp_comma_decimal` and the like), `17,5` is read as 17.5 and the
+  notes write the limits with a comma. Limits in the tag are always written
+  with a point.
+- **Blank checks nothing.**
+- **A calc field never blocks a save**, because nobody typed its value. It still
+  shows the note, and the post-save audit and the scan still report it. A
+  read-only field never holds a save either.
+- **A `when` that reads a field on another form** works as on the other tags.
+  The page reads that field's saved value when it opens, and the rule does not
+  block on the page. On a data entry form the note names the fields that chose
+  the limits; a survey names none. The post-save audit checks it with the saved
+  values.
+- **No event or instance references yet.** `when` reads fields of this entry
+  only. A `when` with an event or instance reference, and the `references`
+  key, are refused.
+- **The post-save audit checks each form and survey save.** It logs a value
+  outside either range as `type: range`, with reason `soft-low`, `soft-high`,
+  `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock` says. A
+  rule that only shows notes still leaves a record of each unusual value.
+- **The Validation scan** counts these findings. Its report labels them
+  "Unusual value", "Implausible value" or "Not a number", with the limits in
+  the detail line ("Expected 12 to 17.5 g/dL." or "Allowed 3 to 25 g/dL.").
+  The report page and its download are not available while the scan is being
+  rebuilt (see the README); the scan page shows the count. The scan's own
+  result names the branch that judged each value, so the report can show that
+  branch's limits; the stored run does not keep the branch yet.
+- **Configure dialog:** none. `@UVRANGE` exists only as an action tag.
+
+### `@UVRANGE` JSON keys
+
+`soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
+`caseSensitive`. A rule needs `soft` or `hard` limits. Any other key is a
+configuration error.
+
+These are refused when the rule is saved:
+
+```text invalid
+# Shorthand. The tag takes JSON only.
+# refused: needs its settings as JSON
+@UVRANGE=12-17.5
+
+# No limits at all.
+# refused: needs "soft" or "hard" limits
+@UVRANGE={"unit":"g/dL"}
+
+# A range is a list of two limits.
+# refused: must be a list of two limits
+@UVRANGE={"hard":[3,25,40]}
+
+# Both ends open checks nothing.
+# refused: needs at least one limit
+@UVRANGE={"soft":[null,null],"hard":[3,25]}
+
+# Low above high. Swap the numbers.
+# refused: is above its high limit
+@UVRANGE={"hard":[25,3]}
+
+# The usual range must lie inside the plausible one.
+# refused: is outside the "hard" range
+@UVRANGE={"soft":[2,17.5],"hard":[3,25]}
+
+# A limit must be a number.
+# refused: must be a number such as 12
+@UVRANGE={"hard":["three",25]}
+
+# A limit is written with a point, even for a comma-decimal field.
+# refused: must be a number such as 12
+@UVRANGE={"hard":["0","1,5"]}
+
+# A limit of more than 64 characters once written out.
+# refused: is longer than 64 characters
+@UVRANGE={"hard":[0,1e100]}
+
+# blockSave is replaced by softBlock and hardBlock.
+# refused: "blockSave" does not apply
+@UVRANGE={"hard":[3,25],"blockSave":"hard"}
+
+# softBlock has no hard block, because an unusual value may be right.
+# refused: "softBlock" must be off or confirm
+@UVRANGE={"soft":[12,17.5],"softBlock":"hard"}
+
+# hardBlock cannot be off. For notes only, use "soft" with "softBlock":"off";
+# text that is not a number still follows hardBlock.
+# refused: "hardBlock" must be confirm or hard
+@UVRANGE={"hard":[3,25],"hardBlock":"off"}
+
+# A unit is a short label.
+# refused: "unit" must be a short label
+@UVRANGE={"hard":[3,25],"unit":"grams per decilitre of blood"}
+```
+
+---
+
 ## Combining tags on one field
 
 Different kinds of tag on one field **compose**: all must pass, and each keeps an
@@ -798,7 +1991,7 @@ A three-way branch:
 
 ## The `when` condition language
 
-The same dialect powers `when` on all five tags and `assert` on `@UVASSERT`. It is a
+The same dialect powers `when` on every tag and `assert` on `@UVASSERT`. It is a
 **REDCap-style subset — not byte-for-byte REDCap logic**.
 
 | Supported                                                                                        | Rejected when the rule is saved                      |
@@ -979,7 +2172,7 @@ imports, deleted instances or writes that do not invoke a save hook.
 @UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'","message":"Document follow-up of the prior adverse event"}
 
 # Format rule gated by consent recorded at baseline.
-@UVALIDATE={"algorithm":"none","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","when":"[baseline_arm_1][consent]='1'"}
+@UVALIDATE={"algorithm":"none","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","when":"[baseline_arm_1][consent]='1'"}
 
 # A choices branch can also use a saved region in another event.
 @UVCHOICES={"when":"[baseline_arm_1][region]='1'","show":["1BAM","1CME"]}
@@ -1130,8 +2323,8 @@ Choosing where the collection comes from:
 @UVASSERT={"assert":"{r}='0'","references":{"r":{"field":"result","event":"followup_arm_1","instance":"all-instances"}}}
 ```
 
-A binding takes `event` or `events`, never both. `events:"arm"` needs `arm`, and the
-arm must contain an event that collects the instrument. Up to 20 bindings per rule;
+A binding takes `event` or `events`, never both. Each event appears in `events` once.
+`events:"arm"` needs `arm`, and the arm must contain an event that collects the instrument. Up to 20 bindings per rule;
 alias names are lowercase letters, digits and `_`, starting with a letter.
 
 Only one collection operand is allowed per comparison. Counts on an empty
@@ -1662,6 +2855,150 @@ counts as the same value), `scope` narrows the **search** (which records are com
 @UVUNIQUE={"surveys":true,"with":["dob"],"message":"A response already exists for this ID and date of birth"}
 ```
 
+### `@UVWINDOW` recipes
+
+#### Dates that cannot be in the future
+
+```text
+# on: consent_date
+@UVWINDOW={"notFuture":true,"blockSave":"hard"}
+
+# on: specimen_collected_at (datetime) — a collection time cannot be later than now
+@UVWINDOW={"notFuture":true,"message":"The collection time is in the future - check the clock"}
+```
+
+#### Protocol visit windows
+
+```text
+# on: visit_date_wk4 — target day 28, window -7/+7 days
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"blockSave":"confirm"}
+
+# on: visit_date_m6 — month 6 as weeks 24 to 28 after enrolment
+@UVWINDOW={"from":"[enrol_date]","window":[24,28],"unit":"weeks"}
+
+# on: visit_date in each follow-up event — counted from the baseline event (references enabled)
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
+```
+
+#### Order of events in one participant's history
+
+```text
+# on: diagnosis_date — on or after birth
+@UVWINDOW={"from":"[dob]","window":[0,null],"notFuture":true}
+
+# on: treatment_start — no earlier than diagnosis, at most 90 days after it
+@UVWINDOW={"from":"[diagnosis_date]","window":[0,90]}
+
+# on: screening_date — up to 28 days before enrolment
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}
+```
+
+#### Timed samples (datetime fields)
+
+```text
+# on: pk_sample_2h — between 90 minutes and 150 minutes after the dose
+@UVWINDOW={"from":"[dose_given_at]","window":[90,150],"unit":"minutes"}
+
+# on: result_reported_at — within 48 hours of collection
+@UVWINDOW={"from":"[specimen_collected_at]","window":[0,48],"unit":"hours"}
+```
+
+#### Only for some records
+
+```text
+# on: visit_date — scheduled visits only; unscheduled visits may fall anywhere
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"when":"[visit_type]='1'"}
+```
+
+### `@UVEXISTS` recipes
+
+#### Results that point at registered specimens
+
+```text
+# on: result_specimen_id — the specimen must be registered, hard block
+@UVEXISTS={"in":"[specimen_id]","blockSave":"hard","message":"Register this specimen on the collection form first."}
+
+# on: aliquot_parent — the parent tube must be registered at the same site
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"confirm"}
+```
+
+#### Links between participants
+
+```text
+# on: mother_record_id — the mother is enrolled in this project
+@UVEXISTS=record
+
+# on: index_case_id — the index case is a participant of the same group
+@UVEXISTS={"in":"[participant_id]","scope":"dag"}
+```
+
+#### Visits and kits
+
+```text
+# on: kit_returned — the returned kit was dispensed in this event
+@UVEXISTS={"in":"[kit_dispensed]","scope":"event"}
+
+# on: screening_number — issued at the screening event
+@UVEXISTS={"in":"[screening_number]","event":"screening_arm_1"}
+```
+
+#### Surveys
+
+```text
+# on: voucher_code — the respondent enters a voucher the study issued (not an Identifier)
+@UVEXISTS={"in":"[voucher_issued]","surveys":true,"blockSave":"hard"}
+```
+
+#### Another project
+
+```text
+# on: result_specimen_id — registered in the lab project, at the same site
+@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"},"blockSave":"hard"}
+
+# on: screening_id — screened in the screening project's screening event
+@UVEXISTS={"in":"[screening_id]","project":"screening","event":"screening_arm_1"}
+```
+
+### `@UVRANGE` recipes
+
+#### Laboratory results
+
+```text
+# on: hb (g/dL) — usual range by sex, plausible range for everyone
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+@UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}
+
+# on: creatinine (µmol/L) — a note only for unusual values, a block for impossible ones
+@UVRANGE={"soft":[45,110],"softBlock":"off","hard":[10,2000],"unit":"µmol/L"}
+
+# on: viral_load_log — a value in log10 copies/mL, never below zero
+@UVRANGE={"soft":[null,7],"hard":[0,9],"unit":"log10 copies/mL"}
+```
+
+#### Vital signs
+
+```text
+# on: temp_c — catches a temperature typed in °F
+@UVRANGE={"soft":[36,37.5],"hard":[30,43],"unit":"°C","message":"Check the temperature and the unit (°C, not °F)."}
+
+# on: sbp — no usual minimum
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+
+# on: resp_rate — by age group
+@UVRANGE={"soft":[20,40],"hard":[5,100],"unit":"/min","when":"[age_years]<5"}
+@UVRANGE={"soft":[12,24],"hard":[5,70],"unit":"/min"}
+```
+
+#### Anthropometry
+
+```text
+# on: weight_kg — ask before saving an implausible weight instead of refusing it
+@UVRANGE={"soft":[30,150],"hard":[2,300],"hardBlock":"confirm","unit":"kg"}
+
+# on: bmi (calc) — a calc never blocks; the note and the scan still flag it
+@UVRANGE={"soft":[16,35],"hard":[10,60],"unit":"kg/m²"}
+```
+
 ### Combination recipes
 
 Different kinds of tag on one field compose — all must pass, each with its own
@@ -1770,6 +3107,7 @@ you can recognise the mistake; the fix is on the right.
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","aggregate":"median"}}}                                unknown aggregate
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","event":"a_arm_1","events":["b_arm_1"],"aggregate":"sum"}}}    event and events together
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","events":"arm","aggregate":"sum"}}}                   events "arm" needs arm
+@UVASSERT={"assert":"{t}>0","references":{"t":{"field":"dose","events":["b_arm_1","b_arm_1"],"aggregate":"sum"}}}   an event listed twice
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0]"}}}                    elapsedFrom needs unit
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","elapsedFrom":"[d0][any-instance]","unit":"days"}}}   elapsedFrom is one scalar reference
 @UVASSERT={"assert":"{t}>0","references":{"t":{"field":"d","type":"date","aggregate":"minimum"}}}                   typed dates cannot be aggregated
@@ -1784,8 +3122,8 @@ you can recognise the mistake; the fix is on the right.
 
 Everything a tag can say, the module's **Configure** dialog can say too. Use the
 dialog when one rule covers many fields, when you want a rule that is not tied to the
-data dictionary, or when a designer should not edit annotations. `@UVCHOICES` is the
-one mode that exists only as a tag.
+data dictionary, or when a designer should not edit annotations. `@UVCHOICES`,
+`@UVWINDOW` and `@UVEXISTS` exist only as tags.
 
 **Step 1 — open it.** Control Center or the project's *External Modules* page →
 **Universal Field Validator** → **Configure**.
@@ -1938,6 +3276,50 @@ target the same field: different kinds compose, and the same kind branches by `w
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`                                         |
 | `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
 
+### `@UVWINDOW`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `from`          | string          | *(none)*     | One date field reference, e.g. `[visit_date_bl]`; another event needs event and instance references enabled |
+| `window`        | list of two     | *(none)*     | `[earliest, latest]` whole units from `from`, both included; `null` leaves an end open |
+| `unit`          | string          | `days`       | `days`, `weeks`; on datetime fields also `minutes`, `hours`. Needs `from` |
+| `notFuture`     | boolean         | `false`      | The date may not be after today (a datetime: after now), by the server's clock |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string          | generic line   | Replaces the line that names the allowed dates                         |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; a `from` date on another form never blocks |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
+### `@UVEXISTS`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `in`            | string          | *(none)*     | `record`, or one field reference such as `[specimen_id]`; the shorthand `@UVEXISTS=[field]` sets it |
+| `project`       | number or string | *(this project)* | Another project's id, or an alias from this project's settings. Not with `"scope":"dag"` or `"scope":"event"` |
+| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"` or `"in":"record"` |
+| `scope`         | string          | `project`    | `project`, `dag` (this record's group), `event` (this entry's event)   |
+| `match`         | object          | *(none)*     | `{"target_field":"[field of this record]"}`, up to 5 pairs, same entry as the searched value |
+| `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier   |
+| `when`          | string          | *(none)*     | Check only while true                                                  |
+| `message`       | string          | generic line   | Replaces the "not found" line                                          |
+| `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when` (the lookup itself is always exact)        |
+
+### `@UVRANGE`
+
+| Key               | Type            | Default        | Notes                                                                  |
+| ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
+| `soft`          | list of two     | *(none)*     | `[low, high]` usual range, both included; `null` leaves an end open; inside `hard` |
+| `hard`          | list of two     | *(none)*     | `[low, high]` plausible range, both included; `null` leaves an end open |
+| `softBlock`     | string          | `confirm`    | `off`, `confirm`: for a value outside `soft`                       |
+| `hardBlock`     | string          | `hard`       | `confirm`, `hard`: for a value outside `hard` or not a number; a calc never blocks |
+| `unit`          | string          | *(none)*     | Label shown after the limits in the notes, up to 20 characters         |
+| `when`          | string          | *(none)*     | Check only while true; fields of this entry only                       |
+| `message`       | string          | generic line   | Replaces the generated note for both levels                            |
+| `caseSensitive` | boolean         | `false`      | Exact-case text in `when`                                            |
+
+A limit is a JSON number, or a decimal in quotes for more digits than a JSON
+number keeps. `blockSave` is refused.
+
 ### Keys every tag also accepts
 
 | Key            | Type   | Notes                                                                                  |
@@ -1951,7 +3333,7 @@ target the same field: different kinds compose, and the same kind branches by `w
 | ------------------ | ----------------- | --------------------------------------------------------------------------------------------- |
 | `field`          | string            | Required. The field to read                                                                   |
 | `event`          | string            | One unique event name. Not with `events`                                                    |
-| `events`         | list or `"arm"` | Several unique event names, or `"arm"` together with `arm`                                |
+| `events`         | list or `"arm"` | Several unique event names, each listed once, or `"arm"` together with `arm`              |
 | `arm`            | integer           | Arm number for `events:"arm"`; must contain an event that collects the instrument           |
 | `instance`       | integer or string | A number, or `current-`, `previous-`, `next-`, `first-`, `last-instance`, `any-instance`, `all-instances`. Not with `match` |
 | `match`          | object            | `{"target_key_field":"[source_field]"}`; several keys mean all must match                   |
@@ -1992,6 +3374,15 @@ target the same field: different kinds compose, and the same kind branches by `w
 | Codes in one `show`/`hide` list | 200 |
 | Composite `with` fields | 5 |
 | `keepChars` length | 64 |
+| Entries in one `alternates` list | 8 |
+| `@UVWINDOW` bound, either side of `from` | 36,500 units |
+| `@UVEXISTS` `match` pairs | 5 |
+| `@UVEXISTS` lookups per user session | 60 a minute, shared with `@UVUNIQUE` |
+| `@UVEXISTS` lookups into one other project, per browser session | 30 a minute (Control Center setting) |
+| `@UVEXISTS` lookups one project answers for signed-in data entry in other projects | 1,200 a minute (Control Center setting) |
+| `@UVEXISTS` lookups one project answers for post-save checks and scans of other projects | 1,200 a minute (same setting, its own count) |
+| `@UVEXISTS` lookups one project answers for survey respondents of other projects | 120 a minute |
+| `@UVRANGE` `unit` label | 20 characters |
 
 ### Algorithms
 
@@ -2077,6 +3468,27 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVCHOICES={"when":"[country]='1' and [region]='101'","show":["s01","s02"]}
 @UVCHOICES={"when":"[pilot(1)]='1'","show":["s01"],"message":"Pilot sites only","blockSave":"hard"}
 
+# ── @UVWINDOW — dates within a window ────────────────────────────────────────
+@UVWINDOW={"notFuture":true}                           not after today
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}  21 to 35 days after baseline
+@UVWINDOW={"from":"[dob]","window":[0,null]}           not before birth
+@UVWINDOW={"from":"[enrol_date]","window":[-28,0]}     up to 28 days before enrolment
+@UVWINDOW={"from":"[rand_date]","window":[10,14],"unit":"weeks","blockSave":"hard"}
+
+# ── @UVEXISTS — values that must already exist ──────────────────────────────
+@UVEXISTS=record                                       a record ID of this project
+@UVEXISTS=[specimen_id]                                a value saved in specimen_id
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1"}
+@UVEXISTS={"in":"[specimen_id]","match":{"site_code":"[site]"},"blockSave":"hard"}
+@UVEXISTS={"in":"[referral_id]","scope":"dag"}
+@UVEXISTS={"in":"[specimen_id]","project":"lab"}       saved in another project (both must agree)
+
+# ── @UVRANGE — numbers within plausible limits ──────────────────────────────
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}            usual and plausible limits
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250]}     note only for unusual values
+@UVRANGE={"hard":[2,300],"hardBlock":"confirm"}                    ask instead of blocking
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"when":"[sex]='2'"}       limits for one group
+
 # ── Events, repeating instruments, bindings (feature must be enabled) ────────
 @UVASSERT={"assert":"[weight]>=[baseline_arm_1][weight]"}
 @UVREQUIRED={"when":"[previous-event-name][adverse_event]='1'"}
@@ -2086,6 +3498,7 @@ The separators `,` `_` `-` are interchangeable, and each numeric shorthand also 
 @UVASSERT={"assert":"[result]>={t}","references":{"t":{"field":"threshold","event":"collection_arm_1","match":{"specimen_id":"[result_specimen_id]"}}}}
 @UVASSERT={"assert":"{h}>=0 and {h}<=48","references":{"h":{"field":"result_time","type":"datetime","elapsedFrom":"[collected_at]","unit":"hours"}}}
 @UVUNIQUE=record                                      no duplicate inside one record
+@UVWINDOW={"from":"[baseline_arm_1][visit_date]","window":[21,35]}
 
 # ── Letter case ──────────────────────────────────────────────────────────────
 @UVASSERT={"assert":"[code]=[code_confirm]","caseSensitive":true}

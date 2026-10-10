@@ -15,6 +15,7 @@ require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\Branching;
 use INSPIRE\UniversalValidator\AnnotationRules;
+use INSPIRE\UniversalValidator\ModeRegistry;
 
 $n = 0;
 $fail = 0;
@@ -154,7 +155,7 @@ $rules = [rule(['sid'], ['when' => '   ']), rule(['sid'], [])];
 $c = Branching::fieldConflicts($rules);
 check('blank when is treated as no when', isset($c['sid']) && $c['sid']['kind'] === 'two-unconditional');
 
-// ---- BRANCH_KEYS must cover every rule option checkFragment validates ----
+// ---- the branch keys must cover every rule option checkFragment validates ----
 // branchOf() is a sparse allow-list, and validation runs on the SOURCE rule
 // BEFORE the copy. An option missing here therefore validates fine and then
 // silently vanishes, after which ruleFindings falls back to the DEFAULT
@@ -174,8 +175,8 @@ $n++;
         if (in_array($k, $skip, true)) continue;
         $need[] = isset($map[$k]) ? $map[$k] : $k;
     }
-    $missing = array_values(array_diff($need, Branching::BRANCH_KEYS));
-    check('BRANCH_KEYS covers every @UVALIDATE option (missing: ' . implode(', ', $missing) . ')',
+    $missing = array_values(array_diff($need, ModeRegistry::branchKeys()));
+    check('branch keys cover every @UVALIDATE option (missing: ' . implode(', ', $missing) . ')',
         $missing === []);
 }
 

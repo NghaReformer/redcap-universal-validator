@@ -752,6 +752,138 @@ class Logic
         return $sa > 0 ? $mag : -$mag;
     }
 
+    /** Exact decimal comparison of two NUM_RE-shaped strings (-1, 0, 1). The public face of decCmp. */
+    public static function numCompare($a, $b)
+    {
+        return self::decCmp((string) $a, (string) $b);
+    }
+
+    /**
+     * A typed or saved number as a NUM_RE string, or null when it is not one.
+     * Whitespace is trimmed. With $decimalComma (REDCap's *_comma_decimal
+     * validations) one comma is the decimal mark, so "17,5" reads as 17.5; a
+     * value saved with a point still reads. A number with an exponent
+     * ("2.5E1", which REDCap's number validation accepts) is written out
+     * digit for digit. Thousands separators and a lone sign or point are not
+     * numbers. Blank is ''. The twin is QRID_rangeNumber in js/engine.js.
+     */
+    public static function normalizeNumber($value, $decimalComma = false)
+    {
+        $v = trim((string) $value, " \t\r\n");
+        if ($v === '') return '';
+        if ($decimalComma && substr_count($v, ',') === 1 && strpos($v, '.') === false) $v = str_replace(',', '.', $v);
+        if (preg_match(self::NUM_RE, $v)) return $v;
+        $p = self::exponentParts($v);
+        if ($p === null) return null;
+        // More than 70 places from the decimal point, a number is past every
+        // limit (a limit is at most 64 characters written out), so it is
+        // judged as 10^70 or 10^-71 with its sign: the same verdict, without
+        // writing out a thousand digits for "1e1000".
+        if ($p['digits'] !== '' && $p['point'] > 71) $p = ['sign' => $p['sign'], 'digits' => '1', 'point' => 71];
+        elseif ($p['digits'] !== '' && $p['point'] < -70) $p = ['sign' => $p['sign'], 'digits' => '1', 'point' => -70];
+        return self::partsText($p);
+    }
+
+    /** The longest number plainDecimal writes out. */
+    const MAX_PLAIN = 4096;
+
+    /**
+     * A number written with an exponent, written out as a plain decimal digit
+     * for digit: "2.5E1" is "25", "-1.5e-7" is "-0.00000015", "5E0001" is
+     * "50". Null when $s is not that shape, or when written out it would be
+     * longer than MAX_PLAIN characters. Zero carries no sign. Twin of
+     * QRID_plainDecimal.
+     */
+    public static function plainDecimal($s)
+    {
+        $p = self::exponentParts($s);
+        if ($p === null || self::partsLength($p) > self::MAX_PLAIN) return null;
+        return self::partsText($p);
+    }
+
+    /**
+     * A number written with an exponent as 0.DIGITS x 10^POINT: ['sign' =>
+     * '-' or '', 'digits' => its digits without leading or trailing zeros
+     * ('' for zero), 'point' => int], or null when $s is not that shape. The
+     * exponent may have any number of digits; past nine digits it counts as
+     * a billion. Twin of QRID_exponentParts.
+     */
+    public static function exponentParts($s)
+    {
+        if (!preg_match('/^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?)([0-9]+)$/D', (string) $s, $m)) return null;
+        $int = $m[2];
+        $all = $int . (isset($m[3]) ? $m[3] : '');
+        if ($all === '') return null;
+        $digits = ltrim($all, '0');
+        if ($digits === '') return ['sign' => '', 'digits' => '', 'point' => 0];
+        $lead = strlen($all) - strlen($digits);
+        $e = ltrim($m[5], '0');
+        $e = strlen($e) > 9 ? 1000000000 : (int) $e;
+        return ['sign' => $m[1] === '-' ? '-' : '', 'digits' => rtrim($digits, '0'),
+                'point' => strlen($int) - $lead + ($m[4] === '-' ? -$e : $e)];
+    }
+
+    /** How long exponentParts' number is written out. */
+    public static function partsLength(array $p)
+    {
+        $d = strlen($p['digits']);
+        if ($d === 0) return 1;
+        $pt = $p['point'];
+        return strlen($p['sign']) + ($pt <= 0 ? 2 - $pt + $d : ($pt >= $d ? $pt : $d + 1));
+    }
+
+    /** exponentParts' number written out. Callers check partsLength first. */
+    public static function partsText(array $p)
+    {
+        $d = $p['digits'];
+        if ($d === '') return '0';
+        $pt = $p['point'];
+        if ($pt <= 0) $t = '0.' . str_repeat('0', -$pt) . $d;
+        elseif ($pt >= strlen($d)) $t = $d . str_repeat('0', $pt - strlen($d));
+        else $t = substr($d, 0, $pt) . '.' . substr($d, $pt);
+        return $p['sign'] . $t;
+    }
+
+    /**
+     * A NUM_RE string as a limit is shown: no "+", no leading zeros, a bare
+     * "." dropped and ".5" as "0.5"; a zero carries no sign. The digits after
+     * the point stay as typed, so 36.0 is still 36.0. Null for anything else.
+     */
+    public static function canonicalDecimal($s)
+    {
+        if (!preg_match('/^([+-]?)([0-9]*)(?:\.([0-9]*))?$/D', (string) $s, $m) || ($m[2] === '' && (!isset($m[3]) || $m[3] === ''))) {
+            return null;
+        }
+        $int = ltrim($m[2], '0');
+        if ($int === '') $int = '0';
+        $frac = isset($m[3]) ? $m[3] : '';
+        $zero = ($int === '0' && trim($frac, '0') === '');
+        return ($m[1] === '-' && !$zero ? '-' : '') . $int . ($frac === '' ? '' : '.' . $frac);
+    }
+
+    /**
+     * The @UVRANGE verdict for one value: ['tier' => ok|soft|hard|inert,
+     * 'reason' => null|soft-low|soft-high|hard-low|hard-high|not-a-number].
+     * $spec holds 'softLo', 'softHi', 'hardLo', 'hardHi' (NUM_RE strings, null
+     * = open) and 'decimalComma'. Bounds are inclusive. Blank is inert; a value
+     * that is not a number is hard; outside the hard limits is hard; outside
+     * the soft ones is soft. Exact decimal comparison, so 2.50 equals 2.5 and
+     * numbers past 2^53 keep every digit. The twin is QRID_rangeVerdict;
+     * tests/range_fixture.json pins both.
+     */
+    public static function rangeVerdict(array $spec, $value)
+    {
+        $n = self::normalizeNumber($value, !empty($spec['decimalComma']));
+        if ($n === '') return ['tier' => 'inert', 'reason' => null];
+        if ($n === null) return ['tier' => 'hard', 'reason' => 'not-a-number'];
+        $b = function ($k) use ($spec) { return (isset($spec[$k]) && $spec[$k] !== null && $spec[$k] !== '') ? (string) $spec[$k] : null; };
+        if ($b('hardLo') !== null && self::decCmp($n, $b('hardLo')) < 0) return ['tier' => 'hard', 'reason' => 'hard-low'];
+        if ($b('hardHi') !== null && self::decCmp($n, $b('hardHi')) > 0) return ['tier' => 'hard', 'reason' => 'hard-high'];
+        if ($b('softLo') !== null && self::decCmp($n, $b('softLo')) < 0) return ['tier' => 'soft', 'reason' => 'soft-low'];
+        if ($b('softHi') !== null && self::decCmp($n, $b('softHi')) > 0) return ['tier' => 'soft', 'reason' => 'soft-high'];
+        return ['tier' => 'ok', 'reason' => null];
+    }
+
     /** ASCII-whitespace trim + the numeric-or-string comparison from the spec. */
     private static function compare($op, $a, $b, $blank = self::BLANK_PASSES, $caseSensitive = false)
     {

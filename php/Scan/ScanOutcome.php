@@ -85,6 +85,7 @@ final class ScanOutcome
      *   failed:        bool  unrecoverable store/schema/fingerprint failure
      *   expired:       bool  abandoned beyond the configured lifetime
      *   emptyScope:    bool  nothing was examined: no records in scope, or all deleted
+     *   lookupsMoved:  bool  @UVEXISTS verdicts may have moved with a change in the window
      *   violations:    int   ABSENT IS UNKNOWN, and unknown is never clean
      *   ruleProblems:  int   ABSENT IS UNKNOWN, and unknown is never clean
      *   gaps:          int   collection gaps; never a violation, never blocking
@@ -189,8 +190,11 @@ final class ScanOutcome
         // list it opened with and cannot know the project did not move.
         if (!$b('fenced')) {
             return self::out(self::PARTIAL, self::MANIFEST, $detail, false, $gaps,
-                'every record on the opening list was examined, but this server cannot prove the '
-                . 'project did not change during the run');
+                $b('lookupsMoved')
+                    ? 'every record on the opening list was examined, but records changed during the run '
+                      . 'and @UVEXISTS answers depend on other records, so they were not re-checked'
+                    : 'every record on the opening list was examined, but this server cannot prove the '
+                      . 'project did not change during the run');
         }
 
         // Fenced and whole. Detail truncation does not reduce COVERAGE - every

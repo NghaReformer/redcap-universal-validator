@@ -470,9 +470,9 @@ algorithm. A token is valid if any one of them accepts it.
 ```text
 @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
   {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
 ```
 
 **Try it.** Scan one of each, with or without separators. All four read as
@@ -486,19 +486,45 @@ its shape still matches, so the message names a check-character error rather
 than a format error, and the save is blocked. A rule that validated all four
 families by shape alone could not catch that.
 
-**What it will refuse.** If two families were the same length and one of them
-had no check character, the format-only one would accept first and the other's
-check character would never be tested — so that combination is rejected when
-the rule is saved, with a message naming the two entries. The same applies to
-lengths where one is the sum of two or more others: a single token could then
-swallow several real members and still verify.
+**Families with and without a check character.** A value whose shape matches a
+check-bearing family belongs to that family and must pass its check character.
+A format-only family is tried only when no check-bearing pattern matches, so
+declaration order does not matter. Two families may share a length when their
+patterns cannot match the same value. For example, an HIV viral-load field where
+`C`–`Z` codes carry a check character and older `A`/`B` codes do not, both six
+characters long:
 
-In a **single**-value field there are no lengths to separate the families, so
-the same question is answered by looking for a value both patterns accept. If a
-check-bearing pattern is written in a form that cannot be analysed — lookaround,
-a backreference, a named group — the rule is refused rather than assumed safe,
-because the alternative is a mis-scan recorded as clean. Writing the pattern
-with plain character classes (`SK[1-5]-[0-9]{4}[0-9A-Z]`) is all it takes.
+```text
+@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
+  {"label":"Check character verified code","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},
+  {"label":"Non Check character verified code","pattern":"[AB][0-9]{5}","algorithm":"none","lengths":[6]}]}
+```
+
+`C1234` followed by a wrong final character is flagged; `A12345` is accepted on
+format. A format-only family has no check character, so a mis-scan that happens
+to produce a valid legacy code (a `C` read as an `A`) cannot be caught. That is
+the cost of keeping legacy codes, whatever the lengths.
+
+**What it will refuse.** If a format-only pattern accepts a value a
+check-bearing pattern also accepts, the rule is rejected when saved, with a
+message naming the two entries and an example value. Shape ownership already
+makes the check decide inside the check-bearing shape, but a mis-scan that
+breaks that shape (an `O` for a `0`, a dropped digit) would land in the
+overlapping format-only shape and pass on format. In a pooled field only
+entries that share a declared length are compared, because the parser never
+tries an entry at another length. That does not stop an inserted or dropped
+character from turning a check-bearing ID into a valid-looking ID of a
+format-only family of the neighbouring length; keep such families clearly
+different in shape as well. The same applies to lengths where one is the sum of
+two or more others: a single token could then swallow several real members and
+still verify.
+
+The overlap test searches both patterns for a common value and is exact for
+ordinary patterns: classes, groups, alternation and quantifiers. A
+backreference, or a lookaround whose effect it cannot settle, makes the rule
+refused rather than assumed safe, because the alternative is a mis-scan recorded
+as clean. Writing the pattern with plain character classes
+(`SK[1-9]-[0-9]{4}[0-9A-Z]`) is all it takes.
 
 **Write patterns in portable regex.** They run as JavaScript in the browser and
 as PCRE on the server, so anything the two read differently is refused when the
@@ -853,7 +879,11 @@ Not yet — messages are English only in this version.
 Check-character and format rules: Text and Notes fields only. Constraint
 rules: Text, Notes, dropdown, radio, yes/no, true/false, calc and slider.
 Required and Unique rules: the same minus calc. Choice-filter rules
-(`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields).
+(`@UVCHOICES`): radio, dropdown and checkbox (not matrix fields). Date-window
+rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
+validation. Lookup rules (`@UVEXISTS`): Text, dropdown, radio and SQL fields.
+Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
+validation (including comma decimals), calc fields and sliders.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -871,6 +901,84 @@ in the Configure dialog) checks the value against every other record as it is
 typed, with optional composite keys (`with`), project/DAG/event scopes, and a
 real save block. Two saves at the same instant can both pass the live check —
 the post-save audit logs such a collision to the module log.
+
+**Can a visit date be checked against the protocol window?**
+Yes. The `@UVWINDOW` tag checks a date against a window counted from another
+date. `@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}` accepts a visit
+21 to 35 days after baseline, both days included, and the message names the
+allowed dates. `"notFuture":true` refuses a date after today, where "today" is
+the server's date, not the computer's. If the study runs in another time zone
+than the server, name it in the project setting **Time zone for @UVWINDOW
+"notFuture"** (for example `Africa/Douala`). A blank `from` date checks nothing. A
+`from` date on another form only advises, because that form could change while
+this one is open. On a survey, or for a user without rights to that form, the
+`from` date is not sent to the page; the page then checks only `notFuture`, and
+the window is checked when the record is saved. Annotation-only; see the README
+section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**Can a specimen ID on a result form be checked against the registered specimens?**
+Yes. The `@UVEXISTS` tag checks that a value is already saved in the project.
+`@UVEXISTS=[specimen_id]` accepts a value only if some record holds it in
+`specimen_id`; `@UVEXISTS=record` accepts only the ID of a saved record. Add
+`"match":{"site_code":"[site]"}` to look only at specimens of the same site,
+`"event"` to look in one event, and `"scope":"dag"` to stay inside the record's
+Data Access Group. The page asks the server when the value is entered or
+changed, not on every keystroke, and answers found, not found, or could not
+check. Clicking Save re-checks the field and waits for an answer still on its
+way. "Could not check" never blocks a save; the post-save audit checks the
+value again unless a `match` field is still blank. Users are answered only
+about forms they may open, and a user in a Data Access Group only on records
+of their group. Surveys need `"surveys":true`, which is refused when the lookup
+touches an Identifier field.
+Annotation-only; see the README section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**Can the specimen be checked against a separate lab project?**
+Yes, when both projects agree. Write
+`@UVEXISTS={"in":"[specimen_id]","project":"lab"}`, and map the alias `lab` to
+the lab project under "@UVEXISTS project aliases" in this project's module
+settings (or write the project id). An administrator must turn on "@UVEXISTS in
+other projects" in the Control Center, and the lab project must enable the
+module and list this project, with `specimen_id`, under "Projects that may look
+up values here". By default only users with rights to that field in the lab
+project get an answer. The lab project can instead answer any signed-in user of
+this project with found / not found only, and only then also survey
+respondents. The lab project's module log records every lookup, answered or
+refused. Until the lab project agrees, the rule shows one setup error that does
+not say what is missing.
+
+**Can a lab value get a gentle warning when unusual and a block when impossible?**
+Yes. The `@UVRANGE` tag takes two ranges.
+`@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}` shows an amber note
+and asks "save anyway?" for a haemoglobin outside 12 to 17.5, and a red note
+that blocks the save outside 3 to 25 or for text that is not a number. Set
+`"softBlock":"off"` for a note only, or `"hardBlock":"confirm"` to ask instead
+of blocking. Write one tag per group with `when` for limits by sex or age
+group. The note appears when the user leaves the field, not while typing. A
+calc field never blocks. The post-save audit logs every value outside either
+range, and the Validation scan counts them; its report labels them "Unusual
+value", "Implausible value" or "Not a number". Annotation-only; see the README
+section and
+[`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**What happens to a field marked with a missing data code?**
+A field marked with one of the project's missing data codes (REDCap's "M"
+button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not
+validate it, and the module treats it as blank: no check-character, format,
+`@UVASSERT`, `@UVUNIQUE`, `@UVEXISTS`, `@UVWINDOW` or `@UVRANGE` verdict, on the
+page, in the post-save audit or in the scan. `@UVREQUIRED` counts the code as
+an answer, so a field marked "unknown" is not reported as missing. A code in an
+`@UVEXISTS` `match` field or a `@UVWINDOW` "from" date also counts as blank.
+In a `when` condition or an `@UVASSERT` expression the code is read as itself,
+the way REDCap's branching logic reads it: write `[visit_date]<>'UNK'` in
+`when` to leave such records out.
+
+**Why did `@UVUNIQUE` miss a duplicate date while it was being typed?**
+In 2.1.0 and earlier, on a D-M-Y or M-D-Y date field the page sent the date as
+shown (`31-12-2024`) while REDCap stores `2024-12-31`, so the live check never
+matched. The post-save audit and the Validation scan compare stored values and
+did catch it. The release after 2.1.0 fixes the live check.
 
 ---
 

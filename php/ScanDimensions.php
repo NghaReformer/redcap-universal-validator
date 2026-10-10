@@ -2,6 +2,8 @@
 
 namespace INSPIRE\UniversalValidator;
 
+require_once __DIR__ . '/ModeRegistry.php';
+
 /**
  * Every LABEL a scan report needs, read once per scan.
  *
@@ -42,7 +44,7 @@ final class ScanDimensions
     public $fieldLabels = [];
     /** @var array field name => form name */
     public $fieldForms = [];
-    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>] */
+    /** @var array rule ordinal (1-based) => ['label'=>, 'message'=>, 'assert'=>, 'type'=>, 'fields'=>, 'detail'=>] */
     public $rules = [];
     /**
      * @var array rule source id => rule ordinal. A STORED finding names its rule
@@ -197,15 +199,45 @@ final class ScanDimensions
         // Rules, keyed by the ordinal a finding cites. This is what makes
         // "Rule 12" mean something to a reader a week later.
         foreach ($rules as $i => $r) {
+            $type = isset($r['type']) ? (string) $r['type'] : '';
+            $t = self::ruleText($r, $type);
             $d->rules[$i + 1] = [
-                'type'    => isset($r['type']) ? (string) $r['type'] : '',
-                'label'   => isset($r['note']) ? (string) $r['note'] : '',
-                'message' => isset($r['message']) ? (string) $r['message'] : '',
-                'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
+                'type'    => $type,
+                'label'   => $t['label'],
+                'message' => $t['message'],
+                'assert'  => $t['assert'],
                 'fields'  => (isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [],
+                'detail'  => $t['detail'],
             ];
+            // A branched rule carries its wording and limits per branch; a
+            // finding names the branch that judged it (rule()).
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                foreach ($r['branches'] as $bi => $b) {
+                    if (is_array($b)) $d->rules[$i + 1]['branches'][$bi] = self::ruleText($b, $type);
+                }
+            }
         }
         return $d;
+    }
+
+    /**
+     * The text of one rule (or one branch) a report shows: its label, message,
+     * assert and the keys its mode lists under scan.detailKeys
+     * (php/modes.json), for the catalog's "detail" sentence. Scalars only: a
+     * snapshot is text.
+     */
+    private static function ruleText(array $r, $type)
+    {
+        $detail = [];
+        foreach (ModeRegistry::detailKeys($type) as $k) {
+            if (isset($r[$k]) && is_scalar($r[$k])) $detail[$k] = (string) $r[$k];
+        }
+        return [
+            'label'   => isset($r['note']) ? (string) $r['note'] : '',
+            'message' => isset($r['message']) ? (string) $r['message'] : '',
+            'assert'  => isset($r['assert']) ? (string) $r['assert'] : '',
+            'detail'  => $detail,
+        ];
     }
 
     /**
@@ -278,11 +310,23 @@ final class ScanDimensions
     }
 
     /** One rule's snapshot, or an empty shape — never a missing-index warning. */
-    public function rule($ordinal)
+    public function rule($ordinal, $branch = null)
     {
-        return isset($this->rules[$ordinal])
-            ? $this->rules[$ordinal]
-            : ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => []];
+        if (!isset($this->rules[$ordinal])) {
+            return ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => []];
+        }
+        $r = $this->rules[$ordinal];
+        // The branch that judged a finding speaks for it: its message and its
+        // limits, never another branch's. A label only the rule has stays.
+        // A message does not: a branch without one shows the default wording,
+        // as it does on the page (branches never inherit a rule-level message).
+        if ($branch !== null && isset($r['branches'][$branch])) {
+            $b = $r['branches'][$branch];
+            if ($b['label'] === '') $b['label'] = $r['label'];
+            $r = array_merge($r, $b);
+        }
+        unset($r['branches']);
+        return $r;
     }
 
     /**
@@ -307,7 +351,8 @@ final class ScanDimensions
             $ord = (int) $finding['rule'];
         }
         if ($ord < 1) $ord = 0;
-        $rule = $this->rule($ord);
+        // The branch that judged it, where the finding says (see rule()).
+        $rule = $this->rule($ord, isset($finding['branch']) ? $finding['branch'] : null);
         // A rule this object does not know keeps the ordinal the finding gave:
         // "Rule 12" with no name is a worse cell than a named one and a far
         // better one than nothing.

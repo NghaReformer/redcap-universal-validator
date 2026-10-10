@@ -171,6 +171,29 @@ const JSMO = 'EMStub.UV';
   site.fire('change');
   check('with-field change re-checks', stub.calls.length === 2 && stub.calls[1].payload.values.site === '1');
 }
+{
+  // A "with" field this page does not carry is left out: the server reads its
+  // saved value (another form, or another page of a multi-page survey).
+  const stub = makeTransportStub();
+  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'S-77';
+  stub.next = { used: false, record: null };
+  boot([spec], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['spec'], uniqueWith: ['site'], blockSave: 'hard' }] }, stub);
+  check('with field not on the page: left out of the payload', stub.calls.length === 1
+    && !('site' in stub.calls[0].payload.values));
+}
+{
+  // Branches: the page sends the values its conditions read, so the server
+  // answers from the branch the page enforces.
+  const stub = makeTransportStub();
+  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'S-77';
+  const arm = makeEl('select'); arm.name = 'arm'; arm.value = '2';
+  stub.next = { used: false, record: null };
+  boot([spec, arm], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['spec'], branches: [
+      { when: "[arm]='1'", blockSave: 'hard' }, { when: "[arm]='2'", blockSave: 'confirm' }] }] }, stub);
+  check('branches: the condition values travel as cond', stub.calls.length === 1 && stub.calls[0].payload.cond.arm === '2');
+}
 
 // ---- 3) failures FAIL OPEN ---------------------------------------------------
 {
@@ -217,7 +240,58 @@ const JSMO = 'EMStub.UV';
   }, stub);
   check('pending: checking note shown', /checking/.test(uMsg(env, 'pid').innerHTML));
   const ev = submitEv(); env.doc.fire('submit', ev);
-  check('pending: save never trapped', ev._prevented === false);
+  check('pending: a save click waits for the answer', ev._prevented === true
+    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+}
+{
+  // ...for a bounded time: no answer in time fails open, and Save does not ask
+  // the same value again.
+  const realST = global.setTimeout;
+  const long = [];
+  global.setTimeout = (fn, ms) => { if ((ms || 0) >= 5000) { long.push(fn); return 0; } return realST(fn, ms); };
+  try {
+    const stub = makeTransportStub();
+    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'SLOW2';
+    stub.next = 'HANG';
+    const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
+    long.forEach((fn) => fn());
+    const ev = submitEv(); env.doc.fire('submit', ev);
+    check('pending: no answer in time lets the save through', ev._prevented === false);
+    check('pending: ...without asking the same value again', stub.calls.length === 1);
+  } finally { global.setTimeout = realST; }
+}
+
+{
+  // A value changed with no event at all (a script, a widget): Save asks.
+  const stub = makeTransportStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'FREE1';
+  stub.next = { used: false, record: null };
+  const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
+  pid.value = 'TAKEN1';
+  stub.next = { used: true, record: null };
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('changed without an event, then Save: the value is asked before the save is decided',
+    ev._prevented === true && stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'TAKEN1');
+}
+{
+  // A -> B -> A without an input event: A comes from the cache, and B's late
+  // reply must not paint over it.
+  const pending = [];
+  const calls = [];
+  const obj = { ajax(a, payload) { calls.push(payload); return { then(res) { pending.push(res); } }; } };
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'A-1';
+  const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, { obj });
+  pending[0]({ used: false, record: null });
+  pid.value = 'B-1'; pid.fire('change');
+  pid.value = 'A-1'; pid.fire('change');
+  check('cache hit: A is answered without asking again', calls.length === 2 && /Not used before/.test(uMsg(env, 'pid').innerHTML));
+  pending[1]({ used: true, record: null });
+  check('cache hit: a late reply for B is dropped', /Not used before/.test(uMsg(env, 'pid').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('cache hit: ...and the save goes through', ev._prevented === false);
 }
 
 // ---- 5) stale responses are discarded ---------------------------------------

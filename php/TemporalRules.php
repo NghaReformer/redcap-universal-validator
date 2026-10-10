@@ -2,6 +2,7 @@
 namespace INSPIRE\UniversalValidator;
 require_once __DIR__.'/TemporalLogic.php';
 require_once __DIR__.'/AddressResolver.php';
+require_once __DIR__.'/ModeRegistry.php';
 
 /** Pure compilation and dependency discovery. No compiled metadata is persisted on rules. */
 final class TemporalRules
@@ -10,18 +11,27 @@ final class TemporalRules
     public static function extended(array $rule)
     {
         if(isset($rule['references'])||($rule['uniqueScope']??null)==='record')return true;
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){$p=Logic::parse($rule[$key],['qualified'=>true]);if(!empty($p['ok'])&&Logic::qualifiedRefs($p['ast']))return true;}
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){$p=Logic::parse($rule[$key],['qualified'=>true]);if(!empty($p['ok'])&&Logic::qualifiedRefs($p['ast']))return true;}
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')return true;
         foreach($rule['branches']??[] as $b)if(self::extended($b))return true;
         return false;
     }
+    /** The operand references ("from" of @UVWINDOW, ...) of one rule node: [registry entry, parsed ref or qref] pairs. */
+    private static function operands(array $rule)
+    {
+        $out=[];
+        foreach(ModeRegistry::operandKeys() as $rk)if(isset($rule[$rk['key']])){$op=ModeRegistry::operandRef($rule[$rk['key']],['qualified'=>true]);if($op!==null)$out[]=[$rk,$op];}
+        return $out;
+    }
     public static function fields(array $rule)
     {
-        $out=array_merge($rule['fields']??[],$rule['uniqueWith']??[]);
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        $out=$rule['fields']??[];foreach(ModeRegistry::refKeys('fieldList') as $rk)$out=array_merge($out,is_array($rule[$rk['key']]??null)?$rule[$rk['key']]:[]);
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::referencedFields($p['ast']) as $r)$out[]=$r[0];
             foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='qref')$out[]=$r[1];
         }
+        foreach(self::operands($rule) as list(,$op))$out[]=$op[1];
         foreach($rule['references']??[] as $b)if(is_array($b)){
             if(isset($b['field'])&&is_string($b['field']))$out[]=$b['field'];
             foreach(is_array($b['match']??null)?$b['match']:[] as $target=>$source){$out[]=$target;if(is_string($source)&&preg_match('/^\[([a-z][a-z0-9_]*)\]$/D',(string)$source,$m))$out[]=$m[1];}
@@ -48,7 +58,17 @@ final class TemporalRules
             if(isset($b['match'])&&!is_array($b['match']))$errors[]='Binding '.$alias.' match must be an object.';
             if(isset($b['excludeCurrent'])&&!is_bool($b['excludeCurrent']))$errors[]='excludeCurrent must be Boolean.';
             if(isset($b['event']) && is_string($b['event']) && !preg_match('/^[a-z][a-z0-9_-]*$/D',(string)$b['event']))$errors[]='Binding '.$alias.' has an invalid event.';
-            if(isset($b['events']) && is_array($b['events']))foreach($b['events'] as $event)if(!is_string($event)||!preg_match('/^[a-z][a-z0-9_-]*$/D',$event)){$errors[]='Binding '.$alias.' has an invalid event list.';break;}
+            if(isset($b['events']) && is_array($b['events'])){
+                $listed=[];
+                foreach($b['events'] as $event){
+                    if(!is_string($event)||!preg_match('/^[a-z][a-z0-9_-]*$/D',$event)){$errors[]='Binding '.$alias.' has an invalid event list.';break;}
+                    // A repeat adds no member (members are de-duplicated) but was walked
+                    // again for every host context: a 64 KB list of one relative token
+                    // made a save's audit run for minutes (wargame P2).
+                    if(isset($listed[$event])){$errors[]='Binding '.$alias.' lists event '.$event.' more than once.';break;}
+                    $listed[$event]=true;
+                }
+            }
             if(isset($b['arm']) && (!is_scalar($b['arm']) || !preg_match('/^[1-9][0-9]*$/D',(string)$b['arm'])))$errors[]='Binding '.$alias.' needs a positive arm number.';
             if(isset($b['instance']) && ((!is_int($b['instance'])&&!is_string($b['instance'])) ||
                 (!preg_match('/^[1-9][0-9]*$/D',(string)$b['instance'])&&!in_array($b['instance'],['current-instance','previous-instance','next-instance','first-instance','last-instance','any-instance','all-instances'],true))))$errors[]='Binding '.$alias.' has an invalid instance selector.';
@@ -62,7 +82,7 @@ final class TemporalRules
             }
 
         }
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $r)if($r[0]==='binding'&&!array_key_exists($r[1],$refs))$errors[]='Undefined reference binding {'.$r[1].'}.';
             $collection=function($operand)use($refs){
@@ -90,10 +110,11 @@ final class TemporalRules
             if($event['state']==='ok')$ids[$event['event']]=true;
             elseif($event['state']==='unreadable')$unknown=true;
         };
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok']))continue;
             foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$add($ref[1],$ref[3]);
         }
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$add($op[1],$op[3]);
         foreach($rule['references']??[] as $binding){
             if(!is_array($binding)||!isset($binding['field']))continue;
             if(($binding['events']??null)==='arm'){
@@ -120,16 +141,17 @@ final class TemporalRules
     public static function validateProject(array $rule, ProjectShape $shape)
     {
         $errors=[];$references=[];
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
             $p=Logic::parse($rule[$key],['qualified'=>true]);
             if(!empty($p['ok']))foreach(Logic::qualifiedRefs($p['ast']) as $ref)if($ref[0]==='qref')$references[]=[$ref[1],$ref[3],$ref[4]];
         }
+        foreach(self::operands($rule) as list(,$op))if($op[0]==='qref')$references[]=[$op[1],$op[3],$op[4]];
         foreach($rule['references']??[] as $alias=>$binding)if(is_array($binding)&&is_string($binding['field']??null)){
             $field=$binding['field'];$meta=$shape->field($field);
             if(($meta['type']??null)==='checkbox')$errors[]='Binding '.$alias.' needs a scalar field; use a qualified checkbox-code reference for checkbox values.';
             if(isset($binding['type'])&&$meta){
                 $validation=$meta['validation']??'';
-                $expected=strpos($validation,'datetime_seconds_')===0?'datetime_seconds':(strpos($validation,'datetime_')===0?'datetime':(strpos($validation,'date_')===0?'date':null));
+                $tv=TemporalValue::fromValidation($validation);$expected=$tv?$tv['type']:null;
                 if($expected!==$binding['type'])$errors[]='Binding '.$alias.' date type must match the field validation type.';
             }
             foreach(is_array($binding['match']??null)?$binding['match']:[] as $target=>$source){
@@ -168,7 +190,7 @@ final class TemporalRules
             $loc=$r['location'];$onPage=$browser&&!empty($r['self']);
             if($onPage){$live=true;$node=['ref',$loc['field'],$loc['code']];}
             else{$snapshot=$snapshot||$browser;if($browser&&$mayRead&&!$mayRead($loc['instrument']))$denied=true;$node=['lit',$r['value']];}
-            if($typed){$format='ymd';if($onPage){$v=$shape->field($loc['field'])['validation']??'';if(substr($v,-3)==='dmy')$format='dmy';elseif(substr($v,-3)==='mdy')$format='mdy';}$node=['date',$typed,$format,$node];}
+            if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
         $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$live,&$denied,&$problems){
@@ -198,22 +220,46 @@ final class TemporalRules
             if($ast[0]==='not')return ['not',$walk($ast[1])];
             if($ast[0]==='and'||$ast[0]==='or')return [$ast[0],array_map($walk,$ast[1])];return $ast;
         };
+        // Long exact arithmetic spends the same budget as the reads that fed it.
+        $charge=function($units)use($resolver){return $resolver->charge($units);};
         $compiled=$rule;
-        foreach(['when','assert'] as $key)if(isset($rule[$key])){
-            if(!$browser && $key==='assert' && ($compiled['when']??null)==='1=0' && !$problems)continue;
+        foreach(ModeRegistry::condKeys() as $key)if(isset($rule[$key])){
+            if(!$browser && in_array($key,ModeRegistry::condKeys('test'),true) && ($compiled['when']??null)==='1=0' && !$problems)continue;
             $p=Logic::parse($rule[$key],['qualified'=>true]);if(empty($p['ok'])){$problems[]='invalid';continue;}
             $tree=$walk($p['ast']);
             // The browser evaluates its own tree; only saved-data callers need the verdict here.
-            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},$key==='assert',!empty($rule['caseSensitive']));
-            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]='unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
+            $value=$browser?null:TemporalLogic::evaluate($tree,function($f,$c)use($context){$v=$context['values'][$f]??'';return $c===null?$v:(is_array($v)&&($v[$c]??'0')==='1'?'1':'0');},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);
+            if(!$browser){if($key==='assert')$compiled['_temporalAssertLabel']=$rule[$key];if($value===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';$compiled[$key]=$value?'1=1':'1=0';unset($compiled[$key.'Ast']);}
             else $compiled[$key.'Ast']=['temporal',$tree];
+        }
+        // An operand is a VALUE the verdict reads, not a comparison, so it never folds to a
+        // Boolean: the browser gets a live ref or a permitted snapshot, saved-data callers the
+        // value itself.
+        //  - No saved entry yet (no row in that event, no such instance) is a blank value:
+        //    the window waits for it, as it waits for a blank field.
+        //  - One the viewer may not read is ['withheld']: nothing of it is sent, and the
+        //    browser checks only what does not depend on it.
+        //  - One that is the host field itself, in this same entry, is marked: a field is
+        //    never judged against its own value (on the browser the live ref names it).
+        foreach(self::operands($rule) as list($rk,$op)){
+            if(!$browser && ($compiled['when']??null)==='1=0' && !$problems)continue;
+            $r=$resolver->resolve($op,$context);
+            if(($r['state']??null)==='absent'){$form=$shape->field($op[1])['form']??null;$r=['state'=>'ok','value'=>'','self'=>false,'location'=>['instrument'=>$form,'field'=>$op[1],'code'=>null]];}
+            if(isset($r['members'])){$problems[]='invalid';$node=['unknown'];}
+            elseif(($r['state']??null)==='ok'&&$browser&&empty($r['self'])&&$mayRead&&!$mayRead($r['location']['instrument']??null))$node=['withheld'];
+            else $node=$member($r);
+            if($browser)$compiled[$rk['op']]=$node;
+            else{
+                $compiled[$rk['value']]=$node[0]==='lit'?(string)$node[1]:null;
+                if(!empty($r['self'])&&in_array($r['location']['field']??null,$rule['fields']??[],true))$compiled[$rk['value'].'Self']=$r['location']['field'];
+            }
         }
         // A survey/no-rights comparison with no live operands may disclose only its Boolean result.
         if($browser&&$denied){
             if($live)$problems[]='unauthorized';
-            else foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},$key==='assert',!empty($rule['caseSensitive']));$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]='unresolved';}
+            else foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast'])){$v=TemporalLogic::evaluate($compiled[$key.'Ast'],function(){return '';},in_array($key,ModeRegistry::condKeys('test'),true),!empty($rule['caseSensitive']),$charge);$compiled[$key.'Ast']=$v===null?['unknown']:['const',$v];if($v===null)$problems[]=$resolver->exhausted()?'limit':'unresolved';}
         }
-        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser)foreach(['when','assert'] as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];}
+        if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
         if($browser){unset($compiled['references']);$compiled['blockSave']='off';}
         return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];

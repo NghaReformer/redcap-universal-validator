@@ -74,6 +74,13 @@ final class CatchUp
     const K_GONE    = 'reconciled-deleted';
     const K_NOFENCE = 'fence-unprovable';
     const K_CHURN   = 'reconcile-unsettled';
+    /**
+     * Records the change log lists inside the window, counted on the first
+     * round only. Not a finding and never blocking: promotion reads it to know
+     * whether a verdict that depends on OTHER records (@UVEXISTS) can have
+     * moved during the run (ScanPromotion::facts).
+     */
+    const K_WINDOW  = 'window-changes';
 
     /** @var ScanStore */
     private $store;
@@ -151,6 +158,10 @@ final class CatchUp
                                      $st['catchupCursor'], $limit);
         if (!$page) {
             return $this->endOfRound($runId, $epoch, $st, $out);
+        }
+
+        if ((int) $st['catchupRound'] === 1) {
+            $this->store->addAggregate($runId, self::K_WINDOW, null, null, count($page));
         }
 
         $ids = [];

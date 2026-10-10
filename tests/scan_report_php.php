@@ -794,7 +794,7 @@ namespace {
         check('rules: an unknown source id falls back to the ordinal',
             ScanColumns::row(mapper()->toFinding(row(['rule_source_id' => 'gone'])), $d)['rule_label'] === 'A must be OK');
         check('rules: an ordinal nobody knows keeps its number and has no name',
-            $d->ruleOf(['rule' => 12]) === ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'ordinal' => 12]);
+            $d->ruleOf(['rule' => 12]) === ['type' => '', 'label' => '', 'message' => '', 'assert' => '', 'fields' => [], 'detail' => [], 'ordinal' => 12]);
         check('rules: a negative or non-numeric ordinal is no rule',
             $d->ruleOf(['rule' => -3])['ordinal'] === 0 && $d->ruleOf(['rule' => 'x'])['ordinal'] === 0
             && $d->ruleOf([])['ordinal'] === 0);

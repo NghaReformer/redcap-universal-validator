@@ -1,0 +1,122 @@
+<p>REDCap can check that a value looks right, but not that it refers to something real.
+A lab result can name a specimen ID that was never registered, and a follow-up form can
+point to a participant record that does not exist. <code>@UVEXISTS</code> checks, as the
+value is entered, that it is <strong>already saved in the project</strong>: a record ID, or
+a value of another field such as the specimen ID on the collection form.</p>
+
+<h2>Syntax</h2>
+
+<pre><code>@UVEXISTS=record
+
+@UVEXISTS=[specimen_id]
+
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"dag",
+           "match":{"site_code":"[site]"},
+           "message":"Register the specimen on the collection form first.",
+           "blockSave":"hard"}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>in</code></td><td><code>record</code> (a record ID of this project), or one field
+    reference such as <code>[specimen_id]</code> (a value saved in that field, in any record)</td></tr>
+<tr><td><code>event</code></td><td>Look in one event only, by its unique event name</td></tr>
+<tr><td><code>scope</code></td><td><code>project</code> (default), <code>dag</code> (records of the same
+    Data Access Group) or <code>event</code> (the event of the entry being checked)</td></tr>
+<tr><td><code>match</code></td><td>Look only at saved entries whose target field equals a field of
+    this record, e.g. <code>{"site_code":"[site]"}</code>; up to 5 pairs</td></tr>
+<tr><td><code>surveys</code></td><td><code>true</code> to check on surveys too (off by default)</td></tr>
+<tr><td><code>project</code></td><td>Look in another project on the same server, by project id or by an
+    alias set in this project's module settings; that project must agree (see below)</td></tr>
+<tr><td><code>message</code>, <code>blockSave</code>, <code>when</code>,
+    <code>caseSensitive</code></td><td>As for the other tags</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2>Field types</h2>
+
+<p>Text, dropdown, radio and SQL fields. The field searched in, and each pair of
+<code>match</code> fields, must be stored the same way: two dates, two datetimes to the
+minute, two datetimes to the second, two times of the same precision, or neither a date
+nor a time, because the comparison is exact on the stored values.</p>
+
+<h2>What is checked, and when</h2>
+
+<ul>
+<li>The check runs when the value is entered or changed, not on every keystroke. It
+    shows <strong>found</strong>, <strong>not found</strong>, or <strong>could not check</strong>.
+    "Could not check" never blocks a save.</li>
+<li>Clicking Save re-checks the field first and waits for an answer still on its way, up
+    to 10 seconds. A value typed and saved at once is therefore checked before the save.</li>
+<li>With several <code>when</code> branches, the page sends the values its conditions
+    read, so the server answers from the branch the page is enforcing.</li>
+<li>The comparison is exact and case-sensitive. Dates are compared as REDCap stores them
+    (Y-M-D), whatever format the field shows.</li>
+<li>A blank value checks nothing, and so does a blank <code>match</code> field on the
+    same page. A <code>match</code> field on another form that is still blank shows
+    "could not check" to staff.</li>
+<li>Signed-in users are answered only when they may open the forms the lookup reads, and
+    at most 60 times a minute. A user in a Data Access Group is answered only on records
+    of their own group. Staff in no group see the record the value was found in; staff in
+    a group see it only when it is in their group. A record-ID lookup never names a
+    record.</li>
+<li>REDCap may confine a group user's reads to their own group. A "not found" from a rule
+    that looks across groups is kept only when the module sees other groups' records in
+    the same request; otherwise it is "could not check".</li>
+<li>The page config never carries where the rule looks (<code>in</code>,
+    <code>event</code>, <code>scope</code>, <code>match</code>). On a survey a
+    misconfigured rule shows a general notice, and the "no access" reason staff see
+    names no form or field.</li>
+<li>On a <strong>survey</strong> the check runs only when the rule says
+    <code>"surveys": true</code>, and the answer is found or not found, never a record.
+    The opt-in is refused when any field the lookup touches is an Identifier. Survey
+    lookups may cause at most 60 reads of a whole searched field a minute per project.</li>
+</ul>
+
+<h2>Looking in another project</h2>
+
+<pre><code>@UVEXISTS={"in":"[specimen_id]","project":"lab","match":{"site_code":"[site]"}}</code></pre>
+
+<ul>
+<li>An administrator turns on <strong>@UVEXISTS in other projects</strong> in the Control
+    Center. It is off by default.</li>
+<li>The searched project enables the module and lists the asking project under
+    <strong>Projects that may look up values here</strong>, with the fields it may search
+    (<code>record</code> for its record ID) and who gets an answer: only users with rights to
+    those fields there (the default; a user in a Data Access Group there is answered from
+    their group only), or any signed-in user of the asking project, with found or not found
+    only and no Identifier searched. Survey respondents are answered only under the second
+    choice, when the searched project also allows it and the rule says
+    <code>"surveys": true</code>.</li>
+<li>Until that agreement passes, every problem shows the same setup error, and nothing of
+    the searched project is read. Field errors come after.</li>
+<li>The record found there is never shown. Every lookup, answered or refused, is written to
+    the searched project's module log, with the value as a keyed hash under that project's
+    key, or left out when that project logs no values.</li>
+<li>At most 30 lookups a minute per browser session into one project. One project answers
+    at most 1,200 a minute for signed-in data entry, another 1,200 for post-save checks and
+    scans, and 120 for survey respondents; the first two are Control Center settings. Over
+    any of them the answer is "could not check", and the searched project's log gets one
+    "throttled" line a minute.</li>
+<li>The audit asks as the user who saved. A user in a Data Access Group of the searched
+    project gets "could not check" after saving: a check confined to that group would log a
+    value saved in another group as missing, and the same save by someone else as clean.</li>
+<li>The Validation scan reads the searched project once per searched field and request.
+    Each branch of the rule is judged on its own. A branch the scanning user would not be
+    answered for, or that needs a project where that user is in a Data Access Group, is
+    reported as not evaluated. A stored scan that looked up values in a project the reader
+    would not be answered by is not shown to that reader.</li>
+</ul>
+
+<h2>Audit</h2>
+
+<p>The post-save audit logs a violation as <code>type: exists</code> with reason
+<code>not-found</code>, and the Validation scan reports it. Saving the form that holds a
+<code>match</code> field checks the lookup again. The scan reads the searched field once per
+rule per scan request and checks every record against it. A lookup that could not be
+completed is reported as a rule problem, never as a pass. A scan confined to one Data Access
+Group reports a rule that looks across groups as not evaluated, because a value saved only in
+another group would read as not found. A durable scan with <code>@UVEXISTS</code> rules claims
+coverage through its change fence only when no record changed during the run.</p>

@@ -577,6 +577,511 @@
           "alt": 0
         }
       ]
+    },
+    {
+      "label": "ownership: disjoint same-length run",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "CHECKED",
+            "pattern": "[C-Z][0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              6
+            ]
+          },
+          {
+            "label": "LEGACY",
+            "pattern": "[AB][0-9]{5}",
+            "algorithm": "none",
+            "lengths": [
+              6
+            ]
+          }
+        ]
+      },
+      "input": "C12348A12345Z9876MB00001",
+      "segs": [
+        {
+          "type": "id",
+          "id": "C12348",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A12345",
+          "valid": true,
+          "alt": 1
+        },
+        {
+          "type": "id",
+          "id": "Z9876M",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "B00001",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: broken check member is caught",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "CHECKED",
+            "pattern": "[C-Z][0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              6
+            ]
+          },
+          {
+            "label": "LEGACY",
+            "pattern": "[AB][0-9]{5}",
+            "algorithm": "none",
+            "lengths": [
+              6
+            ]
+          }
+        ]
+      },
+      "input": "C1234AA12345",
+      "segs": [
+        {
+          "type": "id",
+          "id": "C1234A",
+          "valid": false,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A12345",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: broken check member alone",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "CHECKED",
+            "pattern": "[C-Z][0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              6
+            ]
+          },
+          {
+            "label": "LEGACY",
+            "pattern": "[AB][0-9]{5}",
+            "algorithm": "none",
+            "lengths": [
+              6
+            ]
+          }
+        ]
+      },
+      "input": "Z9876A",
+      "segs": [
+        {
+          "type": "id",
+          "id": "Z9876A",
+          "valid": false,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "ownership: overlapping shapes, good minted ID",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "ABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: overlapping shapes, broken minted ID",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "ABCDEFGHA",
+      "segs": [
+        {
+          "type": "id",
+          "id": "ABCDEFGHA",
+          "valid": false,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: overlapping shapes, legacy-only shape",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "123456789",
+      "segs": [
+        {
+          "type": "id",
+          "id": "123456789",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "ownership: overlapping shapes, mixed run",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "123456789ABCDEFGHAABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "123456789",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHA",
+          "valid": false,
+          "alt": 1
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: format-only declared first",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "ABCDEFGHA ABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "ABCDEFGHA",
+          "valid": false,
+          "alt": 1
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "ownership: format-only declared last",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "MINTED",
+            "pattern": "\\D[0-9A-Z]{8}",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "LEGACY",
+            "pattern": "[0-9A-Z]{9}",
+            "algorithm": "none",
+            "lengths": [
+              9
+            ]
+          }
+        ]
+      },
+      "input": "ABCDEFGHA ABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "ABCDEFGHA",
+          "valid": false,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "keep: {n,m} comma is syntax, not a separator",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "[A-Z][0-9]{6,7}",
+        "idLengths": [
+          7,
+          8
+        ]
+      },
+      "input": "A123456,B1234567, C765432",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A123456",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "B1234567",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "C765432",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "keep: (?:...) prefix is syntax, not a separator",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "GRP",
+            "pattern": "(?:SK)[1-5][0-9]{4}[0-9A-Z]",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              8
+            ]
+          },
+          {
+            "label": "OLD",
+            "pattern": "FC[1-9][0-9]{4}",
+            "algorithm": "none",
+            "lengths": [
+              7
+            ]
+          }
+        ]
+      },
+      "input": "SK10123D:FC10589",
+      "segs": [
+        {
+          "type": "id",
+          "id": "SK10123D",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "FC10589",
+          "valid": true,
+          "alt": 1
+        }
+      ]
+    },
+    {
+      "label": "keep: escaped separator \\: is kept",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "A\\:B[0-9]{3}",
+        "idLengths": [
+          6
+        ]
+      },
+      "input": "A:B123 A:B456",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A:B123",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A:B456",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "keep: hex-escaped separator \\x3A is kept",
+      "config": {
+        "algorithm": "none",
+        "idPattern": "A\\x3AB[0-9]{3}",
+        "idLengths": [
+          6
+        ]
+      },
+      "input": "A:B123,A:B456",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A:B123",
+          "valid": true,
+          "alt": 0
+        },
+        {
+          "type": "id",
+          "id": "A:B456",
+          "valid": true,
+          "alt": 0
+        }
+      ]
+    },
+    {
+      "label": "ownership: owners only at declared lengths",
+      "config": {
+        "strip": "-",
+        "alternates": [
+          {
+            "label": "CHK",
+            "pattern": "[A-Z][0-9A-Z]{7}[0-9A-Z]?",
+            "algorithm": "iso7064_mod37_36",
+            "lengths": [
+              9
+            ]
+          },
+          {
+            "label": "OLD",
+            "pattern": "[A-Z][0-9]{7}",
+            "algorithm": "none",
+            "lengths": [
+              8
+            ]
+          }
+        ]
+      },
+      "input": "A1234567 ABCDEFGHK",
+      "segs": [
+        {
+          "type": "id",
+          "id": "A1234567",
+          "valid": true,
+          "alt": 1
+        },
+        {
+          "type": "id",
+          "id": "ABCDEFGHK",
+          "valid": true,
+          "alt": 0
+        }
+      ]
     }
   ]
 }

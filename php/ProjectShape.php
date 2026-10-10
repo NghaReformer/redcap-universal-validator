@@ -7,6 +7,8 @@ final class ProjectShape
     private $events;
     private $fields;
     private $fieldsKnown;
+    /** eventId() answers, keyed by its arguments. The shape never changes, so neither do they. */
+    private $eventIds = [];
 
     /**
      * events[id] = {name, arm, order, forms: ?array<string>, repeats: ?array<string>,
@@ -25,7 +27,20 @@ final class ProjectShape
     public function event($id) { return isset($this->events[$id]) ? $this->events[$id] : null; }
     public function events() { return $this->events; }
 
+    /**
+     * Every token walks the project's events, and a binding asks again for each
+     * host context of a save: 200 events, a few hundred tokens and 50 instances
+     * made one audit take over a minute (wargame P2). serialize() keeps null, ''
+     * and an integer id apart and is binary-safe.
+     */
     public function eventId($token, $current, $form)
+    {
+        $key = serialize([$token, $current, $form]);
+        if (!array_key_exists($key, $this->eventIds)) $this->eventIds[$key] = $this->findEventId($token, $current, $form);
+        return $this->eventIds[$key];
+    }
+
+    private function findEventId($token, $current, $form)
     {
         if ($token === null || $token === 'event-name') {
             if ($this->event($current) === null) return ['state'=>'unreadable'];

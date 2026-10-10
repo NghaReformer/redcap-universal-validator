@@ -227,6 +227,19 @@ namespace {
     check('repeat uniqueness preserves leading zeros',$eval($r,['a_val'=>'012'])===true);
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='10';
     $res=$m->scanProject(PID);check('record duplicates both contexts reported',count($res['violations'])===2);
+    // The page reads a D-M-Y date as typed, the other entries come from saved
+    // Y-M-D data: the page must get them the way the field shows them.
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$dictionary['a_val']['text_validation_type_or_show_slider_number']='date_dmy';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2026-01-07';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-01-09';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('D-M-Y record uniqueness: a typed duplicate is caught',$eval($r,['a_val'=>'07-01-2026'])===false);
+    check('D-M-Y record uniqueness: a duplicate in another event is caught',$eval($r,['a_val'=>'09-01-2026'])===false);
+    check('D-M-Y record uniqueness: a free date passes',$eval($r,['a_val'=>'08-01-2026'])===true);
+    check('D-M-Y record uniqueness: this entry\'s own saved date passes',$eval($r,['a_val'=>'05-01-2026'])===true);
+    $res=$m->scanProject(PID);check('D-M-Y record uniqueness: the scan finds no duplicate',!$res['violations']);
 
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
     $m->projectSettings['qualified-audit-max-contexts']=1;$m->redcap_save_record(PID,'1','fb',1,null);
@@ -356,6 +369,70 @@ namespace {
     check('an arm that collects nothing is a configuration error',(bool)array_filter($bad,function($e){return strpos($e,'arm 7')!==false;}));
     $res=$m->scanProject(PID);
     check('and never a confident count of zero',!$res['violations']&&count($res['unconfigurable'])>=1);
+
+    // @UVWINDOW counted from a date in another event (2.2.0): the "from" operand
+    // goes through the same resolver, entitlement and snapshot rules as a condition.
+    $win=function($ann='@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"blockSave":"hard"}'){
+        $m=temporal('[a_val]>0');
+        REDCap::$dictionary['a_val']['field_annotation']=$ann;
+        foreach(['a_val','b_open'] as $f)REDCap::$dictionary[$f]['text_validation_type_or_show_slider_number']='date_ymd';
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2026-01-01';
+        REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-01-05';   // 4 days: early
+        REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='2026-01-25';   // 24 days: inside
+        REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='2026-03-01';   // 59 days: late
+        return $m;
+    };
+    $m=$win();$p=render($m,'fa');$r=ruleOf($p,'a_val');
+    check('window from another event: no configuration error, not deferred',$r&&empty($r['configError'])&&empty($r['deferred']));
+    check('window from another event: the saved anchor is a snapshot literal',($r['windowFromOp']??null)===['lit','2026-01-01']);
+    check('window from another event: advisory in the browser',($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
+    $res=$m->scanProject(PID);
+    $reasons=array_column($res['violations'],'reason');sort($reasons);
+    check('window from another event: the scan finds the early and the late entry',$reasons===['window-early','window-late']&&!$res['unconfigurable']);
+    $m=$win();$m->redcap_save_record(PID,'1','fb',1,null);
+    check('window from another event: saving the anchor form re-audits every host entry',count(invalid($m))===2);
+    $m=$win();$m->projectSettings['enable-event-instance-refs']=false;
+    check('window from another event needs the feature',strpos(ruleOf(render($m,'fa'),'a_val')['configError']??'','event and instance references')!==false);
+    $m=$win();REDCap::$rights['nurse']['forms']['fb']='0';$p=render($m,'fa');
+    check('window anchor on a form the viewer cannot read: withheld, nothing shipped',(ruleOf($p,'a_val')['windowFromOp']??null)===['withheld']&&empty(ruleOf($p,'a_val')['deferred'])&&strpos($p['raw'],'2026-01-01')===false);
+    $m=$win();$fold=new ReflectionMethod($m,'foldTemporalRules');$fold->setAccessible(true);
+    $rule=['type'=>'window','fields'=>['a_val'],'windowFrom'=>'[baseline_arm_1][b_open][2]','windowLo'=>21,'windowHi'=>35,
+           'windowUnit'=>'days','dateType'=>'date','dateFormat'=>'ymd','fromType'=>'date','fromFormat'=>'ymd'];
+    $survey=$fold->invoke($m,[$rule],PID,'1','fa',1,1,'survey');
+    check('window anchor on a survey: withheld, nothing shipped',($survey[0]['windowFromOp']??null)===['withheld']&&empty($survey[0]['deferred'])&&strpos(json_encode($survey),'2026-01-01')===false);
+    $m=$win();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='';
+    $res=$m->scanProject(PID);
+    check('window from a blank anchor in another event: inert, not unresolved',!$res['violations']&&!$res['unconfigurable']);
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);
+    $res=$m->scanProject(PID);
+    check('window from an anchor entry that does not exist: never a verdict',!$res['violations']);
+    check('...and not unresolved: the window waits for the entry, as for a blank date',!$res['unconfigurable']);
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$m->redcap_save_record(PID,'1','fa',1,1);
+    check('...nor on save',!invalid($m)&&!unconf($m));
+    $m=$win();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$r=ruleOf(render($m,'fa'),'a_val');
+    check('...and the page gets a blank anchor, not a deferral',$r&&empty($r['deferred'])&&($r['windowFromOp']??null)===['lit','']);
+    // A "from" that is the host field itself on one of its entries: that entry is
+    // never judged against its own value; the other entries are.
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');
+    $res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=($v['event_id']??'?').'/'.($v['instance']??'?').':'.$v['reason'];sort($hit);
+    check('window from its own entry: that entry has no verdict, the others do',$hit===['1/3:window-early','2/1:window-late']&&!$res['unconfigurable']);
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');$m->redcap_save_record(PID,'1','fa',1,1);
+    $hit=[];foreach(invalid($m) as $c)$hit[]=$c[1]['event_id'].'/'.$c[1]['instance'].':'.$c[1]['reason'];sort($hit);
+    check('window from its own entry: saving it re-audits the others, never itself',$hit===['1/3:window-early','2/1:window-late']&&!unconf($m));
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('window from its own entry: the page names the field itself (the browser reads no anchor)',($r['windowFromOp']??null)===['ref','a_val',null]);
+
+    // A branched extended rule: each scan finding names the branch that judged
+    // it, so the report shows that branch's message and not the first one's.
+    $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');
+    REDCap::$dictionary['a_val']['field_annotation']='@UVASSERT={"assert":"[a_val]<[baseline_arm_1][b_open][2]","when":"[key_a]=\'A\'","message":"under"} '
+        .'@UVASSERT={"assert":"[a_val]>[baseline_arm_1][b_open][2]","when":"[key_a]=\'B\'","message":"over"}';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='5';
+    REDCap::$data[1]['repeat_instances'][2]['fa'][1]['a_val']='20';
+    $res=$m->scanProject(PID);$dims=$m->scanDimensions(PID,$res['rules']??null);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.(isset($v['branch'])?$dims->rule($v['rule'],$v['branch'])['message']:'none');sort($hit);
+    check('branched extended rule: each scan finding names its branch (got '.json_encode($hit).')',$hit===['1/3:over','2/1:under']&&!$res['unconfigurable']);
 
     $goldenPath=__DIR__.'/temporal_golden.json';
     if(in_array('--update-golden',$argv,true))file_put_contents($goldenPath,json_encode($golden,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");

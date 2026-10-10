@@ -13,6 +13,7 @@ require_once __DIR__ . '/../php/AnnotationRules.php';
 
 use INSPIRE\UniversalValidator\AnnotationRules;
 use INSPIRE\UniversalValidator\CheckCharacter;
+use INSPIRE\UniversalValidator\ModeRegistry;
 
 $n = 0;
 $fail = 0;
@@ -332,14 +333,13 @@ check('assert caseSensitive quoted -> error', isset($f[0]['error'])
     && strpos($f[0]['error'], 'caseSensitive') !== false && $f[0]['_tag'] === '@UVASSERT');
 $f = AnnotationRules::parseAllTags('@UVASSERT={"assert":"[a]=[b]","caseSensitive":1}');
 check('assert caseSensitive:1 -> error', isset($f[0]['error']));
-// Every tag with a "when" takes the flag; each refuses a non-boolean.
-$tagForms = [
-    '@UVALIDATE' => '@UVALIDATE={"algorithm":"luhn","when":"[a]=\'x\'",%s}',
-    '@UVREQUIRED' => '@UVREQUIRED={"when":"[a]=\'x\'",%s}',
-    '@UVUNIQUE' => '@UVUNIQUE={"when":"[a]=\'x\'",%s}',
-    '@UVCHOICES' => '@UVCHOICES={"when":"[a]=\'x\'","hide":["9"],%s}',
-    '@UVASSERT' => '@UVASSERT={"assert":"[a]=[b]","when":"[a]=\'x\'",%s}',
-];
+// Every tag with a "when" takes the flag; each refuses a non-boolean. One
+// sample per mode in php/modes.json (tests/mode_samples.json), so a new mode
+// is covered here the day it is added.
+$modeSamples = json_decode(file_get_contents(__DIR__ . '/mode_samples.json'), true)['modes'];
+$tagForms = [];
+foreach (ModeRegistry::all() as $m) $tagForms[$m['tag']] = $modeSamples[$m['mode']]['tagForm'];
+check('every mode has a tagForm sample', count($tagForms) === count(ModeRegistry::all()));
 foreach ($tagForms as $tag => $form) {
     $f = AnnotationRules::parseAllTags(sprintf($form, '"caseSensitive":true'));
     check($tag . ' caseSensitive:true carried', !isset($f[0]['error']) && $f[0]['caseSensitive'] === true);
@@ -349,8 +349,8 @@ foreach ($tagForms as $tag => $form) {
     check($tag . ' caseSensitive non-boolean -> error', isset($f[0]['error'])
         && strpos($f[0]['error'], 'caseSensitive') !== false);
 }
-foreach (['single', 'pooled', 'constraint', 'required', 'unique', 'choices'] as $t) {
-    $frag = ['type' => $t, 'caseSensitive' => 'yes', 'assert' => '[a]=[b]', 'choicesHide' => ['9']];
+foreach (ModeRegistry::all() as $m) foreach ($m['types'] as $t) {
+    $frag = array_merge(['type' => $t, 'caseSensitive' => 'yes'], $modeSamples[$m['mode']]['fragment']);
     $errs = AnnotationRules::checkFragment($frag);
     check('checkFragment (' . $t . ', settings channel) refuses a non-boolean caseSensitive',
         (bool) array_filter($errs, function ($e) { return strpos($e, 'caseSensitive') !== false; }));
@@ -539,13 +539,135 @@ check('cross-alternate sum-swallow rejected (9 = 5 + 4)',
     ]), 'swallow') !== false);
 check('the four-family union 8/9/10 is safe', $altErr($ALT4) === '');
 
-// R3 - a format-only alternate sharing a length with a check-bearing one would
-// accept first, so that check character would never be tested
-check('format-only alternate sharing a length with a check-bearing one rejected',
-    strpos($altErr([
-        ['pattern' => 'AA[0-9]{7}', 'algorithm' => 'none', 'lengths' => [9]],
-        ['pattern' => 'BB[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
-    ]), 'would accept the value first') !== false);
+// Helpers for the shape-ownership tests below: a minted ID, the same ID with
+// its check character corrupted (same character class, so the shape still
+// matches), and compact views of the two runtime verdicts.
+$withCheck = function ($body) {
+    return $body . CheckCharacter::compute('iso7064_mod37_36', str_replace('-', '', $body));
+};
+$breakCheck = function ($id) {
+    $c = substr($id, -1);
+    return substr($id, 0, -1) . ($c === 'A' ? 'B' : 'A');
+};
+$pooledSegs = function (array $alts, $v) {
+    $segs = CheckCharacter::pooledParse(['type' => 'pooled', 'alternates' => $alts], $v);
+    if ($segs === null) return 'null';
+    return implode(' ', array_map(function ($s) {
+        return $s['type'] === 'id' ? $s['id'] . ':' . ($s['valid'] ? 'ok' : 'bad') . ':' . $s['alt']
+                                   : 'junk:' . $s['text'];
+    }, $segs));
+};
+$singleReason = function (array $alts, $v) {
+    $r = CheckCharacter::validateSingleField(['strip' => '-', 'alternates' => $alts], $v);
+    return ($r['ok'] ? 'ok' : 'bad') . ':' . $r['reason'];
+};
+
+// R3 - a format-only alternate may share a length with a check-bearing one
+// when the shapes are disjoint. The blunt shared-length refusal this replaced
+// could not tell AA/BB apart from a real overlap.
+$R3 = [
+    ['pattern' => 'AA[0-9]{7}',         'algorithm' => 'none',             'lengths' => [9]],
+    ['pattern' => 'BB[0-9]{6}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+];
+$bb = $withCheck('BB123456');
+check('R3 format-only and check-bearing alternates may share a length', $altErr($R3) === '');
+check('R3 pooled: a good check-bearing ID verifies', $pooledSegs($R3, $bb) === $bb . ':ok:1');
+check('R3 pooled: a corrupted check-bearing ID is flagged',
+    $pooledSegs($R3, $breakCheck($bb)) === $breakCheck($bb) . ':bad:1');
+check('R3 pooled: a format-only ID of the same length is accepted',
+    $pooledSegs($R3, 'AA1234567') === 'AA1234567:ok:0');
+check('R3 pooled: a mixed run splits at the right boundaries',
+    $pooledSegs($R3, 'AA1234567' . $bb . $breakCheck($bb))
+    === 'AA1234567:ok:0 ' . $bb . ':ok:1 ' . $breakCheck($bb) . ':bad:1');
+
+// The driving real-world case: HIV viral-load sample codes. C-Z codes carry a
+// check character, legacy A/B codes do not, and both are 6 characters long.
+$HIV = [
+    ['label' => 'Check character verified code',     'pattern' => '[C-Z][0-9]{4}[0-9A-Z]',
+     'algorithm' => 'iso7064_mod37_36', 'lengths' => [6]],
+    ['label' => 'Non Check character verified code', 'pattern' => '[AB][0-9]{5}',
+     'algorithm' => 'none', 'lengths' => [6]],
+];
+$hivTag = '@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":['
+    . '{"label":"Check character verified code","pattern":"[C-Z][0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[6]},'
+    . '{"label":"Non Check character verified code","pattern":"[AB][0-9]{5}","algorithm":"none","lengths":[6]}]}';
+$r = AnnotationRules::parseField($hivTag);
+check('HIV the pooled action tag parses clean', !isset($r['error']) && count($r['alternates']) === 2);
+$hivSingle = array_map(function ($a) { unset($a['lengths']); return $a; }, $HIV);
+check('HIV the single-value rule parses clean',
+    fragErrors(['type' => 'single', 'alternates' => $hivSingle]) === []);
+$c1 = $withCheck('C1234');
+$z9 = $withCheck('Z9876');
+check('HIV pooled: a check-character code verifies', $pooledSegs($HIV, $c1) === $c1 . ':ok:0');
+check('HIV pooled: a corrupted check-character code is flagged',
+    $pooledSegs($HIV, $breakCheck($c1)) === $breakCheck($c1) . ':bad:0');
+check('HIV pooled: a legacy A/B code is accepted on format',
+    $pooledSegs($HIV, 'A12345') === 'A12345:ok:1' && $pooledSegs($HIV, 'B00001') === 'B00001:ok:1');
+check('HIV pooled: a jammed mixed run splits and verifies',
+    $pooledSegs($HIV, $c1 . 'A12345' . $z9) === $c1 . ':ok:0 A12345:ok:1 ' . $z9 . ':ok:0');
+check('HIV pooled: a corrupted member inside a run is still caught',
+    $pooledSegs($HIV, $breakCheck($c1) . 'A12345') === $breakCheck($c1) . ':bad:0 A12345:ok:1');
+check('HIV single: a check-character code verifies', $singleReason($hivSingle, $c1) === 'ok:valid');
+check('HIV single: a corrupted check-character code is a check error',
+    $singleReason($hivSingle, $breakCheck($c1)) === 'bad:check-character');
+check('HIV single: a legacy A/B code is accepted', $singleReason($hivSingle, 'A12345') === 'ok:valid');
+check('HIV single: anything else is a format error', $singleReason($hivSingle, 'A1234X') === 'bad:format');
+
+// Review 3, H5: regex syntax is not a separator that cleaning must keep. The
+// comma of a {n,m} quantifier and the ":" "=" "!" "<" ">" and group name of a
+// "(?..." prefix used to be collected as literal characters.
+check('patternLiterals: separators are kept', CheckCharacter::patternLiterals('FC[1-9]-[0-9]{4}') === '-');
+check('patternLiterals: a {n,m} comma is syntax', CheckCharacter::patternLiterals('Ad{6,7}') === '');
+check('patternLiterals: (?: (?= (?! (?<= (?<! (?<name> prefixes are syntax',
+    CheckCharacter::patternLiterals('(?:P-)?(?=S)(?!X)(?<=Y)?(?<!Z)?(?<grp>SK)[0-9]{4}') === '-');
+check('patternLiterals: escaped metacharacters are literal, so an escaped {2,3} keeps its comma',
+    CheckCharacter::patternLiterals('A\.B\{2,3\}') === '.{,}');
+check('patternLiterals: a "{" that is not a quantifier is left alone (it is a metacharacter)',
+    CheckCharacter::patternLiterals('A{B') === '');
+check('patternLiterals: an escaped separator is literal', CheckCharacter::patternLiterals('A\:B') === ':'
+    && CheckCharacter::patternLiterals('A\x3AB') === ':' && CheckCharacter::patternLiterals('A\/B\d') === '/');
+check('patternLiterals legacy: the pre-rc.2 reader, kept only to grandfather KEEP verdicts',
+    CheckCharacter::patternLiterals('(?:SK)\d{2,3}', true) === ':,' && CheckCharacter::patternLiterals('A\:B', true) === '');
+// Review 4, I1: main counted syntax characters as kept, so these siblings agreed
+// by accident and saved. Their runtime KEEP union is unchanged, so they stay
+// accepted rather than turning a working field into a configuration notice.
+foreach ([
+    [['(?:SK)[0-9]{4}[0-9A-Z]', [7]],    ['A:B[0-9]{3}', [6]]],
+    [['(?=D)[A-Z0-9]{5}[0-9A-Z]', [6]],  ['A=[0-9]{2}', [4]]],
+    [['(?<p>ST)[0-9]{3}[0-9A-Z]', [6]],  ['Q<[0-9]{2}>', [5]]],
+    [['[A-Z][0-9]{5,6}', [6, 7]],        ['X,[0-9]{3}', [5]]],
+] as $g) {
+    check('I1 a KEEP verdict main reached is grandfathered: ' . $g[0][0] . ' / ' . $g[1][0],
+        $altErr([
+            ['label' => 'K', 'pattern' => $g[0][0], 'algorithm' => 'none', 'lengths' => $g[0][1]],
+            ['label' => 'F', 'pattern' => $g[1][0], 'algorithm' => 'none', 'lengths' => $g[1][1]],
+        ]) === '');
+}
+// Review 5, J1: the grandfather clause must not admit a rule whose runtime
+// cleaning changes. LG\/ is now kept as a separator, which would keep "/" for
+// the SK sibling too and turn "SK1234Z/SK5678S" - clean before - into junk.
+$J1 = [['label' => 'SK', 'pattern' => 'SK[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [7]],
+       ['label' => 'LG', 'pattern' => 'LG\/[0-9]{5}',       'algorithm' => 'none',             'lengths' => [8]]];
+check('J1 a newly kept escaped separator is not grandfathered',
+    strpos($altErr($J1), 'disagree about which characters survive cleaning (/)') !== false
+    && strpos($altErr($J1, ['keepChars' => ';']), 'disagree about which characters survive cleaning (/)') !== false);
+check('J1 ... declaring it in keepChars is still the escape hatch', $altErr($J1, ['keepChars' => '/']) === '');
+check('J1 ... and a sibling that already keeps "/" literally leaves the union unchanged, so it stands',
+    $altErr([['label' => 'SK', 'pattern' => 'SK/[0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],
+             ['label' => 'LG', 'pattern' => 'LG\/[0-9]{5}',        'algorithm' => 'none',             'lengths' => [8]]]) === '');
+check('KEEP gate: a (?:...) alternate beside a plain one is not refused',
+    $altErr([
+        ['label' => 'GRP', 'pattern' => '(?:SK)[1-5][0-9]{4}[0-9A-Z]', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [8]],
+        ['label' => 'OLD', 'pattern' => 'FC[1-9][0-9]{4}',             'algorithm' => 'none',             'lengths' => [7]],
+    ]) === '');
+check('KEEP gate: a {n,m} alternate beside a fixed-length one is not refused',
+    $altErr([
+        ['label' => 'CHK', 'pattern' => '[A-Z][0-9A-Z]{7,8}', 'algorithm' => 'iso7064_mod37_36', 'lengths' => [9]],
+        ['label' => 'OLD', 'pattern' => '[A-Z][0-9]{7}',      'algorithm' => 'none',             'lengths' => [8]],
+    ]) === '');
+check('KEEP: commas typed between {n,m} pooled members are dropped, not junk',
+    CheckCharacter::validatePooledField(['type' => 'pooled', 'algorithm' => 'none',
+        'idPattern' => '[A-Z][0-9]{6,7}', 'idLengths' => [7, 8]], 'A123456,B1234567')['ok'] === true);
 
 // R2 - KEEP is computed once for the whole field, so an algorithm that can emit
 // "*" changes what survives cleaning for its siblings too
@@ -600,17 +722,38 @@ check('H-01 permissive format-only alternate refused (declared first)',
     strpos($altErr([
         ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
         ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
-    ], ['type' => 'single']), 'never be tested') !== false);
+    ], ['type' => 'single']), 'its check character never tested') !== false);
 check('H-01 caught regardless of declaration order',
     strpos($altErr([
         ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
         ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
-    ], ['type' => 'single']), 'never be tested') !== false);
+    ], ['type' => 'single']), 'its check character never tested') !== false);
 check('H-01 the error names a concrete overlapping value',
     strpos($altErr([
         ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'],
         ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD],
     ], ['type' => 'single']), 'SK1-00000') !== false);
+// The reviewer's repro of why the refusal stays even with shape ownership: an
+// O for a 0, a dropped digit, a 1 for an I all break the SK shape, so the
+// catch-all takes them on format. Ownership only covers corruptions that keep
+// the check-bearing shape, so the save-time refusal is what protects these.
+$CATCH = ['label' => 'catchall', 'pattern' => '[A-Z0-9-]+',              'algorithm' => 'none'];
+$SK    = ['label' => 'SK',       'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]', 'algorithm' => $MOD];
+$sk    = $withCheck('SK1-0427');
+foreach (['SK1-O427', 'SK1-427', 'SKI-0427'] as $broken) {
+    check('H-01 runtime: a shape-breaking mis-scan (' . $broken . ') passes the catch-all, hence the refusal',
+        $singleReason([$CATCH, $SK], $broken . substr($sk, -1)) === 'ok:valid');
+}
+// Shape ownership is the runtime backstop when an overlap slips past the save
+// gate (a stale rule, a probe that cannot reach the overlap): inside the SK
+// shape the check decides, in either declaration order.
+foreach ([[$CATCH, $SK], [$SK, $CATCH]] as $oi => $pair) {
+    check('ownership: a good SK ID verifies, order ' . $oi, $singleReason($pair, $sk) === 'ok:valid');
+    check('ownership: a bad check inside the SK shape is a check error, order ' . $oi,
+        $singleReason($pair, $breakCheck($sk)) === 'bad:check-character');
+    check('ownership: a non-SK value falls to the catch-all, order ' . $oi,
+        $singleReason($pair, 'XYZ-123') === 'ok:valid');
+}
 // ...and disjoint prefixes are still fine, single AND pooled: the driving case
 // declares its format-only family FIRST and must keep working.
 check('H-01 the driving case (disjoint shapes) still accepted, single',
@@ -655,7 +798,6 @@ check('M-04 non-ASCII alternate strip refused at config time',
 check('M-04 an ASCII alternate strip is still accepted',
     $altErr([['pattern' => 'A[0-9]{4}', 'algorithm' => 'none', 'strip' => '-']], ['type' => 'single']) === '');
 
-// patternWitness must never guess: an unverifiable witness is discarded.
 // L-01: the union cap only runs on the POOLED path, so without a per-entry
 // bound a single-type rule could carry an arbitrarily long list into config.
 check('L-01 an over-long per-alternate lengths list is refused',
@@ -666,12 +808,6 @@ check('L-01 a list at the cap is still accepted',
     !isset(AnnotationRules::parseField('@UVALIDATE={"type":"single","alternates":[{"pattern":"A[0-9]{4}",'
         . '"algorithm":"none","lengths":[' . implode(',', range(1, 32)) . ']}]}')['error']));
 
-check('patternWitness builds a verified witness for a supported pattern',
-    CheckCharacter::patternWitness('SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-// Round 2: an unbuildable witness makes the overlap guard SILENT, so the
-// builder has to cover the ordinary ways an ID family gets written - a group,
-// an alternation of prefixes, a negated class. Taking the first branch is
-// enough: any one member of the check-bearing pattern proves the overlap.
 // Round 2 lows: checkFragment is public and documented as THE shared
 // validator returning a list of error strings, so a malformed alternates must
 // be REPORTED there, not throw (validateSettings swallows a throw into an
@@ -693,26 +829,54 @@ check('L-5 the alternate count is refused before the list is normalized',
     isset(AnnotationRules::normalizeAlternates(
         array_fill(0, 20000, ['pattern' => 'A[0-9]{4}', 'algorithm' => 'none']))['error']));
 
-check('patternWitness expands a group and takes the first branch',
-    CheckCharacter::patternWitness('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness handles top-level alternation',
-    CheckCharacter::patternWitness('SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness handles a negated class, preferring an ID-like member',
-    CheckCharacter::patternWitness('[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]') === '0K1-00000');
-check('patternWitness handles an optional non-capturing group',
-    CheckCharacter::patternWitness('(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]') === 'SK1-00000');
-check('patternWitness declines lookaround rather than guess',
-    CheckCharacter::patternWitness('(?=SK)[A-Z]{2}[0-9]{5}') === null);
-check('patternWitness declines an unbalanced group',
-    CheckCharacter::patternWitness('([A-Z])\\1[0-9]{7}') === null);
-// every witness it DOES return is a genuine member - that is what makes the
-// guard "proven overlap only" rather than a guess
-foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
-          'FC[1-9]-[0-9]{4}', '(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]', 'A(B(C|D)E)?[0-9]{2}'] as $wp) {
-    $w = CheckCharacter::patternWitness($wp);
+// patternOverlap decides overlap exactly. It reads the ordinary ways an ID
+// family is written - a group, an alternation of prefixes, a negated class, an
+// optional non-capturing group, a named group - and gives a concrete example.
+$ovEx = function ($a, $b, $len = null) {
+    $r = CheckCharacter::patternOverlap($a, $b, $len);
+    return $r['overlap'] === null ? 'unknown' : ($r['overlap'] ? $r['example'] : 'disjoint');
+};
+check('patternOverlap: a group', in_array($ovEx('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'), ['SK1-00000', 'DT1-00000'], true));
+check('patternOverlap: top-level alternation, either branch',
+    $ovEx('SK1-[0-9]{4}[0-9A-Z]|SK2-[0-9]{4}[0-9A-Z]', 'SK2-[0-9]{5}') === 'SK2-00000');
+check('patternOverlap: a negated class', $ovEx('[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+') === '0K1-00000');
+check('patternOverlap: an optional non-capturing group',
+    $ovEx('(?:P-)?SK[1-5]-[0-9]{4}[0-9A-Z]', 'P-[A-Z0-9-]+') === 'P-SK1-00000');
+check('patternOverlap: a named group is an ordinary group', $ovEx('(?<x>[A-Z])[0-9]{8}', '[0-9A-Z]{9}') === 'A00000000');
+check('patternOverlap: disjoint prefixes', $ovEx('(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'FC[1-9]-[0-9]{4}') === 'disjoint');
+check('patternOverlap: the HIV families are disjoint at their length and at any length',
+    $ovEx('[C-Z][0-9]{4}[0-9A-Z]', '[AB][0-9]{5}', 6) === 'disjoint'
+    && $ovEx('[C-Z][0-9]{4}[0-9A-Z]', '[AB][0-9]{5}') === 'disjoint');
+// lookaround is read as a superset; an overlap found there is reported only if
+// the real patterns confirm it, otherwise the answer is unknown
+check('patternOverlap: lookaround overlap whose first example the real pattern rejects is unknown',
+    $ovEx('(?=SK)[A-Z]{2}[0-9]{5}', '[A-Z0-9]{7}') === 'unknown');
+check('patternOverlap: lookaround overlap the real patterns confirm',
+    $ovEx('(?=A)[A-Z]{2}[0-9]{5}', '[A-Z0-9]{7}') === 'AA00000');
+check('patternOverlap: lookaround overlap the real patterns refute is unknown',
+    $ovEx('(?=[A-Z])[0-9A-Z]{9}', '[0-9]{9}') === 'unknown');
+check('patternOverlap: a lookaround superset that is disjoint proves disjoint',
+    $ovEx('(?=SK)[A-Z]{2}[0-9]{5}', '[0-9]{7}') === 'disjoint');
+check('patternOverlap: a backreference is unknown', $ovEx('([A-Z])\\1[0-9]{7}', '[0-9A-Z]{9}') === 'unknown');
+// The reviewer's misses of the sampling probe: overlaps neither sample reached.
+check('patternOverlap: an overlap at the shared length only (SK[0-9]+ vs 9 chars)',
+    $ovEx('SK[0-9]+[0-9A-Z]', '[A-Z0-9]{9}', 9) === 'SK0000000');
+check('patternOverlap: an overlap in the middle of a range ([A-Z] vs [B-Y0-9])',
+    $ovEx('[A-Z][0-9]{4}[0-9A-Z]', '[B-Y0-9][0-9]{5}', 6) === 'B00000');
+check('patternOverlap: a subset family (M-codes inside [A-Z])',
+    $ovEx('[A-Z][0-9]{4}[0-9A-Z]', 'M[0-9]{5}', 6) === 'M00000');
+check('patternOverlap: values are uppercased, so lowercase-only shapes never meet',
+    $ovEx('[a-z]{3}', '[a-z]{3}') === 'disjoint');
+// every example it DOES return is a genuine member of both patterns
+foreach ([['SK[1-5]-[0-9]{4}[0-9A-Z]', '[A-Z0-9-]+'], ['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', 'DT[0-9-]{6}[A-Z0-9]'],
+          ['[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]', '.{9}'], ['\D[0-9A-Z]{8}', '[0-9A-Z]{9}'],
+          ['A(B(C|D)E)?[0-9]{2}', 'ABDE[0-9]+'], ['FC[1-9]-[0-9]{4}', 'F[A-Z][0-9]-[0-9]*']] as $pair) {
     $why = '';
-    check('patternWitness output is a real member of ' . $wp,
-        $w === null || CheckCharacter::patTest(CheckCharacter::gatePattern($wp, $why, true), $w));
+    $ex = $ovEx($pair[0], $pair[1]);
+    check('patternOverlap example is a member of both: ' . $pair[0] . ' / ' . $pair[1],
+        $ex !== 'unknown' && $ex !== 'disjoint'
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
 }
 // ...and the guard now fires on all three shapes that bypassed it in round 1
 foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
@@ -722,7 +886,7 @@ foreach (['(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]',
         strpos($altErr([
             ['label' => 'legacy', 'pattern' => '[A-Z0-9-]+', 'algorithm' => 'none'],
             ['label' => 'SK',     'pattern' => $ck,          'algorithm' => $MOD],
-        ], ['type' => 'single']), 'never be tested') !== false);
+        ], ['type' => 'single']), 'its check character never tested') !== false);
 }
 // a genuinely disjoint alternation family is still accepted
 check('H-1 a disjoint alternation family is not refused',
@@ -732,59 +896,142 @@ check('H-1 a disjoint alternation family is not refused',
     ], ['type' => 'single']) === '');
 
 // ---- round 3 ------------------------------------------------------------
-// H-1: "no witness" is UNKNOWN, not "safe". A check-bearing pattern the builder
-// cannot analyse used to silence the guard completely, and a single-value field
-// has nothing else: every mis-scanned ID of that family recorded as clean.
+// H-1: "cannot tell" is UNKNOWN, not "safe". A check-bearing pattern the old
+// builder could not analyse silenced the guard completely, and every
+// mis-scanned ID of that family was recorded as clean. Each of these overlaps
+// LEGACY or cannot be proved not to, so each is refused.
 foreach (['(?=[A-Z])[0-9A-Z]{9}', '(?![0])[0-9A-Z]{9}', '(?<x>[A-Z])[0-9]{8}', '([A-Z])\\1[0-9]{7}'] as $opaque) {
-    check('H-1 an unanalysable check-bearing pattern is refused: ' . $opaque,
-        strpos($altErr([
+    check('H-1 a lookaround/backreference/named-group pattern overlapping LEGACY is refused: ' . $opaque,
+        $altErr([
             ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}', 'algorithm' => 'none'],
             ['label' => 'MINTED', 'pattern' => $opaque,       'algorithm' => $MOD],
-        ], ['type' => 'single']), 'too complex to prove') !== false);
+        ], ['type' => 'single']) !== '');
 }
-// The negated shorthands are ordinary regex, so the builder covers them rather
+// The negated shorthands are ordinary regex, so the reader covers them rather
 // than refusing the rule that uses them.
-check('H-1 the builder covers the negated shorthands',
-    CheckCharacter::patternWitness('\D[0-9A-Z]{8}') === 'A00000000'
-    && CheckCharacter::patternWitness('\S[0-9]{8}') === '000000000'
-    && CheckCharacter::patternWitness('\b[A-Z]{9}') === 'AAAAAAAAA');
+check('H-1 the overlap reader covers the negated shorthands and \b',
+    $ovEx('\D[0-9A-Z]{8}', '[0-9A-Z]{9}') === 'A00000000'
+    && $ovEx('\S[0-9]{8}', '[0-9]{9}') === '000000000'
+    && $ovEx('\b[A-Z]{9}', '[0-9]{9}') === 'disjoint');
 check('H-1 a rule using them is still accepted when the shapes are disjoint',
     $altErr([
         ['label' => 'GHIT', 'pattern' => '[^a-z]C[1-9]-[0-9]{4}',   'algorithm' => 'none'],
         ['label' => 'S4K',  'pattern' => '\D[0-9]{4}[0-9A-Z]{4}',   'algorithm' => $MOD],
     ], ['type' => 'single']) === '');
-// A pooled rule is proved safe the other way - the shared-length guard, which
-// is complete there - so it must NOT be refused for an unanalysable pattern.
-check('H-1 pooled is not refused for an unanalysable pattern',
+// A pooled parser only tries a format at its declared lengths, so alternates
+// with no length in common never compete and need no proof - an unanalysable
+// pattern is fine there...
+check('H-1 pooled is not refused for an unanalysable pattern at a different length',
     $altErr([
         ['label' => 'GHIT',   'pattern' => 'FC[1-9]-[0-9]{4}', 'algorithm' => 'none', 'lengths' => [8]],
         ['label' => 'MINTED', 'pattern' => '([A-Z])\1[1-9]-[0-9]{5}', 'algorithm' => $MOD, 'lengths' => [9]],
     ]) === '');
-check('H-1 ... and the pooled shared-length guard still fires',
+check('H-1 ... a pooled overlap at a shared length is refused by the probe',
     strpos($altErr([
         ['label' => 'GHIT',   'pattern' => '[0-9A-Z]{9}',      'algorithm' => 'none', 'lengths' => [9]],
         ['label' => 'MINTED', 'pattern' => '\D[0-9A-Z]{8}',    'algorithm' => $MOD,   'lengths' => [9]],
-    ]), 'never be tested') !== false);
-// One witness probes ONE point, so a format-only alternate that overlaps
-// somewhere the ID-like pick does not reach read as clean. The second probe is
-// biased the other way; both are still verified against the pattern's own
-// regex, so a probe can only ever find a REAL overlap.
-check('H-1 the second probe finds a subset overlap the first misses',
+    ]), 'its check character never tested') !== false);
+// ...but at a SHARED length the probe runs, and unknown is refused as in the
+// single path.
+check('H-1 pooled: an unanalysable pattern at a shared length is refused',
+    strpos($altErr([
+        ['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}',          'algorithm' => 'none', 'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '([A-Z])\1[0-9A-Z]{7}', 'algorithm' => $MOD,   'lengths' => [9]],
+    ]), 'too complex to prove') !== false);
+// The reviewer's F2: a format-only family wholly inside a check-bearing one
+// would be dead - every legacy value owned, and failing, by the check.
+check('H-1 a format-only family subsumed by a check-bearing one is refused, single and pooled',
+    strpos($altErr([
+        ['label' => 'NEW',    'pattern' => '[A-Z0-9]{8}[0-9A-Z]', 'algorithm' => $MOD],
+        ['label' => 'LEGACY', 'pattern' => '[0-9]{9}',            'algorithm' => 'none'],
+    ], ['type' => 'single']), 'its check character never tested') !== false
+    && strpos($altErr([
+        ['label' => 'NEW',    'pattern' => '[A-Z0-9]{8}[0-9A-Z]', 'algorithm' => $MOD,   'lengths' => [9]],
+        ['label' => 'LEGACY', 'pattern' => '[0-9]{9}',            'algorithm' => 'none', 'lengths' => [9]],
+    ]), 'its check character never tested') !== false);
+// Runtime backstop, exhaustively, on the round-3 LEGACY/MINTED pair (refused at
+// save, see above): of the 36 final characters after ABCDEFGH exactly one is
+// the real check character, and ownership accepts only that one.
+$R3X = [['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}',   'algorithm' => 'none'],
+        ['label' => 'MINTED', 'pattern' => '\D[0-9A-Z]{8}', 'algorithm' => $MOD]];
+$R3P = [['label' => 'LEGACY', 'pattern' => '[0-9A-Z]{9}',   'algorithm' => 'none', 'lengths' => [9]],
+        ['label' => 'MINTED', 'pattern' => '\D[0-9A-Z]{8}', 'algorithm' => $MOD,   'lengths' => [9]]];
+$good = $withCheck('ABCDEFGH');
+$singleOk = 0; $pooledOk = 0; $singleChk = 0; $pooledBad = 0;
+foreach (str_split('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ') as $ch) {
+    $v = 'ABCDEFGH' . $ch;
+    if ($singleReason($R3X, $v) === 'ok:valid') $singleOk++;
+    if ($singleReason($R3X, $v) === 'bad:check-character') $singleChk++;
+    if ($pooledSegs($R3P, $v) === $v . ':ok:1') $pooledOk++;
+    if ($pooledSegs($R3P, $v) === $v . ':bad:1') $pooledBad++;
+}
+check('ownership single: only the real check character is accepted (1 of 36)',
+    $singleOk === 1 && $singleChk === 35 && $singleReason($R3X, $good) === 'ok:valid');
+check('ownership pooled: only the real check character is accepted (1 of 36)',
+    $pooledOk === 1 && $pooledBad === 35 && $pooledSegs($R3P, $good) === $good . ':ok:1');
+// Ownership is per LENGTH in a pooled field: a check-bearing family whose
+// pattern could match 8 characters but which only declares 9 does not own an
+// 8-character token, so the format-only family at 8 keeps it.
+$PL = [['label' => 'CHK', 'pattern' => '[A-Z][0-9A-Z]{7}[0-9A-Z]?', 'algorithm' => $MOD,   'lengths' => [9]],
+       ['label' => 'OLD', 'pattern' => '[A-Z][0-9]{7}',      'algorithm' => 'none', 'lengths' => [8]]];
+check('ownership pooled: a check-bearing family owns only its declared lengths',
+    $altErr($PL) === '' && $pooledSegs($PL, 'A1234567') === 'A1234567:ok:1');
+// A subset overlap anywhere in the pattern is found, not just at a sampled point.
+check('H-1 a subset format-only alternate is refused, naming an example',
     strpos($altErr([
         ['label' => 'SUB', 'pattern' => 'SK5-[0-9]{4}[0-9A-Z]',      'algorithm' => 'none'],
         ['label' => 'S4K', 'pattern' => 'SK[1-5]-[0-9]{4}[0-9A-Z]',  'algorithm' => $MOD],
-    ], ['type' => 'single']), 'SK5-9999Z') !== false);
-foreach (['SK[1-5]-[0-9]{4}[0-9A-Z]', '(SK|DT)[1-5]-[0-9]{4}[0-9A-Z]', '[^a-z]K[1-5]-[0-9]{4}[0-9A-Z]',
-          '\D[0-9A-Z]{8}', 'A(B(C|D)E)?[0-9]{2}', 'FC[1-9]-[0-9]{4}'] as $wp) {
-    $why = '';
-    $re  = CheckCharacter::gatePattern($wp, $why, true);
-    $all = CheckCharacter::patternWitnesses($wp);
-    check('every probe for ' . $wp . ' is a real member', $all !== [] && count(array_filter(
-        $all, function ($w) use ($re) { return !CheckCharacter::patTest($re, $w); })) === 0);
+    ], ['type' => 'single']), 'SK5-00000') !== false);
+// The reviewer's G1 rules: all refused by main's blunt shared-length guard,
+// passed by the sampling probe, refused again by the exact test.
+foreach ([
+    [['SK[0-9]+[0-9A-Z]', [9]],              ['[A-Z0-9]{9}', [9]]],
+    [['SK[1-5]X?[0-9]{2}[0-9A-Z]', [7]],     ['[A-Z0-9]{7}', [7]]],
+    [['[A-Z][0-9]{4}[0-9A-Z]', [6]],         ['[B-Y0-9][0-9]{5}', [6]]],
+    [['[A-Z][0-9]{4}[0-9A-Z]', [6]],         ['M[0-9]{5}', [6]]],
+] as $g) {
+    check('G1 pooled overlap at a shared length refused: ' . $g[0][0] . ' / ' . $g[1][0],
+        strpos($altErr([
+            ['label' => 'K', 'pattern' => $g[0][0], 'algorithm' => $MOD,   'lengths' => $g[0][1]],
+            ['label' => 'F', 'pattern' => $g[1][0], 'algorithm' => 'none', 'lengths' => $g[1][1]],
+        ]), 'its check character never tested') !== false);
 }
-// L-4: an empty string is not a witness - every pattern that can match nothing
-// accepts it, so it proves no overlap, and it reads as `for example ""`.
-check('L-4 an empty witness is no claim', CheckCharacter::patternWitness('A{0,9}') === null);
+// Only the shared length counts in a pooled rule: SK[0-9]+[0-9A-Z] and a
+// 9-character catch-all do overlap at 9, but not at 8.
+check('G1 pooled: no overlap at the lengths actually shared means no refusal',
+    $altErr([
+        ['label' => 'K', 'pattern' => 'SK[0-9]+[0-9A-Z]', 'algorithm' => $MOD,   'lengths' => [8]],
+        ['label' => 'F', 'pattern' => '[0-9]{8}',         'algorithm' => 'none', 'lengths' => [8]],
+    ]) === '');
+// L-4: the empty string proves nothing - both patterns accepting "" is not an
+// overlap a value could hit.
+check('L-4 an empty-string overlap is no claim', $ovEx('A{0,9}', 'B{0,3}') === 'disjoint');
+// Review 3, H1: two patterns that both accept "" must still be searched for a
+// NON-empty common value - the empty-string accept at the start hid it.
+check('patternOverlap: both accepting "" does not hide a real overlap',
+    $ovEx('0?', '0*') === '0' && $ovEx('[A-Z0-9]*', '[0-9]*') === '0'
+    && $ovEx('[^AB]?', '\w*') === '0');
+// Review 3, H2: escaped range endpoints outside the value alphabet still bound
+// the range, and octal escapes read as both engines read them.
+foreach ([['[\x00-\x7F]{5}[0-9A-Z]', '[0-9]{6}'], ['[\x20-\x7F]{5}[0-9A-Z]', '[A-Z0-9]{6}'],
+          ['[\x21-\x7A]{5}[0-9A-Z]', '[A-Z0-9]{6}'], ['[\0-9]{5}[0-9A-Z]', '[0-8]{6}'],
+          ['SK\061[0-9]{3}[0-9A-Z]', 'SK[0-9]{5}'], ['[\060-\071]{4}[0-9A-Z]', '[2-5]{5}'],
+          ['[\t-~]{3}', '[A-Z]{3}']] as $pair) {
+    $why = '';
+    $ex = $ovEx($pair[0], $pair[1]);
+    check('patternOverlap: escape endpoints and octal read correctly: ' . $pair[0] . ' / ' . $pair[1],
+        $ex !== 'unknown' && $ex !== 'disjoint'
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[0], $why, true), $ex)
+        && CheckCharacter::patTest(CheckCharacter::gatePattern($pair[1], $why, true), $ex));
+}
+check('patternOverlap: an octal escape outside a class that could be a backreference is unknown',
+    $ovEx('([A-Z])\101', 'AA') === 'unknown');
+// With a length, only values of exactly that length count: these two meet at
+// 5 characters and nowhere at 8.
+check('patternOverlap: an overlap at another length does not count',
+    $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}', 8) === 'disjoint'
+    && $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}', 5) === 'SK000'
+    && $ovEx('SK[0-9]+', 'SK[0-9]{3}|[0-9]{8}') === 'SK000');
 // L-1: checkFragment is documented as THE gate every channel goes through, so
 // it has to report on a hostile shape rather than throw - validateSettings
 // swallows a throw into an ALLOWED save of a rule nothing validated.

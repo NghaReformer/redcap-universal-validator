@@ -14,6 +14,21 @@ node tests/risky_js.cjs         # JS risky-pattern heuristic vs risky_patterns.j
 php  tests/risky_php.php         # PHP risky-pattern heuristic + server behavior
 php  tests/annotation_php.php    # @UVALIDATE parser + shared rule validator (checkFragment)
 php  tests/hook_php.php          # redcap_save_record audit path against a strict framework mock
+php  tests/registry_php.php      # mode registry (php/modes.json): frozen maps, coverage, bad file
+node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
+php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
+node tests/window_dom_js.cjs     # @UVWINDOW browser rule (messages, clock, snapshot, guard)
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights there, probe log, budgets
+node tests/exists_dom_js.cjs      # @UVEXISTS browser rule (asks on change, could-not-check, cache)
+node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
+php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
+node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
+php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
+php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
+node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
 node tests/config_notice_js.cjs  # page-level config-error notice
 node tests/dispatch_notice_js.cjs # dispatcher config-error routing
 node tests/a11y_dom_js.cjs      # field DOM contract (a11y wiring, debounce, survey, readonly)
@@ -126,6 +141,126 @@ Three properties make the pair hard to break quietly:
   verdict and fails if it now agrees, so a sentinel cannot rot into a case that
   would pass either way.
 
+## `php/modes.json` — the mode registry contract
+
+Each action tag configures one validation mode, and `php/modes.json` lists
+them: the tag, its rule types, the field types it accepts, its parser and
+validator, the keys a rule carries, and the scan labels.
+`php/ModeRegistry.php` serves the file to the server, and
+`gen_mode_registry.cjs` writes the parts the browser needs into `js/engine.js`.
+
+- `registry_php.php` holds copies of the hand-kept lists the registry replaced
+  (tag map, branch keys, client keys, field-type gates, refusal wording) and
+  fails if the registry no longer reproduces them.
+- It also fails when a mode is missing from a place that stays hand-written:
+  `config.json` action-tags, `site/pages.py`, `php/messages/catalog.json`, the
+  engine's public namespace, or `mode_samples.json`.
+- `mode_samples.json` holds one working sample per mode. `annotation_php.php`
+  and `deferral_dom_js.cjs` loop over it, so a new mode is covered by their
+  every-mode checks without editing them.
+
+## `window_fixture.json` — the date-window contract
+
+`window_php.php` runs every case through `TemporalLogic::windowVerdict` and
+`window_js.cjs` through `QRID_windowVerdict`; both must return the same verdict
+and the same earliest and latest bounds. Each case gives the rule, the value and
+its display format, the `from` date and its format, and the clock. Cases cover
+D-M-Y, M-D-Y and Y-M-D input, leap days and year ends, open and negative bounds,
+every unit, a blank value or `from` date, half-typed and impossible dates, a
+date against a datetime, and `notFuture` exactly at today, at the next minute
+and one second ahead of now. The clock is an input, so no case depends on the
+day the tests run. `window_js.cjs` also checks `QRID_clockNow`: the page clock
+moves forward with `Date.now()`, never backwards, and is null without a valid
+server clock.
+
+- `window_dom_js.cjs` boots the browser rule on a stub page: the message names
+  the bounds in the field's format, the survey message leaves out the `from`
+  field, a snapshot `from` date never blocks, and the save-time recheck of a
+  page left open past the server's midnight uses the new day.
+- `window_module_php.php` covers the server side: field and dictionary checks,
+  the four outcomes of the page fold for a `from` date (live, snapshot,
+  withheld, unresolved), `config.clock`, the audit reasons, re-auditing on a
+  save of the `from` form, scan labels and detail lines, and the durable scan
+  clock taken from the run's start time.
+
+## `exists_php.php` and `exists_dom_js.cjs` — the lookup contract
+
+`exists_php.php` mocks `REDCap::getData` so that it honours `records`, `events`
+and a simple `filterLogic`, and can be told to misbehave: a filtered read that
+wrongly comes back empty, a full read that throws, every read throwing, or a read
+that returns every event. It covers the grammar and dictionary refusals, that
+the lookup target never reaches the page config, the `exists-check` endpoint
+(found, not found and could not check; a narrowed miss confirmed by the full
+read; trimmed, case-sensitive comparison of stored values; dates typed as shown;
+`match` fields on and off the page; events, scopes and branches; the form-rights
+gate and the per-session throttle, both shared with `unique-check`; the survey
+opt-in, its Identifier refusal and its whole-field read budget; the DAG-masked
+record; a record outside the caller's group; a group caller whose read may not
+see other groups; `when` values sent from the page), the audit, the scan index
+read once per rule, and the group-confined scan.
+
+`exists_dom_js.cjs` drives the browser rule with fake timers and a stub
+transport: typing clears the answer and asks nothing, change and blur ask once,
+Save waits for an answer still on its way, *could not check* never blocks and
+is not asked again by Save, unknown answers are not cached, a late reply for an
+older value is dropped, the message follows an autocomplete widget, surveys are
+opt-in and never see a reason.
+
+`exists_cross_php.php` covers `"project"`, a lookup in another project. Its
+mocks keep settings, dictionaries, data, rights and `\Project` per project id,
+and `REDCap::getUserRights()` is a trap: it answers with the rights of the
+project of the request, including the form of the other project, and no check
+may read it as rights there. It covers the grammar, the order of the annotation
+checks (server switch, alias, the other project's agreement with one message
+for every reason and no read of that project before it passes, then the field
+checks there), the endpoint under both agreements (rights there, expiry,
+administrators, confinement to a group there, Identifiers, surveys), the
+record never echoed, an empty read never "not found", the probe log in the
+other project, the budgets (one count per kind of caller there, a session
+window, one "throttled" line a minute), the audit (including a saver in a group
+there), the scan judged branch by branch, a stored scan refused to a reader the
+other project would not answer, a deleted project, a field named `record`, and
+the Configure dialog checks of the alias and agreement rows.
+
+## `range_*` — the plausibility contract
+
+`range_fixture.json` holds number cases that `range_php.php` runs through
+`Logic::rangeVerdict` and `range_js.cjs` through `QRID_rangeVerdict`; both must
+give the same level (ok, soft, hard, inert) and reason. Cases cover values on
+and next to each limit, `17.50` against `17.5`, numbers past 2^53 and long
+fractions, open limits, a rule with only one level, comma decimals on comma
+fields and commas on point fields, exponents written out (`2.5E1` is 25,
+`1.5E0001` is 15, and `1e1000` is past every limit), and text that is not a
+number (`-`, `.`, `1,200`, `1e1e1`). `range_php.php` also
+covers the grammar: limits kept exactly as typed, quoted or not (the JSON is
+read a second time with every number quoted), exponents written out, the
+64-character cap, and every refusal.
+
+- `range_dom_js.cjs` boots the browser rule on a stub page: the note waits for
+  the field to be left, typing clears it, each level blocks per `softBlock` and
+  `hardBlock`, the save-time recheck catches a value never left, a calc and a
+  read-only field never block, branches pick their limits from `when`.
+- `range_module_php.php` covers the server side: which fields may carry the
+  tag, comma-decimal fields, the notes' limit texts, the audit reasons, the
+  scan, its labels and detail lines, and the detail line of a branched rule,
+  taken from the branch that judged the value. It also covers the fallback
+  branch, two true conditions (a rule problem, never a finding), the survey
+  page's baked-in branch choice, and the branch on a branched `@UVUNIQUE`
+  duplicate.
+
+## `missing_codes_*` — Missing Data Codes
+
+A field marked with one of the project's missing data codes holds the code.
+Each mode says in `php/modes.json` (`missingCodes`) what that means to it:
+`skip` treats the field as blank, `answer` (`@UVREQUIRED`) counts it as filled
+in. `missing_codes_dom_js.cjs` checks every browser factory with a code, then
+an ordinary bad value, then the code again, plus spaces around a code, case,
+a `@UVWINDOW` "from" date and an `@UVEXISTS` `match` field holding a code.
+`missing_codes_php.php` checks REDCap's "CODE, Label" lines, the registry, the
+post-save audit with and without codes configured, the scan (two records
+marked `UNK` are not duplicates), the `unique-check` and `exists-check`
+endpoints, and the page config (codes, never their labels).
+
 ## `hook_php.php` — the audit-path contract
 
 Mocks the External Modules framework and `REDCap::getData`/`getDataDictionary`.
@@ -142,8 +277,9 @@ non-text field rejection, and the save-time `validateSettings` gate.
 ## CI
 
 `.github/workflows/parity.yml` runs the JS suite on Node 20 and the PHP suite
-on PHP 7.4, 8.1 and 8.3 (the declared minimum is exercised, not just stated),
-`php -l`-lints the PHP, checks that `pooled_fixture.json` is regenerated, and
+on PHP 7.4, 8.1, 8.3 and 8.4 (the declared minimum is exercised, not just
+stated), `php -l`-lints the PHP, checks that `pooled_fixture.json`,
+`when_fuzz.json` and the mode block in `js/engine.js` are regenerated, and
 builds a release-shaped `universal_validator_vX.Y.Z.zip` to verify the package
 layout (required files present, development-only trees excluded, namespace
 matching). Green CI means the module's client and server engines agree with
@@ -163,7 +299,7 @@ end-to-end checks for the server engine and run in CI on every push.
 
 Run `php tests/qualified_php.php`, `php tests/binding_php.php`, `php tests/temporal_value_php.php`, `php tests/temporal_logic_php.php`, and `php tests/temporal_integration_php.php`; then `node tests/qualified_js.cjs`, `node tests/temporal_logic_js.cjs`, and `node tests/deferral_dom_js.cjs`. Shared temporal fixtures cover exact rational comparisons, invalid dates, blank typed dates, Boolean unknowns and live members. `php tests/temporal_adversarial_php.php` is differential: it resolves every reference and binding shape from every host context of 60 seeded random records through both the shared (once-per-record) and the unshared resolver and requires identical results, then checks exact-decimal addition against the digit-string path on 20,000 pairs. Integration reads filter requested fields so omitted dependencies cannot pass by accident.
 
-`php tests/docs_examples_php.php` parses every action tag printed in `docs/action_tag_validation_examples.md`, `docs/EVENT-INSTANCE-REFERENCES.md` and `docs/region-site-choices-example.txt` with the real annotation parser. Tags in a block fenced as `text invalid` must be refused; every other tag must parse without a configuration error.
+`php tests/docs_examples_php.php` parses every action tag printed in `docs/action_tag_validation_examples.md`, `docs/EVENT-INSTANCE-REFERENCES.md` and `docs/region-site-choices-example.txt` with the real annotation parser. Tags in a block fenced as `text invalid` must be refused; every other tag must parse without a configuration error. A `# refused: <text>` comment before a refused tag requires its error to contain that text. A block fenced as `text expect` lists `input => result` lines for the last `@UVALIDATE` tag of the block before it; each line runs through the server verdict and must produce the printed result. The same lines are written to `tests/docs_expect_fixture.json` (regenerate with `--write`; a stale fixture fails the test), and `node tests/docs_examples_js.cjs` replays them through the browser engine, which must accept or refuse each one-ID value and split each pooled value exactly as the server did.
 
 Run the existing complete CI matrix and `tests/mysql/run.php` against its disposable private schemas. Local mocks do not establish REDCap metadata shapes or import/deletion hook behavior; follow the deployment acceptance section in `docs/EVENT-INSTANCE-REFERENCES.md` for the real-project pilot.
 

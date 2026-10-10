@@ -30,6 +30,8 @@ namespace INSPIRE\UniversalValidator;
 
 require_once __DIR__ . '/CheckCharacter.php';
 require_once __DIR__ . '/Logic.php';
+require_once __DIR__ . '/ModeRegistry.php';
+require_once __DIR__ . '/TemporalLogic.php';
 
 class AnnotationRules
 {
@@ -38,23 +40,40 @@ class AnnotationRules
     const TAG_REQUIRED = '@UVREQUIRED';
     const TAG_UNIQUE = '@UVUNIQUE';
     const TAG_CHOICES = '@UVCHOICES';
+    const TAG_WINDOW = '@UVWINDOW';
+    const TAG_EXISTS = '@UVEXISTS';
+    const TAG_RANGE = '@UVRANGE';
+
+    /** Longest @UVRANGE "unit" text: a label such as "g/dL", not a sentence. */
+    const MAX_RANGE_UNIT = 20;
+    /** Longest @UVRANGE limit, in characters once any exponent is written out. */
+    const MAX_RANGE_BOUND = 64;
+
+    /** Where an @UVEXISTS lookup may search: the whole project (default), the
+     *  record's own Data Access Group, or the event of the entry being checked. */
+    const EXISTS_SCOPES = ['project', 'dag', 'event'];
+
+    /** Cap on @UVEXISTS "match" pairs, so a lookup stays one narrow read. */
+    const MAX_EXISTS_MATCH = 5;
 
     /**
-     * Every action tag this module owns, mapped to the validation MODE the tag
-     * configures. @UVALIDATE is the original check-character / regex ID tag;
-     * the intent-named tags each configure one added mode. Different modes on
-     * one field COMPOSE (all must pass); several tags of the SAME mode on one
-     * field branch (php/Branching.php). The mode travels on the rule as its
-     * "type" (single|pooled = check; constraint; required; …), which is what
-     * the client dispatcher, the server audit, and Branching all key on.
+     * An @UVEXISTS "project": a project id, or an alias the project's own
+     * settings map to one (so a data dictionary moves between servers unchanged).
      */
-    const TAGS = [
-        self::TAG          => 'check',
-        self::TAG_ASSERT   => 'constraint',
-        self::TAG_REQUIRED => 'required',
-        self::TAG_UNIQUE   => 'unique',
-        self::TAG_CHOICES  => 'choices',
-    ];
+    const EXISTS_PROJECT_RE = '/^(?:[1-9][0-9]{0,9}|[a-z][a-z0-9_-]{0,39})$/';
+
+    /** Largest window bound, in units either side of the anchor. */
+    const MAX_WINDOW_BOUND = 36500;
+
+    /*
+     * Which tag configures which validation MODE, the field types each mode
+     * accepts, and the parser/validator each one uses all live in
+     * php/modes.json (served by ModeRegistry). Different modes on one field
+     * COMPOSE (all must pass); several tags of the SAME mode on one field
+     * branch (php/Branching.php). The mode travels on the rule as its "type"
+     * (single|pooled = check; constraint; required; ...), which is what the
+     * client dispatcher, the server audit, and Branching all key on.
+     */
 
     /** Uniqueness scopes: whole project (default), within the record's Data
      *  Access Group, or within the same event of a longitudinal project. */
@@ -62,33 +81,6 @@ class AnnotationRules
 
     /** Composite-key size cap: [field]+with must stay a cheap lookup. */
     const MAX_UNIQUE_WITH = 5;
-
-    /** Field types a constraint (@UVASSERT) may be attached to — any scalar
-     *  input whose current answer is a single readable value. Checkbox (multi
-     *  value), file and descriptive fields are excluded as the VALIDATED field,
-     *  though any of them may still be REFERENCED inside an assert condition. */
-    const CONSTRAINT_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                    'yesno', 'truefalse', 'calc', 'sql', 'slider'];
-
-    /** Field types @UVREQUIRED may be attached to. Same scalar family as
-     *  constraints MINUS calc (the person entering data cannot type into a
-     *  calc, so "required" would trap them on a field they cannot fix). */
-    const REQUIRED_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                  'yesno', 'truefalse', 'sql', 'slider'];
-
-    /** Field types @UVUNIQUE may be attached to — same list as required (no
-     *  calc: a data enterer cannot fix a calc collision). Composite "with"
-     *  fields are checked separately against the data dictionary. */
-    const UNIQUE_FIELD_TYPES = ['text', 'notes', 'dropdown', 'radio',
-                                'yesno', 'truefalse', 'sql', 'slider'];
-
-    /** Field types @UVCHOICES may filter — the multiple-choice family whose
-     *  options come from select_choices_or_calculations. yesno/truefalse have
-     *  fixed options (filtering one of two makes the field a foregone
-     *  conclusion, not a choice) and sql options live outside the dictionary,
-     *  so neither is eligible. Matrix membership is refused separately in the
-     *  channel glue (grid rows render different markup). */
-    const CHOICES_FIELD_TYPES = ['radio', 'dropdown', 'checkbox'];
 
     /** Cap on the show/hide code list: filtering is a per-choice DOM walk on
      *  every re-evaluation, so the list must stay small. REDCap fields with
@@ -298,14 +290,11 @@ class AnnotationRules
     {
         $any = false;
         $out = [];
-        foreach (self::TAGS as $tag => $mode) {
+        foreach (ModeRegistry::tagMap() as $tag => $mode) {
+            $parser = ModeRegistry::mode($mode)['parser'];
             foreach (self::extractTagsFor($annotation, $tag) as $val) {
                 $any = true;
-                if ($mode === 'constraint')    $frag = self::parseAssertValue($val, $opts);
-                elseif ($mode === 'required')  $frag = self::parseRequiredValue($val, $opts);
-                elseif ($mode === 'unique')    $frag = self::parseUniqueValue($val, $opts);
-                elseif ($mode === 'choices')   $frag = self::parseChoicesValue($val, $opts);
-                else                           $frag = self::parseValue($val, $opts);
+                $frag = self::$parser($val, $opts);
                 if (isset($frag['error'])) $frag['_tag'] = $tag; // so groupMulti names the right tag
                 $out[] = $frag;
             }
@@ -533,6 +522,348 @@ class AnnotationRules
         return $errs ? ['error' => implode(' ', $errs)] : $out;
     }
 
+    /**
+     * Parse one @UVWINDOW value into a window fragment (a date must fall in a
+     * window around another date, and/or not after today). JSON form only:
+     *   @UVWINDOW={"from":"[visit_date_bl]","window":[21,35],"unit":"days"}
+     *   @UVWINDOW={"from":"[dob]","window":[0,null]}          not before the anchor
+     *   @UVWINDOW={"notFuture":true}                          not after today
+     * "window" is [earliest, latest] in whole units from the "from" date,
+     * inclusive; null leaves that side open. "from" may name another event
+     * ([baseline_arm_1][visit_date]) once event and instance references are
+     * enabled. Whether the field and its "from" field are date fields of the
+     * same kind is checked with the data dictionary in hand
+     * (UniversalValidator::annotateWindowField / annotateWindowDictionary).
+     */
+    private static function parseWindowValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_WINDOW . ' needs its settings as JSON, e.g. '
+                . self::TAG_WINDOW . '={"from":"[visit_date_bl]","window":[21,35]} or '
+                . self::TAG_WINDOW . '={"notFuture":true}.'];
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_WINDOW . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['from', 'window', 'unit', 'notFuture', 'when', 'message', 'blockSave', 'caseSensitive', 'references'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_WINDOW . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'window'];
+        if (array_key_exists('from', $cfg)) {
+            if (!is_string($cfg['from'])) return ['error' => '"from" must be a field reference such as "[visit_date]".'];
+            $out['windowFrom'] = trim($cfg['from']);
+        }
+        if (array_key_exists('window', $cfg)) {
+            $w = $cfg['window'];
+            if (!is_array($w) || array_keys($w) !== [0, 1]) {
+                return ['error' => '"window" must be a list of two bounds, [earliest, latest] — e.g. [21,35], or [0,null] for an open end.'];
+            }
+            if ($w[0] === null && $w[1] === null) {
+                return ['error' => '"window" needs at least one bound — [null,null] would check nothing.'];
+            }
+            // An open side is simply absent from the rule, so two rules that
+            // differ only in how they spelled "open" still group as one.
+            if ($w[0] !== null) $out['windowLo'] = $w[0];
+            if ($w[1] !== null) $out['windowHi'] = $w[1];
+        }
+        if (array_key_exists('unit', $cfg)) {
+            if (!is_string($cfg['unit'])) return ['error' => '"unit" must be a string.'];
+            $out['windowUnit'] = strtolower(trim($cfg['unit']));
+        } elseif (isset($out['windowFrom'])) {
+            $out['windowUnit'] = 'days';
+        }
+        // An explicit false IS the default, so it is dropped, as caseSensitive is.
+        if (array_key_exists('notFuture', $cfg) && $cfg['notFuture'] !== false) $out['windowNotFuture'] = $cfg['notFuture'];
+        foreach (['when', 'message', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        self::takeCaseSensitive($cfg, $out);
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVEXISTS value into an exists fragment. The value must already
+     * be saved somewhere in the project:
+     *   @UVEXISTS=record                  a record ID of this project
+     *   @UVEXISTS=[specimen_id]           a saved value of field specimen_id
+     *   @UVEXISTS={"in":"[specimen_id]","event":"enrol_arm_1","scope":"dag",
+     *              "match":{"site_code":"[site]"},"when":"...","message":"...",
+     *              "blockSave":"hard","surveys":true}
+     * "match" narrows the lookup to saved entries whose target field holds the
+     * same value as a field of this record (target field => [local field]).
+     * "surveys" is an opt-in, as for @UVUNIQUE: a found / not found answer is
+     * record-derived information.
+     * "project" (a project id or alias) looks in another project instead. The
+     * searched fields are then that project's ("existsRemoteTargets"), so they
+     * never enter this project's field checks, read set or reverse dependencies.
+     */
+    private static function parseExistsValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '') {
+            return ['error' => self::TAG_EXISTS . ' needs to know where to look: ' . self::TAG_EXISTS . '=record, '
+                . self::TAG_EXISTS . '=[field], or the JSON form with "in".'];
+        }
+        if ($val[0] !== '{') {
+            $in = self::existsSource($val);
+            if ($in === false) return ['error' => self::EXISTS_RECORD_FIELD];
+            if ($in === null) {
+                return ['error' => self::TAG_EXISTS . '=' . $val . ' is not a place to look — use record, one field '
+                    . 'reference such as [specimen_id], or the JSON form for other options.'];
+            }
+            $out = ['type' => 'exists', 'existsIn' => $in];
+            if ($in !== 'record') $out['existsTargets'] = [$in];
+            $errs = self::checkFragment($out, $opts);
+            return $errs ? ['error' => implode(' ', $errs)] : $out;
+        }
+        $cfg = json_decode($val, true);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_EXISTS . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_EXISTS . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        if (!isset($cfg['in'])) {
+            return ['error' => self::TAG_EXISTS . ' needs "in": "record" or one field reference such as "[specimen_id]".'];
+        }
+        if (!is_string($cfg['in'])) return ['error' => '"in" must be a string.'];
+        $in = self::existsSource($cfg['in']);
+        if ($in === false) return ['error' => self::EXISTS_RECORD_FIELD];
+        if ($in === null) {
+            return ['error' => '"in" must be "record" or one field reference such as "[specimen_id]" — got '
+                . json_encode($cfg['in']) . '. To look in one event, add "event".'];
+        }
+        $out = ['type' => 'exists', 'existsIn' => $in];
+        if (isset($cfg['project'])) {
+            $p = $cfg['project'];
+            if (is_int($p) || (is_string($p) && trim($p) !== '')) {
+                $out['existsProject'] = strtolower(trim((string) $p));
+            } else {
+                return ['error' => '"project" must be a project id such as 123, or a project alias such as "lab".'];
+            }
+        }
+        if (isset($cfg['event'])) {
+            if (!is_string($cfg['event'])) return ['error' => '"event" must be a unique event name such as "enrolment_arm_1".'];
+            $out['existsEvent'] = strtolower(trim($cfg['event']));
+        }
+        if (isset($cfg['scope'])) {
+            if (!is_string($cfg['scope'])) return ['error' => '"scope" must be a string.'];
+            $out['existsScope'] = strtolower(trim($cfg['scope']));
+        }
+        if (isset($cfg['match'])) {
+            if (!is_array($cfg['match']) || !$cfg['match'] || array_keys($cfg['match']) === range(0, count($cfg['match']) - 1)) {
+                return ['error' => '"match" must be an object of target field to field of this record, e.g. '
+                    . '{"site_code":"[site]"}.'];
+            }
+            $match = [];
+            foreach ($cfg['match'] as $target => $local) {
+                $t = strtolower(trim((string) $target));   // a target named "record": refused by checkExists
+                $l = is_string($local) ? self::existsSource($local) : null;
+                if ($l === false) return ['error' => self::EXISTS_RECORD_FIELD];
+                if ($l === null || $l === 'record') {
+                    return ['error' => '"match" value for "' . $t . '" must be one field reference of this record, such as "[site]".'];
+                }
+                if (isset($match[$t])) return ['error' => '"match" names the target "' . $t . '" twice.'];
+                $match[$t] = $l;
+            }
+            $out['existsMatch'] = $match;
+        }
+        if (isset($cfg['surveys'])) {
+            if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
+            if ($cfg['surveys']) $out['existsSurveys'] = true;
+        }
+        foreach (['when', 'message', 'blockSave'] as $k) {
+            if (isset($cfg[$k])) {
+                if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+                $out[$k] = $cfg[$k];
+            }
+        }
+        self::takeCaseSensitive($cfg, $out);
+        // What the rule reads, as field lists: the fields of THIS record the
+        // lookup is narrowed by, and the fields it searches in other entries.
+        if (isset($out['existsMatch'])) $out['existsLocal'] = array_values(array_unique(array_values($out['existsMatch'])));
+        $targets = $in === 'record' ? [] : [$in];
+        foreach (array_keys(isset($out['existsMatch']) ? $out['existsMatch'] : []) as $t) $targets[] = (string) $t;
+        if ($targets) $out[isset($out['existsProject']) ? 'existsRemoteTargets' : 'existsTargets'] = array_values(array_unique($targets));
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * Parse one @UVRANGE value into a range fragment: two tiers of plausibility
+     * limits for a number. JSON form only:
+     *   @UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+     *   @UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"hardBlock":"hard"}
+     * Outside "soft" is unusual (softBlock: off or confirm, default confirm);
+     * outside "hard", or not a number at all, is implausible (hardBlock:
+     * confirm or hard, default hard). Bounds are inclusive; null leaves a side
+     * open. Each bound is kept as an exact decimal string (rangeBound), so the
+     * two runtimes compare the same digits. Whether the field holds numbers is
+     * checked with the data dictionary in hand
+     * (UniversalValidator::annotateRangeField).
+     */
+    private static function parseRangeValue($val, array $opts = [])
+    {
+        $val = trim($val);
+        if ($val === '' || $val[0] !== '{') {
+            return ['error' => self::TAG_RANGE . ' needs its settings as JSON, e.g. '
+                . self::TAG_RANGE . '={"soft":[12,17.5],"hard":[3,25]}.'];
+        }
+        $cfg = json_decode($val, true, 512, JSON_BIGINT_AS_STRING);
+        if (!is_array($cfg)) {
+            return ['error' => self::TAG_RANGE . ' JSON does not parse ('
+                . json_last_error_msg() . ') — use double quotes around keys and string values.'];
+        }
+        // The same JSON with every number as the text it was typed as. A limit
+        // is read from here, so 0.12345678901234567890 keeps all its digits
+        // instead of becoming the nearest double. Types are still judged on
+        // $cfg: a "unit" typed as 5 is a number, not the string "5".
+        $exact = json_decode(self::quoteJsonNumbers($val), true);
+        if (array_key_exists('blockSave', $cfg)) {
+            return ['error' => '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" (off or confirm) '
+                . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
+        }
+        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive'];
+        $unknown = array_diff(array_keys($cfg), $allowed);
+        if ($unknown) {
+            return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)
+                . ' — valid: ' . implode(', ', $allowed) . '.'];
+        }
+        $out = ['type' => 'range'];
+        foreach (['soft' => 'rangeSoft', 'hard' => 'rangeHard'] as $k => $prefix) {
+            if (!array_key_exists($k, $cfg)) continue;
+            $pair = $cfg[$k];
+            if (!is_array($pair) || array_keys($pair) !== [0, 1]) {
+                return ['error' => '"' . $k . '" must be a list of two limits, [low, high] — e.g. [12,17.5], or [null,140] for no low limit.'];
+            }
+            if ($pair[0] === null && $pair[1] === null) {
+                return ['error' => '"' . $k . '" needs at least one limit — [null,null] would check nothing.'];
+            }
+            foreach ([0 => 'Lo', 1 => 'Hi'] as $i => $side) {
+                if ($pair[$i] === null) continue;
+                $typed = isset($exact[$k][$i]) && is_string($exact[$k][$i]) ? $exact[$k][$i] : null;
+                $b = self::rangeBound($pair[$i], $typed);
+                $what = 'the "' . $k . '" ' . ($i === 0 ? 'low' : 'high') . ' limit';
+                if ($b === null) {
+                    return ['error' => $what . ' must be a number such as 12 or 17.5 — got '
+                        . ((is_int($pair[$i]) || is_float($pair[$i])) && $typed !== null ? $typed : json_encode($pair[$i])) . '.'];
+                }
+                if ($b === false || strlen($b) > self::MAX_RANGE_BOUND) {
+                    return ['error' => $what . ' is longer than ' . self::MAX_RANGE_BOUND . ' characters written out.'];
+                }
+                $out[$prefix . $side] = $b;
+            }
+        }
+        foreach (['softBlock' => 'rangeSoftBlock', 'hardBlock' => 'rangeHardBlock', 'unit' => 'rangeUnit',
+                  'when' => 'when', 'message' => 'message'] as $k => $key) {
+            if (!isset($cfg[$k])) continue;
+            if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
+            $out[$key] = $k === 'unit' ? trim($cfg[$k]) : $cfg[$k];
+        }
+        self::takeCaseSensitive($cfg, $out);
+        $errs = self::checkFragment($out, $opts);
+        return $errs ? ['error' => implode(' ', $errs)] : $out;
+    }
+
+    /**
+     * One @UVRANGE limit as an exact decimal string, or null. A JSON number is
+     * taken as the text it was typed as ($typed, from quoteJsonNumbers), so
+     * 17.5, 3.0 and 9007199254740993 keep their digits; a string must be a
+     * number too. An exponent is written out digit for digit (1e3 is 1000,
+     * -2.5e-5 is -0.000025), the same way Logic::normalizeNumber reads one
+     * typed into the field. False when written out it would be longer than
+     * MAX_RANGE_BOUND characters.
+     */
+    private static function rangeBound($b, $typed)
+    {
+        if (is_int($b) || is_float($b)) {
+            if (!is_string($typed)) return null;
+            $t = $typed;
+        } elseif (is_string($b)) {
+            $t = trim($b);
+        } else {
+            return null;
+        }
+        if (preg_match(Logic::NUM_RE, $t)) return Logic::canonicalDecimal($t);
+        $p = Logic::exponentParts($t);
+        if ($p === null) return null;
+        // Too long is said as such, without writing out "1e1000".
+        if (Logic::partsLength($p) > self::MAX_RANGE_BOUND) return false;
+        return Logic::partsText($p);
+    }
+
+    /**
+     * The JSON text with every number token outside a string wrapped in
+     * quotes, so json_decode hands back each number exactly as typed. Only
+     * called on text that already decodes, so every token it wraps is a valid
+     * JSON number.
+     */
+    private static function quoteJsonNumbers($json)
+    {
+        $out = '';
+        $n = strlen($json);
+        $inString = false;
+        for ($i = 0; $i < $n; $i++) {
+            $c = $json[$i];
+            if ($inString) {
+                $out .= $c;
+                if ($c === '\\' && $i + 1 < $n) {
+                    $out .= $json[++$i];
+                } elseif ($c === '"') {
+                    $inString = false;
+                }
+                continue;
+            }
+            if ($c === '"') {
+                $inString = true;
+                $out .= $c;
+                continue;
+            }
+            if ($c === '-' || ($c >= '0' && $c <= '9')) {
+                $j = $i;
+                while ($j < $n && strpos('0123456789+-.eE', $json[$j]) !== false) $j++;
+                $out .= '"' . substr($json, $i, $j - $i) . '"';
+                $i = $j - 1;
+                continue;
+            }
+            $out .= $c;
+        }
+        return $out;
+    }
+
+    /**
+     * "record", or the field one plain [field] reference names, or null; false
+     * for [record]. "record" is the record ID everywhere a lookup is described
+     * (here, the other project's agreement, its rights and Identifier checks),
+     * so a field that happens to be called "record" cannot be searched: it
+     * would be checked as the record ID and read as the field.
+     */
+    private static function existsSource($text)
+    {
+        $t = trim((string) $text);
+        if (strtolower($t) === 'record') return 'record';
+        if (!preg_match('/^\[([A-Za-z][A-Za-z0-9_]*)\]$/', $t, $m)) return null;
+        $f = strtolower($m[1]);
+        return $f === 'record' ? false : $f;
+    }
+
+    const EXISTS_RECORD_FIELD = 'a field named "record" cannot be used by ' . self::TAG_EXISTS
+        . ': "record" stands for the record ID. Write record (without brackets) to look up record IDs.';
+
     /** Parse one raw tag value into a fragment (see parseField). */
     private static function parseValue($val, array $opts = [])
     {
@@ -670,24 +1001,19 @@ class AnnotationRules
 
         // "alternates" describes accepted ID FORMATS, which only the check
         // modes read. Left unremarked on the others it validates clean, is
-        // carried through Branching::BRANCH_KEYS and shipped to the browser,
+        // carried through the branch keys (ModeRegistry::branchKeys()) and shipped to the browser,
         // and a designer reads it as active configuration when nothing will
         // ever consult it.
         if (isset($frag['alternates']) && $frag['alternates'] !== null && $frag['alternates'] !== ''
-                && !in_array($type, ['single', 'pooled'], true)) {
+                && !in_array($type, ModeRegistry::types('check'), true)) {
             return ['"alternates" applies only to ID checks (type "single" or "pooled"); a '
                 . $type . ' rule has no ID format to match.'];
         }
-        // Constraint mode (@UVASSERT): a cross-field assertion, not an ID check.
-        // It shares "when"/"blockSave" with check rules but none of the
-        // check-character/pattern/pooled machinery, so it validates separately.
-        if ($type === 'constraint') return array_merge(self::checkConstraint($frag, $opts), $caseErrors);
-        // Required mode (@UVREQUIRED): blank-while-required is the only test.
-        if ($type === 'required') return array_merge(self::checkRequired($frag, $opts), $caseErrors);
-        // Unique mode (@UVUNIQUE): no-duplicates across records via the server.
-        if ($type === 'unique') return array_merge(self::checkUnique($frag, $opts), $caseErrors);
-        // Choices mode (@UVCHOICES): dynamic show/hide of individual options.
-        if ($type === 'choices') return array_merge(self::checkChoices($frag, $opts), $caseErrors);
+        // Every mode except the ID check has its own validator (modes.json
+        // "checker"): it shares "when"/"blockSave" with check rules but none of
+        // the check-character/pattern/pooled machinery below.
+        $checker = ModeRegistry::mode(ModeRegistry::modeOfType($type))['checker'];
+        if ($checker !== null) return array_merge(self::$checker($frag, $opts), $caseErrors);
 
         $errors = $caseErrors;
         $algo = isset($frag['algorithm']) && $frag['algorithm'] !== '' ? $frag['algorithm'] : 'iso7064_mod37_36';
@@ -735,7 +1061,7 @@ class AnnotationRules
             if (!is_array($al) || !count($al) || array_keys($al) !== range(0, count($al) - 1)) {
                 $errors[] = '"alternates" must be a non-empty JSON list [ ... ] of formats, not an '
                     . 'object { ... } and not empty — the browser and the server order object keys '
-                    . 'differently, and alternates are tried in the order you write them.';
+                    . 'differently, and the order you write them decides which format a value is credited to.';
             } else {
                 $hasAlts = true;
             }
@@ -776,11 +1102,8 @@ class AnnotationRules
             $baseKeep   = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
                 . (isset($frag['keepChars']) ? (string) $frag['keepChars'] : '');
             $union = [];        // every length any alternate can produce
-            $roLens = [];       // lengths of the FORMAT-ONLY alternates
-            $ckLens = [];       // lengths of the CHECK-BEARING alternates
             $keepSets = [];
             $shapes = [];
-            $fwhy = '';
             foreach ($alts as $i => $a) {
                 if (!is_array($a)) {
                     $errors[] = 'alternate ' . ($i + 1) . ' must be a JSON object { ... } describing one '
@@ -867,10 +1190,9 @@ class AnnotationRules
                         }
                     }
                     $union = array_merge($union, $ls);
-                    if ($aAlgo === 'none') $roLens = array_merge($roLens, $ls);
-                    else                   $ckLens = array_merge($ckLens, $ls);
                 }
-                $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none')];
+                $shapes[$i] = ['name' => $nm, 'pattern' => $a['pattern'], 'formatOnly' => ($aAlgo === 'none'),
+                               'lengths' => ($type === 'pooled') ? $ls : null];
                 // KEEP is computed once over the WHOLE field before anything is
                 // split, so it is the union across alternates. An algorithm that
                 // can emit "*" therefore makes "*" survive for a sibling that
@@ -882,52 +1204,61 @@ class AnnotationRules
                 // comparison below was skipped entirely - silently disabling
                 // the gate. Copy-pasting an entry and forgetting to rename it
                 // is the obvious way to hit that.
-                $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'])];
+                $keepSets[$i] = ['name' => $nm, 'keep' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern']),
+                                 'legacy' => self::keepSetFor($baseKeep, $aAlgo, $a['pattern'], true)];
             }
-            // A format-only alternate accepts on shape alone, and the first
-            // alternate that accepts wins - so if its pattern also accepts a
-            // value a check-bearing alternate is meant to verify, that check
-            // character is never tested and a mis-scan passes as clean. Pattern
-            // subsumption is undecidable in general; this asks the decidable
-            // question instead - is there a CONCRETE string both accept?
+            // Both runtimes apply SHAPE OWNERSHIP: a value whose shape matches a
+            // check-bearing alternate must pass that check, and a format-only
+            // alternate is consulted only when no check-bearing shape matched
+            // (CheckCharacter::validateSingleField, pooledVerifiesAs and their js
+            // twins). That stops a format-only alternate from excusing a bad
+            // check character inside the check-bearing shape. It cannot stop a
+            // mis-scan that BREAKS the shape - an O for a 0, a dropped digit -
+            // from landing in an overlapping format-only shape and passing on
+            // format alone. So the two shapes must still be shown disjoint here.
             //
-            // When no witness can be produced the answer is UNKNOWN, and this
-            // used to treat unknown as safe. It is not: \D[0-9A-Z]{8} beside a
-            // format-only [0-9A-Z]{9} produced no witness, drew no complaint,
-            // and then recorded every mis-scanned ID as clean (H-1). A pooled
-            // rule is proved safe a second way - the shared-length guard below,
-            // which is complete there because the parser only tries a format at
-            // a length that format declared - so unknown is refused for
-            // single-value fields, where this is the only protection there is.
+            // CheckCharacter::patternOverlap decides it exactly: is there a
+            // value both patterns accept? For a pooled pair only values of a
+            // length both alternates declare count, because the parser only
+            // tries a format at its declared lengths; two pooled alternates
+            // with no length in common never compete for a token. So C-Z
+            // check-bearing codes beside legacy A/B codes, all six long, are
+            // accepted, while SK[0-9]+[0-9A-Z] beside [A-Z0-9]{9} is refused
+            // (the sampling probe this replaced looked only at 4-character SK
+            // values and missed it). When the answer is unknown - a pattern the
+            // reader cannot model, or the search budget exhausted - the rule is
+            // refused rather than assumed safe (H-1).
             if (!$errors && count($shapes) > 1) {
                 foreach ($shapes as $fi => $F) {
                     if (!$F['formatOnly']) continue;
                     foreach ($shapes as $ki => $K) {
                         if ($K['formatOnly']) continue;
-                        $ws = CheckCharacter::patternWitnesses($K['pattern']);
-                        if (!$ws) {
-                            if ($type === 'pooled') continue;        // lengths prove it instead
+                        $lens = ($F['lengths'] === null)
+                            ? [null] : array_values(array_intersect($F['lengths'], $K['lengths']));
+                        $ex = null;
+                        $unknown = false;
+                        foreach ($lens as $L) {
+                            $ov = CheckCharacter::patternOverlap($K['pattern'], $F['pattern'], $L);
+                            if ($ov['overlap'] === null) { $unknown = true; break; }
+                            if ($ov['overlap']) { $ex = $ov['example']; break; }
+                        }
+                        if ($unknown) {
                             $errors[] = $K['name'] . '\'s pattern is too complex to prove it does not '
-                                . 'overlap ' . $F['name'] . ', which has no check character. Whichever '
-                                . 'alternate accepts first wins, so if the two shapes do overlap, '
-                                . $K['name'] . '\'s check character would never be tested and a mis-scan '
-                                . 'would pass as a clean ID. Write ' . $K['name'] . '\'s pattern with '
-                                . 'explicit character classes (no lookaround, backreferences or '
-                                . 'assertions), or narrow ' . $F['name'] . '\'s so the two cannot overlap.';
+                                . 'overlap ' . $F['name'] . ', which has no check character. If the two '
+                                . 'shapes do overlap, a mis-scanned ' . $K['name'] . ' ID that no longer fits '
+                                . $K['name'] . '\'s pattern could pass as a clean ' . $F['name'] . ' ID, '
+                                . 'its check character never tested. Write ' . $K['name'] . '\'s pattern with '
+                                . 'explicit character classes (no backreferences), or narrow '
+                                . $F['name'] . '\'s so the two cannot overlap.';
                             break 2;
                         }
-                        $fre = CheckCharacter::gatePattern($F['pattern'], $fwhy, true);
-                        if ($fre === null) continue;
-                        $w = null;
-                        foreach ($ws as $cand) {
-                            if (CheckCharacter::patTest($fre, $cand)) { $w = $cand; break; }
-                        }
-                        if ($w === null) continue;                  // no probe landed in both
+                        if ($ex === null) continue;
                         $errors[] = $F['name'] . ' has no check character and its pattern also accepts '
-                            . 'values meant for ' . $K['name'] . ' (for example "' . $w . '"). Whichever '
-                            . 'alternate accepts first wins, so ' . $K['name'] . '\'s check character '
-                            . 'would never be tested and a mis-scan would pass as a clean ID. Narrow '
-                            . $F['name'] . '\'s pattern so the two cannot overlap.';
+                            . 'values meant for ' . $K['name'] . ' (for example "' . $ex . '"). A mis-scanned '
+                            . $K['name'] . ' ID that no longer fits ' . $K['name'] . '\'s pattern - an O for '
+                            . 'a 0, a dropped character - could then pass as a clean ' . $F['name'] . ' ID, '
+                            . 'its check character never tested. Narrow ' . $F['name'] . '\'s pattern so '
+                            . 'the two cannot overlap.';
                         break 2;
                     }
                 }
@@ -935,9 +1266,24 @@ class AnnotationRules
             if (!$errors && count($keepSets) > 1) {
                 $idxs  = array_keys($keepSets);
                 $first = $keepSets[$idxs[0]];
+                $differ = function ($a, $b) {
+                    return array_merge(array_diff(str_split($a), str_split($b)), array_diff(str_split($b), str_split($a)));
+                };
+                // Grandfathered: before 2.1.0-rc.2 the reader counted regex
+                // syntax (the ":" of "(?:", the "," of "{n,m}") as kept
+                // characters, so a sibling using that character literally
+                // agreed by accident and the rule saved. That is allowed to
+                // stand only when the field's runtime KEEP union is the same
+                // under both readers, i.e. cleaning really is unchanged. An
+                // escaped separator the old reader dropped ("LG\/[0-9]{5}")
+                // is kept now, and kept for every sibling: a "/" people type
+                // between SK IDs would turn into junk, so that rule is refused.
+                $newUnion = ''; $legUnion = '';
+                foreach ($keepSets as $ks) { $newUnion .= $ks['keep']; $legUnion .= $ks['legacy']; }
+                $sameUnion = !array_diff(str_split($newUnion), str_split($legUnion));
                 foreach ($idxs as $ix) {
-                    $diff = array_merge(array_diff(str_split($keepSets[$ix]['keep']), str_split($first['keep'])),
-                                        array_diff(str_split($first['keep']), str_split($keepSets[$ix]['keep'])));
+                    $diff = $differ($keepSets[$ix]['keep'], $first['keep']);
+                    if ($diff && $sameUnion && !$differ($keepSets[$ix]['legacy'], $first['legacy'])) $diff = [];
                     if ($diff) {
                         $nm = $keepSets[$ix]['name'];
                         if ($nm === $first['name']) $nm = 'alternate ' . ($ix + 1);
@@ -965,18 +1311,6 @@ class AnnotationRules
                         . 'swallow ' . count($sw['parts']) . ' real ones and still verify, so a mis-scan '
                         . 'would be reported as a clean ID. Give the alternates lengths where no length is '
                         . 'the sum of two or more others, or split them into separate fields.';
-                }
-                // A format-only alternate sharing a length with a check-bearing
-                // one accepts first (declaration order is irrelevant — the DP
-                // takes any accepting pair), so that length's check character
-                // would never actually be tested.
-                $shared = array_values(array_unique(array_intersect($roLens, $ckLens)));
-                if (!$errors && $shared) {
-                    sort($shared);
-                    $errors[] = 'a format-only alternate and a check-character alternate are both '
-                        . implode(' and ', $shared) . ' characters long. At that length the format-only '
-                        . 'alternate would accept the value first, so the check character would never be '
-                        . 'tested. Give them different lengths, or drop the format-only alternate.';
                 }
             }
         }
@@ -1115,10 +1449,11 @@ class AnnotationRules
         if (array_keys($alts) !== range(0, count($alts) - 1)) {
             // A JSON object would be ordered differently by the two runtimes
             // (PHP keeps insertion order, JavaScript reorders integer-like
-            // keys), and alternates are tried in DECLARATION order.
+            // keys), and declaration order decides which alternate a value is
+            // credited to.
             return ['error' => '"alternates" must be a JSON list [ ... ], not an object { ... } - '
-                . 'the browser and the server order object keys differently, and alternates are '
-                . 'tried in the order you write them.'];
+                . 'the browser and the server order object keys differently, and the order you '
+                . 'write them decides which format a value is credited to.'];
         }
         $clean = [];
         foreach ($alts as $i => $a) {
@@ -1175,7 +1510,7 @@ class AnnotationRules
      * CheckCharacter::pooledKeepFor and keepFor (js) -- used here only to prove
      * the alternates agree, since cleaning runs once for the whole field.
      */
-    private static function keepSetFor($base, $algo, $pattern)
+    private static function keepSetFor($base, $algo, $pattern, $legacy = false)
     {
         $K = $base;
         if ($algo !== 'none') {
@@ -1184,20 +1519,9 @@ class AnnotationRules
                 if (strpos($K, $CA[$i]) === false) $K .= $CA[$i];
             }
         }
-        $pat = (string) $pattern; $meta = '\\^$.|?*+()[]{}';
-        for ($i = 0; $i < strlen($pat); $i++) {
-            $pc = $pat[$i];
-            if ($pc === '\\') {
-                $i++;
-                if ($i < strlen($pat)) {
-                    $pc = $pat[$i];
-                    if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
-                }
-                continue;
-            }
-            if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
-                $K .= $pc;
-            }
+        $lit = CheckCharacter::patternLiterals($pattern, $legacy);
+        for ($i = 0; $i < strlen($lit); $i++) {
+            if (strpos($K, $lit[$i]) === false) $K .= $lit[$i];
         }
         return $K;
     }
@@ -1273,6 +1597,16 @@ class AnnotationRules
      */
     public static function checkRequired(array $frag, array $opts = [])
     {
+        return self::checkCommon($frag, $opts);
+    }
+
+    /**
+     * The keys most modes share: an optional "when" gate (normative dialect
+     * in php/Logic.php), "blockSave" and "message". "caseSensitive" is checked
+     * once for every mode in checkFragment.
+     */
+    private static function checkCommon(array $frag, array $opts = [])
+    {
         $errors = [];
         if (isset($frag['when'])) {
             if (!is_string($frag['when']) || trim($frag['when']) === '') {
@@ -1290,6 +1624,216 @@ class AnnotationRules
             $errors[] = '"message" must be a string.';
         }
         return $errors;
+    }
+
+    /**
+     * Semantic validation for a window (@UVWINDOW) fragment: a "from" that is
+     * exactly one field reference, whole-number bounds within
+     * MAX_WINDOW_BOUND with earliest <= latest, a known unit, a strict-boolean
+     * notFuture, and at least one of window / notFuture. Field types (is the
+     * field a date, is the "from" field the same kind of date) are checked in
+     * the channel glue, where the data dictionary is in hand.
+     */
+    public static function checkWindow(array $frag, array $opts = [])
+    {
+        $errors = [];
+        $hasFrom = isset($frag['windowFrom']);
+        $hasBound = array_key_exists('windowLo', $frag) || array_key_exists('windowHi', $frag);
+        $notFuture = array_key_exists('windowNotFuture', $frag);
+        if ($hasFrom) {
+            $from = $frag['windowFrom'];
+            if (ModeRegistry::operandRef($from, $opts) === null) {
+                $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($from, ['qualified' => true]) !== null)
+                    ? 'a "from" date in another event or instance needs event and instance references — enable them in project settings first.'
+                    : '"from" must be exactly one date field reference, e.g. "[visit_date]" or "[baseline_arm_1][visit_date]" '
+                      . '(not a checkbox code, a {binding} or a list of instances).';
+            }
+            if (!$hasBound) $errors[] = '"from" needs a "window" to check against, e.g. "window":[21,35].';
+        } elseif ($hasBound) {
+            $errors[] = '"window" needs a "from" date to count from.';
+        }
+        if (isset($frag['windowUnit']) && !$hasFrom) {
+            $errors[] = '"unit" only applies to a "window" — add a "from" date.';
+        }
+        if (!$hasFrom && !$hasBound && !$notFuture) {
+            $errors[] = self::TAG_WINDOW . ' needs a "from" date with a "window", or "notFuture": true.';
+        }
+        foreach (['windowLo' => 'earliest', 'windowHi' => 'latest'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            $b = $frag[$k];
+            if (!is_int($b)) {
+                $errors[] = 'the "window" ' . $label . ' bound must be a whole number or null — got ' . json_encode($b) . '.';
+            } elseif (abs($b) > self::MAX_WINDOW_BOUND) {
+                $errors[] = 'the "window" ' . $label . ' bound is limited to ' . self::MAX_WINDOW_BOUND . ' units either side of the "from" date.';
+            }
+        }
+        if (isset($frag['windowLo'], $frag['windowHi']) && is_int($frag['windowLo']) && is_int($frag['windowHi'])
+                && $frag['windowLo'] > $frag['windowHi']) {
+            $errors[] = 'the "window" earliest bound (' . $frag['windowLo'] . ') is after its latest bound ('
+                . $frag['windowHi'] . ').';
+        }
+        if (isset($frag['windowUnit'])
+                && (!is_string($frag['windowUnit']) || !isset(TemporalLogic::WINDOW_UNITS[$frag['windowUnit']]))) {
+            $units = array_keys(TemporalLogic::WINDOW_UNITS);
+            $errors[] = '"unit" must be ' . implode(', ', array_slice($units, 0, -1)) . ' or ' . end($units) . '.';
+        }
+        if ($notFuture && $frag['windowNotFuture'] !== true) {
+            $errors[] = '"notFuture" must be true or false (unquoted).';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for an exists (@UVEXISTS) fragment: a source that is
+     * "record" or a field name, a known scope, an "event" that is a plausible
+     * unique event name, "match" pairs of field names under the cap, and the
+     * combinations that make no sense ("event" with "scope":"event"; "event",
+     * "scope":"event" or "match" on a record-ID lookup). Whether the fields and
+     * the event exist is checked in the channel glue with the dictionary in hand.
+     * Event and instance references in "when" are not supported here yet.
+     */
+    public static function checkExists(array $frag, array $opts = [])
+    {
+        $errors = [];
+        $in = isset($frag['existsIn']) ? $frag['existsIn'] : null;
+        if (!is_string($in) || ($in !== 'record' && !preg_match('/^[a-z][a-z0-9_]*$/', $in))) {
+            $errors[] = self::TAG_EXISTS . ' needs "in": "record" or one field reference such as "[specimen_id]".';
+        }
+        $scope = isset($frag['existsScope']) ? $frag['existsScope'] : 'project';
+        if (!in_array($scope, self::EXISTS_SCOPES, true)) {
+            $scopes = self::EXISTS_SCOPES;
+            $last = array_pop($scopes);
+            $errors[] = '"scope" must be ' . implode(', ', $scopes) . ' or ' . $last . '.';
+        }
+        if (isset($frag['existsEvent']) && (!is_string($frag['existsEvent']) || !preg_match('/^[a-z0-9_]+$/', $frag['existsEvent']))) {
+            $errors[] = '"event" must be a unique event name such as "enrolment_arm_1".';
+        }
+        if (isset($frag['existsEvent']) && $scope === 'event') {
+            $errors[] = '"event" and "scope":"event" cannot be combined — "event" names the one event to look in, '
+                . '"scope":"event" means the event of the entry being checked.';
+        }
+        if ($in === 'record') {
+            if (isset($frag['existsEvent'])) $errors[] = '"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            if ($scope === 'event') $errors[] = '"scope":"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            if (isset($frag['existsMatch'])) $errors[] = '"match" needs "in" to name a field; a record ID has nothing to match.';
+        }
+        if (isset($frag['existsMatch'])) {
+            $match = $frag['existsMatch'];
+            if (!is_array($match) || !$match) {
+                $errors[] = '"match" must name at least one target field.';
+            } elseif (count($match) > self::MAX_EXISTS_MATCH) {
+                $errors[] = '"match" is limited to ' . self::MAX_EXISTS_MATCH . ' fields.';
+            } else {
+                foreach ($match as $t => $l) {
+                    if (!is_string($t) || !preg_match('/^[a-z][a-z0-9_]*$/', $t)) {
+                        $errors[] = '"match" target ' . json_encode($t) . ' is not a valid REDCap field name.';
+                        break;
+                    }
+                    if ($t === 'record' || $l === 'record') {
+                        $errors[] = self::EXISTS_RECORD_FIELD;
+                        break;
+                    }
+                    if (!is_string($l) || !preg_match('/^[a-z][a-z0-9_]*$/', $l)) {
+                        $errors[] = '"match" value for "' . $t . '" must be one field reference such as "[site]".';
+                        break;
+                    }
+                    if ($t === $in) {
+                        $errors[] = '"match" target "' . $t . '" is the field named in "in" — it already holds the value looked up.';
+                        break;
+                    }
+                }
+            }
+        }
+        if (isset($frag['existsSurveys']) && $frag['existsSurveys'] !== true) {
+            $errors[] = '"surveys" must be true or false (unquoted).';
+        }
+        if (isset($frag['existsProject'])) {
+            if (!is_string($frag['existsProject']) || !preg_match(self::EXISTS_PROJECT_RE, $frag['existsProject'])) {
+                $errors[] = '"project" must be a project id such as 123, or a project alias such as "lab" '
+                    . '(letters, digits, _ and -, starting with a letter).';
+            }
+            // Groups and events belong to one project: this record's group or
+            // event means nothing in another one.
+            if ($scope === 'dag' || $scope === 'event') {
+                $errors[] = '"scope":"' . $scope . '" cannot be used with "project" — Data Access Groups and events '
+                    . 'are not shared between projects. Use "event" to name one event of the other project.';
+            }
+        }
+        // The lookup reads saved values of one project through one read; an
+        // event/instance reference in "when" would need the extended pipeline,
+        // which this tag does not run yet.
+        if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
+                && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
+            $errors[] = self::TAG_EXISTS . ' does not support event or instance references in "when" yet — use '
+                . 'fields of this entry.';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * Semantic validation for a range (@UVRANGE) fragment: at least one limit,
+     * every limit an exact decimal string, low <= high within each tier, each
+     * soft limit inside the hard range (a value the soft range calls usual must
+     * never be implausible), the two enforcement keys and a short unit label.
+     * Whether the field holds numbers is checked in the channel glue, where
+     * the data dictionary is in hand.
+     */
+    public static function checkRange(array $frag, array $opts = [])
+    {
+        $errors = [];
+        if (array_key_exists('blockSave', $frag)) {
+            $errors[] = '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" and "hardBlock".';
+        }
+        $b = [];
+        foreach (['rangeSoftLo' => 'soft low', 'rangeSoftHi' => 'soft high', 'rangeHardLo' => 'hard low', 'rangeHardHi' => 'hard high'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            if (!is_string($frag[$k]) || !preg_match(Logic::NUM_RE, $frag[$k])) {
+                $errors[] = 'the ' . $label . ' limit must be a number — got ' . json_encode($frag[$k]) . '.';
+                continue;
+            }
+            $b[$k] = $frag[$k];
+        }
+        if (!array_key_exists('rangeSoftLo', $frag) && !array_key_exists('rangeSoftHi', $frag)
+                && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag)) {
+            $errors[] = self::TAG_RANGE . ' needs "soft" or "hard" limits, e.g. "soft":[12,17.5],"hard":[3,25].';
+        }
+        foreach (['Soft' => 'soft', 'Hard' => 'hard'] as $t => $label) {
+            if (isset($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi'])
+                    && Logic::numCompare($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi']) > 0) {
+                $errors[] = 'the "' . $label . '" low limit (' . $b['range' . $t . 'Lo'] . ') is above its high limit ('
+                    . $b['range' . $t . 'Hi'] . ').';
+            }
+        }
+        foreach (['rangeSoftLo' => 'low', 'rangeSoftHi' => 'high'] as $k => $side) {
+            if (!isset($b[$k])) continue;
+            $below = isset($b['rangeHardLo']) && Logic::numCompare($b[$k], $b['rangeHardLo']) < 0;
+            $above = isset($b['rangeHardHi']) && Logic::numCompare($b[$k], $b['rangeHardHi']) > 0;
+            if ($below || $above) {
+                $errors[] = 'the "soft" ' . $side . ' limit (' . $b[$k] . ') is outside the "hard" range — a value '
+                    . '"soft" accepts would be refused as implausible. Keep both soft limits inside the hard ones.';
+            }
+        }
+        if (isset($frag['rangeSoftBlock']) && !in_array($frag['rangeSoftBlock'], ['off', 'confirm'], true)) {
+            $errors[] = '"softBlock" must be off or confirm.';
+        }
+        if (isset($frag['rangeHardBlock']) && !in_array($frag['rangeHardBlock'], ['confirm', 'hard'], true)) {
+            $errors[] = '"hardBlock" must be confirm or hard.';
+        }
+        if (array_key_exists('rangeUnit', $frag)) {
+            $u = $frag['rangeUnit'];
+            if (!is_string($u) || $u === '' || preg_match('/[\x00-\x1f\x7f]/', $u)
+                    || (function_exists('mb_strlen') ? mb_strlen($u, 'UTF-8') : strlen($u)) > self::MAX_RANGE_UNIT) {
+                $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "g/dL".';
+            }
+        }
+        // The check reads only the tagged field; an event/instance reference in
+        // "when" would need the extended pipeline, which this tag does not run.
+        if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
+                && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
+            $errors[] = self::TAG_RANGE . ' does not support event or instance references in "when" yet — use '
+                . 'fields of this entry.';
+        }
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**
@@ -1328,22 +1872,7 @@ class AnnotationRules
         if (isset($frag['uniqueSurveys']) && !is_bool($frag['uniqueSurveys'])) {
             $errors[] = '"surveys" must be true or false (unquoted).';
         }
-        if (isset($frag['when'])) {
-            if (!is_string($frag['when']) || trim($frag['when']) === '') {
-                $errors[] = 'the "when" condition must be a non-empty condition string.';
-            } else {
-                $w = Logic::parse($frag['when'], $opts);
-                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
-            }
-        }
-        if (isset($frag['blockSave'])
-            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
-            $errors[] = '"blockSave" must be off, confirm or hard.';
-        }
-        if (isset($frag['message']) && !is_string($frag['message'])) {
-            $errors[] = '"message" must be a string.';
-        }
-        return $errors;
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     /**
@@ -1384,22 +1913,7 @@ class AnnotationRules
                 $seen[$c] = true;
             }
         }
-        if (isset($frag['when'])) {
-            if (!is_string($frag['when']) || trim($frag['when']) === '') {
-                $errors[] = 'the "when" condition must be a non-empty condition string.';
-            } else {
-                $w = Logic::parse($frag['when'], $opts);
-                if (empty($w['ok'])) $errors[] = 'the "when" condition ' . $w['error'];
-            }
-        }
-        if (isset($frag['blockSave'])
-            && !in_array($frag['blockSave'], ['off', 'confirm', 'hard'], true)) {
-            $errors[] = '"blockSave" must be off, confirm or hard.';
-        }
-        if (isset($frag['message']) && !is_string($frag['message'])) {
-            $errors[] = '"message" must be a string.';
-        }
-        return $errors;
+        return array_merge($errors, self::checkCommon($frag, $opts));
     }
 
     public static function posInt($v)

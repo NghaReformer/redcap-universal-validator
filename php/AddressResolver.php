@@ -120,6 +120,24 @@ final class AddressResolver
         return $result;
     }
 
+    /**
+     * Spend evaluation budget on arithmetic done outside the resolver. TemporalRules
+     * hands this to TemporalLogic, which charges each long multiplication: a
+     * collection's members are handed out cheaply once cached, and each one scaled
+     * against a 4,000-digit average cost seconds per save while charging nothing
+     * (wargame P1).
+     */
+    public function charge($units)
+    {
+        return $this->budget->take($units);
+    }
+
+    /** True once the shared budget has refused a request. */
+    public function exhausted()
+    {
+        return $this->budget->exhausted();
+    }
+
     private function bindingResult(array $binding, array $context)
     {
         $allowed=['field','event','events','arm','instance','match','aggregate','excludeCurrent'];
@@ -173,6 +191,9 @@ final class AddressResolver
                 $candidates=isset($selected['members'])?$selected['members']:[$selected];
             } elseif ($bucket['bucket']===null) {
                 $hasRow=array_key_exists($eventId,$this->record)||($same&&$field['form']===$context['instrument']&&!empty($context['unsaved']));
+                // value() charges a row it reads; an event with no row cost nothing,
+                // so a long list of them was free work per host context (wargame P2).
+                if (!$hasRow && !$this->budget->take()) return self::problem('limit');
                 $candidates=$hasRow?[$this->value(['ref',$binding['field'],null],$eventId,null,null,$field['form'],$context,$same)]:[];
             } else {
                 $index=$this->instances($eventId,$bucket['bucket'],$same?$context:null);
@@ -222,6 +243,10 @@ final class AddressResolver
         if ($op==='any' || $op==='all') return ['state'=>'ok','quantifier'=>$op,'members'=>$members];
         if (!in_array($op,['sum','minimum','maximum','average'],true)) return self::problem('invalid');
         if (!$values) return self::problem('absent');
+        // Reading charged each value once; summing long values again per host
+        // context (excludeCurrent, match) is charged here (wargame P1).
+        $cost=ExactDecimal::sumCost($values);
+        if ($cost>0 && !$this->budget->take($cost)) return self::problem('limit');
         $sum=ExactDecimal::sum($values);
         if ($sum['state']!=='ok') return $sum;
         if ($op==='average') return ['state'=>'ok','numerator'=>$sum['value'],'denominator'=>(string)count($values),'members'=>$members];

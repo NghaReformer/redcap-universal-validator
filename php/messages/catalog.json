@@ -16,6 +16,10 @@
     "{placeholders} are substituted from the finding. A placeholder with no value",
     "is dropped along with the sentence fragment around it, never printed raw.",
     "",
+    "'detail' is an optional second sentence for staff, filled from the RULE: the",
+    "keys a mode lists under scan.detailKeys in php/modes.json are copied into the",
+    "report's rule snapshot. A detail whose placeholders are not all set is left out.",
+    "",
     "'staff' is what a data manager reads. 'survey' is what a respondent reads:",
     "shorter, no field names, no rule numbers. A report renders staff wording, but",
     "shows the survey line too where it differs, because a designer needs to know",
@@ -37,6 +41,60 @@
   "choices/hidden-choice": {
     "staff":  "The saved answer is no longer one of the available choices for this field.",
     "survey": "The selected choice is no longer available."
+  },
+  "window/window-early": {
+    "staff":  "The date is earlier than its allowed window.",
+    "survey": "This date is too early.",
+    "detail": "The window opens {windowLo} {windowUnit} from {windowFrom}."
+  },
+  "window/window-late": {
+    "staff":  "The date is later than its allowed window.",
+    "survey": "This date is too late.",
+    "detail": "The window closes {windowHi} {windowUnit} from {windowFrom}."
+  },
+  "window/future": {
+    "staff":  "The date is in the future.",
+    "survey": "This date cannot be in the future."
+  },
+  "window/*": {
+    "staff":  "The date is outside its allowed window.",
+    "survey": "This date is not allowed here."
+  },
+  "exists/not-found": {
+    "staff":  "The value is not saved where this rule looks for it.",
+    "survey": "This value was not found."
+  },
+  "exists/*": {
+    "staff":  "The value is not saved where this rule looks for it.",
+    "survey": "This value was not found."
+  },
+  "range/soft-low": {
+    "staff":  "The value is lower than usual for this field.",
+    "survey": "This value is lower than expected. Please check it.",
+    "detail": "Expected {rangeSoftText}."
+  },
+  "range/soft-high": {
+    "staff":  "The value is higher than usual for this field.",
+    "survey": "This value is higher than expected. Please check it.",
+    "detail": "Expected {rangeSoftText}."
+  },
+  "range/hard-low": {
+    "staff":  "The value is below the lowest plausible value for this field.",
+    "survey": "This value is too low.",
+    "detail": "Allowed {rangeHardText}."
+  },
+  "range/hard-high": {
+    "staff":  "The value is above the highest plausible value for this field.",
+    "survey": "This value is too high.",
+    "detail": "Allowed {rangeHardText}."
+  },
+  "range/not-a-number": {
+    "staff":  "The value is not a number.",
+    "survey": "Please enter a number."
+  },
+  "range/*": {
+    "staff":  "The value is outside its plausible range.",
+    "survey": "This value is not allowed here."
   },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",

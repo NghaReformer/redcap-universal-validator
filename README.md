@@ -112,9 +112,9 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    ```text
    @UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
      {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
-     {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-     {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-     {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
+     {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+     {"label":"DARETB",    "pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+     {"label":"SCREENTB",  "pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}
    ```
 
    Entry keys: `pattern` (required), `algorithm`, `source`, `strip`, `lengths`,
@@ -124,16 +124,29 @@ channels; the dialog's "What this rule checks" selector picks the kind:
    rule-level `pattern`, `idLengths`, `idMinLen` and `idMaxLen` must be left
    unset, because each entry carries its own.
 
+   Check-bearing entries own their shape. A value that matches the pattern of
+   any check-bearing entry must pass that entry's check character; a
+   format-only entry (`"algorithm":"none"`) is tried only when no check-bearing
+   pattern matches, whatever the declaration order. A format-only entry may
+   share a length with a check-bearing one as long as their patterns cannot
+   match the same value, as with `C`-`Z` codes that carry a check character
+   beside legacy `A`/`B` codes that do not, all six long.
+
    Some combinations are refused when the rule is saved rather than guessed at
    later: lengths where one is the sum of two or more others (one token could
-   then swallow several real members and still verify), a format-only entry
-   sharing a length with a check-bearing one (the format-only entry would
-   accept first, so that check character would never be tested), and entries
-   that disagree about which characters survive cleaning. Each message names
-   the entry and the fix. A single-value rule has no lengths to separate the
-   families, so it is refused instead when a check-bearing pattern cannot be
-   analysed for overlap — lookaround, a backreference, a named group. Plain
-   character classes avoid it.
+   then swallow several real members and still verify), a format-only pattern
+   that accepts a value a check-bearing pattern also accepts, and entries that
+   disagree about which characters survive cleaning. The overlap refusal is
+   needed even with shape ownership: a mis-scan that breaks the check-bearing
+   shape (an `O` for a `0`, a dropped digit) would otherwise land in the
+   overlapping format-only shape and pass on format. The overlap test is exact
+   for ordinary patterns (classes, groups, alternation, quantifiers); a
+   backreference, or lookaround it cannot settle, makes the rule refused rather
+   than assumed safe. In a pooled field it compares only entries that share a
+   declared length, since the parser never tries an entry at another length.
+   Length separation does not stop an inserted or dropped character from
+   turning a check-bearing ID into a valid-looking ID of a format-only family of
+   the neighbouring length. Each message names the entry and the fix.
 
    **Patterns must be portable.** They run as JavaScript in the browser and as
    PCRE on the server, so syntax the two engines read differently is refused
@@ -497,6 +510,184 @@ field instead of one near-duplicate field per country:
   import, a race) is logged by the post-save audit as `type: choices`,
   `reason: hidden-choice`, and the Validation scan reports it retrospectively.
 
+## Dates within a window — the `@UVWINDOW` tag
+
+REDCap's date validation takes a fixed minimum and maximum and only warns.
+`@UVWINDOW` checks a date against a window counted from another date of the same
+record, and/or that it is not after today:
+
+```text
+@UVWINDOW={"from":"[visit_date_bl]","window":[21,35]}
+@UVWINDOW={"from":"[dob]","window":[0,null],"notFuture":true}
+@UVWINDOW={"from":"[dose_given_at]","window":[0,6],"unit":"hours","blockSave":"hard"}
+@UVWINDOW={"notFuture":true}
+```
+
+- **JSON form only.** `window` is `[earliest, latest]` in whole units from the
+  `from` date, both ends included; `null` leaves an end open and negative bounds
+  count back. `unit` is `days` (default) or `weeks`, and also `minutes` or
+  `hours` on datetime fields. Optional `when`, `message`, `blockSave`.
+- **Date fields only:** Text fields with date, datetime or datetime-with-seconds
+  validation, in any display format. The `from` field must be the same kind of
+  date. The message names the allowed dates in the field's own format.
+- **Today is the server's date.** The page gets the server clock and moves it
+  forward while it stays open, so a wrong computer clock cannot accept tomorrow's
+  date and a form left open past midnight moves to the next day. A computer clock
+  moved forward while the form is open moves it too; the post-save audit reads the
+  server clock and still logs the date. The project setting **Time zone for
+  @UVWINDOW "notFuture"** sets the time zone, when it differs from the server's.
+- **Blank checks nothing.** A blank field, or a blank `from` date, is not
+  checked; a date still being typed shows no verdict.
+- **Other forms and events.** A `from` date on another form is read when the page
+  opens and the window part is advisory (it never blocks); `notFuture` keeps its
+  `blockSave`. On a survey, or without rights to that form, the value never
+  reaches the page: the browser checks only `notFuture`, and staff see a note
+  that the window is checked on save. With event and instance references
+  enabled, `from` may name another event: `[baseline_arm_1][visit_date]`; such a
+  rule is advisory on the page, like every rule with an event or instance
+  reference. On a multi-page survey, put the `from` field on the same page as the date it
+  anchors, or the window is checked only after the save.
+- **Audited.** The post-save audit logs `type: window` with reason
+  `window-early`, `window-late` or `future`, and saving the `from` date's form
+  re-checks the windows counted from it. The Validation scan reports the same
+  findings. Configure via field annotation only.
+
+## Values that must already exist — the `@UVEXISTS` tag
+
+REDCap can check that a value has the right shape, not that it refers to
+something that is real. `@UVEXISTS` checks, as the value is entered, that it is
+already saved in the project: a record ID, or a value of another field such as
+the specimen ID on the collection form.
+
+```text
+@UVEXISTS=record
+@UVEXISTS=[specimen_id]
+@UVEXISTS={"in":"[specimen_id]","event":"enrolment_arm_1","scope":"dag",
+           "match":{"site_code":"[site]"},"blockSave":"hard"}
+```
+
+- `in` is `record` (a record ID of this project) or one field reference (a value
+  saved in that field, in any record). `event` looks in one event, by its unique
+  name. `scope` is `project` (default), `dag` (records of the same Data Access
+  Group; records in no group form one group) or `event` (the event of the entry
+  being checked). `match` looks only at saved entries whose target field equals
+  a field of this record, `{"target":"[field of this record]"}`, up to 5 pairs;
+  the target values must sit in the same entry as the searched value (one event
+  row, or one repeat instance with its event row). Optional `when`, `message`,
+  `blockSave`, `surveys`.
+- **Exact comparison of stored values.** Trimmed and case-sensitive. A date is
+  compared as REDCap stores it (Y-M-D), whatever format the field shows, so the
+  searched field and the field itself must be stored the same way: both dates,
+  both datetimes to the minute, both datetimes to the second, both times of the
+  same precision, or neither a date nor a time. Dropdown and radio values are
+  compared by code.
+- **Asked on change, not per keystroke.** The page asks the server when the value
+  is entered or changed, and once when the form opens. Typing clears the
+  previous answer, typing in a text field a `when` condition reads included.
+  The answer is *found* (green), *not found* (red, enforced per `blockSave`) or
+  *could not check* (amber, never blocks): a failed read, a `match` field that is
+  blank on another form, or a busy server all answer *could not check*.
+- **Save waits for the answer.** Clicking Save re-checks the field first. A value
+  typed and saved at once is asked before the save is decided, and while an
+  answer is on its way the save is held ("still being checked"). After 10
+  seconds without an answer the value counts as *could not check* and the save
+  goes through.
+- **Branches.** With several `when` branches, the page sends the values its
+  conditions read, so the server answers from the branch the page is enforcing,
+  also on a record not saved yet.
+- **The page config never says where the rule looks.** `in`, `event`, `scope`
+  and `match` stay on the server, which reads them from the stored rule. On a
+  survey a misconfigured rule shows only a general notice, and the "no access"
+  reason staff see does not name a form or field.
+- **Who gets an answer.** Signed-in users are answered only when they may open
+  every form the lookup reads (the searched field and the `match` fields; a
+  record-ID lookup needs no extra form), and at most 60 lookups a minute per
+  session, shared with `@UVUNIQUE`. A user in a Data Access Group is answered
+  only on records of their own group. Staff in no group see the record the value
+  was found in; staff in a group see it only when it is in their group. A
+  record-ID lookup never names a record.
+- **Data Access Groups.** REDCap may confine a group user's reads to their own
+  group. A *not found* from a rule that looks across groups is therefore kept
+  only when the module sees records of other groups in the same request;
+  otherwise the answer is *could not check*, and the post-save audit reports a
+  rule problem instead of a violation.
+- **Surveys: opt-in, and never on an Identifier.** `"surveys":true` enables the
+  check on surveys, answered as found / not found only, under the survey
+  throttle. It is refused when any field the lookup touches is an Identifier
+  (the field, the `match` fields, the searched field, or the record-ID field for
+  a record-ID lookup), and when the Identifier flags cannot be read. A *not
+  found* costs a read of the whole searched field, so survey lookups may cause
+  at most 60 such reads a minute per project; past that they answer *could not
+  check*, which a survey shows as nothing.
+- **Audited.** The post-save audit logs `type: exists`, reason `not-found`.
+  Saving the form that holds a `match` field checks the lookup again. The
+  Validation scan reads the searched field once per rule per scan request and
+  checks every record against it. A lookup that cannot be completed is reported
+  as a rule problem, never as a pass. A scan confined to one Data Access Group
+  does not evaluate a rule that looks across groups (`scope` other than `dag`)
+  and says so. A durable scan with `@UVEXISTS` rules claims coverage through its
+  change fence only when no record changed during the run: an answer depends on
+  other records, which the catch-up does not re-check.
+- **Another project.** `"project":412`, or an alias such as `"project":"lab"`
+  that this project's settings map to a project id, looks in another project on
+  the same server. `in`, `event` and the `match` targets then name that
+  project's fields and events. Three parties must agree. An administrator turns
+  on "@UVEXISTS in other projects". The searched project enables the module and
+  lists this project under "Projects that may look up values here", with the
+  fields it may search and who gets an answer (only users with rights to those
+  fields there, confined to their group there; or any signed-in user of this
+  project, found / not found only, with no Identifier searched). Surveys are
+  answered only when that project also allows it. Until its agreement
+  passes, every problem shows one setup error and nothing of that project is
+  read. Its record is never shown. Each lookup, answered or refused, leaves a
+  `uv-exists-probe` line in that project's module log, with the value as a
+  keyed hash under its key. At most 30 lookups a minute per browser session
+  into one project. One project answers at most 1,200 a minute for signed-in
+  data entry, another 1,200 for post-save checks and scans, and 120 for survey
+  respondents (the first two are Control Center settings), so one kind of
+  caller cannot use up another's. Over any of them the answer is *could not
+  check*, and the searched project's log gets one "throttled" line a minute.
+- Works on Text, dropdown, radio and SQL fields; composes with the other modes on
+  the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
+  annotation only.
+
+## Numbers within plausible limits — the `@UVRANGE` tag
+
+REDCap's number validation takes one minimum and one maximum and only warns.
+`@UVRANGE` checks a number against two levels of limits: a usual range, outside
+which the value is unusual, and a plausible range, outside which it is a typing
+slip:
+
+```text
+@UVRANGE={"soft":[12,17.5],"hard":[3,25],"unit":"g/dL"}
+@UVRANGE={"soft":[null,140],"softBlock":"off","hard":[40,250],"unit":"mmHg"}
+@UVRANGE={"soft":[12,15.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='2'"}
+```
+
+- **JSON form only.** `soft` and `hard` are `[low, high]`, both ends included;
+  `null` leaves an end open, and the soft limits must lie inside the hard ones.
+  Outside `soft`, the note is amber and `softBlock` decides (`off` or `confirm`,
+  default `confirm`). Outside `hard`, or not a number, the note is red and
+  `hardBlock` decides (`confirm` or `hard`, default `hard`). `blockSave` is
+  refused. Optional `unit`, `when`, `message`.
+- **Number fields:** Text fields with no, integer or number validation
+  (including comma decimals), calc fields and sliders. A calc field and a
+  read-only field never block a save.
+- **Exact.** Limits and values are compared as decimals, digit by digit, so
+  `17.50` equals `17.5`, and a limit is kept exactly as written, quoted or not.
+  `1.5E1` is 15, as REDCap's number validation reads it. Thousands separators
+  and units typed into the box are not numbers. Blank checks nothing, and so
+  does a missing data code (`UNK`, `-99`).
+- **Branch by group.** Several `@UVRANGE` tags with `when` give different
+  limits by sex, age group or anything else on the form.
+- **The note waits.** It appears when the field is left, not while a number is
+  being typed.
+- **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
+  `soft-high`, `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock`
+  says. The Validation scan counts the same findings; its report (see below)
+  labels them "Unusual value", "Implausible value" or "Not a number", with the
+  limits in the detail line. Configure via field annotation only.
+
 ## The Validation scan — checking data that is already saved
 
 Live validation guards the form; it cannot reach values that arrived through
@@ -666,6 +857,35 @@ check-character primitive, but the full runtime path the module actually uses:
   privacy modes on success AND exception paths, event/instrument scoping,
   repeat instances, duplicate-field skips, per-rule isolation, keyed hashing,
   and the save-time `validateSettings` gate.
+- `tests/window_js.cjs` / `tests/window_php.php` — the `@UVWINDOW` verdict
+  (window bounds, units, `notFuture` against a given clock, date formats, leap
+  days, year limits) in both runtimes from one fixture,
+  `tests/window_fixture.json`. `tests/window_dom_js.cjs` drives the browser rule
+  and `tests/window_module_php.php` the server side: annotation checks, the
+  page fold of an off-page `from` date, the audit, reverse dependencies, the
+  scan, the scan clock and the `window-timezone` setting.
+- `tests/exists_php.php` — `@UVEXISTS` on the server: the grammar and
+  dictionary checks, the page config without the lookup target, the
+  `exists-check` endpoint (found / not found / could not check, a narrowed miss
+  confirmed by a full read, rights, throttle, surveys, the DAG-masked record),
+  the audit, the one-read scan index and group-confined scans.
+  `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur
+  only, never blocks on *could not check*, the cache and stale replies.
+  `tests/exists_cross_php.php` covers lookups in another project: the server
+  switch, the alias, the searched project's agreement (one refusal for every
+  reason, nothing read before it passes), rights there, the probe log, the
+  budgets, the audit and the scan.
+- `tests/range_js.cjs` / `tests/range_php.php` — the `@UVRANGE` verdict
+  (edges, exact decimals past 2^53, comma decimals, what is not a number) in
+  both runtimes from one fixture, `tests/range_fixture.json`, plus the grammar.
+  `tests/range_dom_js.cjs` drives the browser rule (the note waits for the
+  field to be left, each level's block, calc and read-only fields never block)
+  and `tests/range_module_php.php` the server side: eligible fields, the audit,
+  the scan and its per-branch detail line.
+- `tests/missing_codes_dom_js.cjs` / `tests/missing_codes_php.php` — a field
+  marked with a missing data code is not judged by any mode, on the page, in
+  the audit, in the scan or by the lookup endpoints; `@UVREQUIRED` counts it
+  as an answer.
 - `tests/a11y_dom_js.cjs` — the field-facing DOM contract: live-region status
   messages, `aria-describedby`/`aria-invalid`, label-based block dialogs,
   debounce, the read-only exemption, and survey muting of technical detail.
@@ -697,10 +917,25 @@ node tests/gen_when_fuzz.cjs  # regenerate the seeded when-fuzz fixture
 php  tests/when_fuzz_php.php   # PHP "when" engine vs the JS twin (4048 fuzz cases)
 node tests/when_dom_js.cjs    # "when" gate DOM contract (live refs, folded consts, fail-open)
 php  tests/branching_php.php   # branch resolver (shared fields -> branch rules)
+php  tests/registry_php.php    # mode registry (php/modes.json): frozen maps, coverage, bad file
+node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js after editing php/modes.json
 node tests/branch_dom_js.cjs  # branched validation DOM contract (active/else/conflict)
 node tests/constraint_dom_js.cjs # @UVASSERT constraint DOM contract (assert test, compose, branches)
 node tests/required_dom_js.cjs   # @UVREQUIRED required DOM contract (blank, when-gate, compose)
 node tests/unique_dom_js.cjs     # @UVUNIQUE unique DOM contract (transport, fail-open, cache)
+node tests/window_js.cjs         # @UVWINDOW verdict vs window_fixture.json
+php  tests/window_php.php         # @UVWINDOW verdict, PHP twin, same fixture
+node tests/window_dom_js.cjs     # @UVWINDOW DOM contract (messages, clock, snapshot, guard)
+php  tests/window_module_php.php  # @UVWINDOW hooks, page fold, audit, scan, clock and time zone
+php  tests/exists_php.php         # @UVEXISTS grammar, hooks, endpoint, audit and scan index
+php  tests/exists_cross_php.php   # @UVEXISTS in another project: agreement, rights, probe log, budgets
+node tests/exists_dom_js.cjs      # @UVEXISTS DOM contract (asks on change, could-not-check, cache)
+node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
+php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
+node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
+php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
+php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks
 php  tests/annotation_php.php  # @UVALIDATE parser + shared rule validator
 php  tests/hook_php.php        # redcap_save_record audit path (mocked framework)

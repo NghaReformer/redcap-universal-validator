@@ -156,6 +156,11 @@ Use a sentinel that appears in no note or label (`ZZCHOICES99`).
 
 ## Section H — server audit & Validation scan
 
+Since 1.8.9 the Validation scan page shows counts only while the scan is being
+rebuilt (see the README), so H3 and H4 read the count: the H1/H2 violations
+are counted and the E1 record adds nothing. The listing and CSV in H3 come
+back with the report page.
+
 | # | Action | Expect |
 |---|---|---|
 | H1 | Import (or race a save so) a record where `uch_region = 201` while `uch_country = 1` | module log gains `invalid-id-saved` with `type: choices`, `reason: hidden-choice`, scoped to the right instrument/event/instance (value stored per the project's log-privacy mode) |

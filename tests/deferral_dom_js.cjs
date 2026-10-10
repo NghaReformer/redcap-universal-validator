@@ -18,6 +18,7 @@
  * Run:  node tests/branch_dom_js.cjs
  */
 'use strict';
+const fs = require('fs');
 const path = require('path');
 
 let n = 0, fail = 0;
@@ -87,11 +88,21 @@ function submitEv() {
 }
 
 
-for (const type of ['single','pooled','constraint','required','unique','choices']) {
+// Every type of every mode in php/modes.json, each started with its sample
+// from tests/mode_samples.json, so a new mode is covered the day it is added.
+const REGISTRY = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'php', 'modes.json'), 'utf8'));
+const SAMPLES = JSON.parse(fs.readFileSync(path.join(__dirname, 'mode_samples.json'), 'utf8')).modes;
+const ALL_TYPES = [];
+const SAMPLE_KEYS = {};
+for (const m of REGISTRY.modes) {
+  for (const t of m.types) ALL_TYPES.push(t);
+  Object.assign(SAMPLE_KEYS, SAMPLES[m.mode].client);
+}
+check('the deferral loop covers every registry type', ALL_TYPES.length >= 6);
+for (const type of ALL_TYPES) {
   for (const branched of [false,true]) {
     const field=makeEl('input'); field.name='target'; field.value='bad';
-    const branch={algorithm:'none',idPattern:'GOOD',assert:'1=0',blockSave:'hard',
-      choicesHide:['bad'],choicesAll:['bad','good'],uniqueScope:'project',when:'1=0',whenAst:['const',false]};
+    const branch=Object.assign({}, SAMPLE_KEYS, {blockSave:'hard',when:'1=0',whenAst:['const',false]});
     const rule=Object.assign({type,fields:['target']},branch,{deferred:true,deferredWhy:['source unavailable']});
     if(branched){rule.branches=[branch,Object.assign({},branch,{when:null,whenAst:null})];}
     const env=boot([field],{rules:[rule]});

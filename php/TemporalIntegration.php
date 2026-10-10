@@ -69,7 +69,8 @@ trait TemporalIntegration
             $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;
             foreach($rule['branches'] as $i=>$branch){
                 $flat=array_merge($rule,$branch);unset($flat['branches']);
-                $gate=$flat;unset($gate['assert']);
+                // The selector alone: a test or an operand that cannot be resolved belongs to its branch, not to the choice of branch.
+                $gate=$flat;foreach(ModeRegistry::condKeys('test') as $k)unset($gate[$k]);foreach(ModeRegistry::operandKeys() as $rk)unset($gate[$rk['key']]);
                 $g=TemporalRules::compile($gate,$resolver,$shape,$ctx,$browser,$mayRead);
                 if($browser){
                     $b=$this->temporalPrepared($flat,$shape,$node,$ctx,true,$mayRead);
@@ -95,7 +96,10 @@ trait TemporalIntegration
             $pick=$active?$active[0]:$fallback;
             if($pick===null){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}
             $flat=array_merge($rule,$rule['branches'][$pick]);unset($flat['branches']);
-            return $this->temporalPrepared($flat,$shape,$node,$ctx,false,null);
+            // The chosen branch travels with the flattened rule, so a finding can
+            // name the branch that judged it (ScanDimensions keeps one per branch).
+            $res=$this->temporalPrepared($flat,$shape,$node,$ctx,false,null);$res['branch']=$pick;
+            return $res;
         }
         $prepared=TemporalRules::compile($rule,$resolver,$shape,$ctx,$browser,$mayRead);
         if(!$browser && !$prepared['problems'] && ($prepared['rule']['when']??null)==='1=0')return $prepared;
@@ -118,12 +122,14 @@ trait TemporalIntegration
                     $holders=$index['holders'][self::temporalTupleKey($current,$parts)]??[];
                     unset($holders[$own]);$results[$field]=!$holders;continue;
                 }
+                // A live date reads as the field shows it (31-12-2026), saved ones as Y-M-D.
+                $shown=[];foreach($parts as $f)$shown[$f]=$currentOps[$f][0]==='ref'?TemporalValue::fromValidation($shape->field($f)['validation']??''):null;
                 $clauses=[];$sent=[];
                 foreach($index['tuples'] as $id=>$tuple){
                     if((string)$id===$own)continue;
                     // Entries holding the same tuple are one clause: the page asks "is my value taken", not "by how many".
                     $key=self::temporalTupleKey($tuple,$parts);if(isset($sent[$key]))continue;$sent[$key]=true;
-                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',$tuple[$f]]];$clauses[]=['not',['and',$eq]];
+                    $eq=[];foreach($parts as $f)$eq[]=['cmp','identical',$currentOps[$f],['lit',self::temporalShown($tuple[$f],$shown[$f])]];$clauses[]=['not',['and',$eq]];
                 }
                 $tests[$field]=['and',$clauses];
             }
@@ -184,6 +190,14 @@ trait TemporalIntegration
         return $held['resolver'];
     }
 
+    /** A saved date or datetime written the way its field shows it; any other value as saved. */
+    private static function temporalShown($value,$tv)
+    {
+        if($tv===null)return $value;
+        $shown=TemporalValue::format(trim((string)$value),$tv['type'],$tv['format']);
+        return $shown!==''?$shown:$value;
+    }
+
     /** Components compare as TemporalLogic's "identical" does: exact strings after PHP's default trim. */
     private static function temporalTupleKey(array $tuple,array $parts)
     {
@@ -234,8 +248,10 @@ trait TemporalIntegration
                 // Do not ship complete record-local uniqueness tuples unless every component is disclosable.
                 $p=$this->temporalPrepared($r,$shape,$node,$ctx,true,$mayRead);$out[$i]=$p['rule'];
                 if($p['problems']){$out[$i]['deferred']=true;$out[$i]['deferredWhy']=['Extended validation unavailable: '.implode(', ',$p['problems']).'.'];
-                    foreach(['whenAst','assertAst','uniqueRecordAsts'] as $k)unset($out[$i][$k]);unset($out[$i]['references']);
-                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;unset($b['whenAst'],$b['assertAst'],$b['uniqueRecordAsts'],$b['references']);}unset($b);
+                    // Every folded key the browser could act on: condition trees, record tuples, operands.
+                    $folded=['whenAst','uniqueRecordAsts','references'];foreach(ModeRegistry::refKeys('cond','test') as $rk)$folded[]=$rk['ast'];foreach(ModeRegistry::operandKeys() as $rk)$folded[]=$rk['op'];
+                    foreach($folded as $k)unset($out[$i][$k]);
+                    if(isset($out[$i]['branches']))foreach($out[$i]['branches'] as &$b){$b['deferred']=true;foreach($folded as $k)unset($b[$k]);}unset($b);
                 }
             }
         }catch(\Throwable $e){foreach($extended as $i=>$r){$out[$i]=['type'=>$r['type'],'fields'=>$r['fields'],'deferred'=>true,'deferredWhy'=>['Extended source data unavailable.'],'blockSave'=>'off'];}}

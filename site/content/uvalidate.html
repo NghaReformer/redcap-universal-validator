@@ -50,23 +50,25 @@ it. Each entry needs its own <code>pattern</code>; a pooled rule also needs
 <code>lengths</code> on every entry.</p>
 <pre><code>@UVALIDATE={"type":"pooled","strip":"-","blockSave":"hard","alternates":[
   {"label":"GHIT",      "pattern":"FC[1-9]-[0-9]{4}",        "algorithm":"none","lengths":[8]},
-  {"label":"START4KIDS","pattern":"SK[1-5]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
-  {"label":"DARETB",    "pattern":"DT[1-2]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
-  {"label":"SCREENTB",  "pattern":"ST[1-5]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}</code></pre>
+  {"label":"START4KIDS","pattern":"SK[1-9]-[0-9]{4}[0-9A-Z]","algorithm":"3736","lengths":[9]},
+  {"label":"DARETB",    "pattern":"DT[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]},
+  {"label":"SCREENTB",  "pattern":"ST[1-9]-[0-9]{5}[0-9A-Z]","algorithm":"3736","lengths":[10]}]}</code></pre>
 <p>Entry keys: <code>pattern</code> (required), <code>algorithm</code>,
 <code>source</code>, <code>strip</code>, <code>lengths</code>,
 <code>label</code>; anything omitted falls back to the rule-level value. Up to 8
 entries per rule. When <code>alternates</code> is used the rule-level
 <code>pattern</code>, <code>idLengths</code>, <code>idMinLen</code> and
 <code>idMaxLen</code> must be left unset.</p>
-<p>Combinations that could report a mis-scan as a clean ID are refused when the
-rule is saved, each with a message naming the entry and the fix: lengths where
-one is the sum of two or more others, a format-only entry sharing a length with
-a check-bearing one, and entries that disagree about which characters survive
-cleaning. A single-value rule has no lengths to separate the families, so it is
-refused instead when a check-bearing pattern cannot be analysed for overlap
-&mdash; lookaround, a backreference, a named group. Plain character classes
-avoid it.</p>
+<p>A value that matches the pattern of a check-bearing entry must pass that
+entry's check character; format-only entries are tried only when no
+check-bearing pattern matches. Combinations that could report a mis-scan as a
+clean ID are refused when the rule is saved, each with a message naming the
+entry and the fix: lengths where one is the sum of two or more others, a
+format-only pattern that accepts a value a check-bearing pattern also accepts
+(in a pooled rule, between entries sharing a length), and entries that disagree
+about which characters survive cleaning. The overlap test is exact for
+ordinary patterns; a backreference, or lookaround it cannot settle, makes the
+rule refused rather than assumed safe. Plain character classes avoid it.</p>
 <p>Patterns run as JavaScript in the browser and as PCRE on the server, so
 syntax the two read differently is refused when the rule is saved:
 <code>\pL</code> and <code>\p{L}</code>, <code>\K \G \h \v \R \N \X \C

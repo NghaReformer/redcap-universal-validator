@@ -661,6 +661,21 @@
      technical config detail is muted there (UX-001) — admins still see every
      detail on data-entry forms, in the Configure dialog, and in the module log. */
   var QRID_IS_SURVEY = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.context === "survey");
+  /* The project's Missing Data Codes. A field marked with REDCap's "M" button
+     holds the code itself; REDCap does not validate it, and neither does a
+     check that judges the value (php/modes.json "missingCodes":"skip"). Every
+     factory except @UVREQUIRED treats it like a blank field. */
+  var QRID_MISSING_CODES = (function(){
+    var set = Object.create(null);
+    var list = (QRID_COMBINED_CONFIG && Array.isArray(QRID_COMBINED_CONFIG.missingCodes)) ? QRID_COMBINED_CONFIG.missingCodes : [];
+    for(var i = 0; i < list.length; i++){ if(typeof list[i] === "string" && list[i] !== "") set[list[i]] = true; }
+    return set;
+  })();
+  function QRID_isMissingCode(value){
+    if(value === null || value === undefined) return false;
+    var t = String(value).replace(/^[ \t\r\n\0\x0B]+|[ \t\r\n\0\x0B]+$/g, "");
+    return t !== "" && QRID_MISSING_CODES[t] === true;
+  }
 
   /* Shared per-load registries (were window globals; now namespace-only).
      Object.create(null): REDCap field names are attacker-ish input for a plain
@@ -931,6 +946,16 @@ function QRID_gatePattern(raw, label){
       "behave differently in the browser and on the server — write out the characters the class should " +
       "contain." };
   }
+  if(QRID_newPcreQuantifier(src)){
+    /* "{,n}" and quantifiers with spaces ("{2, 3}") are literal text here and
+       to PCRE2 before 10.43, and quantifiers from 10.43 on (bundled with PHP
+       8.4): a server upgrade would silently split the two runtimes. Twin of
+       gatePattern (php). */
+    return { re: null, error: pre + "idPattern" + " uses \"{,n}\" or a quantifier with spaces such as " +
+      "\"{2, 3}\". JavaScript reads these as literal text, PCRE before 10.43 does too, and PCRE 10.43 and " +
+      "later (PHP 8.4) read them as quantifiers, so the pattern would behave differently in the browser and " +
+      "on some servers. Write {0,n} or {2,3} without spaces, or escape the brace (\\{) for the literal text." };
+  }
   if(QRID_riskyPattern(src)){
     return { re: null, error: pre + "idPattern" + " looks catastrophically backtracking (nested quantifiers, a " +
       "repeated ambiguous group, overlapping unbounded quantifiers, or a long run of overlapping " +
@@ -960,6 +985,58 @@ function QRID_gatePattern(raw, label){
 
    Twin of CheckCharacter::alternatesOf (php). */
 function QRID_altName(alt, i){ return alt.label ? alt.label : "alternate " + (i + 1); }
+/* The non-alphanumeric characters a pattern matches LITERALLY - its
+   separators, such as the "-" in FC[1-9]-[0-9]{4} - which pooled cleaning must
+   therefore keep. Regex syntax is not a literal: the comma of a {n,m}
+   quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
+   prefix used to be read as separators. An escaped separator is literal too:
+   "\:" and "\x3A" both match ":". Twin of CheckCharacter::patternLiterals
+   (php). */
+/* A brace group of digits, commas and spaces is a quantifier only to PCRE2
+   10.43+ when it has an empty minimum ("{,n}") or white space. Twin of
+   CheckCharacter::usesNewPcreQuantifier (php). */
+function QRID_newPcreQuantifier(src){
+  var groups = String(src).replace(/\\[\s\S]/g, "").match(/\{[0-9 ,]*\}/g) || [];
+  for(var i = 0; i < groups.length; i++){
+    if(/^\{ *,/.test(groups[i])) return true;
+    if(groups[i].indexOf(" ") >= 0 && /[0-9]/.test(groups[i])) return true;
+  }
+  return false;
+}
+
+function QRID_patternLiterals(pattern){
+  var pat = String(pattern), meta = "\\^$.|?*+()[]{}", out = "", m;
+  for(var i = 0; i < pat.length; i++){
+    var pc = pat.charAt(i);
+    if(pc === "\\"){
+      i++;
+      if(i >= pat.length) continue;
+      var ec = pat.charAt(i), hx = null;
+      if(ec === "x") hx = /^[0-9A-Fa-f]{2}/.exec(pat.slice(i + 1));
+      else if(ec === "u") hx = /^[0-9A-Fa-f]{4}/.exec(pat.slice(i + 1));
+      if(hx){
+        i += hx[0].length;
+        ec = String.fromCharCode(Math.min(parseInt(hx[0], 16), 0x7F));  /* only printable ASCII is kept below */
+      } else if(/[A-Za-z0-9]/.test(ec)){
+        continue;                               /* \d, \w, \b ... are not text */
+      }
+      if(ec >= " " && ec <= "~" && !/[A-Za-z0-9]/.test(ec) && out.indexOf(ec) < 0) out += ec;
+      continue;
+    }
+    if(pc === "{" && (m = /^\{\d+(,\d*)?\}/.exec(pat.slice(i)))){
+      i += m[0].length - 1;                     /* a quantifier, not text */
+      continue;
+    }
+    if(pc === "(" && pat.charAt(i + 1) === "?" &&
+       (m = /^\(\?(?:<[A-Za-z_][A-Za-z0-9_]*>|<=|<!|[:=!])/.exec(pat.slice(i)))){
+      i += m[0].length - 1;                     /* a group prefix, not text */
+      continue;
+    }
+    if(meta.indexOf(pc) < 0 && !/[A-Za-z0-9]/.test(pc) && out.indexOf(pc) < 0) out += pc;
+  }
+  return out;
+}
+
 function QRID_alternatesOf(cfg){
   var raw = cfg.alternates;
   function bad(msg){ return { list: [], error: msg }; }
@@ -1340,6 +1417,79 @@ function QRID_temporalEvaluate(ast,read,blank,cs){
   return null;
 }
 
+/* ---- @UVWINDOW date helpers. Twins of TemporalValue::family / canonical /
+   format and TemporalLogic::windowVerdict; tests/window_fixture.json drives both
+   runtimes (tests/window_php.php, tests/window_js.cjs). */
+var QRID_WINDOW_UNITS=Object.create(null);   /* no inherited keys: "constructor" is not a unit */
+QRID_WINDOW_UNITS.minutes=60;QRID_WINDOW_UNITS.hours=3600;QRID_WINDOW_UNITS.days=86400;QRID_WINDOW_UNITS.weeks=604800;
+function QRID_temporalFamily(type){ return type==='date'?'date':'datetime'; }
+/* Seconds of UTC wall-clock time back to the canonical form QRID_temporalDate
+   produces; null outside the years 1-9999, which no date field can hold. */
+function QRID_temporalCanonical(seconds,type){
+  var d=new Date(seconds*1000),y=d.getUTCFullYear();
+  if(!isFinite(y)||y<1||y>9999)return null;
+  var iso=d.toISOString();
+  return type==='date'?iso.slice(0,10):iso.slice(0,19).replace('T',' ');
+}
+/* A canonical value written the way a field of this type and format shows it. */
+function QRID_temporalFormat(canonical,type,format){
+  var m=typeof canonical==='string'?/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(canonical):null;
+  if(!m)return '';
+  var date=format==='dmy'?m[3]+'-'+m[2]+'-'+m[1]:(format==='mdy'?m[2]+'-'+m[3]+'-'+m[1]:m[1]+'-'+m[2]+'-'+m[3]);
+  if(type==='date')return date;
+  var time=(m[4]!==undefined?m[4]:'00')+':'+(m[5]!==undefined?m[5]:'00');
+  if(type==='datetime_seconds')time+=':'+(m[6]!==undefined&&m[6]!==''?m[6]:'00');
+  return date+' '+time;
+}
+/* The @UVWINDOW verdict: inert (blank, or nothing applied) | unknown | future | window-early | window-late | ok,
+   with the window's earliest / latest bound (canonical, null when open). Pure:
+   the caller passes the clock. See TemporalLogic::windowVerdict. */
+function QRID_windowVerdict(spec,value,valueFormat,anchor,anchorFormat,clock){
+  var out={verdict:'ok',earliest:null,latest:null};
+  if(typeof value!=='string'||QRID_whenTrim(value)===''){out.verdict='inert';return out;}
+  var type=spec.type==null?null:spec.type;
+  var v=QRID_temporalDate(QRID_whenTrim(value),type,valueFormat);
+  if(!v){out.verdict='unknown';return out;}
+  var lo=spec.lo==null?null:spec.lo,hi=spec.hi==null?null:spec.hi,windowReason=null,checked=false;
+  if((lo!==null||hi!==null)&&typeof anchor==='string'&&QRID_whenTrim(anchor)!==''){
+    checked=true;
+    var fromType=spec.fromType==null?null:spec.fromType,unit=spec.unit==null?'days':spec.unit;
+    var a=QRID_temporalDate(QRID_whenTrim(anchor),fromType,anchorFormat);
+    if(!a||QRID_temporalFamily(type)!==QRID_temporalFamily(fromType)||typeof unit!=='string'||QRID_WINDOW_UNITS[unit]===undefined
+       ||(QRID_temporalFamily(type)==='date'&&unit!=='days'&&unit!=='weeks')){out.verdict='unknown';return out;}
+    var u=QRID_WINDOW_UNITS[unit];
+    if(type==='datetime')a.seconds-=((a.seconds%60)+60)%60;   /* read to the minute, as the field is */
+    var diff=v.seconds-a.seconds;
+    if(lo!==null)out.earliest=QRID_temporalCanonical(a.seconds+(lo|0)*u,v.date);
+    if(hi!==null)out.latest=QRID_temporalCanonical(a.seconds+(hi|0)*u,v.date);
+    if(lo!==null&&diff<(lo|0)*u)windowReason='window-early';
+    else if(hi!==null&&diff>(hi|0)*u)windowReason='window-late';
+  }
+  if(spec.notFuture){
+    var today=clock&&typeof clock==='object'&&clock.today!=null?clock.today:null;
+    var now=clock&&typeof clock==='object'&&clock.now!=null?QRID_temporalDate(String(clock.now),'datetime_seconds','ymd'):null;
+    if(typeof today!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(today)||!now){out.verdict='unknown';return out;}
+    checked=true;
+    if(v.date==='date'?v.value>today:v.seconds>now.seconds){out.verdict='future';return out;}
+  }
+  if(windowReason!==null)out.verdict=windowReason;
+  else if(!checked)out.verdict='inert';   /* a blank anchor and no notFuture: nothing was checked */
+  return out;
+}
+/* The server's wall-clock time now: config.clock, stamped when the page was
+   built, advanced by how long the page has been open. A page left open across
+   midnight therefore moves to the next day. The elapsed time never goes
+   backwards, so setting the computer's clock back cannot undo a day. null
+   without a usable server clock. */
+var QRID_CLOCK_T0=Date.now(),QRID_CLOCK_ELAPSED=0;
+function QRID_clockNow(base){
+  if(!base||typeof base!=='object'||typeof base.now!=='string')return null;
+  var b=QRID_temporalDate(base.now,'datetime_seconds','ymd');if(!b)return null;
+  var e=Date.now()-QRID_CLOCK_T0;if(e>QRID_CLOCK_ELAPSED)QRID_CLOCK_ELAPSED=e;
+  var now=QRID_temporalCanonical(b.seconds+Math.floor(QRID_CLOCK_ELAPSED/1000),'datetime');
+  return now===null?null:{today:now.slice(0,10),now:now};
+}
+
 /* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
 function QRID_whenRefKey(ref){
   if(ref[0] === "binding") return "{" + ref[1] + "}";
@@ -1689,6 +1839,74 @@ function QRID_whenDecCmp(a, b){
   }
   return sa > 0 ? mag : -mag;
 }
+/* @UVRANGE: a typed or saved number as a NUM_RE string, "" for blank, or null
+   when it is not a number. One comma is the decimal mark on a *_comma_decimal
+   field. A number with an exponent (2.5E1, which REDCap's number validation
+   accepts) is written out. Twin of Logic::normalizeNumber. */
+function QRID_rangeNumber(value, decimalComma){
+  var v = QRID_whenTrim(value == null ? "" : String(value));
+  if(v === "") return "";
+  if(decimalComma && v.split(",").length === 2 && v.indexOf(".") < 0) v = v.replace(",", ".");
+  if(QRID_WHEN_NUM_RE.test(v)) return v;
+  var p = QRID_exponentParts(v);
+  if(p === null) return null;
+  /* Past 70 places a number is past every limit (at most 64 characters), so
+     it is judged as 10^70 or 10^-71 with its sign. */
+  if(p.digits !== "" && p.point > 71) p = { sign: p.sign, digits: "1", point: 71 };
+  else if(p.digits !== "" && p.point < -70) p = { sign: p.sign, digits: "1", point: -70 };
+  return QRID_partsText(p);
+}
+var QRID_MAX_PLAIN = 4096;
+/* A number with an exponent written out digit for digit ("2.5E1" is "25",
+   "5E0001" is "50"); null when not that shape or longer than QRID_MAX_PLAIN
+   characters written out. Zero carries no sign. Twin of Logic::plainDecimal. */
+function QRID_plainDecimal(s){
+  var p = QRID_exponentParts(s);
+  if(p === null || QRID_partsLength(p) > QRID_MAX_PLAIN) return null;
+  return QRID_partsText(p);
+}
+/* A number with an exponent as 0.DIGITS x 10^POINT, or null. Twin of
+   Logic::exponentParts. */
+function QRID_exponentParts(s){
+  var m = /^([+-]?)([0-9]*)(?:\.([0-9]*))?[eE]([+-]?)([0-9]+)$/.exec(String(s));
+  if(!m) return null;
+  var all = m[2] + (m[3] === undefined ? "" : m[3]);
+  if(all === "") return null;
+  var digits = all.replace(/^0+/, "");
+  if(digits === "") return { sign: "", digits: "", point: 0 };
+  var lead = all.length - digits.length;
+  var e = m[5].replace(/^0+/, "");
+  e = e.length > 9 ? 1000000000 : (e === "" ? 0 : parseInt(e, 10));
+  return { sign: m[1] === "-" ? "-" : "", digits: digits.replace(/0+$/, ""),
+           point: m[2].length - lead + (m[4] === "-" ? -e : e) };
+}
+function QRID_partsLength(p){
+  var d = p.digits.length, pt = p.point;
+  if(d === 0) return 1;
+  return p.sign.length + (pt <= 0 ? 2 - pt + d : (pt >= d ? pt : d + 1));
+}
+function QRID_partsText(p){
+  var d = p.digits, pt = p.point, t;
+  if(d === "") return "0";
+  if(pt <= 0) t = "0." + new Array(-pt + 1).join("0") + d;
+  else if(pt >= d.length) t = d + new Array(pt - d.length + 1).join("0");
+  else t = d.slice(0, pt) + "." + d.slice(pt);
+  return p.sign + t;
+}
+/* The @UVRANGE verdict: { tier: ok|soft|hard|inert, reason }. Bounds inclusive,
+   exact decimal comparison. Twin of Logic::rangeVerdict; tests/range_fixture.json
+   pins both. */
+function QRID_rangeVerdict(spec, value){
+  var n = QRID_rangeNumber(value, !!spec.decimalComma);
+  if(n === "") return { tier: "inert", reason: null };
+  if(n === null) return { tier: "hard", reason: "not-a-number" };
+  function b(k){ return (spec[k] != null && spec[k] !== "") ? String(spec[k]) : null; }
+  if(b("hardLo") !== null && QRID_whenDecCmp(n, b("hardLo")) < 0) return { tier: "hard", reason: "hard-low" };
+  if(b("hardHi") !== null && QRID_whenDecCmp(n, b("hardHi")) > 0) return { tier: "hard", reason: "hard-high" };
+  if(b("softLo") !== null && QRID_whenDecCmp(n, b("softLo")) < 0) return { tier: "soft", reason: "soft-low" };
+  if(b("softHi") !== null && QRID_whenDecCmp(n, b("softHi")) > 0) return { tier: "soft", reason: "soft-high" };
+  return { tier: "ok", reason: null };
+}
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
@@ -1847,6 +2065,16 @@ var QRID_WHEN = (function(){
     if(el) return el.value == null ? "" : String(el.value);
     return "";
   }
+  /* Whether the page carries (field, codeOrNull) at all - a live lookup sends
+     only values the page really has (QRID_condValues). */
+  function has(f, code){
+    if(code !== null && code !== undefined){
+      var nm = "__chk__" + f + "_RC_" + code;
+      if(document.getElementsByName && document.getElementsByName(nm).length) return true;
+      return !!(document.getElementById && document.getElementById("id-" + nm));
+    }
+    return !!findValueEl(f);
+  }
   function fire(f){
     var cbs = hooks[f];
     if(!cbs) return;
@@ -1972,6 +2200,7 @@ var QRID_WHEN = (function(){
     var refs = QRID_whenRefs(ast);
     var unknown = false;
     return {
+      refs: function(){ return refs; },
       unresolved: function(){ return unknown; },
       active: function(){
         try { var verdict = QRID_whenEvaluateWith(ast, readRef, blank, caseSensitive); unknown = verdict === null; return verdict === true; }
@@ -1990,8 +2219,45 @@ var QRID_WHEN = (function(){
       }
     };
   }
-  return { gateFor: gateFor, readRef: readRef };
+  return { gateFor: gateFor, readRef: readRef, has: has };
 })();
+/* The values this page reads for the fields its branch conditions test, sent
+   with a live lookup (unique-check, exists-check) so the server answers from
+   the branch the page is enforcing (activeRuleFor), not from the one the SAVED
+   record would select. Only fields present on the page are sent; the server
+   keeps the saved value for any other. Checkbox options go as code -> "1"/"0". */
+function QRID_condValues(variants){
+  var out = {};
+  for(var i = 0; i < variants.length; i++){
+    var g = variants[i].gate;
+    if(!g || typeof g.refs !== "function") continue;
+    var refs = g.refs();
+    for(var j = 0; j < refs.length; j++){
+      var f = refs[j][0], code = refs[j][1];
+      if(typeof f !== "string" || !QRID_WHEN.has(f, code)) continue;
+      if(code === null || code === undefined){ out[f] = QRID_WHEN.readRef(f, null); continue; }
+      if(typeof out[f] !== "object" || out[f] === null) out[f] = {};
+      out[f][code] = QRID_readCheckbox(f, code);
+    }
+  }
+  return out;
+}
+/* A small answer cache for the live lookups: the payload (value, match or
+   "with" values, branch values) -> the server's answer. Several entries, so
+   flipping a selector back and forth or retyping a value asks once. */
+function QRID_answerCache(max){
+  var map = Object.create(null), order = [];
+  return {
+    get: function(k){ return Object.prototype.hasOwnProperty.call(map, k) ? map[k] : null; },
+    put: function(k, v){
+      if(!Object.prototype.hasOwnProperty.call(map, k)){ order.push(k); if(order.length > max) delete map[order.shift()]; }
+      map[k] = v;
+    }
+  };
+}
+/* How long a save waits on a lookup still in flight before the lookup counts
+   as unanswered (QRID_registerBlocker holds the save meanwhile). */
+var QRID_PENDING_MS = 10000;
 /* ---- optional save blocking (shared by both factories) ---------------------
    blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
@@ -2028,14 +2294,22 @@ function QRID_registerBlocker(input, fieldName, blockMode){
       if(item && typeof item.__qridRecheck === "function"){ try { item.__qridRecheck(); } catch(_r){} }
     }
     var bad = UV_guard.items.filter(function(el){ return el.__qridInvalid && el.__qridBlockMode !== "off"; });
-    if(!bad.length) return;
-    var names = bad.map(function(el){ return el.__qridFieldLabel || el.__qridFieldName; }).join(", ");
-    var hard = bad.some(function(el){ return el.__qridBlockMode === "hard"; });
+    /* A lookup still in flight holds the save. Clicking Save blurs the field,
+       and the blur is when a lookup asks: letting the save through would
+       decide it before the answer that may block it arrives. Only items whose
+       active rule can block set __qridPending, and they drop it when the
+       answer comes or after QRID_PENDING_MS. */
+    var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
+    if(!bad.length && !pend.length) return;
+    var label = function(el){ return el.__qridFieldLabel || el.__qridFieldName; };
+    var names = bad.map(label).concat(pend.map(function(el){ return label(el) + " (still being checked)"; })).join(", ");
+    var hard = pend.length > 0 || bad.some(function(el){ return el.__qridBlockMode === "hard"; });
     if(hard){
       e.preventDefault();
       if(e.stopImmediatePropagation) e.stopImmediatePropagation();
-      window.alert("Cannot save yet — please fix the flagged field(s): " + names);
-      try { bad[0].focus(); } catch(_f){}
+      window.alert(bad.length ? "Cannot save yet — please fix the flagged field(s): " + names
+                              : "Cannot save yet — please wait a moment and save again: " + names);
+      try { (bad[0] || pend[0]).focus(); } catch(_f){}
       return;
     }
     if(window.confirm("Validation FAILED for: " + names + "\n\nSave anyway?")){
@@ -2101,26 +2375,59 @@ function QRID_attachMsgRegion(input, fieldName, mode){
                   "false"; else the attribute is removed.
    "info" is deliberately not an opinion about validity (it is the uniqueness
    check saying "asking the server"), which keeps today's behaviour of clearing
-   aria-invalid while a check is in flight.
+   aria-invalid while a check is in flight. "warn" is the same: a lookup that
+   could not be completed says nothing about the value.
    Save-blocking is NOT routed through here: each mode keeps its own guard item,
    which is what makes composition correct in the first place. */
-var QRID_OUTLINE = { bad: "2px solid #c62828", info: "2px solid #0067c0", ok: "2px solid #2e9e44" };
-function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "info" | null */
+var QRID_OUTLINE = { bad: "2px solid #c62828", warn: "2px solid #b7791f", info: "2px solid #0067c0", ok: "2px solid #2e9e44" };
+function QRID_setModeState(input, mode, kind){   /* "bad" | "ok" | "warn" | "info" | null */
   if(!input) return;
   var st = input.__qridModeState;
   if(!st){ st = {}; input.__qridModeState = st; }
   if(kind === null || kind === undefined) delete st[mode]; else st[mode] = kind;
-  var bad = false, info = false, ok = false;
+  var bad = false, warn = false, info = false, ok = false;
   for(var k in st){
     if(!Object.prototype.hasOwnProperty.call(st, k)) continue;
     if(st[k] === "bad") bad = true;
+    else if(st[k] === "warn") warn = true;
     else if(st[k] === "info") info = true;
     else if(st[k] === "ok") ok = true;
   }
   input.style.outline = bad ? QRID_OUTLINE.bad
+                     : warn ? QRID_OUTLINE.warn
                      : info ? QRID_OUTLINE.info
                      : ok   ? QRID_OUTLINE.ok : "";
   QRID_setInvalidState(input, bad ? true : (ok ? false : null));
+  /* An autocomplete dropdown's <select> is hidden; what the user sees is its
+     companion text input (QRID_followWidget). */
+  var comp = input.__qridCompanion;
+  if(comp && comp.style){
+    comp.style.outline = input.style.outline;
+    QRID_setInvalidState(comp, bad ? true : (ok ? false : null));
+  }
+}
+/* Autocomplete dropdowns: REDCap pairs the hidden <select> with a companion
+   text input (id rc-ac-input_<field>) that its widget finds right NEXT TO the
+   select, so a message region left after the select sits between the two
+   (reports/choices-dropdown-review-2026-09-17.md; @UVCHOICES does the same).
+   Move the region after the companion's wrapper, describe the companion, and
+   have QRID_setModeState paint the companion. The companion can render after
+   the field binds, so callers run this on every check; it does nothing once
+   done or when the field has no companion. */
+function QRID_followWidget(input, msg, fieldName){
+  if(!document.getElementById) return;
+  var ac = document.getElementById("rc-ac-input_" + fieldName);
+  if(!ac || msg.__qridBeside === ac) return;
+  msg.__qridBeside = ac;
+  input.__qridCompanion = ac;
+  var host = ac.parentNode;
+  if(host && host.parentNode) host.parentNode.insertBefore(msg, host.nextSibling);
+  if(ac.setAttribute && ac.getAttribute){
+    var desc = ac.getAttribute("aria-describedby") || "";
+    if((" " + desc + " ").indexOf(" " + msg.id + " ") < 0)
+      ac.setAttribute("aria-describedby", desc ? desc + " " + msg.id : msg.id);
+  }
+  if(ac.style) ac.style.outline = input.style.outline;
 }
 function QRID_setInvalidState(input, state){  /* true | false | null (empty field) */
   if(!input.setAttribute) return;
@@ -2256,7 +2563,10 @@ function QRID_renderConflict(msg, input, act, mode){
     : '&#9888; Validation conflict: more than one "when" condition is true for this field right now — "' +
       QRID_escapeHtml(act[0].when) + '" and "' + QRID_escapeHtml(act[1].when) +
       '". The value was <b>NOT</b> validated; make the conditions mutually exclusive.';
-  input.__qridInvalid = false;
+  /* The input IS the guard item of the check mode only. Every other mode keeps
+     its own guard item and releases it itself; clearing the input here lifted
+     an @UVALIDATE block that had nothing to do with this rule. */
+  if((mode || "check") === "check") input.__qridInvalid = false;
   QRID_setModeState(input, mode || "check", null);
 }
 /* NO variant is active AND the server deferred the whole rule. That is not the
@@ -2490,21 +2800,29 @@ function QRIDSingleInit(QRID_CONFIG){
     var normR = Q.normalize(v, REGEX_RULES).trim();
     var i, A, shapeFailed = [];
 
-    /* ---- pass 1: acceptance, declaration order, first accept wins ---- */
+    /* ---- pass 1: acceptance, by shape ownership ----
+       A value whose shape matches ANY check-bearing alternate belongs to that
+       family and must pass its check character. Format-only alternates are
+       consulted only when no check-bearing shape matched, so they can never
+       accept a mis-scanned check-bearing ID, whatever the patterns overlap and
+       whatever the declaration order. Twin of validateSingleField (php). */
     for(i = 0; i < ALTS.length; i++){
       A = ALTS[i];
+      if(A.regexOnly) continue;
       if(A.re && !A.re.test(normR)) continue;
-      if(A.regexOnly){
-        return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + " format OK" : "ID format OK") +
-          ". (" + (MIXED ? "IDs in this format carry" : "This project's IDs carry") + " no check " +
-          "character, so typos that keep the format cannot be detected.)" };
-      }
       if(Q.validateIdCheck(v, A.scheme)){
         if(!A.re) return { ok: true, html: "&#10003; ID verified &mdash; the check character matches." };
         return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + ": format" : "Format") +
           " OK <b>and</b> check character verified." };
       }
       shapeFailed.push(A);           /* shape matched (or no shape to match), check did not */
+    }
+    for(i = 0; i < ALTS.length && !shapeFailed.length; i++){
+      A = ALTS[i];
+      if(!A.regexOnly || !A.re.test(normR)) continue;
+      return { ok: true, html: "&#10003; " + (MIXED ? nameOf(A, i) + " format OK" : "ID format OK") +
+        ". (" + (MIXED ? "IDs in this format carry" : "This project's IDs carry") + " no check " +
+        "character, so typos that keep the format cannot be detected.)" };
     }
 
     /* ---- pass 2: a shape matched but its check character failed ---- */
@@ -2610,7 +2928,7 @@ function QRIDSingleInit(QRID_CONFIG){
       var V = act[0];
       input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
       var v = (input.value || "").trim();
-      if(!v){
+      if(!v || QRID_isMissingCode(v)){
         msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
         QRID_setModeState(input, "check", null);
         return;
@@ -2649,7 +2967,8 @@ function QRIDSingleInit(QRID_CONFIG){
   (QRID_CONFIG.fields || []).forEach(function(f){
     if(IS_BRANCH){
       UV_validators[f] = { type: "single", branch: true,
-        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode, test: V.verdict }; }),
+        branches: VS.all.map(function(V){ return { when: V.when, mode: V.mode,
+          test: function(v, isFinal){ return QRID_isMissingCode(v) ? null : V.verdict(v, isFinal); } }; }),
         active: function(){ return QRID_activeVariants(VS); } };
       return;
     }
@@ -2657,7 +2976,7 @@ function QRIDSingleInit(QRID_CONFIG){
     UV_validators[f] = { type: "single",
       mode: { check: V0.mode.check, regexOnly: V0.mode.regexOnly, configError: configError,
               guidance: V0.mode.guidance, blockSave: V0.blockSave },
-      test: function(v, isFinal){ return configError ? null : V0.verdict(v, isFinal !== false); } };
+      test: function(v, isFinal){ return (configError || QRID_isMissingCode(v)) ? null : V0.verdict(v, isFinal !== false); } };
   });
   function boot(){
     if(configError){
@@ -2844,7 +3163,7 @@ function QRIDConstraintInit(QRID_CONFIG){
          not JS String.trim: String.trim also strips Unicode spaces such as
          U+00A0, so a host value of " " went inert in the browser while the
          server compared it untrimmed and logged a violation (M-04). */
-      if(val === null || QRID_whenTrim(val) === ""){ inert(); return; }
+      if(val === null || QRID_whenTrim(val) === "" || QRID_isMissingCode(val)){ inert(); return; }
       var ok = true;
       try { ok = V.assertGate.active(); } catch(e){ ok = true; }
       if(V.assertGate.unresolved && V.assertGate.unresolved()){
@@ -2886,7 +3205,432 @@ function QRIDConstraintInit(QRID_CONFIG){
   /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "constraint", mode: { constraint: true, configError: configError },
-      test: function(){ var a = QRID_activeVariants(VS); return (a.length === 1) ? a[0].assertGate.active() : null; } };
+      test: function(){ var a = QRID_activeVariants(VS); if(a.length !== 1 || QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null; return a[0].assertGate.active(); } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ---- window validator (@UVWINDOW) -----------------------------------------
+   A date must fall inside a window around another date ("from"), and/or not
+   after today ("notFuture"). The verdict is QRID_windowVerdict, the twin of
+   TemporalLogic::windowVerdict (tests/window_fixture.json drives both), and
+   UniversalValidator::findingsWindow is the server side of this factory.
+   The "from" date arrives FOLDED (UniversalValidator::foldRuleConditions):
+   ["ref", field, null] when it is on this page and read as typed, or
+   ["lit", Y-M-D] when it is another form's saved value this user may read —
+   a snapshot, so the rule never blocks. Anything else arrives deferred.
+   "Today" is the SERVER's (config.clock, advanced by QRID_clockNow), so a
+   computer whose clock is a day ahead cannot accept tomorrow's date.
+   A value that is not yet a whole date (being typed, or 31-02) shows no
+   verdict: REDCap's own date check speaks to that. tests/window_dom_js.cjs
+   locks this factory. */
+function QRIDWindowInit(QRID_CONFIG){
+  function styleMsg(el, ok){
+    var c = ok ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+               : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function bound(v){ return (typeof v === "number" && isFinite(v) && Math.floor(v) === v) ? v : null; }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var lo = bound(cfg.windowLo), hi = bound(cfg.windowHi);
+    var hasWindow = lo !== null || hi !== null;
+    var notFuture = cfg.windowNotFuture === true;
+    /* A deferred stub (the page could not be given this rule) carries no bounds
+       or date type: it reports its deferral, not a configuration error. */
+    if(!configError && !cfg.deferred && !hasWindow && !notFuture){
+      configError = '@UVWINDOW has nothing to check — set a "from" date with a "window", or "notFuture": true.';
+    }
+    if(!configError && !cfg.deferred && (cfg.dateType !== "date" && cfg.dateType !== "datetime" && cfg.dateType !== "datetime_seconds")){
+      configError = "@UVWINDOW needs a date field — this field's date type is unknown.";
+    }
+    /* The anchor. A rule the server built always carries windowFromOp unless it
+       is deferred; the plain-text fallback serves hand-written configs and the
+       test harnesses, and reads only a plain [field] of this page. */
+    var fromOp = null;
+    if(!configError && hasWindow){
+      var op = cfg.windowFromOp;
+      /* "withheld": the server sent nothing of a "from" date this viewer may not read. */
+      if(op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld")) fromOp = op;
+      else if(typeof cfg.windowFrom === "string" && cfg.windowFrom !== ""){
+        var p = QRID_whenParse(cfg.windowFrom + "=''");
+        if(p.ok && p.ast[0] === "cmp" && p.ast[2][0] === "ref" && p.ast[2][2] === null) fromOp = ["ref", p.ast[2][1], null];
+      }
+      if(!fromOp && !cfg.deferred) configError = '@UVWINDOW cannot read its "from" date.';
+    }
+    var DEFERRED = !configError && !!cfg.deferred;
+    /* A "from" date read when the page was built can go stale. QRID_buildVariants
+       turns blockSave off for it, and for a deferred rule, so neither blocks. */
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);   /* applicability */
+    /* A "from" field on this page re-checks the window when it changes. */
+    var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
+    return { configError: configError, gate: GATE, fromWatch: FROM_WATCH, blockSave: BLOCK,
+             /* "future" never depends on the "from" date, so a snapshot or withheld
+                anchor (which turns blockSave off) does not soften it. */
+             futureBlock: BLOCK,
+             windowWithheld: !!(fromOp && fromOp[0] === "withheld"),
+             deferred: DEFERRED, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             spec: { lo: lo, hi: hi, unit: (typeof cfg.windowUnit === "string" && cfg.windowUnit !== "") ? cfg.windowUnit : "days",
+                     notFuture: notFuture, type: cfg.dateType, fromType: cfg.fromType == null ? null : cfg.fromType },
+             fromOp: fromOp,
+             fromFormat: (fromOp && fromOp[0] === "ref") ? (cfg.fromFormat || "ymd") : "ymd",
+             fromName: (typeof cfg.windowFrom === "string") ? cfg.windowFrom : "",
+             dateFormat: cfg.dateFormat || "ymd",
+             mode: { window: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var FUTURE_BLOCK = "off";
+  for(var fbi = 0; fbi < VS.all.length; fbi++){
+    var fv = VS.all[fbi];
+    if(!fv.configError && !fv.deferred && fv.spec.notFuture && fv.futureBlock !== "off"){ FUTURE_BLOCK = fv.futureBlock; break; }
+  }
+  var ANY_BLOCK = VS.firstBlock !== "off" || FUTURE_BLOCK !== "off";
+
+  /* One variant's verdict for the field's current value. A "from" that names the
+     field itself (the extended path folds [baseline_arm_1][visit_date] to a live
+     ref on the baseline visit) is not an anchor: no window applies there. */
+  function verdictOf(V, fieldName){
+    var val = QRID_WHEN.readRef(fieldName, null);
+    var op = V.fromOp, anchor = null;
+    if(op && op[0] === "ref") anchor = op[1] === fieldName ? "" : QRID_WHEN.readRef(op[1], null);
+    else if(op && op[0] === "lit") anchor = String(op[1]);
+    /* A "from" date marked with a Missing Data Code was not entered. */
+    if(anchor !== null && QRID_isMissingCode(anchor)) anchor = "";
+    var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
+    var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, clock);
+    r.clock = clock;
+    return r;
+  }
+  /* The default wording names the allowed dates the way the field shows them.
+     Survey respondents are not told which field the window counts from. */
+  function describe(V, r){
+    var t = V.spec.type, f = V.dateFormat;
+    if(r.verdict === "future"){
+      if(t !== "date") return "This date and time is in the future.";
+      return "This date is after today" + (r.clock ? " (" + QRID_escapeHtml(QRID_temporalFormat(r.clock.today, "date", f)) + ")" : "") + ".";
+    }
+    var e = r.earliest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.earliest, t, f)) : null;
+    var l = r.latest !== null ? QRID_escapeHtml(QRID_temporalFormat(r.latest, t, f)) : null;
+    var text = (e && l) ? "This date must be between " + e + " and " + l + "."
+             : e ? "This date must be on or after " + e + "."
+             : l ? "This date must be on or before " + l + "."
+             : "This date is outside its allowed window.";
+    if(!QRID_IS_SURVEY && V.fromName){
+      var lo = V.spec.lo, hi = V.spec.hi, u = V.spec.unit;
+      var range = (lo !== null && hi !== null) ? lo + " to " + hi : (lo !== null ? "at least " + lo : "at most " + hi);
+      text += ' <span style="opacity:.8">(' + QRID_escapeHtml(range + " " + u + " from " + V.fromName) + ")</span>";
+    }
+    return text;
+  }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-w")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-w", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "w");
+    /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
+       time, so a page left open past midnight is checked against the day it
+       is saved on, not the day the value was typed. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} },
+                __qridRecheck: function(){ check(); } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock !== "off" ? VS.firstBlock : FUTURE_BLOCK);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; setGuard(false); QRID_setModeState(input, "w", null); }
+    /* The window part was not sent to this page. Staff are told it is checked
+       on save; a survey respondent is told nothing. */
+    function withheld(V){
+      if(QRID_IS_SURVEY){ inert(); return; }
+      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+        "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+      msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
+        " is not checked on this page: that date is on a form you cannot view here." +
+        " It is checked when the record is saved.";
+      setGuard(false); QRID_setModeState(input, "w", null);
+    }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "w")){ setGuard(false); QRID_setModeState(input, "w", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "w"); setGuard(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "w");
+          setGuard(false); QRID_setModeState(input, "w", null);
+          return;
+        }
+        inert(); return;
+      }
+      if(QRID_isMissingCode(QRID_WHEN.readRef(fieldName, null))){ inert(); return; }
+      var r;
+      try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
+      var future = r.verdict === "future";
+      if(r.verdict === "unknown" || (r.verdict === "inert" && !V.windowWithheld)){ inert(); return; }
+      if(!future && V.windowWithheld){
+        /* inert here can only mean "nothing else to check": the value is typed */
+        if(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))) === ""){ inert(); return; }
+        withheld(V); return;
+      }
+      if(r.verdict !== "ok" && !future && r.verdict !== "window-early" && r.verdict !== "window-late"){ inert(); return; }
+      var ok = r.verdict === "ok";
+      styleMsg(msg, ok);
+      QRID_setModeState(input, "w", ok ? "ok" : "bad");
+      setGuard(!ok, future ? V.futureBlock : V.blockSave);
+      var base = V.message ? QRID_escapeHtml(V.message) : describe(V, r);
+      if(!ok && !future && V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(counted from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
+      }
+      msg.innerHTML = ok ? "&#10003; OK." : "&#10007; " + base;
+    }
+    var debounced = QRID_debounced(function(){ check(); });
+    if(input.addEventListener){
+      input.addEventListener("input", debounced);
+      input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+      input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
+    }
+    /* A jQuery-only change (REDCap's date picker, its Today and Now buttons, a
+       script) reaches the when-registry, not these native listeners. */
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ check(); });
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      if(VS.all[gi].fromWatch) VS.all[gi].fromWatch.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "window", mode: { window: true, configError: configError },
+      test: function(){
+        var a = QRID_activeVariants(VS);
+        if(a.length !== 1 || a[0].deferred) return null;
+        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
+        var v = verdictOf(a[0], f).verdict;
+        return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
+      } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ---- range validator (@UVRANGE) --------------------------------------------
+   Two tiers of plausibility limits for a number. Outside "soft" the value is
+   unusual: an amber note, and with softBlock "confirm" the save asks first.
+   Outside "hard", or not a number, it is implausible: a red note, and the save
+   is held (hardBlock "hard") or asks (hardBlock "confirm"). A value inside the
+   soft range says nothing: a green OK on every number would be noise. A calc
+   (rangeComputed) and a read-only input never hold the save, nobody typed them.
+   The verdict is QRID_rangeVerdict, the twin of Logic::rangeVerdict
+   (tests/range_fixture.json); UniversalValidator::findingsRange is the server
+   twin. The note appears when the field is left, not while a number is being
+   typed: "1" on the way to "12" is not a finding. */
+function QRIDRangeInit(QRID_CONFIG){
+  var NUM = /^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/;
+  function styleMsg(el, kind){   /* "warn" | "bad" */
+    var c = (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
+                              : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var SOFT = cfg.rangeSoftBlock || "confirm", HARD = cfg.rangeHardBlock || "hard";
+    if(!configError && SOFT !== "off" && SOFT !== "confirm"){
+      configError = 'softBlock must be "off" or "confirm" — got "' + SOFT + '".';
+    }
+    if(!configError && HARD !== "confirm" && HARD !== "hard"){
+      configError = 'hardBlock must be "confirm" or "hard" — got "' + HARD + '".';
+    }
+    var spec = { decimalComma: cfg.decimalComma === true };
+    var keys = { softLo: "rangeSoftLo", softHi: "rangeSoftHi", hardLo: "rangeHardLo", hardHi: "rangeHardHi" };
+    var any = false;
+    for(var k in keys){
+      if(!Object.prototype.hasOwnProperty.call(keys, k)) continue;
+      var b = cfg[keys[k]];
+      if(b === undefined || b === null || b === "") continue;
+      if(typeof b !== "string" || !NUM.test(b)){
+        if(!configError) configError = "@UVRANGE limit " + k + " is not a number.";
+        continue;
+      }
+      spec[k] = b; any = true;
+    }
+    /* A deferred stub (the page could not be given this rule) carries no limits:
+       it reports its deferral, not a configuration error. */
+    if(!configError && !cfg.deferred && !any) configError = "@UVRANGE has no limits to check.";
+    var DEFERRED = !configError && !!cfg.deferred;
+    var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    /* blockSave is what QRID_buildVariants reads and turns "off" for a deferred
+       rule or one whose branch was chosen from values read when the page opened;
+       the tier's own setting applies only while it is not "off". */
+    return { configError: configError, gate: GATE,
+             blockSave: (cfg.rangeComputed === true || DEFERRED) ? "off" : HARD,
+             softBlock: SOFT, hardBlock: HARD,
+             deferred: DEFERRED, snapshot: SNAPSHOT,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             spec: spec,
+             softText: (typeof cfg.rangeSoftText === "string") ? cfg.rangeSoftText : "",
+             hardText: (typeof cfg.rangeHardText === "string") ? cfg.rangeHardText : "",
+             mode: { range: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = false;
+  for(var abi = 0; abi < VS.all.length; abi++){
+    if(VS.all[abi].blockSave !== "off"){ ANY_BLOCK = true; break; }
+  }
+  function blockFor(V, tier){
+    if(V.blockSave === "off") return "off";
+    return tier === "soft" ? V.softBlock : V.hardBlock;
+  }
+  function describe(V, r){
+    if(V.message) return QRID_escapeHtml(V.message);
+    if(r.reason === "not-a-number") return "This is not a number.";
+    var t = r.tier === "soft" ? V.softText : V.hardText;
+    var low = r.reason === "soft-low" || r.reason === "hard-low";
+    var text = r.tier === "soft"
+      ? (low ? "This value is lower than usual" : "This value is higher than usual")
+      : (low ? "This value is below the plausible range" : "This value is above the plausible range");
+    return text + (t ? " (" + (r.tier === "soft" ? "expected " : "allowed ") + QRID_escapeHtml(t) + ")" : "") + ".";
+  }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-n")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-n", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "n");
+    /* Own guard item (see QRIDConstraintInit). __qridRecheck re-judges at save
+       time: the note waits for the field to be left, the guard does not. */
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} },
+                __qridRecheck: function(){ check(); } };
+      QRID_registerBlocker(GITEM, fieldName, "off");
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "n", null); }
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "n");
+          setGuard(false); QRID_setModeState(input, "n", null);
+          return;
+        }
+        inert(); return;
+      }
+      var r, typed = QRID_WHEN.readRef(fieldName, null);
+      if(QRID_isMissingCode(typed)){ inert(); return; }
+      try { r = QRID_rangeVerdict(V.spec, typed); } catch(e){ inert(); return; }   /* fail open */
+      if(r.tier !== "soft" && r.tier !== "hard"){ inert(); return; }
+      var kind = r.tier === "soft" ? "warn" : "bad";
+      styleMsg(msg, kind);
+      QRID_setModeState(input, "n", kind);
+      setGuard(true, blockFor(V, r.tier));
+      var base = describe(V, r);
+      if(V.snapshot && !QRID_IS_SURVEY){
+        base += ' <span style="opacity:.8">(limits chosen from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+          ", read when this page was opened — reload if it has changed since." +
+          " This check does not block saving; it is re-checked after the save.)</span>";
+      }
+      msg.innerHTML = (kind === "warn" ? "&#9888; " : "&#10007; ") + base;
+    }
+    /* Typing clears the note; leaving the field (or a change from a script,
+       a calc or the slider) judges the value. The self-watch below also hears
+       every keystroke, so it stays quiet while the person is in the field. */
+    function typing(){ return typeof document !== "undefined" && document.activeElement === input; }
+    if(input.addEventListener){
+      input.addEventListener("input", function(){ if(msg.style.display !== "none") inert(); });
+      input.addEventListener("change", function(){ check(); });
+      input.addEventListener("blur", function(){ check(); });
+    }
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(function(){ if(!typing()) check(); });
+    for(var gi = 0; gi < VS.all.length; gi++){
+      if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "range", mode: { range: true, configError: configError },
+      test: function(){
+        var a = QRID_activeVariants(VS);
+        if(a.length !== 1 || a[0].deferred) return null;
+        if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
+        var t = QRID_rangeVerdict(a[0].spec, QRID_WHEN.readRef(f, null)).tier;
+        return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
+      } };
   });
   function boot(){
     if(configError){
@@ -3519,7 +4263,7 @@ function QRID_inList(list, v){
    here FAILS OPEN — a network error or missing transport never traps a save;
    the server audit is the race/backstop net. tests/unique_dom_js.cjs locks
    this contract; UniversalValidator::redcap_module_ajax is the server twin. */
-function QRID_uniqueTransport(){
+function QRID_ajaxTransport(){
   var name = (typeof QRID_COMBINED_CONFIG === "object" && QRID_COMBINED_CONFIG) ? QRID_COMBINED_CONFIG.jsmoName : null;
   if(typeof name !== "string" || !name) return null;
   try {
@@ -3528,6 +4272,8 @@ function QRID_uniqueTransport(){
   } catch(e){}
   return null;
 }
+/* The transport's first name, from when @UVUNIQUE was its only user. */
+var QRID_uniqueTransport = QRID_ajaxTransport;
 function QRIDUniqueInit(QRID_CONFIG){
   function styleMsg(el, kind){   /* true=free, false=used, "info"=checking */
     var c = (kind === true) ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -3562,6 +4308,7 @@ function QRIDUniqueInit(QRID_CONFIG){
     if(input.getAttribute && input.getAttribute("data-qrid-bound-q")) return true;   /* per-mode bind marker */
     if(input.setAttribute) input.setAttribute("data-qrid-bound-q", "1");
     var msg = QRID_attachMsgRegion(input, fieldName, "q");
+    QRID_followWidget(input, msg, fieldName);
     var localGates = VS.all.map(function(v){return v.localAsts[fieldName] ? QRID_WHEN.gateFor("1=1",v.localAsts[fieldName],QRID_BLANK_PASSES,true) : null;});
     var GITEM = null;
     if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
@@ -3572,13 +4319,18 @@ function QRIDUniqueInit(QRID_CONFIG){
       QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
-    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); QRID_setModeState(input, "q", null); }
+    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    function inert(){ msg.style.display = "none"; QRID_setModeState(input, "q", null); setGuard(false); setPending(false); QRID_setModeState(input, "q", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
     var pendingKey = null;  /* candidate key already asked, awaiting an answer */
-    var lastResp = null;    /* {key, resp} — one-deep answer cache. The direct input
-      listeners and the when-registry self-watch BOTH recheck on a change; the
-      cache turns the second pass (and a gate re-flip over the same value) into
-      a synchronous render instead of a duplicate server request. */
+    /* Answer cache. The direct input listeners and the when-registry self-watch
+       BOTH recheck on a change; the cache turns the second pass (and a gate
+       re-flip over the same values) into a synchronous render instead of a
+       duplicate server request. */
+    var answers = QRID_answerCache(16);
+    /* The last payload that got no usable answer: Save does not ask it again
+       (a server that cannot answer would hold every click). */
+    var failedKey = null;
     function renderResp(resp, V){
       if(resp.used){
         styleMsg(msg, false);
@@ -3597,10 +4349,11 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
     }
     var activeVariant = null;
-    function check(){
+    function check(saving){
+      QRID_followWidget(input, msg, fieldName);
       var act = QRID_activeVariants(VS);
       var nextVariant = act.length === 1 ? act[0] : null;
-      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; lastResp = null; activeVariant = nextVariant; }
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; setPending(false); activeVariant = nextVariant; }
       if(!act.length){
         /* inert — unless no branch could be CHOSEN at all (M-01). */
         if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "q")){ setGuard(false); QRID_setModeState(input, "q", null); return; }
@@ -3620,7 +4373,8 @@ function QRIDUniqueInit(QRID_CONFIG){
          information a respondent would not otherwise see (SEC-005 posture). */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
       var val = String(QRID_WHEN.readRef(fieldName, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
-      if(val === ""){ inert(); return; }
+      /* A reply still on its way is for a value this field no longer holds. */
+      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
       var localGate = localGates[VS.all.indexOf(V)];
       if(localGate){
         var valid = localGate.active();
@@ -3633,36 +4387,51 @@ function QRIDUniqueInit(QRID_CONFIG){
         }
         return;
       }
-      var payload = { field: fieldName, values: {} };
+      var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
       for(var wi = 0; wi < V.uniqueWith.length; wi++){
         var w = V.uniqueWith[wi];
+        /* A "with" field this page does not carry is left out: the server
+           reads its saved value (another form, or another survey page). */
+        if(!QRID_WHEN.has(w, null)) continue;
         payload.values[w] = String(QRID_WHEN.readRef(w, null)).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
       }
-      var key = JSON.stringify(payload.values);
-      if(lastResp && lastResp.key === key){ renderResp(lastResp.resp, V); return; }  /* cached answer */
+      var key = JSON.stringify([payload.values, payload.cond]);
+      var cached = answers.get(key);
+      if(cached){
+        /* A cached answer is the latest word: an older request still in
+           flight must not paint over it when it lands. */
+        ++seq; pendingKey = null; setPending(false);
+        renderResp(cached, V); return;
+      }
       if(pendingKey === key) return;                    /* already asked; the answer will render */
-      var t = QRID_uniqueTransport();
+      if(saving === true && failedKey === key){ ++seq; pendingKey = null; inert(); return; }
+      var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
         inert(); return;
       }
       var my = ++seq;
       pendingKey = key;
-      /* pending: informative, never blocking (fail open if no answer comes) */
+      /* pending: informative, and it holds a save click until the answer
+         comes (fail open if none comes within QRID_PENDING_MS) */
       styleMsg(msg, "info");
       msg.innerHTML = "&#8230; checking whether this value is already recorded&hellip;";
       QRID_setModeState(input, "q", "info");
       setGuard(false);
+      setPending(V.blockSave !== "off");
       QRID_setModeState(input, "q", null);
+      setTimeout(function(){ if(my === seq && pendingKey === key){ ++seq; pendingKey = null; failedKey = key; inert(); } }, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
+        setPending(false);
         if(err || !resp || resp.error || typeof resp.used === "undefined"){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          failedKey = key;
           inert(); return;       /* fail open; the server audit is the net */
         }
-        lastResp = { key: key, resp: resp };
+        answers.put(key, resp);
         renderResp(resp, V);
       }
       try {
@@ -3680,6 +4449,9 @@ function QRIDUniqueInit(QRID_CONFIG){
       input.addEventListener("change", function(){ if(debounced.cancel) debounced.cancel(); check(); });
       input.addEventListener("blur", function(){ if(debounced.cancel) debounced.cancel(); check(); });
     }
+    /* Save re-judges the field first: a change no event reported (REDCap's
+       radio "reset" link) must not leave a stale verdict deciding the save. */
+    if(GITEM) GITEM.__qridRecheck = function(){ if(debounced.cancel) debounced.cancel(); check(true); };
     /* watch the field itself and every composite member through the shared
        when-registry (same trick as QRIDRequiredInit — wiring only) */
     var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
@@ -3698,6 +4470,267 @@ function QRIDUniqueInit(QRID_CONFIG){
   /* per-field registry (namespace .validators — testing / power users) */
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "unique", mode: { unique: true, configError: configError } };
+  });
+  function boot(){
+    if(configError){
+      var missing = (QRID_CONFIG.fields || []).filter(function(f){ return !QRID_attachErrorRegion(f, configError); });
+      if(missing.length) QRID_configErrorNotice(configError);
+      return;
+    }
+    var pending = (QRID_CONFIG.fields || []).slice();
+    var mo = null;
+    function stop(){ if(mo){ mo.disconnect(); mo = null; } }
+    function sweep(){ pending = pending.filter(function(f){ return !attach(f); }); if(!pending.length){ stop(); return true; } return false; }
+    if(sweep()) return;
+    var tries = 0;
+    var timer = setInterval(function(){ tries++; if(sweep() || tries >= 20){ clearInterval(timer); stop(); } }, 500);
+    if(typeof MutationObserver !== "undefined" && document.body){
+      mo = new MutationObserver(function(){ sweep(); });
+      mo.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+  if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+/* ---- exists validator (@UVEXISTS) ------------------------------------------
+   The value must already be saved somewhere in the project: a record ID, or a
+   value of the field named in "in". Where to look is NOT on this page - the
+   server strips it (ModeRegistry::clientShape) and the exists-check endpoint
+   re-reads it from the stored rule. The page sends the field's value and the
+   values of its "match" fields; a match field not on this page is sent blank
+   and read from the saved record by the server.
+   Requests go out on change/blur and once on load, never per keystroke:
+   typing clears the verdict, so a half-typed value never reads "not found".
+   Answers: found (green), not-found (red; blocks per blockSave), unknown
+   (amber "could not check"; never blocks). Every failure is unknown.
+   tests/exists_dom_js.cjs locks this contract; existsCheck() in
+   UniversalValidator.php is the server twin. */
+function QRIDExistsInit(QRID_CONFIG){
+  function styleMsg(el, kind){   /* "ok" | "bad" | "warn" | "info" */
+    var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
+          : (kind === "warn") ? "#d9c48a;background:#fdf8e6;color:#7a5c00"
+          : (kind === "info") ? "#c9dbf5;background:#eef3fb;color:#3a567f"
+          : "#e0b4b0;background:#fbeceb;color:#c62828";
+    el.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+      "font-size:13px;font-family:inherit;border:1px solid " + c;
+  }
+  function makeVariant(cfg){
+    var configError = cfg.configErrorOverride || "";
+    var BLOCK = cfg.blockSave || "off";
+    if(!configError && BLOCK !== "off" && BLOCK !== "confirm" && BLOCK !== "hard"){
+      configError = 'blockSave must be "off", "confirm" or "hard" — got "' + BLOCK + '".';
+    }
+    var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    return { configError: configError, gate: GATE, blockSave: BLOCK,
+             deferred: !configError && !!cfg.deferred,
+             deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
+             locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
+             surveys: cfg.existsSurveys === true,
+             when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
+             mode: { exists: true } };
+  }
+
+  var VS = QRID_buildVariants(QRID_CONFIG, makeVariant);
+  var configError = VS.configError;
+  var ANY_BLOCK = VS.firstBlock !== "off";
+  function trim(v){ return String(v).replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, ""); }
+
+  function attach(fieldName){
+    var input = QRID_findAnchor(fieldName);
+    if(!input) return false;
+    if(input.getAttribute && input.getAttribute("data-qrid-bound-x")) return true;   /* per-mode bind marker */
+    if(input.setAttribute) input.setAttribute("data-qrid-bound-x", "1");
+    var msg = QRID_attachMsgRegion(input, fieldName, "x");
+    QRID_followWidget(input, msg, fieldName);
+    var GITEM = null;
+    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+      GITEM = { __qridInvalid: false, __qridBlockMode: "off",
+                __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
+                readOnly: false, disabled: false,
+                focus: function(){ try { input.focus(); } catch(e){} } };
+      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+    }
+    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
+    function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
+    var seq = 0;            /* stale-response guard: only the LATEST request may render */
+    var pendingKey = null;  /* payload already asked, awaiting an answer */
+    var answers = QRID_answerCache(16);   /* found / not-found answers only */
+    /* The last payload that got no usable answer (unknown, an error, or none
+       in time), and why. Save does not ask it again: a server that cannot
+       answer would otherwise hold every click for another QRID_PENDING_MS. */
+    var unanswered = { key: null, why: null };
+    var dirty = {};         /* field name => typed since its last change/blur */
+    function typing(){ for(var k in dirty){ if(Object.prototype.hasOwnProperty.call(dirty, k) && dirty[k]) return true; } return false; }
+    /* No promise about later: when the reason is a blank "match" field the
+       save has nothing to check either. */
+    function unknown(V, why){
+      if(QRID_IS_SURVEY){ inert(); return; }
+      styleMsg(msg, "warn");
+      QRID_setModeState(input, "x", "warn");
+      setGuard(false);
+      setPending(false);
+      msg.innerHTML = "&#9888; Could not check this value just now" +
+        (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
+    }
+    function renderResp(resp, V){
+      if(resp.state === "found"){
+        styleMsg(msg, "ok");
+        QRID_setModeState(input, "x", "ok");
+        setGuard(false);
+        msg.innerHTML = "&#10003; Found" +
+          (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".";
+      } else if(resp.state === "not-found"){
+        styleMsg(msg, "bad");
+        QRID_setModeState(input, "x", "bad");
+        setGuard(true, V.blockSave);
+        msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
+          : "This value is not saved where it should be. Check it, or record it there first.");
+      } else {
+        unknown(V, resp.why);
+      }
+    }
+    var activeVariant = null;
+    function check(saving){
+      QRID_followWidget(input, msg, fieldName);
+      var act = QRID_activeVariants(VS);
+      var nextVariant = act.length === 1 ? act[0] : null;
+      if(activeVariant !== nextVariant){ ++seq; pendingKey = null; setPending(false); activeVariant = nextVariant; }
+      if(!act.length){
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "x")){ setGuard(false); setPending(false); QRID_setModeState(input, "x", null); return; }
+        inert(); return;
+      }
+      if(act.length > 1){ QRID_renderConflict(msg, input, act, "x"); setGuard(false); setPending(false); return; }
+      var V = act[0];
+      if(V.deferred){
+        if(V.deferredWhy && !QRID_IS_SURVEY){
+          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "x");
+          setGuard(false); setPending(false); QRID_setModeState(input, "x", null);
+          return;
+        }
+        inert(); return;
+      }
+      /* Surveys are opt-in per rule, as for @UVUNIQUE. */
+      if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
+      var val = trim(QRID_WHEN.readRef(fieldName, null));
+      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
+      var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
+      payload.values[fieldName] = val;
+      for(var li = 0; li < V.locals.length; li++){
+        var lf = V.locals[li];
+        /* A match field this page does not carry (another form, another
+           survey page) is left out: the server reads its saved value. */
+        if(!QRID_WHEN.has(lf, null)) continue;
+        var lv = trim(QRID_WHEN.readRef(lf, null));
+        /* A match field on this page that is blank: nothing to narrow by yet. */
+        if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); return; }
+        payload.values[lf] = lv;
+      }
+      var key = JSON.stringify([payload.values, payload.cond]);
+      var cached = answers.get(key);
+      if(cached){
+        /* A cached answer is the latest word: an older request still in
+           flight must not paint over it when it lands. */
+        ++seq; pendingKey = null; setPending(false);
+        renderResp(cached, V); return;
+      }
+      if(pendingKey === key) return;
+      if(saving === true && unanswered.key === key){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
+      var t = QRID_ajaxTransport();
+      if(!t){
+        try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
+        inert(); return;
+      }
+      var my = ++seq;
+      pendingKey = key;
+      /* pending: informative, and it holds a save click until the answer
+         comes; no answer within QRID_PENDING_MS counts as "could not check" */
+      styleMsg(msg, "info");
+      msg.innerHTML = "&#8230; checking&hellip;";
+      QRID_setModeState(input, "x", "info");
+      setGuard(false);
+      setPending(V.blockSave !== "off");
+      setTimeout(function(){
+        if(my === seq && pendingKey === key){
+          ++seq; pendingKey = null;
+          unanswered = { key: key, why: "no answer from the server" };
+          unknown(V, unanswered.why);
+        }
+      }, QRID_PENDING_MS);
+      function render(err, resp){
+        if(my !== seq) return;
+        pendingKey = null;
+        setPending(false);
+        if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
+          try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          unanswered = { key: key, why: null };
+          unknown(V, null); return;
+        }
+        if(resp.state !== "unknown") answers.put(key, resp);
+        else unanswered = { key: key, why: resp.why || null };
+        renderResp(resp, V);
+      }
+      try {
+        var p = t.ajax("exists-check", payload);
+        if(p && typeof p.then === "function"){
+          p.then(function(r){ render(null, r); }, function(e){ render(e || "rejected", null); });
+        } else {
+          render("no promise from transport", null);
+        }
+      } catch(e){ render(e, null); }
+    }
+    /* Typing clears the verdict; change and blur ask. */
+    function watchTyping(name, el){
+      if(!el || !el.addEventListener) return;
+      el.addEventListener("input", function(){
+        dirty[name] = true;
+        if(name === fieldName || msg.style.display !== "none"){ ++seq; pendingKey = null; inert(); }
+      });
+      var settleNow = function(){ dirty[name] = false; check(); };
+      el.addEventListener("change", settleNow);
+      el.addEventListener("blur", settleNow);
+    }
+    watchTyping(fieldName, input);
+    /* Save re-judges the field first, typing or not: the click ends the
+       typing, and a change no event reported (REDCap's radio "reset" link)
+       must not leave a stale verdict deciding the save. A value with no
+       answer yet is asked now, and the guard holds the save until it lands. */
+    if(GITEM) GITEM.__qridRecheck = function(){ for(var dk in dirty) dirty[dk] = false; check(true); };
+    /* Anything else that changes (REDCap's date picker or autocomplete without
+       a native event, a "match" field, a "when" field) reaches the shared
+       when-registry. Asked after a pause, and only when nobody is typing. */
+    var settle = QRID_debounced(function(){ if(!typing()) check(); });
+    var selfWatch = QRID_WHEN.gateFor("[" + fieldName + "]<>''", null);
+    if(selfWatch) selfWatch.onChange(settle);
+    for(var vi = 0; vi < VS.all.length; vi++){
+      if(VS.all[vi].gate){
+        VS.all[vi].gate.onChange(settle);
+        /* Typing in a text field a "when" condition reads is typing too. */
+        var grefs = VS.all[vi].gate.refs ? VS.all[vi].gate.refs() : [];
+        for(var gr = 0; gr < grefs.length; gr++){
+          var gname = grefs[gr][0];
+          if(grefs[gr][1] !== null || typeof gname !== "string" || Object.prototype.hasOwnProperty.call(dirty, gname)) continue;
+          var gel = QRID_findAnchor(gname);
+          var gtag = gel ? (gel.tagName || "").toLowerCase() : "";
+          var gty = gel ? (gel.type || "").toLowerCase() : "";
+          if(gtag === "textarea" || (gtag === "input" && gty !== "hidden" && gty !== "radio" && gty !== "checkbox")){
+            dirty[gname] = false; watchTyping(gname, gel);
+          }
+        }
+      }
+      for(var lj = 0; lj < VS.all[vi].locals.length; lj++){
+        var lname = VS.all[vi].locals[lj];
+        if(!Object.prototype.hasOwnProperty.call(dirty, lname)){ dirty[lname] = false; watchTyping(lname, QRID_findAnchor(lname)); }
+        var lw = QRID_WHEN.gateFor("[" + lname + "]<>''", null);
+        if(lw) lw.onChange(settle);
+      }
+    }
+    check();
+    return true;
+  }
+  (QRID_CONFIG.fields || []).forEach(function(f){
+    UV_validators[f] = { type: "exists", mode: { exists: true, configError: configError } };
   });
   function boot(){
     if(configError){
@@ -3893,10 +4926,19 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
        alternates accepting one token produce identical output and betterThan
        needs no extra criterion. Feed alternate identity into the DP score and
        that guarantee is gone. */
-    for(var li3 = 0; li3 < LENS.length; li3++)
+    for(var li3 = 0; li3 < LENS.length; li3++){
+      /* Shape ownership: the check-bearing alternates that also produce IDs of
+         this length. A token any of them shapes as its own must pass that
+         check, so a format-only pair here may not accept it (verifiesAs). A
+         null entry is a check-bearing alternate without a pattern, which owns
+         every token of its lengths. Twin of pooledState's owners (php). */
+      var owners = [];
+      for(var oj = 0; oj < ALTS.length; oj++)
+        if(ALTS[oj].check && ALTS[oj].lengths.indexOf(LENS[li3]) >= 0) owners.push(ALTS[oj].re);
       for(var aj = 0; aj < ALTS.length; aj++)
         if(ALTS[aj].lengths.indexOf(LENS[li3]) >= 0)
-          PAIRS.push({ len: LENS[li3], alt: aj, a: ALTS[aj] });
+          PAIRS.push({ len: LENS[li3], alt: aj, a: ALTS[aj], owners: ALTS[aj].regexOnly ? owners : [] });
+    }
     for(var ri = 0; ri < PAIRS.length; ri++)
       if(PAIRS[ri].a.check && PAIRS[ri].a.re) RESCAN.push(PAIRS[ri]);
     if(!PAIRS.length){
@@ -3936,16 +4978,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         if(K.indexOf(CA.charAt(_c)) < 0) K += CA.charAt(_c);
     }
     if(A.re){
-      var _pat = String(A.pattern), _meta = "\\^$.|?*+()[]{}";
-      for(var _pi = 0; _pi < _pat.length; _pi++){
-        var _pc = _pat.charAt(_pi);
-        if(_pc === "\\"){                       /* escaped char: literal if it is a metachar */
-          _pi++; _pc = _pat.charAt(_pi);
-          if(_pc && _meta.indexOf(_pc) >= 0 && K.indexOf(_pc) < 0) K += _pc;
-          continue;
-        }
-        if(_meta.indexOf(_pc) < 0 && !/[A-Za-z0-9]/.test(_pc) && K.indexOf(_pc) < 0) K += _pc;
-      }
+      var _lit = QRID_patternLiterals(A.pattern);
+      for(var _li = 0; _li < _lit.length; _li++)
+        if(K.indexOf(_lit.charAt(_li)) < 0) K += _lit.charAt(_li);
     }
     return K;
   }
@@ -3982,7 +5017,13 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
      (legacy projects, no check character): the shape IS the whole test. */
   function verifiesAs(P, t){
     if(P.a.re && !P.a.re.test(t)) return false;
-    if(P.a.regexOnly) return true;
+    if(P.a.regexOnly){
+      /* a check-bearing family shapes this token as its own: its check
+         decides, never a format-only sibling of the same length */
+      for(var oi = 0; oi < P.owners.length; oi++)
+        if(!P.owners[oi] || P.owners[oi].test(t)) return false;
+      return true;
+    }
     return Q.validateIdCheck(t, P.a.scheme);
   }
   function parse(raw){
@@ -4174,7 +5215,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     var V = act[0];
     input.__qridBlockMode = V.blockSave;   /* the ACTIVE variant governs blocking */
     var v = (input.value || "").trim();
-    if(!v){
+    if(!v || QRID_isMissingCode(v)){
       msg.style.display = "none"; QRID_setModeState(input, "check", null); input.__qridInvalid = false;
       QRID_setModeState(input, "check", null);
       return;
@@ -4311,24 +5352,71 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
 /* ---- dispatcher: one validator instance per rule ---- */
 (function(){
   var C = QRID_COMBINED_CONFIG;
+  /* DEFAULT_KEYS: every key a rule carries to its factory (the union of the
+     modes' clientKeys). "deferred" marks a rule the server had to freeze (an
+     off-page ref this viewer may not read): the verdict is stale the moment
+     the user types, so the client shows it as advisory and never blocks.
+     MODE_OF_TYPE / FACTORY_OF_TYPE: which mode a rule type belongs to and
+     which factory starts it. */
+  /* @generated mode-registry BEGIN — written from php/modes.json by tests/gen_mode_registry.cjs.
+     Edit php/modes.json and re-run that script; never edit this block. */
   var DEFAULT_KEYS = ["algorithm", "idPattern", "alternates", "source", "strip", "suggestFix",
                       "keepChars", "idLengths", "idMinLen", "idMaxLen", "expectedIds",
-                      "blockSave", "when", "whenAst",
-                      /* constraint mode (@UVASSERT). "deferred" marks an assert
-                         the server had to freeze (an off-page ref this viewer may
-                         not read): the verdict is stale the moment the user types,
-                         so the client shows it as advisory and never blocks. */
-                      "assert", "assertAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
-                      /* unique mode (@UVUNIQUE) */
-                      "uniqueWith", "uniqueScope", "uniqueSurveys", "uniqueRecordAsts",
-                      /* choices mode (@UVCHOICES) */
-                      "choicesShow", "choicesHide", "choicesAll"];
+                      "blockSave", "when", "whenAst", "assert", "assertAst", "caseSensitive",
+                      "message", "deferred", "deferredWhy", "snapshotFields", "uniqueWith",
+                      "uniqueScope", "uniqueSurveys", "uniqueRecordAsts", "choicesShow",
+                      "choicesHide", "choicesAll", "windowFrom", "windowFromOp", "windowLo",
+                      "windowHi", "windowUnit", "windowNotFuture", "dateType", "dateFormat",
+                      "fromType", "fromFormat", "existsLocal", "existsSurveys", "rangeSoftLo",
+                      "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock",
+                      "rangeHardBlock", "rangeUnit", "rangeSoftText", "rangeHardText",
+                      "decimalComma", "rangeComputed"];
+  var MODE_OF_TYPE = {
+    "single": "check",
+    "pooled": "check",
+    "constraint": "constraint",
+    "required": "required",
+    "unique": "unique",
+    "choices": "choices",
+    "window": "window",
+    "exists": "exists",
+    "range": "range"
+  };
+  var FACTORY_OF_TYPE = {
+    "single": "QRIDSingleInit",
+    "pooled": "QRIDPooledInit",
+    "constraint": "QRIDConstraintInit",
+    "required": "QRIDRequiredInit",
+    "unique": "QRIDUniqueInit",
+    "choices": "QRIDChoiceFilterInit",
+    "window": "QRIDWindowInit",
+    "exists": "QRIDExistsInit",
+    "range": "QRIDRangeInit"
+  };
+  var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\" or \"range\"";
+  /* @generated mode-registry END */
+  /* The factories the registry may name. Hand-written, because a name in a
+     data file must never reach an arbitrary function; tests/gen_mode_registry.cjs
+     fails when the registry names a factory that is missing here. */
+  var QRID_FACTORY_BY_NAME = {
+    QRIDSingleInit: QRIDSingleInit,
+    QRIDPooledInit: QRIDPooledInit,
+    QRIDConstraintInit: QRIDConstraintInit,
+    QRIDRequiredInit: QRIDRequiredInit,
+    QRIDUniqueInit: QRIDUniqueInit,
+    QRIDChoiceFilterInit: QRIDChoiceFilterInit,
+    QRIDWindowInit: QRIDWindowInit,
+    QRIDExistsInit: QRIDExistsInit,
+    QRIDRangeInit: QRIDRangeInit
+  };
+  function own(o, k){ return Object.prototype.hasOwnProperty.call(o, k); }
   /* The validation MODE a rule's type belongs to — twin of
-     Branching::modeOfType in php/Branching.php. Different modes on one field
-     COMPOSE (each attaches its own validator); same-mode sharing is branched
-     server-side. Duplicate detection therefore keys on (field, mode). */
+     ModeRegistry::modeOfType in php/ModeRegistry.php. Different modes on one
+     field COMPOSE (each attaches its own validator); same-mode sharing is
+     branched server-side. Duplicate detection therefore keys on (field, mode).
+     Unknown types belong to the check mode. */
   function modeOfType(t){
-    return (t === "constraint" || t === "required" || t === "unique" || t === "choices") ? t : "check";
+    return (typeof t === "string" && own(MODE_OF_TYPE, t)) ? MODE_OF_TYPE[t] : "check";
   }
   /* Keys a multi-format rule carries PER ALTERNATE. They must not be inherited
      from the top-level config, because the server merges defaults() there
@@ -4418,21 +5506,15 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     cfg.fields = rule.configError ? (rule.fields || [])
                : (rule.fields || []).filter(function(f){ return counts[dupKey(f, rule.type)] === 1; });
     if(!cfg.fields.length) return;
-    if(rule.type === "pooled"){
-      QRIDPooledInit(cfg);
-    } else if(rule.type === "constraint"){
-      QRIDConstraintInit(cfg);
-    } else if(rule.type === "required"){
-      QRIDRequiredInit(cfg);
-    } else if(rule.type === "unique"){
-      QRIDUniqueInit(cfg);
-    } else if(rule.type === "choices"){
-      QRIDChoiceFilterInit(cfg);
-    } else if(rule.type === "single" || rule.type === undefined || rule.type === "" || rule.configError){
+    var factory = (typeof rule.type === "string" && own(FACTORY_OF_TYPE, rule.type))
+      ? QRID_FACTORY_BY_NAME[FACTORY_OF_TYPE[rule.type]] : null;
+    if(factory){
+      factory(cfg);
+    } else if(rule.type === undefined || rule.type === "" || rule.configError){
       QRIDSingleInit(cfg);
     } else {
       cfg.configErrorOverride = 'rule for fields [' + cfg.fields.join(", ") +
-        '] has unknown type "' + rule.type + '" — use "single", "pooled", "constraint", "required", "unique" or "choices".';
+        '] has unknown type "' + rule.type + '" — use ' + KNOWN_TYPES_TEXT + '.';
       QRIDSingleInit(cfg);
     }
   });
@@ -4466,12 +5548,22 @@ window.INSPIREUniversalValidator = {
     BLANK_INERT: QRID_BLANK_INERT,
     caps: { maxLen: QRID_WHEN_MAX_LEN, maxRefs: QRID_WHEN_MAX_REFS, maxDepth: QRID_WHEN_MAX_DEPTH }
   },
+  windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
+    verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
+    family: QRID_temporalFamily, clockNow: QRID_clockNow, units: QRID_WINDOW_UNITS
+  },
+  rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
+    verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
+  },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
   constraintInit: QRIDConstraintInit,   /* @UVASSERT — locked by tests/constraint_dom_js.cjs */
   requiredInit: QRIDRequiredInit,       /* @UVREQUIRED — locked by tests/required_dom_js.cjs */
   uniqueInit: QRIDUniqueInit,           /* @UVUNIQUE — locked by tests/unique_dom_js.cjs */
   choiceFilterInit: QRIDChoiceFilterInit, /* @UVCHOICES — locked by tests/choices_dom_js.cjs */
+  windowInit: QRIDWindowInit,           /* @UVWINDOW — locked by tests/window_dom_js.cjs */
+  existsInit: QRIDExistsInit,           /* @UVEXISTS — locked by tests/exists_dom_js.cjs */
+  rangeInit: QRIDRangeInit,             /* @UVRANGE — locked by tests/range_dom_js.cjs */
   get validators(){ return UV_validators; },
   get guard(){ return UV_guard; },
   get lastPooled(){ return UV_lastPooled; }

@@ -319,6 +319,10 @@ final class ScanService
             'rollupDone'     => ($r['phase'] === ScanPhase::ROLLUP && !empty($r['done'])),
             'maxFindings'    => $policy['maxFindings'],
             'maxBytes'       => $policy['maxBytes'],
+            // A @UVEXISTS verdict depends on other records, which the catch-up
+            // does not re-check when one of them changes (ScanPromotion::facts).
+            'crossRecordLookups' => !empty($ctx['plan']['crossRecordLookups']),
+            'windowChanges'  => $this->aggregateTotal($store, $runId, CatchUp::K_WINDOW),
         ]);
         return array_merge($r, ['status' => $this->status($pid, $runId)]);
     }
@@ -377,6 +381,18 @@ final class ScanService
         $auth = ScanAuthorization::mayRead($ent['rights'], $ent['forms'], $run['scope_dag'],
                                            $ent['unknown']);
         if (empty($auth['ok'])) return ['ok' => false, 'why' => $auth['why']];
+        // A run can hold answers another project gave the person who ran it.
+        // A reader that project would not answer is refused the whole run, by
+        // the same rule as an instrument they cannot read (ScanAuthorization:
+        // whole-report denial, never filtered rows). The plan is re-derived
+        // for THIS reader, so the list is theirs. Cancel does not ask: a run
+        // must stay stoppable.
+        $refused = (isset($ent['ctx']['plan']['crossRefused']) && is_array($ent['ctx']['plan']['crossRefused']))
+                 ? $ent['ctx']['plan']['crossRefused'] : [];
+        if ($refused) {
+            return ['ok' => false, 'why' => 'this scan looks values up in project ' . implode(', ', $refused)
+                . ', which does not answer your lookups, so its results are not shown to you'];
+        }
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
         // unless the row already carries it. See progressOf() for why a quiet

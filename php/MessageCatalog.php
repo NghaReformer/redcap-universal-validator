@@ -157,7 +157,7 @@ final class MessageCatalog
     /**
      * The second sentence, when the rule carries detail worth showing. Staff only.
      *
-     * TWO REASONS CARRY MORE THAN ONE SENTENCE CAN SAY.
+     * THREE KINDS OF DETAIL.
      *
      * An assertion. The engine emits `assert:<expression>`; a STORED finding
      * holds the code `assert` alone, because the expression belongs to the rule
@@ -174,6 +174,13 @@ final class MessageCatalog
      * of its own, and they are given here, one sentence per part. A part with
      * no wording is NAMED rather than dropped: an unknown problem is still a
      * problem.
+     *
+     * A detail template. Besides the assert expression, a catalog entry may
+     * carry a "detail" template filled from the rule snapshot's 'detail' map
+     * (the keys its mode lists under scan.detailKeys in php/modes.json). A
+     * template with any
+     * placeholder the rule does not set is left out whole: half a sentence
+     * about a window bound that does not exist would be wrong, not short.
      */
     public static function detail(array $finding, array $rule)
     {
@@ -183,8 +190,32 @@ final class MessageCatalog
                   ? (string) $rule['assert'] : (string) substr($reason, 7);
             return $expr === '' ? '' : 'The rule requires: ' . $expr;
         }
-        if (strpos($reason, ';') === false) return '';
+        if (strpos($reason, ';') !== false) return self::pooledDetail($reason, $finding);
 
+        $type = isset($finding['type']) ? (string) $finding['type'] : '';
+        $code = $reason;
+        $colon = strpos($reason, ':');
+        if ($colon !== false) $code = substr($reason, 0, $colon);
+        $vals = (isset($rule['detail']) && is_array($rule['detail'])) ? $rule['detail'] : [];
+        $cat = self::catalog();
+        foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
+            if (!isset($cat[$ck]['detail']) || !is_string($cat[$ck]['detail']) || $cat[$ck]['detail'] === '') continue;
+            $missing = false;
+            $text = preg_replace_callback('/\{(\w+)\}/', function ($m) use ($vals, &$missing) {
+                if (!isset($vals[$m[1]]) || !is_scalar($vals[$m[1]]) || (string) $vals[$m[1]] === '') {
+                    $missing = true;
+                    return '';
+                }
+                return (string) $vals[$m[1]];
+            }, $cat[$ck]['detail']);
+            return $missing ? '' : $text;
+        }
+        return '';
+    }
+
+    /** One sentence per part of a `;`-joined pooled reason; parts with no wording are named. */
+    private static function pooledDetail($reason, array $finding)
+    {
         $type = isset($finding['type']) ? (string) $finding['type'] : '';
         $cat = self::catalog();
         $said = [];

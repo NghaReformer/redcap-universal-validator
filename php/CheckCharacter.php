@@ -607,224 +607,473 @@ class CheckCharacter
         return null;
     }
 
+    // -- exact pattern overlap (config-time) ---------------------------------
+    //
+    // checkFragment must know whether a format-only alternate's pattern accepts
+    // a value a check-bearing alternate's pattern also accepts. Sampling a few
+    // members of the check-bearing pattern missed real overlaps (SK[0-9]+[0-9A-Z]
+    // beside [A-Z0-9]{9}: both samples were 4 characters long), so this decides
+    // the question exactly: both patterns become NFAs over the characters a
+    // validated value can contain, and their product is searched for a string
+    // both accept - of exactly one length for a pooled pair, of any length for
+    // a single-value field.
+    //
+    // Lookaround and mid-pattern anchors are read as "always true", which
+    // describes a SUPERSET of the pattern. A superset that is disjoint proves
+    // the real patterns disjoint; an overlap found in a superset is only
+    // reported after the example string is confirmed against both real
+    // compiled patterns. Anything else this reader does not model (a
+    // backreference, an unknown escape) makes the answer unknown.
+
+    /** Characters a validated value can contain: printable ASCII, uppercased. */
+    const OVERLAP_ALPHABET = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`{|}~";
+    /** Example characters, most ID-like first. */
+    const OVERLAP_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-';
+    const OVERLAP_MAX_STATES = 20000;   // NFA states per pattern
+    const OVERLAP_MAX_VISITS = 400000;  // product states visited per question
+
+    /** Set while reading a pattern: something was read as a superset. */
+    private static $ovApprox = false;
+
     /**
-     * A shortest concrete string this pattern accepts, or null when one cannot
-     * be produced. Used to decide, at config time, whether a format-only
-     * alternate would swallow a value a check-bearing one is meant to verify.
-     *
-     * Covers the pattern class this module supports: literals, escaped
-     * literals, character classes (including negated ones), ".", groups,
-     * alternation - the first branch is taken, which is enough, since ANY
-     * member of the check-bearing pattern proves the overlap - and the
-     * quantifiers ?, +, *, {n}, {n,m}. Lookaround returns null.
-     *
-     * The result is VERIFIED against the pattern's own compiled regex before it
-     * is returned, so a witness this builder gets wrong is discarded rather
-     * than used. The guard can therefore only ever fire on a string both
-     * patterns provably accept, never on a guess - which is what lets the
-     * builder pick ID-like members heuristically without risking a false
-     * refusal.
+     * Do two patterns accept a common value? Returns
+     *   ['overlap' => true,  'example' => '<a value both accept>']
+     *   ['overlap' => false, 'example' => null]
+     *   ['overlap' => null,  'example' => null]   unknown - treat as unsafe
+     * With $len, only values of exactly $len characters count (a pooled pair
+     * competes only at the lengths both declare).
      */
-    public static function patternWitness($pattern, $mode = 0)
+    public static function patternOverlap($a, $b, $len = null)
     {
-        $p = preg_replace('/^\\^/', '', (string) $pattern);
-        $p = preg_replace('/\\$$/', '', $p);
-        $i = 0;
-        $out = self::witnessSeq($p, $i, 0, $mode);
-        if ($out === null) return null;
-        // A top-level "|" is fine - the first branch was taken. Anything else
-        // left over (a stray ")") means the pattern is not balanced.
-        if ($i < strlen($p) && $p[$i] !== '|') return null;
-        // An empty witness is no claim: every pattern that can match nothing
-        // accepts it, so it proves no overlap, and "for example """ is not a
-        // sentence to put in front of a designer (L-4).
-        if ($out === '') return null;
+        $unknown = ['overlap' => null, 'example' => null];
+        self::$ovApprox = false;
+        $na = self::ovNfa($a);
+        $nb = self::ovNfa($b);
+        if ($na === null || $nb === null) return $unknown;
+        $approx = self::$ovApprox;
+        $ex = self::ovSearch($na, $nb, $len);
+        if ($ex === null) return $unknown;                   // search budget exceeded
+        if ($ex === false) return ['overlap' => false, 'example' => null];
         $why = '';
-        $re = self::gatePattern($pattern, $why, true);
-        if ($re === null) return null;
-        return self::patTest($re, $out) ? $out : null;         // verify, or no claim
+        $ra = self::gatePattern($a, $why, true);
+        $rb = self::gatePattern($b, $why, true);
+        if ($ra !== null && $rb !== null && self::patTest($ra, $ex) && self::patTest($rb, $ex)) {
+            return ['overlap' => true, 'example' => $ex];
+        }
+        // An overlap of the supersets that the real patterns do not share. With
+        // no approximation in play this would be a reader bug; either way the
+        // safe answer is "unknown".
+        return $unknown;
+    }
+
+    /** Pattern -> ['eps' => [], 'tr' => [], 'start' => s, 'accept' => s], or null. */
+    private static function ovNfa($pattern)
+    {
+        if (!is_string($pattern)) return null;
+        $p = preg_replace('/^\^/', '', $pattern);
+        $p = preg_replace('/\$$/', '', $p);
+        $i = 0;
+        $ast = self::ovAlt($p, $i, 0);
+        if ($ast === null || $i !== strlen($p)) return null;
+        $nfa = ['eps' => [], 'tr' => [], 'n' => 0];
+        $frag = self::ovBuild($ast, $nfa);
+        if ($frag === null) return null;
+        $nfa['start'] = $frag[0];
+        $nfa['accept'] = $frag[1];
+        return $nfa;
+    }
+
+    private static function ovAlt($p, &$i, $depth)
+    {
+        if ($depth > 16) return null;
+        $branches = [];
+        while (true) {
+            $seq = self::ovSeq($p, $i, $depth);
+            if ($seq === null) return null;
+            $branches[] = $seq;
+            if ($i < strlen($p) && $p[$i] === '|') { $i++; continue; }
+            break;
+        }
+        return count($branches) === 1 ? $branches[0] : ['t' => 'alt', 'a' => $branches];
+    }
+
+    private static function ovSeq($p, &$i, $depth)
+    {
+        $items = [];
+        $n = strlen($p);
+        while ($i < $n && $p[$i] !== '|' && $p[$i] !== ')') {
+            $atom = self::ovAtom($p, $i, $depth);
+            if ($atom === null) return null;
+            $q = self::ovQuant($p, $i);
+            if ($q === false) return null;
+            if ($q !== null) {
+                if ($atom['t'] === 'eps') { $items[] = $atom; continue; }   // quantified assertion
+                $atom = ['t' => 'rep', 'n' => $atom, 'min' => $q[0], 'max' => $q[1]];
+            }
+            $items[] = $atom;
+        }
+        return ['t' => 'cat', 'a' => $items];
+    }
+
+    /** One atom, or null when it is outside the modelled subset. */
+    private static function ovAtom($p, &$i, $depth)
+    {
+        $c = $p[$i];
+        if ($c === '(') {
+            $i++;
+            $look = false;
+            if (substr($p, $i, 2) === '?:') {
+                $i += 2;
+            } elseif (substr($p, $i, 2) === '?=' || substr($p, $i, 2) === '?!') {
+                $i += 2; $look = true;
+            } elseif (substr($p, $i, 3) === '?<=' || substr($p, $i, 3) === '?<!') {
+                $i += 3; $look = true;
+            } elseif (substr($p, $i, 2) === '?<') {
+                $close = strpos($p, '>', $i);
+                if ($close === false || !preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', substr($p, $i + 2, $close - $i - 2))) {
+                    return null;
+                }
+                $i = $close + 1;                                  // named group: same language
+            } elseif ($i < strlen($p) && $p[$i] === '?') {
+                return null;
+            }
+            $inner = self::ovAlt($p, $i, $depth + 1);
+            if ($inner === null || $i >= strlen($p) || $p[$i] !== ')') return null;
+            $i++;
+            if ($look) { self::$ovApprox = true; return ['t' => 'eps']; }
+            return $inner;
+        }
+        if ($c === '[') return self::ovClass($p, $i);
+        if ($c === '.') { $i++; return ['t' => 'set', 's' => self::ovAll()]; }
+        if ($c === '^' || $c === '$') { $i++; self::$ovApprox = true; return ['t' => 'eps']; }
+        if ($c === '*' || $c === '+' || $c === '?') return null;   // nothing to repeat
+        if ($c === '\\') {
+            $i++;
+            if ($i >= strlen($p)) return null;
+            if ($p[$i] === 'b' || $p[$i] === 'B') { $i++; self::$ovApprox = true; return ['t' => 'eps']; }
+            $atom = self::ovEscape($p, $i, false);
+            if ($atom === null) return null;
+            return ['t' => 'set', 's' => $atom[0] === 'code' ? self::ovCode($atom[1]) : $atom[1]];
+        }
+        $i++;
+        return ['t' => 'set', 's' => self::ovChar($c)];
+    }
+
+    /** Quantifier at $i: [min, max (-1 = unbounded)], null for none, false if unmodelled. */
+    private static function ovQuant($p, &$i)
+    {
+        if ($i >= strlen($p)) return null;
+        $c = $p[$i];
+        $q = null;
+        if ($c === '?') $q = [0, 1];
+        elseif ($c === '*') $q = [0, -1];
+        elseif ($c === '+') $q = [1, -1];
+        if ($q !== null) {
+            $i++;
+        } elseif ($c === '{' && preg_match('/\G\{(\d+)(,(\d*))?\}/', $p, $m, 0, $i)) {
+            $min = (int) $m[1];
+            $max = !isset($m[2]) || $m[2] === '' ? $min : ($m[3] === '' ? -1 : (int) $m[3]);
+            if ($min > self::MAX_ID_LEN * 4 || $max > self::MAX_ID_LEN * 4 || ($max !== -1 && $max < $min)) return false;
+            $q = [$min, $max];
+            $i += strlen($m[0]);
+        } else {
+            return null;                   // a "{" that is not a quantifier reads as a literal
+        }
+        if ($i < strlen($p) && $p[$i] === '?') $i++;                 // lazy: same language
+        return $q;
+    }
+
+    /** A character class at $i ("[" ... "]"). */
+    private static function ovClass($p, &$i)
+    {
+        $n = strlen($p);
+        $i++;
+        $neg = false;
+        if ($i < $n && $p[$i] === '^') { $neg = true; $i++; }
+        $set = self::ovNone();
+        while (true) {
+            if ($i >= $n) return null;
+            // "]" always closes, so "[]" and "[^]" read as JavaScript reads them
+            if ($p[$i] === ']') { $i++; break; }
+            $lo = self::ovClassAtom($p, $i);
+            if ($lo === null) return null;
+            if ($lo[0] === 'code' && $i + 1 < $n && $p[$i] === '-' && $p[$i + 1] !== ']') {
+                $j = $i + 1;
+                $hi = self::ovClassAtom($p, $j);
+                if ($hi === null) return null;
+                if ($hi[0] === 'code') {
+                    if ($hi[1] < $lo[1]) return null;               // out-of-order range
+                    // Endpoints outside the value alphabet (\x00, \x7F, a
+                    // lowercase letter) still bound the range: only the
+                    // characters a value can contain are kept from it.
+                    for ($o = $lo[1]; $o <= min($hi[1], 0x7E); $o++) $set = self::ovOr($set, self::ovCode($o));
+                    $i = $j;
+                    continue;
+                }
+            }
+            $set = self::ovOr($set, $lo[0] === 'code' ? self::ovCode($lo[1]) : $lo[1]);
+        }
+        if ($neg) {
+            $all = self::ovAll();
+            $out = '';
+            for ($k = 0; $k < strlen($all); $k++) $out .= ($set[$k] === '1') ? '0' : $all[$k];
+            $set = $out;
+        }
+        return ['t' => 'set', 's' => $set];
+    }
+
+    /** ['code', int] or ['set', bitmap] for one class member, or null. */
+    private static function ovClassAtom($p, &$i)
+    {
+        $c = $p[$i++];
+        if ($c !== '\\') return ['code', ord($c)];
+        if ($i >= strlen($p)) return null;
+        if ($p[$i] === 'b') { $i++; return ['code', 8]; }            // [\b] is backspace
+        return self::ovEscape($p, $i, true);
     }
 
     /**
-     * Every distinct witness this builder can produce for $pattern, in probe
-     * order. One witness only ever probes ONE point of the pattern, so a
-     * format-only sibling that overlaps somewhere else - SK5-[0-9]{4}[0-9A-Z]
-     * beside SK[1-5]-[0-9]{4}[0-9A-Z], where the "SK1" witness misses - read as
-     * clean. A second probe biased the other way (the LAST member of each class
-     * rather than the most ID-like) finds that family.
-     *
-     * Adding probes can only ever find MORE real overlaps, never invent one:
-     * each witness is still verified against the pattern's own compiled regex
-     * before it is returned, so every string here is a genuine member. It is a
-     * probe, not a proof - two patterns that overlap only at a point neither
-     * probe reaches are still admitted, which is why the alternates are also
-     * separated by length wherever the mode allows it.
+     * The escape whose letter is at $i (the backslash already read), as
+     * ['code', int] for one character or ['set', bitmap] for a shorthand class,
+     * or null when it is not modelled. Only forms the browser (JavaScript, no
+     * "u" flag) and the server (PCRE) read the same way are decoded.
      */
-    public static function patternWitnesses($pattern)
+    private static function ovEscape($p, &$i, $inClass)
+    {
+        $digit = '0123456789';
+        $word  = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz';
+        $space = " \t\n\r\x0B\x0C";
+        $e = $p[$i++];
+        switch ($e) {
+            case 'd': return ['set', self::ovChars($digit)];
+            case 'D': return ['set', self::ovNot(self::ovChars($digit))];
+            case 'w': return ['set', self::ovChars($word)];
+            case 'W': return ['set', self::ovNot(self::ovChars($word))];
+            case 's': return ['set', self::ovChars($space)];
+            case 'S': return ['set', self::ovNot(self::ovChars($space))];
+            case 't': return ['code', 9];
+            case 'n': return ['code', 10];
+            case 'f': return ['code', 12];
+            case 'r': return ['code', 13];
+            case 'x':
+                if (!preg_match('/\G[0-9A-Fa-f]{2}/', $p, $m, 0, $i)) return null;
+                $i += 2;
+                return ['code', hexdec($m[0])];
+            case 'u':
+                if (!preg_match('/\G[0-9A-Fa-f]{4}/', $p, $m, 0, $i)) return null;
+                $i += 4;
+                return ['code', hexdec($m[0])];
+        }
+        if ($e >= '0' && $e <= '9') {
+            // Octal. "\0" plus up to two more octal digits reads the same in
+            // both engines; so does a 1-3 digit octal inside a class. Outside a
+            // class "\1".."\9" is a backreference to PCRE and may be one to
+            // JavaScript too, so it is not modelled.
+            if ($e !== '0' && !$inClass) return null;
+            if ($e > '7') return null;
+            preg_match('/\G[0-7]{0,2}/', $p, $m, 0, $i);
+            $i += strlen($m[0]);
+            $o = octdec($e . $m[0]);
+            return $o > 0377 ? null : ['code', $o];
+        }
+        if (ctype_alnum($e)) return null;     // an escape not modelled (\c, \k, ...)
+        return ['code', ord($e)];             // escaped punctuation is itself
+    }
+
+    /** The one-character bitmap for a code point (empty outside the alphabet). */
+    private static function ovCode($o)
+    {
+        return ($o >= 0x20 && $o <= 0x7E) ? self::ovChar(chr($o)) : self::ovNone();
+    }
+
+    private static function ovNone() { return str_repeat('0', strlen(self::OVERLAP_ALPHABET)); }
+    private static function ovAll()  { return str_repeat('1', strlen(self::OVERLAP_ALPHABET)); }
+
+    /** The character as a validated value can contain it (values are uppercased). */
+    private static function ovChar($c)
+    {
+        $s = self::ovNone();
+        $k = strpos(self::OVERLAP_ALPHABET, $c);
+        if ($k !== false) $s[$k] = '1';
+        return $s;
+    }
+
+    private static function ovChars($chars)
+    {
+        $s = self::ovNone();
+        for ($j = 0; $j < strlen($chars); $j++) $s = self::ovOr($s, self::ovChar($chars[$j]));
+        return $s;
+    }
+
+    private static function ovOr($a, $b)
+    {
+        for ($k = 0; $k < strlen($a); $k++) if ($b[$k] === '1') $a[$k] = '1';
+        return $a;
+    }
+
+    private static function ovNot($a)
+    {
+        for ($k = 0; $k < strlen($a); $k++) $a[$k] = ($a[$k] === '1') ? '0' : '1';
+        return $a;
+    }
+
+    private static function ovState(array &$nfa)
+    {
+        if ($nfa['n'] >= self::OVERLAP_MAX_STATES) return null;
+        $s = $nfa['n']++;
+        $nfa['eps'][$s] = [];
+        $nfa['tr'][$s] = [];
+        return $s;
+    }
+
+    /** Thompson construction: [start, accept] or null past the state cap. */
+    private static function ovBuild(array $node, array &$nfa)
+    {
+        $s = self::ovState($nfa);
+        $e = self::ovState($nfa);
+        if ($s === null || $e === null) return null;
+        switch ($node['t']) {
+            case 'eps':
+                $nfa['eps'][$s][] = $e;
+                return [$s, $e];
+            case 'set':
+                $nfa['tr'][$s][] = [$node['s'], $e];
+                return [$s, $e];
+            case 'cat':
+                $cur = $s;
+                foreach ($node['a'] as $child) {
+                    $f = self::ovBuild($child, $nfa);
+                    if ($f === null) return null;
+                    $nfa['eps'][$cur][] = $f[0];
+                    $cur = $f[1];
+                }
+                $nfa['eps'][$cur][] = $e;
+                return [$s, $e];
+            case 'alt':
+                foreach ($node['a'] as $child) {
+                    $f = self::ovBuild($child, $nfa);
+                    if ($f === null) return null;
+                    $nfa['eps'][$s][] = $f[0];
+                    $nfa['eps'][$f[1]][] = $e;
+                }
+                return [$s, $e];
+            case 'rep':
+                $cur = $s;
+                for ($k = 0; $k < $node['min']; $k++) {
+                    $f = self::ovBuild($node['n'], $nfa);
+                    if ($f === null) return null;
+                    $nfa['eps'][$cur][] = $f[0];
+                    $cur = $f[1];
+                }
+                if ($node['max'] === -1) {
+                    $f = self::ovBuild($node['n'], $nfa);
+                    if ($f === null) return null;
+                    $nfa['eps'][$cur][] = $f[0];
+                    $nfa['eps'][$f[1]][] = $f[0];
+                    $nfa['eps'][$f[1]][] = $e;
+                } else {
+                    for ($k = $node['min']; $k < $node['max']; $k++) {
+                        $f = self::ovBuild($node['n'], $nfa);
+                        if ($f === null) return null;
+                        $nfa['eps'][$cur][] = $e;                     // stop here
+                        $nfa['eps'][$cur][] = $f[0];
+                        $cur = $f[1];
+                    }
+                }
+                $nfa['eps'][$cur][] = $e;
+                return [$s, $e];
+        }
+        return null;
+    }
+
+    /** Epsilon closure of every state, as sorted state lists. */
+    private static function ovClosures(array $nfa)
     {
         $out = [];
-        foreach ([0, 1] as $mode) {
-            $w = self::patternWitness($pattern, $mode);
-            if ($w !== null && !in_array($w, $out, true)) $out[] = $w;
+        for ($s = 0; $s < $nfa['n']; $s++) {
+            $seen = [$s => true];
+            $stack = [$s];
+            while ($stack) {
+                $x = array_pop($stack);
+                foreach ($nfa['eps'][$x] as $y) {
+                    if (!isset($seen[$y])) { $seen[$y] = true; $stack[] = $y; }
+                }
+            }
+            $out[$s] = array_keys($seen);
         }
         return $out;
     }
 
     /**
-     * One alternative of a pattern, from $i, stopping at "|" or ")" at this
-     * level. Returns null when the shape is outside the supported class.
+     * Breadth-first search of the product automaton. Returns the shortest
+     * common value (of exactly $len characters when $len is set), false when
+     * there is none, or null when the visit budget runs out.
      */
-    private static function witnessSeq($p, &$i, $depth, $mode = 0)
+    private static function ovSearch(array $A, array $B, $len)
     {
-        if ($depth > 8) return null;                            // absurd nesting
-        $n = strlen($p);
-        $out = '';
-        while ($i < $n) {
-            $c = $p[$i];
-            if ($c === '|' || $c === ')') break;                // this alternative ends
-            $atom = null;
-            if ($c === '(') {
-                $i++;
-                if ($i < $n && $p[$i] === '?') {
-                    // "(?:" is an ordinary group; lookaround and the rest
-                    // constrain rather than contribute, so make no claim.
-                    if ($i + 1 < $n && $p[$i + 1] === ':') $i += 2;
-                    else return null;
-                }
-                $atom = self::witnessSeq($p, $i, $depth + 1, $mode);
-                if ($atom === null) return null;
-                if (!self::skipToGroupEnd($p, $i)) return null;
-            } elseif ($c === '\\') {
-                $i++;
-                if ($i >= $n) return null;
-                $e = $p[$i];
-                // Probe 1 biases every choice the other way (see
-                // patternWitnesses) so an overlap the ID-like pick misses is
-                // still found; probe 0 is the shape a real ID has.
-                if ($e === 'd') $atom = $mode ? '9' : '0';
-                elseif ($e === 'w') $atom = $mode ? 'z' : 'A';
-                elseif ($e === 's') $atom = ' ';
-                // The negated shorthands are as ordinary in a hand-written ID
-                // pattern as the positive ones, and declining them used to
-                // silence the overlap guard completely - \D[0-9A-Z]{8} beside a
-                // format-only [0-9A-Z]{9} shipped as a silent accept of every
-                // broken check character (H-1). Pick an ID-like member; the
-                // self-verification below discards the choice if it is wrong.
-                elseif ($e === 'D') $atom = $mode ? 'z' : 'A';  // non-digit
-                elseif ($e === 'W') $atom = $mode ? ' ' : '-';  // non-word
-                elseif ($e === 'S') $atom = $mode ? 'z' : '0';  // non-space
-                elseif ($e === 'b' || $e === 'B') $atom = '';   // zero-width assertion
-                else $atom = $e;                                // escaped literal
-                $i++;
-            } elseif ($c === '[') {
-                $close = self::classEnd($p, $i);
-                if ($close === -1) return null;
-                $body = substr($p, $i + 1, $close - $i - 1);
-                $neg = ($body !== '' && $body[0] === '^');
-                if ($neg) $body = substr($body, 1);
-                if ($body === '') return null;
-                $cls = self::expandClass($body);
-                if ($cls === null) return null;
-                $atom = $neg ? self::firstOutside($cls, $mode) : self::firstInside($cls, $mode);
-                if ($atom === null) return null;
-                $i = $close + 1;
-            } elseif ($c === '.') {
-                $atom = $mode ? 'z' : 'A';
-                $i++;
-            } else {
-                $atom = $c;
-                $i++;
+        $ca = self::ovClosures($A);
+        $cb = self::ovClosures($B);
+        $key = function ($x, $y, $d) { return $x . ',' . $y . ',' . $d; };
+        $frontier = [];
+        $parent = [];
+        foreach ($ca[$A['start']] as $x) {
+            foreach ($cb[$B['start']] as $y) {
+                $k = $key($x, $y, 0);
+                if (!isset($parent[$k])) { $parent[$k] = null; $frontier[] = [$x, $y]; }
             }
-            $min = 1;
-            if ($i < $n) {
-                $q = $p[$i];
-                if ($q === '?') { $min = 0; $i++; }
-                elseif ($q === '+') { $min = 1; $i++; }
-                elseif ($q === '*') { $min = 0; $i++; }
-                elseif ($q === '{') {
-                    $close = strpos($p, '}', $i + 1);
-                    if ($close === false) return null;
-                    $spec = substr($p, $i + 1, $close - $i - 1);
-                    if (!preg_match('/^([0-9]+)(,([0-9]*))?$/', $spec, $m)) return null;
-                    $min = (int) $m[1];
-                    $i = $close + 1;
-                }
-            }
-            if ($min > self::MAX_ID_LEN) return null;
-            $out .= str_repeat($atom, $min);
-            if (strlen($out) > self::MAX_ID_LEN) return null;
         }
-        return $out;
-    }
-
-    /** Advance past the remaining alternatives of the group we are inside. */
-    private static function skipToGroupEnd($p, &$i)
-    {
-        $n = strlen($p);
-        $lvl = 1;
-        while ($i < $n) {
-            $ch = $p[$i];
-            if ($ch === '\\') { $i += 2; continue; }
-            if ($ch === '[') {
-                $close = self::classEnd($p, $i);
-                if ($close === -1) return false;
-                $i = $close + 1;
-                continue;
+        $depth = 0;
+        $visits = 0;
+        $maxDepth = $len === null ? PHP_INT_MAX : $len;
+        while ($frontier && $depth < $maxDepth) {
+            $next = [];
+            foreach ($frontier as $pair) {
+                list($x, $y) = $pair;
+                foreach ($A['tr'][$x] as $ta) {
+                    foreach ($B['tr'][$y] as $tb) {
+                        $ch = self::ovPick($ta[0], $tb[0]);
+                        if ($ch === null) continue;
+                        foreach ($ca[$ta[1]] as $x2) {
+                            foreach ($cb[$tb[1]] as $y2) {
+                                // Without a length every depth is the same
+                                // state, so a pair is visited once in total.
+                                // Without a length only two depths matter -
+                                // nothing consumed yet, or something - so a pair
+                                // is visited at most twice and an empty-string
+                                // accept at the start cannot hide a real one.
+                                $k = $key($x2, $y2, $len === null ? 1 : $depth + 1);
+                                if (isset($parent[$k]) || array_key_exists($k, $parent)) continue;
+                                if (++$visits > self::OVERLAP_MAX_VISITS) return null;
+                                $parent[$k] = [$key($x, $y, $len === null ? min($depth, 1) : $depth), $ch];
+                                $done = ($x2 === $A['accept'] && $y2 === $B['accept'])
+                                    && ($len === null || $depth + 1 === $len);
+                                if ($done) {
+                                    $out = '';
+                                    for ($c = $k; $parent[$c] !== null; $c = $parent[$c][0]) $out = $parent[$c][1] . $out;
+                                    return $out;
+                                }
+                                $next[] = [$x2, $y2];
+                            }
+                        }
+                    }
+                }
             }
-            if ($ch === '(') $lvl++;
-            elseif ($ch === ')') { $lvl--; if ($lvl === 0) { $i++; return true; } }
-            $i++;
+            $frontier = $next;
+            $depth++;
         }
         return false;
     }
 
-    /** Index of the "]" closing the class at $i, or -1. */
-    private static function classEnd($p, $i)
+    /** The most ID-like character both bitmaps contain, or null. */
+    private static function ovPick($a, $b)
     {
-        $n = strlen($p);
-        $j = $i + 1;
-        if ($j < $n && $p[$j] === '^') $j++;
-        if ($j < $n && $p[$j] === ']') $j++;                    // a literal "]" first
-        for (; $j < $n; $j++) {
-            if ($p[$j] === '\\') { $j++; continue; }
-            if ($p[$j] === ']') return $j;
+        $pref = self::OVERLAP_PREFERENCE;
+        for ($j = 0; $j < strlen($pref); $j++) {
+            $k = strpos(self::OVERLAP_ALPHABET, $pref[$j]);
+            if ($a[$k] === '1' && $b[$k] === '1') return $pref[$j];
         }
-        return -1;
-    }
-
-    // A real ID is far likelier to be alphanumeric than to start with a space,
-    // and a witness that LOOKS like an ID is the one most likely to expose an
-    // overlap. Only the choice among valid members is heuristic - every witness
-    // is still verified against the real regex before use, so a poor pick can
-    // cost a missed warning but never a false refusal.
-    const WITNESS_PREFERENCE = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ-abcdefghijklmnopqrstuvwxyz';
-
-    /**
-     * The most ID-like member of an expanded class, or in probe mode 1 the
-     * LEAST ID-like one — the second probe exists to land somewhere the first
-     * cannot reach (see patternWitnesses).
-     */
-    private static function firstInside($cls, $mode = 0)
-    {
-        if ($cls === '') return null;
-        $n = strlen(self::WITNESS_PREFERENCE);
-        for ($j = 0; $j < $n; $j++) {
-            $k = $mode ? $n - 1 - $j : $j;
-            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) !== false) return self::WITNESS_PREFERENCE[$k];
-        }
-        return $mode ? $cls[strlen($cls) - 1] : $cls[0];
-    }
-
-    /** The most ID-like printable-ASCII character an expanded class excludes. */
-    private static function firstOutside($cls, $mode = 0)
-    {
-        $n = strlen(self::WITNESS_PREFERENCE);
-        for ($j = 0; $j < $n; $j++) {
-            $k = $mode ? $n - 1 - $j : $j;
-            if (strpos($cls, self::WITNESS_PREFERENCE[$k]) === false) return self::WITNESS_PREFERENCE[$k];
-        }
-        for ($ch = 0x20; $ch <= 0x7E; $ch++) {
-            if (strpos($cls, chr($ch)) === false) return chr($ch);
+        for ($k = 0; $k < strlen($a); $k++) {
+            if ($a[$k] === '1' && $b[$k] === '1') return self::OVERLAP_ALPHABET[$k];
         }
         return null;
     }
@@ -864,6 +1113,20 @@ class CheckCharacter
      * family wider (M-1). Escaped-backslash pairs are stripped first, exactly as
      * in usesUFlagEscape. Keep in sync with QRID_pcreOnly (js).
      */
+    public static function usesNewPcreQuantifier($pattern)
+    {
+        // A brace group of digits, commas and spaces is a quantifier only to
+        // PCRE2 10.43+ when it has an empty minimum ("{,n}") or white space.
+        // Twin of QRID_newPcreQuantifier (js).
+        $d = preg_replace('/\\\\./s', '', (string) $pattern);       // drop escaped characters
+        if (!preg_match_all('/\{[0-9 ,]*\}/', $d, $mm)) return false;
+        foreach ($mm[0] as $g) {
+            if (preg_match('/^\{ *,/', $g)) return true;
+            if (strpos($g, ' ') !== false && preg_match('/[0-9]/', $g)) return true;
+        }
+        return false;
+    }
+
     public static function usesPcreOnlySyntax($pattern)
     {
         $d = str_replace('\\\\', '', (string) $pattern);    // drop escaped-backslash pairs (parity)
@@ -979,6 +1242,18 @@ class CheckCharacter
                     . 'characters the class should contain.';
                 return null;
             }
+            if (self::usesNewPcreQuantifier($pattern)) {
+                // "{,n}" and quantifiers with spaces ("{2, 3}") are literal text to a
+                // browser and to PCRE2 before 10.43, and quantifiers from 10.43 on
+                // (bundled with PHP 8.4), so a server upgrade would silently split
+                // the server from the browser.
+                $why = 'the format pattern uses "{,n}" or a quantifier with spaces such as "{2, 3}". '
+                    . 'JavaScript reads these as literal text, PCRE before 10.43 does too, and PCRE 10.43 '
+                    . 'and later (PHP 8.4) read them as quantifiers, so the pattern would behave differently '
+                    . 'in the browser and on some servers. Write {0,n} or {2,3} without spaces, or escape '
+                    . 'the brace (\\{) for the literal text.';
+                return null;
+            }
             if (self::riskyPattern($pattern)) {
                 $why = 'the format pattern looks catastrophically backtracking (nested '
                     . 'quantifiers, a repeated ambiguous group, overlapping unbounded quantifiers, or a '
@@ -1020,9 +1295,9 @@ class CheckCharacter
      * junk / invalid-ID verdict. Mirrors the preg_last_error guard in
      * matchesPattern() for the single-field path.
      */
-    // Public because checkFragment's config-time overlap check needs the same
-    // PCRE-error-guarded match the parser uses; a bare preg_match there could
-    // report an engine failure as a real match.
+    // Public so config-time callers (patternOverlap's example check, the
+    // tests) use the same PCRE-error-guarded match the parser uses; a bare
+    // preg_match could report an engine failure as a real match.
     public static function patTest($re, $t)
     {
         $m = @preg_match($re, $t);
@@ -1061,18 +1336,21 @@ class CheckCharacter
                 return ['ok' => true, 'reason' => 'unconfigurable'];
             }
         }
+        // Shape ownership: a value whose shape matches ANY check-bearing
+        // alternate belongs to that family and must pass its check character.
+        // Format-only alternates are consulted only when no check-bearing
+        // shape matched, so they can never accept a mis-scanned check-bearing
+        // ID, whatever the patterns overlap and whatever the declaration
+        // order. Twin of verdict() pass 1 (js).
         $anyPattern = false; $shapeMatched = false;
         foreach ($ALTS as $A) {
+            if ($A['algorithm'] === 'none') continue;
             $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
             if ($pattern !== null) {
                 $anyPattern = true;
                 if (!self::matchesPattern($value, $pattern)) continue;
             }
             $shapeMatched = true;
-            if ($A['algorithm'] === 'none') {
-                // format-only: the shape IS the whole test
-                return ['ok' => true, 'reason' => $pattern !== null ? 'valid' : 'no-op'];
-            }
             if (self::validateId($A['algorithm'], $A['source'], $A['strip'], $value)) {
                 return ['ok' => true, 'reason' => 'valid'];
             }
@@ -1081,6 +1359,14 @@ class CheckCharacter
         // single-format rule: a SHAPE that matched but whose check failed is a
         // check-character error; nothing matching any shape is a format error.
         if ($shapeMatched) return ['ok' => false, 'reason' => 'check-character'];
+        foreach ($ALTS as $A) {
+            if ($A['algorithm'] !== 'none') continue;
+            // format-only: the shape IS the whole test
+            $pattern = ($A['pattern'] !== null && $A['pattern'] !== '') ? $A['pattern'] : null;
+            if ($pattern === null) return ['ok' => true, 'reason' => 'no-op'];
+            $anyPattern = true;
+            if (self::matchesPattern($value, $pattern)) return ['ok' => true, 'reason' => 'valid'];
+        }
         if ($anyPattern)   return ['ok' => false, 'reason' => 'format'];
         return ['ok' => false, 'reason' => 'check-character'];
     }
@@ -1186,10 +1472,20 @@ class CheckCharacter
         // two runtimes would silently disagree.
         $PAIRS = []; $RESCAN = [];
         foreach ($LENS as $L) {
+            // Shape ownership: the check-bearing alternates that also produce
+            // IDs of length L. A token any of them shapes as its own must pass
+            // that check, so a format-only pair at L may not accept it
+            // (pooledVerifiesAs). A null entry is a check-bearing alternate
+            // without a pattern, which owns every token of its lengths.
+            $owners = [];
+            foreach ($ALTS as $A) {
+                if ($A['check'] && in_array($L, $A['lengths'], true)) $owners[] = $A['re'];
+            }
             foreach ($ALTS as $ai => $A) {
                 if (!in_array($L, $A['lengths'], true)) continue;
                 $P = ['len' => $L, 'alt' => $ai, 're' => $A['re'], 'regexOnly' => $A['regexOnly'],
-                      'algo' => $A['algorithm'], 'source' => $A['source'], 'strip' => $A['strip']];
+                      'algo' => $A['algorithm'], 'source' => $A['source'], 'strip' => $A['strip'],
+                      'owners' => $A['regexOnly'] ? $owners : []];
                 $PAIRS[] = $P;
                 // Regex-only alternates never take part in the junk re-scan: the
                 // shape IS their test, so stamping valid=false on a shape match
@@ -1244,30 +1540,84 @@ class CheckCharacter
             }
         }
         if ($A['re'] !== null) {
-            $pat = (string) $A['pattern']; $meta = '\\^$.|?*+()[]{}';
-            for ($i = 0; $i < strlen($pat); $i++) {
-                $pc = $pat[$i];
-                if ($pc === '\\') {
-                    $i++;
-                    if ($i < strlen($pat)) {
-                        $pc = $pat[$i];
-                        if (strpos($meta, $pc) !== false && strpos($K, $pc) === false) $K .= $pc;
-                    }
-                    continue;
-                }
-                if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($K, $pc) === false) {
-                    $K .= $pc;
-                }
+            $lit = self::patternLiterals($A['pattern']);
+            for ($i = 0; $i < strlen($lit); $i++) {
+                if (strpos($K, $lit[$i]) === false) $K .= $lit[$i];
             }
         }
         return $K;
+    }
+
+    /**
+     * The non-alphanumeric characters a pattern matches LITERALLY - its
+     * separators, such as the "-" in FC[1-9]-[0-9]{4} - which pooled cleaning
+     * must therefore keep. Regex syntax is not a literal: the comma of a {n,m}
+     * quantifier and the ":", "=", "!", "<", ">" and group name of a "(?..."
+     * prefix used to be read as separators, so a pooled {6,7} pattern kept the
+     * commas people type between IDs, and one alternate using (?:...) was
+     * refused beside one that did not. An escaped separator is literal too:
+     * "\:" and "\x3A" both match ":", and used to be dropped by cleaning.
+     * Twin of QRID_patternLiterals (js).
+     *
+     * $legacy reproduces the reader before 2.1.0-rc.2 (syntax characters
+     * counted, escaped separators ignored). checkFragment uses it only to
+     * grandfather KEEP-agreement verdicts, never to build a KEEP set.
+     */
+    public static function patternLiterals($pattern, $legacy = false)
+    {
+        $pat = (string) $pattern;
+        $meta = '\\^$.|?*+()[]{}';
+        $n = strlen($pat);
+        $out = '';
+        for ($i = 0; $i < $n; $i++) {
+            $pc = $pat[$i];
+            if ($pc === '\\') {
+                $i++;
+                if ($i >= $n) continue;
+                $ec = $pat[$i];
+                if ($legacy) {
+                    if (strpos($meta, $ec) !== false && strpos($out, $ec) === false) $out .= $ec;
+                    continue;
+                }
+                if (($ec === 'x' && preg_match('/\G[0-9A-Fa-f]{2}/', $pat, $m, 0, $i + 1))
+                        || ($ec === 'u' && preg_match('/\G[0-9A-Fa-f]{4}/', $pat, $m, 0, $i + 1))) {
+                    $i += strlen($m[0]);
+                    $ec = chr(min(hexdec($m[0]), 0x7F));            // only printable ASCII is kept below
+                } elseif (ctype_alnum($ec)) {
+                    continue;                                        // \d, \w, \b ... are not text
+                }
+                if ($ec >= ' ' && $ec <= '~' && !ctype_alnum($ec) && strpos($out, $ec) === false) $out .= $ec;
+                continue;
+            }
+            if (!$legacy && $pc === '{' && preg_match('/\G\{\d+(,\d*)?\}/', $pat, $m, 0, $i)) {
+                $i += strlen($m[0]) - 1;                             // a quantifier, not text
+                continue;
+            }
+            if (!$legacy && $pc === '(' && $i + 1 < $n && $pat[$i + 1] === '?') {
+                if (preg_match('/\G\(\?(?:<[A-Za-z_][A-Za-z0-9_]*>|<=|<!|[:=!])/', $pat, $m, 0, $i)) {
+                    $i += strlen($m[0]) - 1;                         // a group prefix, not text
+                    continue;
+                }
+            }
+            if (strpos($meta, $pc) === false && !preg_match('/[A-Za-z0-9]/', $pc) && strpos($out, $pc) === false) {
+                $out .= $pc;
+            }
+        }
+        return $out;
     }
 
     /** Does THIS (alternate, length) pair accept the token? Twin of verifiesAs (js). */
     private static function pooledVerifiesAs(array $P, $t)
     {
         if ($P['re'] !== null && !self::patTest($P['re'], $t)) return false;
-        if ($P['regexOnly']) return true;
+        if ($P['regexOnly']) {
+            // a check-bearing family shapes this token as its own: its check
+            // decides, never a format-only sibling of the same length
+            foreach ($P['owners'] as $ore) {
+                if ($ore === null || self::patTest($ore, $t)) return false;
+            }
+            return true;
+        }
         return self::validateId($P['algo'], $P['source'], $P['strip'], $t);
     }
 

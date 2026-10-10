@@ -153,6 +153,19 @@ namespace {
             return isset(self::$groupNames[$group_id]) ? self::$groupNames[$group_id] : '';
         }
         public static function getRecordIdField() { return 'record_id'; }
+        /** Forms each username may NOT open; everyone else opens every dictionary form. */
+        public static $formsWithheld = [];
+        /** REDCap's static rights read, keyed by username. Only a named user has a row. */
+        public static function getUserRights($username = null) {
+            if ($username === null || $username === '') return [];
+            $forms = [];
+            foreach (self::$dictionary as $meta) {
+                if (!isset($meta['form_name'])) continue;
+                $f = (string) $meta['form_name'];
+                $forms[$f] = in_array($f, self::$formsWithheld[$username] ?? [], true) ? '0' : '1';
+            }
+            return [$username => ['forms' => $forms]];
+        }
     }
 
     require_once __DIR__ . '/../UniversalValidator.php';
@@ -610,6 +623,19 @@ namespace {
     $html = ob_get_clean();
     check('non-text picker field surfaces a config error',
         strpos($html, 'only Text and Notes fields') !== false);
+
+    // A stored dialog row naming a mode the dialog has no boxes for
+    // (php/modes.json "dialog": false) is refused, naming the action tag.
+    $choicesRow = [[
+        'rule-type' => 'choices', 'fields' => ['gender'], 'fields-csv' => '',
+        'when' => "[main_id_1]='x'", 'block-save' => 'off',
+    ]];
+    $m = newModule($choicesRow, $ddRadio, $classicData, 149);
+    ob_start();
+    $m->redcap_data_entry_form_top(149, '1', 'id_validation_test', 351, null, 1);
+    $html = ob_get_clean();
+    check('a dialog row of a tag-only mode surfaces a config error naming the tag',
+        strpos($html, 'cannot be set up in this dialog') !== false && strpos($html, '@UVCHOICES') !== false);
 
     // ---- 16) validateSettings: the save-time gate ----
     $m = newModule([], $dictionary, [], 149);
@@ -1371,6 +1397,11 @@ namespace {
     $cDictBad['mx'] = ['field_type' => 'radio', 'form_name' => 'cf', 'matrix_group_name' => 'grid1',
         'select_choices_or_calculations' => '1, A | 2, B',
         'field_annotation' => '@UVCHOICES={"hide":["1"]}'];
+    // a "when" naming a field the project does not have: the error must be
+    // attributed to @UVCHOICES, not to @UVALIDATE
+    $cDictBad['badref'] = ['field_type' => 'radio', 'form_name' => 'cf',
+        'select_choices_or_calculations' => '1, A | 2, B',
+        'field_annotation' => '@UVCHOICES={"when":"[no_such_field]=\'1\'","hide":["1"]}'];
     $m = newModule([], $cDictBad, [2 => [351 => ['record_id' => '2',
         'freetext' => '1', 'site2' => '999', 'mx' => '1']]], 149);
     ob_start();
@@ -1390,6 +1421,8 @@ namespace {
         && strpos($cfgErrs['site2'], '"999"') !== false && strpos($cfgErrs['site2'], '1, 2') !== false);
     check('matrix field -> configError', isset($cfgErrs['mx'])
         && strpos($cfgErrs['mx'], 'matrix') !== false);
+    check('bad "when" reference on @UVCHOICES -> error names @UVCHOICES',
+        isset($cfgErrs['badref']) && strpos($cfgErrs['badref'], '@UVCHOICES on "badref"') === 0);
     $m->logCalls = [];
     $m->redcap_save_record(149, '2', 'cf', 351, null, null, null, 1);
     check('config-error choices rules produce no detections',
@@ -1625,6 +1658,45 @@ namespace {
     check('ajax: overlong value refused', isset(ajaxCall($m, ['field' => 'pid', 'values' => ['pid' => str_repeat('x', 1200)]])['error']));
     check('ajax: bad field name refused', isset(ajaxCall($m, ['field' => 'pid; DROP', 'values' => []])['error']));
     check('ajax: unknown action refused', isset($m->redcap_module_ajax('other', [], 149, '3', 'uf', 351, 1, null, null, null, '', '', 'u', null)['error']));
+
+    // Date fields: the browser sends the value as the field shows it (31-12-2024
+    // on a D-M-Y field), REDCap stores Y-M-D. The endpoint compares stored
+    // values, so it must rewrite the typed value first or it never finds a
+    // duplicate on a D-M-Y or M-D-Y field.
+    $dtDict = $uqDict + [
+        'vdate' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'date_dmy'],
+        'vtime' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'datetime_mdy'],
+        'vsec'  => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '@UVUNIQUE',
+                    'text_validation_type_or_show_slider_number' => 'datetime_seconds_dmy'],
+        'kit'   => ['field_type' => 'text', 'form_name' => 'uf',
+                    'field_annotation' => '@UVUNIQUE={"with":["kdate"]}'],
+        'kdate' => ['field_type' => 'text', 'form_name' => 'uf', 'field_annotation' => '',
+                    'text_validation_type_or_show_slider_number' => 'date_mdy'],
+    ];
+    $dtData = $uqData;
+    $dtData['1'][351] += ['vdate' => '2024-12-31', 'vtime' => '2024-12-31 14:30',
+                          'vsec' => '2024-12-31 14:30:05', 'kit' => 'K-1', 'kdate' => '2024-01-05'];
+    $m = newModule([], $dtDict, $dtData, 149);
+    \REDCap::$lastGetDataParams = null;
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '31-12-2024']]);
+    check('ajax: a D-M-Y date typed as shown finds the stored Y-M-D duplicate',
+        isset($r['used']) && $r['used'] === true && $r['record'] === '1');
+    check('ajax: the narrowed query asks for the stored form of the date',
+        isset(\REDCap::$lastGetDataParams['filterLogic'])
+        && strpos(\REDCap::$lastGetDataParams['filterLogic'], "'2024-12-31'") !== false);
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '30-12-2024']]);
+    check('ajax: another D-M-Y date is free', isset($r['used']) && $r['used'] === false);
+    $r = ajaxCall($m, ['field' => 'vtime', 'values' => ['vtime' => '12-31-2024 14:30']]);
+    check('ajax: an M-D-Y datetime finds the stored duplicate', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'vsec', 'values' => ['vsec' => '31-12-2024 14:30:05']]);
+    check('ajax: a datetime with seconds finds the stored duplicate', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'kit', 'values' => ['kit' => 'K-1', 'kdate' => '01-05-2024']]);
+    check('ajax: a composite "with" date is rewritten too', isset($r['used']) && $r['used'] === true);
+    $r = ajaxCall($m, ['field' => 'vdate', 'values' => ['vdate' => '31-12-20']]);
+    check('ajax: a half-typed date is compared as typed (free, no error)',
+        isset($r['used']) && $r['used'] === false);
 
     // Branch selectors on the live endpoint and in the scan's unique collector
     // follow each branch's own "caseSensitive". The saved record says "NORTH".
@@ -2342,8 +2414,8 @@ namespace {
     //
     // THE BUCKET NUMBER IS DOUBLED and carries the tier in its low bit, because
     // sessioned and sessionless traffic are counted separately - see
-    // surveyRateLimited(). CLI has no session, so this is the even slot.
-    $anonSlot = ((int) floor(time() / 60)) * 2;
+    // surveyRateLimited(). CLI has no session, so this is tier 0 (RATE_TIERS).
+    $anonSlot = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS;
     $m->rateBuckets['149|' . $anonSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_PROJECT_ANON;
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);       // anon: no user
@@ -2486,7 +2558,7 @@ namespace {
     @session_start();
     if (session_status() === PHP_SESSION_ACTIVE) {
         $slotOf = function ($sessioned) {
-            return ((int) floor(time() / 60)) * 2 + ($sessioned ? 1 : 0);
+            return ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + ($sessioned ? 1 : 0);
         };
         $call = function ($m, $tok) {
             return $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => $tok]],

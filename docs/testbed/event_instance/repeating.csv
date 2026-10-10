@@ -1,0 +1,6 @@
+event_name,form_name
+baseline_arm_1,xr_specimen
+visit_1_arm_1,xr_specimen
+visit_1_arm_1,xr_result
+visit_2_arm_1,xr_result
+unscheduled_arm_1,

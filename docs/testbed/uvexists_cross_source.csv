@@ -1,0 +1,7 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+record_id,lab,,text,Lab record ID,,,,,,,,,,,,,
+lab_spec,lab,,text,Specimen ID,,,,,,,,,,,,,
+lab_site,lab,,dropdown,Site,"1, North | 2, South",,,,,,,,,,,,
+lab_date,lab,,text,Collection date,,,date_ymd,,,,,,,,,,
+lab_secret,lab,,text,Internal code (not listed for the asking project),,,,,,,,,,,,,
+lab_donor,lab,,text,Donor name,,,,,,y,,,,,,,

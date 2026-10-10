@@ -1,0 +1,3 @@
+record_id,lab_spec,lab_site,lab_date,lab_secret,lab_donor,lab_complete
+L-1,LS-001,1,2026-02-01,K-1,Ada Test,2
+L-2,LS-002,2,2026-02-03,K-2,Ben Test,2
