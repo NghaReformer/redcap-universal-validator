@@ -1554,6 +1554,11 @@ namespace {
         $mig->redcap_module_system_enable('1.9.1');
         check('migrate: enabling the module with the switch already on also installs',
             $creates($mig) > 0);
+        // Installing a new version of the module migrates too, so a schema
+        // change does not wait for a settings save.
+        $mig->sql = [];
+        $mig->redcap_module_system_change_version('2.2.0', '2.1.0');
+        check('migrate: a new version of the module migrates the schema', $creates($mig) > 0);
 
         // A migration that throws must not fail the SAVE. An administrator
         // ticking a box would otherwise be told their settings could not be

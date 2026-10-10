@@ -5245,6 +5245,18 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
+     * A new version of the module was installed. A schema change it carries
+     * (version 3 adds finding.as_of) is applied now, not at the next settings
+     * save: until then health() reports the old version and the durable scan
+     * stays disabled.
+     */
+    public function redcap_module_system_change_version($version = null, $old_version = null)
+    {
+        Scan\Schema::ensureRateBucket($this);
+        $this->installScanSchema();
+    }
+
+    /**
      * Migrate, but only when the installation has asked for the feature.
      *
      * Returns nothing and throws nothing: this runs inside a framework hook

@@ -22,10 +22,12 @@ use INSPIRE\UniversalValidator\Scan\SourceFence;
  *
  * TRUST. A stamp is trusted only when the newest row that logged the field
  * logged the value saved now. Every other answer says why it is not a stamp
- * (state), and the caller decides: the post-save audit knows a value the log
- * does not show yet was written by the save it is auditing, a scan reports
- * the rule as not checked. A line that appears twice in one row (a notes
- * value holding a line of the same shape) is ambiguous and never a stamp.
+ * (state), and the caller reports the part judged against that day as not
+ * checked, after a save and in a scan alike: REDCap writes a save's log row
+ * before it calls redcap_save_record, so a value the log does not show has a
+ * gap in its history. A line that appears twice in one row, a value that
+ * spans lines, and every field of a row with a line of no known shape are
+ * ambiguous and never a stamp (parseDataValues).
  *
  * PHP 7.4.
  */
@@ -187,8 +189,15 @@ final class ValueStamps
      * data_values as instance => field => value. A field logged twice in one
      * row maps to null (ambiguous), and so does a value that spans lines (a
      * notes field): its later lines belong to it and are never read as
-     * entries, up to the line that ends with ',. Lines of another shape (a
-     * checkbox code, a file, a DAG change) are skipped.
+     * entries, up to the line that ends with ',. A checkbox line and a blank
+     * line are skipped. Any other line means a value was split where this
+     * parse did not expect (a line of a notes value that ends with ',), so
+     * every field of the row maps to null rather than to a value read from
+     * the wrong place.
+     *
+     * A notes value written to look like entries on every line is still read
+     * as entries: data_values does not mark where a value ends. Doing that
+     * takes an edit of the notes field by a user who may edit the date itself.
      */
     public static function parseDataValues($text)
     {
@@ -196,6 +205,7 @@ final class ValueStamps
         if (!is_string($text) || $text === '') return $out;
         $instance = 1;
         $open = false;   // inside a value that spans lines
+        $stray = false;  // a line of no known shape
         foreach (preg_split('/\r?\n/', $text) as $i => $line) {
             if ($open) {
                 if (preg_match("/',$/D", $line)) $open = false;
@@ -212,7 +222,13 @@ final class ValueStamps
             if (preg_match("/^([a-z][a-z0-9_]*) = '/", $line, $m)) {
                 $out[$instance][$m[1]] = null;
                 $open = true;
+                continue;
             }
+            if ($line === '' || preg_match('/^[a-z][a-z0-9_]*\([^)]*\) = (?:checked|unchecked),?$/D', $line)) continue;
+            $stray = true;
+        }
+        if ($stray) {
+            foreach ($out as $inst => $fields) foreach ($fields as $f => $v) $out[$inst][$f] = null;
         }
         return $out;
     }

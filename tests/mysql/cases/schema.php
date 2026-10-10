@@ -209,7 +209,12 @@ check('upgrade: and it reports itself at version 1', Schema::currentVersion($ca)
 
 $r = Schema::migrate($ca);
 check('upgrade: an installation at version 1 migrates rather than sitting still',
-    $r['ok'] === true && $r['from'] === 1 && $r['to'] === 2);
+    $r['ok'] === true && $r['from'] === 1 && $r['to'] === Schema::VERSION);
+check('upgrade: and every later version is applied on the way, version 3 included',
+    Schema::currentVersion($ca) === Schema::VERSION
+    && (int) $ca->query('SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = "' . Schema::table('finding') . '"
+          AND column_name = "as_of"')[0][0] === 1);
 
 // The four tables gain the column, and the rows that predate it go: their
 // identities were computed by a naming pass that has since changed, so they can

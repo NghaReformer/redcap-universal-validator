@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 2;
+    const VERSION = 3;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -56,6 +56,12 @@ final class Schema
     // NOT EXISTS with a changed column list against an existing populated table
     // succeeds, emits one warning, and changes nothing - so a schema change
     // written that way reaches only installations that never had the table.
+    //
+    // AND VERSION 2 IS FROZEN TOO, now that 2.1.0 release candidates installed
+    // it. A column added to statementsV2() reaches no installation already at
+    // version 2, for the same reason version 1 had to freeze: migrate() does
+    // nothing once the version row is present and the tables exist. Each later
+    // change is a version of its own (statementsV3 onward).
 
     /**
      * Table prefix. One constant, because the plan requires the installation's
@@ -133,6 +139,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 3) return self::statementsV3();
         if ((int) $version === 2) return self::statementsV2();
         if ((int) $version !== 1) return [];
 
@@ -540,11 +547,6 @@ final class Schema
         $f = $T('finding');
         $col($f, 'project_id',
             'ALTER TABLE ' . $f . ' ADD COLUMN project_id INT UNSIGNED NOT NULL DEFAULT 0 AFTER finding_id');
-        // The day a @UVWINDOW verdict was judged against (the day the value
-        // was saved), for the report's "Judged against" sentence. NULL for
-        // every other finding.
-        $col($f, 'as_of',
-            'ALTER TABLE ' . $f . ' ADD COLUMN as_of VARCHAR(16) NULL');
 
         // Every key rebuilt with project_id LEADING, so a project-scoped query
         // can use it. Dropped and added in one statement each, so the table is
@@ -636,6 +638,23 @@ final class Schema
             ADD UNIQUE KEY uq_dim_v2 (project_id, generation_id, kind, dim_key)');
 
         return $out;
+    }
+
+    /**
+     * Version 3: the day a @UVWINDOW verdict was judged against (the day the
+     * value was saved) on each finding, for the report's "Judged against"
+     * sentence. NULL for every other finding. A descriptor like version 2's,
+     * so an interrupted migration resumes.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV3()
+    {
+        $f = self::table('finding');
+        return [
+            ['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN as_of VARCHAR(16) NULL',
+             'skipIf' => ['column', $f, 'as_of']],
+        ];
     }
 
     /**
@@ -831,6 +850,11 @@ final class Schema
                             'why' => 'schema version 2 did not verify after it was applied: ' . $bad
                                    . '. The version is NOT recorded and the scan stays disabled.'];
                 }
+            }
+            if ($v === 3 && !self::alreadyApplied($module, ['column', self::table('finding'), 'as_of'])) {
+                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                        'why' => 'schema version 3 did not verify after it was applied: the finding table '
+                               . 'has no as_of column. The version is NOT recorded and the scan stays disabled.'];
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

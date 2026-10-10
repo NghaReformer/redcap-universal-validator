@@ -79,7 +79,12 @@ check('parse: a value that spans lines is one entry, and its lines are not read 
     === [1 => ['visit' => '2026-10-01', 'notes' => null, 'wt' => '1']]);
 check('parse: a value that spans lines to the end of the row', ValueStamps::parseDataValues("notes = 'a\nb = 'c'")
     === [1 => ['notes' => null]]);
-check('parse: an instance line only counts first', ValueStamps::parseDataValues("visit = '2026-10-01',\n[instance = 3],\nwt = '1'")
+check('parse: an instance line past the first is a stray line, so the row is ambiguous',
+    ValueStamps::parseDataValues("visit = '2026-10-01',\n[instance = 3],\nwt = '1'") === [1 => ['visit' => null, 'wt' => null]]);
+check('parse: a notes line ending in a quote hides where a value ends: the row is ambiguous',
+    ValueStamps::parseDataValues("notes = 'He said 'hi'\nw_past = '2026-10-09'\nend',\nwt = '1'")
+    === [1 => ['notes' => null, 'w_past' => null, 'wt' => null]]);
+check('parse: a blank line is not a stray line', ValueStamps::parseDataValues("visit = '2026-10-01',\n\nwt = '1'")
     === [1 => ['visit' => '2026-10-01', 'wt' => '1']]);
 check('parse: nothing', ValueStamps::parseDataValues('') === [] && ValueStamps::parseDataValues(null) === []);
 

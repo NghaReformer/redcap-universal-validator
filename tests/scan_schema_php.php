@@ -57,6 +57,8 @@ namespace {
         public $unattributed = 0;
         /** Model a paged DELETE that never removes anything, so verifyV2 has work to do. */
         public $stubbornRows = false;
+        /** SQL fragment of an ALTER that succeeds and changes nothing, or null. */
+        public $inertAlter = null;
 
         /**
          * Model the DDL rather than merely record it.
@@ -68,6 +70,7 @@ namespace {
          * it is given, and the resume and idempotence scenarios become real.
          */
         private function applyDdl($sql) {
+            if ($this->inertAlter !== null && strpos($sql, $this->inertAlter) !== false) return;
             if (preg_match('/^CREATE TABLE IF NOT EXISTS (\w+)/', $sql, $m)) {
                 if ($this->present !== null && !in_array($m[1], $this->present, true)) {
                     $this->present[] = $m[1];
@@ -283,6 +286,36 @@ namespace INSPIRE\UniversalValidator\Scan {
     }
 
     /* =====================================================================
+     * VERSION 3  reaches an installation already at version 2
+     * ===================================================================== */
+    {
+        check('v3: the build is at version 3', Schema::VERSION === 3);
+        check('v3: version 2 no longer carries as_of', strpos(implode(' ',
+            array_map(function ($i) { return $i['sql']; }, Schema::statements(2))), 'as_of') === false);
+        $m = new \FakeModule();
+        $m->version = '2';
+        $r = Schema::migrate($m);
+        check('v3: an installation at version 2 applies the as_of column',
+            $r['ok'] === true && $r['from'] === 2 && $r['to'] === 3 && $r['applied'] === 1
+            && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
+        check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
+            return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        $m = new \FakeModule();
+        $m->version = '2';
+        $m->columns[] = 'uv_finding.as_of';
+        $r = Schema::migrate($m);
+        check('v3: a column already there is not added twice', $r['ok'] === true && $r['applied'] === 0
+            && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
+        $m = new \FakeModule();
+        $m->version = '2';
+        $m->inertAlter = 'ADD COLUMN as_of';
+        $r = Schema::migrate($m);
+        check('v3: an ALTER that did not take is not recorded', $r['ok'] === false
+            && strpos((string) $r['why'], 'version 3 did not verify') !== false
+            && !array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+    }
+
+    /* =====================================================================
      * MIGRATE  fails closed, and never records work it did not finish
      * ===================================================================== */
     {
@@ -430,9 +463,9 @@ namespace INSPIRE\UniversalValidator\Scan {
         $deletes = 0;
         $r = Schema::migrate($m);
         check('v2: an installation at version 1 does NOT sit still',
-            $r['ok'] === true && $r['from'] === 1 && $r['to'] === 2);
-        check('v2: and applies only version 2, not version 1 again',
-            $r['applied'] === count(Schema::statements(2)));
+            $r['ok'] === true && $r['from'] === 1 && $r['to'] === Schema::VERSION);
+        check('v2: and applies only the versions after 1, not version 1 again',
+            $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -477,7 +510,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('v2: a migration interrupted part-way resumes rather than failing',
             $rh['ok'] === true);
         check('v2: and skips exactly the statements already applied',
-            $rh['applied'] === count(Schema::statements(2)) - 3);
+            $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with

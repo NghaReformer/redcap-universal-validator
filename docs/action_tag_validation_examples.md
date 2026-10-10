@@ -1343,11 +1343,13 @@ time of day is kept.
 `today` is the server's date and goes on a date field; `now` is the server's
 time and goes on a datetime field. A fixed date is written Y-M-D, with a time
 (`2026-01-01 08:00`) when the field holds dates with a time. A window counted
-from `now` gets the same small margin as `notFuture` at both ends, and is judged
-again when the form is saved. A window that ends at `now` (`[-2,0]`) accepts a
-time filled in with REDCap's Now button. `notPast`, or a window that starts at
-`now` (`[0,24]`), refuses such a time once the form is saved more than about 2
-minutes after the click. A period counted from `now` is the period holding the
+from `now` gets the same small margin as `notFuture` at both ends. A rule that
+blocks a save (`blockSave` confirm or hard) is judged again when the form is
+saved. A window that ends at `now` (`[-2,0]`) accepts a time filled in with
+REDCap's Now button. `notPast`, or a window that starts at `now` (`[0,24]`),
+refuses such a time once the form is saved more than about 2 minutes after the
+click, on the form when the rule blocks, and in the post-save audit when it is
+saved more than 12 minutes after. A period counted from `now` is the period holding the
 server's date, with no margin, as a period is whole calendar days.
 
 ### Level 5 — calendar periods
@@ -1424,8 +1426,9 @@ are judged against the day the value was saved, not the day someone looks at it.
   the record ago), that part of the rule is reported as not checked for the
   value, with the reason. It is never judged against today instead.
 - A verdict that no save day can change needs no log read: with `notFuture`, a
-  date after today; with `notPast` and no window counted from today, a date from
-  today on. Every other value of these rules costs one read of the record's log,
+  date after today; with `notPast` as the only part judged against a day (no
+  `notFuture`, no window counted from today), a date from today on, or a date
+  and time from now on. Every other value of these rules costs one read of the record's log,
   after each save and in the scan.
 - `notFuture` uses the same day where the log shows it, so a scan still finds a
   date that was in the future when it was saved. Where the day is not known it
@@ -1526,7 +1529,8 @@ warning.
   [visit_date_bl]." or "The date must be in last month.". Where the log does not
   show when a value was saved, `notFuture` is judged against the day the scan
   runs. Each part of a durable scan reads the clock when that part runs, and
-  stores the day each finding was judged against (`as_of`) for its report.
+  stores with each finding the day it was judged against (`as_of`); the durable
+  scan's report, which will show it, has not shipped yet.
 - **Configure dialog:** none. `@UVWINDOW` exists only as an action tag.
 
 ### `@UVWINDOW` JSON keys

@@ -124,7 +124,7 @@ Each field shows a visible error and checks nothing:
 
 | # | Action | Expect |
 |---|---|---|
-| H1 | Set the computer clock 5 minutes fast, reload, click REDCap's Now button beside `uw_now_hard`, press Save | Green OK, and the save goes through: the page allows the computer's lead over the server, up to 10 minutes. The module log then has a `future` entry for `uw_now_hard`, since the audit allows 120 seconds only. Restore the clock after |
+| H1 | Set the computer clock 5 minutes fast, reload, click REDCap's Now button beside `uw_now_hard`, press Save | Green OK, and the save goes through: the page allows the computer's lead over the server, up to 10 minutes. The module log has no `future` entry for `uw_now_hard`, because after saving the audit allows 12 minutes either side of the save. Restore the clock after |
 | H2 | `uw_now_hard` = the server's time plus 10 minutes, press Save | "This date and time is in the future."; save blocked |
 | H3 | `uw_anchor` = 2026-03-01, `uw_dmy` = 06-03-2026, `uw_when_dmy` = 2026-03-12 | Red, window late: the condition reads 06-03-2026 as 2026-03-06, as REDCap stores it. Before this release the rule stayed off |
 | H4 | `uw_dmy` = 31-12-2025 | The `uw_when_dmy` message disappears |
@@ -151,9 +151,9 @@ fields saved, such as a new record created for this section.
 | I7 | `uw_notpast` (D-M-Y) = yesterday, press Save | "This date is before today (DD-MM-YYYY)."; save blocked. Today: OK |
 | I8 | Click REDCap's Now button beside `uw_now_win`; then type the server's time minus 3 hours | OK; then red, window early |
 | I9 | `uw_fixed` = 2025-12-31, then 2026-01-01 | Red "This date must be on or after 2026-01-01." with "(at least 0 days from 2026-01-01)"; then OK |
-| I10 | Run the Validation scan | `uw_lastmonth` from I4 is listed as "Date outside allowed window", and the "What is wrong" column reads "The date is later than its allowed window. The date must be in last month. Judged against <today>, when this value was saved." `uw_today` from I2 is not listed |
+| I10 | Run the Validation scan | The run finishes, and its counts include a window finding on `uv_window_test` for `uw_lastmonth` from I4 and none for `uw_today` from I2. The per-finding report, with the "Judged against" line, has not shipped; `tests/window_module_php.php` checks its wording |
 | I11 | **[repeating instrument, optional]** Make `uv_window_test` repeating, save `uw_lastmonth` = today's date on instance 2, open the module log | The entry for instance 2 has `as_of` = today and no "not known" entry: the log's `[instance = 2]` line was read |
-| I12 | Save `uw_notes` with two lines, the second exactly `uw_today = '2020-01-01'`. Run the Validation scan, and open REDCap's Logging page for that save | `uw_today` keeps the verdict and the day it had before: the line inside the notes value is not read as a save of `uw_today`. Note how the Logging page shows the two lines |
+| I12 | Save `uw_notes` with two lines: `first line`, then exactly `uw_today = '<the value uw_today holds>'`. Open the module log, and REDCap's Logging page for that save. Then save `uw_notes` again with the first line `He said 'hi',` | After the first save there is no "the day this value was saved is not known" entry for `uw_today` and no new window entry, since the line inside the notes value is not read as a save of `uw_today`. On the second save, note whether the Logging page shows the quote in `'hi'` escaped. If it does not, the module log may report `uw_today` as not checked after that save, never as a finding |
 
 ## Sign-off
 
