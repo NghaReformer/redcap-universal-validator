@@ -492,13 +492,31 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('health M11: rows naming other tables are not ours',
             Schema::health($m6e)['ok'] === false
             && count(Schema::health($m6e)['missing']) === count(Schema::tables()));
-        // The server matched the names with its own collation, as the per-table
-        // COUNT(*) did; a name it hands back in another case is still the table.
+        // R8-2: the IN list is matched with the information_schema collation,
+        // which ignores case on MySQL 5.7 and MariaDB. On a server with
+        // lower_case_table_names=0, a table that exists only as UV_FINDING
+        // comes back for uv_finding, and every statement the module sends to
+        // uv_finding fails there. That table is missing, not present.
         $m6f = new \FakeModule();
         $m6f->version = Schema::VERSION;
         $m6f->upperNames = true;
-        check('health M11: a name the server stores in another case is still present',
-            Schema::health($m6f)['ok'] === true);
+        $h6f = Schema::health($m6f);
+        check('health R8-2: a table the server holds only in another case is missing, not present',
+            $h6f['ok'] === false && $h6f['missing'] === Schema::tables());
+        $one = Schema::tables();
+        $odd = array_shift($one);
+        $m6g = new \FakeModule();
+        $m6g->version = Schema::VERSION;
+        $m6g->tableListAnswer = array_merge([[strtoupper($odd)]], array_map(function ($t) { return [$t]; }, $one));
+        $h6g = Schema::health($m6g);
+        check('health R8-2: one table in another case is named missing, the rest are present',
+            $h6g['ok'] === false && $h6g['missing'] === [$odd]);
+        // Both spellings on a case-keeping server: ours is there, and is used.
+        $m6h = new \FakeModule();
+        $m6h->version = Schema::VERSION;
+        $m6h->tableListAnswer = array_merge([[strtoupper($odd)], [$odd]], array_map(function ($t) { return [$t]; }, $one));
+        check('health R8-2: a table present as we name it is present beside one in another case',
+            Schema::health($m6h)['ok'] === true);
     }
 
     /* =====================================================================

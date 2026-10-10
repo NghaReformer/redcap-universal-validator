@@ -905,10 +905,17 @@ final class Schema
      * our names as underscores rather than as wildcards. The names are our own
      * allowlist (tables()), bound, never interpolated.
      *
-     * The names come back as the server stores them, which on a case-folding
-     * installation need not be how we spelled them; the server matched them
-     * with its own collation, as the per-table COUNT(*) this replaces did, so
-     * they are compared here without case.
+     * NAMES ARE COMPARED BYTE FOR BYTE (wave 8 review R8-2). The IN list is
+     * matched with the information_schema collation, which ignores case on
+     * MySQL 5.7 and MariaDB, so on a server with lower_case_table_names=0 a
+     * table that exists only as UV_FINDING comes back for uv_finding - and
+     * every statement the module sends names uv_finding and fails there with
+     * "doesn't exist". This read used to fold case and called that table
+     * present, so health() answered ok over a schema the scan cannot use; the
+     * per-table read it replaced did not. A row counts only when it is the
+     * name we use. A server that folds case (lower_case_table_names=1) stores
+     * our names lowercased, which is how tables() spells them, and one that
+     * keeps case (=2) stores them as we created them.
      *
      * @return array<string,bool>|null
      */
@@ -933,12 +940,11 @@ final class Schema
         } else {
             return null;
         }
-        $ours = [];
-        foreach ($names as $t) $ours[strtolower($t)] = $t;
+        $ours = array_fill_keys($names, true);
         $present = [];
         foreach ($rows as $r) {
-            $n = (is_array($r) && isset($r[0])) ? strtolower((string) $r[0]) : '';
-            if (isset($ours[$n])) $present[$ours[$n]] = true;
+            $n = (is_array($r) && isset($r[0])) ? (string) $r[0] : '';
+            if (isset($ours[$n])) $present[$n] = true;
         }
         return $present;
     }
