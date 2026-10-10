@@ -9,13 +9,13 @@ real rights, real widgets (radio reset link, autocomplete, date picker) and the
 module log.
 
 Target: chpr-redcap.org pid 149 (longitudinal, repeating, seed records XE-1 to
-XE-4). Fixture: [`uvexists_test_fields.csv`](uvexists_test_fields.csv), 31
+XE-4). Fixture: [`uvexists_test_fields.csv`](uvexists_test_fields.csv), 32
 fields on one new instrument `uv_exists_test`: 19 rule fields carry a valid
-`@UVEXISTS` (one of them with `@UVUNIQUE` too), 2 carry `@UVUNIQUE` only, 7
+`@UVEXISTS` (one of them with `@UVUNIQUE` too), 3 carry `@UVUNIQUE` only, 7
 `ux_bad_*` fields carry a broken `@UVEXISTS`, and `ux_type`, `ux_gate` and
 `ux_site_sel` carry no tag. Before this sheet was written, every annotation
 and every lookup below was run offline through the module against the
-dictionary and the seed data in `event_instance/`: the 21 rule fields
+dictionary and the seed data in `event_instance/`: the 22 rule fields
 configure, the 7 `ux_bad_*` fields show the errors in section F, and each
 "Expect" below is what the module answered.
 
@@ -25,8 +25,8 @@ configure, the 7 `ux_bad_*` fields show the errors in section F, and each
 
 1. Deploy the release that contains `@UVEXISTS` and confirm the version in
    Control Center.
-2. Append, never replace. Download the current dictionary, append the 31
-   rows of the CSV, upload. The diff must report one new instrument and 31 new
+2. Append, never replace. Download the current dictionary, append the 32
+   rows of the CSV, upload. The diff must report one new instrument and 32 new
    fields, and nothing else.
 3. Designate `uv_exists_test` on `event_1_arm_1` (event 351).
 4. The steps below use these seed values. Specimen IDs (`xs_id`, repeating `xr_specimen`)
@@ -216,9 +216,10 @@ next step.
 | J3 | On XE-1, `ux_rec` = XE-1 | Red: the record being edited does not find itself |
 | J4 | `ux_weight` = 70.0, then 070, then 71 | Found (record XE-1) twice, then red: numbers compare by value, and every enrolment weight is 70 |
 | J5 | `ux_weight_txt` = 70.00 | Found (record XE-1): the searched field holds numbers, so a plain Text field compares by value too |
-| J6 | On XE-1 save `ux_uq` = UQ-1 and `ux_uq_cs` = UQ-1. Open XE-2, type uq-1 in both, leave each field | `ux_uq`: "already recorded (record XE-1)", and Save is blocked (hard). `ux_uq_cs`: not used before |
+| J6 | On XE-1 save `ux_uq` = UQ-1 and `ux_uq_cs` = UQ-1. Open XE-2, type uq-1 in both, leave each field | `ux_uq`: "already recorded (record XE-1)", and Save is blocked (hard). `ux_uq_cs`: not used before. The `ux_uq` answer comes from REDCap's filtered read with `lower()`: if it says not used before, that REDCap does not honour `lower()` in `filterLogic`; record the version |
 | J7 | Leave XE-2 without saving. Run the Validation scan with `ux_uq` = uq-1 saved on XE-2 (clear `ux_uq_cs` first, or save it too) | Two "Duplicate value" rows for `ux_uq` (XE-1 and XE-2); none for `ux_uq_cs` |
-| J8 | On XE-2, `ux_spec` = S-998 and leave the field (red). In a second tab, register S-998 as a specimen of XE-1 and save. Back in the first tab press Save | Save asks again instead of trusting the red answer: the field turns green and the save goes through |
+| J8 | On XE-2, `ux_spec` = S-998 and leave the field (red). In a second tab, register S-998 as a specimen of XE-1 and save. Back in the first tab, at least 30 seconds after the red answer, press Save | That click asks again instead of trusting the red answer: an alert says the field is still being checked, then the field turns green. The next Save goes through |
+| J9 | On XE-1 save `ux_uq_num` = 7. Open XE-2, type 007 and leave the field | "already recorded (record XE-1)": REDCap's filtered read compares the number by value. If it says not used before, record the REDCap version |
 
 ## Sign-off
 

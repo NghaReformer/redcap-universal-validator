@@ -43,7 +43,8 @@ id only when it is inside their own Data Access Group.</p>
 <code>sp-1</code> are duplicates. Add <code>"caseSensitive":true</code> when case tells two
 values apart. In a field that holds numbers (an integer or number Text field, or a slider)
 values compare by value, so <code>007</code> and <code>7</code> are duplicates. On a plain
-Text field they stay text. <code>@UVEXISTS</code> compares the same way.</p>
+Text field they stay text. <code>@UVEXISTS</code> compares the same way. A saved Missing
+Data Code is never a duplicate: ten records marked <code>UNK</code> share no value.</p>
 <p>Up to 2.1.0-rc.2 the comparison was exact. A project that already holds both spellings
 of a value gets duplicate findings after the upgrade.</p>
 
@@ -56,7 +57,9 @@ holding the survey link that a specific value is in the study — one value at a
 <ul>
 <li><strong>Off by default.</strong></li>
 <li>Answered as a bare yes/no, never a record id.</li>
-<li>Rate-limited.</li>
+<li>Rate-limited. A value the filtered read cannot settle needs a read of the whole
+field, which a survey makes only within a read budget it shares with <code>@UVEXISTS</code>
+(60 a minute per project); past it the answer is "could not check", which never blocks.</li>
 <li><strong>Refused outright on any field REDCap flags as an Identifier</strong> —
 there it would let a stranger test whether a named person is enrolled, so the module
 makes that a configuration error rather than trusting a warning to be read.</li>

@@ -1103,8 +1103,12 @@ Respondents always receive a **boolean** — never a record id.
   On a plain Text field they stay text, so `007` and `7` differ. Dropdown and radio
   values compare by code. `@UVEXISTS` compares the same way, so the two tags agree when
   one field carries both.
-- **Save asks again.** A value the page found already used is asked once more when
-  Save is clicked, so a record changed since then no longer blocks the save.
+- **Save asks again.** A value the page found already used 30 seconds or more
+  before Save is clicked is asked once more, so a record changed since then no
+  longer blocks the save. That click waits for the answer; the next one is decided
+  by it. When the server cannot answer, the earlier answer stands.
+- **Missing Data Codes are never duplicates.** Ten records marked `UNK` share no
+  value, and `unk` typed in one record is no duplicate of a saved `UNK`.
 - **The race is audited, not denied.** Two near-simultaneous saves can both pass the
   live check. The post-save audit re-checks the saved value against every other record
   and logs a collision (`type: unique`, `reason: duplicate-value`) — review the module
@@ -1561,7 +1565,11 @@ stay fields of this record. Three switches must all be on:
 - **Record IDs.** `@UVEXISTS=record` never finds the record being edited. A
   record ID typed in another letter case (`xe-7` for `XE-7`) is found after one
   extra read of the project's record IDs, within the survey read budget on a
-  survey. With `"caseSensitive":true` only the exact ID is found.
+  survey. With `"caseSensitive":true` only the exact ID is found. When the
+  record-ID field is validated as an integer or number, IDs compare by value:
+  `007` finds record `7`.
+- **Missing Data Codes.** A saved code is no value: `unk` typed here does not
+  find `UNK` saved in the searched field.
 - **The record shown to staff.** When several entries match, the one in the
   user's own Data Access Group comes first, so it can be named, then the one
   spelled exactly as typed.

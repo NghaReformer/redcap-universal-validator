@@ -141,7 +141,14 @@ namespace {
             return $out;
         }
         private static function matchesFilter(array $node, $logic) {
-            preg_match_all("/\\[([a-z0-9_]+)\\] = '([^']*)'/", $logic, $mm, PREG_SET_ORDER);
+            // The three clause forms the module writes, as REDCap reads them.
+            preg_match_all("/(lower\\()?\\[([a-z0-9_]+)\\]\\)? = (?:'([^']*)'|(-?[0-9.]+))/", $logic, $mm, PREG_SET_ORDER);
+            $match = (function ($row, $c) {
+                    if (!isset($row[$c[2]]) || is_array($row[$c[2]])) return false;
+                    $s = (string) $row[$c[2]];
+                    if (isset($c[4]) && $c[4] !== '') return is_numeric(trim($s)) && (float) trim($s) == (float) $c[4];
+                    return $c[1] !== '' ? strtolower($s) === $c[3] : $s === $c[3];
+                });
             $rows = [];
             foreach ($node as $k => $v) {
                 if ($k === 'repeat_instances') {
@@ -154,7 +161,7 @@ namespace {
             }
             foreach ($rows as $row) {
                 $ok = true;
-                foreach ($mm as $c) if (!isset($row[$c[1]]) || (string) $row[$c[1]] !== $c[2]) { $ok = false; break; }
+                foreach ($mm as $c) if (!$match($row, $c)) { $ok = false; break; }
                 if ($ok) return true;
             }
             return false;
@@ -394,7 +401,27 @@ namespace {
     $m = mod();
     $r = ask($m, 'res_spec', ['res_spec' => 'sp-2']);
     check('letter case is ignored by default', $r === ['state' => 'found', 'record' => '2']);
-    check('...the exact narrowed read missed, so the full read decided', count(\REDCap::$calls) === 2 && fullReads() === 1);
+    check('...the narrowed read compares letters as the rule does, so it decided alone',
+        count(\REDCap::$calls) === 1 && (\REDCap::$calls[0]['filterLogic'] ?? null) === "lower([specimen_id]) = 'sp-2'");
+    $m = mod();
+    $r = ask($m, 'res_spec', ['res_spec' => 'sp-404']);
+    check('...and its miss is confirmed by a full read', ($r['state'] ?? null) === 'not-found' && count(\REDCap::$calls) === 2 && fullReads() === 1);
+    // Record IDs that hold numbers compare by value.
+    $ND = $DICT; $ND['record_id'] = f('enrol', '', 'integer');
+    check('record IDs: "002" finds record 2 when the record ID is an integer',
+        (ask(mod('nurse', null, $ND), 'res_rec', ['res_rec' => '002'])['state'] ?? null) === 'found');
+    check('record IDs: ...and not when it is text', (ask(mod(), 'res_rec', ['res_rec' => '002'])['state'] ?? null) === 'not-found');
+    check('record IDs: an exact rule finds "002" for record 2 too (a number has no letter case)',
+        (ask(mod('nurse', null, $ND), 'res_rec_cs', ['res_rec_cs' => '002'])['state'] ?? null) === 'found');
+    $SN = $DATA; $SN['1'][351]['res_rec'] = '003';
+    $m = mod('nurse', null, $ND); \REDCap::$data = $SN;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    check('record IDs: the scan finds "003" for record 3 when the record ID is an integer',
+        !array_filter($res['violations'], function ($v) { return $v['field'] === 'res_rec'; }));
+    $m = mod(); \REDCap::$data = $SN;
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    check('record IDs: ...and reports it when the record ID is text',
+        count(array_filter($res['violations'], function ($v) { return $v['field'] === 'res_rec'; })) === 1);
     $m = mod();
     $r = ask($m, 'res_spec', ['res_spec' => 'SP-404']);
     check('not found', $r === ['state' => 'not-found', 'record' => null]);
@@ -710,7 +737,7 @@ namespace {
     $ip = new \ReflectionProperty($m, 'existsIndexes'); $ip->setAccessible(true);
     $siteIdx = null;
     foreach ($ip->getValue($m) as $k => $idx) if (is_array($idx) && strpos($k, '"site_code"') !== false) $siteIdx = $idx;
-    $bKey = bin2hex('=b') . '.';
+    $bKey = '2:=b';
     check('index: 58 records sharing a value cost one entry per (group, event)', $siteIdx !== null && count($siteIdx[$bKey] ?? []) === 2);
     check('index: the key names the project', (bool) array_filter(array_keys($ip->getValue($m)), function ($k) { return strpos($k, '[149,') === 0; }));
 
@@ -942,6 +969,38 @@ namespace {
     sort($dup);
     check('unique scan: letter case ignored by default, numbers by value, caseSensitive exact',
         $dup === ['1/res_uniq', '1/res_unum', '2/res_uniq', '2/res_unum']);
+    // The durable scan re-reads a group's values and compares them as the scan
+    // grouped them, or it blocks every group the comparison joined.
+    $sp = new \ReflectionMethod($m, 'scanPlan'); $sp->setAccessible(true);
+    $plan = $sp->invoke($m, 149);
+    check('scan plan: the fields whose unique rules all keep letter case', ($plan['uniqueExact'] ?? null) === ['res_ucs' => true]);
+    $cv = function ($v, $f) use ($plan) { return \INSPIRE\UniversalValidator\Scan\ScanService::comparableValue($v, $f, $plan); };
+    $tuple = function ($v, $f) use ($cv) { return \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::canonicalTuple([$cv($v, $f)]); };
+    check('durable verify: "U-1" and " u-1" plus a no-break space are one value', $tuple('U-1', 'res_uniq') === $tuple(" u-1\xC2\xA0", 'res_uniq'));
+    check('durable verify: "007" and "7" are one number', $tuple('007', 'res_unum') === $tuple('7', 'res_unum'));
+    check('durable verify: a caseSensitive field keeps "U-1" and "u-1" apart', $tuple('U-1', 'res_ucs') !== $tuple('u-1', 'res_ucs'));
+    check('durable verify: different values stay different', $tuple('U-1', 'res_uniq') !== $tuple('U-2', 'res_uniq'));
+    $locs = [['record' => '1', 'event_id' => 351, 'instance' => 1, 'field' => 'res_uniq'],
+             ['record' => '2', 'event_id' => 351, 'instance' => 1, 'field' => 'res_uniq'],
+             ['record' => '3', 'event_id' => 351, 'instance' => 1, 'field' => 'res_uniq']];
+    $got = ['ok' => true, 'data' => ['1' => [351 => ['res_uniq' => 'U-1']], '2' => [351 => ['res_uniq' => ' u-1']]]];
+    $rr = \INSPIRE\UniversalValidator\Scan\ScanService::rereadValues($got, $locs, $plan);
+    $lk = function ($l) { return \INSPIRE\UniversalValidator\Scan\UniqueFinalizer::locKey($l); };
+    check('durable reread: each value found comes back in the form it is compared in',
+        $rr['ok'] === true && count($rr['values']) === 2 && $rr['values'][$lk($locs[0])] === ['=u-1']
+        && $rr['values'][$lk($locs[1])] === ['=u-1']);
+    check('durable reread: a failed read is passed on',
+        \INSPIRE\UniversalValidator\Scan\ScanService::rereadValues(['ok' => false, 'why' => 'gone'], $locs, $plan)
+            === ['ok' => false, 'values' => [], 'why' => 'gone']);
+    // A field with one exact and one folding branch compares folded.
+    $MX = $DICT;
+    $MX['res_umix'] = f('result', '@UVUNIQUE={"when":"[home_site]=\'A\'","caseSensitive":true} @UVUNIQUE={"when":"[home_site]=\'B\'"}');
+    $m = mod('nurse', null, $MX);
+    $mixPlan = $sp->invoke($m, 149);
+    $mixRule = null;
+    foreach ($mixPlan['live'] as $r) if (($r['fields'] ?? null) === ['res_umix']) $mixRule = $r;
+    check('scan plan: a field with an exact branch and a folding one compares folded',
+        isset($mixRule['branches']) && count($mixRule['branches']) === 2 && ($mixPlan['uniqueExact'] ?? null) === ['res_ucs' => true]);
     $m = mod(); \REDCap::$data = $UQ;
     $m->redcap_save_record(149, '2', 'result', 351, null, null, null, 1);
     $by = []; foreach (findings($m) as $e) if ($e['type'] === 'unique') $by[$e['field']] = true;

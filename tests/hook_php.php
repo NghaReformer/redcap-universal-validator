@@ -125,6 +125,8 @@ namespace {
         public static $data = [];
         public static $dictionary = [];
         public static $dataThrows = false;
+        /** When set, a read of the whole project (no 'records') returns false, as a failed export does. */
+        public static $wholeReadFails = false;
         public static $lastGetDataParams = null;
         /** Every getData call, so a test can prove WHICH records each chunk asked for. */
         public static $getDataCalls = [];
@@ -132,6 +134,7 @@ namespace {
             self::$lastGetDataParams = $params;
             self::$getDataCalls[] = $params;
             if (self::$dataThrows) throw new \RuntimeException('simulated getData failure: value=SECRET123');
+            if (self::$wholeReadFails && empty($params['records'])) return false;
             // A chunk read names the records it wants and gets ONLY those. Until
             // 1.6.3 this returned the whole project regardless, so scanProject's
             // chunking was unfalsifiable: a caller that requested the wrong slice
@@ -146,20 +149,28 @@ namespace {
             return $out;
         }
         /**
-         * When set, a filterLogic of "[f] = 'v'" clauses joined by " and " keeps
-         * only records with an event row holding every value exactly, as a
-         * case-sensitive REDCap would. Off, the filter is ignored (a build that
-         * returns everything).
+         * When set, a filterLogic of clauses joined by " and " keeps only
+         * records with an event row holding every value, as REDCap reads the
+         * three forms the module writes: [f] = 'v' exactly (a case-sensitive
+         * REDCap), lower([f]) = 'v' with the stored value lowered, and
+         * [f] = 7 by value. Off, the filter is ignored (a build that returns
+         * everything).
          */
         public static $exactFilter = false;
         private static function filtered($logic) {
-            preg_match_all("/\\[(\\w+)\\] = '([^']*)'/", $logic, $m, PREG_SET_ORDER);
+            preg_match_all("/(lower\\()?\\[([a-z0-9_]+)\\]\\)? = (?:'([^']*)'|(-?[0-9.]+))/", $logic, $m, PREG_SET_ORDER);
+            $ok = (function ($row, $c) {
+                    if (!isset($row[$c[2]]) || is_array($row[$c[2]])) return false;
+                    $s = (string) $row[$c[2]];
+                    if (isset($c[4]) && $c[4] !== '') return is_numeric(trim($s)) && (float) trim($s) == (float) $c[4];
+                    return $c[1] !== '' ? strtolower($s) === $c[3] : $s === $c[3];
+                });
             $out = [];
             foreach (self::$data as $rec => $node) {
                 foreach ($node as $ev => $row) {
                     if (!is_array($row) || $ev === 'repeat_instances') continue;
                     $all = true;
-                    foreach ($m as $c) if (!isset($row[$c[1]]) || (string) $row[$c[1]] !== $c[2]) { $all = false; break; }
+                    foreach ($m as $c) if (!$ok($row, $c)) { $all = false; break; }
                     if ($all) { $out[$rec] = $node; break; }
                 }
             }
@@ -2379,8 +2390,7 @@ namespace {
     check('F4: live endpoint still finds the collision', isset($r['used']) && $r['used'] === true);
     check('F4: live endpoint narrows the query with a filterLogic on the candidate value',
         isset(\REDCap::$lastGetDataParams['filterLogic'])
-        && strpos(\REDCap::$lastGetDataParams['filterLogic'], 'pid_f') !== false
-        && strpos(\REDCap::$lastGetDataParams['filterLogic'], 'UNIQ-1') !== false);
+        && \REDCap::$lastGetDataParams['filterLogic'] === "lower([pid_f]) = 'uniq-1'");
     // a value that cannot be safely inlined (contains a quote) falls back to the full scan
     $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => "A'B"]]], 149);
     \REDCap::$lastGetDataParams = null;
@@ -2418,11 +2428,11 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('F4-DAG-01 control: a project-scoped check still narrows',
         isset(\REDCap::$getDataCalls[0]['filterLogic']));
-    // The filter compares exactly, so its miss on a value with letters, under a
-    // rule that ignores letter case, is confirmed by one full read...
-    check('lookup case: a narrowed miss on a value with letters is confirmed by a full read',
-        count(\REDCap::$getDataCalls) === 2 && !isset(\REDCap::$getDataCalls[1]['filterLogic']));
-    // ...which finds the duplicate typed in another case.
+    // The filter compares letters through lower(), as the rule does, so its
+    // miss on a value with letters is final...
+    check('lookup case: a narrowed miss on a value with letters is final',
+        count(\REDCap::$getDataCalls) === 1 && \REDCap::$getDataCalls[0]['filterLogic'] === "lower([pid_f]) = 'p-2'");
+    // ...and the filter finds the duplicate typed in another case.
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('lookup case: "p-1" is used when "P-1" is saved', ($r['used'] ?? null) === true && ($r['record'] ?? null) === '1');
@@ -2440,6 +2450,28 @@ namespace {
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('lookup case: "caseSensitive": true keeps "p-1" free next to "P-1"', ($r['used'] ?? null) === false);
+    check('lookup case: ...and its filter compares exactly', \REDCap::$getDataCalls[0]['filterLogic'] === "[pid_f] = 'p-1'");
+    // A field that holds numbers is filtered by value, unquoted, so "007" finds 7.
+    $numDict = $f4Dict;
+    $numDict['pid_f']['text_validation_type_or_show_slider_number'] = 'integer';
+    $m = newModule([], $numDict, ['1' => [351 => ['record_id' => '1', 'pid_f' => '7']]], 149);
+    \REDCap::$exactFilter = true;
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '007']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup numbers: the filter compares a number by value', \REDCap::$getDataCalls[0]['filterLogic'] === '[pid_f] = 7');
+    check('lookup numbers: "007" is used when 7 is saved, from the filter alone',
+        ($r['used'] ?? null) === true && count(\REDCap::$getDataCalls) === 1);
+    // A comma-decimal number is filtered as typed, so its miss is confirmed.
+    $comDict = $f4Dict;
+    $comDict['pid_f']['text_validation_type_or_show_slider_number'] = 'number_comma_decimal';
+    $m = newModule([], $comDict, ['1' => [351 => ['record_id' => '1', 'pid_f' => '15,0']]], 149);
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '15']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup numbers: a comma-decimal miss is confirmed by a full read, which finds "15,0" for 15',
+        ($r['used'] ?? null) === true && count(\REDCap::$getDataCalls) === 2 && !isset(\REDCap::$getDataCalls[1]['filterLogic']));
+    \REDCap::$exactFilter = false;
 
     // F5: a SESSIONLESS flood is bounded per project (the session-only throttle
     // could not count a cookieless caller). CLI has no active session, so the
@@ -2493,23 +2525,66 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('M16: the retired timestamp array no longer throttles anyone', isset($r['used']));
 
-    // A survey's confirming full read spends the per-project read budget, and
-    // a spent budget leaves the narrowed answer standing (the audit decides).
+    // A survey's narrowed read finds "TK-1" for "tk-1" through lower(): no
+    // read of the whole field, so no read budget spent.
     $foldDict = $f5Dict;
     $foldDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true}';
     $m = newModule([], $foldDict, $f5Data, 149);
     \REDCap::$exactFilter = true;
+    \REDCap::$getDataCalls = [];
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'tk-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     $fullSlot = ((int) floor(time() / 60)) * \INSPIRE\UniversalValidator\UniversalValidator::RATE_TIERS + 2;
     check('lookup case: a survey finds "tk-1" used when "TK-1" is saved', $r === ['used' => true, 'record' => null]);
-    check('lookup case: ...and the confirming read was counted in the read budget', ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 1);
-    $m = newModule([], $foldDict, $f5Data, 149);
-    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
-    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'tk-1']],
+    check('lookup case: ...from the narrowed read alone, with no read budget spent',
+        count(\REDCap::$getDataCalls) === 1 && ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 0);
+    // A value the filter cannot carry (a quote) is read in full, and every such
+    // read spends the budget: an unauthenticated caller cannot export the
+    // project on every request by typing a quote.
+    $quoted = ['1' => [351 => ['record_id' => '1', 'tok' => "TK'1"]]];
+    $m = newModule([], $foldDict, $quoted, 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => "tk'1"]],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
-    check('lookup case: a spent read budget leaves the narrowed answer (fails open)', $r === ['used' => false, 'record' => null]);
+    check('survey budget: a value the filter cannot carry is read in full ("tk\'1" is used)', $r === ['used' => true, 'record' => null]);
+    check('survey budget: ...and that full read was counted', ($m->rateBuckets['149|' . $fullSlot] ?? 0) === 1);
+    $m = newModule([], $foldDict, $quoted, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    \REDCap::$getDataCalls = [];
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => "tk'1"]],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: spent, the answer is "not known", never "free"', $r === ['unknown' => true, 'record' => null]);
+    check('survey budget: ...and nothing was read', \REDCap::$getDataCalls === []);
+    // A Data Access Group rule never narrows, so its read is budgeted too.
+    $dagDict = $foldDict;
+    $dagDict['tok']['field_annotation'] = '@UVUNIQUE={"surveys":true,"scope":"dag"}';
+    $m = newModule([], $dagDict, $f5Data, 149);
+    $m->rateBuckets['149|' . $fullSlot] = \INSPIRE\UniversalValidator\UniversalValidator::THROTTLE_SURVEY_FULL_READS;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
+    check('survey budget: a group rule\'s read is budgeted as well', $r === ['unknown' => true, 'record' => null]);
     \REDCap::$exactFilter = false;
+    // A read that returns no data set settles nothing: live it is "not known",
+    // never "free", and after saving it is a rule problem, never a finding.
+    $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => "A'B"]]], 149);
+    \REDCap::$wholeReadFails = true;
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => "A'B"]],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    \REDCap::$wholeReadFails = false;
+    check('unique: a failed read answers "not known", not "free"', $r === ['unknown' => true, 'record' => null]);
+    $m = newModule([], $f4Dict, [
+        '1' => [351 => ['record_id' => '1', 'pid_f' => 'UNIQ-1']],
+        '2' => [351 => ['record_id' => '2', 'pid_f' => 'UNIQ-1']],
+    ], 149);
+    \REDCap::$wholeReadFails = true;
+    $m->redcap_save_record(149, '2', 'if', 351, null, null, null, 1);
+    \REDCap::$wholeReadFails = false;
+    $dupLogged = false; $notRead = false;
+    foreach ($m->logCalls as $c) {
+        if ($c[0] === 'invalid-id-saved' && ($c[1]['field'] ?? null) === 'pid_f') $dupLogged = true;
+        if ($c[0] === 'uvalidate-unconfigurable' && strpos((string) ($c[1]['why'] ?? ''), 'could not be read') !== false) $notRead = true;
+    }
+    check('unique audit: a failed read is no duplicate finding', !$dupLogged);
+    check('unique audit: ...it is logged as not checked', $notRead);
 
     // F6: THE COUNTER'S STORAGE IS NOT REACHABLE. Two shapes, both of which
     // shipped as a silent pass. The first is the one that mattered: with the

@@ -27,6 +27,35 @@ const path = require('path');
 let n = 0, fail = 0;
 function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' + label); } }
 
+/* The clock Save reads to decide whether a cached answer is fresh
+   (QRID_RECHECK_MS): tests move it forward with clockShift. */
+let clockShift = 0;
+const realDateNow = Date.now;
+Date.now = () => realDateNow() + clockShift;
+/* A transport whose replies the test hands over when it chooses, as a real
+   (asynchronous) one does: stub.answer(reply | 'ERROR'). */
+function makeDeferredStub() {
+  const stub = { calls: [], pending: [] };
+  stub.obj = {
+    ajax(action, payload) {
+      stub.calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
+      return { then(res, rej) { stub.pending.push({ res, rej }); } };
+    },
+  };
+  stub.answer = (r) => {
+    const p = stub.pending.shift();
+    if (r === 'ERROR') p.rej(new Error('network')); else p.res(JSON.parse(JSON.stringify(r)));
+  };
+  return stub;
+}
+/* console.error output while fn runs, kept off the test's own output. */
+function errorsDuring(fn) {
+  const errs = [], was = console.error;
+  console.error = (m) => errs.push(String(m));
+  try { fn(); } finally { console.error = was; }
+  return errs;
+}
+
 function makeEl(tag) {
   return {
     tagName: (tag || 'div').toUpperCase(), id: '', name: '', value: '', innerHTML: '',
@@ -137,9 +166,13 @@ const JSMO = 'EMStub.UV';
     && stub.calls[0].payload.field === 'pid' && stub.calls[0].payload.values.pid === 'AB100');
   let ev = submitEv(); env.doc.fire('submit', ev);
   check('used: hard block traps the save', ev._prevented === true);
-  // The save asks again rather than trust the cached "used".
-  check('used: the save asked again', stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'AB100');
+  check('used: a fresh "used" decides the save without asking again', stub.calls.length === 1);
+  // An older one is asked again: the other record may have changed since.
+  clockShift += 31000;
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('used: the save asked again', stub.calls.length === 2 && stub.calls[1].payload.values.pid === 'AB100' && ev._prevented === true);
   stub.next = { used: false, record: null };
+  clockShift += 31000;
   ev = submitEv(); env.doc.fire('submit', ev);
   check('used: a value freed since then lets the save through', ev._prevented === false && stub.calls.length === 3);
 
@@ -427,6 +460,77 @@ const JSMO = 'EMStub.UV';
   resolve({used:true,record:'7'});
   const ev=submitEv();env.doc.fire('submit',ev);
   check('unknown uniqueness discards late response',!ev._prevented&&pid.getAttribute('aria-invalid')!=='true');
+}
+
+// ---- a real transport answers later: Save waits once, then decides ----------------
+for (const mode of ['confirm', 'hard']) {
+  const stub = makeDeferredStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
+  const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: mode }] }, stub);
+  stub.answer({ used: true, record: '7' });
+  const confirms = [];
+  env.win.confirm = (m) => { confirms.push(m); return false; };
+  const click = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev; };
+  const told = () => mode === 'confirm' ? confirms.length : env.win._alerts.filter((a) => /fix the flagged/.test(a)).length;
+  let ev = click();
+  check(mode + ' async: a fresh "used" decides the first click, with no request', ev._prevented && told() === 1 && stub.calls.length === 1);
+  clockShift += 31000;
+  ev = click();
+  check(mode + ' async: an older "used" is asked again, and the click waits for it',
+    ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  stub.answer({ used: true, record: '7' });
+  ev = click();
+  check(mode + ' async: the next click is decided by the answer, not held again', ev._prevented && told() === 2 && stub.calls.length === 2);
+  click(); click();
+  check(mode + ' async: further clicks ask nothing', stub.calls.length === 2 && told() === 4);
+  clockShift += 31000;
+  click();
+  const errs = errorsDuring(() => stub.answer('ERROR'));
+  ev = click();
+  check(mode + ' async: a re-ask that fails keeps the known duplicate',
+    ev._prevented && told() === 5 && stub.calls.length === 3 && /already recorded/.test(uMsg(env, 'pid').innerHTML) && errs.length === 1);
+  clockShift += 31000;
+  click();
+  const quiet = errorsDuring(() => stub.answer({ unknown: true, record: null }));
+  ev = click();
+  check(mode + ' async: an "unknown" re-ask keeps it too, and is no error',
+    ev._prevented && told() === 6 && stub.calls.length === 4 && quiet.length === 0);
+  clockShift += 31000;
+  click();
+  stub.answer({ used: false, record: null });
+  ev = click();
+  check(mode + ' async: a value freed since then lets the next click save', !ev._prevented && stub.calls.length === 5);
+}
+// A re-ask with no answer in time keeps the known duplicate.
+{
+  const realST = global.setTimeout;
+  const long = [];
+  global.setTimeout = (fn, ms) => { if ((ms || 0) >= 5000) { long.push(fn); return 0; } return realST(fn, ms); };
+  try {
+    const stub = makeDeferredStub();
+    const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
+    const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+      rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
+    stub.answer({ used: true, record: '7' });
+    clockShift += 31000;
+    let ev = submitEv(); env.doc.fire('submit', ev);
+    long.forEach((fn) => fn()); long.length = 0;
+    ev = submitEv(); env.doc.fire('submit', ev);
+    check('async: a re-ask with no answer in time keeps the known duplicate',
+      ev._prevented && stub.calls.length === 2 && /already recorded/.test(uMsg(env, 'pid').innerHTML)
+      && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  } finally { global.setTimeout = realST; }
+}
+// A first answer of "unknown" (the server's read budget) is no error either.
+{
+  const stub = makeDeferredStub();
+  const pid = makeEl('input'); pid.name = 'pid'; pid.value = 'AB100';
+  const env = boot([pid], { singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['pid'], blockSave: 'hard' }] }, stub);
+  const errs = errorsDuring(() => stub.answer({ unknown: true, record: null }));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('unknown: inert, never blocks, logs nothing', !ev._prevented && uMsg(env, 'pid').style.display === 'none' && errs.length === 0);
 }
 
 console.log(`unique_dom_js: ${n} checks, ${fail} failure(s)`);

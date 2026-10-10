@@ -74,7 +74,7 @@ Elapsed values are signed (`target - elapsedFrom`). `elapsedFrom` is one scalar 
 @UVUNIQUE={"scope":"record","with":["specimen_type"]}
 ```
 
-This compares entries on the target instrument across its designated events and instances in one record. It excludes only the exact current event/instrument/instance. Composite components use case-sensitive strings with the same ASCII trimming as ordinary uniqueness; leading zeros remain significant. Multiple target fields are evaluated independently. Findings retain the uniqueness mode and are not sent through the distinct-record duplicate finalizer.
+This compares entries on the target instrument across its designated events and instances in one record. It excludes only the exact current event/instrument/instance. Values, composite components included, compare as ordinary uniqueness compares them: trimmed, A-Z letter case ignored unless the rule sets `"caseSensitive":true`, and numbers by value in a field that holds them, so `007` and `7` are the same entry there. Multiple target fields are evaluated independently. Findings retain the uniqueness mode and are not sent through the distinct-record duplicate finalizer.
 
 Project/DAG/event uniqueness keeps its existing cross-record behavior. Record-local browser checking uses authorized snapshots and live current operands, without a new AJAX endpoint. Branches can select different uniqueness scopes. Cross-record branches with extended selectors require authenticated source-read access for their AJAX check; unavailable/survey lookups defer to saved-data auditing and scans.
 

@@ -249,6 +249,25 @@ namespace {
     check('unique-check control: without codes UNK is used', ($ask(mod(''), 'unique-check', 'm_unique', ['m_unique' => 'UNK'])['used'] ?? null) === true);
     check('exists-check: a code is nothing to look up', ($ask(mod($CODES), 'exists-check', 'm_exists', ['m_exists' => 'UNK'])['error'] ?? null) === 'nothing to look up');
     check('exists-check control: without codes UNK is looked up', ($ask(mod(''), 'exists-check', 'm_exists', ['m_exists' => 'UNK'])['state'] ?? null) === 'not-found');
+    // Codes are case-sensitive: "unk" is a value. Under a rule that ignores
+    // letter case it still never matches a saved "UNK", which is a code.
+    check('unique-check: "unk" is not a duplicate of a saved code "UNK"',
+        ($ask(mod($CODES), 'unique-check', 'm_unique', ['m_unique' => 'unk'])['used'] ?? null) === false);
+    check('unique-check control: without codes "unk" is used next to UNK',
+        ($ask(mod(''), 'unique-check', 'm_unique', ['m_unique' => 'unk'])['used'] ?? null) === true);
+    $m = mod($CODES); \REDCap::$data['3'][351]['specimen_id'] = 'UNK';
+    check('exists-check: "unk" does not find a saved code "UNK"', ($ask($m, 'exists-check', 'm_exists', ['m_exists' => 'unk'])['state'] ?? null) === 'not-found');
+    $m = mod(''); \REDCap::$data['3'][351]['specimen_id'] = 'UNK';
+    check('exists-check control: without codes "unk" finds UNK', ($ask($m, 'exists-check', 'm_exists', ['m_exists' => 'unk'])['state'] ?? null) === 'found');
+    $m = mod($CODES); \REDCap::$data['3'][351]['specimen_id'] = 'UNK'; \REDCap::$data['5'] = [351 => ['record_id' => '5', 'm_unique' => 'unk', 'm_exists' => 'unk', 'm_req' => 'x']];
+    save($m, '5');
+    check('audit: "unk" is neither a duplicate of nor found by a saved code',
+        fieldsOf(logged($m, 'invalid-id-saved')) === ['m_exists']);
+    $m = mod($CODES); \REDCap::$data['3'][351]['specimen_id'] = 'UNK'; \REDCap::$data['5'] = [351 => ['record_id' => '5', 'm_unique' => 'unk', 'm_exists' => 'unk', 'm_req' => 'x']];
+    $res = $m->scanProject(149);
+    $five = [];
+    foreach ($res['violations'] as $v) if ($v['record'] === '5') $five[] = $v['field'];
+    check('scan: the same answers for "unk" (got ' . json_encode($five) . ')', $five === ['m_exists']);
     $r = $ask(mod($CODES), 'exists-check', 'm_match', ['m_match' => 'SP-1', 'm_site' => 'UNK']);
     check('exists-check: a code in a match field cannot be matched (got ' . json_encode($r) . ')',
         ($r['state'] ?? null) === 'unknown' && strpos((string) ($r['why'] ?? ''), 'missing data code') !== false);

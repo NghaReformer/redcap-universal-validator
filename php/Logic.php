@@ -872,11 +872,32 @@ class Logic
      * space, tab, CR, LF, NUL, vertical tab and the no-break space U+00A0 (as
      * UTF-8 bytes: C2 is never a continuation byte, so no other character
      * loses a byte). Twin: QRID_lookupTrim.
+     *
+     * A scan from each end rather than a regex: a run of some thousands of
+     * spaces made the regex exhaust PCRE's stack, and preg_replace then
+     * returned null, which read as a blank value.
      */
     public static function lookupTrim($s)
     {
-        return (string) preg_replace('/^(?:[ \t\r\n\0\x0B]|\xC2\xA0)+|(?:[ \t\r\n\0\x0B]|\xC2\xA0)+$/', '', (string) $s);
+        $s = (string) $s;
+        $n = strlen($s);
+        $i = 0;
+        while ($i < $n) {
+            if (strpos(self::LOOKUP_SPACE, $s[$i]) !== false) $i++;
+            elseif ($s[$i] === "\xC2" && $i + 1 < $n && $s[$i + 1] === "\xA0") $i += 2;
+            else break;
+        }
+        $j = $n;
+        while ($j > $i) {
+            if (strpos(self::LOOKUP_SPACE, $s[$j - 1]) !== false) $j--;
+            elseif ($j - 2 >= $i && $s[$j - 1] === "\xA0" && $s[$j - 2] === "\xC2") $j -= 2;
+            else break;
+        }
+        return ($i === 0 && $j === $n) ? $s : (string) substr($s, $i, $j - $i);
     }
+
+    /** The one-byte characters lookupTrim takes off each end (with U+00A0). */
+    const LOOKUP_SPACE = " \t\r\n\0\x0B";
 
     /**
      * A number in one written form, or null when $s is not a number: no "+",

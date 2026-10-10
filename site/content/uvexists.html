@@ -60,9 +60,12 @@ same decimal mark.</p>
     <code>007</code>. Dates are compared as REDCap stores them (Y-M-D), whatever format the
     field shows.</li>
 <li><code>@UVEXISTS=record</code> never finds the record being edited. A record ID typed in
-    another letter case is found after one read of every record ID.</li>
-<li>Save never trusts a remembered "not found": the value may have been saved elsewhere
-    since, so Save asks again.</li>
+    another letter case is found after one read of every record ID, and so is
+    <code>007</code> for record <code>7</code> when the record-ID field is validated as a
+    number.</li>
+<li>Save asks again about a "not found" the page has held for 30 seconds or more: the
+    value may have been saved elsewhere since. That click waits for the answer, and the
+    next click is decided by it.</li>
 <li>A blank value checks nothing, and so does a blank <code>match</code> field on the
     same page. A <code>match</code> field on another form that is still blank shows
     "could not check" to staff.</li>

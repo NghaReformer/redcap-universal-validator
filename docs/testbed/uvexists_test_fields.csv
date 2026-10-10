@@ -23,6 +23,7 @@ ux_weight,uv_exists_test,,text,An enrolment weight that was recorded (kg),,"Ever
 ux_weight_txt,uv_exists_test,,text,"An enrolment weight, typed in a plain Text field",,"The searched field holds numbers, so 70.00 is found here too.",,,,,,,,,,,@UVEXISTS=[xe_weight]
 ux_uq,uv_exists_test,,text,"Kit code, unique (letter case ignored, hard)",,"Save UQ-1 on XE-1. On XE-2, uq-1 is already recorded.",,,,,,,,,,,"@UVUNIQUE={""blockSave"":""hard""}"
 ux_uq_cs,uv_exists_test,,text,"Kit code, unique (exact letter case)",,"Save UQ-1 on XE-1. On XE-2, uq-1 is not used before.",,,,,,,,,,,"@UVUNIQUE={""caseSensitive"":true}"
+ux_uq_num,uv_exists_test,,text,"Box number, unique (integer)",,"Save 7 on XE-1. On XE-2, 007 is already recorded: numbers compare by value.",integer,,,,,,,,,,@UVUNIQUE
 ux_bad_self,uv_exists_test,Configuration errors (each must show an error and check nothing),text,Bad: searches itself,,,,,,,,,,,,,"@UVEXISTS={""in"":""[ux_bad_self]""}"
 ux_bad_nofield,uv_exists_test,,text,Bad: unknown field,,,,,,,,,,,,,@UVEXISTS=[no_such_field]
 ux_bad_multi,uv_exists_test,,text,Bad: searches a checkbox,,,,,,,,,,,,,@UVEXISTS=[xe_consent]

@@ -52,5 +52,11 @@ for (const c of fx.same) {
 check('a number key never equals a text key', L.key('7', true, 'point') !== L.key('7', true, null));
 check('the trim keeps a no-break space inside a value', L.trim('a b') === 'a b');
 
+const sp = ' \t'.repeat(10000), nb = '\u00A0'.repeat(10000);
+check('the trim takes a long run of space and no-break spaces off each end', L.trim(sp + nb + 'SP-1' + nb + sp) === 'SP-1');
+check('the trim keeps a long run of space inside a value', L.trim('A' + sp + 'B') === 'A' + sp + 'B');
+check('the trim leaves nothing of a value that is all space', L.trim(sp + nb) === '');
+check('the trim keeps an em space, as the server does', L.trim('\u2003x\u2003') === '\u2003x\u2003');
+
 console.log('lookup_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

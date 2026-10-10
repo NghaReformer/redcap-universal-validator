@@ -159,6 +159,36 @@ function submitEv() {
 }
 function saved(env) { const ev = submitEv(); env.doc.fire('submit', ev); return !ev._prevented; }
 const JSMO = 'EMStub.UV';
+
+/* The clock Save reads to decide whether a cached answer is fresh
+   (QRID_RECHECK_MS): tests move it forward with clockShift. */
+let clockShift = 0;
+const realDateNow = Date.now;
+Date.now = () => realDateNow() + clockShift;
+/* A transport whose replies the test hands over when it chooses, as a real
+   (asynchronous) one does: stub.answer(reply | 'ERROR'). */
+function makeDeferredStub() {
+  const stub = { calls: [], pending: [] };
+  stub.obj = {
+    ajax(action, payload) {
+      stub.calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
+      return { then(res, rej) { stub.pending.push({ res, rej }); } };
+    },
+  };
+  stub.answer = (r) => {
+    const p = stub.pending.shift();
+    if (r === 'ERROR') p.rej(new Error('network')); else p.res(JSON.parse(JSON.stringify(r)));
+  };
+  return stub;
+}
+/* console.error output while fn runs, kept off the test's own output. */
+function errorsDuring(fn) {
+  const errs = [], was = console.error;
+  console.error = (m) => errs.push(String(m));
+  try { fn(); } finally { console.error = was; }
+  return errs;
+}
+
 const rule = (extra) => Object.assign({ type: 'exists', fields: ['spec'] }, extra || {});
 function one(value, extra, cfgExtra) {
   const stub = makeTransportStub();
@@ -270,10 +300,13 @@ function one(value, extra, cfgExtra) {
   const env = boot([t.spec], t.cfg, t.stub);
   const msg = xMsg(env, 'spec');
   check('load: not-found shown', /not saved/.test(msg.innerHTML) && t.stub.calls.length === 1);
-  // M1: the save asks again rather than trust the cached "not found".
-  check('save: a cached "not found" is asked again before the save is decided', !saved(env) && t.stub.calls.length === 2
+  check('save: a fresh "not found" decides the save without asking again', !saved(env) && t.stub.calls.length === 1);
+  // M1: an older one is asked again: the value may have been saved elsewhere since.
+  clockShift += 31000;
+  check('save: an older "not found" is asked again before the save is decided', !saved(env) && t.stub.calls.length === 2
     && t.stub.calls[1].payload.values.spec === 'SP-1');
   t.stub.next = { state: 'found', record: null };
+  clockShift += 31000;
   check('save: ...and a value saved elsewhere since then lets the save through', saved(env) && t.stub.calls.length === 3
     && /Found/.test(msg.innerHTML));
   check('save: a cached "found" is not asked again', saved(env) && t.stub.calls.length === 3);
@@ -556,6 +589,56 @@ function one(value, extra, cfgExtra) {
 }
 
 check('published in the namespace', (() => { const t = one('x'); const env = boot([t.spec], { rules: [] }, null); return typeof env.NS.existsInit === 'function'; })());
+
+// ---- a real transport answers later: Save waits once, then decides ----------------
+{
+  const stub = makeDeferredStub();
+  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'SP-1';
+  const env = boot([spec], { jsmoName: JSMO, rules: [rule({ blockSave: 'hard' })] }, stub);
+  stub.answer({ state: 'not-found' });
+  const click = () => { const ev = submitEv(); env.doc.fire('submit', ev); return ev; };
+  const fixes = () => env.win._alerts.filter((a) => /fix the flagged/.test(a)).length;
+  let ev = click();
+  check('async: a fresh "not found" decides the first click, with no request', ev._prevented && fixes() === 1 && stub.calls.length === 1);
+  clockShift += 31000;
+  ev = click();
+  check('async: an older "not found" is asked again, and the click waits for it',
+    ev._prevented && stub.calls.length === 2 && /still being checked/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+  stub.answer({ state: 'not-found' });
+  ev = click(); click();
+  check('async: the next clicks are decided by the answer and ask nothing', ev._prevented && fixes() === 3 && stub.calls.length === 2);
+  clockShift += 31000;
+  click();
+  const errs = errorsDuring(() => stub.answer('ERROR'));
+  ev = click();
+  check('async: a re-ask that fails keeps the known "not found"', ev._prevented && fixes() === 4 && stub.calls.length === 3
+    && /not saved/.test(xMsg(env, 'spec').innerHTML) && errs.length === 1);
+  clockShift += 31000;
+  click();
+  stub.answer({ state: 'unknown', why: 'too many lookups' });
+  ev = click();
+  check('async: an "unknown" re-ask keeps it too', ev._prevented && fixes() === 5 && stub.calls.length === 4);
+  clockShift += 31000;
+  click();
+  stub.answer({ state: 'found', record: null });
+  ev = click();
+  check('async: a value saved elsewhere since then lets the next click save', !ev._prevented && stub.calls.length === 5);
+}
+
+// A re-ask with no answer in time keeps the known "not found".
+{
+  const stub = makeDeferredStub();
+  const spec = makeEl('input'); spec.name = 'spec'; spec.value = 'SP-1';
+  const env = boot([spec], { jsmoName: JSMO, rules: [rule({ blockSave: 'hard' })] }, stub);
+  stub.answer({ state: 'not-found' });
+  clockShift += 31000;
+  let ev = submitEv(); env.doc.fire('submit', ev);
+  flushAll();
+  ev = submitEv(); env.doc.fire('submit', ev);
+  check('async: a re-ask with no answer in time keeps the known "not found"',
+    ev._prevented && stub.calls.length === 2 && /not saved/.test(xMsg(env, 'spec').innerHTML)
+    && /fix the flagged/.test(env.win._alerts[env.win._alerts.length - 1] || ''));
+}
 
 global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; console.error = realConsoleError;
 console.log(`exists_dom_js: ${n} checks, ${fail} failure(s)`);

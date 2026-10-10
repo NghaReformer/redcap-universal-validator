@@ -2398,6 +2398,23 @@ function QRID_answerCache(max){
 /* How long a save waits on a lookup still in flight before the lookup counts
    as unanswered (QRID_registerBlocker holds the save meanwhile). */
 var QRID_PENDING_MS = 10000;
+/* How long Save trusts a cached answer that blocks it ("used", "not found").
+   Older, Save asks the server again, since another record may have changed
+   in the meantime, and holds the save until the answer lands. A fresh answer
+   decides the next click, so a second click gets the "Save anyway?" dialog
+   or the block message instead of another wait. */
+var QRID_RECHECK_MS = 30000;
+/* A copy of a lookup answer, stamped with the time it was given. */
+function QRID_stampAnswer(resp){
+  var o = {};
+  for(var k in resp){ if(Object.prototype.hasOwnProperty.call(resp, k)) o[k] = resp[k]; }
+  o.__at = Date.now();
+  return o;
+}
+/* Whether Save asks again about a cached answer given QRID_RECHECK_MS ago or earlier. */
+function QRID_answerStale(entry){
+  return !entry || typeof entry.__at !== "number" || Date.now() - entry.__at >= QRID_RECHECK_MS;
+}
 /* ---- optional save blocking (shared by both factories) ---------------------
    blockSave: "off" (warn-only) | "confirm" (Save anyway? dialog) | "hard"
    (refuse the BROWSER save until fixed — it cannot stop API/import writes;
@@ -4679,16 +4696,19 @@ function QRIDUniqueInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      /* Save never trusts a cached "used": the other record may have changed
-         since. It is asked again, and the guard holds the save meanwhile. */
-      if(cached && !(saving === true && cached.used === true)){
+      /* Save asks again about a cached "used" older than QRID_RECHECK_MS: the
+         other record may have changed since. The guard holds the save
+         meanwhile. A re-ask that gets no usable answer keeps the old one. */
+      var prior = (cached && saving === true && cached.used === true && QRID_answerStale(cached)) ? cached : null;
+      if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
         renderResp(cached, V); return;
       }
       if(pendingKey === key) return;                    /* already asked; the answer will render */
-      if(saving === true && failedKey === key){ ++seq; pendingKey = null; inert(); return; }
+      if(saving === true && failedKey === key && !prior){ ++seq; pendingKey = null; inert(); return; }
+      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V); }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the uniqueness check — rule inert."); } catch(e){}
@@ -4704,17 +4724,29 @@ function QRIDUniqueInit(QRID_CONFIG){
       setGuard(false);
       setPending(V.blockSave !== "off");
       QRID_setModeState(input, "q", null);
-      setTimeout(function(){ if(my === seq && pendingKey === key){ ++seq; pendingKey = null; failedKey = key; inert(); } }, QRID_PENDING_MS);
+      setTimeout(function(){
+        if(my === seq && pendingKey === key){
+          ++seq; pendingKey = null; setPending(false);
+          if(prior){ keepPrior(); return; }
+          failedKey = key; inert();
+        }
+      }, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;   /* a newer keystroke superseded this answer */
         pendingKey = null;
         setPending(false);
-        if(err || !resp || resp.error || typeof resp.used === "undefined"){
-          try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+        /* "unknown": the server could not settle it (its read budget, a
+           failed read). Not an error, and not "free" either. */
+        var unsettled = !err && resp && !resp.error && resp.unknown === true;
+        if(err || !resp || resp.error || unsettled || typeof resp.used === "undefined"){
+          if(!unsettled){
+            try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: uniqueness check failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          }
+          if(prior){ keepPrior(); return; }
           failedKey = key;
           inert(); return;       /* fail open; the server audit is the net */
         }
-        answers.put(key, resp);
+        answers.put(key, QRID_stampAnswer(resp));
         renderResp(resp, V);
       }
       try {
@@ -4912,17 +4944,20 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       var key = JSON.stringify([payload.values, payload.cond]);
       var cached = answers.get(key);
-      /* Save never trusts a cached "not found": the value may have been saved
-         elsewhere since (another tab, a colleague). It is asked again, and the
-         guard holds the save until the answer lands. */
-      if(cached && !(saving === true && cached.state === "not-found")){
+      /* Save asks again about a cached "not found" older than QRID_RECHECK_MS:
+         the value may have been saved elsewhere since (another tab, a
+         colleague). The guard holds the save until the answer lands. A
+         re-ask that gets no usable answer keeps the old one. */
+      var prior = (cached && saving === true && cached.state === "not-found" && QRID_answerStale(cached)) ? cached : null;
+      if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
         renderResp(cached, V); return;
       }
       if(pendingKey === key) return;
-      if(saving === true && unanswered.key === key){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
+      if(saving === true && unanswered.key === key && !prior){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
+      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V); }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
@@ -4939,7 +4974,8 @@ function QRIDExistsInit(QRID_CONFIG){
       setPending(V.blockSave !== "off");
       setTimeout(function(){
         if(my === seq && pendingKey === key){
-          ++seq; pendingKey = null;
+          ++seq; pendingKey = null; setPending(false);
+          if(prior){ keepPrior(); return; }
           unanswered = { key: key, why: "no answer from the server" };
           unknown(V, unanswered.why);
         }
@@ -4950,10 +4986,12 @@ function QRIDExistsInit(QRID_CONFIG){
         setPending(false);
         if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
           try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: lookup failed — " + (err || (resp && resp.error) || "bad response")); } catch(e){}
+          if(prior){ keepPrior(); return; }
           unanswered = { key: key, why: null };
           unknown(V, null); return;
         }
-        if(resp.state !== "unknown") answers.put(key, resp);
+        if(resp.state === "unknown" && prior){ keepPrior(); return; }
+        if(resp.state !== "unknown") answers.put(key, QRID_stampAnswer(resp));
         else unanswered = { key: key, why: resp.why || null };
         renderResp(resp, V);
       }

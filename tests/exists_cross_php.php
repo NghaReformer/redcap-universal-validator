@@ -148,12 +148,19 @@ namespace {
                     $node = $n2;
                 }
                 if (!empty($p['filterLogic'])) {
-                    preg_match_all("/\\[([a-z0-9_]+)\\] = '([^']*)'/", $p['filterLogic'], $mm, PREG_SET_ORDER);
+                    // The three clause forms the module writes, as REDCap reads them.
+                    preg_match_all("/(lower\\()?\\[([a-z0-9_]+)\\]\\)? = (?:'([^']*)'|(-?[0-9.]+))/", $p['filterLogic'], $mm, PREG_SET_ORDER);
+                    $match = (function ($row, $c) {
+                    if (!isset($row[$c[2]]) || is_array($row[$c[2]])) return false;
+                    $s = (string) $row[$c[2]];
+                    if (isset($c[4]) && $c[4] !== '') return is_numeric(trim($s)) && (float) trim($s) == (float) $c[4];
+                    return $c[1] !== '' ? strtolower($s) === $c[3] : $s === $c[3];
+                });
                     $hit = false;
                     foreach ($node as $k => $row) {
                         if ($k === 'repeat_instances' || !is_array($row)) continue;
                         $ok = true;
-                        foreach ($mm as $c) if (!isset($row[$c[1]]) || (string) $row[$c[1]] !== $c[2]) { $ok = false; break; }
+                        foreach ($mm as $c) if (!$match($row, $c)) { $ok = false; break; }
                         if ($ok) { $hit = true; break; }
                     }
                     if (!$hit) continue;

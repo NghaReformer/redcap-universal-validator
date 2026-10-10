@@ -260,10 +260,10 @@ for (const after of ['UNK', '']) {
   check('exists: a code on load asks nothing', stub.calls.length === 0 && saves(env));
   set(env, spec, 'S-100');
   check('exists: an ordinary value is looked up', stub.calls.length === 1 && noted(env, 'spec'));
-  // The save asks once more: it never trusts a cached "not found".
-  check('exists: ...and blocks the save', !saves(env) && stub.calls.length === 2);
+  // A fresh "not found" decides the save (an older one would be asked again).
+  check('exists: ...and blocks the save', !saves(env) && stub.calls.length === 1);
   set(env, site, 'UNK'); set(env, spec, 'S-101');
-  check('exists: a code in the match field is like a blank one', stub.calls.length === 2 && saves(env));
+  check('exists: a code in the match field is like a blank one', stub.calls.length === 1 && saves(env));
 }
 
 // @UVREQUIRED counts a code as an answer (php/modes.json "missingCodes":"answer").

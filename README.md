@@ -898,8 +898,9 @@ check-character primitive, but the full runtime path the module actually uses:
   scan, the scan clock and the `window-timezone` setting.
 - `tests/exists_php.php` — `@UVEXISTS` on the server: the grammar and
   dictionary checks, the page config without the lookup target, the
-  `exists-check` endpoint (found / not found / could not check, a narrowed miss
-  confirmed by a full read, rights, throttle, surveys, the DAG-masked record),
+  `exists-check` endpoint (found / not found / could not check, a narrowed read
+  that compares as the rule does and a miss confirmed by a full read, rights,
+  throttle, surveys, the DAG-masked record),
   the audit, the chunked scan index and group-confined scans, letter case and
   numbers in both `@UVEXISTS` and `@UVUNIQUE`.
   `tests/exists_dom_js.cjs` drives the browser rule: asks on change and blur

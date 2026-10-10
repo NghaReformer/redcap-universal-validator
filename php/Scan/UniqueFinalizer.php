@@ -701,11 +701,14 @@ final class UniqueFinalizer implements DuplicateFinalizer
     /**
      * The comparable form of one candidate's value tuple.
      *
-     * Trimmed with PHP's trim(), matching the live uniqueness check exactly -
-     * the scan and the live endpoint must agree about what "the same value"
-     * means, or a record blocked at save time would not appear in the report
-     * that is supposed to explain it. Hashed rather than stored so the
-     * representative on the group row is bounded whatever the field holds.
+     * The reader hands over each value in the form the scan grouped it by
+     * (ScanService::comparableValue: Logic::lookupKey, as the live uniqueness
+     * check compares), so the scan and the live endpoint agree about what "the
+     * same value" means, or a record blocked at save time would not appear in
+     * the report that is supposed to explain it. Trimmed with PHP's trim() as
+     * well, for a reader that hands over raw values. Hashed rather than stored
+     * so the representative on the group row is bounded whatever the field
+     * holds.
      */
     public static function canonicalTuple($parts)
     {

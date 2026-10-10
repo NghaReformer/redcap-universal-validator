@@ -698,6 +698,7 @@ final class ScanService
     private function finalizer($pid, array $ctx)
     {
         $read = $ctx['read'];
+        $plan = (isset($ctx['plan']) && is_array($ctx['plan'])) ? $ctx['plan'] : [];
         return new UniqueFinalizer($this->db, [
             'pid'      => $pid,
             'hmacKey'  => $this->key(),
@@ -705,22 +706,52 @@ final class ScanService
             // Re-reading a duplicate group goes through the SAME read the worker
             // uses, so a group is verified against the values the scan would
             // have seen rather than a second, differently-shaped export.
-            'read'     => function (array $locs) use ($read) {
+            'read'     => function (array $locs) use ($read, $plan) {
                 $ids = [];
                 foreach ($locs as $l) $ids[(string) $l['record']] = true;
-                $got = $read(array_keys($ids));
-                if (empty($got['ok'])) {
-                    return ['ok' => false, 'values' => [], 'why' => $got['why']];
-                }
-                $out = [];
-                foreach ($locs as $l) {
-                    $v = self::valueAt($got['data'], $l);
-                    if ($v === null) continue;
-                    $out[UniqueFinalizer::locKey($l)] = [$v];
-                }
-                return ['ok' => true, 'values' => $out, 'why' => null];
+                return self::rereadValues($read(array_keys($ids)), $locs, $plan);
             },
         ]);
+    }
+
+    /**
+     * The finalizer's reader: each candidate's value out of one read of its
+     * records ($got, as the worker's read returns it), in the form it is
+     * compared in (comparableValue), keyed by UniqueFinalizer::locKey. A
+     * value that is not there is left out, which the finalizer blocks on.
+     */
+    public static function rereadValues($got, array $locs, array $plan)
+    {
+        if (!is_array($got) || empty($got['ok'])) {
+            return ['ok' => false, 'values' => [], 'why' => is_array($got) && isset($got['why']) ? $got['why'] : null];
+        }
+        $out = [];
+        foreach ($locs as $l) {
+            $v = self::valueAt($got['data'], $l);
+            if ($v === null) continue;
+            $out[UniqueFinalizer::locKey($l)] = [self::comparableValue($v, (string) $l['field'], $plan)];
+        }
+        return ['ok' => true, 'values' => $out, 'why' => null];
+    }
+
+    /**
+     * How the finalizer compares a re-read @UVUNIQUE value: its
+     * Logic::lookupKey, the form the scan grouped the candidates by. Letter
+     * case is ignored unless every unique rule on the field keeps it
+     * ($plan['uniqueExact']), and a field that holds numbers compares them by
+     * value ($plan['numberMarks']). The raw text blocked every group the
+     * comparison had joined: "SP-1" with "sp-1", "007" with "7".
+     *
+     * Where one rule on the field ignores case and another keeps it, the
+     * values are compared folded: two values the scan grouped under either
+     * rule are then equal here. A value edited since it was grouped is caught
+     * by the version fence before this comparison.
+     */
+    public static function comparableValue($v, $field, array $plan)
+    {
+        $marks = (isset($plan['numberMarks']) && is_array($plan['numberMarks'])) ? $plan['numberMarks'] : [];
+        $exact = (isset($plan['uniqueExact']) && is_array($plan['uniqueExact'])) ? $plan['uniqueExact'] : [];
+        return \INSPIRE\UniversalValidator\Logic::lookupKey($v, empty($exact[$field]), isset($marks[$field]) ? $marks[$field] : null);
     }
 
     /**

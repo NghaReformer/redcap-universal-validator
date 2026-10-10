@@ -54,6 +54,15 @@ foreach ($fx['same'] as $c) {
 check('a number key never equals a text key', Logic::lookupKey('7', true, 'point') !== Logic::lookupKey('7', true, null));
 check('the trim keeps a no-break space inside a value', Logic::lookupTrim("a\xC2\xA0b") === "a\xC2\xA0b");
 check('the trim takes no byte of another character ending in A0', Logic::lookupTrim("x\xE0\xA0") === "x\xE0\xA0");
+// Long runs of space at either end or inside: a regex trim ran out of stack here
+// and gave back an empty value.
+$sp = str_repeat(" \t", 10000);
+$nb = str_repeat("\xC2\xA0", 10000);
+check('the trim takes a long run of space and no-break spaces off each end',
+    Logic::lookupTrim($sp . $nb . 'SP-1' . $nb . $sp) === 'SP-1');
+check('the trim keeps a long run of space inside a value', Logic::lookupTrim('A' . $sp . 'B') === 'A' . $sp . 'B');
+check('the trim leaves nothing of a value that is all space', Logic::lookupTrim($sp . $nb) === '');
+check('the trim keeps a lone C2 or A0 byte at an end', Logic::lookupTrim("\xA0x\xC2") === "\xA0x\xC2");
 
 echo "lookup_php: $n checks, $fail failure(s)\n";
 exit($fail ? 1 : 0);
