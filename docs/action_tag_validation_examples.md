@@ -1360,8 +1360,15 @@ Without the feature, `from` must be a field of the same event.
   respondent sees nothing about it.
 - **`notFuture` keeps its `blockSave`.** "After today" does not depend on the
   `from` date, so a hard rule still blocks a future date when the window part is
-  advisory or not sent. A rule whose `from` names another event is advisory as a
-  whole on the page, like every rule with an event or instance reference.
+  advisory or not sent. A `from` in another event works the same way: the window
+  part is advisory, and `notFuture` blocks as set. A `from` that resolves to a
+  field on this page (`[visit_date][current-instance]`) blocks as set too.
+- **A condition read when the page opened makes the whole rule advisory.** When
+  a `when`, or the condition that picks a branch, reads a value from another
+  form or event, the page judges with the value it read when it opened. Whether
+  the rule applies may have changed since, so nothing in the rule blocks there,
+  `notFuture` included. A count or set of entries in another event counts as
+  such a value, even when it holds no entries.
 - **Multi-page surveys.** The browser reads a `from` date only on the page being
   shown. If the `from` field is on an earlier page of the survey, the window is
   not checked while the respondent types; the post-save audit still checks it.
@@ -1384,16 +1391,20 @@ Without the feature, `from` must be a field of the same event.
   taken in the server's time zone unless the project setting **Time zone for
   @UVWINDOW "notFuture"** names another one, such as `Africa/Douala`. A page left
   open across a daylight-saving change follows it.
-- **A date and time gets a small margin on the page.** It may run up to 120
-  seconds past the server's "now", or up to the computer's own time when that is
-  later (by at most 26 hours), so REDCap's Now button and `@NOW`, which use the
+- **A date and time gets a small margin.** It may run up to 120 seconds past
+  the server's "now", on the page, in the post-save audit and in the scan. On the
+  page the margin also covers how far the computer's clock runs ahead of the
+  server's, up to 10 minutes, so REDCap's Now button and `@NOW`, which use the
   computer's clock, are not refused on a computer whose clock is a little fast.
-  A date has no margin, and the post-save audit and the scan compare exactly.
+  The audit allows only the 120 seconds and logs a later time as `future`. The
+  computer's time zone adds no margin, and a date has none.
 - **One time zone per project.** `@NOW` and `@TODAY` fill in the computer's
   time, `@NOW-UTC` and `@TODAY-UTC` UTC, `@NOW-SERVER` and `@TODAY-SERVER` the
   server's. `notFuture` on a field filled by one of the last four is refused when
   that zone runs ahead of the rule's time zone at any time of the year: in New
-  York, a UTC "now" is five hours in the future.
+  York, a UTC "now" is four hours in the future in summer and five in winter. A
+  rule that also has a window keeps the window; only `notFuture` is dropped, and
+  staff see why on the form.
 - **Hours and minutes count wall-clock time.** `"window":[0,6],"unit":"hours"`
   compares the times as written, so across a daylight-saving change the window
   spans 5 or 7 hours of elapsed time.

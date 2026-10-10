@@ -123,7 +123,7 @@ Each field shows a visible error and checks nothing:
 
 | # | Action | Expect |
 |---|---|---|
-| H1 | Set the computer clock 5 minutes fast, reload, click REDCap's Now button beside `uw_now_hard`, press Save | Green OK, and the save goes through: the page allows a date and time up to the computer's own time. Restore the clock after |
+| H1 | Set the computer clock 5 minutes fast, reload, click REDCap's Now button beside `uw_now_hard`, press Save | Green OK, and the save goes through: the page allows the computer's lead over the server, up to 10 minutes. The module log then has a `future` entry for `uw_now_hard`, since the audit allows 120 seconds only. Restore the clock after |
 | H2 | `uw_now_hard` = the server's time plus 10 minutes, press Save | "This date and time is in the future."; save blocked |
 | H3 | `uw_anchor` = 2026-03-01, `uw_dmy` = 06-03-2026, `uw_when_dmy` = 2026-03-12 | Red, window late: the condition reads 06-03-2026 as 2026-03-06, as REDCap stores it. Before this release the rule stayed off |
 | H4 | `uw_dmy` = 31-12-2025 | The `uw_when_dmy` message disappears |

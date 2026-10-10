@@ -550,9 +550,10 @@ record, and/or that it is not after today:
   `blockSave`. On a survey, or without rights to that form, the value never
   reaches the page: the browser checks only `notFuture`, and staff see a note
   that the window is checked on save. With event and instance references
-  enabled, `from` may name another event: `[baseline_arm_1][visit_date]`; such a
-  rule is advisory on the page, like every rule with an event or instance
-  reference. On a multi-page survey, put the `from` field on the same page as the date it
+  enabled, `from` may name another event: `[baseline_arm_1][visit_date]`. Its
+  window part is advisory on the page and `notFuture` keeps its `blockSave`. A
+  `when`, or a branch selector, that reads a value from another form or event
+  makes the whole rule advisory, `notFuture` included. On a multi-page survey, put the `from` field on the same page as the date it
   anchors, or the window is checked only after the save.
 - **Audited.** The post-save audit logs `type: window` with reason
   `window-early`, `window-late` or `future`, and saving the `from` date's form

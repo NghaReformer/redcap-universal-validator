@@ -59,12 +59,13 @@ message shows the allowed dates the way the field shows them.</p>
     across midnight moves to the next day. When the study's time zone differs from
     the server's, name it in the project setting <em>Time zone for @UVWINDOW
     "notFuture"</em>. A date and time may run up to 120 seconds past the server's
-    "now" on the page, or up to the computer's own time when that is later, so
-    REDCap's Now button passes on a computer whose clock is a little fast; the
-    audit compares exactly.</li>
+    "now". On the page the margin also covers a computer clock that runs fast, up
+    to 10 minutes, so REDCap's Now button passes there; the audit allows the 120
+    seconds only.</li>
 <li><strong>One time zone per project.</strong> <code>notFuture</code> on a field
     filled by <code>@NOW-UTC</code>, <code>@TODAY-UTC</code>, <code>@NOW-SERVER</code>
-    or <code>@TODAY-SERVER</code> is refused when that zone runs ahead of the rule's.
+    or <code>@TODAY-SERVER</code> is refused when that zone runs ahead of the rule's;
+    a rule that also has a window keeps the window.
     Hour and minute windows count wall-clock time.</li>
 <li><code>notFuture</code> does not need the <code>from</code> date: a
     <code>from</code> date that cannot be read or resolved stops only the window
@@ -72,7 +73,9 @@ message shows the allowed dates the way the field shows them.</p>
 <li>A <code>from</code> date on <strong>another form</strong> is read when the page
     opens. That check is advisory: it shows the verdict but never blocks the save,
     because the other form could change while this one is open.
-    <code>notFuture</code> keeps its <code>blockSave</code>.</li>
+    <code>notFuture</code> keeps its <code>blockSave</code>, unless a <code>when</code>
+    condition reads a value from another form or event: then nothing in the rule
+    blocks.</li>
 <li>On a <strong>survey</strong>, or for a user without rights to that form, the
     <code>from</code> date is not sent to the page. The page checks only
     <code>notFuture</code>, and the window is checked when the record is saved. On a
