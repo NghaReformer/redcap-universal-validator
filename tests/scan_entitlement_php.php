@@ -338,11 +338,13 @@ namespace {
         // run already holds for every record it lists. Entitling it would refuse
         // the scan to anyone barred from the first instrument for no disclosure.
         //
-        // AND A SECOND: each host instrument's status field (R2O-2), read so the
-        // scan checks a form only where it was started. It is not entitled as a
-        // field because it is not one any rule reads; what it discloses is about
-        // its own instrument, so that instrument must ALREADY be entitled - which
-        // is checked, so the exception cannot widen what the run may read.
+        // AND A SECOND: each gated host instrument's status field (R2O-2), read
+        // so the scan checks a form only where it was started. It is not
+        // entitled as a field because it is not one any rule reads; what it
+        // discloses is about its own instrument, so that instrument must
+        // ALREADY be entitled - which is checked, so the exception cannot widen
+        // what the run may read. This rule reads fb, so its host is not gated
+        // (R3G-1) and no status field is read; the gated case follows.
         $statusRead = array_values(array_map('strval', $p['ctx']['plan']['formStatusFields']));
         $ownKeys = array_keys($p['ctx']['ownership']);
         $askedData = array_values(array_diff($p['asked'], array_merge(['record_id'], $statusRead)));
@@ -351,11 +353,21 @@ namespace {
             $ownKeys === $askedData);
         check('C5: and the record-id field is read alongside them (EE-2)',
             in_array('record_id', $p['asked'], true));
-        check('C5: the host status fields are read too (R2O-2), and only those',
-            $statusRead === ['fa_complete']
-            && !array_diff($statusRead, $p['asked']));
+        check('C5: a host whose rule reads another form reads no status field (R3G-1)',
+            $statusRead === []
+            && !array_filter($p['asked'], function ($f) { return substr($f, -9) === '_complete'; }));
+        $pg = planOf(['record_id' => fld('fa'),
+                      'a_val' => fld('fa', '@UVASSERT={"assert":"[a_min] < \'5\'"}'),
+                      'a_min' => fld('fa'), 'c_idle' => fld('fc')]);
+        $statusGated = array_values(array_map('strval', $pg['ctx']['plan']['formStatusFields']));
+        $ownGated = array_keys($pg['ctx']['ownership']);
+        sort($ownGated, SORT_STRING);
+        check('C5: a gated host\'s status field is read too (R2O-2), and only that one',
+            $statusGated === ['fa_complete'] && in_array('fa_complete', $pg['asked'], true)
+            && array_values(array_diff($pg['asked'], ['record_id', 'fa_complete'])) === $ownGated);
         check('C5: each one belongs to an instrument the run is already entitled to',
-            !array_diff(array_map(function ($sf) { return substr($sf, 0, -9); }, $statusRead), $p['forms']));
+            $statusGated && !array_diff(array_map(function ($sf) { return substr($sf, 0, -9); }, $statusGated),
+                                        $pg['forms']));
         // THE UPPER BOUND, and it is the check standing between this fix and a
         // module that refuses every scan on every project.
         check('C5: an instrument no rule reads is NOT in the entitlement set',

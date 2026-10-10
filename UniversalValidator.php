@@ -5480,8 +5480,10 @@ class UniversalValidator extends AbstractExternalModule
      *               could not be placed - the fail-closed encoding ScanService reads as
      *               unknown ownership and mayStart() refuses on,
      *               readSet: array, dupes: array, unconf: array,
-     *               formStatusFields: array<string,string> host form => its status field,
-     *               formStartFields: array<string,string[]> host form => the fields whose
+     *               gateable: array<int,array<string,true>> rule index => the host forms
+     *               whose contexts the started-form gate may drop for that rule,
+     *               formStatusFields: array<string,string> gateable host form => its status field,
+     *               formStartFields: array<string,string[]> gateable host form => the fields whose
      *               value says it was started (its status field, then the read fields it owns),
      *               statusRefs: string[] status fields a rule itself reads}
      */
@@ -5490,7 +5492,7 @@ class UniversalValidator extends AbstractExternalModule
         $out = ['pid' => $pid, 'fatal' => null, 'nothingToScan' => false, 'live' => [], 'hostFields' => [],
                 // Empty means "no started-form gate": every designated context is
                 // kept, which is the behaviour before R2O-2. Filled at the end.
-                'formStatusFields' => [], 'formStartFields' => [], 'statusRefs' => [],
+                'gateable' => [], 'formStatusFields' => [], 'formStartFields' => [], 'statusRefs' => [],
                 // Present on EVERY return, including the refusals. An entitlement
                 // key that exists only on the success path is one a caller reads as
                 // "no forms" on the path where it should read as "no answer".
@@ -5953,13 +5955,39 @@ class UniversalValidator extends AbstractExternalModule
         // look at. The record-id field is not evidence, because it is stored on
         // every event whatever was opened.
         //
+        // ONLY FOR A RULE WHOSE VERDICT ITS HOST FORM DECIDES ALONE (review
+        // R3G-1). The gate dropped every rule's contexts alike, so `ae_term`
+        // required "when [had_ae]='1'", with had_ae on the visit form, was never
+        // checked where the AE form was never opened - which is the one place
+        // that rule exists for. The scan certified the record clean while the
+        // save audit, re-checking the rule as a reverse dependant when the visit
+        // form was saved, logged the violation; auditRule() says the two must
+        // not disagree. The save audit does not gate: a dependant is evaluated
+        // in every designated host context of the saved event, an extended rule
+        // in every one of the record, and the rule's own condition decides. So
+        // the scan keeps every designated context for a (rule, host) pair whose
+        // condition, operand or field list (any branch) reads a field another
+        // form owns, and for every extended rule, which reads other events or
+        // instances by construction (a qualified reference, a binding, or a
+        // record-wide unique scope). Its condition decides there, as it does on
+        // save. A field the dictionary does not place counts as another
+        // form's: a context kept in error is a finding someone can see, one
+        // dropped in error is a finding nobody sees.
+        //
+        // Nor a rule on the record-id field itself: the record id is stored
+        // wherever the record exists, so it is always entered, and gating it
+        // would stop checking the record id of a record whose first instrument
+        // was never saved (an import).
+        //
+        // Computed HERE, once per plan, never per record: the gate runs per
+        // record per context, on projects with hundreds of thousands of
+        // records. scanRecord() only looks the pair up.
+        //
         // The status fields are added to the READ only, never to $readSet: the
         // read set keys the entitlement, and every host form is entitled
-        // already through the rule's own fields.
-        //
-        // The per-form list of start signals is built HERE, once per plan:
-        // the gate runs per record per context, on projects with hundreds of
-        // thousands of records, and must not re-derive ownership each time.
+        // already through the rule's own fields. They are read only for the
+        // host forms the gate consults, so a project with no gateable rule
+        // reads no status field and does not ask for blanks.
         //
         // A STATUS FIELD A RULE ITSELF READS keeps the value it had. REDCap
         // reports a never-started form's status as '0' unless getData is asked
@@ -5970,20 +5998,36 @@ class UniversalValidator extends AbstractExternalModule
         // form path reads '0'. So scanRecord() puts the '0' back on exactly
         // those fields before any rule sees the record, and only the gate
         // reads the blank. A referenced value does not move because of the gate.
+        $pkOwn = (string) $out['recordIdField'];
+        $gateable = [];
         $statusFields = [];
-        foreach ($hostFields as $forms) {
-            foreach (array_keys($forms) as $form) $statusFields[(string) $form] = $form . '_complete';
+        foreach ($hostFields as $i => $forms) {
+            if (TemporalRules::extended($live[$i])) continue;
+            // The forms owning what the rule's configuration reads. A @UVEXISTS
+            // "in" field is read in OTHER records ('lookup'), so it says nothing
+            // about this record's other forms - the save audit skips it too.
+            $readsFrom = [];
+            foreach (ModeRegistry::refFields($live[$i], ['cond', 'operand', 'fieldList'], ['lookup']) as $f) {
+                $readsFrom[isset($ddOwn[$f]['form_name']) ? (string) $ddOwn[$f]['form_name'] : ''] = true;
+            }
+            foreach ($forms as $form => $own) {
+                $form = (string) $form;
+                if ($readsFrom && (count($readsFrom) > 1 || !isset($readsFrom[$form]))) continue;
+                if ($pkOwn !== '' && in_array($pkOwn, (array) $own, true)) continue;
+                $gateable[$i][$form] = true;
+                $statusFields[$form] = $form . '_complete';
+            }
         }
         $startFields = [];
         foreach ($statusFields as $form => $sf) $startFields[$form] = [$sf];
         $statusRefs = [];
-        $pkOwn = (string) $out['recordIdField'];
         foreach ($ownership as $f => $form) {
             $f = (string) $f;
             if (!isset($ddOwn[$f]) && substr($f, -9) === '_complete') { $statusRefs[] = $f; continue; }
             if ($form === null || $f === $pkOwn || !isset($startFields[$form])) continue;
             $startFields[$form][] = $f;
         }
+        $out['gateable'] = $gateable;
         $out['formStatusFields'] = $statusFields;
         $out['formStartFields'] = $startFields;
         $out['statusRefs'] = $statusRefs;
@@ -6143,7 +6187,6 @@ class UniversalValidator extends AbstractExternalModule
         // ownership map contexts x rules times (M-05).
         $resCache = [];
         $hostCache = [];    // host form (+ gated?) => its contexts in THIS record; rules share hosts
-        $pkField = isset($plan['recordIdField']) ? (string) $plan['recordIdField'] : '';
         foreach ($plan['live'] as $i => $r) {
             // Reported as not evaluated by scanPlan(); evaluating it anyway would
             // add findings the same report says it cannot vouch for.
@@ -6151,16 +6194,15 @@ class UniversalValidator extends AbstractExternalModule
             $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
             foreach ($plan['hostFields'][$i] as $hostForm => $ownFields) {
                 $onForm = array_fill_keys($ownFields, true);
-                // Only where the host was STARTED (R2O-2), when the plan can
-                // tell: a plan that did not ask for the host's status field
-                // keeps every designated context, as before. NOT for a rule on
-                // the record-id field itself: the record id is stored wherever
-                // the record exists, so it is always entered, and gating it
-                // would stop checking the record id of a record whose first
-                // instrument was never saved (an import).
+                // Only where the host was STARTED (R2O-2), and only for a pair
+                // scanPlan() named gateable: a rule that reads another form or
+                // event, or one on the record-id field, keeps every designated
+                // context and its own condition decides (R3G-1). A plan that
+                // does not name the pair, or did not ask for the host's status
+                // field, keeps every designated context, as before.
                 $gate = null;
-                if (isset($plan['formStatusFields'][$hostForm], $plan['formStartFields'][$hostForm])
-                        && ($pkField === '' || !isset($onForm[$pkField]))) {
+                if (isset($plan['gateable'][$i][$hostForm], $plan['formStatusFields'][$hostForm],
+                          $plan['formStartFields'][$hostForm])) {
                     $gate = ['fields' => $plan['formStartFields'][$hostForm], 'node' => $asRead];
                 }
                 $hk = $hostForm . ($gate === null ? '|all' : '|started');

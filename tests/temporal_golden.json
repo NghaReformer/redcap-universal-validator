@@ -111,8 +111,7 @@
                 "fb_complete",
                 "record_id"
             ],
-            "exportDataAccessGroups": true,
-            "returnBlankForGrayFormStatus": true
+            "exportDataAccessGroups": true
         }
     ],
     "identities": [

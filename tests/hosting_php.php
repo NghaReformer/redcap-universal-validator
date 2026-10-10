@@ -865,6 +865,122 @@ namespace {
     }
 
     /* =====================================================================
+     * R3G-1  a rule whose condition lives on ANOTHER form or event
+     *
+     * The started-form gate dropped every rule's unopened contexts alike. A
+     * required field on the adverse-event form "when the visit form says an
+     * AE happened" is exactly the rule whose form was never opened, so the
+     * scan certified the record clean while the save audit - re-checking the
+     * rule when the visit form is saved - logged the violation. The gate now
+     * applies only to a rule whose verdict its host form decides alone; one
+     * that reads another form or event keeps every designated context, and
+     * its own condition decides there, as on save.
+     * ===================================================================== */
+    {
+        $r3gWhere = function (array $rows) {
+            $out = [];
+            foreach ($rows as $v) $out[] = $v['event_id'] . ':' . $v['field'];
+            sort($out);
+            return $out;
+        };
+        $r3gLogged = function ($m) {
+            $out = [];
+            foreach (viols($m) as $c) $out[] = $c[1]['instrument'] . '@' . $c[1]['event_id'] . ':' . $c[1]['field'];
+            sort($out);
+            return $out;
+        };
+        $r3gDurable = function ($m) {
+            $ctx = $m->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null);
+            $got = $ctx['read'](['1']);
+            return isset($got['data'][1]) ? $ctx['evaluate']('1', $got['data'][1]) : null;
+        };
+
+        // fb (visit) and fc (adverse event) designated on events 1 and 2. On
+        // event 2 the visit form says an AE happened; fc was opened nowhere.
+        // ae_grade is required on fc unconditionally: the R2O-2 case, still gated.
+        // ae_onset's condition reads fc AND fb: reading the host too does not
+        // make it the host's alone.
+        $D = dict(['record_id' => ['fa'], 'a_val' => ['fa'], 'had_ae' => ['fb'],
+                   'ae_term' => ['fc', '@UVREQUIRED={"when":"[had_ae]=\'1\'"}'],
+                   'ae_grade' => ['fc', '@UVREQUIRED'],
+                   'ae_onset' => ['fc', '@UVREQUIRED={"when":"[had_ae]=\'1\' and [ae_grade]=\'\'"}']]);
+        $maps = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 1, 'form' => 'fb'], ['event_id' => 1, 'form' => 'fc'],
+                 ['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $data = [1 => [1 => ['record_id' => '1', 'a_val' => 'X', 'fa_complete' => '2', 'had_ae' => '0',
+                             'fb_complete' => '2', 'ae_term' => '', 'ae_grade' => '', 'fc_complete' => ''],
+                       2 => ['record_id' => '1', 'had_ae' => '1', 'fb_complete' => '2', 'ae_term' => '',
+                             'ae_grade' => '', 'fc_complete' => '']]];
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $m->redcap_save_record(PID, '1', 'fb', 2, null, null, null, 1);
+        check('R3G-1: the save audit logs the cross-form required fields on event 2 (the reference)',
+            $r3gLogged($m) === ['fc@2:ae_onset', 'fc@2:ae_term']);
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $res = $m->scanProject(PID);
+        check('R3G-1: the legacy scan finds the same two, and only them',
+            $res['status'] === 'complete' && $r3gWhere($res['violations']) === ['2:ae_onset', '2:ae_term']
+            && !$res['unconfigurable']);
+        $m = mkMod($D, $data, null, $maps);
+        \REDCap::$filterByFields = true;
+        $ev = $r3gDurable($m);
+        check('R3G-1: and the durable scan',
+            is_array($ev) && $ev['why'] === null && $ev['contexts'] === 2
+            && $r3gWhere($ev['findings']) === ['2:ae_onset', '2:ae_term']);
+
+        // What counts is what the rule reads IN THIS RECORD. A @UVEXISTS "in"
+        // field is read in OTHER records, so it leaves its host gated - and the
+        // gated host's status field is the only one the read asks for.
+        $DP = dict(['record_id' => ['fa'], 'specimen_id' => ['fb'],
+                    'res_id' => ['fc', '@UVEXISTS={"in":"[specimen_id]"}'],
+                    'ae_term' => ['fb', '@UVREQUIRED={"when":"[res_id]<>\'\'"}']]);
+        $plan = mkMod($DP, $data, null, $maps)->durableScanContext(PID, ['generation' => 1, 'runSeq' => 1], null)['plan'];
+        check('R3G-1: a lookup in other records leaves its host gated; a condition on another form does not',
+            isset($plan['formStatusFields']) && $plan['formStatusFields'] === ['fc' => 'fc_complete']);
+
+        // Cross-EVENT (docs/action_tag_validation_examples.md, "close-out comment
+        // needed once ..."): the baseline form says an AE happened; the close-out
+        // form on the follow-up event was never opened.
+        $DX = dict(['record_id' => ['fa'], 'had_ae' => ['fa'], 'v_note' => ['fb'],
+                    'close_note' => ['fc', '@UVREQUIRED=' . json_encode(['when' => "[baseline_arm_1][had_ae]='1'",
+                                                                         'message' => 'Follow up the baseline AE'])]]);
+        $mapsX = [['event_id' => 1, 'form' => 'fa'], ['event_id' => 2, 'form' => 'fb'], ['event_id' => 2, 'form' => 'fc']];
+        $dataX = function ($hadAe) {
+            return [1 => [1 => ['record_id' => '1', 'had_ae' => $hadAe, 'fa_complete' => '2'],
+                          2 => ['record_id' => '1', 'v_note' => 'seen', 'fb_complete' => '2', 'close_note' => '',
+                                'fc_complete' => '']]];
+        };
+        $mkX = function ($hadAe) use ($DX, $mapsX, $dataX) {
+            $m = mkMod($DX, $dataX($hadAe), [], $mapsX);
+            $m->projectSettings['enable-event-instance-refs'] = true;
+            \REDCap::$filterByFields = true;
+            $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => true,
+                'eventInfo' => [1 => ['unique_event_name' => 'baseline_arm_1', 'arm_num' => 1],
+                                2 => ['unique_event_name' => 'followup_arm_1', 'arm_num' => 1]],
+                'eventsForms' => [1 => ['fa'], 2 => ['fb', 'fc']]];
+            return $m;
+        };
+        $m = $mkX('1');
+        $m->redcap_save_record(PID, '1', 'fa', 1, null, null, null, 1);
+        check('R3G-1: cross-event: saving the baseline form logs the close-out field (the reference)',
+            $r3gLogged($m) === ['fc@2:close_note'] && !unconf($m));
+        $res = $mkX('1')->scanProject(PID);
+        check('R3G-1: cross-event: the legacy scan finds the same one',
+            $res['status'] === 'complete' && $r3gWhere($res['violations']) === ['2:close_note']
+            && !$res['unconfigurable']);
+        $ev = $r3gDurable($mkX('1'));
+        check('R3G-1: cross-event: and the durable scan',
+            is_array($ev) && $ev['why'] === null && $r3gWhere($ev['findings']) === ['2:close_note']);
+        // The rule's own condition decides in the unopened context: no AE, no finding.
+        $res = $mkX('0')->scanProject(PID);
+        $ev = $r3gDurable($mkX('0'));
+        check('R3G-1: cross-event: with the condition false the unopened form is clean, both scans',
+            $res['status'] === 'complete' && !$res['violations'] && !$res['unconfigurable']
+            && is_array($ev) && $ev['why'] === null && !$ev['findings']);
+        unset($GLOBALS['Proj']);
+    }
+
+    /* =====================================================================
      * H-06  an existing record whose requested fields are all still BLANK
      *
      * Found on a live REDCap 17.0.6 project (pid 151), not by a mock. A
