@@ -433,6 +433,17 @@ final class ScanWorker
                 }
                 if ($claimed === false) return self::refused($worked, $requeued, $blocked,
                                                              $found, $phase);
+                if (!$claimed && (int) $retired > 0) {
+                    // A CALL THAT ONLY RETIRED SAYS NOTHING ABOUT WHAT IS LEFT
+                    // (review R2S-5). The store walks a bounded number of
+                    // windows of dead rows per call, so [] here can mean it
+                    // stopped looking, not that it found nothing to hand out.
+                    // Reading it as "records are still out with another
+                    // worker" backed the browser off over rows that were free.
+                    // Every such call made rows terminal, so asking again
+                    // always moves, and the budget still decides when to stop.
+                    continue;
+                }
                 if (!$claimed) {
                     // NOT WHILE RECORDS ARE STILL OUT. Catch-up sweeps
                     // stragglers BY STATE, and a row claimed by a worker that

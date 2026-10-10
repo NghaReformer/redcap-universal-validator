@@ -177,38 +177,53 @@ final class ArrayScanStore implements ScanStore
         $cut = time() - max(1, (int) $staleSeconds);
         $out = [];
         if (!isset($this->records[$runId])) return [];
-        foreach ($this->records[$runId] as $o => $rec) {
-            if (count($out) >= $limit) break;
-            $free = ($rec['state'] === self::REC_PENDING)
-                 || ($rec['state'] === self::REC_CLAIMED
-                     && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut);
-            if (!$free) continue;
-            // ABANDONED: free, still carrying a claim, AND that claim stale -
-            // a fresh stamp on a PENDING row is a live scanning worker's
-            // (review R2S-1). See SqlScanStore.
-            $abandoned = $maxAttempts !== null && (int) $rec['claim_seq'] !== 0
-                      && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut;
-            if ($abandoned) {
-                if ($out) break;                     // it goes alone, in a call of its own
-                $now = min(254, (int) $rec['attempts'] + 1);
-                $this->records[$runId][$o]['attempts'] = $now;
-                if ($now >= max(1, (int) $maxAttempts)) {
-                    $this->records[$runId][$o]['state'] = (int) $exhausted;
-                    $this->records[$runId][$o]['claim_owner'] = null;
-                    $this->records[$runId][$o]['claim_seq'] = 0;
-                    $this->records[$runId][$o]['claimed_at'] = null;
-                    $retired++;
-                    continue;
-                }
+        $isFree = function (array $rec) use ($cut) {
+            return ($rec['state'] === self::REC_PENDING)
+                || ($rec['state'] === self::REC_CLAIMED
+                    && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut);
+        };
+        // WINDOW AFTER WINDOW, exactly as the SQL store's LIMIT walks them
+        // (review R2S-5): the next $limit free rows in ordinal order, and the
+        // next window only when every row of a full one was retired. This
+        // store used to retire any number of rows in one call while the SQL
+        // store stopped after one window, so the fast suite could not see the
+        // call that answered [] with free rows still waiting behind it.
+        for ($window = 0; $window < self::SWEEP_WINDOWS; $window++) {
+            $rows = [];
+            foreach ($this->records[$runId] as $o => $rec) {
+                if (count($rows) >= $limit) break;
+                if ($isFree($rec)) $rows[] = $o;
             }
-            $this->records[$runId][$o]['state'] = self::REC_CLAIMED;
-            $this->records[$runId][$o]['claimed_at'] = time();
-            // TAKING A STRAGGLER REPLACES ITS TOKEN, which is the whole
-            // takeover fence: whoever held it before now matches nothing.
-            $this->records[$runId][$o]['claim_owner'] = (string) $owner;
-            $this->records[$runId][$o]['claim_seq'] = $token;
-            $out[] = self::claimRow($this->records[$runId][$o]) + ['abandoned' => $abandoned];
-            if ($abandoned) break;
+            foreach ($rows as $o) {
+                $rec = $this->records[$runId][$o];
+                // ABANDONED: free, still carrying a claim, AND that claim stale -
+                // a fresh stamp on a PENDING row is a live scanning worker's
+                // (review R2S-1). See SqlScanStore.
+                $abandoned = $maxAttempts !== null && (int) $rec['claim_seq'] !== 0
+                          && $rec['claimed_at'] !== null && $rec['claimed_at'] < $cut;
+                if ($abandoned) {
+                    if ($out) break;                 // it goes alone, in a call of its own
+                    $now = min(254, (int) $rec['attempts'] + 1);
+                    $this->records[$runId][$o]['attempts'] = $now;
+                    if ($now >= max(1, (int) $maxAttempts)) {
+                        $this->records[$runId][$o]['state'] = (int) $exhausted;
+                        $this->records[$runId][$o]['claim_owner'] = null;
+                        $this->records[$runId][$o]['claim_seq'] = 0;
+                        $this->records[$runId][$o]['claimed_at'] = null;
+                        $retired++;
+                        continue;
+                    }
+                }
+                $this->records[$runId][$o]['state'] = self::REC_CLAIMED;
+                $this->records[$runId][$o]['claimed_at'] = time();
+                // TAKING A STRAGGLER REPLACES ITS TOKEN, which is the whole
+                // takeover fence: whoever held it before now matches nothing.
+                $this->records[$runId][$o]['claim_owner'] = (string) $owner;
+                $this->records[$runId][$o]['claim_seq'] = $token;
+                $out[] = self::claimRow($this->records[$runId][$o]) + ['abandoned' => $abandoned];
+                if ($abandoned) break;
+            }
+            if ($out || count($rows) < $limit) break;
         }
         return $out;
     }

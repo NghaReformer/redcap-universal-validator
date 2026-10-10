@@ -594,77 +594,98 @@ final class SqlScanStore implements ScanStore
             }
             $t = Schema::table('scan_record');
             $stale = gmdate('Y-m-d H:i:s', time() - max(1, (int) $staleSeconds));
-            // The eighth column says whether the row's claim is as old as a
-            // CLAIMED row must be before it is free: asked of the server, in
-            // the same comparison the WHERE clause makes, so the two can never
-            // disagree about what stale means.
-            $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
-                attempts, version_scanned, claim_seq, (updated_at < ?)
-                FROM ' . $t . '
-                WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
-                ORDER BY ordinal LIMIT ' . $limit,
-                [$stale, $runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
             $out = [];
-            $retire = [];
-            foreach ($rows as $row) {
-                // ABANDONED: free, yet still carrying a claim. Every way a
-                // worker lets go of a row - commit, release, the give-back after
-                // a failure, a requeue - clears claim_seq to 0 in the same
-                // statement. A row that is free and still holds one was left by
-                // a worker that died: a request killed by memory_limit or
-                // max_execution_time inside the read or the evaluation, where
-                // nothing after the fatal ran and no attempt was counted. A
-                // record that kills PHP every time it is evaluated was therefore
-                // taken over and retried for ever, and the run never finished.
-                //
-                // So a takeover counts the attempt the dead worker could not,
-                // retires the row at the limit as any other exhausted record is
-                // retired, and otherwise hands it out ALONE: if it kills this
-                // worker too, it charges only itself and not the records that
-                // happened to share its batch. Only with $maxAttempts, so a
-                // caller that does not bound attempts keeps the old behaviour.
-                //
-                // AND ONLY WHEN THE CLAIM IS STALE (review R2S-1). The rule
-                // above said "free and still stamped", and a PENDING row is
-                // free at any age - while claim() stamps the rows it hands
-                // out in scanning and leaves them PENDING. So a LIVE worker
-                // still evaluating its last scanning batch looked dead to a
-                // second driver that had reached catch-up (a second tab, a
-                // reload, Continue while the old request ran): its healthy
-                // records were charged, and at recordAttempts=1 retired as
-                // unreadable before anyone examined them. A fresh stamp is
-                // taken over uncharged, which replaces its token and lets the
-                // live worker's commit drop it - wasteful, never wrong. Stale
-                // is the eighth column: updated_at, which the stamp wrote.
-                $abandoned = $maxAttempts !== null && (int) $row[6] !== 0
-                          && (int) $row[7] === 1;
-                $attempts = (int) $row[4];
-                if ($abandoned) {
-                    if ($out) break;                 // it goes alone, in a call of its own
-                    $attempts = min(254, $attempts + 1);
-                    if ($attempts >= max(1, (int) $maxAttempts)) {
-                        $retire[] = (int) $row[0];
-                        continue;
+            // WINDOW AFTER WINDOW, while a whole window is retired (review
+            // R2S-5). The LIMIT below is the window. Rows retired out of
+            // attempts used to take their places in it, so a window that was
+            // all retired answered [] while free rows sat behind it - and the
+            // worker, finding the manifest incomplete, said "records are still
+            // out with another worker" and backed off, once per window of dead
+            // rows. A retired row is terminal by the time the next SELECT runs,
+            // so each window starts where the last one's retirements ended.
+            // Bounded, so the run row's lock is held for a bounded number of
+            // statements; the in-memory store walks the same windows.
+            for ($window = 0; $window < self::SWEEP_WINDOWS; $window++) {
+                // The eighth column says whether the row's claim is as old as
+                // a CLAIMED row must be before it is free: asked of the server,
+                // in the same comparison the WHERE clause makes, so the two can
+                // never disagree about what stale means.
+                $rows = $this->db->select('SELECT ordinal, record_id_bin, record_hash, dag_at_fence,
+                    attempts, version_scanned, claim_seq, (updated_at < ?)
+                    FROM ' . $t . '
+                    WHERE run_id = ? AND (state = ? OR (state = ? AND updated_at < ?))
+                    ORDER BY ordinal LIMIT ' . $limit,
+                    [$stale, $runId, self::REC_PENDING, self::REC_CLAIMED, $stale]);
+                $retire = [];
+                foreach ($rows as $row) {
+                    // ABANDONED: free, yet still carrying a claim. Every way a
+                    // worker lets go of a row - commit, release, the give-back
+                    // after a failure, a requeue - clears claim_seq to 0 in the
+                    // same statement. A row that is free and still holds one
+                    // was left by a worker that died: a request killed by
+                    // memory_limit or max_execution_time inside the read or the
+                    // evaluation, where nothing after the fatal ran and no
+                    // attempt was counted. A record that kills PHP every time
+                    // it is evaluated was therefore taken over and retried for
+                    // ever, and the run never finished.
+                    //
+                    // So a takeover counts the attempt the dead worker could
+                    // not, retires the row at the limit as any other exhausted
+                    // record is retired, and otherwise hands it out ALONE: if
+                    // it kills this worker too, it charges only itself and not
+                    // the records that happened to share its batch. Only with
+                    // $maxAttempts, so a caller that does not bound attempts
+                    // keeps the old behaviour.
+                    //
+                    // AND ONLY WHEN THE CLAIM IS STALE (review R2S-1). The rule
+                    // above said "free and still stamped", and a PENDING row is
+                    // free at any age - while claim() stamps the rows it hands
+                    // out in scanning and leaves them PENDING. So a LIVE worker
+                    // still evaluating its last scanning batch looked dead to a
+                    // second driver that had reached catch-up (a second tab, a
+                    // reload, Continue while the old request ran): its healthy
+                    // records were charged, and at recordAttempts=1 retired as
+                    // unreadable before anyone examined them. A fresh stamp is
+                    // taken over uncharged, which replaces its token and lets
+                    // the live worker's commit drop it - wasteful, never wrong.
+                    // Stale is the eighth column: updated_at, which the stamp
+                    // wrote.
+                    $abandoned = $maxAttempts !== null && (int) $row[6] !== 0
+                              && (int) $row[7] === 1;
+                    $attempts = (int) $row[4];
+                    if ($abandoned) {
+                        if ($out) break;             // it goes alone, in a call of its own
+                        $attempts = min(254, $attempts + 1);
+                        if ($attempts >= max(1, (int) $maxAttempts)) {
+                            $retire[] = (int) $row[0];
+                            continue;
+                        }
                     }
+                    $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
+                              'hash' => $row[2], 'dag' => $row[3],
+                              'attempts' => $attempts, 'version' => $row[5],
+                              'claim' => $token, 'abandoned' => $abandoned];
+                    if ($abandoned) break;
                 }
-                $out[] = ['ordinal' => (int) $row[0], 'id_bin' => $row[1],
-                          'hash' => $row[2], 'dag' => $row[3],
-                          'attempts' => $attempts, 'version' => $row[5],
-                          'claim' => $token, 'abandoned' => $abandoned];
-                if ($abandoned) break;
-            }
-            if ($retire) {
-                $marks = implode(',', array_fill(0, count($retire), '?'));
-                // Terminal, so the run can finish; blocking, so it can never
-                // finish clean - the same state noteAttempts() retires to.
-                // COUNTED, so the worker can report them: a record retired
-                // here was never in a batch, and nothing else would say so.
-                $this->db->exec('UPDATE ' . $t . '
-                    SET state = ?, attempts = LEAST(attempts + 1, 254),
-                        claim_owner = NULL, claim_seq = 0, updated_at = ?
-                    WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
-                    array_merge([(int) $exhausted, self::now(), $runId], $retire, [self::REC_DONE]));
-                $retired += $this->db->affected();
+                if ($retire) {
+                    $marks = implode(',', array_fill(0, count($retire), '?'));
+                    // Terminal, so the run can finish; blocking, so it can
+                    // never finish clean - the same state noteAttempts()
+                    // retires to. COUNTED, so the worker can report them: a
+                    // record retired here was never in a batch, and nothing
+                    // else would say so.
+                    $this->db->exec('UPDATE ' . $t . '
+                        SET state = ?, attempts = LEAST(attempts + 1, 254),
+                            claim_owner = NULL, claim_seq = 0, updated_at = ?
+                        WHERE run_id = ? AND ordinal IN (' . $marks . ') AND state < ?',
+                        array_merge([(int) $exhausted, self::now(), $runId], $retire,
+                                    [self::REC_DONE]));
+                    $retired += $this->db->affected();
+                }
+                // Something to hand out, or nothing behind this window: either
+                // way this is the answer. Otherwise every row of a full window
+                // was retired, and the next one is looked at.
+                if ($out || count($rows) < $limit) break;
             }
             if ($out && $out[0]['abandoned']) {
                 // The attempt the dead worker never counted, with the takeover.

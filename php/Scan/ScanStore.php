@@ -174,6 +174,15 @@ interface ScanStore
     ];
 
     /**
+     * How many windows of $limit rows one claimPending() call may retire
+     * before it answers. See claimPending(): a call that retires a whole
+     * window looks at the next one, and this is where it stops looking, so one
+     * call holds the run row's lock for a bounded number of statements however
+     * many dead rows sit in front of the live ones. Both stores use it.
+     */
+    const SWEEP_WINDOWS = 16;
+
+    /**
      * Create a run and take the project's active slot, or report busy.
      *
      * MUST fail rather than wait when the slot is held (I1). Returns the run on
@@ -306,6 +315,16 @@ interface ScanStore
      * exclusions they are: such a row never reaches a batch, and nothing else
      * would say it was excluded. Both stores set it on every call, to 0 unless
      * a row was retired and the retirement was kept.
+     *
+     * A WINDOW THAT WAS ALL RETIRED IS NOT THE END (review R2S-5). The call
+     * looks at free rows a window of $limit at a time, in ordinal order. When
+     * every row of a full window was retired and nothing was claimed, it looks
+     * at the next window in the same transaction, up to SWEEP_WINDOWS of them.
+     * The SQL store used to answer [] after the first window while free rows
+     * remained behind it, and the worker read that as "records are still out
+     * with another worker". An answer of [] with $retired > 0 can therefore
+     * still mean the bound was reached: the caller asks again rather than
+     * concluding anything from it.
      *
      * @return array|false  as claim(), with the same three-way distinction
      * @throws ScanStoreUnavailable when the storage failed rather than refused

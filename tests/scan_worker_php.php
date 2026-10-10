@@ -2722,6 +2722,30 @@ namespace INSPIRE\UniversalValidator\Scan {
         check('live worker: and the worker whose commit held nothing reports nothing examined',
             $w1res['ok'] === true && $w1res['worked'] === 0 && $w1res['findings'] === 0);
 
+        // MORE DEAD ROWS THAN ONE SWEEP WALKS (review R2S-5). The store retires
+        // at most SWEEP_WINDOWS windows a call and then answers [] - with rows
+        // retired, and live rows still behind them. The worker read every []
+        // as "records are still out with another worker" and stopped; it now
+        // asks again, because a call that retired something moved the run.
+        $deadN = ScanStore::SWEEP_WINDOWS + 4;
+        $ids9 = [];
+        for ($i = 1; $i <= $deadN + 3; $i++) $ids9[] = 'D' . $i;
+        list($store9, $run9) = $fixture($ids9, 823);
+        $ep9 = (int) $store9->run(823, $run9)['lease_epoch'];
+        $store9->claim($run9, 'dead', $ep9, $deadN);         // and then nothing ran
+        $store9->advancePhase($run9, $ep9, ScanPhase::CATCH_UP);
+        ageClaims($store9, $run9, 1000);
+        $w9 = new ScanWorker($store9, ['fence' => new Versions(), 'read' => $reader,
+            'evaluate' => $quiet, 'owner' => 'w2', 'attempts' => 1, 'finalizer' => $fin(),
+            'budget' => new WorkBudget(['mode' => 'cron', 'memoryLimit' => null, 'timeLimit' => null,
+                'min' => 1, 'max' => 1, 'first' => 1, 'startedAt' => microtime(true)])]);
+        $res9 = $w9->work(823, $run9);
+        check('sweep: a call that only retired is asked again, not read as waiting',
+            $res9['stop'] !== 'waiting' && $res9['worked'] === 3 && $res9['blocked'] === $deadN);
+        check('sweep: so the dead rows are retired and the live ones behind them examined',
+            $store9->recordStates($run9) === [ScanStore::REC_UNREADABLE => $deadN,
+                                              ScanStore::REC_DONE => 3]);
+
         // A batch with nothing to say carries an empty list, not a missing key.
         list($store4, $run4) = $fixture(['A'], 818);
         $w4 = new ScanWorker($store4, ['fence' => new Versions(), 'read' => $reader,

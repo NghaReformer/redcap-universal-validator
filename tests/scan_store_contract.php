@@ -806,6 +806,51 @@ function storeContract(callable $newStore, $label, callable $age)
     $C('live worker: no record became an exclusion nobody examined',
         !isset($s12->recordStates($rid12)[ScanStore::REC_UNREADABLE]));
 
+    // A WINDOW THAT WAS ALL RETIRED IS NOT THE END (review R2S-5). The sweep
+    // reads free rows a window of $limit at a time. Retired rows used to take
+    // their places in the SQL store's window, so a window that was all dead
+    // rows answered [] while free rows waited behind it, and the worker read
+    // that as "records are still out with another worker". Five dead rows at
+    // the limit, windows of two: two windows are all retired, the third
+    // retires one and hands out the first live row - which in a window is the
+    // unit both stores answer in.
+    $s13 = $newStore();
+    $rid13 = (int) $s13->startRun(741, [])['run']['run_id'];
+    $recs13 = [];
+    for ($i = 1; $i <= 7; $i++) $recs13[] = $mk5('N' . $i);
+    $s13->writeManifest($rid13, $recs13);
+    $ep13 = (int) $s13->run(741, $rid13)['lease_epoch'];
+    $s13->claim($rid13, 'dead', $ep13, 5);              // five rows, and then nothing ran
+    $age($s13, $rid13, 1000);
+    $ret13 = -1;
+    $t13 = $s13->claimPending($rid13, 'w2', $ep13, 2, 900, 1, ScanStore::REC_UNREADABLE, $ret13);
+    $C('sweep: a window whose every row was retired is followed by the next one',
+        is_array($t13) && count($t13) === 1 && $t13[0]['id_bin'] === 'N6');
+    $C('sweep: and every dead row in front of it was retired, and counted',
+        $ret13 === 5 && (int) $s13->recordStates($rid13)[ScanStore::REC_UNREADABLE] === 5);
+
+    // AND THE WALK IS BOUNDED, the same in both stores, so one call holds the
+    // run row's lock for a bounded number of statements. Past the bound the
+    // call answers [] with $retired > 0, which a caller must read as "ask
+    // again" - and asking again carries on from where it stopped.
+    $s14 = $newStore();
+    $rid14 = (int) $s14->startRun(742, [])['run']['run_id'];
+    $dead14 = ScanStore::SWEEP_WINDOWS + 2;
+    $recs14 = [];
+    for ($i = 1; $i <= $dead14 + 1; $i++) $recs14[] = $mk5('B' . $i);
+    $s14->writeManifest($rid14, $recs14);
+    $ep14 = (int) $s14->run(742, $rid14)['lease_epoch'];
+    $s14->claim($rid14, 'dead', $ep14, $dead14);
+    $age($s14, $rid14, 1000);
+    $ret14 = -1;
+    $t14 = $s14->claimPending($rid14, 'w2', $ep14, 1, 900, 1, ScanStore::REC_UNREADABLE, $ret14);
+    $C('sweep: one call retires at most SWEEP_WINDOWS windows, and says how many',
+        $t14 === [] && $ret14 === ScanStore::SWEEP_WINDOWS);
+    $t14b = $s14->claimPending($rid14, 'w2', $ep14, 1, 900, 1, ScanStore::REC_UNREADABLE, $ret14);
+    $C('sweep: and the next call carries on to the live row behind them',
+        is_array($t14b) && count($t14b) === 1 && $t14b[0]['id_bin'] === 'B' . ($dead14 + 1)
+        && $ret14 === 2);
+
     // A RELEASED row is not abandoned, and a caller that gives no attempt
     // limit keeps the old behaviour exactly.
     $s10 = $newStore();
