@@ -175,14 +175,19 @@ final class WorkBudget
     private $pinned = [];      // kind => the claim it keeps for the rest of the request; see alone()
     private $retryPass = false; // alone() owes the next admit() one unit, whatever it measures
     private $retried = false;  // ... and owes it once per request
+    private $onReclaim;        // ?callable(): void, told when reclaim() runs; see reclaim()
 
     /**
      * @param array $opts {mode: 'browser'|'cron', min:int, max:int,
      *                     memoryLimit: string|int|null, timeLimit: string|int|null,
      *                     startedAt: ?float, first: ?int,
-     *                     probe: ?callable(bool $resetPeak): array{used:int, peak:int, arena:int}}
+     *                     probe: ?callable(bool $resetPeak): array{used:int, peak:int, arena:int},
+     *                     reclaim: ?callable(): void}
      *        `probe` replaces the three PHP memory functions, so the measurement
      *        seam can be driven with known numbers instead of real allocations.
+     *        `reclaim` is called whenever reclaim() runs, before PHP is asked
+     *        for its cached chunks, so a test can see what was still held at
+     *        that moment (review R3S-3).
      */
     public function __construct(array $opts = [])
     {
@@ -201,6 +206,8 @@ final class WorkBudget
             ? max($this->min, min($this->max, (int) $opts['first']))
             : max($this->min, min($this->max, 25));
         $this->probe = (isset($opts['probe']) && is_callable($opts['probe'])) ? $opts['probe'] : null;
+        $this->onReclaim = (isset($opts['reclaim']) && is_callable($opts['reclaim']))
+            ? $opts['reclaim'] : null;
     }
 
     /**
@@ -367,9 +374,16 @@ final class WorkBudget
      * and charged for it. gc_mem_caches() hands cached chunks back, so the
      * arena reads what is really free. A probe stands in for PHP's figures,
      * so with one there is nothing to ask.
+     *
+     * IT CAN ONLY RETURN WHAT WAS LET GO BEFORE IT RAN, which is why the
+     * caller frees the batch's read data first. With a probe this method did
+     * nothing at all, so the order could be reversed with every suite green
+     * (review R3S-3): `reclaim` in the constructor's options is told the
+     * moment it runs, and the worker suite checks what was still held then.
      */
     public function reclaim()
     {
+        if ($this->onReclaim !== null) call_user_func($this->onReclaim);
         if ($this->probe !== null) return;
         if (function_exists('gc_mem_caches')) gc_mem_caches();
     }

@@ -1989,6 +1989,74 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('neighbours: and is charged there, so the run reaches an end rather than a loop',
         $store->recordState($runId, 1) === ScanStore::REC_UNREADABLE);
 
+    // ONE AT A TIME FOR THE REST OF THE REQUEST, NOT FOR ONE BATCH (review
+    // R3S-2). alone() pins the records claim at one, in claim() and in next(),
+    // and with both pins taken out every suite stayed green: the records above
+    // are large enough that memory holds the claim at one by itself. These are
+    // not. Each reads 10.5 MiB and evaluates in 2 MiB, so a first batch of ten
+    // reads 105 MiB over a 20 MiB base and its first evaluation reaches the
+    // limit beside the other nine. Retried alone it costs 12.5 MiB, and the
+    // clock and the room left would both let the next batch double - which is
+    // the batch the drop has just shown this request cannot hold.
+    //
+    // AND THE RETRY RUNS AFTER THE BATCH HAS LET GO OF WHAT IT READ (review
+    // R3S-3). reclaim() can only hand back chunks that were freed before it
+    // ran, and with a probe it did nothing, so moving the release of the read
+    // data after it left every suite green. The model heap says what is held
+    // at the moment reclaim() is called: the 20 MiB base, and nothing the
+    // batch read or evaluated.
+    $twelve = [];
+    for ($i = 1; $i <= 12; $i++) $twelve[] = sprintf('P%02d', $i);
+    list($store, $runId) = $fixture($twelve);
+    $died = false;
+    $h = new ModelHeap(20, true);
+    $sizes = [];
+    $heldAtReclaim = [];
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(),
+        'read' => function ($ids) use ($h, $MB, &$sizes) {
+            $sizes[] = count($ids);
+            $data = [];
+            foreach ($ids as $id) {
+                $data[$id] = ['1' => ['x' => 'v'], 'mem' => new HeldBytes($h, (int) (10.5 * $MB))];
+            }
+            return ['ok' => true, 'data' => $data, 'why' => null];
+        },
+        'evaluate' => $letGo($h, ['*' => 2], 128 * $MB, $died),
+        'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 128 * $MB,
+            'timeLimit' => null, 'first' => 10, 'startedAt' => microtime(true),
+            'probe' => $h->probe(),
+            'reclaim' => function () use ($h, &$heldAtReclaim) { $heldAtReclaim[] = $h->used; }])]);
+    $res = $w->work(800, $runId);
+    check('alone: the first evaluation beside nine others is dropped and retried by itself',
+        $died === false && array_slice($sizes, 0, 2) === [10, 1]
+        && $store->recordState($runId, 1) === ScanStore::REC_DONE);
+    check('alone: the batch after the retry, and the one after that, each claim one record',
+        count($sizes) >= 4 && $sizes[2] === 1 && $sizes[3] === 1);
+    check('alone: and so does every batch to the end of the request',
+        max(array_slice($sizes, 1)) === 1 && $res['ok'] === true);
+    check('alone: the read data is let go before reclaim() runs, so it can be handed back',
+        $heldAtReclaim === [20 * $MB]);
+
+    // Each pin on its own, in the budget's own answers. next() hands back one
+    // after a retry, below a configured minimum of four; and claim() still
+    // says one after next() has set the claim to that minimum because the
+    // room ran out.
+    $hp = new ModelHeap(20, true);
+    $bp = new WorkBudget(['mode' => 'browser', 'memoryLimit' => 128 * $MB, 'timeLimit' => null,
+        'min' => 4, 'first' => 10, 'startedAt' => microtime(true), 'probe' => $hp->probe()]);
+    $bp->alone('records');
+    $tp = microtime(true);
+    $op = $bp->observe($bp->mark('records', $tp), 1, $tp + 0.001);
+    check('alone: next() answers one after a retry, whatever the clock and the minimum say',
+        $op['claim'] === 1 && $bp->claim('records') === 1);
+    $hp->used = 100 * $MB;                                   // past the reserve now
+    $mp = $bp->mark('records', $tp);
+    $hp->spike(5 * $MB);
+    $op2 = $bp->observe($mp, 1, $tp + 0.001);
+    check('alone: and claim() answers one after the claim was set to the minimum',
+        $op2['stop'] === 'memory' && $bp->claim('records') === 1);
+
     // -- a squeezed request summarises a page, and says it moved (R2S-2) ------
     //
     // A request that starts past the 60% reserve is let through for one unit.
