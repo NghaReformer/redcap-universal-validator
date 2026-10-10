@@ -1580,9 +1580,10 @@ stay fields of this record. Three switches must all be on:
 - **Save waits for the answer.** Clicking Save re-checks the field first: a value
   typed and saved at once is asked before the save is decided, and the save is
   held while the answer is on its way. After 10 seconds without one, the value
-  counts as *could not check*. A *not found* is never taken from the page's
-  memory at Save: the value may have been saved elsewhere since, so it is asked
-  again.
+  counts as *could not check*. A *not found* the page has held for 30 seconds or
+  more is asked again at Save, since the value may have been saved elsewhere
+  since. If the server cannot answer that second question, the earlier *not
+  found* stands and is enforced.
 - **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
   and *could not check* (amber; never blocks). A failed read, a `match` field that
   is blank on another form, a busy server and missing rights all answer *could not

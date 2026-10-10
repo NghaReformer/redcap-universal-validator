@@ -2428,10 +2428,11 @@ namespace {
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
     check('F4-DAG-01 control: a project-scoped check still narrows',
         isset(\REDCap::$getDataCalls[0]['filterLogic']));
-    // The filter compares letters through lower(), as the rule does, so its
-    // miss on a value with letters is final...
-    check('lookup case: a narrowed miss on a value with letters is final',
-        count(\REDCap::$getDataCalls) === 1 && \REDCap::$getDataCalls[0]['filterLogic'] === "lower([pid_f]) = 'p-2'");
+    // The filter compares letters through lower(), as the rule does; its miss
+    // is still confirmed by a full read (a saved value may have spaces around it)...
+    check('lookup case: a narrowed miss on a value with letters is confirmed by a full read',
+        count(\REDCap::$getDataCalls) === 2 && \REDCap::$getDataCalls[0]['filterLogic'] === "lower([pid_f]) = 'p-2'"
+        && !isset(\REDCap::$getDataCalls[1]['filterLogic']));
     // ...and the filter finds the duplicate typed in another case.
     $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'p-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
@@ -2441,7 +2442,24 @@ namespace {
     \REDCap::$getDataCalls = [];
     $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '11-2']],
         149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
-    check('lookup case: a narrowed miss on a value with no letters is final', count(\REDCap::$getDataCalls) === 1);
+    check('lookup case: a narrowed miss on a value with no letters is confirmed too', count(\REDCap::$getDataCalls) === 2);
+    // A saved value with spaces around it: the filter cannot see it, the full read does.
+    \REDCap::$exactFilter = true;
+    foreach (["P-1 ", "P-1\xC2\xA0", " p-1"] as $padded) {
+        $m = newModule([], $f4Dict, ['1' => [351 => ['record_id' => '1', 'pid_f' => $padded]]], 149);
+        \REDCap::$getDataCalls = [];
+        $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => 'P-1']],
+            149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+        check('lookup padding: "P-1" is used when ' . json_encode($padded) . ' is saved',
+            ($r['used'] ?? null) === true && count(\REDCap::$getDataCalls) === 2);
+    }
+    $padNum = $f4Dict;
+    $padNum['pid_f']['text_validation_type_or_show_slider_number'] = 'integer';
+    $m = newModule([], $padNum, ['1' => [351 => ['record_id' => '1', 'pid_f' => "7\xC2\xA0"]]], 149);
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'pid_f', 'values' => ['pid_f' => '007']],
+        149, '2', 'if', 351, 1, null, null, null, '', '', 'staff1', null);
+    check('lookup padding: "007" is used when "7" with a no-break space is saved', ($r['used'] ?? null) === true);
+    \REDCap::$exactFilter = false;
     // An exact rule keeps every narrowed miss final.
     $csDict = $f4Dict;
     $csDict['pid_f']['field_annotation'] = '@UVUNIQUE={"caseSensitive":true}';
@@ -2477,8 +2495,8 @@ namespace {
     // could not count a cookieless caller). CLI has no active session, so the
     // endpoint takes the per-project tier. Pre-seed the budget to the cap -> the
     // next anon check is throttled.
-    // An exact rule: its narrowed misses are final, so these throttle counts
-    // see no confirming read (that budget is counted further down).
+    // An exact rule. Its narrowed misses are confirmed by a full read, which a
+    // survey counts in a budget of its own (counted further down).
     $f5Dict = [
         'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'if'],
         'tok' => ['field_type' => 'text', 'form_name' => 'if', 'identifier' => '',
@@ -2500,7 +2518,9 @@ namespace {
         isset($r['error']) && strpos($r['error'], 'too many') !== false);
     // a fresh project: the anon caller is answered, and the check is recorded in the budget
     $m = newModule([], $f5Dict, $f5Data, 149);
-    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-9']],
+    // "TK-1" is saved, so the narrowed read settles it and no confirming read
+    // adds statements of its own to the counts below.
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F5: a fresh sessionless caller is answered (not throttled)', isset($r['used']));
     check('F5: the sessionless check is recorded in the per-project budget',
@@ -2599,7 +2619,8 @@ namespace {
 
     $m = newModule([], $f5Dict, $f5Data, 149);
     $m->queryThrows = true;
-    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-7']],
+    // A saved value: the narrowed read answers it, with no read budget to consult.
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F6: a missing counter table does not refuse the caller (the tier fails open)',
         isset($r['used']));
@@ -2644,7 +2665,7 @@ namespace {
     // now treated as the storage failure it is.
     $m = newModule([], $f5Dict, $f5Data, 149);
     $m->lastInsertIdUnreadable = true;
-    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-6']],
+    $r = $m->redcap_module_ajax('unique-check', ['field' => 'tok', 'values' => ['tok' => 'TK-1']],
         149, '2', 'if', 351, 1, null, null, null, '', '', null, null);
     check('F6: an unreadable count is not read as "under the cap"',
         count(array_filter($m->logCalls, function ($l) {
@@ -2693,7 +2714,7 @@ namespace {
 
         $m = newModule([], $f5Dict, $f5Data, 149);
         $_SESSION = [];
-        $r = $call($m, 'S-1');
+        $r = $call($m, 'TK-1');   // saved: no confirming read in the counts
         check('F7: a caller WITH a session is still answered', isset($r['used']));
         check('F7: and tier 1 counted it', count($_SESSION['uvalidate_unique_hits']) === 1);
         check('F7: and tier 2 counted it too, which it never used to',

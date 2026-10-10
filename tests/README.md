@@ -227,7 +227,8 @@ memory cap that stops it after its first chunk), the group-confined scan, and
 `exists_dom_js.cjs` drives the browser rule with fake timers and a stub
 transport: typing clears the answer and asks nothing, change and blur ask once,
 Save waits for an answer still on its way, *could not check* never blocks and
-is not asked again by Save, a cached *not found* is asked again by Save,
+is not asked again by Save, a cached *not found* 30 seconds old or more is
+asked again by Save and stands when that second answer fails or times out,
 unknown answers are not cached, a late reply for an
 older value is dropped, the message follows an autocomplete widget, surveys are
 opt-in and never see a reason.

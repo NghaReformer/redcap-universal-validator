@@ -214,19 +214,19 @@ trait TemporalIntegration
      * quadratic: a record stopped being checkable at about 220 repeat instances
      * because the rescans alone spent the evaluation budget.
      * tuples: "event|instance" => [field => value] (entries whose own value is
-     * blank are left out: blank is never a duplicate). holders: tuple key =>
-     * the entries holding it.
+     * blank, or a Missing Data Code, are left out: neither is ever a
+     * duplicate). holders: tuple key => the entries holding it.
      */
     private function temporalUniqueTuples(AddressResolver $resolver,array $node,$form,$field,array $parts,$fold,array $marks)
     {
         $cacheKey=$form.'|'.implode(',',$parts).'|'.($fold?'fold':'exact');
         if(isset($this->temporalUniqueIndex[$cacheKey]))return $this->temporalUniqueIndex[$cacheKey];
-        $index=['problem'=>null,'tuples'=>[],'holders'=>[]];$count=0;
+        $index=['problem'=>null,'tuples'=>[],'holders'=>[]];$count=0;$codes=$this->missingDataCodes($this->temporalPid);
         foreach($this->hostContextsFor(self::recordContexts($node),$form,$this->temporalPid) as $other){
             if(++$count>10000){$index['problem']='limit';break;}
             $oc=$this->temporalContext($other,$form);$tuple=[];
             foreach($parts as $f){$v=$resolver->resolve(['ref',$f,null],$oc);if($v['state']!=='ok'){$index['problem']=$v['state'];break 2;}$tuple[$f]=$v['value'];}
-            if($tuple[$field]==='')continue;
+            if($tuple[$field]===''||($codes&&self::isMissingCode($tuple[$field],$codes)))continue;
             $id=$other['event_id'].'|'.$other['instance'];
             $index['tuples'][$id]=$tuple;$index['holders'][self::temporalTupleKey($tuple,$parts,$fold,$marks)][$id]=true;
         }

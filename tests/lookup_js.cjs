@@ -57,6 +57,24 @@ check('the trim takes a long run of space and no-break spaces off each end', L.t
 check('the trim keeps a long run of space inside a value', L.trim('A' + sp + 'B') === 'A' + sp + 'B');
 check('the trim leaves nothing of a value that is all space', L.trim(sp + nb) === '');
 check('the trim keeps an em space, as the server does', L.trim('\u2003x\u2003') === '\u2003x\u2003');
+// No regex: a long run of space inside a value is passed over once, not once
+// per position (a saved value like this reaches every page that reads it).
+{
+  const inner = 'A' + ' '.repeat(400000) + 'B ';
+  const t0 = Date.now();
+  const out = L.trim(inner);
+  check('the trim passes over a long inner run of space in linear time', out === inner.slice(0, -1) && Date.now() - t0 < 200);
+  const chars = [' ', '\t', '\r', '\n', '\0', '\v', '\u00a0', 'a', '\u2003', '-'];
+  const old = (v) => String(v).replace(/^[ \t\r\n\0\v\u00a0]+|[ \t\r\n\0\v\u00a0]+$/g, '');
+  let same = true;
+  for (let k = 0; k < 20000 && same; k++) {
+    let s = '';
+    const len = (k * 7) % 9;
+    for (let q = 0; q < len; q++) s += chars[(k * 31 + q * 17 + (k >> 3)) % chars.length];
+    same = L.trim(s) === old(s);
+  }
+  check('the trim agrees with the anchored regex it replaced', same);
+}
 
 console.log('lookup_js: ' + n + ' checks, ' + fail + ' failure(s)');
 process.exit(fail ? 1 : 0);

@@ -1901,8 +1901,16 @@ function QRID_partsText(p){
   return p.sign + t;
 }
 /* A looked-up value (@UVEXISTS, @UVUNIQUE) without the space around it: space,
-   tab, CR, LF, NUL, vertical tab and the no-break space. Twin of Logic::lookupTrim. */
-function QRID_lookupTrim(v){ return String(v).replace(/^[ \t\r\n\0\v\u00A0]+|[ \t\r\n\0\v\u00A0]+$/g, ""); }
+   tab, CR, LF, NUL, vertical tab and the no-break space. Twin of Logic::lookupTrim.
+   An index scan from each end: a regex anchored at the end is retried from
+   every position of a long run of spaces inside the value, which is quadratic. */
+function QRID_lookupSpace(c){ return c === 32 || c === 9 || c === 13 || c === 10 || c === 0 || c === 11 || c === 160; }
+function QRID_lookupTrim(v){
+  var s = String(v), i = 0, j = s.length;
+  while(i < j && QRID_lookupSpace(s.charCodeAt(i))) i++;
+  while(j > i && QRID_lookupSpace(s.charCodeAt(j - 1))) j--;
+  return (i === 0 && j === s.length) ? s : s.slice(i, j);
+}
 /* A number in one written form ("007", "7.0" and "7" are all "7"), or null.
    mark "comma" reads one comma as the decimal mark. Twin of Logic::numberKey. */
 function QRID_numberKey(s, mark){

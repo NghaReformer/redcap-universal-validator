@@ -7179,9 +7179,8 @@ class UniversalValidator extends AbstractExternalModule
             // let REDCap filter to candidate matches instead of exporting the whole
             // project (F4). The post-save audit's findCollision call keeps the full,
             // authoritative scan.
-            // A narrowed miss that a rule ignoring letter case (or comparing
-            // numbers by value) cannot trust is confirmed by a full read, which
-            // a survey makes only within its read budget.
+            // A narrowed miss is confirmed by a full read, which a survey
+            // makes only within its read budget (findCollision).
             $mayFullRead = $isAuthenticated ? null
                 : function () use ($project_id) { return $this->surveyFullReadAllowed($project_id); };
             $col = $this->findCollision($project_id, $field, $with, $scope, $values, $record, $event_id, $group_id, true,
@@ -7232,7 +7231,8 @@ class UniversalValidator extends AbstractExternalModule
      * from the values the page sent for its "when" fields ("cond"), and from
      * saved values for every other field (activeRuleFor).
      * Every failure answers unknown or an error, which the browser shows as
-     * "could not check" and never blocks on.
+     * "could not check". It blocks only where Save asked again about a "not
+     * found" the page already held: that answer stands (QRID keepPrior).
      */
     private function existsCheck($payload, $project_id, $record, $instrument, $event_id, $repeat_instance, $survey_hash, $user_id, $group_id)
     {
@@ -7825,13 +7825,14 @@ class UniversalValidator extends AbstractExternalModule
      * primary field is never blank (guarded in findCollision), so at least it is
      * always constrained. Returns null when nothing can be safely constrained.
      *
-     * Each clause finds at least what Logic::lookupKey calls equal: a number
-     * in a field that holds them ($marks 'point') unquoted, so REDCap
-     * compares it by value; letters under a rule that ignores case ($fold)
-     * through lower(), whose answer on the A-Z-only text this allows is the
-     * fold's. Whatever else a clause lets through, the PHP comparison drops.
-     * A comma-decimal number is inlined as text (narrowIsFinal confirms its
-     * miss).
+     * A clause compares as the rule does where REDCap can: a number in a
+     * field that holds them ($marks 'point') unquoted, so REDCap compares it
+     * by value; letters under a rule that ignores case ($fold) through
+     * lower(). It can still miss a value Logic::lookupKey calls equal (a
+     * saved value with spaces around it, a comma-decimal number written
+     * another way), so a narrowed read settles only a hit: findCollision
+     * confirms every miss with a full read. Whatever else a clause lets
+     * through, the PHP comparison drops.
      */
     private static function collisionFilterLogic(array $need, array $target, $fold = false, array $marks = [])
     {
@@ -7870,8 +7871,10 @@ class UniversalValidator extends AbstractExternalModule
      *
      * $mayFullRead (a survey's read budget) is asked before every read of the
      * whole field: one that confirms a narrowed miss, and one made because the
-     * value could not be narrowed at all. A saved Missing Data Code in the
-     * tagged field is no duplicate (the scan skips them too).
+     * value could not be narrowed at all. A narrowed miss is never final: the
+     * filter cannot see a saved value with spaces around it, which the
+     * comparison here trims. A saved Missing Data Code in the tagged field is
+     * no duplicate (the scan skips them too).
      */
     private function findCollision($pid, $field, array $with, $scope, array $values, $excludeRecord, $event_id, $groupId = null, $narrow = false, $fold = true, ?callable $mayFullRead = null)
     {
@@ -7909,8 +7912,8 @@ class UniversalValidator extends AbstractExternalModule
         // scope, falsely flagging a collision in another DAG. Keep the full scan for
         // dag scope; narrowing (the F4 amplification guard) applies to project/event.
         //
-        // The filter compares as the rule does (collisionFilterLogic), so its
-        // miss is final, except for a comma-decimal number (narrowIsFinal).
+        // Only a hit settles the lookup here; a miss falls through to the full
+        // read (collisionFilterLogic says why).
         if ($narrow && $scope !== 'dag') {
             $fl = self::collisionFilterLogic($need, $target, $fold, $marks);
             if ($fl !== null) {
@@ -7918,7 +7921,7 @@ class UniversalValidator extends AbstractExternalModule
                     $n = \REDCap::getData($params + ['filterLogic' => $fl]);
                     if (is_array($n)) {
                         $hit = self::collisionIn($n, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes);
-                        if ($hit !== null || self::narrowIsFinal($target, $marks)) return $hit;
+                        if ($hit !== null) return $hit;
                     }
                 } catch (\Throwable $e) {
                     // filterLogic unsupported/malformed here — fall back below.
@@ -7929,19 +7932,6 @@ class UniversalValidator extends AbstractExternalModule
         $data = \REDCap::getData($params);
         if (!is_array($data)) return false;
         return self::collisionIn($data, $target, $keys, $marks, $fold, $scope, $excludeRecord, $groupId, $codes);
-    }
-
-    /**
-     * Whether a filterLogic read that found nothing settles a findCollision
-     * lookup: no component is a comma-decimal number, which the filter can
-     * only match as typed ("1,5" and "1,50" are one number).
-     */
-    private static function narrowIsFinal(array $target, array $marks)
-    {
-        foreach ($target as $f => $tv) {
-            if ($tv !== '' && isset($marks[$f]) && $marks[$f] === 'comma') return false;
-        }
-        return true;
     }
 
     /** findCollision's comparison over one exported data set: the colliding ['record','dag'], or null. */

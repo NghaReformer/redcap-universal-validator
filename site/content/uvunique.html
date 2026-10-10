@@ -57,9 +57,10 @@ holding the survey link that a specific value is in the study — one value at a
 <ul>
 <li><strong>Off by default.</strong></li>
 <li>Answered as a bare yes/no, never a record id.</li>
-<li>Rate-limited. A value the filtered read cannot settle needs a read of the whole
-field, which a survey makes only within a read budget it shares with <code>@UVEXISTS</code>
-(60 a minute per project); past it the answer is "could not check", which never blocks.</li>
+<li>Rate-limited. A value the filtered read does not find is confirmed by a read of the
+whole field, which a survey makes only within a read budget it shares with <code>@UVEXISTS</code>
+(60 a minute per project). Past it the answer is "could not check", which does not block,
+except that an "already used" the page held before Save asked again still stands.</li>
 <li><strong>Refused outright on any field REDCap flags as an Identifier</strong> —
 there it would let a stranger test whether a named person is enrolled, so the module
 makes that a configuration error rather than trusting a warning to be read.</li>

@@ -304,6 +304,21 @@ namespace {
     check('record uniqueness ignores letter case by default',count($res['violations'])===2);
     $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
     check('...and the page compares with the folding operator',strpos($ast,'"same:fold:text"')!==false&&strpos($ast,'"ab-1"')!==false);
+    // A saved Missing Data Code is no value: "unk" typed elsewhere is no duplicate of it.
+    $m=temporal('',null,'UVUNIQUE');
+    $mc=new ReflectionProperty(\INSPIRE\UniversalValidator\UniversalValidator::class,'missingCodesMemo');$mc->setAccessible(true);
+    $mc->setValue($m,[PID=>['UNK'=>true]]);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='UNK';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='unk';
+    $res=$m->scanProject(PID);
+    check('record uniqueness: "unk" is no duplicate of a saved code UNK',count($res['violations'])===0);
+    $ast=json_encode(ruleOf(render($m,'fa','1',1,3),'a_val')['uniqueRecordAsts']['a_val']??null);
+    check('...and the page is not sent the code as a value to match',strpos($ast,'"UNK"')===false);
+    $m=temporal('',null,'UVUNIQUE');
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='UNK';
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='unk';
+    $res=$m->scanProject(PID);
+    check('...control, no codes set up: "unk" and "UNK" are duplicates',count($res['violations'])===2);
     $m=temporal('',null,'UVUNIQUE');
     REDCap::$dictionary['a_val']['field_annotation']='@UVUNIQUE={"scope":"record","caseSensitive":true}';
     REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='ab-1';

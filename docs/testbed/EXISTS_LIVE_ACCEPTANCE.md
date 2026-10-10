@@ -216,10 +216,11 @@ next step.
 | J3 | On XE-1, `ux_rec` = XE-1 | Red: the record being edited does not find itself |
 | J4 | `ux_weight` = 70.0, then 070, then 71 | Found (record XE-1) twice, then red: numbers compare by value, and every enrolment weight is 70 |
 | J5 | `ux_weight_txt` = 70.00 | Found (record XE-1): the searched field holds numbers, so a plain Text field compares by value too |
-| J6 | On XE-1 save `ux_uq` = UQ-1 and `ux_uq_cs` = UQ-1. Open XE-2, type uq-1 in both, leave each field | `ux_uq`: "already recorded (record XE-1)", and Save is blocked (hard). `ux_uq_cs`: not used before. The `ux_uq` answer comes from REDCap's filtered read with `lower()`: if it says not used before, that REDCap does not honour `lower()` in `filterLogic`; record the version |
+| J6 | On XE-1 save `ux_uq` = UQ-1 and `ux_uq_cs` = UQ-1. Open XE-2, type uq-1 in both, leave each field | `ux_uq`: "already recorded (record XE-1)", and Save is blocked (hard). `ux_uq_cs`: not used before. The module first asks REDCap for `lower([ux_uq]) = 'uq-1'` and confirms a miss with a read of the whole field, so the answer is right either way |
 | J7 | Leave XE-2 without saving. Run the Validation scan with `ux_uq` = uq-1 saved on XE-2 (clear `ux_uq_cs` first, or save it too) | Two "Duplicate value" rows for `ux_uq` (XE-1 and XE-2); none for `ux_uq_cs` |
 | J8 | On XE-2, `ux_spec` = S-998 and leave the field (red). In a second tab, register S-998 as a specimen of XE-1 and save. Back in the first tab, at least 30 seconds after the red answer, press Save | That click asks again instead of trusting the red answer: an alert says the field is still being checked, then the field turns green. The next Save goes through |
-| J9 | On XE-1 save `ux_uq_num` = 7. Open XE-2, type 007 and leave the field | "already recorded (record XE-1)": REDCap's filtered read compares the number by value. If it says not used before, record the REDCap version |
+| J9 | On XE-1 save `ux_uq_num` = 7. Open XE-2, type 007 and leave the field. Then save -5 on XE-1 and type -05 on XE-2 | "already recorded (record XE-1)" both times: numbers compare by value |
+| J10 | Import `ux_uq` = `UQ-5 ` (a space after it) for XE-1 with Data Import, then open XE-1 and record whether the space was kept. Open XE-2, type UQ-5 and leave the field | "already recorded (record XE-1)" whether REDCap kept the space or not: a value with spaces around it is compared without them |
 
 ## Sign-off
 
