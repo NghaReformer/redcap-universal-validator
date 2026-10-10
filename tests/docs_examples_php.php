@@ -33,6 +33,19 @@
  *     hard-low, hard-high              outside "hard" (implausible)
  *     not-a-number                     not a plain decimal number
  *
+ * A @UVRANGE rule with a growth "reference" also reads its inputs, given
+ * after the value as "with <field>=<value>, ..." (dates as Y-M-D; an input
+ * left out is blank). Its result is one of
+ *
+ *     ok, z 0.12                       inside every limit, with the z-score
+ *     soft-low, z -3.40                (and the other tiers) with the z-score
+ *     plausible-low, plausible-high    no z-score, outside "plausible"
+ *     not evaluated                    no z-score, and nothing else to judge
+ *     blank, not-a-number, not-positive
+ *
+ * The inputs are read by GrowthReference::inputsFor, the reading the
+ * post-save audit uses, against the references the module ships.
+ *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which
  * tests/docs_examples_js.cjs replays through the browser engine, so the two
@@ -46,6 +59,7 @@ namespace INSPIRE\UniversalValidator;
 require_once __DIR__ . '/../php/AnnotationRules.php';
 require_once __DIR__ . '/../php/CheckCharacter.php';
 require_once __DIR__ . '/../php/Logic.php';
+require_once __DIR__ . '/../php/GrowthReference.php';
 
 $docs = [
     'docs/action_tag_validation_examples.md',
@@ -129,6 +143,42 @@ $rangeSpec = function (array $frag) {
 
 $norm = function ($s) { return preg_replace('/\s+/', ' ', trim($s)); };
 
+/**
+ * A growth rule's documented outcome (UniversalValidator::findingsRange):
+ * [outcome text, fixture case]. $inputs maps field name => value.
+ */
+$growth = function (array $frag, $value, array $inputs) use ($rangeSpec) {
+    $entry = GrowthReference::entry($frag['rangeReference']);
+    if ($entry === null) return ['unknown reference ' . $frag['rangeReference'], null];
+    $table = GrowthReference::table($entry);
+    $scale = isset($frag['rangeMeasureScale']) ? $frag['rangeMeasureScale'] : null;
+    $case = ['reference' => $frag['rangeReference'], 'input' => $value, 'scale' => $scale, 'spec' => $rangeSpec($frag),
+             'plausibleLo' => isset($frag['rangePlausibleLo']) ? $frag['rangePlausibleLo'] : null,
+             'plausibleHi' => isset($frag['rangePlausibleHi']) ? $frag['rangePlausibleHi'] : null,
+             'sex' => null, 'x' => null];
+    $m = GrowthReference::measure($value, false, $scale);
+    if ($m['state'] !== 'ok') return [$m['state'], $case];
+    $read = [];
+    foreach (['rangeSex', 'rangeAgeDob', 'rangeAgeAt', 'rangeAgeDays', 'rangeAgeMonths', 'rangeBy'] as $k) {
+        if (!isset($frag[$k])) continue;
+        // the field a reference names: its last [name], so "[enrol_arm_1][dob]" reads dob
+        $f = preg_match('/\[([a-z0-9_]+)\]$/', $frag[$k], $mm) ? $mm[1] : '';
+        $read[$k] = isset($inputs[$f]) ? trim($inputs[$f], " \t\r\n") : '';
+    }
+    $in = GrowthReference::inputsFor($frag, $read, $entry);
+    if ($in['state'] !== 'ok') {
+        $p = GrowthReference::plausible($m['y'], $case['plausibleLo'], $case['plausibleHi']);
+        return [$p !== null ? $p : 'not evaluated', $case];
+    }
+    // x as the shortest text that reads back as the same double, in both runtimes
+    $case['sex'] = $in['sex'];
+    $case['x'] = sprintf('%.17g', $in['x']);
+    $z = GrowthReference::zScore($entry, $table, $in['sex'], $in['x'], $m['y']);
+    if ($z['state'] !== 'ok') return ['no row', $case];
+    $r = Logic::rangeVerdict($case['spec'], $z['z']);
+    return [($r['tier'] === 'ok' ? 'ok' : $r['reason']) . ', z ' . $z['z'], $case];
+};
+
 foreach ($docs as $doc) {
     $path = __DIR__ . '/../' . $doc;
     $text = file_get_contents($path);
@@ -169,6 +219,27 @@ foreach ($docs as $doc) {
                 if ($cut === false) { $failures[] = "$doc:$lineNo expect line has no \"=>\": $t"; continue; }
                 $input = str_replace('\n', "\n", trim(substr($t, 0, $cut)));
                 $want = $norm(substr($t, $cut + 2));
+                if (($frag['type'] ?? null) === 'range' && isset($frag['rangeReference'])) {
+                    $with = [];
+                    $w = stripos($input, ' with ');
+                    if ($w !== false) {
+                        foreach (explode(',', substr($input, $w + 6)) as $pair) {
+                            $eq = strpos($pair, '=');
+                            if ($eq === false) { $failures[] = "$doc:$lineNo expect input \"$pair\" is not <field>=<value>"; continue 2; }
+                            $with[trim(substr($pair, 0, $eq))] = trim(substr($pair, $eq + 1));
+                        }
+                        $input = trim(substr($input, 0, $w));
+                    }
+                    list($got, $case) = $growth($frag, $input, $with);
+                    $checks++;
+                    if ($norm($got) !== $want) {
+                        $failures[] = "$doc:$lineNo " . json_encode($input) . ' with ' . json_encode($with) . " expected \"$want\" but got \"$got\"";
+                    }
+                    if ($case !== null) {
+                        $fixture[] = ['where' => "$doc:$lineNo", 'tagLine' => $tagLine, 'kind' => 'growth', 'outcome' => $got] + $case;
+                    }
+                    continue;
+                }
                 if (($frag['type'] ?? null) === 'range') {
                     $spec = $rangeSpec($frag);
                     $r = Logic::rangeVerdict($spec, $input);

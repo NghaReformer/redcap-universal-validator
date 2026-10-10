@@ -2399,28 +2399,13 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * 'male', 'female' or null for a sex code under a rule (or branch): letter
-     * case ignored unless its "caseSensitive" is true, the fold Logic::compare
-     * uses. Twin: growthVerdict in js/engine.js.
-     */
-    private static function growthSexOf($code, array $rule)
-    {
-        $fold = empty($rule['caseSensitive']);
-        $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
-        $c = $key($code);
-        if ($c === $key($rule['rangeMale'] ?? '')) return 'male';
-        if ($c === $key($rule['rangeFemale'] ?? '')) return 'female';
-        return null;
-    }
-
-    /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
      * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
      * Code) or unreadable, the sex code is neither "male" nor "female", or the
      * age, length or height is outside the reference, or ['problem' => why]
-     * when an input could not be resolved or the reference cannot be read. The
-     * reasons are the browser's (growthVerdict in js/engine.js).
+     * when an input could not be resolved or the reference cannot be read.
+     * What the inputs mean is GrowthReference::inputsFor.
      */
     private function growthInputs(array $rule, array $values, array $resolution, $pid)
     {
@@ -2456,35 +2441,9 @@ class UniversalValidator extends AbstractExternalModule
         } catch (\Throwable $e) {
             return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" cannot be used: ' . $e->getMessage()];
         }
-        $sexCode = isset($read['rangeSex']) ? $read['rangeSex'] : '';
-        // Letter case is ignored unless the rule is caseSensitive, the fold of
-        // @UVASSERT (twin: growthVerdict in js/engine.js).
-        $sex = self::growthSexOf($sexCode, $rule);
-        if ($sex === null) {
-            return ['state' => 'inert', 'why' => $sexCode === '' ? 'the sex is blank'
-                : 'the sex code is neither ' . $rule['rangeMale'] . ' (male) nor ' . $rule['rangeFemale'] . ' (female)'];
-        }
-        $in = ['comma' => !empty($rule['rangeAxisComma'])];
-        if (isset($rule['rangeAgeDob'])) {
-            foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
-                $type = isset($rule['range' . ucfirst($w) . 'Type']) ? $rule['range' . ucfirst($w) . 'Type'] : 'date';
-                $p = TemporalValue::parse(isset($read[$k]) ? $read[$k] : '', $type, 'ymd');
-                if ($p['state'] === 'absent') { $in[$w . 'Days'] = null; continue; }
-                // a saved value, not the rule: not evaluated, as in the browser
-                if ($p['state'] !== 'ok') {
-                    return ['state' => 'inert', 'why' => 'the ' . ($w === 'dob' ? 'date of birth' : 'date of the measurement')
-                        . ' is not a date this rule can read'];
-                }
-                $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
-            }
-        } else {
-            foreach (['days' => 'rangeAgeDays', 'months' => 'rangeAgeMonths', 'by' => 'rangeBy'] as $w => $k) {
-                if (isset($rule[$k])) $in[$w] = isset($read[$k]) ? $read[$k] : '';
-            }
-        }
-        $a = GrowthReference::axisValue($entry, $in);
-        if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
-        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $sex, 'x' => $a['x']];
+        $in = GrowthReference::inputsFor($rule, $read, $entry);
+        if ($in['state'] !== 'ok') return $in;
+        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $in['sex'], 'x' => $in['x']];
     }
 
     /**
@@ -3198,7 +3157,7 @@ class UniversalValidator extends AbstractExternalModule
         $out = ['sexes' => ['male' => true, 'female' => true], 'xs' => null];
         $sex = $lit('rangeSexOp');
         if ($sex !== null) {
-            $which = self::growthSexOf($sex, $n);
+            $which = GrowthReference::sexOf($sex, $n);
             $out['sexes'] = ['male' => $which === 'male', 'female' => $which === 'female'];
         }
         $in = ['comma' => !empty($n['rangeAxisComma'])];
@@ -5027,7 +4986,7 @@ class UniversalValidator extends AbstractExternalModule
                     : (isset($choices[$f]) && in_array($ftype, ['radio', 'dropdown'], true) ? $choices[$f] : null);
                 if ($codes !== null) {
                     // matched as the rule matches a value: letter case ignored
-                    // unless caseSensitive (growthSexOf)
+                    // unless caseSensitive (GrowthReference::sexOf)
                     $fold = empty($frag['caseSensitive']);
                     $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
                     foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $ck => $word) {

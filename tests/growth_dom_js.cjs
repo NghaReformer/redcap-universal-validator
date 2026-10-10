@@ -565,7 +565,7 @@ function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w
     /higher than usual \(z-score 3\.00 on Test, age in days/.test(nMsg(env, 'weight').innerHTML));
 }
 
-// ---- 11) sex codes ignore letter case unless caseSensitive (UniversalValidator::growthSexOf) -------
+// ---- 11) sex codes ignore letter case unless caseSensitive (GrowthReference::sexOf) ----------
 {
   const MF = { rangeMale: 'M', rangeFemale: 'F' };
   const env = boot(inputs('m', '16'), { growth: GROWTH, rules: [rule(Object.assign({}, MF, LIVE))] });

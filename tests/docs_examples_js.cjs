@@ -8,7 +8,10 @@
  * js/engine.js, booted the way the server injects it: a single-ID rule must
  * accept or refuse the value exactly as the server did, a pooled rule must
  * split it into the same members and junk, with the same alternate credited,
- * and a @UVRANGE rule must reach the same tier and reason.
+ * and a @UVRANGE rule must reach the same tier and reason. A growth rule
+ * replays the server's sex and axis position against the shipped tables:
+ * the same measurement (with "measureScale"), z-score and verdict, or the
+ * same "plausible" verdict when the server found no z-score.
  *
  * Run:  node tests/docs_examples_js.cjs
  */
@@ -92,10 +95,43 @@ function rangeLogic() {
   return global.window.INSPIREUniversalValidator.rangeLogic;
 }
 
+// The shipped growth references, as the page receives them (entry + table).
+function bundledRefs() {
+  const dir = path.join(__dirname, '..', 'data', 'references');
+  const idx = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));
+  const out = {};
+  for (const id of Object.keys(idx.references)) {
+    const e = idx.references[id];
+    out[id] = Object.assign({}, e, JSON.parse(fs.readFileSync(path.join(dir, e.file), 'utf8')));
+  }
+  return out;
+}
+
 const fx = JSON.parse(fs.readFileSync(path.join(__dirname, 'docs_expect_fixture.json'), 'utf8'));
 let fail = 0;
 let range = null;
+let growth = null;
+let refs = null;
 for (const c of fx.cases) {
+  if (c.kind === 'growth') {
+    range = range || rangeLogic();
+    growth = growth || global.window.INSPIREUniversalValidator.growthLogic;
+    refs = refs || bundledRefs();
+    const m = growth.measure(c.input, false, c.scale);
+    let got;
+    if (m.state !== 'ok') got = m.state;
+    else if (c.sex === null) got = growth.plausible(m.y, c.plausibleLo, c.plausibleHi) || 'not evaluated';
+    else {
+      const s = growth.zScore(refs[c.reference], c.sex, parseFloat(c.x), m.y);
+      const r = s.state === 'ok' ? range.verdict(c.spec, s.z) : null;
+      got = r ? (r.tier === 'ok' ? 'ok' : r.reason) + ', z ' + s.z : 'no row';
+    }
+    if (got !== c.outcome) {
+      fail++;
+      console.error(`MISMATCH ${c.where} ${JSON.stringify(c.input)}: server ${c.outcome}, browser ${got}`);
+    }
+    continue;
+  }
   if (c.kind === 'range') {
     range = range || rangeLogic();
     const r = range.verdict(c.spec, c.input);

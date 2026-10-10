@@ -2107,7 +2107,22 @@ length or height) from other fields:
 A weight of 6.6 kg for a boy of exactly one year has a weight-for-age
 z-score of -3.40, so the first rule shows:
 
-> ⚠ This value is lower than usual (z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years); expected z-score -2 to 2).
+> ⚠ This value is lower than usual (z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2).
+
+The same rule, with the inputs written after the value:
+
+```text
+# on: weight_kg
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+```
+
+```text expect
+6.6 with sex=1, dob=2025-01-10, visit_date=2026-01-10    => soft-low, z -3.40
+9.6 with sex=1, dob=2025-01-10, visit_date=2026-01-10    => ok, z -0.04
+6.6 with sex=2, dob=2025-01-10, visit_date=2026-01-10    => soft-low, z -2.56
+6.6 with sex=1, visit_date=2026-01-10                    => not evaluated
+abc with sex=1, dob=2025-01-10, visit_date=2026-01-10    => not-a-number
+```
 
 | Key | Value |
 | --- | ----- |

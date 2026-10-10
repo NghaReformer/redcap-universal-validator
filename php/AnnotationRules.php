@@ -2071,7 +2071,7 @@ class AnnotationRules
             if ($frag['rangeMale'] === $frag['rangeFemale']) {
                 $errors[] = '"male" and "female" are the same code ("' . $frag['rangeMale'] . '").';
             } elseif (empty($frag['caseSensitive']) && Logic::foldAscii($frag['rangeMale']) === Logic::foldAscii($frag['rangeFemale'])) {
-                // sex codes are matched with letter case ignored (growthSexOf)
+                // sex codes are matched with letter case ignored (GrowthReference::sexOf)
                 $errors[] = '"male" "' . $frag['rangeMale'] . '" and "female" "' . $frag['rangeFemale'] . '" differ only in letter case, '
                     . 'which this rule ignores. Add "caseSensitive": true to tell them apart.';
             }

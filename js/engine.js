@@ -4146,7 +4146,7 @@ function QRIDRangeInit(QRID_CONFIG){
           configError = "@UVRANGE cannot read the inputs of its growth reference.";
         }
       }
-      /* sex codes: letter case ignored unless caseSensitive (twin: UniversalValidator::growthSexOf) */
+      /* sex codes: letter case ignored unless caseSensitive (twin: GrowthReference::sexOf) */
       growth = { ref: gref, ops: ops, male: String(cfg.rangeMale), female: String(cfg.rangeFemale),
                  fold: cfg.caseSensitive !== true,
                  dobType: cfg.rangeDobType || "date", dobFormat: cfg.rangeDobFormat || "ymd",

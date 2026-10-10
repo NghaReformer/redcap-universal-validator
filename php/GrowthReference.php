@@ -1,6 +1,7 @@
 <?php
 namespace INSPIRE\UniversalValidator;
 require_once __DIR__ . '/Logic.php';
+require_once __DIR__ . '/TemporalValue.php';
 
 /**
  * Growth references for @UVRANGE: LMS tables (WHO, CDC or any other) and the
@@ -636,6 +637,62 @@ final class GrowthReference
         // one double multiplication in both runtimes. Twin: QRID_growthMeasure.
         if ($scale !== null) $y *= (float) $scale;
         return ['state' => 'ok', 'y' => $y];
+    }
+
+    /**
+     * 'male', 'female' or null for a sex code under a rule (or branch): letter
+     * case ignored unless its "caseSensitive" is true, the fold Logic::compare
+     * uses. Twin: growthVerdict in js/engine.js.
+     */
+    public static function sexOf($code, array $rule)
+    {
+        $fold = empty($rule['caseSensitive']);
+        $key = function ($v) use ($fold) { $v = (string) $v; return $fold ? Logic::foldAscii($v) : $v; };
+        $c = $key($code);
+        if ($c === $key(isset($rule['rangeMale']) ? $rule['rangeMale'] : '')) return 'male';
+        if ($c === $key(isset($rule['rangeFemale']) ? $rule['rangeFemale'] : '')) return 'female';
+        return null;
+    }
+
+    /**
+     * The sex and the axis position of a growth rule's inputs, or why there
+     * are none: ['state' => 'ok', 'sex' => 'male'|'female', 'x' => float] or
+     * ['state' => 'inert', 'why']. $read holds each input the rule names
+     * (rangeSex, rangeAgeDob, rangeAgeAt, rangeAgeDays, rangeAgeMonths,
+     * rangeBy) as trimmed text, '' for a blank one; dates are saved values,
+     * Y-M-D. The reasons are the browser's (growthVerdict in js/engine.js).
+     * The one reading of the inputs: UniversalValidator::growthInputs and
+     * tests/docs_examples_php.php both call it.
+     */
+    public static function inputsFor(array $rule, array $read, array $entry)
+    {
+        $sexCode = isset($read['rangeSex']) ? (string) $read['rangeSex'] : '';
+        $sex = self::sexOf($sexCode, $rule);
+        if ($sex === null) {
+            return ['state' => 'inert', 'why' => $sexCode === '' ? 'the sex is blank'
+                : 'the sex code is neither ' . $rule['rangeMale'] . ' (male) nor ' . $rule['rangeFemale'] . ' (female)'];
+        }
+        $in = ['comma' => !empty($rule['rangeAxisComma'])];
+        if (isset($rule['rangeAgeDob'])) {
+            foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
+                $type = isset($rule['range' . ucfirst($w) . 'Type']) ? $rule['range' . ucfirst($w) . 'Type'] : 'date';
+                $p = TemporalValue::parse(isset($read[$k]) ? (string) $read[$k] : '', $type, 'ymd');
+                if ($p['state'] === 'absent') { $in[$w . 'Days'] = null; continue; }
+                // a saved value, not the rule: not evaluated, as in the browser
+                if ($p['state'] !== 'ok') {
+                    return ['state' => 'inert', 'why' => 'the ' . ($w === 'dob' ? 'date of birth' : 'date of the measurement')
+                        . ' is not a date this rule can read'];
+                }
+                $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
+            }
+        } else {
+            foreach (['days' => 'rangeAgeDays', 'months' => 'rangeAgeMonths', 'by' => 'rangeBy'] as $w => $k) {
+                if (isset($rule[$k])) $in[$w] = isset($read[$k]) ? (string) $read[$k] : '';
+            }
+        }
+        $a = self::axisValue($entry, $in);
+        if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
+        return ['state' => 'ok', 'sex' => $sex, 'x' => $a['x']];
     }
 
     /**

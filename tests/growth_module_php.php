@@ -827,7 +827,7 @@ namespace {
     $z = GrowthReference::zScore($e, GrowthReference::table($e), 'male', 365, 6.6);
     $doc = (string) file_get_contents(__DIR__ . '/../docs/action_tag_validation_examples.md');
     check('docs: the worked example\'s z-score and note (got ' . json_encode($z) . ')', ($z['z'] ?? null) === '-3.40'
-        && strpos($doc, 'This value is lower than usual (z-score -3.40 on ' . $e['title'] . '; expected z-score -2 to 2).') !== false);
+        && strpos($doc, 'This value is lower than usual (z-score -3.40 on ' . $e['title'] . ', in ' . $e['unit'] . '; expected z-score -2 to 2).') !== false);
 
     // ---- 6) a folder of extra references ------------------------------------------------------
     $dir = tmpdir();
