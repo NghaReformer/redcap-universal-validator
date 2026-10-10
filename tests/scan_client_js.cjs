@@ -129,6 +129,10 @@ UV.labels = {
         + 'Continue to carry on from where it stopped.',
   stopping: 'This scan was asked to stop and has not finished stopping. Press Continue to finish '
           + 'stopping it.',
+  planningStopped: 'This scan stopped while it was listing the records to check. Nothing has '
+                 + 'happened for {minutes} minutes, and a list that stopped part way cannot be '
+                 + 'continued. Press Stop, then start a new scan; if there is no Stop button, ask '
+                 + 'your REDCap administrator to stop it.',
   plain: '{done} of {total} records',
   checked: '{done} of {total} records checked',
   excluded: '{n} could not be checked',
@@ -776,6 +780,33 @@ const idle = (stop, why, st) => ({ ok: true, stop, why, worked: 0, requeued: 0, 
   await show(Object.assign(finished('partial'), { paused: true, stopping: true }));
   check('paused: a finished run is never paused or stopping, whatever it is sent',
     els['uv-scan-stalled'].style.display === 'none');
+
+  // R2O-3. A RUN WHOSE PLANNING DIED sat in `planning` with nothing said, and
+  // Continue answered "not in a phase that takes work" for ever. The server
+  // now says so; the page names Stop and does not offer Continue beside it.
+  const planning = (over) => Object.assign(running(0, 0), { phase: 'planning' }, over);
+  await show(planning({ planningStopped: true, idleSeconds: 3 * 3600 }));
+  check('planning: a watching tab is told planning stopped, how long ago, and to press Stop',
+    els['uv-scan-stalled'].style.display === ''
+    && els['uv-scan-stalled'].textContent === UV.labels.planningStopped.replace('{minutes}', '180'));
+  check('planning: Continue, which can never move it, is not offered - Stop is',
+    els['uv-scan-resume'].style.display === 'none' && els['uv-scan-cancel'].style.display === '');
+  await show(planning({ planningStopped: false, idleSeconds: 90 }));
+  check('planning: a run still inside the window is told nothing, as before',
+    els['uv-scan-stalled'].style.display === 'none' && els['uv-scan-resume'].style.display === '');
+  // A tab already DRIVING such a run stops asking for work it can never get.
+  reset([idle(null, 'this scan is not in a phase that takes work',
+              planning({ planningStopped: true, idleSeconds: 3 * 3600 })),
+         planning({ planningStopped: true, idleSeconds: 3 * 3600 })]);
+  UV.resume(7);
+  await ticks(10);
+  check('planning: a driving tab stops driving a run whose planning stopped',
+    UV.state.running === false
+    && sent.filter((s) => s.action === 'scan-work').length === 1
+    && pending.every((p) => p.ms >= 1500));
+  check('planning: and shows the watcher\'s sentence instead, with no Continue',
+    els['uv-scan-stalled'].textContent.indexOf('This scan stopped while it was listing') === 0
+    && els['uv-scan-resume'].style.display === 'none');
 
   // DRIVING. Same status, but this tab is the one doing the work.
   reset([{ ok: true, run_id: 7 }, worked(counted({ stalled: true, idleSeconds: 330 }))]);

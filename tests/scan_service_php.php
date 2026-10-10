@@ -295,6 +295,122 @@ namespace {
             return isset(self::$groupNames[(int) $groupId]) ? self::$groupNames[(int) $groupId] : '';
         }
     }
+
+    /** A designer with full export and the one instrument the rules live on. */
+    class VerbUser
+    {
+        public $rights = ['design' => true, 'data_export_tool' => '1', 'group_id' => null,
+                          'forms' => ['fa' => '1']];
+        public $design = true;
+        public function hasDesignRights() { return $this->design; }
+        public function getRights($pid = null) { return $this->rights; }
+    }
+
+    /**
+     * A module that gets status() and cancel() PAST THEIR GATES, over the real
+     * SqlScanStore (reviews R2O-3, R2O-4, R2O-5).
+     *
+     * status() and cancel() are reachable only through a user, an entitlement
+     * and a database, which is why what they ANSWER had no test here: the
+     * flags and the stall readings were all asked of static helpers. This
+     * serves the handful of statements the two verbs issue, dispatched on the
+     * SQL as FakeSourceDb is, so the store, the entitlement and the
+     * authorisation that run are the real ones.
+     *
+     * THE RUN ROW IS A PLAIN ARRAY the test sets, so a clock can be put hours
+     * in the past - which no store that stamps its own times allows. cancel()
+     * and finish() are applied to it, the way the real statements would, and
+     * every write is kept in $writes so a test can see which ones were sent.
+     */
+    class VerbModule
+    {
+        public $sys = [];
+        public $proj = [];
+        /** @var ?array keyed by ScanStore::RUN_COLUMNS; null is "no such run" */
+        public $runRow = null;
+        public $lease = null;
+        public $census = [];
+        /** @var mixed a VerbUser, or 'throw' */
+        public $user;
+        /** @var array what durableScanContext() answers */
+        public $ctx;
+        public $writes = [];
+        private $count = 0;
+
+        public function __construct()
+        {
+            $this->user = new \VerbUser();
+            $this->ctx = ['ok' => true, 'why' => null, 'rules' => [], 'structure' => [],
+                          'ownership' => ['a_val' => 'fa'],
+                          'plan' => ['hostFields' => ['a_val' => ['fa' => true]]]];
+            $this->sys = [\INSPIRE\UniversalValidator\Scan\ScanService::SYS_FLAG => '1'];
+            $this->proj = [\INSPIRE\UniversalValidator\Scan\ScanService::PROJ_FLAG => '1'];
+        }
+
+        public function getUser()
+        {
+            if ($this->user === 'throw') throw new \RuntimeException('rights table unreadable');
+            return $this->user;
+        }
+        public function durableScanContext($pid, array $opts = [], $dag = null) { return $this->ctx; }
+        public function getSystemSetting($k) { return isset($this->sys[$k]) ? $this->sys[$k] : null; }
+        public function getProjectSetting($k, $pid = null) { return isset($this->proj[$k]) ? $this->proj[$k] : null; }
+        public function log($event, $context = []) {}
+
+        /** A run row with every RUN_COLUMN, these values over plain defaults. */
+        public static function row(array $over)
+        {
+            $row = [];
+            foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $k) $row[$k] = null;
+            return array_merge($row, ['run_id' => 77, 'project_id' => 149, 'phase' => 'scanning',
+                'fingerprint' => 'fp', 'manifest_total' => 10, 'manifest_done' => 3,
+                'cursor_ordinal' => 3, 'lease_epoch' => 1, 'generation_id' => 5, 'run_seq' => 5,
+                'detail_rows' => 0, 'detail_bytes' => 0, 'policy_revision' => 1,
+                'values_state' => 'none', 'coverage' => 'partial', 'detail' => 'complete',
+                'created_at' => gmdate('Y-m-d H:i:s'), 'updated_at' => gmdate('Y-m-d H:i:s')], $over);
+        }
+
+        public function query($sql, $params = [])
+        {
+            if (strpos($sql, 'SELECT ROW_COUNT()') === 0) return [[$this->count]];
+            $this->count = 0;
+            if (strpos($sql, 'SELECT run_id, project_id, scope_dag') === 0) {
+                if ($this->runRow === null || (int) $params[0] !== (int) $this->runRow['run_id']
+                        || (int) $params[1] !== (int) $this->runRow['project_id']) return [];
+                $out = [];
+                foreach (\INSPIRE\UniversalValidator\Scan\ScanStore::RUN_COLUMNS as $k) {
+                    $out[] = $this->runRow[$k];
+                }
+                return [$out];
+            }
+            if (strpos($sql, 'SELECT lease_expires_at') === 0) {
+                return $this->lease === null ? [] : [[$this->lease]];
+            }
+            if (strpos($sql, 'SELECT state, COUNT(*)') === 0) {
+                $out = [];
+                foreach ($this->census as $s => $c) $out[] = [$s, $c];
+                return $out;
+            }
+            if (strpos($sql, 'SELECT EXISTS(SELECT 1') === 0) return [[1]];
+            if (strpos(ltrim($sql), 'UPDATE') === 0 || strpos(ltrim($sql), 'INSERT') === 0) {
+                $this->writes[] = [preg_replace('/\s+/', ' ', trim($sql)), $params];
+                $live = $this->runRow !== null && empty($this->runRow['terminal']);
+                if (strpos($sql, 'SET cancel_requested_at') !== false && $live) {
+                    $this->runRow['cancel_requested_at'] = $params[0];
+                    $this->runRow['phase'] = 'cancelling';
+                    $this->runRow['lease_epoch'] = (int) $this->runRow['lease_epoch'] + 1;
+                    $this->count = 1;
+                } elseif (strpos($sql, 'SET phase = ?, terminal = ?') !== false && $live) {
+                    $this->runRow['phase'] = $params[0];
+                    $this->runRow['terminal'] = $params[1];
+                    $this->runRow['coverage'] = $params[2];
+                    $this->count = 1;
+                }
+                return true;
+            }
+            return [];
+        }
+    }
 }
 
 namespace INSPIRE\UniversalValidator\Scan {
@@ -667,6 +783,52 @@ namespace INSPIRE\UniversalValidator\Scan {
         'lease_expires_at' => $held(299)], [ScanStore::REC_PENDING => 400000], $NOW);
     check('CL-3: a run still listing its records for two and a half minutes is not stalled',
         $plan['stalled'] === false && $plan['paused'] === false && $plan['stopping'] === false);
+
+    // R2O-3. BUT ONLY FOR A WINDOW. When the request that was planning dies,
+    // the run sits in `planning` holding the project's slot until the stale
+    // reaper, Continue cannot move it, and CL-3's silence had no end.
+    $planRow = function ($createdAgo, array $over = []) use ($ago) {
+        return array_merge(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+            'created_at' => $ago($createdAgo), 'updated_at' => $ago($createdAgo),
+            'progress_at' => null, 'lease_expires_at' => null], $over);
+    };
+    $dead = ScanService::progressOf($planRow(3 * 3600), [], $NOW);
+    check('R2O-3: a run planning for three hours has stopped planning - and is not stalled or paused',
+        $dead['planningStopped'] === true && $dead['stalled'] === false
+        && $dead['paused'] === false && $dead['stopping'] === false
+        && $dead['idleSeconds'] === 10800);
+    check('R2O-3: one planning for two and a half minutes is still told nothing',
+        $plan['planningStopped'] === false);
+    $win = ScanPolicy::planningSeconds(null, null);
+    check('R2O-3: the default window is the policy default of fifteen minutes',
+        $win === ScanPolicy::D_PLANNING_MINUTES * 60 && $win === 900);
+    check('R2O-3: a second inside the window is planning; at the window it has stopped',
+        ScanService::progressOf($planRow($win - 1), [], $NOW)['planningStopped'] === false
+        && ScanService::progressOf($planRow($win), [], $NOW)['planningStopped'] === true);
+    check('R2O-3: the window is the caller\'s, as the stall threshold is',
+        ScanService::progressOf($planRow(600), [], $NOW, ScanService::STALL_SECONDS, 300)['planningStopped'] === true
+        && ScanService::progressOf($planRow(600), [], $NOW, ScanService::STALL_SECONDS, 3600)['planningStopped'] === false);
+    check('R2O-3: only planning: a scanning run as old is paused, a finished one is neither',
+        ScanService::progressOf($planRow(10800, ['phase' => ScanPhase::SCANNING]), [], $NOW)['planningStopped'] === false
+        && ScanService::progressOf($planRow(10800, ['phase' => ScanPhase::TERMINAL, 'terminal' => 'complete']),
+            [], $NOW)['planningStopped'] === false);
+    check('R2O-3: a planning row with no readable clock is not given the alarming reading',
+        ScanService::progressOf(['phase' => ScanPhase::PLANNING, 'terminal' => null,
+            'created_at' => 'not a date'], [], $NOW)['planningStopped'] === false);
+    // The window: minutes from the system setting, never shorter than the
+    // request time limit, and malformed is the default.
+    check('R2O-3 policy: the setting gives the minutes',
+        ScanPolicy::planningSeconds('30', '30') === 1800 && ScanPolicy::planningSeconds(20, false) === 1200);
+    check('R2O-3 policy: zero, negative or junk minutes are the default',
+        ScanPolicy::planningSeconds('0', null) === 900 && ScanPolicy::planningSeconds(-5, null) === 900
+        && ScanPolicy::planningSeconds('soon', '') === 900);
+    check('R2O-3 policy: never shorter than the request time limit, which a planner may still be inside',
+        ScanPolicy::planningSeconds('5', '3600') === 3600 && ScanPolicy::planningSeconds(null, 7200) === 7200);
+    check('R2O-3 policy: no limit at all leaves the minutes alone',
+        ScanPolicy::planningSeconds('20', '0') === 1200);
+    check('R2O-3 policy: a sentence threshold, so it is not frozen into the run\'s policy',
+        !array_key_exists('planningSeconds', ScanPolicy::resolve([], []))
+        && !array_key_exists('planningMinutes', ScanPolicy::resolve([], [])));
     check('stall: the list of those phases is the three finishing ones, and not scanning',
         count(ScanService::PHASES_ON_THE_UPDATE_CLOCK) === 3
         && !in_array(ScanPhase::SCANNING, ScanService::PHASES_ON_THE_UPDATE_CLOCK, true));
@@ -883,6 +1045,48 @@ namespace INSPIRE\UniversalValidator\Scan {
         && empty($states[ScanStore::REC_PENDING]) && empty($states[ScanStore::REC_CLAIMED]));
     check('CL-6: in a bounded number of passes, not by running out of test',
         $passes < 400);
+}
+
+/* =====================================================================
+ * R2O-3  A RUN WHOSE PLANNING DIED IS TOLD SO, THROUGH status() ITSELF
+ *
+ * progressOf() decides; status() is what the page is sent. Asked through the
+ * real verb, past its entitlement, over a run row whose clock is hours old -
+ * so dropping the flag from the answer, or not passing the window, is caught
+ * here and not only in the helper.
+ * ===================================================================== */
+{
+    $V = 'INSPIRE\\UniversalValidator\\ScanPageView';
+    $pm = new \VerbModule();
+    $pm->runRow = \VerbModule::row(['phase' => ScanPhase::PLANNING, 'manifest_total' => 0,
+        'created_at' => gmdate('Y-m-d H:i:s', time() - 3 * 3600),
+        'updated_at' => gmdate('Y-m-d H:i:s', time() - 3 * 3600)]);
+    $pst = (new ScanService($pm))->status(149, 77);
+    check('R2O-3 status: a run planning for three hours reaches the page as planning stopped',
+        $pst['ok'] === true && $pst['active'] === true && $pst['planningStopped'] === true
+        && $pst['stalled'] === false && $pst['paused'] === false && $pst['stopping'] === false);
+    $said = $V::stalledText($pst);
+    check('R2O-3 status: and the panel says planning stopped, how long ago, and to press Stop',
+        is_string($said) && strpos($said, 'This scan stopped while it was listing the records') === 0
+        && strpos($said, 'for 180 minutes') !== false && strpos($said, 'Press Stop') !== false
+        && strpos($said, 'Press Continue') === false);
+    // A planner still inside the window is left alone, as CL-3 intended.
+    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 120);
+    $fresh = (new ScanService($pm))->status(149, 77);
+    check('R2O-3 status: one planning for two minutes is told nothing',
+        $fresh['planningStopped'] === false && $V::stalledText($fresh) === null);
+    // THE WINDOW IS THE SETTING'S, read by the verb.
+    $pm->runRow['created_at'] = gmdate('Y-m-d H:i:s', time() - 40 * 60);
+    check('R2O-3 status: forty minutes is past the default window',
+        (new ScanService($pm))->status(149, 77)['planningStopped'] === true);
+    $pm->sys[ScanService::PLANNING_SETTING] = '60';
+    check('R2O-3 status: and inside a window the administrator set to an hour',
+        (new ScanService($pm))->status(149, 77)['planningStopped'] === false);
+    $win = new \ReflectionMethod(ScanService::class, 'planningSeconds');
+    $win->setAccessible(true);
+    $limit = (int) ini_get('max_execution_time');
+    check('R2O-3 status: the verb reads the setting and the time limit, the larger winning',
+        $win->invoke(new ScanService($pm)) === max(3600, $limit));
 }
 }
 

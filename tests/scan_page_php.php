@@ -1897,6 +1897,22 @@ namespace {
         check('PREFILL: and a finished run is never paused or stopping either',
             $V::panelPrefill($status(['paused' => true, 'stopping' => true, 'active' => false,
                 'phase' => 'terminal', 'terminal' => 'cancelled']))['stalled'] === null);
+        // R2O-3. A run whose planning died gets the one sentence that names
+        // the button that helps. It said nothing at all.
+        $ps = $V::panelPrefill($status(['planningStopped' => true, 'phase' => 'planning',
+            'total' => 0, 'idleSeconds' => 3 * 3600]))['stalled'];
+        check('PREFILL: R2O-3 a run whose planning stopped says so, for how long, and to press Stop',
+            is_string($ps) && strpos($ps, 'This scan stopped while it was listing the records') === 0
+            && strpos($ps, 'for 180 minutes') !== false && strpos($ps, 'Press Stop') !== false
+            && strpos($ps, 'Press Continue') === false);
+        check('PREFILL: R2O-3 it outranks a stall or a pause, and a stop outranks it',
+            $V::panelPrefill($status(['planningStopped' => true, 'stalled' => true, 'paused' => true,
+                'idleSeconds' => 3600]))['stalled'] === str_replace('{minutes}', '60', $V::PLANNING_STOPPED)
+            && $V::panelPrefill($status(['planningStopped' => true, 'stopping' => true,
+                'idleSeconds' => 3600]))['stalled'] === $V::STOPPING);
+        check('PREFILL: R2O-3 and a finished run is never said to have stopped planning',
+            $V::panelPrefill($status(['planningStopped' => true, 'active' => false,
+                'phase' => 'terminal', 'terminal' => 'cancelled']))['stalled'] === null);
 
         // OC-2. THE STORED DECISION IS SAID. A run refused `clean` because a
         // rule could not be evaluated, with nothing found, rendered byte for
@@ -1946,7 +1962,8 @@ namespace {
         // THE BROWSER HALF RENDERS FROM THESE, so they are the contract between
         // the two: js/scan.js holds a fallback for each and no other copy.
         $L = $V::labels();
-        $sentences = ['stalled', 'paused', 'stopping', 'plain', 'checked', 'excluded', 'removed',
+        $sentences = ['stalled', 'paused', 'stopping', 'planningStopped',
+                      'plain', 'checked', 'excluded', 'removed',
                       'foundUnknown',
                       'notCertified', 'ruleProblem', 'ruleProblems'];
         $all = '';

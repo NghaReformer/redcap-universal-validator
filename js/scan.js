@@ -346,11 +346,18 @@
         // a closed tab - the ordinary way to leave one - told the next reader
         // to stop it and start again, beside the Continue button that was the
         // right answer. ScanPageView::stalledText() picks in the same order.
+        //
+        // AND A FOURTH, FOR A RUN WHOSE PLANNING DIED (review R2O-3). It sits
+        // in `planning` holding the project's slot, Continue can never move
+        // it, and the page used to say nothing at all. The server says when it
+        // has been planning longer than any request can, and the sentence
+        // sends the reader to Stop - so Continue is hidden beside it.
         var stalledNode = el('uv-scan-stalled');
         if (stalledNode) {
             var L2 = labels(), quiet = null;
             if (!st.terminal && st.active && !UV.state.running) {
                 if (st.stopping) quiet = L2.stopping || '';
+                else if (st.planningStopped) quiet = L2.planningStopped || '';
                 else if (st.stalled) quiet = L2.stalled || '';
                 else if (st.paused) quiet = L2.paused || '';
             }
@@ -369,7 +376,7 @@
 
         toggle(el('uv-scan-start'), !st.active);
         toggle(el('uv-scan-cancel'), st.active && st.mayCancel);
-        toggle(el('uv-scan-resume'), st.active && !UV.state.running);
+        toggle(el('uv-scan-resume'), st.active && !UV.state.running && !st.planningStopped);
     }
 
     function toggle(node, on) {
@@ -494,6 +501,14 @@
             UV.state.idle = 0;
             UV.state.stalledMs = 0;
             text(el('uv-scan-note'), '');
+            return;
+        }
+        // A RUN WHOSE PLANNING DIED takes no work from anybody (review R2O-3),
+        // so driving it is asking the same refusal on the ladder for ever. Stop
+        // driving; the watch that stop() starts shows the sentence that says
+        // what to do instead, and hides Continue.
+        if (st && st.planningStopped) {
+            stop('');
             return;
         }
         if (moved) {

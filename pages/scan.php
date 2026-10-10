@@ -271,13 +271,15 @@ $barPct = ($activeStatus === null) ? 0 : $prefill['pct'];
      style="<?php echo $prefill['done'] === null ? 'display:none;' : ''; ?>margin-top:10px;font-size:13px"><?php
      echo $prefill['done'] === null ? '' : ScanPageView::h($prefill['done']); ?></p>
   <?php // For somebody WATCHING a run that is not moving - the tab opened later,
-        // which has no way to know. It says one of three things, and the server
+        // which has no way to know. It says one of four things, and the server
         // decides which: stopping (Stop was pressed and nothing has finished
-        // it), stalled (a worker holds the run and nothing finishes), or paused
-        // (nobody is working it, which is what closing the driving tab leaves -
-        // press Continue). Only stalled is the alarm. The tab that is driving
-        // the scan already says when a pass makes no progress, in the note
-        // below, and js/scan.js hides this one while it is driving. ?>
+        // it), planning stopped (the request listing the records died - press
+        // Stop and start again), stalled (a worker holds the run and nothing
+        // finishes), or paused (nobody is working it, which is what closing the
+        // driving tab leaves - press Continue). Only stalled is the alarm. The
+        // tab that is driving the scan already says when a pass makes no
+        // progress, in the note below, and js/scan.js hides this one while it
+        // is driving. ?>
   <p id="uv-scan-stalled" role="status" aria-live="polite" aria-atomic="true"
      style="<?php echo $prefill['stalled'] === null ? 'display:none;' : ''; ?>margin-top:8px;font-size:13px;color:#a30"><?php
      echo $prefill['stalled'] === null ? '' : ScanPageView::h($prefill['stalled']); ?></p>
