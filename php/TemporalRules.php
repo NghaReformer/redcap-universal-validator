@@ -193,12 +193,15 @@ final class TemporalRules
             if($typed){$format='ymd';if($onPage){$tv=TemporalValue::fromValidation($shape->field($loc['field'])['validation']??'');if($tv)$format=$tv['format'];}$node=['date',$typed,$format,$node];}
             return $node;
         };
-        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$live,&$denied,&$problems){
+        $operand=function(array $op)use(&$operand,$rule,$resolver,$context,$member,$browser,$mayRead,&$snapshot,&$live,&$denied,&$problems){
             if($op[0]==='lit')return $op;
             if($op[0]==='binding'){
                 $b=$rule['references'][$op[1]]??null;if(!is_array($b)){$problems[]='invalid';return ['unknown'];}
                 $type=$b['type']??null;$from=$b['elapsedFrom']??null;$unit=$b['unit']??null;unset($b['type'],$b['elapsedFrom'],$b['unit']);
                 $r=$resolver->resolveBinding($b,$context);if($r['state']!=='ok'){$problems[]=$r['state'];return ['unknown'];}
+                // Which entries a set or an aggregate holds was read when the page was built,
+                // even when it holds none: an entry added in another tab changes it.
+                if($browser&&(isset($b['aggregate'])||isset($r['members'])))$snapshot=true;
                 if(isset($b['aggregate'])&&!$browser&&!in_array($b['aggregate'],['any','all'],true)){
                     // Saved data has no live member, so the resolver's exact answer is final;
                     // rebuilding it from the member list repeated the whole sum per host context.
@@ -281,6 +284,8 @@ final class TemporalRules
             if(!(ModeRegistry::snapshotAdvisory(ModeRegistry::modeOfType($rule['type']??''))&&!$condSnapshot&&!$denied))$compiled['blockSave']='off';
             $compiled['extendedAdvisory']=true;
         }
-        return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];
+        // stale: a condition read a value from when the page was built, or one this
+        // viewer may not read; a branch chosen by it may be the wrong branch.
+        return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems)),'stale'=>$browser&&($condSnapshot||$denied)];
     }
 }

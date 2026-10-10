@@ -2076,7 +2076,12 @@ class UniversalValidator extends AbstractExternalModule
             if (array_key_exists('windowFromValue', $rule)) {
                 // Compiled on the extended (event/instance) path, which resolved it.
                 $anchor = $rule['windowFromValue'];
-                if (!is_string($anchor)) $fromWhy = 'the "from" date ' . $rule['windowFrom'] . ' could not be resolved';
+                if (!is_string($anchor)) {
+                    $fromWhy = 'the "from" date ' . $rule['windowFrom'] . ' could not be resolved';
+                    if (isset($rule['windowFromValueWhy']) && is_string($rule['windowFromValueWhy'])) {
+                        $fromWhy .= ' (' . rtrim($rule['windowFromValueWhy'], '.') . ')';
+                    }
+                }
             } else {
                 $op = ModeRegistry::operandRef($rule['windowFrom']);
                 $state = $op === null ? null : (isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok');
@@ -2109,6 +2114,9 @@ class UniversalValidator extends AbstractExternalModule
             'fromType' => isset($rule['fromType']) ? $rule['fromType'] : null,
         ];
         $clock = $spec['notFuture'] ? $this->serverClock($project_id) : null;
+        // A date and time gets the page's 120-second margin (QRID_CLOCK_SLACK_S), so
+        // a time a computer a little fast filled in reads the same here as there.
+        if ($clock !== null && $spec['type'] !== 'date') $clock = TemporalLogic::clockSlack($clock);
         // The extended path marks a "from" that resolved to the field itself, in
         // this same entry ([baseline_arm_1][visit_date] saved on the baseline
         // visit): no window applies there.
@@ -2120,10 +2128,12 @@ class UniversalValidator extends AbstractExternalModule
             if ($value === null || is_array($value)) continue;
             $r = TemporalLogic::windowVerdict($spec, (string) $value, 'ymd', $self === $field ? '' : $anchor, 'ymd', $clock);
             if ($r['verdict'] === 'unknown') {
-                if ($fromWhy !== null) {
-                    $why = $fromWhy . ' — the window was not checked (the date is not in the future)';
-                } elseif ($spec['notFuture'] && $clock !== null
-                          && TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok') {
+                $readable = TemporalValue::parse(trim((string) $value, " \t\r\n"), $spec['type'], 'ymd')['state'] === 'ok';
+                if ($fromWhy !== null && $readable) {
+                    $why = $fromWhy . ' — the window was not checked' . ($spec['notFuture'] && $clock !== null ? ' (the date is not in the future)' : '');
+                } elseif ($fromWhy !== null) {
+                    $why = $fromWhy . ', and the saved date is not a date this rule can read — field skipped';
+                } elseif ($spec['notFuture'] && $clock !== null && $readable) {
                     // The value was read and is not in the future: only the window part is unknown.
                     $why = 'the "from" date is not a date this rule can read — the window was not checked (the date is not in the future)';
                 } else {
@@ -3046,6 +3056,9 @@ class UniversalValidator extends AbstractExternalModule
             // verdict, and a rule-level key is written once at the end so the
             // second condition cannot overwrite the first's fields (H-01).
             $snapFields = [];
+            // A snapshot read by a condition (not by the "from" date itself): whether
+            // the rule applies may be stale, so not even "notFuture" blocks.
+            $gateSnap = false;
             if (isset($r['when']) && isset($folded[$r['when']])) {
                 $rules[$i]['whenAst'] = $folded[$r['when']][empty($r['caseSensitive']) ? 0 : 1];
                 // An unresolvable "when" gates on a value we never read, so the
@@ -3054,7 +3067,7 @@ class UniversalValidator extends AbstractExternalModule
                 // A gate that had to give up a live side is stale in the same way
                 // an assert is: defer rather than gate on page-load truth.
                 if (!empty($frozen[$r['when']])) $rules[$i]['deferred'] = true;
-                foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) $snapFields[$sf] = true;
+                foreach (isset($snapshot[$r['when']]) ? $snapshot[$r['when']] : [] as $sf => $_) { $snapFields[$sf] = true; $gateSnap = true; }
             }
             // The TEST conditions ("assert", and any a mode declares with role
             // "test" in php/modes.json) fold with the test polarity.
@@ -3066,7 +3079,7 @@ class UniversalValidator extends AbstractExternalModule
                 // moment the user types, and the post-save audit re-checks it.
                 if (!empty($frozen[$r[$tk]])) $rules[$i]['deferred'] = true;
                 if (!empty($blocked[$r[$tk]])) $noteFor($i, $r[$tk]);
-                foreach (isset($snapshot[$r[$tk]]) ? $snapshot[$r[$tk]] : [] as $sf => $_) $snapFields[$sf] = true;
+                foreach (isset($snapshot[$r[$tk]]) ? $snapshot[$r[$tk]] : [] as $sf => $_) { $snapFields[$sf] = true; $gateSnap = true; }
             }
             foreach (ModeRegistry::operandKeys() as $rk) {
                 if (!isset($r[$rk['key']])) continue;
@@ -3078,6 +3091,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($fo['snapshot'] as $sf => $_) $snapFields[$sf] = true;
             }
             if ($snapFields) $rules[$i]['snapshotFields'] = array_keys($snapFields);
+            if ($gateSnap) $rules[$i]['snapshotGate'] = true;
             if (isset($r['branches']) && is_array($r['branches'])) {
                 // An unresolved SELECTOR makes the branch decision undecidable, and
                 // the client would otherwise fall through to the fallback branch and
@@ -3100,6 +3114,7 @@ class UniversalValidator extends AbstractExternalModule
                 foreach ($r['branches'] as $bi => $b) {
                     $bWhy = [];
                     $bSnap = $selectorSnapshot;
+                    $bGate = (bool) $selectorSnapshot;
                     if (isset($b['when']) && isset($folded[$b['when']])) {
                         $rules[$i]['branches'][$bi]['whenAst'] = $folded[$b['when']][empty($b['caseSensitive']) ? 0 : 1];
                         if (!empty($blocked[$b['when']])) {
@@ -3118,7 +3133,7 @@ class UniversalValidator extends AbstractExternalModule
                             $noteFor($i, $b[$tk]);
                             foreach ($blocked[$b[$tk]] as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
                         }
-                        foreach (isset($snapshot[$b[$tk]]) ? $snapshot[$b[$tk]] : [] as $sf => $_) $bSnap[$sf] = true;
+                        foreach (isset($snapshot[$b[$tk]]) ? $snapshot[$b[$tk]] : [] as $sf => $_) { $bSnap[$sf] = true; $bGate = true; }
                     }
                     foreach (ModeRegistry::operandKeys() as $rk) {
                         if (!isset($b[$rk['key']])) continue;
@@ -3133,6 +3148,7 @@ class UniversalValidator extends AbstractExternalModule
                     // client, so a branch's snapshot/deferral diagnostics have to
                     // be written ONTO the branch or they are silently dropped.
                     if ($bSnap) $rules[$i]['branches'][$bi]['snapshotFields'] = array_keys($bSnap);
+                    if ($bGate) $rules[$i]['branches'][$bi]['snapshotGate'] = true;
                     if ($selectorBlocked) {
                         $rules[$i]['branches'][$bi]['deferred'] = true;
                         foreach ($selectorBlocked as $bf => $bs) $bWhy[$bf . '|' . $bs] = self::resolutionProblem($bs, $bf);
@@ -4348,11 +4364,17 @@ class UniversalValidator extends AbstractExternalModule
             $compZone = $this->clockZone($pid);
             if ($compZone === null) $compZone = $serverZone;
             if (self::zoneAhead($fillZone, $compZone, time())) {
-                return ['error' => '"notFuture" cannot be judged on a field filled by @' . $tm[1] . '-' . $tm[2] . ': that value is '
+                $why = '"notFuture" cannot be judged on a field filled by @' . $tm[1] . '-' . $tm[2] . ': that value is '
                     . $fillZone->getName() . ' time, which runs ahead of the time this rule compares with ('
-                    . $compZone->getName() . '), so it would read as in the future. Fill the field with @' . $tm[1]
-                    . ', or set the project setting Time zone for @UVWINDOW "notFuture" to ' . $fillZone->getName() . '.',
-                    '_tag' => AnnotationRules::TAG_WINDOW];
+                    . $compZone->getName() . '), so it would read as in the future. Set the project setting Time zone for '
+                    . '@UVWINDOW "notFuture" to ' . $fillZone->getName() . ', or fill the field with @' . $tm[1]
+                    . ' if the computers entering data are set to ' . $compZone->getName() . ' time.';
+                // A rule with a window keeps it: only "notFuture" is dropped, with a note.
+                if (!isset($frag['windowLo']) && !isset($frag['windowHi'])) {
+                    return ['error' => $why, '_tag' => AnnotationRules::TAG_WINDOW];
+                }
+                unset($frag['windowNotFuture']);
+                $frag['windowNotFutureOff'] = [$why];
             }
         }
         $frag['dateType'] = $tv['type'];
@@ -4571,9 +4593,11 @@ class UniversalValidator extends AbstractExternalModule
                 . ' and this field holds ' . ($own === 'date' ? 'dates' : 'dates with a time')
                 . ' — a window counts a date from a date, or a datetime from a datetime.');
         }
-        // A plain [field] is read in the same event. Where no event collects
-        // both forms, the "from" date is blank on every entry of this field.
-        if ($op[0] === 'ref' && isset($dd[$name]['form_name'], $meta['form_name'])
+        // A plain [field], and [field][N] or [event-name][field], is read in the
+        // same event. Where no event collects both forms, the "from" date is
+        // blank on every entry of this field.
+        $sameEvent = $op[0] === 'ref' || ($op[0] === 'qref' && in_array($op[3], [null, 'event-name'], true));
+        if ($sameEvent && isset($dd[$name]['form_name'], $meta['form_name'])
                 && $dd[$name]['form_name'] !== $meta['form_name']) {
             $sets = $this->formEventSets($pid);
             $hostForm = $dd[$name]['form_name'];

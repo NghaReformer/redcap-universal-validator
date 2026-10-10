@@ -66,7 +66,7 @@ trait TemporalIntegration
     {
         $resolver=$this->temporalResolverFor($shape,$node,$browser);
         if(isset($rule['branches'])){
-            $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;
+            $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;$selectorStale=false;
             foreach($rule['branches'] as $i=>$branch){
                 $flat=array_merge($rule,$branch);unset($flat['branches']);
                 // The selector alone: a test or an operand that cannot be resolved belongs to its branch, not to the choice of branch.
@@ -83,6 +83,7 @@ trait TemporalIntegration
                     }
                     $out['branches'][$i]=$b['rule'];
                     if($g['problems'])$selectorUnknown=true;
+                    if(!empty($g['stale']))$selectorStale=true;
                 }else{
                     if(empty($branch['when']))$fallback=$i;
                     elseif($g['problems'])$selectorUnknown=true;
@@ -91,6 +92,9 @@ trait TemporalIntegration
             }
             if($selectorUnknown)return ['rule'=>$out,'problems'=>['unresolved branch selector']];
             if($browser){
+                // A selector read when the page was built may pick the wrong branch, so no
+                // branch blocks: not even a "notFuture" that reads only the live field.
+                if($selectorStale)foreach($out['branches'] as $i=>$_){$out['branches'][$i]['blockSave']='off';$out['branches'][$i]['snapshotGate']=true;}
                 $out['snapshotFields']=['saved event/instance values'];$out['blockSave']='off';return ['rule'=>$out,'problems'=>[]];}
             if(count($active)>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
             $pick=$active?$active[0]:$fallback;

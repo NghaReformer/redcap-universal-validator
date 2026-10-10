@@ -223,10 +223,11 @@ const realNow = Date.now;
   check('no server clock: never blocks', ev._prevented === false);
 }
 {
-  // This computer's local time agrees with the server's.
-  Date.now = () => new Date(2026, 9, 9, 14, 30, 0).getTime();
+  // This computer's clock agrees with the server's (the same UTC moment).
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV;
   const d = dateEl('seen_at', '2026-10-09 15:00');
-  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
     rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
   check('datetime notFuture compares the time', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
   d.value = '2026-10-09 14:30'; d.fire('change');
@@ -239,9 +240,10 @@ const realNow = Date.now;
 }
 {
   // The Now button on a computer 10 minutes fast: its time passes on the page.
-  Date.now = () => new Date(2026, 9, 9, 14, 40, 0).getTime();
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV + 600 * 1000;
   const d = dateEl('seen_at', '2026-10-09 14:40');
-  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
     rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd', blockSave: 'hard' }] });
   check('datetime: a fast computer\'s Now passes', /OK/.test(wMsg(env, 'seen_at').innerHTML));
   const ev = submitEv(); env.doc.fire('submit', ev);
@@ -251,12 +253,26 @@ const realNow = Date.now;
   Date.now = realNow;
 }
 {
-  // A computer clock days ahead is wrong: the server clock decides.
-  Date.now = () => new Date(2026, 9, 12, 14, 30, 0).getTime();
+  // A computer clock days ahead is wrong: it widens the margin by 10 minutes only.
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV + 3 * 86400 * 1000;
   const d = dateEl('seen_at', '2026-10-10 09:00');
-  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00' },
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
     rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd' }] });
   check('datetime: a computer days ahead is ignored', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
+  d.value = '2026-10-09 14:42'; d.fire('change');
+  check('datetime: ...past the 10-minute cap only', /OK/.test(wMsg(env, 'seen_at').innerHTML));
+  Date.now = realNow;
+}
+{
+  // A computer in a time zone 3 hours ahead, its clock right: its Now is
+  // 3 hours ahead of the rule's time, and is refused (the time zone setting).
+  const SRV = Date.UTC(2026, 9, 9, 14, 30, 0);
+  Date.now = () => SRV;
+  const d = dateEl('seen_at', '2026-10-09 17:30');
+  const env = boot([d], { clock: { today: '2026-10-09', now: '2026-10-09 14:30:00', utc: SRV, offset: 0 },
+    rules: [{ type: 'window', fields: ['seen_at'], windowNotFuture: true, dateType: 'datetime', dateFormat: 'ymd' }] });
+  check('datetime: a computer in a zone ahead gets no extra margin', /in the future/.test(wMsg(env, 'seen_at').innerHTML));
   Date.now = realNow;
 }
 
@@ -437,8 +453,8 @@ const realNow = Date.now;
     const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' },
       rules: [withheldRule({ windowNotFuture: true, windowFromOpWhy: ['Extended reference unavailable: ambiguous.'] })] });
     const msg = wMsg(env, 'fu_date');
-    check('unresolved "from": staff see why the window is not checked', /is not being checked/.test(msg.innerHTML)
-      && /ambiguous/.test(msg.innerHTML) && /not checked after saving either/.test(msg.innerHTML)
+    check('unresolved "from": staff see why the window is not checked', /is not checked on this page/.test(msg.innerHTML)
+      && /ambiguous/.test(msg.innerHTML) && !/after saving/.test(msg.innerHTML)
       && /after today is still flagged/.test(msg.innerHTML) && !/This rule is not being checked/.test(msg.innerHTML));
     let ev = submitEv(); env.doc.fire('submit', ev);
     check('unresolved "from": the window part never blocks', ev._prevented === false && v.getAttribute('aria-invalid') === null);
@@ -469,6 +485,57 @@ const realNow = Date.now;
   check('snapshot + early: advisory with the caveat', /read when this page was opened/.test(msg.innerHTML));
   ev = submitEv(); env.doc.fire('submit', ev);
   check('snapshot + early: never blocks', ev._prevented === false);
+}
+{
+  // A "when" read when the page was built (snapshotGate): whether the rule
+  // applies may have changed, so not even "future" blocks.
+  const v = dateEl('fu_date', '2026-10-10');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [{ type: 'window', fields: ['fu_date'],
+    windowNotFuture: true, snapshotFields: ['arm'], snapshotGate: true, when: "[arm]='1'", whenAst: ['const', true],
+    dateType: 'date', dateFormat: 'ymd', blockSave: 'hard' }] });
+  check('stale gate + future: still says future', /after today/.test(wMsg(env, 'fu_date').innerHTML));
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('stale gate + future: never blocks', ev._prevented === false);
+}
+{
+  // A saved "from" date that does not read: staff are told; a survey is not.
+  const v = dateEl('fu_date', '2026-03-01');
+  const rule = { type: 'window', fields: ['fu_date'], windowFrom: '[enrol_date]', windowFromOp: ['lit', '2026-02-31'],
+    snapshotFields: ['enrol_date'], windowLo: 0, windowHi: 30, windowUnit: 'days',
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' };
+  let env = boot([v], { rules: [rule] });
+  check('unreadable saved "from": staff see it is not checked',
+    /is not checked: its saved value is not a date/.test(wMsg(env, 'fu_date').innerHTML) && v.getAttribute('aria-invalid') === null);
+  const w = dateEl('fu_date', '2026-03-01');
+  env = boot([w], { context: 'survey', rules: [rule] });
+  check('unreadable saved "from" on a survey: silent', !shown(wMsg(env, 'fu_date')));
+  const x = dateEl('fu_date', '2026-03');
+  env = boot([x], { rules: [rule] });
+  check('unreadable saved "from", value still being typed: silent', !shown(wMsg(env, 'fu_date')));
+}
+{
+  // notFuture dropped for its time zone: the window is checked, staff see why.
+  const v = dateEl('fu_date', '2026-02-05');
+  const rule = { type: 'window', fields: ['fu_date'], windowFrom: '[enrol_date]', windowFromOp: ['lit', '2026-02-01'],
+    windowLo: 0, windowHi: 30, windowUnit: 'days', windowNotFutureOff: ['"notFuture" cannot be judged on a field filled by @TODAY-UTC.'],
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' };
+  let env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [rule] });
+  check('notFuture dropped: the note is shown with the verdict',
+    /OK/.test(wMsg(env, 'fu_date').innerHTML) && /filled by @TODAY-UTC/.test(wMsg(env, 'fu_date').innerHTML)
+    && /Only the window is checked/.test(wMsg(env, 'fu_date').innerHTML));
+  const w = dateEl('fu_date', '2026-02-05');
+  env = boot([w], { context: 'survey', rules: [rule] });
+  check('notFuture dropped: a survey sees no note', !/TODAY-UTC/.test(wMsg(env, 'fu_date').innerHTML));
+}
+{
+  // validators[].test() never calls a value whose window part was withheld a pass.
+  const v = dateEl('fu_date', '2026-01-01');
+  const env = boot([v], { clock: { today: '2026-10-09', now: '2026-10-09 12:00:00' }, rules: [{ type: 'window', fields: ['fu_date'],
+    windowFrom: '[enrol_date]', windowFromOp: ['withheld'], windowLo: 0, windowHi: 30, windowUnit: 'days', windowNotFuture: true,
+    dateType: 'date', dateFormat: 'ymd', fromType: 'date', fromFormat: 'ymd', blockSave: 'hard' }] });
+  check('withheld window: test() is not a pass', env.NS.validators.fu_date.test() === null);
+  v.value = '2026-10-10'; v.fire('change');
+  check('withheld window: a future date still fails test()', env.NS.validators.fu_date.test() === false);
 }
 
 // ---- 14) a "from" that names the field itself ------------------------------------

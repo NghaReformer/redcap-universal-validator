@@ -479,6 +479,11 @@ namespace {
         &&strpos(json_encode($res['unconfigurable']),'window was not checked')!==false);
     $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2099-01-01';$m->redcap_save_record(PID,'1','fa',1,1);
     check('unresolved "from" with notFuture: the audit flags the future date',array_map(function($c){return $c[1]['reason'];},invalid($m))===['future']);
+    $m=$win($amb);$res=$m->scanProject(PID);
+    check('...and the scan gives the reason it could not be resolved',strpos(json_encode($res['unconfigurable']),'could not be resolved (Extended reference unavailable')!==false);
+    $m=$win($amb);REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='2026-02-31';$res=$m->scanProject(PID);
+    check('...an unreadable value is never called "not in the future"',
+        strpos(json_encode($res['unconfigurable']),'and the saved date is not a date this rule can read')!==false);
     $m=$win(str_replace(',"notFuture":true','',$amb));$r=ruleOf(render($m,'fa'),'a_val');
     check('unresolved "from" without notFuture: deferred, as before',$r&&!empty($r['deferred']));
     // A plain "from" on another repeating form: the same, on the page path.
@@ -506,10 +511,26 @@ namespace {
     $r=ruleOf(render($m,'fa'),'a_val');
     check('...an event-qualified "from" is not refused for it',
         $r&&strpos((string)($r['configError']??''),'which no event of this field collects')===false);
+    $m=$win('@UVWINDOW={"from":"[b_open][2]","window":[21,35]}');
+    REDCap::$eventMappings=[['event_id'=>1,'form'=>'fa'],['event_id'=>2,'form'=>'fb']];
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('...an instance with no event reads this event too: refused',
+        $r&&strpos((string)($r['configError']??''),'which no event of this field collects')!==false);
     // A "when" that reads another event is a stale gate: then the whole rule is advisory.
     $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"notFuture":true,"blockSave":"hard","when":"[baseline_arm_1][b_open][2]<>\'\'"}');
     $r=ruleOf(render($m,'fa'),'a_val');
     check('window with a "when" from another event: advisory in the browser',$r&&($r['blockSave']??null)==='off');
+    // A branch chosen by a value from another event may be the wrong branch, so no
+    // branch blocks, not even the one whose "notFuture" reads only the live field.
+    $m=$win('@UVWINDOW={"from":"[baseline_arm_1][b_open][2]","window":[21,35],"blockSave":"hard","when":"[baseline_arm_1][key_b][2]=\'A\'"} @UVWINDOW={"notFuture":true,"blockSave":"hard"}');
+    $r=ruleOf(render($m,'fa'),'a_val');
+    $bs=array_map(function($b){return [$b['blockSave']??null,!empty($b['snapshotGate'])];},array_values($r['branches']??[]));
+    check('branches chosen by a value from another event: none blocks',$bs===[['off',true],['off',true]]);
+    // A count of entries in another event is read when the page is built, even a count of none.
+    $m=$win('@UVWINDOW={"notFuture":true,"blockSave":"hard","when":"{n}=0","references":{"n":{"field":"b_open","events":["event-name","baseline_arm_1"],"aggregate":"count"}}}');
+    unset(REDCap::$data[1]['repeat_instances'][1]['fb']);
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('a "when" counting no entries in another event: advisory in the browser',$r&&empty($r['configError'])&&($r['blockSave']??null)==='off');
     // A "from" that is the host field itself on one of its entries: that entry is
     // never judged against its own value; the other entries are.
     $m=$win('@UVWINDOW={"from":"[baseline_arm_1][a_val][1]","window":[21,35]}');

@@ -91,17 +91,23 @@ check('clockAt: no next change counts elapsed time only',
 check('clockAt: a zone field that is not a number is ignored',
   W.clockAt(Object.assign({}, dst, { offsetAfter: '0' }), 120 * 1000).now === '2026-10-25 02:00:00');
 
-// clockLenient: a date and time may run 120 s past "now", or past this
-// computer's local time when that is later, by up to 26 hours.
-const at = (s) => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10), +s.slice(11, 13), +s.slice(14, 16), +(s.slice(17, 19) || 0)) / 1000;
+// clockLenient: a date and time may run 120 s past "now", plus how far this
+// computer's clock runs ahead of the server's (in UTC), by up to 10 minutes.
 const srv = { today: '2026-10-09', now: '2026-10-09 14:30:00' };
 check('clockLenient: 120 s past the server clock', W.clockLenient(srv, null).now === '2026-10-09 14:32:00');
-check('clockLenient: a computer behind the server does not narrow it', W.clockLenient(srv, at('2026-10-09 14:00:00')).now === '2026-10-09 14:32:00');
-check('clockLenient: a computer 5 minutes fast widens it', W.clockLenient(srv, at('2026-10-09 14:35:00')).now === '2026-10-09 14:37:00');
-check('clockLenient: up to 26 hours ahead', W.clockLenient(srv, at('2026-10-10 16:30:00')).now === '2026-10-10 16:32:00');
-check('clockLenient: past 26 hours the computer is ignored', W.clockLenient(srv, at('2026-10-10 16:30:01')).now === '2026-10-09 14:32:00');
-check('clockLenient: keeps the server day', W.clockLenient(srv, at('2026-10-10 01:00:00')).today === '2026-10-09');
-check('clockLenient: no clock stays no clock', W.clockLenient(null, at('2026-10-10 01:00:00')) === null);
+check('clockLenient: a computer behind the server does not narrow it', W.clockLenient(srv, -1800).now === '2026-10-09 14:32:00');
+check('clockLenient: a computer 5 minutes fast widens it', W.clockLenient(srv, 300).now === '2026-10-09 14:37:00');
+check('clockLenient: by up to 10 minutes', W.clockLenient(srv, 600).now === '2026-10-09 14:42:00');
+check('clockLenient: a clock days ahead widens it by 10 minutes only', W.clockLenient(srv, 3 * 86400).now === '2026-10-09 14:42:00');
+check('clockLenient: a lead that is not a number is ignored', W.clockLenient(srv, NaN).now === '2026-10-09 14:32:00');
+check('clockLenient: keeps the server day', W.clockLenient(srv, 600).today === '2026-10-09');
+check('clockLenient: no clock stays no clock', W.clockLenient(null, 600) === null);
+check('clockError: no UTC stamp, no lead', W.clockError({ today: '2026-10-09', now: '2026-10-09 14:30:00' }) === null);
+// The lead is fixed when the engine loads: against a stamp of 0 it is that moment.
+const loadedAt = W.clockError({ utc: 0 }) * 1000;
+check('clockError: a stamp 5 minutes before the page loaded reads as a 5-minute lead',
+  W.clockError({ utc: loadedAt - 300000 }) === 300);
+check('clockError: a stamp that is not a number gives no lead', W.clockError({ utc: '0' }) === null);
 const dtSpec = { type: 'datetime', notFuture: true };
 check('a time 2 minutes ahead passes with the margin',
   W.verdict(dtSpec, '2026-10-09 14:32', 'ymd', null, 'ymd', W.clockLenient(srv, null)).verdict === 'ok');

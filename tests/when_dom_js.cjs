@@ -402,6 +402,35 @@ const BAD_ID = '0ABC00001X'; // wrong iso7064_mod37_36 check character
   d = date('visit', '15-03-2026');
   t = gated("[visit]>'2026-03-01'", [d], { visit: ['date', 'xyz'] });
   check('an unknown format is ignored', t.sid.__qridInvalid === false);
+
+  // The event and instance path sends its condition compiled ("temporal"):
+  // a plain field in it is compared in its stored form too...
+  const compiled = (ast, fields, formats) => {
+    const sid = makeEl('input'); sid.name = 'sid'; sid.value = BAD_ID;
+    const env = boot([sid].concat(fields), { singleFields: [], pooledFields: [], dateFormats: formats,
+      rules: [{ type: 'single', fields: ['sid'], algorithm: 'iso7064_mod37_36', blockSave: 'hard',
+                when: "[visit]>='2026-03-05'", whenAst: ast }] });
+    return { sid, env };
+  };
+  d = date('visit', '30-01-2026');
+  t = compiled(['temporal', ['cmp', '>=', ['ref', 'visit', null], ['lit', '2026-03-05']]], [d], { visit: ['date', 'dmy'] });
+  check('compiled condition: 30-01-2026 is before 2026-03-05', t.sid.__qridInvalid === false);
+  d.value = '15-03-2026'; d.fire('change');
+  check('compiled condition: 15-03-2026 is on or after 2026-03-05', t.sid.__qridInvalid === true);
+  // ...in a set of entries as well...
+  d = date('visit', '30-01-2026');
+  t = compiled(['temporal', ['cmp', '>=', ['set', 'any', [['ref', 'visit', null], ['lit', '2026-01-01']]], ['lit', '2026-03-05']]],
+    [d], { visit: ['date', 'dmy'] });
+  check('compiled set: no entry is on or after 2026-03-05', t.sid.__qridInvalid === false);
+  d.value = '15-03-2026'; d.fire('change');
+  check('compiled set: the live entry is', t.sid.__qridInvalid === true);
+  // ...while a "date" node still parses the field in its own format.
+  d = date('visit', '15-03-2026');
+  t = compiled(['temporal', ['cmp', '>=', ['date', 'date', 'dmy', ['ref', 'visit', null]], ['date', 'date', 'ymd', ['lit', '2026-03-05']]]],
+    [d], { visit: ['date', 'dmy'] });
+  check('compiled date node: reads 15-03-2026 as a D-M-Y date', t.sid.__qridInvalid === true);
+  d.value = '01-03-2026'; d.fire('change');
+  check('compiled date node: 01-03-2026 is before', t.sid.__qridInvalid === false);
 }
 
 console.log(`when_dom_js: ${n} checks, ${fail} failure(s)`);

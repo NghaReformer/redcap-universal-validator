@@ -123,6 +123,23 @@ final class TemporalLogic
         }
         return Logic::evaluate(['cmp',$op,['lit',(string)$a],['lit',(string)$b]],[],$blank,$case);
     }
+    /** The margin a date and time gets past "now" (twin of QRID_CLOCK_SLACK_S). */
+    const CLOCK_SLACK_S = 120;
+
+    /**
+     * $clock with "now" CLOCK_SLACK_S later, "today" unchanged, or $clock as
+     * it is when its "now" does not read.
+     */
+    public static function clockSlack(array $clock)
+    {
+        $now = isset($clock['now']) ? TemporalValue::parse((string) $clock['now'], 'datetime_seconds', 'ymd') : null;
+        if (!$now || $now['state'] !== 'ok') return $clock;
+        $later = TemporalValue::canonical($now['seconds'] + self::CLOCK_SLACK_S, 'datetime');
+        if ($later === null) return $clock;
+        $clock['now'] = $later;
+        return $clock;
+    }
+
     /** Seconds in one window unit. */
     const WINDOW_UNITS = ['minutes' => 60, 'hours' => 3600, 'days' => 86400, 'weeks' => 604800];
 

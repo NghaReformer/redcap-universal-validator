@@ -1389,11 +1389,15 @@ function QRID_temporalDate(value,type,format){
 }
 /* Blank exactly as QRID_whenCompare sees it: empty after trimming space, tab, CR, LF. */
 function QRID_temporalBlank(v){ return v!==null&&typeof v!=='object'&&QRID_whenTrim(v)===''; }
-function QRID_temporalValue(op,read){
-  if(op[0]==='lit')return op[1];if(op[0]==='unknown')return null;if(op[0]==='ref')return read(op[1],op[2]);
-  if(op[0]==='guard'){for(var g=0;g<op[1].length;g++)if(String(read(op[1][g][0],null))!==op[1][g][1])return null;return QRID_temporalValue(op[2],read);}
+/* raw: read a field as the form shows it. Only a "date" node asks for that (it
+   parses the value with the field's own format); anywhere else a comparison sees
+   a date as REDCap stores it (read.logicValue), as QRID_whenOperandVal does. */
+function QRID_temporalValue(op,read,raw){
+  if(op[0]==='lit')return op[1];if(op[0]==='unknown')return null;
+  if(op[0]==='ref'){var rv=read(op[1],op[2]);return (!raw&&op[2]==null&&typeof read.logicValue==='function')?read.logicValue(op[1],rv):rv;}
+  if(op[0]==='guard'){for(var g=0;g<op[1].length;g++)if(String(read(op[1][g][0],null))!==op[1][g][1])return null;return QRID_temporalValue(op[2],read,raw);}
   if(op[0]==='date'){
-    var dv=QRID_temporalValue(op[3],read);if(dv===null||typeof dv==='object')return null;
+    var dv=QRID_temporalValue(op[3],read,true);if(dv===null||typeof dv==='object')return null;
     /* A saved blank is a RESOLVED answer ("not entered yet"), not an unknown: it
        takes the caller's blank polarity, as a legacy comparison does. Twin of
        TemporalLogic::value. */
@@ -1401,7 +1405,7 @@ function QRID_temporalValue(op,read){
     return QRID_temporalDate(dv,op[1],op[2]);
   }
   if(op[0]==='elapsed'){
-    var a=QRID_temporalValue(op[2],read),b=QRID_temporalValue(op[3],read),units=Object.create(null);
+    var a=QRID_temporalValue(op[2],read,raw),b=QRID_temporalValue(op[3],read,raw),units=Object.create(null);
     units.days=86400;units.hours=3600;units.minutes=60;units.seconds=1;   /* no inherited keys: "constructor" is not a unit */
     if(a===null||b===null)return null;
     if(a===''||b==='')return '';   /* elapsed from/to a date not entered yet is itself blank */
@@ -1409,7 +1413,7 @@ function QRID_temporalValue(op,read){
     return {numerator:String(b.seconds-a.seconds),denominator:String(units[op[1]])};
   }
   if(op[0]==='set'||op[0]==='aggregate'){
-    var values=op[2].map(function(x){return QRID_temporalValue(x,read);});if(values.includes(null))return null;
+    var values=op[2].map(function(x){return QRID_temporalValue(x,read,raw);});if(values.includes(null))return null;
     if(op[0]==='set')return {set:op[1],values:values};var k=op[1];if(k==='count')return String(values.length);if(k==='exists')return values.length?'1':'0';
     values=values.filter(function(v){return v!=='';});if(k==='populated-count')return String(values.length);if(k==='distinct-count')return String(new Set(values.map(String)).size);
     if(!values.length)return null;var sum=QRID_temporalSum(values);if(sum===null)return null;if(k==='sum')return sum;if(k==='average')return {numerator:sum,denominator:String(values.length)};
@@ -1537,7 +1541,9 @@ function QRID_clockNow(base){
    UTC milliseconds (utc), the zone's offset in seconds (offset), and the
    zone's next offset change (next, in UTC milliseconds, with offsetAfter):
    a page left open across a daylight-saving change moves its local time by
-   the change, as the server's clock does. */
+   the change, as the server's clock does. Only that one change is known: a
+   page open across a second one (Casablanca's pair around Ramadan) is off by
+   it until reloaded. */
 function QRID_clockAt(base,elapsedMs){
   if(!base||typeof base!=='object'||typeof base.now!=='string')return null;
   var b=QRID_temporalDate(base.now,'datetime_seconds','ymd');if(!b)return null;
@@ -1548,22 +1554,26 @@ function QRID_clockAt(base,elapsedMs){
   return now===null?null:{today:now.slice(0,10),now:now};
 }
 function QRID_finiteNumber(v){ return typeof v==='number'&&isFinite(v); }
-/* "Now" for a date and time typed on this page: the later of the server clock
-   and this computer's local time (REDCap's Now button and @NOW fill in the
-   computer's time), plus 120 seconds. A computer more than 26 hours ahead
-   (more than any two time zones differ) has a wrong clock and is ignored.
-   Dates, and the post-save audit, stay exact. */
-var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_LEAD_MAX_S=26*3600;
-function QRID_clockLenient(clock,deviceSeconds){
+/* "Now" for a date and time typed on this page: the server's clock plus 120
+   seconds (TemporalLogic::CLOCK_SLACK_S, which the post-save audit allows too),
+   plus how far this computer's clock runs ahead of the server's, up to 10
+   minutes. REDCap's Now button and @NOW fill in the computer's time, so on a
+   computer a little fast they still pass. The lead is measured in UTC
+   (QRID_deviceClockError), so the computer's time zone plays no part: a
+   computer set to a zone ahead of the rule's is still refused, which points
+   to the project's time zone setting. Dates have no margin. */
+var QRID_CLOCK_SLACK_S=120,QRID_DEVICE_ERROR_MAX_S=600;
+function QRID_clockLenient(clock,errorSeconds){
   var b=clock?QRID_temporalDate(clock.now,'datetime_seconds','ymd'):null;if(!b)return clock;
-  var s=b.seconds;
-  if(QRID_finiteNumber(deviceSeconds)&&deviceSeconds>s&&deviceSeconds-s<=QRID_DEVICE_LEAD_MAX_S)s=deviceSeconds;
-  var now=QRID_temporalCanonical(s+QRID_CLOCK_SLACK_S,'datetime');
+  var lead=(QRID_finiteNumber(errorSeconds)&&errorSeconds>0)?Math.min(Math.floor(errorSeconds),QRID_DEVICE_ERROR_MAX_S):0;
+  var now=QRID_temporalCanonical(b.seconds+QRID_CLOCK_SLACK_S+lead,'datetime');
   return now===null?clock:{today:clock.today,now:now};
 }
-/* This computer's local wall-clock time, in the seconds QRID_temporalDate uses. */
-function QRID_deviceLocalSeconds(){
-  var d=new Date(Date.now());return Math.floor(d.getTime()/1000)-d.getTimezoneOffset()*60;
+/* How many seconds this computer's clock ran ahead of the server's when the
+   page loaded (behind is negative), from the clock's UTC stamp; null without
+   one. The time the page took to arrive counts as a little lead. */
+function QRID_deviceClockError(base){
+  return (base&&typeof base==='object'&&QRID_finiteNumber(base.utc))?(QRID_CLOCK_T0-base.utc)/1000:null;
 }
 
 /* Opt-in qualified grammar. The legacy lexer and AST remain unchanged. */
@@ -3534,8 +3544,11 @@ function QRIDWindowInit(QRID_CONFIG){
     var FROM_WATCH = (fromOp && fromOp[0] === "ref") ? QRID_WHEN.gateFor(null, ["cmp", "=", fromOp, ["lit", ""]]) : null;
     return { configError: configError, gate: GATE, fromWatch: FROM_WATCH, blockSave: BLOCK,
              /* "future" never depends on the "from" date, so a snapshot or withheld
-                anchor (which turns blockSave off) does not soften it. */
-             futureBlock: BLOCK,
+                anchor (which turns blockSave off) does not soften it. A condition
+                read when the page was built (snapshotGate) does: whether the rule
+                applies may have changed since. */
+             futureBlock: cfg.snapshotGate === true ? "off" : BLOCK,
+             notFutureOff: (cfg.windowNotFutureOff && cfg.windowNotFutureOff.length) ? cfg.windowNotFutureOff : null,
              windowWithheld: !!(fromOp && fromOp[0] === "withheld"),
              /* why a withheld "from" date was withheld when it was not for rights:
                 it could not be resolved (the server's windowFromOpWhy) */
@@ -3573,9 +3586,11 @@ function QRIDWindowInit(QRID_CONFIG){
     /* A "from" date marked with a Missing Data Code was not entered. */
     if(anchor !== null && QRID_isMissingCode(anchor)) anchor = "";
     var clock = V.spec.notFuture ? QRID_clockNow(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock) : null;
-    var judge = (clock && V.spec.type !== "date") ? QRID_clockLenient(clock, QRID_deviceLocalSeconds()) : clock;
+    var judge = (clock && V.spec.type !== "date")
+      ? QRID_clockLenient(clock, QRID_deviceClockError(QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.clock)) : clock;
     var r = QRID_windowVerdict(V.spec, val, V.dateFormat, anchor, V.fromFormat, judge);
     r.clock = clock;
+    r.anchor = anchor;
     return r;
   }
   /* The default wording names the allowed dates the way the field shows them.
@@ -3630,9 +3645,8 @@ function QRIDWindowInit(QRID_CONFIG){
         msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
           "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
         msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
-          " is not being checked — " + QRID_escapeHtml(V.withheldWhy.join(" ")) +
-          " It is not checked after saving either; the study team needs to correct the rule." +
-          " A date after today is still flagged.";
+          " is not checked on this page — " + QRID_escapeHtml(V.withheldWhy.join(" ")) +
+          (V.spec.notFuture ? " A date after today is still flagged." : "");
         setGuard(false); QRID_setModeState(input, "w", null);
         return;
       }
@@ -3663,6 +3677,18 @@ function QRIDWindowInit(QRID_CONFIG){
       var r;
       try { r = verdictOf(V, fieldName); } catch(e){ inert(); return; }   /* fail open: a bug never traps a save */
       var future = r.verdict === "future";
+      if(r.verdict === "unknown" && !QRID_IS_SURVEY && V.fromOp && V.fromOp[0] === "lit"
+         && typeof r.anchor === "string" && QRID_whenTrim(r.anchor) !== ""
+         && QRID_temporalDate(QRID_whenTrim(String(QRID_WHEN.readRef(fieldName, null))), V.spec.type, V.dateFormat)){
+        /* The value reads, but the saved "from" date does not (it came in some
+           way that skipped REDCap's own check): staff are told. */
+        msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+          "font-size:13px;font-family:inherit;border:1px solid #d9c48a;background:#fdf8e6;color:#7a5c00";
+        msg.innerHTML = "&#9888; The window counted from " + QRID_escapeHtml(V.fromName || "another date") +
+          " is not checked: its saved value is not a date this rule can read.";
+        setGuard(false); QRID_setModeState(input, "w", null);
+        return;
+      }
       if(r.verdict === "unknown" || (r.verdict === "inert" && !V.windowWithheld)){ inert(); return; }
       if(!future && V.windowWithheld){
         /* inert here can only mean "nothing else to check": the value is typed */
@@ -3680,7 +3706,9 @@ function QRIDWindowInit(QRID_CONFIG){
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
       }
-      msg.innerHTML = ok ? "&#10003; OK." : "&#10007; " + base;
+      var note = (V.notFutureOff && !QRID_IS_SURVEY)
+        ? ' <span style="opacity:.8">(' + QRID_escapeHtml(V.notFutureOff.join(" ")) + " Only the window is checked.)</span>" : "";
+      msg.innerHTML = (ok ? "&#10003; OK." : "&#10007; " + base) + note;
     }
     var debounced = QRID_debounced(function(){ check(); });
     if(input.addEventListener){
@@ -3706,6 +3734,7 @@ function QRIDWindowInit(QRID_CONFIG){
         if(a.length !== 1 || a[0].deferred) return null;
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
         var v = verdictOf(a[0], f).verdict;
+        if(v === "ok" && a[0].windowWithheld) return null;   /* the window part was never checked */
         return v === "ok" ? true : (v === "future" || v === "window-early" || v === "window-late") ? false : null;
       } };
   });
@@ -5795,14 +5824,14 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "choicesHide", "choicesAll", "windowFrom", "windowFromOp",
                       "windowFromOpWhy", "windowLo", "windowHi", "windowUnit",
                       "windowNotFuture", "dateType", "dateFormat", "fromType", "fromFormat",
-                      "existsLocal", "existsSurveys", "rangeSoftLo", "rangeSoftHi",
-                      "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
-                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma",
-                      "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
-                      "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
-                      "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
-                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "deferredOnSave",
-                      "extendedAdvisory"];
+                      "snapshotGate", "windowNotFutureOff", "existsLocal", "existsSurveys",
+                      "rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi",
+                      "rangeSoftBlock", "rangeHardBlock", "rangeUnit", "rangeSoftText",
+                      "rangeHardText", "decimalComma", "rangeComputed", "rangeReference",
+                      "rangeSexOp", "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
+                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
+                      "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
+                      "deferredOnSave", "extendedAdvisory"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -5984,7 +6013,7 @@ window.INSPIREUniversalValidator = {
   windowLogic: {                             /* @UVWINDOW twins, locked by tests/window_js.cjs */
     verdict: QRID_windowVerdict, canonical: QRID_temporalCanonical, format: QRID_temporalFormat,
     family: QRID_temporalFamily, clockNow: QRID_clockNow, clockAt: QRID_clockAt,
-    clockLenient: QRID_clockLenient, units: QRID_WINDOW_UNITS
+    clockLenient: QRID_clockLenient, clockError: QRID_deviceClockError, units: QRID_WINDOW_UNITS
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal

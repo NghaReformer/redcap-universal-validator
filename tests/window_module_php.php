@@ -202,6 +202,17 @@ namespace {
     check('@NOW-SERVER ahead of the rule\'s clock: refused', strpos($zoneErr('UTC', 'nf_srv'), 'Europe/Paris time') !== false);
     check('@NOW-SERVER on the server\'s own clock: allowed', $zoneErr(null, 'nf_srv') === '');
     date_default_timezone_set($tzWas);
+    check('the refusal names the time zone setting first', strpos($zoneErr('America/New_York', 'nf_utc'),
+        'Set the project setting Time zone for @UVWINDOW "notFuture" to UTC, or fill the field with @NOW if the computers '
+        . 'entering data are set to America/New_York time.') !== false);
+    // A rule with a window keeps it: only "notFuture" is dropped, with a note.
+    $Z['win_nf_utc'] = f('visit_form', '@TODAY-UTC @UVWINDOW={"from":"[v_start]","window":[0,7],"notFuture":true}', 'date_ymd');
+    $mz = mod($Z, $DATA, $FULL, 'nurse');
+    $mz->projectSettings['window-timezone'] = 'America/New_York';
+    $r = ruleFor(page($mz, 'form', '2', 'visit_form'), 'win_nf_utc');
+    check('@TODAY-UTC on a rule with a window: the window stays, notFuture is dropped with a note',
+        $r && empty($r['configError']) && empty($r['windowNotFuture']) && ($r['windowLo'] ?? null) === 0
+        && strpos(implode(' ', $r['windowNotFutureOff'] ?? []), 'filled by @TODAY-UTC') !== false);
 
     // ---- 2) the fold: live, snapshot, and nothing shipped when not entitled ---
     $r = ruleFor($p, 'visit_date_2');
@@ -209,6 +220,12 @@ namespace {
         && $r['fromType'] === 'date' && $r['fromFormat'] === 'dmy');
     check('entitled off-page "from": its saved Y-M-D is baked in', $r && $r['windowFromOp'] === ['lit', '2026-03-01']);
     check('...as a snapshot, so the rule cannot block', $r && $r['snapshotFields'] === ['visit_date_bl'] && empty($r['deferred']));
+    check('...a "from" date read from another form is not a stale condition', $r && empty($r['snapshotGate']));
+    $G = $DICT;
+    $G['gate_nf'] = f('visit_form', '@UVWINDOW={"notFuture":true,"blockSave":"hard","when":"[visit_date_bl]<>\'\'"}', 'date_ymd');
+    $rg = ruleFor(page(mod($G, $DATA, $FULL, 'nurse'), 'form', '2', 'visit_form'), 'gate_nf');
+    check('a "when" read from another form: marked as a stale condition, so notFuture does not block either',
+        $rg && !empty($rg['snapshotGate']) && $rg['snapshotFields'] === ['visit_date_bl']);
     $r = ruleFor($p, 'v_end');
     check('"from" on this page: a live ref', $r && $r['windowFromOp'] === ['ref', 'v_start', null] && empty($r['snapshotFields']));
     check('the server clock reaches the page', isset($p['cfg']['clock']) && $p['cfg']['clock'] === $CLOCK);
@@ -307,6 +324,19 @@ namespace {
     check('audit: ...an unreadable value too is skipped, without claiming it is not in the future',
         (bool) array_filter(findings($m, 'uvalidate-unconfigurable'), function ($e) {
             return $e['fields'] === 'nf_end' && strpos($e['why'], 'field skipped') !== false; }));
+
+    // A date and time gets the page's 120-second margin after saving too.
+    $DT = $DICT;
+    $DT['dt_nf'] = f('visit_form', '@UVWINDOW={"notFuture":true}', 'datetime_ymd');
+    $dtData = $DATA; $dtData['2'][351]['dt_nf'] = '2026-10-09 14:32';
+    $m = mod($DT, $dtData, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    check('audit: a date and time within 120 s of now is not future',
+        !array_filter(findings($m), function ($e) { return $e['field'] === 'dt_nf'; }));
+    $dtData['2'][351]['dt_nf'] = '2026-10-09 14:33';
+    $m = mod($DT, $dtData, $FULL, 'nurse');
+    $m->redcap_save_record(149, '2', 'visit_form', 351, null, null, null, 1);
+    check('audit: ...past it, it is', (bool) array_filter(findings($m), function ($e) { return $e['field'] === 'dt_nf' && $e['reason'] === 'future'; }));
 
     // ---- 4) reverse dependency: saving only the "from" form re-checks the window ---
     $m = mod($DICT, $DATA, $FULL, 'nurse');
