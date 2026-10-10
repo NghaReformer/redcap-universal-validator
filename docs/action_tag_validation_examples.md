@@ -2341,8 +2341,11 @@ Apart from a conflict, each reference chooses its branch on its own. A `when`
 that reads a value saved on another form makes only its own reference's notes
 advisory. A `when` that names a value the server cannot read (in another event,
 or on another repeating form) leaves only its own reference unchecked. The page
-says so on that reference's line, the audit and the scan log it as a
-configuration problem, and the other references are still judged.
+says so on a line that names the reference, the audit and the scan log it as a
+configuration problem, and the other references are still judged. In the same
+way, a reference whose inputs are read in another event or instance never
+blocks on the page, while the fixed limits or other references beside it block
+as they say.
 
 A boy of 300 days measured standing at 75.0 cm and weighing 7.5 kg has a
 corrected length of 75.7 cm and a weight-for-length z-score of -3.16, lower
@@ -2627,10 +2630,11 @@ case need `caseSensitive`.
 - **The z-score travels with each finding, where the value does.** The
   post-save audit's log entry and the Validation scan always carry the
   reference. The z-score, with the sex and the age, gives the measurement back,
-  so it goes only where the value goes. The log entry has it when the audit log
-  setting keeps raw values. The scan has it beside a value the report shows, and
-  the detail line then reads "Its z-score is -3.40 on the growth reference
-  who-wfa."
+  and with the measurement and the sex it gives back the age, so a date of
+  birth. It goes only where values are kept raw. The log entry has it when the
+  audit log setting keeps raw values. The scan has it when it stores raw values
+  (not under the identifier-redacted mode), and the detail line then reads "Its
+  z-score is -3.40 on the growth reference who-wfa."
 
 ### Semantics worth knowing
 
@@ -2983,7 +2987,8 @@ Semantics:
   event's base row, two fields inside the **same** repeating instrument, and repeating
   **events** (every form in the event shares the instance).
 
-  A refused reference makes the whole rule **deferred** — sibling terms of an `and`/`or`
+  A refused reference makes the whole rule deferred (with several `@UVRANGE`
+  references on one field, only the tags of the reference it belongs to) — sibling terms of an `and`/`or`
   still fold on their own merits, but no verdict is shown for the rule and nothing is
   blocked. The reason names the field and the fix. For `@UVASSERT` the server reports it
   as well: a `uvalidate-unconfigurable` module-log entry after a save (all three cases),
@@ -2993,7 +2998,8 @@ Semantics:
   is as wrong as a stale verdict: the gate decides whether the rule applies at all, and it
   was read once when the page opened. The rule still gives live feedback; it does not
   block. Same for a branched rule whose branch selector lives off-page — the branch that
-  gets chosen rests on page-load truth, so no branch of that rule blocks.
+  gets chosen rests on page-load truth, so no branch of that rule blocks (with several
+  `@UVRANGE` references on one field, no branch of that reference).
 - **A false condition skips the rule — it never erases the value.** That is the
   deliberate difference from REDCap's own field branching. Combine `when` with normal
   branching if you also want erasure.
