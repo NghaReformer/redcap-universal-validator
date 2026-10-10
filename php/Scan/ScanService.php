@@ -1279,6 +1279,15 @@ final class ScanService
         $k = (int) $pid;
         if (!array_key_exists($k, $this->fences)) {
             $f = SourceFence::forProject($this->db, $pid);
+            // A LOG THAT COULD NOT BE READ IS NOT A PROJECT WITHOUT ONE (H11).
+            // Null here builds a worker with no fence, and a worker with no
+            // fence takes every record it reads as having held still - so one
+            // failed read of the log let a whole request's records through
+            // unproved. The request stops instead, as for any storage failure,
+            // and the next one asks again; nothing is remembered.
+            if (!empty($f['unreadable'])) {
+                throw new ScanStoreUnavailable('the project change log could not be read');
+            }
             $this->fences[$k] = empty($f['ok']) ? null : $f['fence'];
         }
         return $this->fences[$k];

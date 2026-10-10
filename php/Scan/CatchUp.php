@@ -132,6 +132,14 @@ final class CatchUp
         }
 
         // -- capture the target fence, once -----------------------------------
+        //
+        // A LOG THAT COULD NOT BE READ IS LEFT TO THROW (H11). retained() and
+        // now() answered a failed read as "the log does not reach back" and
+        // "the log is empty", and both of those end here in unfenced(): the
+        // run gave up its fence for good, recorded fence-unprovable, and a
+        // database blip read as a fact about the project. A failure now leaves
+        // this step having written nothing, the worker stops on it as on any
+        // storage failure, and the next request captures the target.
         if ($st['fenceTarget'] === null || $st['fenceTarget'] === '') {
             $keeps = $fence->retained($st['fenceOpen']);
             if (empty($keeps['ok'])) {
@@ -140,8 +148,8 @@ final class CatchUp
             $target = $fence->now();
             if ($target === null) {
                 return $this->unfenced($runId, $out,
-                    'the change log could not be read at the end of the scan, so changes during '
-                    . 'the run cannot be enumerated');
+                    'the change log holds no entries for this project at the end of the scan, so '
+                    . 'changes during the run cannot be enumerated');
             }
             $this->store->setProgressState($runId, $epoch,
                 ['fenceTarget' => $target, 'catchupCursor' => null,

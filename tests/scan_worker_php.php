@@ -2329,10 +2329,17 @@ namespace INSPIRE\UniversalValidator\Scan {
         public $keeps = true;
         public $changed = [];        // [id => version] inside the window
         public $calls = 0;
+        /** @var string|null 'now' or 'retained': that read fails, as a blip does (H11) */
+        public $broken = null;
 
-        public function now() { return $this->top; }
+        public function now()
+        {
+            if ($this->broken === 'now') throw new ScanStoreUnavailable('[2006] server has gone away');
+            return $this->top;
+        }
         public function retained($open)
         {
+            if ($this->broken === 'retained') throw new ScanStoreUnavailable('[2006] server has gone away');
             return $this->keeps ? ['ok' => true, 'why' => null]
                  : ['ok' => false, 'why' => 'part of the change log covering this scan has been '
                                           . 'removed since the run opened'];
@@ -2543,6 +2550,86 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r['done'] === true && $r['fenced'] === false);
     check('catchup: and no target fence is recorded, so nothing later reads one',
         $store->progressState($runId)['fenceTarget'] === null);
+
+    // A LOG THAT COULD NOT BE READ IS NOT ONE THAT DOES NOT REACH BACK (H11).
+    // Both reads answered a failure as the refusal above, so one blip at the
+    // end of a scan gave the run up as fence-unprovable for good. The step now
+    // throws, writes nothing, and the next step captures the target.
+    foreach (['retained', 'now'] as $which) {
+        list($store, $runId, $epoch) = $inCatchUp(['A']);
+        $log = new Log();
+        $log->broken = $which;
+        $cu = new CatchUp($store, ['fence' => $log, 'hash' => $hash]);
+        $threw = null;
+        try { $cu->step(800, $runId, $epoch, 100); } catch (ScanStoreUnavailable $e) { $threw = $e; }
+        check("H11 catchup: a failed $which() read stops the step as a storage failure",
+            $threw !== null);
+        $kinds = [];
+        foreach ($store->aggregates($runId) as $a) $kinds[] = $a['kind'];
+        check("H11 catchup: and a failed $which() read is not recorded as a fence that cannot be proved",
+            !in_array(CatchUp::K_NOFENCE, $kinds, true)
+            && $store->progressState($runId)['fenceTarget'] === null);
+        $log->broken = null;
+        $r = $cu->step(800, $runId, $epoch, 100);
+        check("H11 catchup: once $which() reads again, the run is fenced at the target",
+            $r['fenced'] === true && $store->progressState($runId)['fenceTarget'] === '500');
+    }
+    // Through the worker: the request stops as storage, the run stays in catch-up.
+    list($store, $runId, $epoch) = $inCatchUp(['A']);
+    $log = new Log();
+    $log->broken = 'now';
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'budget' => $wide(), 'owner' => 'w1', 'attempts' => 3,
+        'finalizer' => $fin(), 'catchup' => new CatchUp($store, ['fence' => $log, 'hash' => $hash])]);
+    $res = $w->work(800, $runId);
+    check('H11 catchup: a worker whose change log failed to read stops on storage, still in catch-up',
+        $res['ok'] === false && $res['stop'] === 'storage'
+        && $store->run(800, $runId)['phase'] === ScanPhase::CATCH_UP);
+
+    // The fence itself, over a database that answers what the test says (H11).
+    $logDb = function ($top = '140', $bottom = '100', $failOn = null) {
+        $db = new ScriptedDb();
+        $db->rows = ['FROM redcap_projects' => [['redcap_log_event']],
+                     'SELECT MAX(log_event_id)' => $top === false ? [] : [[$top]],
+                     'SELECT MIN(log_event_id)' => [[$bottom]]];
+        if ($failOn !== null) {
+            $db->failAt($failOn, 1, new \RuntimeException('MySQL server has gone away', 2006));
+        }
+        return $db;
+    };
+    $throws = function (callable $f, $class = ScanStoreUnavailable::class) {
+        try { $f(); } catch (\Throwable $e) { return $e instanceof $class; }
+        return false;
+    };
+    $ff = SourceFence::forProject($logDb(), 800);
+    check('H11 fence: a readable log is a fence', $ff['ok'] === true && $ff['unreadable'] === false);
+    $fence = SourceFence::forProject($logDb('140', '100', 'SELECT MIN(log_event_id)'), 800)['fence'];
+    check('H11 fence: a failed read of the bottom throws, rather than answering a pruned log',
+        $throws(function () use ($fence) { $fence->retained('120'); }));
+    check('H11 fence: and the next read of the bottom answers again',
+        $fence->retained('120')['ok'] === true);
+    $blip = SourceFence::forProject($logDb('140', '100', 'SELECT MAX(log_event_id)'), 800);
+    check('H11 fence: a project whose log top failed to read is unreadable, not unfenceable',
+        $blip['ok'] === false && $blip['unreadable'] === true && $blip['fence'] === null);
+    $blip = SourceFence::forProject($logDb('140', '100', 'FROM redcap_projects'), 800);
+    check('H11 fence: so is one whose log table could not be looked up',
+        $blip['ok'] === false && $blip['unreadable'] === true);
+    $empty = SourceFence::forProject($logDb(null, null), 800);
+    check('H11 fence: a log with no entries for the project is a fact, not a failure',
+        $empty['ok'] === false && $empty['unreadable'] === false);
+    check('H11 fence: a top that is not a log position throws',
+        SourceFence::forProject($logDb('14x'), 800)['unreadable'] === true);
+    check('H11 fence: and so does a top with no row at all',
+        SourceFence::forProject($logDb(false), 800)['unreadable'] === true);
+    $emptied = SourceFence::forProject($logDb('140', null), 800)['fence'];
+    check('H11 fence: an emptied log does not reach back, which is an answer',
+        $emptied->retained('120')['ok'] === false);
+    check('H11 fence: a bottom that is not a log position throws',
+        $throws(function () use ($logDb) {
+            SourceFence::forProject($logDb('140', 'x1'), 800)['fence']->retained('120'); }));
+    check('H11 fence: a window with no opening position is refused, not answered as empty',
+        $throws(function () use ($ff) { $ff['fence']->changedSince('', '140', null, 10); },
+            \InvalidArgumentException::class));
 
     // The window is captured ONCE. A window that moved every round would be a
     // phase chasing a project people are still using.

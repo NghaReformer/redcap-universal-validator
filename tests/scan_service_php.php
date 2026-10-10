@@ -620,6 +620,8 @@ namespace {
         public $refusedBy = [];
         /** @var ?string what the run's lease reads as, or null for no lease */
         public $lease = null;
+        /** @var int how many reads of the change log's top fail, as a blip does (H11) */
+        public $logFails = 0;
         public $logs = [];
         private $count = 0;
         private $slotEpoch = 0;
@@ -720,7 +722,14 @@ namespace {
                 }
                 if (strpos($sql, 'log_event_id > ?') !== false) return [];
                 if (strpos($s, 'SELECT MIN(log_event_id)') === 0) return [['1']];
-                if (strpos($s, 'SELECT MAX(log_event_id)') === 0) return [['100']];
+                if (strpos($s, 'SELECT MAX(log_event_id)') === 0) {
+                    // The fence's own read, not the capability probe's MAX+COUNT.
+                    if ($this->logFails > 0 && strpos($s, 'SELECT MAX(log_event_id) FROM') === 0) {
+                        $this->logFails--;
+                        throw new \RuntimeException('MySQL server has gone away', 2006);
+                    }
+                    return [['100']];
+                }
                 return [];
             }
             if (strpos($sql, 'information_schema.columns') !== false
@@ -2005,6 +2014,31 @@ namespace INSPIRE\UniversalValidator\Scan {
     $last = end($c['works']);
     check('E2E clean: the work request that finished it carries the same status',
         isset($last['status']['terminal']) && $last['status']['terminal'] === ScanOutcome::COMPLETE);
+
+    // -- the change log fails to read for one request (H11) ----------------------
+    //
+    // SourceFence::forProject() answered a failed read as "no fence", so the
+    // request built its worker unfenced and took every record it read as
+    // having held still. The request now stops as a storage failure, reads
+    // nothing, and the next request runs fenced.
+    $ls = new ArrayScanStore();
+    $lm = new \E2eModule($ls);
+    $l = $drive($lm, $ls, 160, function ($svc, $runId) use ($lm) { $lm->logFails = 1; });
+    check('H11 E2E: no verb threw' . ($l['threw'] ? ' (' . $l['threw'] . ')' : ''), $l['threw'] === null);
+    $first = isset($l['works'][0]) ? $l['works'][0] : null;
+    check('H11 E2E: a request whose change log failed to read is refused as a storage failure',
+        is_array($first) && $first['ok'] === false
+        && strpos((string) $first['why'], 'could not reach its own storage') !== false);
+    check('H11 E2E: and it read no record unfenced',
+        is_array($l['row']) && (int) $l['row']['manifest_done'] === 0);
+    $lrun = (int) $l['start']['run_id'];
+    for ($i = 0; $i < 25; $i++) {
+        $w = (new ScanService($lm, $ls))->work(160, $lrun);
+        if (empty($w['ok']) || $ls->run(160, $lrun)['terminal'] !== null) break;
+    }
+    $lrow = $ls->run(160, $lrun);
+    check('H11 E2E: the next requests run fenced and finish through the fence',
+        $lrow['terminal'] === ScanOutcome::COMPLETE && $lrow['coverage'] === ScanOutcome::FENCED);
 
     // -- a run whose rules look values up in project 300 (R3U-N1, R4-1) ---------
     $ks = new ArrayScanStore();

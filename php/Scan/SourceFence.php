@@ -65,13 +65,33 @@ interface RecordVersions
  */
 interface ChangeLog
 {
-    /** The current top of the log as a decimal string, or null when unreadable. */
+    /**
+     * The current top of the log as a decimal string, or null when the log
+     * holds no entries for the project.
+     *
+     * A LOG THAT COULD NOT BE READ THROWS (H11). It used to answer null for
+     * both, so one failed read at the end of a scan was taken for a log with
+     * nothing in it and the run gave up its fence for good. The caller now
+     * meets the failure, stops, and asks again in the next request.
+     *
+     * @throws ScanStoreUnavailable when the log could not be read
+     */
     public function now();
 
-    /** Does the log still reach back to $open? @return array{ok:bool, why:?string} */
+    /**
+     * Does the log still reach back to $open? A read that failed is not an
+     * answer here either: it throws.
+     *
+     * @return array{ok:bool, why:?string}
+     * @throws ScanStoreUnavailable when the log could not be read
+     */
     public function retained($open);
 
-    /** One keyset page of records changed in ($after, $upTo]. */
+    /**
+     * One keyset page of records changed in ($after, $upTo]. [] means the
+     * window holds nothing more; a read that failed throws, and so does a
+     * fence that is not a log position, because neither is "nothing changed".
+     */
     public function changedSince($after, $upTo, $afterId, $limit);
 }
 
@@ -93,24 +113,44 @@ final class SourceFence implements RecordVersions, ChangeLog
     /**
      * A fence for this project, or a refusal that says why.
      *
-     * @return array{ok:bool, fence:?SourceFence, why:?string}
+     * TWO REFUSALS, AND ONLY ONE OF THEM IS ABOUT THE PROJECT (H11). A log
+     * this installation does not have, or one holding no entries for the
+     * project, is a fact: the run works without a fence and claims no more
+     * than its list. A log that could not be READ is a moment, and it came
+     * back as the same refusal - so a work request that met one blip built
+     * its worker with no fence, and every record it read in that request was
+     * taken as having held still, unasked. `unreadable` says which: the
+     * caller must not run unfenced on it, and asks again next request.
+     *
+     * @return array{ok:bool, fence:?SourceFence, why:?string, unreadable:bool}
      */
     public static function forProject(ScanDb $db, $pid)
     {
-        $tbl = self::resolveTable($db, $pid);
+        $unreadable = ['ok' => false, 'fence' => null, 'unreadable' => true,
+                       'why' => 'this project\'s change log could not be read just now, so no '
+                              . 'read can be proved stable until it can'];
+        try {
+            $tbl = self::resolveTable($db, $pid);
+        } catch (\Throwable $e) {
+            return $unreadable;
+        }
         if ($tbl === null) {
-            return ['ok' => false, 'fence' => null,
+            return ['ok' => false, 'fence' => null, 'unreadable' => false,
                     'why' => 'this project\'s change log could not be resolved to a table this '
                            . 'module recognises, so no read can be proved stable'];
         }
         $f = new self($db, $pid, $tbl);
-        $open = $f->now();
+        try {
+            $open = $f->now();
+        } catch (ScanStoreUnavailable $e) {
+            return $unreadable;
+        }
         if ($open === null) {
-            return ['ok' => false, 'fence' => null,
+            return ['ok' => false, 'fence' => null, 'unreadable' => false,
                     'why' => 'the change log ' . $tbl . ' holds no ordered entries for this '
                            . 'project, so there is nothing to fence a scan against'];
         }
-        return ['ok' => true, 'fence' => $f, 'why' => null];
+        return ['ok' => true, 'fence' => $f, 'why' => null, 'unreadable' => false];
     }
 
     /**
@@ -127,17 +167,17 @@ final class SourceFence implements RecordVersions, ChangeLog
      *
      *   The anchor is `\z`, not `$`. PHP's `$` also matches immediately before a
      *   trailing newline, so with `$` a value ending in one would be accepted.
+     *
+     * Null is "no table this module recognises". A read that failed throws
+     * (H11): it answered null as well, and forProject() could not tell a
+     * project without a usable log from a database that did not answer.
      */
     public static function resolveTable(ScanDb $db, $pid)
     {
-        try {
-            $r = $db->select('SELECT log_event_table FROM redcap_projects WHERE project_id = ?', [$pid]);
-            $tbl = isset($r[0][0]) ? (string) $r[0][0] : '';
-            if ($tbl === '' || !preg_match('/^redcap_log_event[0-9]*\z/', $tbl)) return null;
-            return $tbl;
-        } catch (\Throwable $e) {
-            return null;
-        }
+        $r = $db->select('SELECT log_event_table FROM redcap_projects WHERE project_id = ?', [$pid]);
+        $tbl = isset($r[0][0]) ? (string) $r[0][0] : '';
+        if ($tbl === '' || !preg_match('/^redcap_log_event[0-9]*\z/', $tbl)) return null;
+        return $tbl;
     }
 
     /** Which table this fence reads. For diagnostics and for the run's record of itself. */
@@ -153,18 +193,33 @@ final class SourceFence implements RecordVersions, ChangeLog
      * truncates a bigint past 2^31, and the value is compared, stored and sent
      * to the client - three chances for a truncated fence to be treated as a
      * real one.
+     *
+     * NULL IS AN EMPTY LOG AND NOTHING ELSE (H11). A read that failed, or an
+     * answer that is not a log position, throws ScanStoreUnavailable: both
+     * used to be null, and catch-up took that null for "the log cannot
+     * enumerate this window" and gave up the run's fence on one blip.
      */
     public function now()
     {
         try {
             $r = $this->db->select('SELECT MAX(log_event_id) FROM ' . $this->table
                 . ' WHERE project_id = ?', [$this->pid]);
-            $v = isset($r[0][0]) ? $r[0][0] : null;
-            if ($v === null || $v === '' || !ctype_digit((string) $v)) return null;
-            return (string) $v;
+        } catch (ScanStoreUnavailable $e) {
+            throw $e;
         } catch (\Throwable $e) {
-            return null;
+            throw ScanStoreUnavailable::from($e);
         }
+        // MAX() always answers one row; no row is a read that did not work.
+        if (!isset($r[0]) || !is_array($r[0]) || !array_key_exists(0, $r[0])) {
+            throw new ScanStoreUnavailable('the change log answered its top with no row');
+        }
+        $v = $r[0][0];
+        if ($v === null || $v === '') return null;
+        if (!ctype_digit((string) $v)) {
+            throw new ScanStoreUnavailable('the change log answered its top with something that '
+                . 'is not a log position');
+        }
+        return (string) $v;
     }
 
     /**
@@ -225,28 +280,40 @@ final class SourceFence implements RecordVersions, ChangeLog
             return ['ok' => false, 'why' => 'the opening fence was not recorded, so nothing can be '
                                           . 'proved about the interval since'];
         }
+        // A READ THAT FAILED IS NOT A PRUNED LOG (H11). This answered ok:false
+        // for both, and catch-up turned ok:false into a run that permanently
+        // claims only its list - over a database blip. A failure now throws,
+        // the worker stops on it, and the next request asks again.
         try {
             $r = $this->db->select('SELECT MIN(log_event_id) FROM ' . $this->table
                 . ' WHERE project_id = ?', [$this->pid]);
-            $min = isset($r[0][0]) ? $r[0][0] : null;
-            if ($min === null || !ctype_digit((string) $min)) {
-                return ['ok' => false, 'why' => 'the change log holds no entries for this project '
-                                              . 'any more, so the scan interval cannot be read back'];
-            }
-            // String compare would order "9" after "10". bccomp is not
-            // guaranteed present, so compare by length first and then
-            // lexically - correct for arbitrary-length decimal integers with no
-            // extension and no float rounding.
-            if (self::decCmp((string) $min, $open) > 0) {
-                return ['ok' => false,
-                        'why' => 'part of the change log covering this scan has been removed since '
-                               . 'the run opened, so changes during the run cannot be enumerated'];
-            }
-            return ['ok' => true, 'why' => null];
+        } catch (ScanStoreUnavailable $e) {
+            throw $e;
         } catch (\Throwable $e) {
-            return ['ok' => false, 'why' => 'the change log could not be read back (' . get_class($e)
-                                          . '), so the scan interval cannot be proved covered'];
+            throw ScanStoreUnavailable::from($e);
         }
+        if (!isset($r[0]) || !is_array($r[0]) || !array_key_exists(0, $r[0])) {
+            throw new ScanStoreUnavailable('the change log answered its bottom with no row');
+        }
+        $min = $r[0][0];
+        if ($min === null || $min === '') {
+            return ['ok' => false, 'why' => 'the change log holds no entries for this project '
+                                          . 'any more, so the scan interval cannot be read back'];
+        }
+        if (!ctype_digit((string) $min)) {
+            throw new ScanStoreUnavailable('the change log answered its bottom with something that '
+                . 'is not a log position');
+        }
+        // String compare would order "9" after "10". bccomp is not
+        // guaranteed present, so compare by length first and then
+        // lexically - correct for arbitrary-length decimal integers with no
+        // extension and no float rounding.
+        if (self::decCmp((string) $min, $open) > 0) {
+            return ['ok' => false,
+                    'why' => 'part of the change log covering this scan has been removed since '
+                           . 'the run opened, so changes during the run cannot be enumerated'];
+        }
+        return ['ok' => true, 'why' => null];
     }
 
     /**
@@ -263,7 +330,12 @@ final class SourceFence implements RecordVersions, ChangeLog
     public function changedSince($after, $upTo, $afterId, $limit)
     {
         $limit = max(1, min(5000, (int) $limit));
-        if (!ctype_digit((string) $after) || !ctype_digit((string) $upTo)) return [];
+        // A fence that is not a log position is a caller's mistake, and [] is
+        // the answer "nothing changed in this window" (H11): refused, never
+        // answered as empty.
+        if (!ctype_digit((string) $after) || !ctype_digit((string) $upTo)) {
+            throw new \InvalidArgumentException('a change-log window needs two log positions');
+        }
 
         $sql = 'SELECT CAST(pk AS BINARY) AS p, MAX(log_event_id) FROM ' . $this->table . '
                 WHERE project_id = ? AND log_event_id > ? AND log_event_id <= ?
