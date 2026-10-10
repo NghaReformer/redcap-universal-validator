@@ -1876,9 +1876,9 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('E2E stop: Stop on a run nobody drives ends it at once',
         !empty($stop['ok']) && $stop['stopped'] === true);
     $row = $x['row'];
-    check('E2E stop: the run is stored cancelled, partial, with no verdict',
+    check('E2E stop: the run is stored cancelled, partial, with no verdict, and with the rule problem its plan noted',
         is_array($row) && $row['terminal'] === ScanOutcome::CANCELLED && $row['coverage'] === ScanOutcome::COV_PARTIAL
-        && $row['clean'] === null);
+        && $row['clean'] === null && (int) $row['rule_problem_count'] === 1);
     check('E2E stop: and status() says it was cancelled, and that it is over',
         !empty($x['status']['ok']) && $x['status']['terminal'] === ScanOutcome::CANCELLED
         && $x['status']['active'] === false);
@@ -1887,6 +1887,7 @@ namespace INSPIRE\UniversalValidator\Scan {
     $hs = new ArrayScanStore();
     $hm = new \E2eModule($hs);
     $hm->lease = gmdate('Y-m-d H:i:s', time() + 300);
+    $hm->problems = [['rule' => 2, 'fields' => ['b_val'], 'why' => 'rule 2 cannot be evaluated', 'code' => 'c2']];
     $held = null;
     $h = $drive($hm, $hs, 153, function (ScanService $svc, $runId) use (&$held, $hs) {
         $held = $svc->cancel(153, $runId);
@@ -1898,7 +1899,125 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('E2E held stop: and the next work request ends it, cancelled',
         is_array($h['row']) && $h['row']['terminal'] === ScanOutcome::CANCELLED && $h['passes'] === 1
         && !empty($h['status']['ok']) && $h['status']['terminal'] === ScanOutcome::CANCELLED);
+    check('E2E held stop: with the rule problem its plan noted (R3U-3)',
+        (int) $h['row']['rule_problem_count'] === 1 && $h['status']['ruleProblems'] === 1);
 }
+
+/* =====================================================================
+ * R3U-3  ONE STOPPED RUN, ONE ROW, WHICHEVER REQUEST ENDS IT
+ *
+ * Stop on a run nobody drives, the reap a Start does first, and the work
+ * request that finds a run `cancelling` each wrote derive(['cancelled' =>
+ * true]) - no counts - while promote() wrote the same stopped run with its
+ * tally. So the row said detail `complete` and 0 rule problems, 0 records not
+ * examined, 0 gaps, the panel lost "1 rule could not be evaluated" and the
+ * export was named _CANCELLED instead of _CANCELLED_TRUNCATED.
+ *
+ * One run, built four times: four records, two examined with a finding each,
+ * one that could not be read, one never reached; a rule problem the plan
+ * noted; two collection gaps; a detail budget of two findings. Each copy is
+ * ended by a different writer, and every row must read the same.
+ * ===================================================================== */
+{
+    $stopped = function ($pid) {
+        $store = new ArrayScanStore();
+        $m = new \E2eModule($store);
+        $m->proj['scan-max-detail-findings'] = '2';
+        $key = $m->sys['log-hmac-key'];
+        $hash = function ($id) use ($pid, $key) { return Hmac::raw(Hmac::P_RECORD, $pid, $id, $key); };
+        $runId = (int) $store->startRun($pid, ['created_by' => 'alice'])['run']['run_id'];
+        $store->writeManifest($runId, array_map(function ($id) use ($hash) {
+            return ['id_bin' => $id, 'hash' => $hash($id), 'dag' => null];
+        }, ['R001', 'R002', 'R003', 'R004']));
+        ScanPromotion::noteRuleProblems($store, $runId, [['rule' => 3, 'why' => 'rule 3 is broken', 'code' => 'c3']]);
+        $store->addAggregate($runId, ScanPromotion::GAP_KINDS, 'fa', 'x', 2, 0);
+        $run = $store->run($pid, $runId);
+        $epoch = (int) $run['lease_epoch'];
+        $b = ['bytes' => 0, 'records' => [], 'findings' => []];
+        foreach ($store->claim($runId, 'w1', $epoch, 3) as $i => $c) {
+            $b['records'][] = ['ordinal' => $c['ordinal'], 'claim' => $c['claim'], 'record_hash' => $c['hash'],
+                'state' => $i < 2 ? ScanStore::REC_DONE : ScanStore::REC_UNREADABLE,
+                'version' => $i < 2 ? '50' : null];
+            if ($i < 2) {
+                $b['findings'][] = ['ordinal' => $c['ordinal'], 'project_id' => $pid,
+                    'generation_id' => (int) $run['generation_id'], 'identity' => hash('sha256', 'f' . $c['id_bin'], true),
+                    'valid_from_seq' => (int) $run['run_seq'], 'record_hash' => $c['hash'],
+                    'record_id_bin' => $c['id_bin'], 'event_id' => 1, 'instance' => 1, 'dag_key' => null,
+                    'host_form' => 'fa', 'field' => 'a_val', 'rule_source_id' => 'r1',
+                    'rule_revision' => str_repeat('c', 64), 'rule_ord' => 1, 'check_type' => 'required',
+                    'reason_code' => 'required-blank'];
+            }
+        }
+        $ok = $store->commitBatch($runId, 'w1', $epoch, $b);
+        return [$store, $m, $runId, $ok === true];
+    };
+    $cols = function (ScanStore $store, $pid, $runId) {
+        $r = $store->run($pid, $runId);
+        $out = [];
+        foreach (['phase', 'terminal', 'coverage', 'detail', 'clean', 'rule_problem_count', 'not_examined',
+                  'gap_count'] as $k) {
+            $out[$k] = $r[$k] === null ? null : (string) $r[$k];
+        }
+        $out['suffix'] = ScanOutcome::suffix($r);
+        return $out;
+    };
+    $want = ['phase' => ScanPhase::TERMINAL, 'terminal' => ScanOutcome::CANCELLED,
+             'coverage' => ScanOutcome::COV_PARTIAL, 'detail' => ScanOutcome::DETAIL_TRUNCATED, 'clean' => null,
+             'rule_problem_count' => '1', 'not_examined' => '1', 'gap_count' => '2',
+             'suffix' => '_CANCELLED_TRUNCATED'];
+    $policy = ScanPolicy::resolve([], ['scan-max-detail-findings' => '2']);
+
+    // promote(): the request a worker held, ending the run it was told to stop.
+    list($ps, $pm, $pr, $pok) = $stopped(870);
+    $ps->cancel(870, $pr, 'alice');
+    ScanPromotion::promote($ps, 870, $pr, ['uniqueDone' => false, 'uniqueBlocking' => 0, 'rollupDone' => false,
+        'maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes'], 'crossRecordLookups' => false]);
+    check('R3U-3: the fixture committed its batch', $pok);
+    check('R3U-3: promote() writes the stopped run with its counts and its truncation',
+        $cols($ps, 870, $pr) === $want);
+
+    // Stop on a run nobody drives: cancel() -> stopRun().
+    list($ss, $sm, $sr) = $stopped(871);
+    $sres = (new ScanService($sm, $ss))->cancel(871, $sr);
+    check('R3U-3: Stop on a run nobody drives ends it ...', !empty($sres['ok']) && $sres['stopped'] === true);
+    check('R3U-3: ... with the same row promote() writes', $cols($ss, 871, $sr) === $want);
+
+    // The reap a Start does first: start() on the project.
+    list($rs, $rm, $rr) = $stopped(872);
+    $rs->cancel(872, $rr, 'alice');
+    $rstart = (new ScanService($rm, $rs))->start(872);
+    check('R3U-3: Start ends the run left stopping, and takes the slot ...',
+        !empty($rstart['ok']) && (int) $rstart['run_id'] !== $rr);
+    check('R3U-3: ... and the stopped run\'s row is the same row', $cols($rs, 872, $rr) === $want);
+
+    // A work request that finds the run stopping.
+    list($ws, $wm, $wr) = $stopped(873);
+    $ws->cancel(873, $wr, 'alice');
+    $wres = (new ScanService($wm, $ws))->work(873, $wr);
+    check('R3U-3: a work request that finds the run stopping ends it, and says so ...',
+        !empty($wres['ok']) && $wres['stop'] === 'cancelled' && $wres['worked'] === 0
+        && isset($wres['status']['terminal']) && $wres['status']['terminal'] === ScanOutcome::CANCELLED);
+    check('R3U-3: ... with the same row', $cols($ws, 873, $wr) === $want);
+    check('R3U-3: and status() of a stopped run reports what promotion counted',
+        $wres['status']['ruleProblems'] === 1 && $wres['status']['notExamined'] === 1
+        && $wres['status']['detail'] === ScanOutcome::DETAIL_TRUNCATED);
+
+    // The finisher never reopens a run, and ends one only once.
+    check('R3U-3: the finisher does not touch a run that has ended',
+        ScanPromotion::finishCancelled($ws, 873, $wr, []) === false && $cols($ws, 873, $wr) === $want);
+    check('R3U-3: nor a run that is not there', ScanPromotion::finishCancelled($ws, 873, 999, []) === false);
+
+    // The caller decides the run ends, as derive(['cancelled' => true]) let
+    // it: the worker stopping a run whose privacy settings tightened has
+    // pressed no Stop, and its sentence replaces the outcome's own.
+    list($ts, $tm, $tr) = $stopped(874);
+    $tWhy = 'the project\'s privacy settings were tightened while this scan was running';
+    check('R3U-3: a run nobody pressed Stop on is ended as cancelled when the caller says so, with its counts',
+        ScanPromotion::finishCancelled($ts, 874, $tr, ['maxFindings' => $policy['maxFindings'],
+            'maxBytes' => $policy['maxBytes'], 'why' => $tWhy]) === true
+        && $cols($ts, 874, $tr) === $want && $ts->run(874, $tr)['terminal_reason'] === $tWhy);
+}
+
 
 /* =====================================================================
  * R3G-4  THE EVALUATOR'S REVISION IS IN EVERY RUN'S FINGERPRINT

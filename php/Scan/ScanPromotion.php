@@ -497,36 +497,91 @@ final class ScanPromotion
                     'run' => $run, 'census' => $states, 'wrote' => false];
         }
 
-        // THE STORE IS ASKED HERE, NOT BY THE CALLER. What was found used to
-        // arrive in $in, so the verdict was as good as whichever caller built
-        // the array, and the one production caller fed `violations` from a
-        // counter the finalizer never touches. A number a caller supplies for
-        // any of these five is overridden: what was found, the rule problems,
-        // the gaps, what blocks coverage, and the window's changes.
-        //
-        // AFTER `ready`, because promotion is attempted on every pass and
-        // readiness needs none of it: a run with work left costs no read here.
-        // What blocks coverage and the window's changes were the CALLER's
-        // reads, sent on every pass although neither decides readiness; asked
-        // here they are sent once, by the pass that can promote. The window is
-        // counted from the rows tally() already has.
-        $aggregates = $store->aggregates($runId);
-        $t = self::tally($aggregates);
-        $f = self::facts($run, $states, array_merge($in, [
-            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
-            'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
-            'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
-
-        $outcome = ScanOutcome::derive($f['facts']);
-        $outcome['suffix'] = ScanOutcome::suffix($outcome);
-        // What finish() persists beside the terminal. `gaps` is already there.
-        $outcome['ruleProblems'] = (int) $f['facts']['ruleProblems'];
-        $outcome['notExamined'] = (int) $f['notExamined'];
+        $outcome = self::conclude($store, $runId, $run, $states, $in, false);
         $ok = $store->finish($runId, $outcome);
         return ['promoted' => $ok, 'outcome' => $outcome,
                 'why' => $ok ? null : 'another worker finished this scan first',
                 // A refused finish is still a write somebody made: the run
                 // ended under another worker, after these reads.
                 'run' => $run, 'census' => $states, 'wrote' => true];
+    }
+
+    /**
+     * End a run that was asked to stop, with what it found counted (review
+     * R3U-3).
+     *
+     * ONE FINISHER FOR EVERY WRITER OF A STOPPED RUN. Stop on a run nobody
+     * drives, the reap a Start does first, and the worker that arrives to find
+     * a run `cancelling` each wrote derive(['cancelled' => true, ...]): an
+     * outcome with no counts. So the row said `detail = complete` and
+     * rule_problem_count = not_examined = gap_count = 0 whatever the run had
+     * met, while promote() wrote the SAME stopped run with its tally and its
+     * truncation - one run, two rows, depending on which request ended it. The
+     * panel lost "1 rule could not be evaluated", and the export was named
+     * _CANCELLED where promote() would have named it _CANCELLED_TRUNCATED.
+     *
+     * IT IS promote()'s conclusion, with the cancellation asserted. The tally,
+     * the census and the rows kept against $in's budget are read and judged
+     * exactly as promote() judges them; the caller is the one deciding the run
+     * ends, as derive(['cancelled' => true]) always let it. A run already
+     * terminal is not touched, and finish() itself changes nothing on a run
+     * that has left its slot.
+     *
+     * @param array $in maxFindings and maxBytes, the run's policy - the budget
+     *                  `truncated` is decided against, as promote() is asked -
+     *                  and `why`, a sentence that replaces the outcome's own
+     * @return bool whether this call ended it
+     */
+    public static function finishCancelled(ScanStore $store, $pid, $runId, array $in = [])
+    {
+        $run = $store->run($pid, $runId);
+        if ($run === null || (isset($run['phase']) && $run['phase'] === ScanPhase::TERMINAL)) {
+            return false;
+        }
+        $budget = [];
+        foreach (['maxFindings', 'maxBytes'] as $k) {
+            if (isset($in[$k])) $budget[$k] = $in[$k];
+        }
+        $outcome = self::conclude($store, $runId, $run, $store->recordStates($runId), $budget, true);
+        if (isset($in['why']) && is_string($in['why']) && $in['why'] !== '') $outcome['why'] = $in['why'];
+        return $store->finish($runId, $outcome);
+    }
+
+    /**
+     * What a finishable run may claim, as finish() takes it.
+     *
+     * THE STORE IS ASKED HERE, NOT BY THE CALLER. What was found used to
+     * arrive in $in, so the verdict was as good as whichever caller built the
+     * array, and the one production caller fed `violations` from a counter the
+     * finalizer never touches. A number a caller supplies for any of these five
+     * is overridden: what was found, the rule problems, the gaps, what blocks
+     * coverage, and the window's changes.
+     *
+     * ONLY ONCE THE RUN CAN END, because promotion is attempted on every pass
+     * and readiness needs none of it: a run with work left costs no read here.
+     * What blocks coverage and the window's changes were the CALLER's reads,
+     * sent on every pass although neither decides readiness; asked here they
+     * are sent once, by the pass that can end the run. The window is counted
+     * from the rows tally() already has.
+     *
+     * $cancel asserts the cancellation (finishCancelled()); otherwise it is
+     * whatever the row says.
+     */
+    private static function conclude(ScanStore $store, $runId, array $run, array $states, array $in, $cancel)
+    {
+        $aggregates = $store->aggregates($runId);
+        $t = self::tally($aggregates);
+        $f = self::facts($run, $states, array_merge($in, [
+            'violations' => $t['violations'], 'ruleProblems' => $t['ruleProblems'],
+            'gapCount' => $t['gaps'], 'blockingAggregates' => $store->blockingAggregates($runId),
+            'windowChanges' => self::kindTotal($aggregates, self::WINDOW_KINDS)]));
+        if ($cancel) $f['facts']['cancelled'] = true;
+
+        $outcome = ScanOutcome::derive($f['facts']);
+        $outcome['suffix'] = ScanOutcome::suffix($outcome);
+        // What finish() persists beside the terminal. `gaps` is already there.
+        $outcome['ruleProblems'] = (int) $f['facts']['ruleProblems'];
+        $outcome['notExamined'] = (int) $f['notExamined'];
+        return $outcome;
     }
 }

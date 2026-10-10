@@ -409,3 +409,86 @@ $NEIGHBOUR = uv_neighbour($PID);
         $stopRun->invoke($svc, $store, 961, $rid, 'alice', $before(961, $rid), time())['stopped'] === true
         && $store->run(961, $rid)['terminal'] === 'cancelled');
 }
+
+// R3U-3, ON A REAL SERVER. One stopped run, one row, whichever request ends
+// it. Stop on a run nobody drives used to write derive(['cancelled' => true])
+// with no counts, while promote() wrote the same stopped run with its tally:
+// detail `complete` beside `truncated`, 0 beside 1 rule problem, 0 beside 1
+// record not examined, 0 beside 2 gaps.
+if (!class_exists('UvBudgetModule')) {
+    /** Settings only: a detail budget of two findings, everything else the default. */
+    class UvBudgetModule {
+        public function getSystemSetting($k) { return null; }
+        public function getProjectSetting($k, $pid = null) {
+            return $k === 'scan-max-detail-findings' ? '2' : null;
+        }
+    }
+}
+{
+    $store = new \INSPIRE\UniversalValidator\Scan\SqlScanStore($dbA);
+    $stopRun = new \ReflectionMethod('INSPIRE\\UniversalValidator\\Scan\\ScanService', 'stopRun');
+    $stopRun->setAccessible(true);
+    $svc = new \INSPIRE\UniversalValidator\Scan\ScanService(new UvBudgetModule());
+    $T = Schema::table('scan_run');
+    $build = function ($pid) use ($store, $dbA) {
+        $r = $store->startRun($pid, array('created_by' => 'alice', 'fence_open' => '10'));
+        $rid = (int) $r['run']['run_id'];
+        $m = array();
+        foreach (array('U1', 'U2', 'U3', 'U4') as $id) {
+            $m[] = array('id_bin' => $id, 'hash' => hash('sha256', $id, true), 'dag' => null);
+        }
+        $store->writeManifest($rid, $m);
+        \INSPIRE\UniversalValidator\Scan\ScanPromotion::noteRuleProblems($store, $rid,
+            array(array('rule' => 3, 'why' => 'rule 3 is broken', 'code' => 'c3')));
+        $store->addAggregate($rid, \INSPIRE\UniversalValidator\Scan\ScanPromotion::GAP_KINDS, 'fa', 'x', 2, 0);
+        $run = $store->run($pid, $rid);
+        $ep = (int) $run['lease_epoch'];
+        $seq = uv_run_seq($dbA, $rid);
+        $b = array('bytes' => 0, 'records' => array(), 'findings' => array());
+        foreach ($store->claim($rid, 'w', $ep, 3) as $i => $c) {
+            $b['records'][] = array('ordinal' => $c['ordinal'], 'claim' => $c['claim'],
+                'version' => $i < 2 ? '500' : null, 'record_hash' => $c['hash'],
+                'state' => $i < 2 ? \INSPIRE\UniversalValidator\Scan\ScanStore::REC_DONE
+                                  : \INSPIRE\UniversalValidator\Scan\ScanStore::REC_UNREADABLE);
+            if ($i < 2) {
+                $b['findings'][] = array('ordinal' => $c['ordinal'], 'project_id' => $pid,
+                    'generation_id' => (int) $run['generation_id'],
+                    'identity' => hash('sha256', 'f-' . $pid . '-' . $c['id_bin'], true),
+                    'valid_from_seq' => $seq, 'record_hash' => $c['hash'], 'record_id_bin' => $c['id_bin'],
+                    'event_id' => null, 'instance' => 1, 'host_form' => 'fa', 'field' => 'x',
+                    'rule_source_id' => 'r1', 'rule_revision' => str_repeat('f', 64), 'rule_ord' => 1,
+                    'check_type' => 'required', 'reason_code' => 'required-blank');
+            }
+        }
+        return array($rid, $store->commitBatch($rid, 'w', $ep, $b) === true);
+    };
+    $row = function ($rid) use ($A, $T) {
+        $r = $A->query('SELECT phase, terminal, coverage, detail, clean, rule_problem_count, not_examined,
+            gap_count FROM ' . $T . ' WHERE run_id = ' . (int) $rid)->fetch_assoc();
+        foreach ($r as $k => $v) $r[$k] = $v === null ? null : (string) $v;
+        return $r;
+    };
+    $before = function ($pid, $rid) use ($store, $A, $T) {
+        $run = $store->run($pid, $rid);
+        $run['lease_expires_at'] = $A->query('SELECT lease_expires_at FROM ' . $T
+            . ' WHERE run_id = ' . (int) $rid)->fetch_row()[0];
+        return $run;
+    };
+
+    list($ridS, $okS) = $build(970);
+    $A->query('UPDATE ' . $T . ' SET updated_at = UTC_TIMESTAMP() - INTERVAL 10 MINUTE WHERE run_id = ' . (int) $ridS);
+    $res = $stopRun->invoke($svc, $store, 970, $ridS, 'alice', $before(970, $ridS), time());
+    list($ridP, $okP) = $build(972);
+    $store->cancel(972, $ridP, 'alice');
+    $pol = \INSPIRE\UniversalValidator\Scan\ScanPolicy::resolve(array(), array('scan-max-detail-findings' => '2'));
+    \INSPIRE\UniversalValidator\Scan\ScanPromotion::promote($store, 972, $ridP, array('uniqueDone' => false,
+        'uniqueBlocking' => 0, 'rollupDone' => false, 'maxFindings' => $pol['maxFindings'],
+        'maxBytes' => $pol['maxBytes'], 'crossRecordLookups' => false));
+    check('R3U-3: the fixture committed both batches', $okS && $okP);
+    check('R3U-3: Stop on a run nobody drives ends it', $res['ok'] === true && $res['stopped'] === true);
+    check('R3U-3: and stores the row promote() stores for the same stopped run', $row($ridS) === $row($ridP));
+    check('R3U-3: the truncation, the rule problem, the record not examined and the gaps, all kept',
+        $row($ridS) === array('phase' => 'terminal', 'terminal' => 'cancelled', 'coverage' => 'partial',
+            'detail' => 'truncated', 'clean' => null, 'rule_problem_count' => '1', 'not_examined' => '1',
+            'gap_count' => '2'));
+}

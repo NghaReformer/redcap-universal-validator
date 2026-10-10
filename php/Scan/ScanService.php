@@ -331,6 +331,23 @@ final class ScanService
 
         $policy = $ent['policy'];
         $ctx = $ent['ctx'];
+
+        // A STOPPED RUN IS ENDED HERE, BY THE ONE FINISHER (review R3U-3). The
+        // worker ended a `cancelling` run itself, with an outcome that carried
+        // no counts, so the row of a run stopped while a worker held it said
+        // nothing about the rule problems, the records not examined or the
+        // budget it had met. ScanPromotion::finishCancelled() is what Stop and
+        // Start use, and it is used here before the worker is built. Before
+        // the fingerprint, too: ending a stop evaluates nothing, and a run that
+        // was stopped is not to be told to stop because its rules changed.
+        if (isset($run['phase']) && $run['phase'] === ScanPhase::CANCELLING) {
+            ScanPromotion::finishCancelled($store, $pid, $runId, self::limitsOf($policy));
+            return ['ok' => true, 'worked' => 0, 'requeued' => 0, 'blocked' => 0, 'findings' => 0,
+                    'phase' => ScanPhase::TERMINAL, 'done' => false, 'stop' => 'cancelled',
+                    'why' => 'this scan was stopped, so the records after that point were never examined',
+                    'status' => $this->statusOf($pid, $runId, [])];
+        }
+
         if (!empty($ctx['verifyFingerprint'])) {
             $current = ScanPlanner::requestFingerprint(['rules'=>$ctx['rules'], 'ownership'=>$ctx['ownership'],
                 'structure'=>$ctx['structure'] ?? [], 'policy'=>$policy, 'engine'=>$this->engineVersion()]);
@@ -418,6 +435,9 @@ final class ScanService
             'budget'    => new WorkBudget(['mode' => $mode, 'startedAt' => microtime(true)]),
             'owner'     => $this->owner(),
             'attempts'  => $policy['recordAttempts'],
+            // The budget a stopped run is judged against, for the worker's
+            // own ending of a run it finds `cancelling` (review R3U-3).
+            'limits'    => self::limitsOf($policy),
             'finalizer' => $this->finalizer($pid, $ctx),
             'catchup'   => $this->catchUp($pid, $store, $run['scope_dag']),
             // The SAME question catch-up asks, of the same opened source: is
@@ -798,7 +818,7 @@ final class ScanService
         $stopped = false;
         if (!self::workerHolds($before, $now, self::STALL_SECONDS)) {
             try {
-                $stopped = self::finishCancelled($store, $runId);
+                $stopped = ScanPromotion::finishCancelled($store, $pid, $runId, $this->limits($pid));
             } catch (\Throwable $e) {
                 // The stop itself stands; the run stays `cancelling`, and the
                 // next Continue or Start finishes it, as before this existed.
@@ -809,17 +829,19 @@ final class ScanService
     }
 
     /**
-     * Write a cancelled run's terminal state. One body for cancel() and
-     * reapCancelled(), so the two cannot finish a stop differently.
-     *
-     * @return bool whether this call ended it
+     * The detail budget a run is judged against when it ends: the same
+     * numbers advanceRun() hands promote(), so a stopped run is called
+     * truncated by whichever request ends it, or by none (review R3U-3).
      */
-    private static function finishCancelled(ScanStore $store, $runId)
+    private function limits($pid)
     {
-        return $store->finish($runId, ScanOutcome::derive([
-            'cancelled' => true,
-            'manifestDone' => $store->manifestComplete($runId),
-        ]));
+        return self::limitsOf($this->policy($pid));
+    }
+
+    /** @see limits() - from a policy already in hand. */
+    private static function limitsOf(array $policy)
+    {
+        return ['maxFindings' => $policy['maxFindings'], 'maxBytes' => $policy['maxBytes']];
     }
 
     /**
@@ -982,8 +1004,9 @@ final class ScanService
                 [$pid, ScanPhase::CANCELLING]);
             $n = 0;
             $store = $this->store();
+            $limits = $rows ? $this->limits($pid) : [];
             foreach ($rows as $row) {
-                self::finishCancelled($store, (int) $row[0]);
+                ScanPromotion::finishCancelled($store, $pid, (int) $row[0], $limits);
                 $n++;
             }
             return $n;
