@@ -2119,6 +2119,41 @@ namespace INSPIRE\UniversalValidator\Scan {
     check('squeezed: and no request that summarised something reports that nothing moved',
         $silent === 0);
 
+    // THE UNIQUENESS PHASE SAYS IT MOVED TOO (review R3S-4). Its `listed` -
+    // groups discovered, candidates verified, groups published - could be
+    // replaced by nothing with every suite green: the only finalizer stub
+    // reported zeros until the step that finished. A squeezed request in
+    // unique-finalize that discovered 3 groups, verified 4 candidates and
+    // published 5 groups, and emitted nothing yet, used to answer worked=0,
+    // findings=0, blocked=0 in an unchanged phase - "nothing moved" to the
+    // browser. It also takes the ordinary first page of groups, and one record
+    // for the verify read, as a squeezed request should.
+    class StepFinalizer implements DuplicateFinalizer
+    {
+        public $limits = [];
+        public function step($generationId, $limit = 500, $readLimit = null)
+        {
+            $this->limits[] = [$limit, $readLimit];
+            return ['done' => false, 'groups' => 3, 'verified' => 4, 'emitted' => 0,
+                    'published' => 5, 'collisions' => 0, 'read' => 2, 'why' => null];
+        }
+    }
+    list($store, $runId) = $fixture(['A'], 826);
+    $ep = (int) $store->run(826, $runId)['lease_epoch'];
+    foreach ([ScanPhase::CATCH_UP, ScanPhase::UNIQUE] as $p) $store->advancePhase($runId, $ep, $p);
+    $sf = new StepFinalizer();
+    $w = new ScanWorker($store, ['fence' => new Versions(), 'read' => $reader,
+        'evaluate' => $finder(0), 'owner' => 'w1', 'attempts' => 3, 'finalizer' => $sf,
+        'budget' => new WorkBudget(['mode' => 'browser', 'memoryLimit' => 100 * $MB,
+            'timeLimit' => null, 'startedAt' => microtime(true),
+            'probe' => $scripted([[65, 65, 66]])->fn])]);
+    $res = $w->work(826, $runId);
+    check('squeezed: unique-finalize reports the groups it found, verified and published as movement',
+        $res['ok'] === true && $res['phase'] === ScanPhase::UNIQUE && $res['done'] === false
+        && $res['stop'] === 'memory' && isset($res['listed']) && $res['listed'] === 3 + 4 + 5);
+    check('squeezed: one step, with the ordinary first page of groups and one record to re-read',
+        $sf->limits === [[25, 1]]);
+
     // THE PRODUCTION FINALIZER HONOURS THE READ LIMIT, and says how many
     // records a verify page read so the worker can measure it as records.
     /** Just enough of the database for one verify page of one group. */
