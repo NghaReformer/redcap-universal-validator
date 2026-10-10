@@ -883,7 +883,10 @@ Required and Unique rules: the same minus calc. Choice-filter rules
 rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
 validation. Lookup rules (`@UVEXISTS`): Text, dropdown, radio and SQL fields.
 Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
-validation (including comma decimals), calc fields and sliders.
+validation (including comma decimals), calc fields and sliders; for a growth
+reference, the sex field may be a radio, dropdown, yes/no, Text, calc or SQL
+field, the dates date or datetime fields, and an age, length or height a
+number field or a calc.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -961,6 +964,24 @@ range, and the Validation scan counts them; its report labels them "Unusual
 value", "Implausible value" or "Not a number". Annotation-only; see the README
 section and
 [`action_tag_validation_examples.md`](action_tag_validation_examples.md).
+
+**Can a child's weight or height be checked against the WHO growth standards?**
+Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
+child's sex and age:
+`@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}`.
+The WHO 2006 standards (birth to 5 years) and the WHO 2007 reference (5 to 19
+years) ship with the module, and the z-score is the one WHO's anthro software
+gives. `age` can also be a field holding days or months (`{"days":"[age_days]"}`),
+and weight-for-length or weight-for-height takes `"by":"[height_cm]"` instead
+of `age`. The date of birth may sit on another form, or in another event when
+event and instance references are on; such a rule shows its note but does not
+block. A blank input or an age outside the reference checks nothing, and on a
+data entry form a grey note says why. To check against CDC 2000 or a national
+reference, your REDCap administrator adds its table in a folder named in the
+module's system settings (`data/references/README.md` in the module explains
+how). WHO's 0.7 cm correction for a length measured standing, or a height
+measured lying, is not applied: use `who-wfl` (lying) or `who-wfh` (standing)
+to match how the child was measured.
 
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"

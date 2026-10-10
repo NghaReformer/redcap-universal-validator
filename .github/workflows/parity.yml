@@ -67,6 +67,10 @@ jobs:
         run: |
           node tests/range_js.cjs
           node tests/range_dom_js.cjs
+      - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract)
+        run: |
+          node tests/growth_js.cjs
+          node tests/growth_dom_js.cjs
       - name: JS Missing Data Codes (a coded field is not judged in any mode; @UVREQUIRED counts it)
         run: node tests/missing_codes_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
@@ -131,6 +135,8 @@ jobs:
           php -l php/TemporalIntegration.php
           php -l php/Branching.php
           php -l php/ModeRegistry.php
+          php -l php/GrowthReference.php
+          php -l data/references/convert.php
           php -l php/ScanPageView.php
           php -l php/FindingSink.php
           php -l php/ScanCapabilities.php
@@ -197,6 +203,10 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
+      - name: PHP growth references (z-scores vs fixture, WHO golden, parity hash, extra folder, grammar, hooks, page, audit, scan)
+        run: |
+          php tests/growth_php.php
+          php tests/growth_module_php.php
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
         run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path
@@ -258,9 +268,19 @@ jobs:
           cd "/tmp/pkg/${DIR}"
           echo "--- package contents ---"
           find . -type f | sort
-          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php; do
+          for f in config.json UniversalValidator.php README.md LICENSE js/engine.js php/ReferenceBudget.php php/ProjectShape.php php/AddressResolver.php php/ExactDecimal.php php/TemporalValue.php php/TemporalLogic.php php/TemporalRules.php php/TemporalMetadata.php php/TemporalIntegration.php php/CheckCharacter.php php/AnnotationRules.php php/Logic.php php/Branching.php php/ModeRegistry.php php/modes.json php/ScanPageView.php php/FindingSink.php php/ScanCapabilities.php php/ScanDimensions.php php/MessageCatalog.php php/ScanColumns.php php/Scan/Schema.php php/Scan/ScanStore.php php/Scan/ScanOutcome.php php/Scan/ScanAuthorization.php php/Scan/ScanPolicy.php php/Scan/Hmac.php php/Scan/ScanDb.php php/Scan/DbError.php php/Scan/ScanStoreUnavailable.php php/Scan/SqlScanStore.php php/Scan/ArrayScanStore.php php/Scan/WorkerSlots.php php/Scan/ScanRetention.php php/Scan/ScanPhase.php php/Scan/ScanPlanner.php php/Scan/RecordManifestSource.php php/Scan/SourceFence.php php/Scan/WorkBudget.php php/Scan/ScanWorker.php php/Scan/UniqueFinalizer.php php/Scan/CatchUp.php php/Scan/RollupBuilder.php php/Scan/ScanPromotion.php php/Scan/ReasonCode.php php/Scan/ScanService.php js/scan.js php/messages/catalog.json pages/scan.php pages/export.php php/GrowthReference.php data/references/index.json data/references/README.md data/references/convert.php data/references/who/LICENSE data/references/who/README.md; do
             test -f "$f" || { echo "MISSING required file: $f"; exit 1; }
           done
+          # Every bundled growth table ships, byte for byte as index.json pins it.
+          python3 - <<'PY'
+          import hashlib, json, sys
+          idx = json.load(open('data/references/index.json', encoding='utf-8'))
+          for rid, e in idx['references'].items():
+              raw = open('data/references/' + e['file'], 'rb').read()
+              if hashlib.sha256(raw).hexdigest() != e['sha256']:
+                  sys.exit('growth table of ' + rid + ' does not match its sha256 in the package')
+          print('growth tables OK:', len(idx['references']))
+          PY
           for d in .github reports tools; do
             test ! -e "$d" || { echo "development-only path shipped in the package: $d"; exit 1; }
           done

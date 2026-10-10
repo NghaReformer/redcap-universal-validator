@@ -24,6 +24,7 @@ require_once __DIR__ . '/php/CheckCharacter.php';
 require_once __DIR__ . '/php/AnnotationRules.php';
 require_once __DIR__ . '/php/ModeRegistry.php';
 require_once __DIR__ . '/php/Logic.php';
+require_once __DIR__ . '/php/GrowthReference.php';
 require_once __DIR__ . '/php/TemporalIntegration.php';
 require_once __DIR__ . '/php/Branching.php';
 require_once __DIR__ . '/php/ScanPageView.php';
@@ -1937,6 +1938,14 @@ class UniversalValidator extends AbstractExternalModule
      * nothing; a value that is not a number is implausible ("not-a-number").
      * Soft findings are logged and scanned like hard ones: "softBlock" only
      * decides whether the browser asks before saving.
+     *
+     * With a growth "reference" the limits apply to the value's z-score
+     * against that reference (GrowthReference), for the sex and the age, or
+     * the length or height, the rule reads from other fields. A measurement at
+     * or below 0 is implausible ("not-positive"). Blank inputs, a sex code that
+     * is neither "male" nor "female", and an age or length outside the
+     * reference check nothing; an input this context could not resolve, and a
+     * reference that cannot be read, are reported as rule problems.
      */
     private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -1945,17 +1954,126 @@ class UniversalValidator extends AbstractExternalModule
         foreach (['softLo' => 'rangeSoftLo', 'softHi' => 'rangeSoftHi', 'hardLo' => 'rangeHardLo', 'hardHi' => 'rangeHardHi'] as $k => $rk) {
             if (isset($rule[$rk])) $spec[$k] = $rule[$rk];
         }
+        $isGrowth = isset($rule['rangeReference']);
+        // the z-score is a plain number, whatever the field's decimal mark
+        if ($isGrowth) $spec['decimalComma'] = false;
+        $growth = null;
         foreach ($rule['fields'] as $field) {
             if (isset($dupes[$field])) continue;
             if ($onForm !== null && !isset($onForm[$field])) continue;
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || is_array($value)) continue;
-            $r = Logic::rangeVerdict($spec, (string) $value);
+            $verdictOf = (string) $value;
+            if ($isGrowth) {
+                $m = GrowthReference::measure((string) $value, !empty($rule['decimalComma']));
+                if ($m['state'] === 'blank') continue;
+                if ($m['state'] !== 'ok') {
+                    $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
+                                         'reason' => $m['state']];
+                    continue;
+                }
+                // The inputs are the same for every field of the rule: read once,
+                // and only for a value there is to judge.
+                if ($growth === null) $growth = $this->growthInputs($rule, $values, $resolution, $project_id);
+                if (isset($growth['problem'])) {
+                    $out['unconfigurable'][] = ['fields' => [$field], 'why' => $growth['problem']];
+                    continue;
+                }
+                if ($growth['state'] !== 'ok') continue;
+                $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y']);
+                if ($z['state'] !== 'ok') {
+                    $out['unconfigurable'][] = ['fields' => [$field],
+                        'why' => 'the growth reference "' . $rule['rangeReference'] . '" gives no z-score here ('
+                               . $z['state'] . ') — field skipped'];
+                    continue;
+                }
+                $verdictOf = $z['z'];
+            }
+            $r = Logic::rangeVerdict($spec, $verdictOf);
             if ($r['tier'] === 'ok' || $r['tier'] === 'inert') continue;
             $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
                                  'reason' => $r['reason']];
         }
         return $out;
+    }
+
+    /**
+     * The inputs of a growth-reference range rule, read for one entry:
+     * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
+     * ['state' => 'inert'] when an input is blank (or a Missing Data Code),
+     * the sex code is neither "male" nor "female", or the age, length or
+     * height is outside the reference, or ['problem' => why] when an input
+     * could not be resolved or the reference cannot be read.
+     */
+    private function growthInputs(array $rule, array $values, array $resolution, $pid)
+    {
+        $codes = $this->missingDataCodes($pid);
+        $read = [];
+        foreach (ModeRegistry::operandKeys() as $rk) {
+            $k = $rk['key'];
+            if (!isset($rule[$k])) continue;
+            if (array_key_exists($rk['value'], $rule)) {
+                // compiled on the extended (event/instance) path, which resolved it
+                $v = $rule[$rk['value']];
+                if (!is_string($v)) return ['problem' => 'the input ' . $rule[$k] . ' could not be resolved — field skipped'];
+            } else {
+                $op = ModeRegistry::operandRef($rule[$k]);
+                if ($op === null) return ['problem' => 'the input ' . $rule[$k] . ' cannot be evaluated — field skipped'];
+                $state = isset($resolution[$op[1]]) ? $resolution[$op[1]] : 'ok';
+                if ($state !== 'ok') return ['problem' => 'the input ' . self::resolutionProblem($state, $op[1])];
+                $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
+                $v = is_array($v) ? '' : (string) $v;
+            }
+            $read[$k] = self::isMissingCode($v, $codes) ? '' : trim($v);
+        }
+        $dir = $this->referenceDir();
+        $entry = GrowthReference::entry($rule['rangeReference'], $dir);
+        if ($entry === null) {
+            return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" is not available on this server — field skipped'];
+        }
+        try {
+            $table = GrowthReference::table($entry);
+        } catch (\Throwable $e) {
+            return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" cannot be used: ' . $e->getMessage()];
+        }
+        $sexCode = isset($read['rangeSex']) ? $read['rangeSex'] : '';
+        if ($sexCode === (string) $rule['rangeMale']) $sex = 'male';
+        elseif ($sexCode === (string) $rule['rangeFemale']) $sex = 'female';
+        else return ['state' => 'inert'];
+        $in = ['comma' => !empty($rule['rangeAxisComma'])];
+        if (isset($rule['rangeAgeDob'])) {
+            foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
+                $type = isset($rule['range' . ucfirst($w) . 'Type']) ? $rule['range' . ucfirst($w) . 'Type'] : 'date';
+                $p = TemporalValue::parse(isset($read[$k]) ? $read[$k] : '', $type, 'ymd');
+                if ($p['state'] === 'absent') { $in[$w . 'Days'] = null; continue; }
+                if ($p['state'] !== 'ok') {
+                    return ['problem' => 'the ' . ($w === 'dob' ? 'date of birth' : 'measurement date') . ' ' . $rule[$k]
+                        . ' is not a date this rule can read — field skipped'];
+                }
+                $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
+            }
+        } else {
+            foreach (['days' => 'rangeAgeDays', 'months' => 'rangeAgeMonths', 'by' => 'rangeBy'] as $w => $k) {
+                if (isset($rule[$k])) $in[$w] = isset($read[$k]) ? $read[$k] : '';
+            }
+        }
+        $a = GrowthReference::axisValue($entry, $in);
+        if ($a['state'] !== 'ok') return ['state' => 'inert'];
+        return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $sex, 'x' => $a['x']];
+    }
+
+    /**
+     * The folder of extra growth references an administrator named in the
+     * system setting "reference-data-dir", or null (the bundled ones only).
+     */
+    private function referenceDir()
+    {
+        try {
+            $dir = $this->getSystemSetting('reference-data-dir');
+        } catch (\Throwable $e) {
+            return null;
+        }
+        return (is_string($dir) && trim($dir) !== '') ? trim($dir) : null;
     }
 
     /** @var array|null a pinned clock (tests); null reads the real one */
@@ -2372,6 +2490,7 @@ class UniversalValidator extends AbstractExternalModule
         // computer's: a browser clock set a day ahead must not accept tomorrow's
         // date. Sent only when a rule on this page reads it.
         if (ModeRegistry::rulesNeed($config['rules'], 'clock')) $config['clock'] = $this->serverClock($pid);
+        $config = $this->attachGrowthTables($config);
         // The project's Missing Data Codes (codes only, never their labels): a
         // field marked with one holds the code, which the checks leave alone.
         if ($config['rules']) {
@@ -2379,6 +2498,87 @@ class UniversalValidator extends AbstractExternalModule
             if ($codes) $config['missingCodes'] = array_map('strval', array_keys($codes));
         }
         return $config;
+    }
+
+    /**
+     * The growth tables the @UVRANGE rules on this page read, as
+     * config.growth: reference id => GrowthReference::pageCopy. Only tables in
+     * use travel, and at most the catalog's "pageTables" of them (a table is
+     * tens of kilobytes). A rule that needs one more, or whose reference can no
+     * longer be read, is deferred with the reason: the post-save audit and the
+     * scan still check it.
+     */
+    private function attachGrowthTables(array $config)
+    {
+        $dir = null;
+        $cap = null;
+        $tables = [];
+        foreach ($config['rules'] as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || !empty($r['deferred'])) continue;
+            $nodes = (isset($r['branches']) && is_array($r['branches'])) ? $r['branches'] : [$r];
+            $why = null;
+            $want = [];
+            foreach ($nodes as $n) {
+                if (!is_array($n) || !isset($n['rangeReference']) || !is_string($n['rangeReference'])) continue;
+                // An input withheld from this page means no z-score here: the
+                // browser only judges the measurement itself, so the table
+                // would be dead weight against the page cap.
+                if ($this->anyOperandWithheld($n)) continue;
+                $want[$n['rangeReference']] = true;
+            }
+            if (!$want) continue;
+            if ($cap === null) {
+                $dir = $this->referenceDir();
+                $cap = GrowthReference::catalog($dir)['pageTables'];
+            }
+            $add = [];
+            foreach (array_keys($want) as $id) {
+                if (isset($tables[$id])) continue;
+                $entry = GrowthReference::entry($id, $dir);
+                if ($entry === null) { $why = 'the growth reference "' . $id . '" is not available on this server.'; break; }
+                try {
+                    $add[$id] = GrowthReference::pageCopy($entry, GrowthReference::table($entry));
+                } catch (\Throwable $e) {
+                    $why = 'the growth reference "' . $id . '" cannot be used: ' . $e->getMessage();
+                    break;
+                }
+            }
+            if ($why === null && count($tables) + count($add) > $cap) {
+                $why = 'this form already carries ' . count($tables) . ' growth reference table'
+                    . (count($tables) === 1 ? '' : 's') . ', the most one page may carry (' . $cap . '), so this check '
+                    . 'runs when the record is saved.';
+            }
+            if ($why !== null) {
+                // Only a rule nothing else deferred gets here, and the save's
+                // audit reads its table on the server: deferredOnSave tells the
+                // browser to say "checked when saved", not "not checked at all".
+                $config['rules'][$i]['deferred'] = true;
+                $config['rules'][$i]['deferredOnSave'] = true;
+                $config['rules'][$i]['deferredWhy'] = [$why];
+                // a branch is built on its own in the browser, so it is marked too
+                if (isset($r['branches']) && is_array($r['branches'])) {
+                    foreach ($r['branches'] as $bi => $b) {
+                        if (!is_array($b)) continue;
+                        $config['rules'][$i]['branches'][$bi]['deferred'] = true;
+                        $config['rules'][$i]['branches'][$bi]['deferredOnSave'] = true;
+                    }
+                }
+                continue;
+            }
+            $tables += $add;
+        }
+        if ($tables) $config['growth'] = $tables;
+        return $config;
+    }
+
+    /** True when foldOperand withheld one of this rule's or branch's operands. */
+    private function anyOperandWithheld(array $node)
+    {
+        foreach (ModeRegistry::operandKeys() as $spec) {
+            $op = isset($node[$spec['op']]) ? $node[$spec['op']] : null;
+            if (is_array($op) && isset($op[0]) && $op[0] === 'withheld') return true;
+        }
+        return false;
     }
 
     /**
@@ -3880,10 +4080,103 @@ class UniversalValidator extends AbstractExternalModule
         }
         $unit = isset($frag['rangeUnit']) ? $frag['rangeUnit'] : '';
         $comma = !empty($frag['decimalComma']);
+        // With a growth reference the limits are z-scores: plain numbers,
+        // whatever the field's decimal mark.
+        $growth = isset($frag['rangeReference']);
         foreach (['Soft', 'Hard'] as $t) {
-            $text = self::rangeText($frag['range' . $t . 'Lo'] ?? null, $frag['range' . $t . 'Hi'] ?? null, $unit, $comma);
-            if ($text !== null) $frag['range' . $t . 'Text'] = $text;
+            $text = self::rangeText($frag['range' . $t . 'Lo'] ?? null, $frag['range' . $t . 'Hi'] ?? null,
+                $growth ? '' : $unit, $growth ? false : $comma);
+            if ($text !== null) $frag['range' . $t . 'Text'] = ($growth ? 'z-score ' : '') . $text;
         }
+        return $frag;
+    }
+
+    /**
+     * @UVRANGE "dictionary" hook, for a rule with a growth "reference": the
+     * reference must be one this server has, with a table that reads; its
+     * axis decides between "age" and "by"; and every input must be a field of
+     * the right kind. "sex" is a field holding one code (and when it lists
+     * its choices, "male" and "female" must be among them); "dob" and "at"
+     * are date fields; "days", "months" and "by" are number fields. No input
+     * may be the measured field itself. The date types and formats, and
+     * whether the number inputs use a decimal comma, travel on the rule.
+     */
+    private function annotateRangeDictionary(array $frag, $name, $types, $choices, $pid = null)
+    {
+        if (!isset($frag['rangeReference'])) return $frag;
+        $refuse = function ($why) { return ['error' => $why, '_tag' => AnnotationRules::TAG_RANGE]; };
+        $id = $frag['rangeReference'];
+        $dir = $this->referenceDir();
+        $catalog = GrowthReference::catalog($dir);
+        $entry = GrowthReference::entry($id, $dir);
+        if ($entry === null) {
+            $known = array_keys($catalog['references']);
+            sort($known);
+            return $refuse('"reference" "' . $id . '" is not a growth reference this server has — '
+                . ($known ? 'it has ' . implode(', ', $known) . '.' : 'it has none.')
+                . ($catalog['problems'] ? ' Problems reading the references: ' . implode(' ', $catalog['problems']) : ''));
+        }
+        try {
+            GrowthReference::table($entry);
+        } catch (\Throwable $e) {
+            return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
+        }
+        $byAge = $entry['axis'] === 'age';
+        if ($byAge && isset($frag['rangeBy'])) {
+            return $refuse('"' . $id . '" is read by age — give "age" instead of "by".');
+        }
+        if (!$byAge && !isset($frag['rangeBy'])) {
+            return $refuse('"' . $id . '" is read by ' . $entry['axis'] . ' — give "by", the field holding the '
+                . $entry['axis'] . ' in cm, instead of "age".');
+        }
+        $dd = $this->dataDictionary($pid);
+        $opts = $this->temporalOptions($pid);
+        $comma = false;
+        foreach (['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
+                  'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'] as $k => $label) {
+            if (!isset($frag[$k])) continue;
+            $op = ModeRegistry::operandRef($frag[$k], $opts);
+            if ($op === null) return $frag;   // refused already by AnnotationRules::checkRange
+            $f = (string) $op[1];
+            if (!$dd || !isset($dd[$f])) return $refuse($label . ' names "[' . $f . ']", which is not a field in this project.');
+            if ($f === $name) return $refuse($label . ' names the measured field itself.');
+            $meta = $dd[$f];
+            $ftype = isset($meta['field_type']) ? $meta['field_type'] : '';
+            if ($k === 'rangeSex') {
+                if (!in_array($ftype, ['radio', 'dropdown', 'yesno', 'truefalse', 'text', 'calc', 'sql'], true)) {
+                    return $refuse('"sex" field "' . $f . '" is a ' . $ftype . ' field — it must hold one code (a radio, '
+                        . 'a dropdown or a Text field).');
+                }
+                $codes = in_array($ftype, ['yesno', 'truefalse'], true) ? ['1', '0']
+                    : (isset($choices[$f]) && in_array($ftype, ['radio', 'dropdown'], true) ? $choices[$f] : null);
+                if ($codes !== null) {
+                    foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $ck => $word) {
+                        if (!in_array((string) $frag[$ck], array_map('strval', $codes), true)) {
+                            return $refuse('"' . $word . '" is "' . $frag[$ck] . '", which is not a choice of "sex" field "'
+                                . $f . '" (its codes are ' . implode(', ', $codes) . ').');
+                        }
+                    }
+                }
+            } elseif ($k === 'rangeAgeDob' || $k === 'rangeAgeAt') {
+                $tv = $ftype === 'text' ? TemporalValue::fromValidation(self::validationOf($meta)) : null;
+                if ($tv === null) {
+                    return $refuse($label . ' field "' . $f . '" is not a date field — it needs date, datetime or '
+                        . 'datetime-with-seconds validation.');
+                }
+                $w = $k === 'rangeAgeDob' ? 'Dob' : 'At';
+                $frag['range' . $w . 'Type'] = $tv['type'];
+                $frag['range' . $w . 'Format'] = $tv['format'];
+            } else {
+                $validation = $ftype === 'text' ? self::validationOf($meta) : '';
+                $re = ModeRegistry::eligibility('range')['textValidations'] ?? null;
+                if (!($ftype === 'calc' || ($ftype === 'text' && is_string($re) && preg_match('~' . $re . '~', $validation)))) {
+                    return $refuse($label . ' field "' . $f . '" is not a number field — it needs integer or number '
+                        . 'validation, or to be a calc.');
+                }
+                if (substr($validation, -strlen('_comma_decimal')) === '_comma_decimal') $comma = true;
+            }
+        }
+        if ($comma) $frag['rangeAxisComma'] = true;
         return $frag;
     }
 

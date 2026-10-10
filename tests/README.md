@@ -26,6 +26,10 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE browser rule (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points, 5,000-point parity hash
+php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder
+node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
+php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
@@ -247,6 +251,33 @@ read a second time with every number quoted), exponents written out, the
   branch, two true conditions (a rule problem, never a finding), the survey
   page's baked-in branch choice, and the branch on a branched `@UVUNIQUE`
   duplicate.
+
+## `growth_*` — growth references (z-scores)
+
+`growth_fixture.json` holds cases for each step of a z-score: where a value
+sits on the reference's axis (age in days or months, a date of birth and a
+measurement date, length or height, decimal commas), the L, M and S row
+(nearest row, row below, or between two rows), the z-score with WHO's
+restricted adjustment beyond ±3, its two-decimal text, and the measurement
+itself. `growth_php.php` runs them through `php/GrowthReference.php` and
+`growth_js.cjs` through the `QRID_growth*` twins in `js/engine.js`. Both also
+run the 2,880 points of `who_golden.json`, which `tools/who_golden.R` computed
+with WHO's own R code (`anthro` and `anthroplus`; the file says which commits),
+and 5,000 random points whose results must hash to the SHA-256 the fixture
+pins, so the two runtimes agree point for point. `growth_php.php` also checks
+every bundled table against its SHA-256 in `data/references/index.json`, and a
+folder of extra references (added, replacing by id, every refusal).
+
+- `growth_dom_js.cjs` boots the browser rule: the note names the z-score and
+  the reference, an input's change re-checks, grey notes say why a check did
+  not run (staff only), saved inputs never block, withheld inputs are not
+  guessed at, and a rule over the page's table cap says the save checks it.
+- `growth_module_php.php` covers the module: the grammar and its refusals, the
+  dictionary hook (reference, axis, input field kinds, sex codes), the page
+  (folded inputs, tables in use, the cap), the audit and the scan.
+
+To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
+same seed gives the same file byte for byte.
 
 ## `missing_codes_*` — Missing Data Codes
 

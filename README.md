@@ -687,6 +687,24 @@ slip:
   says. The Validation scan counts the same findings; its report (see below)
   labels them "Unusual value", "Implausible value" or "Not a number", with the
   limits in the detail line. Configure via field annotation only.
+- **Growth references.** With `reference`, the limits apply to the value's
+  z-score for the child's sex and age (or length or height), computed the way
+  WHO's own software computes it:
+
+  ```text
+  @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+  ```
+
+  The WHO 2006 standards (birth to 5 years: weight, length/height, BMI, head
+  and arm circumference, skinfolds, weight-for-length/height) and the WHO 2007
+  reference (5 to 19 years: weight, height, BMI) ship in `data/references`
+  under WHO's GPL-3 licence. An administrator adds others, such as CDC 2000, in
+  a folder named in the module's system settings; `data/references/README.md`
+  explains how, and `data/references/convert.php` turns a published LMS table
+  into the module's format. A measurement at or below 0 is implausible
+  (`not-positive`). Blank inputs, an unknown sex code and an age outside the
+  reference check nothing; staff see why. The inputs may sit on another form,
+  or in another event with event and instance references on.
 
 ## The Validation scan — checking data that is already saved
 
@@ -882,6 +900,16 @@ check-character primitive, but the full runtime path the module actually uses:
   field to be left, each level's block, calc and read-only fields never block)
   and `tests/range_module_php.php` the server side: eligible fields, the audit,
   the scan and its per-branch detail line.
+- `tests/growth_js.cjs` / `tests/growth_php.php` — growth references: the
+  z-score in both runtimes from one fixture (`tests/growth_fixture.json`),
+  2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
+  `tools/who_golden.R`), and 5,000 random points that must hash the same in
+  both. `growth_php.php` also covers a folder of extra references and every
+  refusal of a broken index or table. `tests/growth_dom_js.cjs` drives the
+  browser rule (live inputs, the notes that say why nothing was checked,
+  withheld inputs, never blocking on saved or cross-event inputs) and
+  `tests/growth_module_php.php` the server side: the grammar, the dictionary
+  checks, the page's copy of the tables and its cap, the audit and the scan.
 - `tests/missing_codes_dom_js.cjs` / `tests/missing_codes_php.php` — a field
   marked with a missing data code is not judged by any mode, on the page, in
   the audit, in the scan or by the lookup endpoints; `@UVREQUIRED` counts it
@@ -934,6 +962,10 @@ node tests/range_js.cjs          # @UVRANGE verdict vs range_fixture.json
 php  tests/range_php.php          # @UVRANGE verdict and grammar, PHP twin, same fixture
 node tests/range_dom_js.cjs      # @UVRANGE DOM contract (note on leave, per-level block, calc)
 php  tests/range_module_php.php   # @UVRANGE eligible fields, audit, scan and report detail
+node tests/growth_js.cjs         # growth references: z-scores vs growth_fixture.json, WHO golden, parity hash
+php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
+node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes, withheld, no block)
+php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks

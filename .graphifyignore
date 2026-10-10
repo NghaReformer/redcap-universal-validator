@@ -36,3 +36,8 @@ docs/Participant_Identification_and_REDCAP_Data_Validation*.html
 
 # Flier and stray local PDFs
 *.pdf
+
+# Growth reference tables (WHO LMS rows) and WHO's golden z-scores: numbers
+# only, about 0.7 MB, with nothing for the graph to extract
+data/references/who/*.json
+tests/who_golden.json

@@ -140,6 +140,68 @@ has none, and remove it afterwards.
 | H3 | On `ur_sbp`, choose `UNK` with the "M" button, then Save | No note, no log entry. Then clear the code from both fields |
 | H4 | Data Import Tool, XE-2: `ur_free` = `UNK` | Module log: no `not-a-number` entry for `ur_free` (if the save hook runs for imports on this server) |
 
+## Section I: growth references (WHO z-scores)
+
+Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 22
+fields on two new instruments. `uv_growth_test` (14 fields) holds the inputs
+(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`), five growth rules and five
+broken `ug_bad_*` tags. `uv_growth_more` (8 fields) holds rules that read sex
+and date of birth from `uv_growth_test`, so they are advisory there. The WHO
+tables ship with the module; no setting is needed. Every value in this section
+was run offline through the module against the pid 149 seed, as for sections A
+to H.
+
+Setup:
+
+1. Append the 22 rows of the CSV to the dictionary, as in setup step 2. The
+   diff must report two new instruments and 22 new fields.
+2. Designate `uv_growth_test` on `event_1_arm_1` (351) and `visit_1_arm_1`
+   (380). Designate `uv_growth_more` on `event_1_arm_1` (351) only.
+3. Steps I22 to I25 need the project setting for event and instance references
+   switched on, as for the event/instance test plan.
+4. On `uv_growth_test` for XE-1, event 351, set `ug_sex` = Male,
+   `ug_dob` = 10-01-2025 and `ug_visit` = 2026-01-10, then save. The child is
+   365 days old.
+
+Each note names the z-score and the reference, for example "This value is lower
+than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5 years);
+expected z-score -2 to 2)." A grey note starts with ℹ and says why a check did
+not run; it never blocks.
+
+| # | Action | Expect |
+|---|---|---|
+| I1 | `ug_weight` = 9.6, leave | No note (z-score -0.04) |
+| I2 | `ug_weight` = 7.5, leave, Save | Amber "lower than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5 years); expected z-score -2 to 2)". Save asks first |
+| I3 | `ug_weight` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...; allowed z-score -6 to 5)". Save is blocked |
+| I4 | `ug_weight` = 0, leave | Red "A measurement must be above 0."; Save is blocked |
+| I5 | `ug_weight` = 7.5, then `ug_sex` = Female | Without touching `ug_weight`, the note goes away (z-score -1.46 on the girls' rows) |
+| I6 | `ug_sex` = Not recorded | Grey "Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the sex code is neither 1 (male) nor 2 (female)." |
+| I7 | Clear `ug_sex` | Grey "... the sex is blank." Set `ug_sex` = Male again |
+| I8 | `ug_visit` = 2031-01-10 | Grey "... the age is outside the reference (0 to under 1826.25 days)." |
+| I9 | `ug_visit` = 2024-12-31 | Grey "... the measurement is dated before the birth." Set `ug_visit` = 2026-01-10 again, and `ug_weight` = 9.6 |
+| I10 | `ug_height` = 75.5, then 70, then 60, then 95, leaving each time | No note (-0.10); amber -2.42; red -6.62; red 8.11 "above the plausible range" |
+| I11 | `ug_height` = 80. `ug_wfh` = 13, then 10.5, then 6.0 | Amber "higher than usual (z-score 2.40 on Weight-for-height, WHO 2006 (65 to 120 cm, standing) ...)"; no note (-0.09); red -6.48 |
+| I12 | With `ug_wfh` = 6.0, set `ug_height` = 60 | `ug_wfh` turns grey "... the height is outside the reference (65 to 120 cm)." `ug_height` shows red. Set `ug_height` = 80 and `ug_wfh` = 10.5 |
+| I13 | `ug_age_days` = 365. `ug_hc` = 46, then 42, then 30 | No note (-0.05); amber -3.16 on "Head circumference-for-age"; red -12.50 |
+| I14 | Clear `ug_age_days` | `ug_hc` turns grey "... the age is blank." Set 365 again and `ug_hc` = 46 |
+| I15 | Save with `ug_weight` = 7.5 (answer "save anyway") | Module log: `invalid-id-saved`, `field: ug_weight`, `type: range`, `reason: soft-low` |
+| I16 | Open `uv_growth_more` for XE-1, event 351. `ug_age_m` = 100, `ug_bmi` = 16, then 22, then 30 | No note (0.11); no note (2.67, this rule has hard limits only); red "above the plausible range (z-score 5.03 on BMI-for-age, WHO 2007 (5 to 19 years); allowed z-score -5 to 5)", followed by "(worked out with ug_sex, read when this page was opened ...)". Save is not blocked |
+| I17 | `ug_age_m` = 50 | Grey "... the age is outside the reference (60 to under 229 months)." Set 100 again |
+| I18 | `ug_len_c` = 80,5. `ug_wfl_c` = 10,5, then 8,0, then 6,0 | No note (-0.05); amber -3.45 on "Weight-for-length"; red -6.45. The commas are read as decimals |
+| I19 | `ug_oedema` = No. `ug_muac` = 14, then 11, then 9 | No note (-0.58); no note (-3.62, hard limits only); red -5.72 |
+| I20 | `ug_oedema` = Yes | The `ug_muac` note goes away: the rule's `when` switches it off |
+| I21 | `ug_ssf` = 15, leave. `ug_tsf` = 30, leave. Save | `ug_ssf` shows amber 4.33. `ug_tsf` shows grey "Not checked on this page: this form already carries 4 growth reference tables, ... so this check runs when the record is saved." No verdict, no block. Module log after the save: `ug_bmi` `hard-high`, `ug_wfl_c` `hard-low`, `ug_ssf` `soft-high`, `ug_tsf` `hard-high` (z 8.53). The page config's `growth` holds 4 tables (who2007-bfa, who-wfl, who-acfa and who-ssfa) |
+| I22 | `uv_growth_test` for XE-1 on `visit_1_arm_1` (380): `ug_visit` = 2026-01-10, `ug_xev_wt` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...)", followed by "(worked out with saved event/instance values ...)". The page config shows `rangeSexOp` `["lit","1"]` and `blockSave` `off` |
+| I23 | Save | The save goes through. Module log: `ug_xev_wt` `hard-low` with `event_id` 380 |
+| I24 | Back on event 351, change `ug_dob` to 11-01-2025 and save | Module log: a new `ug_xev_wt` `hard-low` entry with `event_id` 380: the save of event 351 re-checks the rule that reads it. Set `ug_dob` back to 10-01-2025 |
+| I25 | On event 351, `ug_xev_wt` = 4.0, leave | Red note; Save is not blocked (an event-qualified rule never blocks). Clear it |
+| I26 | `uv_growth_test`: check the five `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field |
+| I27 | [only if section H added a missing data code] `ug_sex`: choose `UNK` with the "M" button | `ug_weight` turns grey "... the sex is blank." Clear the code |
+| I28 | [only if the durable scan is enabled] Run the Validation scan | The panel counts the findings saved in I15 to I24. The wording ("Unusual value", "Implausible value", "Expected z-score -2 to 2.", "Allowed z-score -6 to 6.") is pinned offline by `tests/growth_module_php.php` |
+| I29 | Enable `uv_growth_test` and `uv_growth_more` as surveys. Open `uv_growth_test` for XE-2 at event 351: `ug_sex` = Male, `ug_dob` = 10-01-2025, `ug_visit` = 2026-01-10, `ug_weight` = 4.0 | Red note as in I3, without field names; Submit is blocked. Set `ug_weight` = 9.6 and submit |
+| I30 | Survey `uv_growth_more` for XE-2: `ug_bmi` = 0, leave | Red "A measurement must be above 0."; Submit is blocked |
+| I31 | Same survey: `ug_age_m` = 100, `ug_bmi` = 30, Submit | No note (sex is on another form, so it is not sent to a survey) and the survey submits. The page config's `growth` is empty. Module log: `ug_bmi` `hard-high` for XE-2 |
+
 ---
 
 ## Sign-off
@@ -154,9 +216,10 @@ has none, and remove it afterwards.
 | 6 | Section F: every broken tag shows its error | ☐ |
 | 7 | Section G: survey behaviour, no field names in the notes | ☐ |
 | 8 | Section H: a missing data code is never judged | ☐ |
+| 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; rules on `uv_growth_more`, event-qualified rules and the fifth table never block; the audit logs them | ☐ |
 
 ## Cleanup
 
-Delete the `uv_range_test` instrument, or restore the dictionary downloaded in
-setup step 2. Remove the survey setting if G1 enabled it, and the missing data code if
-section H added it.
+Delete the `uv_range_test`, `uv_growth_test` and `uv_growth_more` instruments,
+or restore the dictionary downloaded in setup step 2. Remove the survey settings
+if G1 or I29 enabled them, and the missing data code if section H added it.

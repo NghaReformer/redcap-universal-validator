@@ -32,6 +32,7 @@ require_once __DIR__ . '/CheckCharacter.php';
 require_once __DIR__ . '/Logic.php';
 require_once __DIR__ . '/ModeRegistry.php';
 require_once __DIR__ . '/TemporalLogic.php';
+require_once __DIR__ . '/GrowthReference.php';
 
 class AnnotationRules
 {
@@ -48,6 +49,8 @@ class AnnotationRules
     const MAX_RANGE_UNIT = 20;
     /** Longest @UVRANGE limit, in characters once any exponent is written out. */
     const MAX_RANGE_BOUND = 64;
+    /** With a growth "reference", the limits are z-scores no further than this from 0. */
+    const MAX_GROWTH_Z = 20;
 
     /** Where an @UVEXISTS lookup may search: the whole project (default), the
      *  record's own Data Access Group, or the event of the entry being checked. */
@@ -715,6 +718,14 @@ class AnnotationRules
      * two runtimes compare the same digits. Whether the field holds numbers is
      * checked with the data dictionary in hand
      * (UniversalValidator::annotateRangeField).
+     *
+     * With "reference" the limits are z-scores against a growth reference
+     * (php/GrowthReference.php), and the rule names its inputs:
+     *   @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
+     *             "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-6,5]}
+     * "sex", "age" (one of {"dob","at"}, {"days"} or {"months"}) and "by" become
+     * the operand keys rangeSex, rangeAgeDob/rangeAgeAt, rangeAgeDays,
+     * rangeAgeMonths and rangeBy; checkGrowth refuses a wrong combination.
      */
     private static function parseRangeValue($val, array $opts = [])
     {
@@ -737,7 +748,8 @@ class AnnotationRules
             return ['error' => '"blockSave" does not apply to ' . self::TAG_RANGE . ' — use "softBlock" (off or confirm) '
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
-        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive'];
+        $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive',
+                    'reference', 'sex', 'male', 'female', 'age', 'by'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)
@@ -773,6 +785,39 @@ class AnnotationRules
             if (!isset($cfg[$k])) continue;
             if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be a string.'];
             $out[$key] = $k === 'unit' ? trim($cfg[$k]) : $cfg[$k];
+        }
+        // A growth reference: the limits are z-scores, and the reference reads
+        // the sex and the age (or the length or height) from other fields.
+        if (array_key_exists('reference', $cfg)) {
+            if (!is_string($cfg['reference']) || trim($cfg['reference']) === '') {
+                return ['error' => '"reference" must be the id of a growth reference, such as "who-wfa".'];
+            }
+            $out['rangeReference'] = trim($cfg['reference']);
+        }
+        foreach (['sex' => 'rangeSex', 'by' => 'rangeBy'] as $k => $key) {
+            if (!array_key_exists($k, $cfg)) continue;
+            if (!is_string($cfg[$k])) return ['error' => '"' . $k . '" must be one field reference, such as "[' . ($k === 'sex' ? 'sex' : 'height_cm') . ']".'];
+            $out[$key] = $cfg[$k];
+        }
+        foreach (['male' => 'rangeMale', 'female' => 'rangeFemale'] as $k => $key) {
+            if (!array_key_exists($k, $cfg)) continue;
+            $v = is_int($cfg[$k]) ? (string) $cfg[$k] : $cfg[$k];
+            if (!is_string($v) || trim($v) === '') {
+                return ['error' => '"' . $k . '" must be the code the "sex" field stores for ' . $k . ', such as "' . ($k === 'male' ? '1' : '2') . '".'];
+            }
+            $out[$key] = trim($v);
+        }
+        if (array_key_exists('age', $cfg)) {
+            $a = $cfg['age'];
+            $keys = is_array($a) ? array_keys($a) : [];
+            sort($keys);
+            if (!in_array($keys, [['at', 'dob'], ['days'], ['months']], true)) {
+                return ['error' => '"age" must be {"dob":"[dob]","at":"[visit_date]"}, {"days":"[age_days]"} or {"months":"[age_months]"}.'];
+            }
+            foreach ($a as $k => $v) {
+                if (!is_string($v)) return ['error' => '"age" "' . $k . '" must be one field reference, such as "[' . ($k === 'at' ? 'visit_date' : $k) . ']".'];
+                $out['rangeAge' . ucfirst($k)] = $v;
+            }
         }
         self::takeCaseSensitive($cfg, $out);
         $errs = self::checkFragment($out, $opts);
@@ -1775,8 +1820,12 @@ class AnnotationRules
      * every limit an exact decimal string, low <= high within each tier, each
      * soft limit inside the hard range (a value the soft range calls usual must
      * never be implausible), the two enforcement keys and a short unit label.
-     * Whether the field holds numbers is checked in the channel glue, where
-     * the data dictionary is in hand.
+     * A growth rule's keys are checked by checkGrowth: z limits within
+     * MAX_GROWTH_Z, sex codes, exactly one way to read the axis, each input a
+     * single field reference. Whether the field holds numbers, whether the
+     * reference exists and whether each input field has the right kind are
+     * checked in the channel glue, where the data dictionary is in hand
+     * (UniversalValidator::annotateRangeField and annotateRangeDictionary).
      */
     public static function checkRange(array $frag, array $opts = [])
     {
@@ -1826,14 +1875,84 @@ class AnnotationRules
                 $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "g/dL".';
             }
         }
-        // The check reads only the tagged field; an event/instance reference in
-        // "when" would need the extended pipeline, which this tag does not run.
-        if (isset($frag['when']) && is_string($frag['when']) && trim($frag['when']) !== ''
-                && empty(Logic::parse($frag['when'])['ok']) && !empty(Logic::parse($frag['when'], $opts)['ok'])) {
-            $errors[] = self::TAG_RANGE . ' does not support event or instance references in "when" yet — use '
-                . 'fields of this entry.';
+        return array_merge($errors, self::checkGrowth($frag, $b, $opts), self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * The growth-reference part of a range fragment. Without "reference" none
+     * of its keys apply. With one, the limits are z-scores within
+     * MAX_GROWTH_Z, "sex" with distinct "male" and "female" codes is required,
+     * and so is exactly one of "age" (for a reference by age) and "by" (for one
+     * by length or height). Each input is one field reference, checked the way
+     * a @UVWINDOW "from" date is. Whether the reference exists, and whether its
+     * axis wants "age" or "by", is checked with the data dictionary in hand
+     * (UniversalValidator::annotateRangeDictionary).
+     */
+    private static function checkGrowth(array $frag, array $limits, array $opts)
+    {
+        $errors = [];
+        $inputs = ['rangeSex' => '"sex"', 'rangeAgeDob' => '"age" "dob"', 'rangeAgeAt' => '"age" "at"',
+                   'rangeAgeDays' => '"age" "days"', 'rangeAgeMonths' => '"age" "months"', 'rangeBy' => '"by"'];
+        if (!array_key_exists('rangeReference', $frag)) {
+            foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale']) as $k) {
+                if (array_key_exists($k, $frag)) {
+                    return ['"sex", "male", "female", "age" and "by" only apply with a "reference", such as "reference":"who-wfa".'];
+                }
+            }
+            return [];
         }
-        return array_merge($errors, self::checkCommon($frag, $opts));
+        $id = $frag['rangeReference'];
+        if (!is_string($id) || !preg_match(GrowthReference::ID_RE, $id)) {
+            $errors[] = '"reference" must be the id of a growth reference, such as "who-wfa" (lower-case letters, digits, ".", "_" or "-").';
+        }
+        if (array_key_exists('rangeUnit', $frag)) {
+            $errors[] = '"unit" does not apply with a "reference" — the reference sets the unit of the measurement.';
+        }
+        foreach ($limits as $k => $z) {
+            if (Logic::numCompare($z, '-' . self::MAX_GROWTH_Z) < 0 || Logic::numCompare($z, (string) self::MAX_GROWTH_Z) > 0) {
+                $errors[] = 'with a "reference" the limits are z-scores, which must lie between -' . self::MAX_GROWTH_Z
+                    . ' and ' . self::MAX_GROWTH_Z . ' — got ' . $z . '.';
+                break;
+            }
+        }
+        if (!isset($frag['rangeSex'])) $errors[] = 'a "reference" needs "sex", the field holding the sex, e.g. "sex":"[sex]".';
+        foreach (['rangeMale' => 'male', 'rangeFemale' => 'female'] as $k => $word) {
+            if (!isset($frag[$k]) || !is_string($frag[$k]) || $frag[$k] === '') {
+                $errors[] = 'a "reference" needs "' . $word . '", the code the "sex" field stores for ' . $word . ', e.g. "'
+                    . $word . '":"' . ($word === 'male' ? '1' : '2') . '".';
+            }
+        }
+        if (isset($frag['rangeMale'], $frag['rangeFemale']) && $frag['rangeMale'] === $frag['rangeFemale']) {
+            $errors[] = '"male" and "female" are the same code ("' . $frag['rangeMale'] . '").';
+        }
+        $age = array_key_exists('rangeAgeDob', $frag) || array_key_exists('rangeAgeAt', $frag)
+            || array_key_exists('rangeAgeDays', $frag) || array_key_exists('rangeAgeMonths', $frag);
+        $by = array_key_exists('rangeBy', $frag);
+        if ($age && $by) {
+            $errors[] = 'give "age" or "by", not both — a reference is read by age, or by length or height.';
+        } elseif (!$age && !$by) {
+            $errors[] = 'a "reference" needs "age" (e.g. "age":{"dob":"[dob]","at":"[visit_date]"}) or, for a reference by '
+                . 'length or height, "by" (e.g. "by":"[height_cm]").';
+        }
+        if (array_key_exists('rangeAgeDob', $frag) !== array_key_exists('rangeAgeAt', $frag)) {
+            $errors[] = '"age" needs both "dob" and "at".';
+        }
+        foreach ($inputs as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            if (ModeRegistry::operandRef($frag[$k], $opts) !== null) continue;
+            $errors[] = (empty($opts['qualified']) && ModeRegistry::operandRef($frag[$k], ['qualified' => true]) !== null)
+                ? 'a ' . $label . ' field in another event or instance needs event and instance references — enable them in project settings first.'
+                : $label . ' must be exactly one field reference, e.g. "[' . self::growthExample($k) . ']" or "[baseline_arm_1]['
+                  . self::growthExample($k) . ']" (not a checkbox code, a {binding} or a list of instances).';
+        }
+        return $errors;
+    }
+
+    private static function growthExample($key)
+    {
+        $ex = ['rangeSex' => 'sex', 'rangeAgeDob' => 'dob', 'rangeAgeAt' => 'visit_date', 'rangeAgeDays' => 'age_days',
+               'rangeAgeMonths' => 'age_months', 'rangeBy' => 'height_cm'];
+        return $ex[$key];
     }
 
     /**

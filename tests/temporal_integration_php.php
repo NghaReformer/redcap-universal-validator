@@ -423,6 +423,60 @@ namespace {
     $r=ruleOf(render($m,'fa'),'a_val');
     check('window from its own entry: the page names the field itself (the browser reads no anchor)',($r['windowFromOp']??null)===['ref','a_val',null]);
 
+    // @UVRANGE against a growth reference with the sex and the date of birth in
+    // another event (2.6.0): the inputs are operands like a @UVWINDOW "from"
+    // date, so they take the same resolver, entitlement and snapshot path; a
+    // qualified "when" on a plain range rule does too. Neither blocks in the
+    // browser.
+    $growth=function($ann=null){
+        $m=temporal('[a_val]>0');
+        REDCap::$dictionary['a_val']['field_annotation']=$ann??'@UVRANGE={"reference":"who-wfa","sex":"[baseline_arm_1][key_b][2]",'
+            .'"male":"A","female":"B","age":{"dob":"[baseline_arm_1][b_open][2]","at":"[visit]"},"soft":[-2,2],"hard":[-5,5]}';
+        REDCap::$dictionary['a_val']['text_validation_type_or_show_slider_number']='number_1dp';
+        REDCap::$dictionary['b_open']['text_validation_type_or_show_slider_number']='date_ymd';
+        REDCap::$dictionary['visit']=['field_type'=>'text','form_name'=>'fa','field_annotation'=>'','text_validation_type_or_show_slider_number'=>'date_ymd'];
+        REDCap::$data[1]['repeat_instances'][1]['fb'][2]['b_open']='2025-01-10';   // key_b 'A': a boy
+        foreach([[1,1,'6.6'],[1,3,'9.6'],[2,1,'4.0']] as list($e,$i,$w)){          // z -3.40, -0.04, -6.59
+            REDCap::$data[1]['repeat_instances'][$e]['fa'][$i]['visit']='2026-01-10';
+            REDCap::$data[1]['repeat_instances'][$e]['fa'][$i]['a_val']=$w;
+        }
+        return $m;
+    };
+    $m=$growth();$p=render($m,'fa');$r=ruleOf($p,'a_val');
+    check('growth inputs in another event: no configuration error, not deferred (got '.json_encode([$r['configError']??null,$r['deferredWhy']??null]).')',
+        $r&&empty($r['configError'])&&empty($r['deferred']));
+    check('growth inputs in another event: saved values as literals, the live date as a ref',($r['rangeSexOp']??null)===['lit','A']
+        &&($r['rangeAgeDobOp']??null)===['lit','2025-01-10']&&($r['rangeAgeAtOp']??null)===['ref','visit',null]);
+    check('growth inputs in another event: advisory in the browser',($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
+    check('growth inputs in another event: the page carries the table',isset($p['cfg']['growth']['who-wfa']));
+    $res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
+    check('growth inputs in another event: the scan judges every entry (got '.json_encode([$hit,$res['unconfigurable']]).')',
+        $hit===['1/1:soft-low','2/1:hard-low']&&!$res['unconfigurable']);
+    $m=$growth();$m->redcap_save_record(PID,'1','fb',1,null);
+    check('growth inputs in another event: saving their form re-audits every host entry',count(invalid($m))===2);
+    $m=$growth();REDCap::$data[1]['repeat_instances'][1]['fb'][2]['key_b']='B';$res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
+    check('growth inputs in another event: a girl is judged on the female rows (6.6 kg: z -2.56)',$hit===['1/1:soft-low','2/1:hard-low']);
+    REDCap::$data[1]['repeat_instances'][1]['fa'][1]['a_val']='7.5';$res=$m->scanProject(PID);
+    check('... and 7.5 kg is usual for her (z -1.46)',count($res['violations'])===1);
+    $m=$growth();unset(REDCap::$data[1]['repeat_instances'][1]['fb'][2]);$res=$m->scanProject(PID);
+    check('growth inputs in an entry that does not exist: blank, nothing checked, no problem',!$res['violations']&&!$res['unconfigurable']);
+    $m=$growth();REDCap::$rights['nurse']['forms']['fb']='0';$p=render($m,'fa');$r=ruleOf($p,'a_val');
+    check('growth inputs on a form the viewer cannot read: withheld, nothing shipped',($r['rangeSexOp']??null)===['withheld']
+        &&($r['rangeAgeDobOp']??null)===['withheld']&&strpos($p['raw'],'2025-01-10')===false);
+    $m=$growth();$m->projectSettings['enable-event-instance-refs']=false;
+    check('growth inputs in another event need the feature',strpos(ruleOf(render($m,'fa'),'a_val')['configError']??'','event and instance references')!==false);
+    $m=$growth('@UVRANGE={"hard":[0,10],"when":"[baseline_arm_1][key_b][2]=\'A\'"}');
+    REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='12';
+    $r=ruleOf(render($m,'fa'),'a_val');
+    check('range with a qualified "when": accepted, advisory in the browser',$r&&empty($r['configError'])&&($r['blockSave']??null)==='off');
+    $res=$m->scanProject(PID);
+    $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
+    check('range with a qualified "when": the scan judges by it (got '.json_encode($hit).')',$hit===['1/3:hard-high']&&!$res['unconfigurable']);
+    REDCap::$data[1]['repeat_instances'][1]['fb'][2]['key_b']='B';$res=$m->scanProject(PID);
+    check('... and a false "when" checks nothing',!$res['violations']);
+
     // A branched extended rule: each scan finding names the branch that judged
     // it, so the report shows that branch's message and not the first one's.
     $m=temporal('[a_val]<[baseline_arm_1][b_open][2]');

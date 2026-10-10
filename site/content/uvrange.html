@@ -65,8 +65,10 @@ accepts anything, so a value that is not a number is reported as implausible.</p
     <code>when</code>. When no <code>when</code> is true the field is not checked; add one
     tag without <code>when</code> to cover everyone else. A selector on another form is
     read when the page opens, so that check is advisory and never blocks.</li>
-<li><code>when</code> reads fields of this entry only: event and instance references,
-    and the <code>references</code> key, are not supported by this tag yet.</li>
+<li>With event and instance references turned on in the project settings,
+    <code>when</code> may read another event or instance, such as
+    <code>[baseline_arm_1][sex]</code>. Such a rule never blocks on the page; the audit
+    and the scan check it. The <code>references</code> key is refused.</li>
 <li>The exponent form REDCap's number validation accepts is a number:
     <code>1.5E1</code> is 15. Thousands separators (<code>1,200</code>) and a unit typed
     into the box are not numbers.</li>
@@ -75,11 +77,60 @@ accepts anything, so a value that is not a number is reported as implausible.</p
     blank, on the page, in the audit and in the scan.</li>
 </ul>
 
+<h2>Growth references</h2>
+
+<p>With <code>reference</code>, the limits apply to the value's <strong>z-score</strong>
+for the child's sex and age, or length or height, computed the way WHO's own anthro
+software computes it.</p>
+
+<pre><code>@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
+          "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+
+@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2",
+          "by":"[height_cm]","soft":[-3,3],"hard":[-5,5]}</code></pre>
+
+<div class="scroll">
+<table>
+<thead><tr><th>Key</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>reference</code></td><td>The reference: <code>who-wfa</code>,
+    <code>who-lhfa</code>, <code>who-bfa</code>, <code>who-hcfa</code>, <code>who-acfa</code>,
+    <code>who-ssfa</code>, <code>who-tsfa</code>, <code>who-wfl</code>, <code>who-wfh</code>
+    (WHO 2006, birth to 5 years) or <code>who2007-wfa</code>, <code>who2007-hfa</code>,
+    <code>who2007-bfa</code> (WHO 2007, 5 to 19 years)</td></tr>
+<tr><td><code>sex</code>, <code>male</code>, <code>female</code></td><td>The field holding
+    the sex, and the codes it stores for male and for female</td></tr>
+<tr><td><code>age</code></td><td><code>{"dob":"[dob]","at":"[visit_date]"}</code>,
+    <code>{"days":"[age_days]"}</code> or <code>{"months":"[age_months]"}</code></td></tr>
+<tr><td><code>by</code></td><td>For weight-for-length or weight-for-height: the field
+    holding the length or height in cm</td></tr>
+<tr><td><code>soft</code>, <code>hard</code></td><td>z-score limits, from -20 to 20</td></tr>
+</tbody>
+</table>
+</div>
+
+<ul>
+<li>A value that is not a number, or a measurement of 0 or below, is implausible
+    whatever the inputs say.</li>
+<li>A blank input, a sex code that is neither male nor female, and an age or length
+    outside the reference check nothing. On a data entry form a grey note says why.</li>
+<li>Inputs on another form, or in another event, are read when the page opens and the
+    rule does not block there. A survey, and a user without rights to that form, are
+    not sent their values: the check runs when the record is saved.</li>
+<li>WHO's 0.7 cm correction for a length measured standing, or a height measured lying,
+    is not applied: pick <code>who-wfl</code> (lying) or <code>who-wfh</code> (standing).
+    For a child with oedema, skip weight rules with <code>when</code>.</li>
+<li>The WHO tables ship with the module under WHO's GPL-3 licence. A REDCap
+    administrator can add other references (CDC 2000, a national one) in a folder named
+    in the module's system settings.</li>
+</ul>
+
 <h2>Audit</h2>
 
 <p>The post-save audit logs a value outside either range as <code>type: range</code>
 with reason <code>soft-low</code>, <code>soft-high</code>, <code>hard-low</code>,
-<code>hard-high</code> or <code>not-a-number</code>, whatever <code>softBlock</code> says,
-and the Validation scan counts it. The scan's report, when it returns, labels each one
+<code>hard-high</code>, <code>not-a-number</code> or, for a growth reference,
+<code>not-positive</code>, whatever <code>softBlock</code> says, and the Validation scan
+counts it. The scan's report, when it returns, labels each one
 an unusual value, an implausible value or not a number, with the expected or allowed
 range.</p>

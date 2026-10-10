@@ -84,6 +84,10 @@
     "staff":  "The value is not a number.",
     "survey": "Please enter a number."
   },
+  "range/not-positive": {
+    "staff":  "The measurement is 0 or below.",
+    "survey": "Please enter a measurement above 0."
+  },
   "range/*": {
     "staff":  "The value is outside its plausible range.",
     "survey": "This value is not allowed here."

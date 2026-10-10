@@ -1,0 +1,216 @@
+{
+  "format": "uv-references-1",
+  "pageTables": 4,
+  "sources": {
+    "who2006": {
+      "title": "WHO Child Growth Standards (2006)",
+      "publisher": "World Health Organization",
+      "license": "GPL-3.0",
+      "from": "https://github.com/WorldHealthOrganization/anthro",
+      "commit": "b776d8a12b1c97369c748b561159fd2ec4f4db58",
+      "notes": "who/README.md"
+    },
+    "who2007": {
+      "title": "WHO Growth Reference for 5 to 19 years (2007)",
+      "publisher": "World Health Organization",
+      "license": "GPL-3.0-or-later",
+      "from": "https://github.com/WorldHealthOrganization/anthroplus",
+      "commit": "7cfcdb39026e9a55de55732bc3cf14c82261bcf7",
+      "notes": "who/README.md"
+    }
+  },
+  "references": {
+    "who-wfa": {
+      "source": "who2006",
+      "title": "Weight-for-age, WHO 2006 (birth to 5 years)",
+      "file": "who/who-wfa.json",
+      "sha256": "8d80afd94f32df34686401302ae03ff3c081a7052efd9d8d13f7233aff1bd2dc",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "0",
+        "below": "1826.25"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-lhfa": {
+      "source": "who2006",
+      "title": "Length/height-for-age, WHO 2006 (birth to 5 years)",
+      "file": "who/who-lhfa.json",
+      "sha256": "b30fe5952f028642e0eb4a46f9b9af183aa61aa0878adff8aeee3b4f56c6c2c4",
+      "measure": "length or height",
+      "unit": "cm",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "0",
+        "below": "1826.25"
+      },
+      "adjust": "none"
+    },
+    "who-bfa": {
+      "source": "who2006",
+      "title": "BMI-for-age, WHO 2006 (birth to 5 years)",
+      "file": "who/who-bfa.json",
+      "sha256": "8c780ec8ed499c2661448718426c67ab7284236c73f2f0f1e34f1807cc53b775",
+      "measure": "BMI",
+      "unit": "kg/m2",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "0",
+        "below": "1826.25"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-hcfa": {
+      "source": "who2006",
+      "title": "Head circumference-for-age, WHO 2006 (birth to 5 years)",
+      "file": "who/who-hcfa.json",
+      "sha256": "89f83ee7eee34b6c135489387368252e3396130c819947966b9dae4c5665d122",
+      "measure": "head circumference",
+      "unit": "cm",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "0",
+        "below": "1826.25"
+      },
+      "adjust": "none"
+    },
+    "who-acfa": {
+      "source": "who2006",
+      "title": "Arm circumference-for-age, WHO 2006 (3 months to 5 years)",
+      "file": "who/who-acfa.json",
+      "sha256": "c4389005bea271fd7bd5ff1beaeb31e942f84f7d4a7d1150c15444c29151250a",
+      "measure": "mid-upper arm circumference",
+      "unit": "cm",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "90.5",
+        "below": "1826.25"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-ssfa": {
+      "source": "who2006",
+      "title": "Subscapular skinfold-for-age, WHO 2006 (3 months to 5 years)",
+      "file": "who/who-ssfa.json",
+      "sha256": "cf59d5ca04538f08d2d524b88f95baad6ac28018c4a4bb0c31be476d36fdcfcc",
+      "measure": "subscapular skinfold",
+      "unit": "mm",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "90.5",
+        "below": "1826.25"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-tsfa": {
+      "source": "who2006",
+      "title": "Triceps skinfold-for-age, WHO 2006 (3 months to 5 years)",
+      "file": "who/who-tsfa.json",
+      "sha256": "264a8d921eb83803041918876472e519bc1f406b455a0580f62627d7dcacbc88",
+      "measure": "triceps skinfold",
+      "unit": "mm",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "round",
+      "valid": {
+        "min": "90.5",
+        "below": "1826.25"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-wfl": {
+      "source": "who2006",
+      "title": "Weight-for-length, WHO 2006 (45 to 110 cm, lying)",
+      "file": "who/who-wfl.json",
+      "sha256": "f26dbfdc78e80b75bd1ca1efb6fc95320a5e6649f05307853daa606f1c14e6a8",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "length",
+      "axisUnit": "cm",
+      "lookup": "linear",
+      "valid": {
+        "min": "45",
+        "max": "110"
+      },
+      "adjust": "who-restricted"
+    },
+    "who-wfh": {
+      "source": "who2006",
+      "title": "Weight-for-height, WHO 2006 (65 to 120 cm, standing)",
+      "file": "who/who-wfh.json",
+      "sha256": "49eeac17a6663d791485ec4d17078dfc138cc4af078cf12111e96375817326c0",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "height",
+      "axisUnit": "cm",
+      "lookup": "linear",
+      "valid": {
+        "min": "65",
+        "max": "120"
+      },
+      "adjust": "who-restricted"
+    },
+    "who2007-wfa": {
+      "source": "who2007",
+      "title": "Weight-for-age, WHO 2007 (5 to 10 years)",
+      "file": "who/who2007-wfa.json",
+      "sha256": "8513054500c96b402c219fa9752692bcd45a70b5a253c444dd65b5e175df50af",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "age",
+      "axisUnit": "months",
+      "lookup": "linear",
+      "valid": {
+        "min": "60",
+        "below": "121"
+      },
+      "adjust": "who-restricted"
+    },
+    "who2007-hfa": {
+      "source": "who2007",
+      "title": "Height-for-age, WHO 2007 (5 to 19 years)",
+      "file": "who/who2007-hfa.json",
+      "sha256": "8210f276431e8f8945a6f3cf11e7e047c5881661ed6d56349992a9aa6edf9b09",
+      "measure": "height",
+      "unit": "cm",
+      "axis": "age",
+      "axisUnit": "months",
+      "lookup": "linear",
+      "valid": {
+        "min": "60",
+        "below": "229"
+      },
+      "adjust": "none"
+    },
+    "who2007-bfa": {
+      "source": "who2007",
+      "title": "BMI-for-age, WHO 2007 (5 to 19 years)",
+      "file": "who/who2007-bfa.json",
+      "sha256": "b51fd280646d445122298a906da743b611bf882051677d022940d8290552ab27",
+      "measure": "BMI",
+      "unit": "kg/m2",
+      "axis": "age",
+      "axisUnit": "months",
+      "lookup": "linear",
+      "valid": {
+        "min": "60",
+        "below": "229"
+      },
+      "adjust": "who-restricted"
+    }
+  }
+}

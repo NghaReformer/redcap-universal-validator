@@ -206,10 +206,12 @@ check('equal limits are a fixed value, accepted', errOf('@UVRANGE={"hard":[5,5],
 check('soft equal to hard, accepted', errOf('@UVRANGE={"soft":[3,25],"hard":[3,25]}') === '');
 check('soft open where hard is closed, accepted', errOf('@UVRANGE={"soft":[null,140],"hard":[40,250]}') === '');
 
-// With event and instance references on, a qualified "when" is still refused:
-// the check reads only the tagged field.
+// With event and instance references on, a qualified "when" runs on the
+// extended path (tests/growth_module_php.php); with them off it is refused.
 $q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"when":"[baseline_arm_1][sex]=\'1\'"}', ['qualified' => true]);
-check('qualified "when": refused', isset($q[0]['error']) && strpos($q[0]['error'], 'does not support event or instance references') !== false);
+check('qualified "when" with references on: accepted', is_array($q) && !isset($q[0]['error']));
+$q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"when":"[baseline_arm_1][sex]=\'1\'"}');
+check('qualified "when" with references off: refused', isset($q[0]['error']));
 $q = AnnotationRules::parseAllTags('@UVRANGE={"hard":[1,2],"when":"[sex]=\'1\'"}', ['qualified' => true]);
 check('plain "when" with references on: fine', !isset($q[0]['error']));
 // "references" names bindings for "when", which reads only this entry here: refused, never carried unused.

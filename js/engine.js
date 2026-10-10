@@ -1907,6 +1907,114 @@ function QRID_rangeVerdict(spec, value){
   if(b("softHi") !== null && QRID_whenDecCmp(n, b("softHi")) > 0) return { tier: "soft", reason: "soft-high" };
   return { tier: "ok", reason: null };
 }
+/* @UVRANGE growth references: the z-score of a measurement against an LMS
+   table. Twin of php/GrowthReference.php; tests/growth_fixture.json and
+   tests/who_golden.json pin both. A reference here is the page's copy
+   (config.growth[id], GrowthReference::pageCopy): the index fields and the
+   rows ("scale", "first", "male", "female"). */
+var QRID_GROWTH_DAYS_PER_MONTH = 30.4375, QRID_GROWTH_MAX_Z_TEXT = 999.99;
+/* The inputs a growth rule reads, as the suffix of its "range<Input>Op" keys. */
+var QRID_GROWTH_INPUTS = ["Sex", "AgeDob", "AgeAt", "AgeDays", "AgeMonths", "By"];
+/* Where on the reference's axis a measurement sits. `input` holds what the
+   rule supplied: days or months (a number as text), dobDays and atDays (whole
+   days since 1970-01-01, null for a blank date), or by (cm, as text); comma
+   reads a decimal comma in days, months or by.
+   Returns { state: "ok", x } or { state: "blank"|"outside"|"invalid", why }. */
+function QRID_growthAxis(ref, input){
+  var comma = !!input.comma;
+  function inRange(x, what){
+    var v = ref.valid, ok = x >= parseFloat(v.min) &&
+      (v.max !== undefined ? x <= parseFloat(v.max) : x < parseFloat(v.below));
+    if(ok) return { state: "ok", x: x };
+    var range = v.min + " to " + (v.max !== undefined ? v.max : "under " + v.below) + " " + ref.axisUnit;
+    return { state: "outside", why: "the " + what + " is outside the reference (" + range + ")" };
+  }
+  var n;
+  if(ref.axis !== "age"){
+    var by = QRID_whenTrim(input.by == null ? "" : String(input.by));
+    if(by === "") return { state: "blank", why: "the " + ref.axis + " is blank" };
+    n = QRID_rangeNumber(by, comma);
+    if(n === null || n === "") return { state: "invalid", why: "the " + ref.axis + " is not a number" };
+    return inRange(parseFloat(n), ref.axis);
+  }
+  var x;
+  if(input.hasOwnProperty("dobDays") || input.hasOwnProperty("atDays")){
+    if(input.dobDays == null || input.atDays == null) return { state: "blank", why: "the date of birth or the date of the measurement is blank" };
+    var days = input.atDays - input.dobDays;
+    if(days < 0) return { state: "outside", why: "the measurement is dated before the birth" };
+    x = ref.axisUnit === "days" ? days : days / QRID_GROWTH_DAYS_PER_MONTH;
+  } else {
+    var unit = input.days != null ? "days" : (input.months != null ? "months" : null);
+    var raw = unit === null ? "" : QRID_whenTrim(String(input[unit]));
+    if(raw === "") return { state: "blank", why: "the age is blank" };
+    n = QRID_rangeNumber(raw, comma);
+    if(n === null || n === "") return { state: "invalid", why: "the age is not a number" };
+    var v = parseFloat(n);
+    if(v < 0) return { state: "outside", why: "the age is below 0" };
+    x = unit === ref.axisUnit ? v : (unit === "months" ? v * QRID_GROWTH_DAYS_PER_MONTH : v / QRID_GROWTH_DAYS_PER_MONTH);
+  }
+  return inRange(x, "age");
+}
+/* L, M and S at x for "male" or "female", or null when the table has no row. */
+function QRID_growthLms(ref, sex, x){
+  var rows = ref[sex], s = ref.scale;
+  function row(key){ var i = key - ref.first; return (i >= 0 && i < rows.length) ? rows[i] : null; }
+  if(ref.lookup === "round"){
+    var k = x * s, f = Math.floor(k);
+    return row(k - f >= 0.5 ? f + 1 : f);
+  }
+  if(ref.lookup === "floor") return row(Math.floor(x * s));
+  /* linear, as WHO's own code does it */
+  var lowKey = Math.floor(x * s), lo = row(lowKey);
+  if(lo === null) return null;
+  var diff = (x - lowKey / s) / (1 / s);
+  if(!(diff > 0)) return lo;
+  var hi = row(lowKey + 1);
+  if(hi === null) return null;
+  return [lo[0] + diff * (hi[0] - lo[0]), lo[1] + diff * (hi[1] - lo[1]), lo[2] + diff * (hi[2] - lo[2])];
+}
+/* The unrounded z-score, or null. */
+function QRID_growthZRaw(y, lms, restricted){
+  var l = lms[0], m = lms[1], s = lms[2], z, sd;
+  if(l === 0){
+    z = Math.log(y / m) / s;
+    sd = function(k){ return m * Math.exp(s * k); };
+  } else {
+    z = (Math.pow(y / m, l) - 1) / (s * l);
+    sd = function(k){ return m * Math.pow(1 + l * s * k, 1 / l); };
+  }
+  if(restricted && isFinite(z)){
+    var sd3;
+    if(z > 3){ sd3 = sd(3); z = 3 + (y - sd3) / (sd3 - sd(2)); }
+    else if(z < -3){ sd3 = sd(-3); z = -3 + (y - sd3) / (sd(-2) - sd3); }
+  }
+  return isFinite(z) ? z : null;
+}
+/* z rounded to two decimals, half away from zero, as text; beyond
+   +-QRID_GROWTH_MAX_Z_TEXT it is written as that bound. */
+function QRID_growthZText(z){
+  z = Math.max(-QRID_GROWTH_MAX_Z_TEXT, Math.min(QRID_GROWTH_MAX_Z_TEXT, z));
+  var n = Math.floor(Math.abs(z) * 100 + 0.5);
+  var frac = String(n % 100);
+  return (z < 0 && n !== 0 ? "-" : "") + Math.floor(n / 100) + "." + (frac.length < 2 ? "0" + frac : frac);
+}
+/* A typed measurement: { state: "ok", y } | { state: "blank"|"not-a-number"|"not-positive" }. */
+function QRID_growthMeasure(text, decimalComma){
+  var n = QRID_rangeNumber(text, !!decimalComma);
+  if(n === "") return { state: "blank" };
+  if(n === null) return { state: "not-a-number" };
+  var y = parseFloat(n);
+  if(!(y > 0)) return { state: "not-positive" };
+  return { state: "ok", y: y };
+}
+/* { state: "ok", z } | { state: "outside"|"unknown" } */
+function QRID_growthZScore(ref, sex, x, y){
+  var lms = QRID_growthLms(ref, sex, x);
+  if(lms === null) return { state: "outside" };
+  var z = QRID_growthZRaw(y, lms, ref.adjust === "who-restricted");
+  if(z === null) return { state: "unknown" };
+  return { state: "ok", z: QRID_growthZText(z) };
+}
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
   if(blank === undefined) blank = QRID_BLANK_PASSES;
   if(caseSensitive === undefined) caseSensitive = false;
@@ -3514,17 +3622,55 @@ function QRIDRangeInit(QRID_CONFIG){
     /* A deferred stub (the page could not be given this rule) carries no limits:
        it reports its deferral, not a configuration error. */
     if(!configError && !cfg.deferred && !any) configError = "@UVRANGE has no limits to check.";
+    /* A growth reference: the limits are z-scores, read with the page's copy of
+       the table (config.growth) and the inputs the server folded into ops. */
+    var growth = null;
+    if(typeof cfg.rangeReference === "string" && cfg.rangeReference !== ""){
+      var tables = (QRID_COMBINED_CONFIG && QRID_COMBINED_CONFIG.growth) || null;
+      var gref = (tables && Object.prototype.hasOwnProperty.call(tables, cfg.rangeReference)) ? tables[cfg.rangeReference] : null;
+      var ops = {}, withheld = false, okOp = function(op){ return op && op.length && (op[0] === "ref" || op[0] === "lit" || op[0] === "withheld"); };
+      for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
+        var op = cfg["range" + QRID_GROWTH_INPUTS[gi] + "Op"];
+        if(okOp(op)) ops[QRID_GROWTH_INPUTS[gi]] = op;
+        if(okOp(op) && op[0] === "withheld") withheld = true;
+      }
+      if(!configError && !cfg.deferred){
+        /* A withheld input means no z-score on this page, so the server sends
+           no table for it (UniversalValidator::attachGrowthTables). */
+        if(!gref && !withheld) configError = '@UVRANGE growth reference "' + cfg.rangeReference + '" was not sent to this page.';
+        else if(!ops.Sex || !(ops.AgeDob && ops.AgeAt || ops.AgeDays || ops.AgeMonths || ops.By)){
+          configError = "@UVRANGE cannot read the inputs of its growth reference.";
+        }
+      }
+      growth = { ref: gref, ops: ops, male: String(cfg.rangeMale), female: String(cfg.rangeFemale),
+                 dobType: cfg.rangeDobType || "date", dobFormat: cfg.rangeDobFormat || "ymd",
+                 atType: cfg.rangeAtType || "date", atFormat: cfg.rangeAtFormat || "ymd",
+                 comma: cfg.rangeAxisComma === true };
+    }
     var DEFERRED = !configError && !!cfg.deferred;
     var SNAPSHOT = (!configError && cfg.snapshotFields && cfg.snapshotFields.length) ? cfg.snapshotFields : null;
     var GATE = configError ? null : QRID_WHEN.gateFor(cfg.when, cfg.whenAst, QRID_BLANK_INERT, cfg.caseSensitive === true);
+    /* An input on this page re-checks the value when it changes. */
+    var WATCH = [];
+    if(growth && !configError){
+      for(var wk in growth.ops){
+        if(Object.prototype.hasOwnProperty.call(growth.ops, wk) && growth.ops[wk][0] === "ref"){
+          var w = QRID_WHEN.gateFor(null, ["cmp", "=", growth.ops[wk], ["lit", ""]]);
+          if(w) WATCH.push(w);
+        }
+      }
+    }
     /* blockSave is what QRID_buildVariants reads and turns "off" for a deferred
        rule or one whose branch was chosen from values read when the page opened;
-       the tier's own setting applies only while it is not "off". */
-    return { configError: configError, gate: GATE,
-             blockSave: (cfg.rangeComputed === true || DEFERRED) ? "off" : HARD,
+       the tier's own setting applies only while it is not "off". A rule with
+       event or instance references arrives with blockSave "off" too: it never
+       blocks here, and the save re-checks it. */
+    return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
+             blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.blockSave === "off") ? "off" : HARD,
              softBlock: SOFT, hardBlock: HARD,
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
+             deferredOnSave: cfg.deferredOnSave === true,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: spec,
@@ -3546,12 +3692,79 @@ function QRIDRangeInit(QRID_CONFIG){
   function describe(V, r){
     if(V.message) return QRID_escapeHtml(V.message);
     if(r.reason === "not-a-number") return "This is not a number.";
+    if(r.reason === "not-positive") return "A measurement must be above 0.";
     var t = r.tier === "soft" ? V.softText : V.hardText;
     var low = r.reason === "soft-low" || r.reason === "hard-low";
     var text = r.tier === "soft"
       ? (low ? "This value is lower than usual" : "This value is higher than usual")
       : (low ? "This value is below the plausible range" : "This value is above the plausible range");
-    return text + (t ? " (" + (r.tier === "soft" ? "expected " : "allowed ") + QRID_escapeHtml(t) + ")" : "") + ".";
+    var notes = [];
+    if(r.z !== undefined) notes.push("z-score " + r.z + " on " + V.growth.ref.title);
+    if(t) notes.push((r.tier === "soft" ? "expected " : "allowed ") + t);
+    return text + (notes.length ? " (" + QRID_escapeHtml(notes.join("; ")) + ")" : "") + ".";
+  }
+  /* One input of a growth rule as text, "" when blank or marked with a Missing
+     Data Code; null when the server withheld it from this page. */
+  function growthInput(op){
+    if(!op) return "";
+    if(op[0] === "withheld") return null;
+    var v = op[0] === "ref" ? QRID_WHEN.readRef(op[1], null) : op[1];
+    v = (v == null || typeof v === "object") ? "" : QRID_whenTrim(String(v));
+    return QRID_isMissingCode(v) ? "" : v;
+  }
+  /* A date input as whole days since 1970-01-01: null when blank, undefined
+     when it is not (yet) a whole date. A live field reads in its own format,
+     a saved value as Y-M-D. */
+  function growthDays(op, type, format){
+    var v = growthInput(op);
+    if(v === null) return undefined;
+    if(v === "") return null;
+    var p = QRID_temporalDate(v, type, op[0] === "ref" ? format : "ymd");
+    return p ? Math.floor(p.seconds / 86400) : undefined;
+  }
+  /* The verdict of a growth rule: the measurement first (not a number, at or
+     below 0), then the z-score's tier against the limits. { tier: "withheld" }
+     when an input was not sent to this page; { tier: "inert", why } when an
+     input is blank or outside the reference. Server twin:
+     UniversalValidator::findingsRange and growthInputs. */
+  function growthVerdict(V, typed){
+    var g = V.growth;
+    var m = QRID_growthMeasure(typed, V.spec.decimalComma);
+    if(m.state === "blank") return { tier: "inert", why: null };
+    if(m.state !== "ok") return { tier: "hard", reason: m.state };
+    var withheld = false, ins = {}, k;
+    for(var gi = 0; gi < QRID_GROWTH_INPUTS.length; gi++){
+      k = QRID_GROWTH_INPUTS[gi];
+      if(!g.ops[k]) continue;
+      ins[k] = growthInput(g.ops[k]);
+      if(ins[k] === null) withheld = true;
+    }
+    if(withheld) return { tier: "withheld" };
+    var sex = ins.Sex === g.male ? "male" : (ins.Sex === g.female ? "female" : null);
+    if(sex === null){
+      return { tier: "inert", why: ins.Sex === "" ? "the sex is blank"
+        : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };
+    }
+    var input = { comma: g.comma };
+    if(g.ops.AgeDob){
+      input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
+      input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
+      if(input.dobDays === undefined || input.atDays === undefined) return { tier: "inert", why: null };
+    } else {
+      if(g.ops.AgeDays) input.days = ins.AgeDays;
+      if(g.ops.AgeMonths) input.months = ins.AgeMonths;
+      if(g.ops.By) input.by = ins.By;
+    }
+    var a = QRID_growthAxis(g.ref, input);
+    if(a.state !== "ok") return { tier: "inert", why: a.why };
+    var z = QRID_growthZScore(g.ref, sex, a.x, m.y);
+    if(z.state !== "ok") return { tier: "inert", why: null };
+    var r = QRID_rangeVerdict({ softLo: V.spec.softLo, softHi: V.spec.softHi, hardLo: V.spec.hardLo, hardHi: V.spec.hardHi }, z.z);
+    r.z = z.z;
+    return r;
+  }
+  function verdictOf(V, typed){
+    return V.growth ? growthVerdict(V, typed) : QRID_rangeVerdict(V.spec, typed);
   }
 
   function attach(fieldName){
@@ -3573,15 +3786,31 @@ function QRIDRangeInit(QRID_CONFIG){
     }
     function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); QRID_setModeState(input, "n", null); }
+    /* A grey note for staff; never a block. */
+    function infoNote(html){
+      msg.style.cssText = "display:block;margin:4px 0;padding:6px 10px;border-radius:4px;" +
+        "font-size:13px;font-family:inherit;border:1px solid #cfcfcf;background:#f5f5f5;color:#555";
+      msg.innerHTML = "&#8505; " + html;
+      setGuard(false); QRID_setModeState(input, "n", null);
+    }
+    /* A rule the page could not carry (the growth table cap) is still checked
+       when the record is saved, so it does not get the "not checked at all"
+       notice of QRID_renderDeferralNotice. */
+    function onSaveNotice(why){
+      if(QRID_IS_SURVEY || !why || !why.length){ inert(); return; }
+      infoNote("Not checked on this page: " + QRID_escapeHtml(why.join(" ")));
+    }
     function check(){
       var act = QRID_activeVariants(VS);
       if(!act.length){
+        if(QRID_CONFIG.deferred && QRID_CONFIG.deferredOnSave === true){ onSaveNotice(QRID_CONFIG.deferredWhy); return; }
         if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
         inert(); return;
       }
       if(act.length > 1){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
       var V = act[0];
       if(V.deferred){
+        if(V.deferredOnSave){ onSaveNotice(V.deferredWhy || QRID_CONFIG.deferredWhy); return; }
         if(V.deferredWhy && !QRID_IS_SURVEY){
           QRID_renderDeferralNotice(msg, input, V.deferredWhy, "n");
           setGuard(false); QRID_setModeState(input, "n", null);
@@ -3591,7 +3820,17 @@ function QRIDRangeInit(QRID_CONFIG){
       }
       var r, typed = QRID_WHEN.readRef(fieldName, null);
       if(QRID_isMissingCode(typed)){ inert(); return; }
-      try { r = QRID_rangeVerdict(V.spec, typed); } catch(e){ inert(); return; }   /* fail open */
+      try { r = verdictOf(V, typed); } catch(e){ inert(); return; }   /* fail open */
+      if(r.tier === "withheld" || (r.tier === "inert" && r.why)){
+        /* Staff are told why a growth check did not run; a survey respondent
+           is told nothing. */
+        if(QRID_IS_SURVEY){ inert(); return; }
+        infoNote(r.tier === "withheld"
+          ? "Not checked against " + QRID_escapeHtml(V.growth.ref ? V.growth.ref.title : "its growth reference") +
+            " on this page: an input is on a form you cannot view here. It is checked when the record is saved."
+          : "Not checked against " + QRID_escapeHtml(V.growth.ref.title) + ": " + QRID_escapeHtml(r.why) + ".");
+        return;
+      }
       if(r.tier !== "soft" && r.tier !== "hard"){ inert(); return; }
       var kind = r.tier === "soft" ? "warn" : "bad";
       styleMsg(msg, kind);
@@ -3599,7 +3838,10 @@ function QRIDRangeInit(QRID_CONFIG){
       setGuard(true, blockFor(V, r.tier));
       var base = describe(V, r);
       if(V.snapshot && !QRID_IS_SURVEY){
-        base += ' <span style="opacity:.8">(limits chosen from ' + QRID_escapeHtml(V.snapshot.join(", ")) +
+        /* A growth rule's saved values are its inputs (sex, dates, age, length),
+           not a choice of limits. */
+        base += ' <span style="opacity:.8">(' + (V.growth ? "worked out with " : "limits chosen from ") +
+          QRID_escapeHtml(V.snapshot.join(", ")) +
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
       }
@@ -3618,6 +3860,7 @@ function QRIDRangeInit(QRID_CONFIG){
     if(selfWatch) selfWatch.onChange(function(){ if(!typing()) check(); });
     for(var gi = 0; gi < VS.all.length; gi++){
       if(VS.all[gi].gate) VS.all[gi].gate.onChange(function(){ check(); });
+      for(var wi = 0; wi < VS.all[gi].watch.length; wi++) VS.all[gi].watch[wi].onChange(function(){ check(); });
     }
     check();
     return true;
@@ -3628,7 +3871,7 @@ function QRIDRangeInit(QRID_CONFIG){
         var a = QRID_activeVariants(VS);
         if(a.length !== 1 || a[0].deferred) return null;
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var t = QRID_rangeVerdict(a[0].spec, QRID_WHEN.readRef(f, null)).tier;
+        var t = verdictOf(a[0], QRID_WHEN.readRef(f, null)).tier;
         return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
       } };
   });
@@ -5370,7 +5613,11 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "fromType", "fromFormat", "existsLocal", "existsSurveys", "rangeSoftLo",
                       "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock",
                       "rangeHardBlock", "rangeUnit", "rangeSoftText", "rangeHardText",
-                      "decimalComma", "rangeComputed"];
+                      "decimalComma", "rangeComputed", "rangeReference", "rangeSexOp",
+                      "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
+                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
+                      "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
+                      "deferredOnSave"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -5437,6 +5684,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
       cfg.branches = [];
       cfg.deferred = !!rule.deferred;
       cfg.deferredWhy = rule.deferredWhy;
+      cfg.deferredOnSave = rule.deferredOnSave === true;
       cfg.snapshotFields = rule.snapshotFields;
       for(i = 0; i < rule.branches.length; i++){
         var b = rule.branches[i], bc = {};
@@ -5554,6 +5802,10 @@ window.INSPIREUniversalValidator = {
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
+  },
+  growthLogic: {                             /* @UVRANGE growth references, locked by tests/growth_js.cjs */
+    axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,
+    measure: QRID_growthMeasure, zScore: QRID_growthZScore
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
