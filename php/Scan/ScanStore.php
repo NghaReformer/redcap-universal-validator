@@ -145,6 +145,10 @@ interface ScanStore
         // about the project at all.
         'terminal_reason', 'created_at', 'updated_at', 'progress_at',
         'clean', 'gap_count', 'rule_problem_count', 'not_examined',
+        // The policy the run started under, as JSON. status() reads which
+        // other projects the run looked values up in from it (review R3U-N1):
+        // the reader's plan can no longer say once the rule is gone.
+        'policy_json',
     ];
 
     /**

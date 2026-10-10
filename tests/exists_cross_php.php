@@ -1019,6 +1019,16 @@ namespace {
         }));
     check('R3U-1 plan: nothing is refused when nothing failed', $planOf('nurse')['crossRefused'] === []);
 
+    // R3U-N1: crossAnswered is what a started run keeps and what status()
+    // vouches a stored run's projects against. A revoked agreement makes the
+    // rule a configuration error, which crossRefused never names - so the
+    // stored run is refused because 300 is missing from crossAnswered.
+    check('R3U-N1 plan: a project that answers this reader is vouched for', $planOf('nurse')['crossAnswered'] === [300]);
+    check('R3U-N1 plan: one that refuses this reader is not', $pd['crossAnswered'] === []);
+    $pr = $planOf('nurse', function ($m) { $m->subSettingsBy[300] = ['exists-consumers' => []]; });
+    check('R3U-N1 plan: a revoked agreement is in neither list, so only crossAnswered can refuse the stored run',
+        $pr['crossRefused'] === [] && $pr['crossAnswered'] === []);
+
     echo "exists_cross_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);
 }

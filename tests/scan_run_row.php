@@ -37,7 +37,7 @@ if (!function_exists('uv_run_row')) {
             'fence_target' => null, 'cancel_requested_at' => null,
             'terminal_reason' => null, 'created_at' => $now, 'updated_at' => $now,
             'progress_at' => null, 'clean' => null, 'gap_count' => '0',
-            'rule_problem_count' => '0', 'not_examined' => '0',
+            'rule_problem_count' => '0', 'not_examined' => '0', 'policy_json' => '{}',
         ];
         $missing = array_diff($columns, array_keys($defaults));
         if ($missing) {

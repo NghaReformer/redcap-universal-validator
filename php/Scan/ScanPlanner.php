@@ -172,7 +172,7 @@ final class ScanPlanner
             'baseline_generation' => isset($req['baseline']) ? $req['baseline'] : null,
             'fingerprint'   => $fp,
             'fence_open'    => $open,
-            'policy_json'   => json_encode(isset($req['policy']) ? $req['policy'] : []),
+            'policy_json'   => json_encode(self::storedPolicy($req)),
             'values_state'  => isset($req['policy']['valueMode'])
                                ? $req['policy']['valueMode'] : 'none',
         ]);
@@ -625,6 +625,30 @@ final class ScanPlanner
      * available direction. Extra inputs are folded in rather than rejected,
      * because the safe direction for an unrecognised input is that it counts.
      */
+    /**
+     * The policy the run row keeps: the request's policy, plus the other
+     * projects the run will look values up in (review R3U-N1).
+     *
+     * NOT IN THE FINGERPRINT. A work request compares the fingerprint against
+     * one it builds from the settings policy alone, so a key added to the
+     * fingerprinted policy here would make every run fail its own first pass.
+     * The projects are already covered there: a rule that stops searching a
+     * project changes the rule list, and the rule list is fingerprinted.
+     *
+     * $req['crossProjects'] is the start plan's `crossAnswered`. A request
+     * without it stores none, so ScanService::start() always passes it.
+     */
+    public static function storedPolicy(array $req)
+    {
+        $policy = (isset($req['policy']) && is_array($req['policy'])) ? $req['policy'] : [];
+        if (isset($req['crossProjects']) && is_array($req['crossProjects']) && $req['crossProjects']) {
+            $ids = array_values(array_unique(array_map('intval', $req['crossProjects'])));
+            sort($ids);
+            $policy['crossProjects'] = $ids;
+        }
+        return $policy;
+    }
+
     public static function fingerprint(array $spec)
     {
         foreach (self::$required as $k) {

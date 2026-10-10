@@ -275,6 +275,10 @@ final class ScanService
             'ownership' => $ctx['ownership'],
             'structure' => $ctx['structure'] ?? [],
             'policy'    => $policy,
+            // Which other projects this run's results may hold answers from,
+            // kept on the run for status() (review R3U-N1).
+            'crossProjects' => (isset($ctx['plan']['crossAnswered']) && is_array($ctx['plan']['crossAnswered']))
+                               ? $ctx['plan']['crossAnswered'] : [],
             'createdBy' => (string) $this->username(),
             'engine'    => $this->engineVersion(),
             // WHAT THE PLAN ALREADY KNOWS IT CANNOT EVALUATE. Config-broken,
@@ -509,7 +513,22 @@ final class ScanService
         $plan = isset($ent['ctx']['plan']) && is_array($ent['ctx']['plan']) ? $ent['ctx']['plan'] : [];
         $refused = (isset($plan['crossRefused']) && is_array($plan['crossRefused']))
                  ? array_values(array_map('intval', $plan['crossRefused'])) : [];
-        if ($refused) {
+        // WHAT THE RUN LOOKED UP, NOT ONLY WHAT THE RULES LOOK UP NOW (review
+        // R3U-N1). crossRefused comes from the reader's plan, and a rule whose
+        // agreement was revoked, whose alias was removed or that was deleted
+        // is not in it - so revoking an agreement used to WIDEN who saw the
+        // answers that project had already given. The run keeps the projects
+        // it consulted; one the reader's plan does not vouch for is refused.
+        $consulted = self::consultedProjects($run);
+        if ($consulted === null) {
+            return ['ok' => false, 'final' => false,
+                    'why' => 'which other projects this scan looked values up in could not be read, so '
+                           . 'its results are not shown to you yet'];
+        }
+        $answered = (isset($plan['crossAnswered']) && is_array($plan['crossAnswered']))
+                  ? array_map('intval', $plan['crossAnswered']) : [];
+        $unvouched = array_values(array_diff($consulted, $answered, $refused));
+        if ($refused || $unvouched) {
             // FINAL ONLY WHEN EVERY REFUSAL WAS A DECISION (review R3U-1). This
             // was always final, but crossRefused also lists a project whose
             // rights, module state or agreement could not be READ just now -
@@ -520,16 +539,25 @@ final class ScanService
             $unread = (isset($plan['crossUnread']) && is_array($plan['crossUnread']))
                     ? array_values(array_intersect($refused, array_map('intval', $plan['crossUnread']))) : null;
             $decided = $unread === null ? [] : array_values(array_diff($refused, $unread));
-            $why = $decided
-                ? 'this scan looks values up in project ' . implode(', ', $decided)
-                  . ', which does not answer your lookups, so its results are not shown to you'
-                : 'this scan looks values up in project ' . implode(', ', $refused)
-                  . ', and whether it answers your lookups could not be read just now, so its results '
-                  . 'are not shown to you yet';
+            if ($decided) {
+                $why = 'this scan looks values up in project ' . implode(', ', $decided)
+                     . ', which does not answer your lookups, so its results are not shown to you';
+            } elseif ($refused) {
+                $why = 'this scan looks values up in project ' . implode(', ', $refused)
+                     . ', and whether it answers your lookups could not be read just now, so its results '
+                     . 'are not shown to you yet';
+            } else {
+                $why = 'this scan looked values up in project ' . implode(', ', $unvouched)
+                     . ', and this project\'s rules no longer show that it answers your lookups, so its '
+                     . 'results are not shown to you';
+            }
             return ['ok' => false, 'why' => $why,
                     // A decision is as final as an instrument the reader cannot
                     // read: polling again asks the same rights the same question.
-                    'final' => $unread !== null && count($decided) === count($refused)];
+                    // A project the rules no longer vouch for is not one: the
+                    // rule may be broken by a read that failed (CROSS_UNAVAILABLE
+                    // says the same for every reason), so it is asked again.
+                    'final' => $unread !== null && !$unvouched && count($decided) === count($refused)];
         }
 
         // The lease is not one of ScanStore::RUN_COLUMNS, so it is read here
@@ -856,6 +884,33 @@ final class ScanService
             }
         }
         return ['ok' => true, 'stopped' => $stopped, 'why' => null];
+    }
+
+    /**
+     * The other projects a run's stored results may hold answers from, as its
+     * start recorded them (ScanPlanner::storedPolicy(), review R3U-N1).
+     *
+     * [] for a policy that names none. null when the policy cannot be read or
+     * names them in a shape that is not a list of project ids: an unreadable
+     * list is not an empty one, and status() refuses on null.
+     *
+     * @return int[]|null
+     */
+    private static function consultedProjects(array $run)
+    {
+        $raw = array_key_exists('policy_json', $run) ? $run['policy_json'] : null;
+        if (!is_string($raw)) return null;
+        $policy = json_decode($raw, true);
+        if (!is_array($policy)) return null;
+        if (!array_key_exists('crossProjects', $policy)) return [];
+        if (!is_array($policy['crossProjects'])) return null;
+        $ids = [];
+        foreach ($policy['crossProjects'] as $p) {
+            if (is_int($p) && $p > 0) { $ids[$p] = true; continue; }
+            if (is_string($p) && ctype_digit($p) && (int) $p > 0) { $ids[(int) $p] = true; continue; }
+            return null;
+        }
+        return array_keys($ids);
     }
 
     /**

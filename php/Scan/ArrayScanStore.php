@@ -97,9 +97,10 @@ final class ArrayScanStore implements ScanStore
             'terminal_reason' => null,
             'created_at' => gmdate('Y-m-d H:i:s'), 'updated_at' => gmdate('Y-m-d H:i:s'),
             'clean' => null, 'gap_count' => 0, 'rule_problem_count' => 0, 'not_examined' => 0,
+            'policy_json' => '{}',
         ], array_intersect_key($run, array_flip(
             ['scope_dag', 'created_by', 'generation_id', 'policy_revision', 'fingerprint',
-             'fence_open'])));
+             'fence_open', 'policy_json'])));
         $this->records[$id] = [];
         return ['ok' => true, 'busy' => false, 'run' => $this->run($pid, $id), 'why' => null];
     }

@@ -5583,6 +5583,9 @@ class UniversalValidator extends AbstractExternalModule
                 // key that exists only on the success path is one a caller reads as
                 // "no forms" on the path where it should read as "no answer".
                 'ownership' => [],
+                // Empty on a refusal: nobody is vouched for, so status()
+                // refuses a stored run that looked in another project.
+                'crossRefused' => [], 'crossUnread' => [], 'crossAnswered' => [],
                 'readSet' => [], 'dupes' => [], 'unconf' => [],
                 // A value that is a Missing Data Code is no candidate for a
                 // @UVUNIQUE duplicate: ten records marked "UNK" share no ID.
@@ -5943,6 +5946,12 @@ class UniversalValidator extends AbstractExternalModule
         }
         $out['crossRefused'] = array_keys($out['crossRefused']);
         $out['crossUnread'] = array_keys($out['crossUnread']);
+        // The projects a live rule searches AND that answer this person. A
+        // started run keeps this list; status() refuses a stored run any of
+        // whose projects is missing from the reader's list (review R3U-N1),
+        // because a rule whose agreement was revoked is a configuration error
+        // that never reaches the loop above, and crossRefused cannot name it.
+        $out['crossAnswered'] = array_keys($crossProjects);
 
         $out['readSet'] = $readSet;
 
