@@ -94,6 +94,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // 2.2.0 @UVWINDOW
     'windowFrom', 'windowFromOp', 'windowFromOpWhy', 'windowLo', 'windowHi', 'windowUnit', 'windowNotFuture',
     'dateType', 'dateFormat', 'fromType', 'fromFormat',
+    // a condition read when the page opened; notFuture dropped for its time zone
+    'snapshotGate', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
     'existsLocal', 'existsSurveys',
     // 2.5.0 @UVRANGE
