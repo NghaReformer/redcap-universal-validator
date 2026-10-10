@@ -734,12 +734,15 @@ slip:
   and units typed into the box are not numbers. Blank checks nothing, and so
   does a missing data code (`UNK`, `-99`).
 - **Branch by group.** Several `@UVRANGE` tags with `when` give different
-  limits by sex, age group or anything else on the form.
+  limits by sex, age group or anything else on the form. Tags that name
+  different growth references on one field all apply, and the worst result
+  decides.
 - **The note waits.** It appears when the field is left, not while a number is
   being typed.
 - **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
   `soft-high`, `hard-low`, `hard-high`, `not-a-number` or, for a growth
-  reference, `not-positive`, whatever `softBlock` says. The Validation scan
+  reference, `not-positive`, `plausible-low` or `plausible-high`, whatever
+  `softBlock` says; a growth finding carries its z-score and reference. The Validation scan
   counts the same findings; its report (see below) labels them "Unusual
   value", "Implausible value", "Not a number" or "Not a positive measurement",
   with the limits in the detail line. Configure via field annotation only.
@@ -748,8 +751,13 @@ slip:
   WHO's own software computes it:
 
   ```text
-  @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+  @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
   ```
+
+  The `hard` limits -6 and 5 are the ones WHO's software uses to flag a
+  weight-for-age z-score as implausible. In a nutrition programme, where an
+  extreme value may be a real child, add `"hardBlock":"confirm"` so staff can
+  save it after a second look.
 
   The WHO 2006 standards (birth to 5 years: weight, length/height, BMI, head
   and arm circumference, skinfolds, weight-for-length/height) and the WHO 2007
@@ -757,9 +765,14 @@ slip:
   under WHO's GPL-3 licence. An administrator adds others, such as CDC 2000, in
   a folder named in the module's system settings; `data/references/README.md`
   explains how, and `data/references/convert.php` turns a published LMS table
-  into the module's format. A measurement at or below 0 is implausible
+  into the module's format, and `convert.php --check` prints one z-score from
+  it to compare with the source. A measurement at or below 0 is implausible
   (`not-positive`). Blank inputs, an unknown sex code and an age outside the
-  reference check nothing; staff see why. A limit the reference can never pass
+  reference check nothing; staff see why, and the post-save audit logs it as
+  not evaluated. `"plausible":[0.5,30]` judges the value in the reference's
+  unit when there is no z-score, and `"measureScale":0.001` reads grams
+  against a reference in kg. Sex codes match without regard to letter case
+  unless `caseSensitive` is true. A limit the reference can never pass
   (some rows give no z-score beyond a point: a CDC-style BMI row with L -2 and
   S 0.13 gives none above 3.85) is a configuration error that says which value
   to use. The inputs may sit on another form,

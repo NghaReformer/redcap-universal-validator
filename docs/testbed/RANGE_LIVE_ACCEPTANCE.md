@@ -142,10 +142,10 @@ has none, and remove it afterwards.
 
 ## Section I: growth references (WHO z-scores)
 
-Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 23
-fields on two new instruments. `uv_growth_test` (15 fields) holds the inputs
-(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`), five growth rules and six
-broken `ug_bad_*` tags. `uv_growth_more` (8 fields) holds rules that read sex
+Fixture: [`uvrange_growth_test_fields.csv`](uvrange_growth_test_fields.csv), 30
+fields on two new instruments. `uv_growth_test` (22 fields) holds the inputs
+(`ug_sex`, `ug_dob`, `ug_visit`, `ug_age_days`, `ug_sex_txt`), nine growth
+rules and eight broken `ug_bad_*` tags. `uv_growth_more` (8 fields) holds rules that read sex
 and date of birth from `uv_growth_test`. On a data entry form their notes do
 not block; on a survey (I30, I31) the page holds only a value that is not a
 number or is 0 or below, and the z-score is checked after saving. The WHO
@@ -155,8 +155,8 @@ to H.
 
 Setup:
 
-1. Append the 23 rows of the CSV to the dictionary, as in setup step 2. The
-   diff must report two new instruments and 23 new fields.
+1. Append the 30 rows of the CSV to the dictionary, as in setup step 2. The
+   diff must report two new instruments and 30 new fields.
 2. Designate `uv_growth_test` on `event_1_arm_1` (351) and `visit_1_arm_1`
    (380). Designate `uv_growth_more` on `event_1_arm_1` (351) only.
 3. Steps I22 to I25 need the project setting for event and instance references
@@ -165,15 +165,15 @@ Setup:
    `ug_dob` = 10-01-2025 and `ug_visit` = 2026-01-10, then save. The child is
    365 days old.
 
-Each note names the z-score and the reference, for example "This value is lower
-than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5 years);
-expected z-score -2 to 2)." A grey note starts with ℹ and says why a check did
+Each note names the z-score, the reference and its unit, for example "This value
+is lower than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5
+years), in kg; expected z-score -2 to 2)." A grey note starts with ℹ and says why a check did
 not run; it never blocks.
 
 | # | Action | Expect |
 |---|---|---|
 | I1 | `ug_weight` = 9.6, leave | No note (z-score -0.04) |
-| I2 | `ug_weight` = 7.5, leave, Save | Amber "lower than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5 years); expected z-score -2 to 2)". Save asks first |
+| I2 | `ug_weight` = 7.5, leave, Save | Amber "lower than usual (z-score -2.28 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2)". Save asks first |
 | I3 | `ug_weight` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...; allowed z-score -6 to 5)". Save is blocked |
 | I4 | `ug_weight` = 0, leave | Red "A measurement must be above 0."; Save is blocked |
 | I5 | `ug_weight` = 7.5, then `ug_sex` = Female | Without touching `ug_weight`, the note goes away (z-score -1.46 on the girls' rows) |
@@ -182,27 +182,43 @@ not run; it never blocks.
 | I8 | `ug_visit` = 2031-01-10 | Grey "... the age is outside the reference (0 to under 1826.25 days)." |
 | I9 | `ug_visit` = 2024-12-31 | Grey "... the measurement is dated before the birth." Set `ug_visit` = 2026-01-10 again, and `ug_weight` = 9.6 |
 | I10 | `ug_height` = 75.5, then 70, then 60, then 95, leaving each time | No note (-0.10); amber -2.42; red -6.62; red 8.11 "above the plausible range" |
-| I11 | `ug_height` = 80. `ug_wfh` = 13, then 10.5, then 6.0 | Amber "higher than usual (z-score 2.40 on Weight-for-height, WHO 2006 (65 to 120 cm, standing) ...)"; no note (-0.09); red -6.48 |
+| I11 | `ug_height` = 80. `ug_wfh` = 13, then 10.5, then 6.0 | Amber "higher than usual (z-score 2.40 on Weight-for-height, WHO 2006 (65 to 120 cm, standing), in kg ...)"; no note (-0.09); red -6.48 |
 | I12 | With `ug_wfh` = 6.0, set `ug_height` = 60 | `ug_wfh` turns grey "... the height is outside the reference (65 to 120 cm)." `ug_height` shows red. Set `ug_height` = 80 and `ug_wfh` = 10.5 |
 | I13 | `ug_age_days` = 365. `ug_hc` = 46, then 42, then 30 | No note (-0.05); amber -3.16 on "Head circumference-for-age"; red -12.50 |
 | I14 | Clear `ug_age_days` | `ug_hc` turns grey "... the age is blank." Set 365 again and `ug_hc` = 46 |
-| I15 | Save with `ug_weight` = 7.5 (answer "save anyway") | Module log: `invalid-id-saved`, `field: ug_weight`, `type: range`, `reason: soft-low` |
-| I16 | Open `uv_growth_more` for XE-1, event 351. `ug_age_m` = 100, `ug_bmi` = 16, then 22, then 30 | No note (0.11); no note (2.67, this rule has hard limits only); red "above the plausible range (z-score 5.03 on BMI-for-age, WHO 2007 (5 to 19 years); allowed z-score -5 to 5)", followed by "(worked out with ug_sex, read when this page was opened ...)". Save is not blocked |
+| I15 | Save with `ug_weight` = 7.5 (answer "save anyway") | Module log: `invalid-id-saved`, `field: ug_weight`, `type: range`, `reason: soft-low`, `z: -2.28`, `reference: who-wfa` |
+| I16 | Open `uv_growth_more` for XE-1, event 351. `ug_age_m` = 100, `ug_bmi` = 16, then 22, then 30 | No note (0.11); no note (2.67, this rule has hard limits only); red "above the plausible range (z-score 5.03 on BMI-for-age, WHO 2007 (5 to 19 years), in kg/m2; allowed z-score -5 to 5)", followed by "(worked out with ug_sex, read when this page was opened ...)". Save is not blocked |
 | I17 | `ug_age_m` = 50 | Grey "... the age is outside the reference (60 to under 229 months)." Set 100 again |
 | I18 | `ug_len_c` = 80,5. `ug_wfl_c` = 10,5, then 8,0, then 6,0 | No note (-0.05); amber -3.45 on "Weight-for-length"; red -6.45. The commas are read as decimals |
 | I19 | `ug_oedema` = No. `ug_muac` = 14, then 11, then 9 | No note (-0.58); no note (-3.62, hard limits only); red -5.72 |
 | I20 | `ug_oedema` = Yes | The `ug_muac` note goes away: the rule's `when` switches it off |
-| I21 | `ug_ssf` = 15, leave. `ug_tsf` = 30, leave. Save | `ug_ssf` shows amber 4.33. `ug_tsf` shows grey "Not checked on this page: this form already carries 4 growth reference tables, ... so this check runs when the record is saved." No verdict, no block. Module log after the save: `ug_bmi` `hard-high`, `ug_wfl_c` `hard-low`, `ug_ssf` `soft-high`, `ug_tsf` `hard-high` (z 8.53). The page config's `growth` holds 4 tables (who2007-bfa, who-wfl, who-acfa and who-ssfa) |
+| I21 | `ug_ssf` = 15, leave. `ug_tsf` = 30, leave. Save | `ug_ssf` shows amber 4.33. `ug_tsf` shows red 8.53 "above the plausible range", followed by "(worked out with ...". Neither blocks. Module log after the save: `ug_bmi` `hard-high`, `ug_wfl_c` `hard-low`, `ug_ssf` `soft-high`, `ug_tsf` `hard-high` (z 8.53). The sex is saved on `uv_growth_test`, so the page config's `growth` holds five tables with male rows only: who2007-bfa (170 rows) and who-wfl (651), and who-acfa, who-ssfa and who-tsfa with the 3 rows around 365 days, since the dates are saved too. Together they count as one table of the four a page may carry |
 | I22 | `uv_growth_test` for XE-1 on `visit_1_arm_1` (380): `ug_visit` = 2026-01-10, `ug_xev_wt` = 4.0, leave | Red "below the plausible range (z-score -6.59 ...)", followed by "(worked out with saved event/instance values ...)". The page config shows `rangeSexOp` `["lit","1"]` and `extendedAdvisory` `true` (every page carries `blockSave` `off` at the top level; @UVRANGE ignores it) |
 | I23 | Save | The save goes through. Module log: `ug_xev_wt` `hard-low` with `event_id` 380 |
 | I24 | Back on event 351, set `ug_weight` = 9.6, change `ug_dob` to 11-01-2025 and save | Module log: a new `ug_xev_wt` `hard-low` entry with `event_id` 380, because the save of event 351 re-checks the rule that reads it. The save also re-checks the `uv_growth_more` rules, which read the same sex and date of birth, so the four entries of I21 (`ug_bmi`, `ug_wfl_c`, `ug_ssf`, `ug_tsf`) appear again. Set `ug_dob` back to 10-01-2025 |
 | I25 | On event 351, `ug_xev_wt` = 4.0, leave | Red note; Save is not blocked (an event-qualified rule never blocks). Clear it |
-| I26 | `uv_growth_test`: check the six `ug_bad_*` fields | Each shows its error: `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field; `ug_bad_reach` its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at 1826 days (female), so a low limit must be above -6.97 |
+| I26 | `uv_growth_test`: check the eight `ug_bad_*` fields | Each shows its error: `ug_bad_case` "male" "m" and "female" "M" differ only in letter case, which this rule ignores. Add "caseSensitive": true to tell them apart; `ug_bad_months` "age" "months" field "ug_age_days" holds whole months, but "who-wfa" is read by day; `ug_bad_ref` "who-nope" is not a growth reference this server has, and lists the known ids; `ug_bad_axis` "who-wfh" is read by height, give "by"; `ug_bad_code` "male" is "M", which is not a choice of "sex" field "ug_sex" (its codes are 1, 2, 3); `ug_bad_unit` "unit" does not apply with a "reference"; `ug_bad_kind` "age" "dob" field "ug_weight" is not a date field; `ug_bad_reach` its "hard" low limit -7 is out of reach: with "who-tsfa" no measurement scores below -6.97 at 1826 days (female), so a low limit must be above -6.97 |
 | I27 | [only if section H added a missing data code] `ug_sex`: choose `UNK` with the "M" button | `ug_weight` turns grey "... the sex is blank." Clear the code |
-| I28 | [only if the durable scan is enabled] Run the Validation scan | The panel counts the findings saved in I15 to I24. The detail lines ("Expected z-score -2 to 2." for a soft finding, "Allowed z-score -5 to 5." for `ug_bmi`) are pinned offline by `tests/growth_module_php.php`, and the labels ("Unusual value", "Implausible value") by `tests/range_module_php.php` |
+| I28 | [only if the durable scan is enabled] Run the Validation scan | The panel counts the findings saved in I15 to I24. The detail lines ("Expected z-score -2 to 2. Its z-score is -2.28 on the growth reference who-wfa." for `ug_weight`, "Allowed z-score -5 to 5. Its z-score is 5.03 on the growth reference who2007-bfa." for `ug_bmi`) are pinned offline by `tests/growth_module_php.php`, and the labels ("Unusual value", "Implausible value") by `tests/range_module_php.php` |
 | I29 | Enable `uv_growth_test` and `uv_growth_more` as surveys. Open `uv_growth_test` for XE-2 at event 351: `ug_sex` = Male, `ug_dob` = 10-01-2025, `ug_visit` = 2026-01-10, `ug_weight` = 4.0 | Red note as in I3, without field names; Submit is blocked. Set `ug_weight` = 9.6 and submit |
 | I30 | Survey `uv_growth_more` for XE-2: `ug_bmi` = 0, leave | Red "A measurement must be above 0."; Submit is blocked |
 | I31 | Same survey: `ug_age_m` = 100, `ug_bmi` = 30, Submit | No note (sex is on another form, so it is not sent to a survey) and the survey submits. The page config has no `growth` key. Module log: `ug_bmi` `hard-high` for XE-2 |
+
+Rows I32 to I40 run on the data entry form `uv_growth_test` for XE-1, event 351,
+with the setup values (`ug_sex` = Male, `ug_dob` = 10-01-2025,
+`ug_visit` = 2026-01-10) and `ug_height` = 80.
+
+| # | Action | Expect |
+|---|---|---|
+| I32 | Open the page config | `growth` holds four tables, every row of both sexes: who-wfa, who-lhfa, who-wfh and who-hcfa (1827, 1827, 551 and 1827 rows per sex). `ug_bfa`, the fifth reference, is marked `deferred` and `deferredOnSave` |
+| I33 | `ug_bfa` = 25, leave | Grey "Not checked on this page: this form already carries the rows of 4 growth reference tables, and this one would take it past the most one page may carry (4), so this check runs when the record is saved." No block |
+| I34 | `ug_bfa` = 0, leave. Then `ug_bfa` = 25 and Save (answer "save anyway" where asked) | Red "A measurement must be above 0."; Save is blocked, though the z-score waits for the save. After the save, module log: `ug_bfa` `soft-high`, `z: 4.86`, `reference: who-bfa` |
+| I35 | `ug_wt_two` = 9.6, then 7.5, then 6.0, leaving each time | No note; amber, one line, "lower than usual (z-score -4.24 on Weight-for-height ..." (weight-for-age gives -2.28, inside its soft limits, and says nothing); red, two lines, amber "(z-score -4.14 on Weight-for-age ..." and red "(z-score -6.48 on Weight-for-height ...". Save is blocked |
+| I36 | `ug_wt_two` = 7.5, Save (answer "save anyway") | Module log: one `ug_wt_two` entry, `soft-low`, `z: -4.24`, `reference: who-wfh`; no who-wfa entry |
+| I37 | `ug_wt_g` = 6600, leave, then 9600 | Amber "This value is lower than usual (z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years), in kg after × 0.001; expected z-score -3 to 3)."; no note |
+| I38 | Clear `ug_dob`. `ug_wt_g` = 95000, then 300, then 6600, leaving each time | Red "This value is above the plausible range (allowed 0.5 to 30 kg; no z-score on Weight-for-age, WHO 2006 (birth to 5 years): the date of birth or the date of the measurement is blank)." and Save is blocked; red "below the plausible range (allowed 0.5 to 30 kg; ..."; grey "Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the date of birth or the date of the measurement is blank." |
+| I39 | With `ug_dob` still blank and `ug_wt_g` = 6600, Save (answer "save anyway" where asked) | Module log: `uvalidate-not-evaluated` with `field: ug_wt_g`, `reference: who-wfa`, `why: the date of birth or the date of the measurement is blank`, and one such entry for each other rule read by date whose field holds a value. No `invalid-id-saved` entry for `ug_wt_g`. Set `ug_dob` = 10-01-2025 again and save |
+| I40 | `ug_sex_txt` = m. `ug_wt_txt` = 6.6, leave. Then `ug_sex_txt` = F, then X | Amber "lower than usual (z-score -3.40 on Weight-for-age ..." (`m` is male); no note (-2.56 on the girls' rows); grey "Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the sex code is neither M (male) nor F (female)." |
 
 ---
 
@@ -218,7 +234,7 @@ not run; it never blocks.
 | 6 | Section F: every broken tag shows its error | ☐ |
 | 7 | Section G: survey behaviour, no field names in the notes | ☐ |
 | 8 | Section H: a missing data code is never judged | ☐ |
-| 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; on a data entry form the rules on `uv_growth_more`, event-qualified rules and the fifth table never block; on a survey only a value that is not a number above 0 is held; the audit logs them | ☐ |
+| 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; on a data entry form the rules on `uv_growth_more` and event-qualified rules never block, and the fifth whole table is checked on save while the page still holds 0; two references on one field both judge; `measureScale`, `plausible` and a lower-case sex code work; on a survey only a value that is not a number above 0 is held; the audit logs findings with their z-score and reference, and values not evaluated | ☐ |
 
 ## Cleanup
 

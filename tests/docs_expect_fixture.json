@@ -4333,8 +4333,8 @@
             "reason": "not-a-number"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2120",
-            "tagLine": 2116,
+            "where": "docs/action_tag_validation_examples.md:2116",
+            "tagLine": 2112,
             "kind": "growth",
             "outcome": "soft-low, z -3.40",
             "reference": "who-wfa",
@@ -4342,9 +4342,9 @@
             "scale": null,
             "spec": {
                 "decimalComma": false,
-                "softLo": "-2",
-                "softHi": "2",
-                "hardLo": "-5",
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
                 "hardHi": "5"
             },
             "plausibleLo": null,
@@ -4353,8 +4353,8 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2121",
-            "tagLine": 2116,
+            "where": "docs/action_tag_validation_examples.md:2117",
+            "tagLine": 2112,
             "kind": "growth",
             "outcome": "ok, z -0.04",
             "reference": "who-wfa",
@@ -4362,9 +4362,9 @@
             "scale": null,
             "spec": {
                 "decimalComma": false,
-                "softLo": "-2",
-                "softHi": "2",
-                "hardLo": "-5",
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
                 "hardHi": "5"
             },
             "plausibleLo": null,
@@ -4373,18 +4373,18 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2122",
-            "tagLine": 2116,
+            "where": "docs/action_tag_validation_examples.md:2118",
+            "tagLine": 2112,
             "kind": "growth",
-            "outcome": "soft-low, z -2.56",
+            "outcome": "ok, z -2.56",
             "reference": "who-wfa",
             "input": "6.6",
             "scale": null,
             "spec": {
                 "decimalComma": false,
-                "softLo": "-2",
-                "softHi": "2",
-                "hardLo": "-5",
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
                 "hardHi": "5"
             },
             "plausibleLo": null,
@@ -4393,8 +4393,28 @@
             "x": "365"
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2123",
-            "tagLine": 2116,
+            "where": "docs/action_tag_validation_examples.md:2119",
+            "tagLine": 2112,
+            "kind": "growth",
+            "outcome": "hard-low, z -8.43",
+            "reference": "who-wfa",
+            "input": "2.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2120",
+            "tagLine": 2112,
             "kind": "growth",
             "outcome": "not evaluated",
             "reference": "who-wfa",
@@ -4402,8 +4422,168 @@
             "scale": null,
             "spec": {
                 "decimalComma": false,
-                "softLo": "-2",
-                "softHi": "2",
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2121",
+            "tagLine": 2112,
+            "kind": "growth",
+            "outcome": "not-a-number",
+            "reference": "who-wfa",
+            "input": "abc",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2122",
+            "tagLine": 2112,
+            "kind": "growth",
+            "outcome": "not-positive",
+            "reference": "who-wfa",
+            "input": "0",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2204",
+            "tagLine": 2200,
+            "kind": "growth",
+            "outcome": "ok, z -0.31",
+            "reference": "who-lhfa",
+            "input": "75",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "6"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2205",
+            "tagLine": 2200,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.26",
+            "reference": "who-lhfa",
+            "input": "68",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "6"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2206",
+            "tagLine": 2200,
+            "kind": "growth",
+            "outcome": "soft-low, z -5.44",
+            "reference": "who-lhfa",
+            "input": "60",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "6"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "female",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2218",
+            "tagLine": 2214,
+            "kind": "growth",
+            "outcome": "ok, z -0.13",
+            "reference": "who-acfa",
+            "input": "14.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2219",
+            "tagLine": 2214,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.09",
+            "reference": "who-acfa",
+            "input": "11.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2220",
+            "tagLine": 2214,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-acfa",
+            "input": "12",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
                 "hardLo": "-5",
                 "hardHi": "5"
             },
@@ -4413,18 +4593,518 @@
             "x": null
         },
         {
-            "where": "docs/action_tag_validation_examples.md:2124",
-            "tagLine": 2116,
+            "where": "docs/action_tag_validation_examples.md:2231",
+            "tagLine": 2227,
             "kind": "growth",
-            "outcome": "not-a-number",
-            "reference": "who-wfa",
-            "input": "abc",
+            "outcome": "ok, z -0.06",
+            "reference": "who2007-bfa",
+            "input": "16.5",
             "scale": null,
             "spec": {
                 "decimalComma": false,
-                "softLo": "-2",
-                "softHi": "2",
+                "softLo": "-3",
+                "softHi": "3",
                 "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "female",
+            "x": "120"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2232",
+            "tagLine": 2227,
+            "kind": "growth",
+            "outcome": "ok, z -2.40",
+            "reference": "who2007-bfa",
+            "input": "13",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "female",
+            "x": "120"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2233",
+            "tagLine": 2227,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who2007-bfa",
+            "input": "13",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2259",
+            "tagLine": 2255,
+            "kind": "growth",
+            "outcome": "ok, z 0.15",
+            "reference": "who-bfa",
+            "input": "17",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2260",
+            "tagLine": 2255,
+            "kind": "growth",
+            "outcome": "ok, z -2.36",
+            "reference": "who-bfa",
+            "input": "14",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2261",
+            "tagLine": 2255,
+            "kind": "growth",
+            "outcome": "soft-high, z 4.86",
+            "reference": "who-bfa",
+            "input": "25",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2286",
+            "tagLine": 2282,
+            "kind": "growth",
+            "outcome": "ok, z -0.86",
+            "reference": "who-wfa",
+            "input": "4.0",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "31"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2287",
+            "tagLine": 2282,
+            "kind": "growth",
+            "outcome": "ok, z -2.49",
+            "reference": "who-wfa",
+            "input": "4.0",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "59"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2288",
+            "tagLine": 2282,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfa",
+            "input": "4.0",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2289",
+            "tagLine": 2282,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfa",
+            "input": "4.0",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2349",
+            "tagLine": 2345,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.16",
+            "reference": "who-wfl",
+            "input": "7.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "75.700000000000003"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2350",
+            "tagLine": 2345,
+            "kind": "growth",
+            "outcome": "ok, z -2.98",
+            "reference": "who-wfl",
+            "input": "7.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "75"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2351",
+            "tagLine": 2345,
+            "kind": "growth",
+            "outcome": "ok, z 0.00",
+            "reference": "who-wfl",
+            "input": "9.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "75"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2352",
+            "tagLine": 2345,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfl",
+            "input": "7.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-5",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2490",
+            "tagLine": 2486,
+            "kind": "growth",
+            "outcome": "plausible-high",
+            "reference": "who-wfa",
+            "input": "95",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": "0.5",
+            "plausibleHi": "30",
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2491",
+            "tagLine": 2486,
+            "kind": "growth",
+            "outcome": "plausible-low",
+            "reference": "who-wfa",
+            "input": "0.2",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": "0.5",
+            "plausibleHi": "30",
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2492",
+            "tagLine": 2486,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfa",
+            "input": "6.6",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": "0.5",
+            "plausibleHi": "30",
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2493",
+            "tagLine": 2486,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.40",
+            "reference": "who-wfa",
+            "input": "6.6",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": "0.5",
+            "plausibleHi": "30",
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2511",
+            "tagLine": 2507,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.40",
+            "reference": "who-wfa",
+            "input": "6600",
+            "scale": "0.001",
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2512",
+            "tagLine": 2507,
+            "kind": "growth",
+            "outcome": "ok, z -0.04",
+            "reference": "who-wfa",
+            "input": "9600",
+            "scale": "0.001",
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2534",
+            "tagLine": 2530,
+            "kind": "growth",
+            "outcome": "ok, z -1.83",
+            "reference": "who-wfa",
+            "input": "4.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "64"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2535",
+            "tagLine": 2530,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.67",
+            "reference": "who-wfa",
+            "input": "4.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "120"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2536",
+            "tagLine": 2530,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfa",
+            "input": "4.5",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": null,
+            "x": null
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2553",
+            "tagLine": 2549,
+            "kind": "growth",
+            "outcome": "soft-low, z -3.40",
+            "reference": "who-wfa",
+            "input": "6.6",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "male",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2554",
+            "tagLine": 2549,
+            "kind": "growth",
+            "outcome": "ok, z -2.56",
+            "reference": "who-wfa",
+            "input": "6.6",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
+                "hardHi": "5"
+            },
+            "plausibleLo": null,
+            "plausibleHi": null,
+            "sex": "female",
+            "x": "365"
+        },
+        {
+            "where": "docs/action_tag_validation_examples.md:2555",
+            "tagLine": 2549,
+            "kind": "growth",
+            "outcome": "not evaluated",
+            "reference": "who-wfa",
+            "input": "6.6",
+            "scale": null,
+            "spec": {
+                "decimalComma": false,
+                "softLo": "-3",
+                "softHi": "3",
+                "hardLo": "-6",
                 "hardHi": "5"
             },
             "plausibleLo": null,

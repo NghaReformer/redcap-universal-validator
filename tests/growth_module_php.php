@@ -831,7 +831,7 @@ namespace {
 
     // ---- 5c) the docs: reference ids and the worked example --------------------------------------
     // Every reference id a document names is one the module ships; "who-nope" is
-    // the refused example's unknown id. (JSON in config.json escapes its quotes,
+    // the refused example's unknown id, and "cdc-wfa" the guide's reference of your own. (JSON in config.json escapes its quotes,
     // the testbed CSV doubles them.)
     $named = [];
     foreach (['docs/action_tag_validation_examples.md', 'README.md', 'docs/USER_GUIDE.md', 'site/content/uvrange.html',
@@ -840,7 +840,7 @@ namespace {
         preg_match_all('/"reference"\s*:\s*"([^"]*)"/', $text, $mm);
         foreach ($mm[1] as $id) $named[$id][] = $doc;
     }
-    $unknown = array_diff(array_keys($named), array_keys(GrowthReference::catalog()['references']), ['who-nope']);
+    $unknown = array_diff(array_keys($named), array_keys(GrowthReference::catalog()['references']), ['who-nope', 'cdc-wfa']);
     check('docs: every reference id named is shipped (unknown: ' . json_encode(array_values($unknown)) . ')',
         count($named) >= 5 && !$unknown);
     // The Level 5 example: 6.6 kg for a boy of exactly one year.
@@ -848,7 +848,7 @@ namespace {
     $z = GrowthReference::zScore($e, GrowthReference::table($e), 'male', 365, 6.6);
     $doc = (string) file_get_contents(__DIR__ . '/../docs/action_tag_validation_examples.md');
     check('docs: the worked example\'s z-score and note (got ' . json_encode($z) . ')', ($z['z'] ?? null) === '-3.40'
-        && strpos($doc, 'This value is lower than usual (z-score -3.40 on ' . $e['title'] . ', in ' . $e['unit'] . '; expected z-score -2 to 2).') !== false);
+        && strpos($doc, 'This value is lower than usual (z-score -3.40 on ' . $e['title'] . ', in ' . $e['unit'] . '; expected z-score -3 to 3).') !== false);
 
     // ---- 6) a folder of extra references ------------------------------------------------------
     $dir = tmpdir();

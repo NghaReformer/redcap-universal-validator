@@ -2071,9 +2071,11 @@ place. `null` leaves one end of a range open. A rule may have only `soft`, only
 @UVRANGE={"soft":[13.5,17.5],"hard":[3,25],"unit":"g/dL","when":"[sex]='1'"}
 ```
 
-Several `@UVRANGE` tags on one field branch, and the one whose `when` is true
-applies (see [Branching](#branching--several-tags-of-the-same-kind)). One of
-them may leave out `when` to give the limits for everyone else. While `sex` is
+Several `@UVRANGE` tags with fixed limits on one field branch, and the one
+whose `when` is true applies (see
+[Branching](#branching--several-tags-of-the-same-kind)). One of them may leave
+out `when` to give the limits for everyone else. Tags that name different
+growth references are checked side by side instead (Level 5). While `sex` is
 blank, neither branch above applies and nothing is checked.
 
 ### Level 4 — your own message
@@ -2095,43 +2097,41 @@ length or height) from other fields:
 
 ```text
 # on: weight_kg — weight-for-age, WHO 2006 standards, birth to 5 years
-@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
-
-# on: weight_kg — weight-for-height, by a height field in cm
-@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[height_cm]","soft":[-3,3],"hard":[-5,5]}
-
-# on: bmi — BMI-for-age, WHO 2007 reference, with the age in months held in a field
-@UVRANGE={"reference":"who2007-bfa","sex":"[sex]","male":"1","female":"2","age":{"months":"[age_months]"},"hard":[-5,5]}
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
 ```
 
 A weight of 6.6 kg for a boy of exactly one year has a weight-for-age
-z-score of -3.40, so the first rule shows:
+z-score of -3.40, so the rule shows:
 
-> ⚠ This value is lower than usual (z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -2 to 2).
+> ⚠ This value is lower than usual (z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years), in kg; expected z-score -3 to 3).
 
 The same rule, with the inputs written after the value:
 
 ```text
 # on: weight_kg
-@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
 ```
 
 ```text expect
 6.6 with sex=1, dob=2025-01-10, visit_date=2026-01-10    => soft-low, z -3.40
 9.6 with sex=1, dob=2025-01-10, visit_date=2026-01-10    => ok, z -0.04
-6.6 with sex=2, dob=2025-01-10, visit_date=2026-01-10    => soft-low, z -2.56
+6.6 with sex=2, dob=2025-01-10, visit_date=2026-01-10    => ok, z -2.56
+2.5 with sex=1, dob=2025-01-10, visit_date=2026-01-10    => hard-low, z -8.43
 6.6 with sex=1, visit_date=2026-01-10                    => not evaluated
 abc with sex=1, dob=2025-01-10, visit_date=2026-01-10    => not-a-number
+0 with sex=1, dob=2025-01-10, visit_date=2026-01-10      => not-positive
 ```
 
 | Key | Value |
 | --- | ----- |
 | `reference` | The id of the reference (table below) |
 | `sex` | The field holding the sex, e.g. `"[sex]"` |
-| `male`, `female` | The codes that field stores for male and for female |
+| `male`, `female` | The codes that field stores for male and for female. Letter case is ignored unless `caseSensitive` is true |
 | `age` | `{"dob":"[dob]","at":"[visit_date]"}` (two date fields), `{"days":"[age_days]"}` or `{"months":"[age_months]"}` |
 | `by` | For a reference by length or height: the field holding it, in cm |
 | `soft`, `hard` | z-score limits, from -20 to 20 |
+| `plausible` | `[low, high]` in the reference's unit, judged when no z-score can be worked out (see below) |
+| `measureScale` | A number the typed value is multiplied by before the z-score, from 0.000001 to 1000000 (0.001 for grams typed into a reference in kg) |
 
 The references that ship with the module:
 
@@ -2141,9 +2141,9 @@ The references that ship with the module:
 | `who-lhfa` | length or height (cm) | age | birth to 5 years |
 | `who-bfa` | BMI (kg/m²) | age | birth to 5 years |
 | `who-hcfa` | head circumference (cm) | age | birth to 5 years |
-| `who-acfa` | mid-upper arm circumference (cm) | age | 3 months to 5 years |
-| `who-ssfa` | subscapular skinfold (mm) | age | 3 months to 5 years |
-| `who-tsfa` | triceps skinfold (mm) | age | 3 months to 5 years |
+| `who-acfa` | mid-upper arm circumference (cm) | age | 91 days to 5 years |
+| `who-ssfa` | subscapular skinfold (mm) | age | 91 days to 5 years |
+| `who-tsfa` | triceps skinfold (mm) | age | 91 days to 5 years |
 | `who-wfl` | weight (kg) | length, measured lying | 45 to 110 cm |
 | `who-wfh` | weight (kg) | height, measured standing | 65 to 120 cm |
 | `who2007-wfa` | weight (kg) | age | 5 to 10 years |
@@ -2155,28 +2155,432 @@ packages) computes: the same tables, the same restricted method beyond 3 SD for
 the weight, BMI, arm circumference and skinfold indicators, and the same
 rounding to two decimals. The module's tests compare 2,880 points with WHO's
 code. An administrator can add other references, such as CDC 2000 or a national
-one (see `data/references/README.md`).
+one (see [A reference of your own](#a-reference-of-your-own) below).
+
+#### WHO's limits for each indicator
+
+WHO's software flags a z-score beyond these limits as implausible. They make
+good `hard` limits:
+
+| Indicator | `reference` | `hard` |
+| --------- | ----------- | ------ |
+| Weight-for-age, birth to 5 years | `who-wfa` | `[-6,5]` |
+| Length/height-for-age | `who-lhfa` | `[-6,6]` |
+| Weight-for-length, weight-for-height | `who-wfl`, `who-wfh` | `[-5,5]` |
+| BMI-for-age, birth to 5 years | `who-bfa` | `[-5,5]` |
+| Head circumference-for-age | `who-hcfa` | `[-5,5]` |
+| Arm circumference, skinfolds | `who-acfa`, `who-ssfa`, `who-tsfa` | `[-5,5]` |
+| Weight-for-age, 5 to 10 years | `who2007-wfa` | `[-6,5]` |
+| Height-for-age, 5 to 19 years | `who2007-hfa` | `[-6,6]` |
+| BMI-for-age, 5 to 19 years | `who2007-bfa` | `[-5,5]` |
+
+One rule per indicator, each on the field holding that measurement:
+
+```text
+# on: hc_cm — head circumference-for-age
+@UVRANGE={"reference":"who-hcfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+
+# on: tsf_mm — triceps skinfold-for-age, from 91 days
+@UVRANGE={"reference":"who-tsfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+
+# on: ssf_mm — subscapular skinfold-for-age, from 91 days
+@UVRANGE={"reference":"who-ssfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+
+# on: weight_kg — weight-for-age, 5 to 10 years
+@UVRANGE={"reference":"who2007-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
+
+# on: height_cm — height-for-age, 5 to 19 years
+@UVRANGE={"reference":"who2007-hfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,6]}
+```
+
+Length/height-for-age, with a few values for a child of one year:
+
+```text
+# on: length_cm — length/height-for-age
+@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,6]}
+```
+
+```text expect
+75 with sex=1, dob=2025-01-10, visit_date=2026-01-10     => ok, z -0.31
+68 with sex=1, dob=2025-01-10, visit_date=2026-01-10     => soft-low, z -3.26
+60 with sex=2, dob=2025-01-10, visit_date=2026-01-10     => soft-low, z -5.44
+```
+
+Arm circumference and the skinfolds start at 91 days (3 months). A younger
+child's value is not checked:
+
+```text
+# on: muac_cm — mid-upper arm circumference-for-age, from 91 days
+@UVRANGE={"reference":"who-acfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+```
+
+```text expect
+14.5 with sex=1, dob=2025-01-10, visit_date=2026-01-10   => ok, z -0.13
+11.5 with sex=1, dob=2025-01-10, visit_date=2026-01-10   => soft-low, z -3.09
+12 with sex=1, dob=2025-01-10, visit_date=2025-03-11     => not evaluated
+```
+
+The 5 to 19 year references read the age the same way:
+
+```text
+# on: bmi — BMI-for-age, 5 to 19 years
+@UVRANGE={"reference":"who2007-bfa","sex":"[sex]","male":"1","female":"2","age":{"months":"[age_months]"},"soft":[-3,3],"hard":[-5,5]}
+```
+
+```text expect
+16.5 with sex=2, age_months=120   => ok, z -0.06
+13 with sex=2, age_months=120     => ok, z -2.40
+13 with sex=2, age_months=48      => not evaluated
+```
+
+#### Which soft limits
+
+WHO's cut-offs of -2 and -3 classify children; they do not find typing
+slips. In a clinic for malnourished children many values sit below -2, and a
+`soft` range of `[-2,2]` asks "save anyway?" for each of them. For data
+quality, use `"soft":[-3,3]`, or keep `[-2,2]` with `"softBlock":"off"` so
+the amber note shows without the question. Where an extreme value may be a
+real child in danger, `"hardBlock":"confirm"` lets staff save it after a
+second look instead of refusing it:
+
+```text
+# on: weight_kg — a note from -2, a question beyond WHO's limits
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"softBlock":"off","hard":[-6,5],"hardBlock":"confirm"}
+```
+
+#### BMI from a calc
+
+```text
+# on: bmi — a calc field: round([weight_kg] / (([length_cm] / 100) ^ 2), 2)
+@UVRANGE={"reference":"who-bfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+```
+
+```text expect
+17 with sex=1, dob=2025-01-10, visit_date=2026-01-10     => ok, z 0.15
+14 with sex=1, dob=2025-01-10, visit_date=2026-01-10     => ok, z -2.36
+25 with sex=1, dob=2025-01-10, visit_date=2026-01-10     => soft-high, z 4.86
+```
+
+A calc field never blocks a save, since nobody typed its value. Its note still shows, and
+the post-save audit and the scan report it. Put the limits that should stop a
+typing slip on the typed fields (weight-for-age, length-for-age), and keep the
+BMI rule as a second look. At one year, half a unit of BMI is about 0.37 of a
+z-score, so round the BMI to two decimals or not at all.
+
+#### The age
+
+The age can come from two dates, or from one field holding days or months:
+
+```text
+# on: weight_kg — the age from two dates (whole days between them)
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
+
+# on: weight_kg — the age in months, from a calc that keeps the part month: datediff([dob], [visit_date], "M")
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"months":"[age_months]"},"soft":[-3,3],"hard":[-6,5]}
+
+# on: weight_kg — the age in days, from a calc: datediff([dob], [visit_date], "d")
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"soft":[-3,3],"hard":[-6,5]}
+```
+
+```text expect
+4.0 with sex=1, age_days=31     => ok, z -0.86
+4.0 with sex=1, age_days=59     => ok, z -2.49
+4.0 with sex=1, age_days=1900   => not evaluated
+4.0 with sex=1, age_days=-3     => not evaluated
+```
+
+Two dates are best, since the module counts the days itself. A month is 30.4375
+days, as WHO counts it; REDCap's `datediff` with `"M"` counts 30.44, which
+moves the age by less than a quarter of a day at 5 years. Never round the
+months. The WHO 2006 tables have a row per day, and an age in whole months
+puts every child of 1 month and 0 to 30 days on the same row. For a boy
+weighing 4.0 kg:
+
+| Age | z-score at the age in days | z-score at "1 month" |
+| --- | -------------------------- | -------------------- |
+| 31 days | -0.86 | -0.79 |
+| 45 days | -1.75 | -0.79 |
+| 59 days | -2.49 | -0.79 |
+
+So a Text field with integer validation is refused as `months` on a
+reference read by day; give `dob` and `at`, days, or a number field or calc
+that keeps the part month.
+
+#### Weight-for-length, weight-for-height and weight-for-age on one field
+
+WHO uses length, measured lying, under 2 years (731 days), and height,
+measured standing, from 2 years. WHO's software adds 0.7 cm to a length
+measured standing under 2 years and takes 0.7 cm from a height measured
+lying from 2 years. The module does not know how the child was measured, so
+two calcs make the correction:
+
+| Field | Kind | Value |
+| ----- | ---- | ----- |
+| `measured` | radio | `1, Lying` and `2, Standing` |
+| `length_cm` | Text, number | the length or height as measured |
+| `age_days` | calc | `datediff([dob], [visit_date], "d")` |
+| `len_wfl` | calc | `if([measured] = '2', [length_cm] + 0.7, [length_cm])` |
+| `ht_wfh` | calc | `if([measured] = '1', [length_cm] - 0.7, [length_cm])` |
+
+```text
+# on: weight_kg — weight-for-length under 2 years, weight-for-height from 2 years, weight-for-age at every age
+@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[len_wfl]","soft":[-3,3],"hard":[-5,5],"when":"[age_days] < 731"}
+@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[ht_wfh]","soft":[-3,3],"hard":[-5,5],"when":"[age_days] >= 731"}
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"soft":[-3,3],"hard":[-6,5]}
+```
+
+Tags that name different references all apply, each when its own `when` is
+true (or always, without one). The worst result decides the note and the
+save, and the note has one line per reference. Tags that name the same
+reference branch as in Level 3: the one whose `when` is true applies, and two
+true at once are a branch conflict. Each finding in the module log and the
+Validation scan names its reference.
+
+A boy of 300 days measured standing at 75.0 cm and weighing 7.5 kg has a
+corrected length of 75.7 cm and a weight-for-length z-score of -3.16, lower
+than usual. Without the correction it would be -2.98.
+
+```text
+# on: weight_kg — weight-for-length by the corrected length
+@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[len_wfl]","soft":[-3,3],"hard":[-5,5]}
+```
+
+```text expect
+7.5 with sex=1, len_wfl=75.7    => soft-low, z -3.16
+7.5 with sex=1, len_wfl=75      => ok, z -2.98
+9.5 with sex=1, len_wfl=75      => ok, z 0.00
+7.5 with sex=1, len_wfl=40      => not evaluated
+```
+
+WHO gives no weight-based z-score for a child with oedema; skip those rules
+with `when`, e.g. `"when":"[oedema]<>'1'"`.
+
+#### Under 5 and over 5 on one field
+
+`who-wfa` ends just before 60 months (1826.25 days) and `who2007-wfa` starts
+there. With the age in days, a `when` on each picks the one that covers the
+child:
+
+```text
+# on: weight_kg — weight-for-age from birth to 10 years
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"soft":[-3,3],"hard":[-6,5],"when":"[age_days] <= 1826"}
+@UVRANGE={"reference":"who2007-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"soft":[-3,3],"hard":[-6,5],"when":"[age_days] >= 1827"}
+```
+
+Without the `when`s both apply, and each shows a grey "not checked" note for
+an age outside its own range. The two references meet closely but not
+exactly. A girl of 14 kg has a z-score of -1.86 at 1826 days on WHO 2006,
+and -1.91 at 60 months on WHO 2007.
+
+#### How many references a page carries
+
+Each reference a form uses travels to the page as a table of 3 to 95 KB. A
+page carries at most four, a number the administrator can change
+(`pageTables`, see `data/references/README.md`). A table counts as one when
+the sex is a field on the page. When the sex is a value saved on another
+form, such as an enrolment form, only that sex's rows travel and the table
+counts as one half. When the age or length is saved as well, only the few
+rows around it travel and the table counts as nothing. A rule whose `when`
+the saved values already make false carries no table.
+
+A rule past the limit is checked when the record is saved, with a note
+saying so. The page still checks that the value is a number above 0. The
+weight rules above use up to five references; with the sex on an enrolment
+form they count as two and a half.
+
+#### Surveys
+
+A growth rule works on a survey. Inputs on the survey page are read as the
+respondent types. Inputs on another form, or in another event, are not sent
+to a survey. The page then checks only that the value is a number above 0
+and shows no note, and the post-save audit checks the z-score once the
+survey is submitted.
+
+On a multi-page survey the page reads an input only on the page being shown.
+With the date of birth on an earlier page, the z-score is not worked out while
+the respondent types (a `plausible` range still applies), and the post-save
+audit checks it after submission. Put the inputs on the page of the
+measurement.
+
+#### Date of birth in an enrolment event
+
+```text
+# on: weight_kg — on a visit; the sex and the date of birth were saved at enrolment
+@UVRANGE={"reference":"who-wfa","sex":"[enrolment_arm_1][sex]","male":"1","female":"2","age":{"dob":"[enrolment_arm_1][dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
+```
+
+This needs event and instance references turned on in the project settings.
+The page reads the saved sex and date of birth when it opens and shows the
+z-score, but such a rule never blocks there. The post-save audit and the scan
+check every entry.
+
+#### A reference of your own
+
+Any reference published as L, M and S values per sex can be added without
+changing the module's code: CDC 2000, a national reference, or a reference
+by gestational age. The administrator does it once per server.
+
+1. Convert the table with `convert.php` in the module's
+   `data/references` folder. For the CDC 2000 weight-for-age table, saved
+   from the CDC website as `wtage.csv`:
+
+   ```bash
+   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5 --max-x 239.5
+   ```
+
+   It prints the table's SHA-256 and an index entry to start from.
+
+2. Put `cdc-wfa.json` and an `index.json` in a folder on the REDCap server,
+   outside the module folder, such as `/var/redcap/growth`:
+
+   ```json
+   {
+     "format": "uv-references-1",
+     "references": {
+       "cdc-wfa": {
+         "title": "Weight-for-age, CDC 2000 (2 to 20 years)",
+         "file": "cdc-wfa.json",
+         "sha256": "the value convert.php printed",
+         "measure": "weight", "unit": "kg",
+         "axis": "age", "axisUnit": "months", "lookup": "floor",
+         "valid": {"min": "24", "below": "240"},
+         "adjust": "none"
+       }
+     }
+   }
+   ```
+
+3. In Control Center, External Modules, Universal Field Validator,
+   Configure, set "folder of extra growth references" to that folder.
+
+4. Check one value with the module's own code, and compare it with one you
+   trust, such as a z-score from the source's own software:
+
+   ```bash
+   php convert.php --check cdc-wfa --folder /var/redcap/growth --sex male --x 30 --y 12.5
+   ```
+
+5. Use it in a rule:
+
+   ```text
+   # on: weight_kg — CDC 2000 weight-for-age, 2 to 20 years
+   @UVRANGE={"reference":"cdc-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+   ```
+
+6. Enter a test record with the sex, age and weight you checked in step 4.
+   The note shows the same z-score.
+
+If a limit lies beyond what the table can reach, the configuration error
+names the row and the value the limit must stay under. `data/references/README.md` covers
+tables with one set of rows for both sexes, tables given as a mean and a
+standard deviation, references by gestational age, and the CDC infant tables.
+
+#### A blank date of birth (`plausible`)
+
+A z-score needs every input. With `plausible`, a range in the reference's
+unit judges the value when no z-score can be worked out, so a 95 kg infant
+with a blank date of birth is still caught:
+
+```text
+# on: weight_kg — and 0.5 to 30 kg whenever there is no z-score
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5],"plausible":[0.5,30]}
+```
+
+```text expect
+95 with sex=1, visit_date=2026-01-10                   => plausible-high
+0.2 with visit_date=2026-01-10                         => plausible-low
+6.6 with sex=1, visit_date=2026-01-10                  => not evaluated
+6.6 with sex=1, dob=2025-01-10, visit_date=2026-01-10  => soft-low, z -3.40
+```
+
+> ✗ This value is above the plausible range (allowed 0.5 to 30 kg; no z-score on Weight-for-age, WHO 2006 (birth to 5 years): the date of birth or the date of the measurement is blank).
+
+It applies when the sex is blank or neither code, a date is blank or cannot be
+read, or the age or length is blank or outside the reference. A value outside
+it is implausible and follows `hardBlock`. Once the z-score can be worked
+out, `plausible` plays no part.
+
+#### Grams (`measureScale`)
+
+```text
+# on: weight_g — the weight in grams, against a reference in kg
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5],"measureScale":0.001}
+```
+
+```text expect
+6600 with sex=1, dob=2025-01-10, visit_date=2026-01-10  => soft-low, z -3.40
+9600 with sex=1, dob=2025-01-10, visit_date=2026-01-10  => ok, z -0.04
+```
+
+The typed value is multiplied by `measureScale` before the z-score, and the
+note says so ("z-score -3.40 on Weight-for-age, WHO 2006 (birth to 5 years),
+in kg after × 0.001"). A `plausible` range on such a rule is in the
+reference's unit, after the scale: `[0.5,30]` means 500 to 30,000 g.
+
+#### Corrected age for preterm infants
+
+The WHO standards describe children born at term. For a child born preterm,
+many programmes use the age corrected for prematurity in the first two years.
+A calc gives it, with `ga_days` the gestational age at birth in days (weeks ×
+7 + days):
+
+```text
+# on: weight_kg — the age corrected for prematurity, from a calc:
+#   datediff([dob], [visit_date], "d") - if([ga_days] < 259, 280 - [ga_days], 0)
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_corr_days]"},"soft":[-3,3],"hard":[-6,5]}
+```
+
+```text expect
+4.5 with sex=1, age_corr_days=64     => ok, z -1.83
+4.5 with sex=1, age_corr_days=120    => soft-low, z -3.67
+4.5 with sex=1, age_corr_days=-10    => not evaluated
+```
+
+A boy born at 32 weeks (224 days) who is 120 days old and weighs 4.5 kg has a
+corrected age of 64 days (120 days less the 56 between his birth and his due
+date) and a z-score of -1.83. By his
+age since birth it would be -3.67. Before the due date the corrected age is
+below 0, and nothing is checked.
+
+#### A sex typed as M or F
+
+```text
+# on: weight_kg — the sex in a Text field, M or F
+@UVRANGE={"reference":"who-wfa","sex":"[sex_text]","male":"M","female":"F","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
+```
+
+```text expect
+6.6 with sex_text=m, dob=2025-01-10, visit_date=2026-01-10    => soft-low, z -3.40
+6.6 with sex_text=F, dob=2025-01-10, visit_date=2026-01-10    => ok, z -2.56
+6.6 with sex_text=boy, dob=2025-01-10, visit_date=2026-01-10  => not evaluated
+```
+
+Sex codes match without regard to letter case, so `m` is male. Add
+`"caseSensitive":true` to match them exactly. On a radio or dropdown, `male`
+and `female` must be among its codes, and codes that differ only in letter
+case need `caseSensitive`.
+
+#### What the page, the audit and the scan do
 
 - **The age.** From two dates, the age is the whole number of days between
   them (a date with a time counts its date only). A month is 30.4375 days.
   The WHO 2006 tables have a row per day and use the nearest day; the WHO 2007
   tables and the length and height tables interpolate between rows.
 - **What checks nothing.** A blank input, a sex code that is neither `male`
-  nor `female`, an age or a length outside the reference, and a measurement
-  dated before the birth. On a data entry form a grey note tells the user why
-  ("Not checked against Weight-for-age, WHO 2006 (birth to 5 years): the age is
-  outside the reference (0 to under 1826.25 days)."); a survey shows nothing.
-  A missing data code in an input counts as blank.
+  nor `female`, an age or a length outside the reference, a measurement
+  dated before the birth, and a saved date the rule cannot read ("the date of
+  birth is not a date this rule can read"), unless `plausible` judges the
+  value. On a data entry form a grey note tells the user why ("Not checked
+  against Weight-for-age, WHO 2006 (birth to 5 years): the age is outside the
+  reference (0 to under 1826.25 days)."); a survey shows nothing. A missing
+  data code in an input counts as blank. The post-save audit logs each such
+  value as `uvalidate-not-evaluated`, with the rule, the field, the reason and
+  the reference; the Validation scan does not count them yet.
 - **What is implausible whatever the inputs say.** A value that is not a number,
   and a measurement of 0 or below (reason `not-positive`).
-- **Not applied.** WHO's anthro software adds 0.7 cm to a length measured
-  standing under 2 years, and takes 0.7 cm from a height measured lying from
-  2 years. The module does not know how the child was measured: pick
-  `who-wfl` or `who-wfh` to match, or record the corrected value. WHO gives no
-  weight-based z-score for a child with oedema; skip the rule with `when`, e.g.
-  `"when":"[oedema]<>'1'"`.
-- **Inputs on another form** are read when the page opens, and the rule's
-  note does not block on the page, as for a `when` on another form. A survey,
+- **Inputs on another form** are read when the page opens. The z-score note
+  does not block on the page, as for a `when` on another form, but a value
+  that is not a number or is 0 or below still follows `hardBlock`. A survey,
   and a user without rights to that form, are not sent the values: the page
   checks only that the value is a number above 0, and holds the save when it
   is not. Staff see a note that the z-score is checked when the record is
@@ -2189,8 +2593,9 @@ one (see `data/references/README.md`).
   true/false, Text, calc or SQL field, and when it has choices, `male` and
   `female` must be among them (yes/no and true/false store 1 and 0). `dob` and
   `at` are date or datetime fields; `days`, `months` and `by` are Text fields
-  with integer or number validation, or calcs. No input may be the measured
-  field itself.
+  with integer or number validation, or calcs. A whole-number `months` field
+  on a reference read by day is refused. No input may be the measured field
+  itself.
 - **Limits the reference can reach.** Near 0, some rows give no z-score below
   a floor, and some (in a table without `adjust`, with L below 0) none above a
   ceiling. At 5 years, `who-tsfa` never scores below -6.97 for a girl, so a hard
@@ -2198,11 +2603,9 @@ one (see `data/references/README.md`).
   bound anywhere in the reference is a configuration error that names the row
   and the value a limit must clear ("a low limit must be above -6.97"). Every shipped reference takes soft
   limits of -3 to 3 and hard limits of -6 to 6.
-- **Page size.** A page carries a copy of each table it uses (3 to 95 KB) and at
-  most four different references. A rule needing a fifth is checked when the
-  record is saved, and its note says so. A rule whose inputs are not sent to
-  the page (a survey, or a form the user cannot see) gets no table and does not
-  count towards the four.
+- **The z-score travels with each finding.** The post-save audit's log entry
+  and the Validation scan carry the z-score and the reference, and the scan's
+  detail line reads "Its z-score is -3.40 on the growth reference who-wfa."
 
 ### Semantics worth knowing
 
@@ -2250,12 +2653,18 @@ one (see `data/references/README.md`).
 - **The post-save audit checks each form and survey save.** It logs a value
   outside either range as `type: range`, with reason `soft-low`, `soft-high`,
   `hard-low`, `hard-high`, `not-a-number` or, for a growth reference,
-  `not-positive`, whatever `softBlock` says. A rule that only shows notes
-  still leaves a record of each unusual value.
+  `not-positive`, `plausible-low` or `plausible-high`, whatever `softBlock`
+  says. A growth finding also carries `z` and `reference`. A rule that only
+  shows notes still leaves a record of each unusual value. A growth value with
+  no z-score and no `plausible` range is logged as `uvalidate-not-evaluated`,
+  with the reason.
 - **The Validation scan** counts these findings. Its report labels them
   "Unusual value", "Implausible value", "Not a number" or "Not a positive
   measurement", with the limits in the detail line ("Expected 12 to 17.5
-  g/dL." or "Allowed 3 to 25 g/dL.").
+  g/dL." or "Allowed 3 to 25 g/dL."). A growth finding adds its z-score ("Its
+  z-score is -3.40 on the growth reference who-wfa."), and a value outside
+  `plausible` is an "Implausible value" with that range ("Allowed 0.5 to 30
+  kg.").
   The report page and its download are not available while the scan is being
   rebuilt (see the README); the scan page shows the count. The scan's own
   result names the branch that judged each value, so the report can show that
@@ -2266,7 +2675,8 @@ one (see `data/references/README.md`).
 
 `soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
 `caseSensitive`, and for a growth reference `reference`, `sex`, `male`,
-`female`, `age` and `by`. A rule needs `soft` or `hard` limits. Any other key
+`female`, `age`, `by`, `plausible` and `measureScale`. A rule needs `soft` or
+`hard` limits. Any other key
 is a configuration error.
 
 These are refused when the rule is saved:
@@ -2352,6 +2762,22 @@ These are refused when the rule is saved:
 # An input is one field, not a condition.
 # refused: "sex" must be exactly one field reference
 @UVRANGE={"reference":"who-wfa","sex":"[sex]='1'","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5]}
+
+# Sex codes are matched without regard to letter case.
+# refused: differ only in letter case
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"a","female":"A","age":{"days":"[age_days]"},"hard":[-5,5]}
+
+# "plausible" and "measureScale" are for growth references. Fixed limits are already in the field's unit.
+# refused: only apply with a "reference"
+@UVRANGE={"hard":[3,25],"plausible":[1,30]}
+
+# The plausible range is low, then high.
+# refused: "plausible" low limit
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-6,5],"plausible":[30,0.5]}
+
+# A scale of 0 would make every value 0.
+# refused: "measureScale" must be a number from 0.000001 to 1000000
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-6,5],"measureScale":0}
 ```
 
 These are refused once the data dictionary is read, with a configuration error
@@ -3486,8 +3912,9 @@ counts as the same value), `scope` narrows the **search** (which records are com
 #### Child growth
 
 ```text
-# on: weight_kg — weight-for-age for under-fives (weight-for-height needs its own field: one field takes one rule without "when")
+# on: weight_kg — weight-for-age and weight-for-height for under-fives (different references on one field all apply)
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
+@UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2","by":"[height_cm]","soft":[-3,3],"hard":[-5,5]}
 
 # on: height_cm — the date of birth is saved once, at enrolment, in another event
 @UVRANGE={"reference":"who-lhfa","sex":"[enrolment_arm_1][sex]","male":"1","female":"2","age":{"dob":"[enrolment_arm_1][dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,6]}

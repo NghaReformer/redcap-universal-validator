@@ -1003,14 +1003,20 @@ section and
 **Can a child's weight or height be checked against the WHO growth standards?**
 Yes. Give `@UVRANGE` a `reference` and the limits apply to the z-score for the
 child's sex and age:
-`@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}`.
-The WHO 2006 standards (birth to 5 years) and the WHO 2007 reference (5 to 19
+`@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}`.
+The hard limits -6 and 5 are the ones WHO's software uses to flag a
+weight-for-age z-score as implausible; the guide of examples lists them for
+every indicator. A soft range of -2 to 2 asks "save anyway?" for every
+moderately malnourished child, so use -3 to 3, or add `"softBlock":"off"`. In
+a nutrition programme, `"hardBlock":"confirm"` lets staff save an extreme but
+real value after a second look. The WHO 2006 standards (birth to 5 years) and the WHO 2007 reference (5 to 19
 years) ship with the module, and the z-score is the one WHO's anthro software
 gives. `age` can also be a field holding days or months (`{"days":"[age_days]"}`),
 and weight-for-length or weight-for-height takes `"by":"[height_cm]"` instead
 of `age`. The date of birth may sit on another form, or in another event when
 event and instance references are on. Where the page shows the saved values
-of another form, the rule's note does not block. Where it may not (a survey,
+of another form, the z-score note does not block, though a value that is not
+a number, or is 0 or below, still does. Where it may not (a survey,
 or a user without rights to that form), the page only checks that the value
 is a number above 0 and holds the save when it is not; the z-score is checked
 after saving. A rule with an input in another event never blocks on the page,
@@ -1023,9 +1029,27 @@ above 3.85), and the error says which value the limit must clear. To check
 against CDC 2000 or a national
 reference, your REDCap administrator adds its table in a folder named in the
 module's system settings (`data/references/README.md` in the module explains
-how). WHO's 0.7 cm correction for a length measured standing, or a height
-measured lying, is not applied: use `who-wfl` (lying) or `who-wfh` (standing)
-to match how the child was measured.
+how, and `convert.php --check` prints a z-score from the new table to compare
+with the source). WHO's 0.7 cm correction for a length measured standing, or a
+height measured lying, is not applied by the module; a calc field can apply it,
+as the guide of examples shows.
+
+**Can one weight field be checked against weight-for-age and weight-for-height?**
+Yes. Several `@UVRANGE` tags that name different references on one field all
+apply, each with its own `when` if it has one. The worst result decides the
+note and the save, and the note has one line per reference. Tags that name
+the same reference branch: the one whose `when` is true applies. Each page
+carries at most four reference tables; a rule past that is checked when the
+record is saved. With the sex saved on an enrolment form, each table counts
+half.
+
+**What if the date of birth is blank, or the weight is in grams?**
+Without every input there is no z-score, and the value is logged as not
+evaluated. Add `"plausible":[0.5,30]` to judge it against a range in the
+reference's unit in that case, so a 95 kg infant is still caught. For a field
+in grams against a reference in kg, add `"measureScale":0.001`. Sex codes
+match without regard to letter case (`m` is `M`) unless `caseSensitive` is
+true.
 
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"

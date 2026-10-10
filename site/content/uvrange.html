@@ -84,7 +84,7 @@ for the child's sex and age, or length or height, computed the way WHO's own ant
 software computes it.</p>
 
 <pre><code>@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2",
-          "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5]}
+          "age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
 
 @UVRANGE={"reference":"who-wfh","sex":"[sex]","male":"1","female":"2",
           "by":"[height_cm]","soft":[-3,3],"hard":[-5,5]}</code></pre>
@@ -105,17 +105,35 @@ software computes it.</p>
 <tr><td><code>by</code></td><td>For weight-for-length or weight-for-height: the field
     holding the length or height in cm</td></tr>
 <tr><td><code>soft</code>, <code>hard</code></td><td>z-score limits, from -20 to 20</td></tr>
+<tr><td><code>plausible</code></td><td><code>[low, high]</code> in the reference's unit,
+    judged when no z-score can be worked out (a blank date of birth, say)</td></tr>
+<tr><td><code>measureScale</code></td><td>Multiplies the typed value before the z-score:
+    <code>0.001</code> for grams typed into a reference in kg</td></tr>
 </tbody>
 </table>
 </div>
+
+<p>WHO's software flags a z-score beyond these limits as implausible, and they make
+good <code>hard</code> limits: weight-for-age -6 to 5; length/height-for-age -6 to 6;
+weight-for-length, weight-for-height, BMI, head and arm circumference and the skinfolds
+-5 to 5. For <code>soft</code>, -3 to 3 suits data checking; -2 to 2 asks "save anyway?"
+for every moderately malnourished child unless <code>"softBlock":"off"</code>.</p>
 
 <ul>
 <li>A value that is not a number, or a measurement of 0 or below, is implausible
     whatever the inputs say.</li>
 <li>A blank input, a sex code that is neither male nor female, and an age or length
-    outside the reference check nothing. On a data entry form a grey note says why.</li>
+    outside the reference check nothing, unless <code>plausible</code> judges the value.
+    On a data entry form a grey note says why, and the audit logs the value as not
+    evaluated. Sex codes match without regard to letter case unless
+    <code>caseSensitive</code> is true.</li>
+<li>Tags that name different references on one field all apply (weight-for-age and
+    weight-for-height on one weight, say). The worst result decides, and the note has
+    one line per reference.</li>
+<li>A page carries at most four reference tables. With the sex saved on another form,
+    a table counts half. A rule past the limit is checked when the record is saved.</li>
 <li>Inputs on another form, or in another event, are read when the page opens and the
-    rule's note does not block there. A survey, and a user without rights to that form,
+    z-score note does not block there. A survey, and a user without rights to that form,
     are not sent the values of another form: the page checks only that the value is a
     number above 0, and holds the save when it is not; the z-score is checked when the
     record is saved. A rule with an input in another event never blocks, on a survey
@@ -125,11 +143,12 @@ software computes it.</p>
     skinfold-for-age never goes below -6.97 for a girl, so a hard low limit of -7 would
     not hold back even 0.1 mm there.</li>
 <li>WHO's 0.7 cm correction for a length measured standing, or a height measured lying,
-    is not applied: pick <code>who-wfl</code> (lying) or <code>who-wfh</code> (standing).
-    For a child with oedema, skip weight rules with <code>when</code>.</li>
+    is not applied by the module. A calc field can apply it, and the guide of examples
+    shows how. For a child with oedema, skip weight rules with <code>when</code>.</li>
 <li>The WHO tables ship with the module under WHO's GPL-3 licence. A REDCap
     administrator can add other references (CDC 2000, a national one) in a folder named
-    in the module's system settings.</li>
+    in the module's system settings, and check one z-score from the new table with
+    <code>convert.php --check</code>.</li>
 </ul>
 
 <h2>Audit</h2>
@@ -137,7 +156,8 @@ software computes it.</p>
 <p>The post-save audit logs a value outside either range as <code>type: range</code>
 with reason <code>soft-low</code>, <code>soft-high</code>, <code>hard-low</code>,
 <code>hard-high</code>, <code>not-a-number</code> or, for a growth reference,
-<code>not-positive</code>, whatever <code>softBlock</code> says, and the Validation scan
-counts it. The scan's report, when it returns, labels each one
+<code>not-positive</code>, <code>plausible-low</code> or <code>plausible-high</code>,
+whatever <code>softBlock</code> says, and the Validation scan counts it. A growth
+finding carries its z-score and reference. The scan's report, when it returns, labels each one
 an unusual value, an implausible value, not a number or (for a growth reference) not a
 positive measurement, with the expected or allowed range.</p>
