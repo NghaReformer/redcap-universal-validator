@@ -115,8 +115,9 @@ software computes it.</p>
 <li>A blank input, a sex code that is neither male nor female, and an age or length
     outside the reference check nothing. On a data entry form a grey note says why.</li>
 <li>Inputs on another form, or in another event, are read when the page opens and the
-    rule does not block there. A survey, and a user without rights to that form, are
-    not sent their values: the check runs when the record is saved.</li>
+    rule's note does not block there. A survey, and a user without rights to that form,
+    are not sent their values: the page checks only that the value is a number above 0,
+    and holds the save when it is not; the z-score is checked when the record is saved.</li>
 <li>WHO's 0.7 cm correction for a length measured standing, or a height measured lying,
     is not applied: pick <code>who-wfl</code> (lying) or <code>who-wfh</code> (standing).
     For a child with oedema, skip weight rules with <code>when</code>.</li>
@@ -132,5 +133,5 @@ with reason <code>soft-low</code>, <code>soft-high</code>, <code>hard-low</code>
 <code>hard-high</code>, <code>not-a-number</code> or, for a growth reference,
 <code>not-positive</code>, whatever <code>softBlock</code> says, and the Validation scan
 counts it. The scan's report, when it returns, labels each one
-an unusual value, an implausible value or not a number, with the expected or allowed
-range.</p>
+an unusual value, an implausible value, not a number or (for a growth reference) not a
+positive measurement, with the expected or allowed range.</p>

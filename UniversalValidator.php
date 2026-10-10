@@ -1982,9 +1982,10 @@ class UniversalValidator extends AbstractExternalModule
                 if ($growth['state'] !== 'ok') continue;
                 $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y']);
                 if ($z['state'] !== 'ok') {
+                    // only "outside": table() refuses rows that do not cover "valid"
                     $out['unconfigurable'][] = ['fields' => [$field],
-                        'why' => 'the growth reference "' . $rule['rangeReference'] . '" gives no z-score here ('
-                               . $z['state'] . ') — field skipped'];
+                        'why' => 'the growth reference "' . $rule['rangeReference'] . '" has no row at this '
+                               . ($growth['entry']['axis'] === 'age' ? 'age' : $growth['entry']['axis']) . ' — field skipped'];
                     continue;
                 }
                 $verdictOf = $z['z'];
@@ -2024,12 +2025,15 @@ class UniversalValidator extends AbstractExternalModule
                 $v = isset($values[$op[1]]) ? $values[$op[1]] : '';
                 $v = is_array($v) ? '' : (string) $v;
             }
-            $read[$k] = self::isMissingCode($v, $codes) ? '' : trim($v);
+            // the browser's trim set (QRID_whenTrim): \v or \0 is not whitespace there
+            $read[$k] = self::isMissingCode($v, $codes) ? '' : trim($v, " \t\r\n");
         }
         $dir = $this->referenceDir();
         $entry = GrowthReference::entry($rule['rangeReference'], $dir);
         if ($entry === null) {
-            return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" is not available on this server — field skipped'];
+            $why = GrowthReference::unavailableWhy($rule['rangeReference'], $dir);
+            return ['problem' => 'the growth reference "' . $rule['rangeReference'] . '" is not available on this server'
+                . ($why !== null ? ' (' . $why . ')' : '') . ' — field skipped'];
         }
         try {
             $table = GrowthReference::table($entry);
@@ -2535,7 +2539,11 @@ class UniversalValidator extends AbstractExternalModule
             foreach (array_keys($want) as $id) {
                 if (isset($tables[$id])) continue;
                 $entry = GrowthReference::entry($id, $dir);
-                if ($entry === null) { $why = 'the growth reference "' . $id . '" is not available on this server.'; break; }
+                if ($entry === null) {
+                    $gone = GrowthReference::unavailableWhy($id, $dir);
+                    $why = 'the growth reference "' . $id . '" is not available on this server' . ($gone !== null ? ' (' . $gone . ')' : '') . '.';
+                    break;
+                }
                 try {
                     $add[$id] = GrowthReference::pageCopy($entry, GrowthReference::table($entry));
                 } catch (\Throwable $e) {
@@ -4107,6 +4115,11 @@ class UniversalValidator extends AbstractExternalModule
         $dir = $this->referenceDir();
         $catalog = GrowthReference::catalog($dir);
         $entry = GrowthReference::entry($id, $dir);
+        $gone = GrowthReference::unavailableWhy($id, $dir);
+        if ($entry === null && $gone !== null) {
+            // meant to be there: the extra folder cannot be read, or its entry for this id is broken
+            return $refuse('"reference" "' . $id . '" cannot be used: ' . $gone);
+        }
         if ($entry === null) {
             $known = array_keys($catalog['references']);
             sort($known);
@@ -4167,7 +4180,10 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 $validation = $ftype === 'text' ? self::validationOf($meta) : '';
                 $re = ModeRegistry::eligibility('range')['textValidations'] ?? null;
-                if (!($ftype === 'calc' || ($ftype === 'text' && is_string($re) && preg_match('~' . $re . '~', $validation)))) {
+                // The measured field may be a Text field without validation (its
+                // own value is judged, "not a number" included); an input may not:
+                // a typo there would only switch the check off, with no finding.
+                if (!($ftype === 'calc' || ($ftype === 'text' && $validation !== '' && is_string($re) && preg_match('~' . $re . '~', $validation)))) {
                     return $refuse($label . ' field "' . $f . '" is not a number field — it needs integer or number '
                         . 'validation, or to be a calc.');
                 }

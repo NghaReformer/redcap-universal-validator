@@ -103,7 +103,7 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // deferredOnSave marks a rule the page could not carry but the save checks)
     'rangeReference', 'rangeSexOp', 'rangeMale', 'rangeFemale', 'rangeAgeDobOp', 'rangeAgeAtOp',
     'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp', 'rangeDobType', 'rangeDobFormat',
-    'rangeAtType', 'rangeAtFormat', 'rangeAxisComma', 'deferredOnSave',
+    'rangeAtType', 'rangeAtFormat', 'rangeAxisComma', 'deferredOnSave', 'extendedAdvisory',
 ]);
 
 // Branching::modeOfType.

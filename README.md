@@ -683,10 +683,11 @@ slip:
 - **The note waits.** It appears when the field is left, not while a number is
   being typed.
 - **Audited.** The post-save audit logs `type: range` with reason `soft-low`,
-  `soft-high`, `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock`
-  says. The Validation scan counts the same findings; its report (see below)
-  labels them "Unusual value", "Implausible value" or "Not a number", with the
-  limits in the detail line. Configure via field annotation only.
+  `soft-high`, `hard-low`, `hard-high`, `not-a-number` or, for a growth
+  reference, `not-positive`, whatever `softBlock` says. The Validation scan
+  counts the same findings; its report (see below) labels them "Unusual
+  value", "Implausible value", "Not a number" or "Not a positive measurement",
+  with the limits in the detail line. Configure via field annotation only.
 - **Growth references.** With `reference`, the limits apply to the value's
   z-score for the child's sex and age (or length or height), computed the way
   WHO's own software computes it:
@@ -903,7 +904,8 @@ check-character primitive, but the full runtime path the module actually uses:
 - `tests/growth_js.cjs` / `tests/growth_php.php` — growth references: the
   z-score in both runtimes from one fixture (`tests/growth_fixture.json`),
   2,880 points computed by WHO's own R code (`tests/who_golden.json`, made by
-  `tools/who_golden.R`), and 5,000 random points that must hash the same in
+  `tools/who_golden.R` in the source repository; `tools/` is not in the
+  release package), and 5,000 random points that must hash the same in
   both. `growth_php.php` also covers a folder of extra references and every
   refusal of a broken index or table. `tests/growth_dom_js.cjs` drives the
   browser rule (live inputs, the notes that say why nothing was checked,

@@ -251,9 +251,23 @@ namespace {
         'b_code'    => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"M","female":"2",' . $AGE . ',"hard":[-5,5]}', 'number'),
         'b_yesno'   => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[yn]","male":"1","female":"2",' . $AGE . ',"hard":[-5,5]}', 'number'),
         'b_textsex' => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_txt]","male":"M","female":"F",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_daystxt' => f('anthro_form', tag('who-hcfa', '"age":{"days":"[age_txt]"}'), 'number'),
+        'b_tf'      => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[tf]","male":"1","female":"0",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_tfbad'   => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[tf]","male":"1","female":"2",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_sqlsex'  => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_sql]","male":"M","female":"F",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_calcsex' => f('anthro_form', '@UVRANGE={"reference":"who-wfa","sex":"[sex_calc]","male":"1","female":"2",' . $AGE . ',"hard":[-5,5]}', 'number'),
+        'b_calcage' => f('anthro_form', tag('who-hcfa', '"age":{"days":"[age_calc]"}'), 'number'),
+        'b_dts'     => f('anthro_form', tag('who-wfa', '"age":{"dob":"[dob_dts]","at":"[at_dt]"}'), 'number'),
         'chk'       => f('enrol_form', '', '', 'checkbox', '1, M | 2, F'),
         'yn'        => f('enrol_form', '', '', 'yesno'),
+        'tf'        => f('enrol_form', '', '', 'truefalse'),
         'sex_txt'   => f('enrol_form'),
+        'sex_sql'   => f('enrol_form', '', '', 'sql', 'select value, label from x'),
+        'sex_calc'  => f('enrol_form', '', '', 'calc', 'if([sex]=1,1,2)'),
+        'age_txt'   => f('anthro_form'),
+        'age_calc'  => f('anthro_form', '', '', 'calc', 'datediff([dob],[visit_date],"d")'),
+        'dob_dts'   => f('enrol_form', '', 'datetime_seconds_ymd'),
+        'at_dt'     => f('anthro_form', '', 'datetime_dmy'),
     ];
     $p = page(mod($bad, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
     $cases = [
@@ -267,12 +281,24 @@ namespace {
         'b_sexchk'   => '"sex" field "chk" is a checkbox field',
         'b_code'     => '"male" is "M", which is not a choice of "sex" field "sex" (its codes are 1, 2, 3).',
         'b_yesno'    => '"female" is "2", which is not a choice of "sex" field "yn" (its codes are 1, 0).',
+        // a Text field with no validation could hold anything: a typo would only switch the check off
+        'b_daystxt'  => '"age" "days" field "age_txt" is not a number field — it needs integer or number validation, or to be a calc.',
+        'b_tfbad'    => '"female" is "2", which is not a choice of "sex" field "tf" (its codes are 1, 0).',
     ];
     foreach ($cases as $f => $want) {
         check('dictionary: ' . $f . ' (got ' . json_encode($err($p, $f)) . ')', strpos($err($p, $f), $want) !== false
             && strpos($err($p, $f), '@UVRANGE on "' . $f . '"') === 0);
     }
     check('dictionary: a Text sex field takes any codes', $err($p, 'b_textsex') === '');
+    foreach (['b_tf' => 'a true/false sex field with 1 and 0', 'b_sqlsex' => 'an SQL sex field takes any codes',
+              'b_calcsex' => 'a calc sex field takes any codes', 'b_calcage' => 'a calc age in days',
+              'b_dts' => 'datetime-with-seconds and datetime dates'] as $f => $label) {
+        check('dictionary: ' . $label . ' (got ' . json_encode($err($p, $f)) . ')', ruleFor($p, $f) !== null && $err($p, $f) === '');
+    }
+    $r = ruleFor($p, 'b_dts');
+    check('dictionary: datetime types and formats travel (got ' . json_encode([$r['rangeDobType'] ?? null, $r['rangeDobFormat'] ?? null,
+        $r['rangeAtType'] ?? null, $r['rangeAtFormat'] ?? null]) . ')', $r && $r['rangeDobType'] === 'datetime_seconds'
+        && $r['rangeDobFormat'] === 'ymd' && $r['rangeAtType'] === 'datetime' && $r['rangeAtFormat'] === 'dmy');
 
     // ---- 3) the page --------------------------------------------------------------------
     $p = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
@@ -416,6 +442,96 @@ namespace {
     check('scan: not-positive has its catalog wording',
         \INSPIRE\UniversalValidator\MessageCatalog::explain(['type' => 'range', 'reason' => 'not-positive', 'rule' => 1], $dims->rule(1))
         === ['text' => 'The measurement is 0 or below.', 'source' => 'catalog']);
+    check('scan: not-positive has its survey wording',
+        \INSPIRE\UniversalValidator\MessageCatalog::explain(['type' => 'range', 'reason' => 'not-positive', 'rule' => 1], $dims->rule(1), 'survey')
+        === ['text' => 'Please enter a measurement above 0.', 'source' => 'catalog']);
+    // a hard finding's detail names the hard z-score limits
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $res = $m->scanProject(149);
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+    $bm = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'bmi'; }));
+    $row = $bm ? \INSPIRE\UniversalValidator\ScanColumns::row($bm[0], $dims, $cols) : [];
+    check('scan: a hard finding names the hard z-score limits (got ' . json_encode([$row['issue'] ?? null, $row['problem'] ?? null]) . ')',
+        ($row['issue'] ?? '') === 'Implausible value'
+        && ($row['problem'] ?? '') === 'The value is above the highest plausible value for this field. Allowed z-score -5 to 5.');
+
+    // ---- 5b) more inputs: trim, overflow, dates with a time, "when", branches ------------------
+    // \v is not whitespace in the browser (QRID_whenTrim): the height is not a number there, so not here either
+    $vt = $DATA; $vt['2'][351]['height'] = "80\x0B";
+    list($by) = audit($DICT, $vt);
+    check('audit: a height ending in a vertical tab is not a number, as in the browser', !isset($by['wt_h']));
+    $huge = $DATA; $huge['2'][351]['weight'] = '1' . str_repeat('0', 320);
+    list($by, $un) = audit($DICT, $huge);
+    check('audit: a measurement past what a float holds is implausible, not a rule problem (got ' . json_encode([$by, $un]) . ')',
+        ($by['weight'] ?? null) === 'hard-high' && !$un);
+    $DT = $DICT + [
+        'dob_dts' => f('enrol_form', '', 'datetime_seconds_ymd'),
+        'at_dt'   => f('anthro_form', '', 'datetime_ymd'),
+        'wt_dt'   => f('anthro_form', tag('who-wfa', '"age":{"dob":"[dob_dts]","at":"[at_dt]"}'), 'number_1dp'),
+    ];
+    $dt = $DATA;
+    $dt['2'][351] += ['dob_dts' => '2025-01-10 23:59:59', 'at_dt' => '2026-01-10 00:01', 'wt_dt' => '6.6'];
+    list($by, $un) = audit($DT, $dt);
+    check('audit: dates with a time count their dates only (365 days, z -3.40) (got ' . json_encode([$by, $un]) . ')',
+        ($by['wt_dt'] ?? null) === 'soft-low' && !$un);
+    $dt['2'][351]['at_dt'] = '2026-01-09 23:59';
+    list($by) = audit($DT, $dt);
+    check('audit: ... and a day earlier is 364 days, still read by date', ($by['wt_dt'] ?? null) === 'soft-low');
+    // the oedema recipe: "when" switches the rule off
+    $OE = $DICT + [
+        'oedema' => f('anthro_form', '', '', 'yesno'),
+        'muac'   => f('anthro_form', substr(tag('who-acfa', $AGE, '"hard":[-5,5]'), 0, -1) . ',"when":"[oedema]<>\'1\'"}', 'number_1dp'),
+    ];
+    $oe = $DATA; $oe['2'][351] += ['oedema' => '0', 'muac' => '9'];
+    list($by, $un) = audit($OE, $oe);
+    check('audit: "when" true, the arm circumference is judged (z -5.72) (got ' . json_encode([$by, $un]) . ')',
+        ($by['muac'] ?? null) === 'hard-low' && !$un);
+    $res = mod($OE, $oe, $FULL, 'nurse')->scanProject(149);
+    $mu = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'muac'; }));
+    check('scan: "when" true, judged', count($mu) === 1 && $mu[0]['reason'] === 'hard-low');
+    $oe['2'][351]['oedema'] = '1';
+    list($by, $un) = audit($OE, $oe);
+    check('audit: "when" false (oedema), nothing checked', !isset($by['muac']) && !$un);
+    $res = mod($OE, $oe, $FULL, 'nurse')->scanProject(149);
+    check('scan: "when" false, nothing', !array_filter($res['violations'], function ($v) { return $v['field'] === 'muac'; }));
+    $r = ruleFor(page(mod($OE, $oe, $FULL, 'nurse'), 'form', '2', 'anthro_form'), 'muac');
+    check('page: the "when" travels with the growth rule', $r && ($r['when'] ?? null) === "[oedema]<>'1'" && empty($r['configError']));
+    // a branched rule whose branches use different references: the page carries both tables
+    $BR = $DICT + [
+        'how'   => f('anthro_form', '', '', 'radio', '1, By age | 2, By height'),
+        'wt_br' => f('anthro_form', substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[how]=\'1\'"} '
+                                  . substr(tag('who-wfh', '"by":"[height]"'), 0, -1) . ',"when":"[how]=\'2\'"}', 'number_1dp'),
+    ];
+    $br = $DATA; $br['2'][351] += ['how' => '2', 'wt_br' => '13'];
+    $p = page(mod($BR, $br, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r = ruleFor($p, 'wt_br');
+    $refs = $r ? array_map(function ($b) { return $b['rangeReference'] ?? null; }, $r['branches'] ?? []) : [];
+    check('page: a branched growth rule keeps each branch\'s reference (got ' . json_encode($refs) . ')', $refs === ['who-wfa', 'who-wfh']
+        && isset($p['cfg']['growth']['who-wfa'], $p['cfg']['growth']['who-wfh']) && empty($r['deferred']));
+    list($by) = audit($BR, $br);
+    check('audit: the branch that applies judges (by height: 13 kg at 80 cm, z 2.40)', ($by['wt_br'] ?? null) === 'soft-high');
+
+    // ---- 5c) the docs: reference ids and the worked example --------------------------------------
+    // Every reference id a document names is one the module ships; "who-nope" is
+    // the refused example's unknown id. (JSON in config.json escapes its quotes,
+    // the testbed CSV doubles them.)
+    $named = [];
+    foreach (['docs/action_tag_validation_examples.md', 'README.md', 'docs/USER_GUIDE.md', 'site/content/uvrange.html',
+              'config.json', 'docs/testbed/uvrange_growth_test_fields.csv', 'docs/testbed/RANGE_LIVE_ACCEPTANCE.md'] as $doc) {
+        $text = str_replace(['\\"', '""'], '"', (string) file_get_contents(__DIR__ . '/../' . $doc));
+        preg_match_all('/"reference"\s*:\s*"([^"]*)"/', $text, $mm);
+        foreach ($mm[1] as $id) $named[$id][] = $doc;
+    }
+    $unknown = array_diff(array_keys($named), array_keys(GrowthReference::catalog()['references']), ['who-nope']);
+    check('docs: every reference id named is shipped (unknown: ' . json_encode(array_values($unknown)) . ')',
+        count($named) >= 5 && !$unknown);
+    // The Level 5 example: 6.6 kg for a boy of exactly one year.
+    $e = GrowthReference::entry('who-wfa');
+    $z = GrowthReference::zScore($e, GrowthReference::table($e), 'male', 365, 6.6);
+    $doc = (string) file_get_contents(__DIR__ . '/../docs/action_tag_validation_examples.md');
+    check('docs: the worked example\'s z-score and note (got ' . json_encode($z) . ')', ($z['z'] ?? null) === '-3.40'
+        && strpos($doc, 'This value is lower than usual (z-score -3.40 on ' . $e['title'] . '; expected z-score -2 to 2).') !== false);
 
     // ---- 6) a folder of extra references ------------------------------------------------------
     $dir = tmpdir();
@@ -452,7 +568,14 @@ namespace {
     file_put_contents($dir . '/index.json', '{"format":"nope"}');
     $p = page(mod($mine, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
     check('extra folder: an unreadable index is named in the refusal (got ' . json_encode($err($p, 'weight')) . ')',
-        strpos($err($p, 'weight'), 'Problems reading the references: the reference folder in the module settings: index.json must say "format": "uv-references-1".') !== false);
+        strpos($err($p, 'weight'), 'cannot be used: the reference folder in the module settings: index.json must say "format": "uv-references-1".') !== false);
+    // ... and it refuses a bundled id too: the folder may have meant to replace it
+    $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
+    check('extra folder: unreadable, a bundled reference is refused as well (got ' . json_encode($err($p, 'weight')) . ')',
+        strpos($err($p, 'weight'), '"reference" "who-wfa" cannot be used: the reference folder in the module settings: index.json must say') !== false
+        && !isset($p['cfg']['growth']));
+    list($by, $un) = audit($DICT, $DATA, 'anthro_form', $SYS);
+    check('extra folder: unreadable, the audit does not judge against the bundled table', !$by);
     file_put_contents($dir . '/index.json', json_encode(['format' => 'uv-references-1', 'pageTables' => 1, 'references' => new \stdClass()]));
     $p = page(mod($DICT, $DATA, $FULL, 'nurse', $SYS), 'form', '2', 'anthro_form');
     $kept = array_filter($p['cfg']['rules'], function ($x) { return !empty($x['rangeReference']) && empty($x['deferred']); });

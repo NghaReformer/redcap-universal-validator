@@ -110,7 +110,9 @@
     {"name": "by length",                "ref": "t-length", "sex": "male",   "x": 45.3, "y": 2.6,  "want": {"state": "ok", "z": "0.00"}},
     {"name": "half months",              "ref": "t-floor",  "sex": "male",   "x": 24.9, "y": 22,   "want": {"state": "ok", "z": "1.00"}},
     {"name": "L 0",                      "ref": "t-l0",     "sex": "male",   "x": 0,    "y": 11,   "want": {"state": "ok", "z": "0.95"}},
-    {"name": "an enormous measurement",  "ref": "t-days",   "sex": "male",   "x": 0,    "y": 1e70, "want": {"state": "ok", "z": "999.99"}}
+    {"name": "an enormous measurement",  "ref": "t-days",   "sex": "male",   "x": 0,    "y": 1e70, "want": {"state": "ok", "z": "999.99"}},
+    {"name": "past a float (no finite z)", "ref": "t-days", "sex": "male",   "x": 0,    "y": 1e309, "want": {"state": "ok", "z": "999.99"}},
+    {"name": "past a float, L 0",        "ref": "t-l0",     "sex": "male",   "x": 0,    "y": 1e309, "want": {"state": "ok", "z": "999.99"}}
   ],
   "parity": {
     "_comment": "5,000 points drawn from the bundled WHO references with the MINSTD generator, the same way in both runtimes; the SHA-256 of their lines.",

@@ -884,9 +884,9 @@ rules (`@UVWINDOW`): Text fields with date, datetime or datetime-with-seconds
 validation. Lookup rules (`@UVEXISTS`): Text, dropdown, radio and SQL fields.
 Plausibility rules (`@UVRANGE`): Text fields with no, integer or number
 validation (including comma decimals), calc fields and sliders; for a growth
-reference, the sex field may be a radio, dropdown, yes/no, Text, calc or SQL
-field, the dates date or datetime fields, and an age, length or height a
-number field or a calc.
+reference, the sex field may be a radio, dropdown, yes/no, true/false, Text,
+calc or SQL field, the dates date or datetime fields, and an age, length or
+height a Text field with integer or number validation, or a calc.
 
 **Can the options of a dropdown depend on an earlier answer (country → site)?**
 Yes — since 1.5.0 the `@UVCHOICES` tag filters the options of a radio,
@@ -974,8 +974,11 @@ years) ship with the module, and the z-score is the one WHO's anthro software
 gives. `age` can also be a field holding days or months (`{"days":"[age_days]"}`),
 and weight-for-length or weight-for-height takes `"by":"[height_cm]"` instead
 of `age`. The date of birth may sit on another form, or in another event when
-event and instance references are on; such a rule shows its note but does not
-block. A blank input or an age outside the reference checks nothing, and on a
+event and instance references are on. Where the page shows those saved values,
+the rule's note does not block. Where it may not (a survey, or a user without
+rights to that form), the page only checks that the value is a number above 0
+and holds the save when it is not; the z-score is checked after saving. A
+blank input or an age outside the reference checks nothing, and on a
 data entry form a grey note says why. To check against CDC 2000 or a national
 reference, your REDCap administrator adds its table in a folder named in the
 module's system settings (`data/references/README.md` in the module explains

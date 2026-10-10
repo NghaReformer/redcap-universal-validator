@@ -52,27 +52,42 @@ final class GrowthReference
      * Every reference the module knows: the bundled ones, then the ones in
      * $extraDir, which add to them or replace them by id.
      *
+     * An entry of $extraDir that cannot be used removes the bundled one with
+     * the same id instead of leaving it in place, and a folder whose index
+     * cannot be read removes every reference: the administrator meant to
+     * change something, and judging against the table they meant to replace,
+     * with no sign of it, is worse than a configuration error.
+     *
      * @return array ['references' => [id => entry + ['dir' => folder]],
-     *                'pageTables' => int, 'problems' => [string, ...]]
+     *                'pageTables' => int, 'problems' => [string, ...],
+     *                'refused' => [id => why], 'broken' => why|null]
      */
     public static function catalog($extraDir = null)
     {
         $extraDir = is_string($extraDir) ? trim($extraDir) : '';
         if (isset(self::$catalogMemo[$extraDir])) return self::$catalogMemo[$extraDir];
-        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'problems' => []];
-        $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references']];
-        if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings'];
+        $out = ['references' => [], 'pageTables' => self::PAGE_TABLES, 'problems' => [], 'refused' => [], 'broken' => null];
+        $dirs = [['dir' => self::bundledDir(), 'what' => 'the bundled references', 'extra' => false]];
+        if ($extraDir !== '') $dirs[] = ['dir' => rtrim($extraDir, '/\\'), 'what' => 'the reference folder in the module settings', 'extra' => true];
         foreach ($dirs as $d) {
             $index = self::readIndex($d['dir']);
             if (isset($index['error'])) {
-                $out['problems'][] = $d['what'] . ': ' . $index['error'];
+                $why = $d['what'] . ': ' . $index['error'];
+                $out['problems'][] = $why;
+                if ($d['extra']) {
+                    $out['broken'] = $why;
+                    $out['references'] = [];
+                }
                 continue;
             }
             if (isset($index['pageTables'])) $out['pageTables'] = $index['pageTables'];
             foreach ($index['references'] as $id => $e) {
                 $why = self::entryProblem($id, $e);
                 if ($why !== null) {
-                    $out['problems'][] = $d['what'] . ': reference "' . $id . '" ' . $why;
+                    $why = $d['what'] . ': reference "' . $id . '" ' . $why;
+                    $out['problems'][] = $why;
+                    unset($out['references'][(string) $id]);
+                    $out['refused'][(string) $id] = $why;
                     continue;
                 }
                 $e['dir'] = $d['dir'];
@@ -90,6 +105,18 @@ final class GrowthReference
         return (is_string($id) && isset($c['references'][$id])) ? $c['references'][$id] : null;
     }
 
+    /**
+     * Why reference $id is not available although it may be meant to be: the
+     * extra folder cannot be read, or its entry for $id is broken. Null when
+     * neither applies (the id is available, or simply unknown).
+     */
+    public static function unavailableWhy($id, $extraDir = null)
+    {
+        $c = self::catalog($extraDir);
+        if ($c['broken'] !== null) return $c['broken'];
+        return (is_string($id) && isset($c['refused'][$id])) ? $c['refused'][$id] : null;
+    }
+
     /** Forget what was read (tests). */
     public static function reset()
     {
@@ -100,7 +127,9 @@ final class GrowthReference
     private static function readIndex($dir)
     {
         $path = $dir . DIRECTORY_SEPARATOR . 'index.json';
-        if (!is_file($path) || !is_readable($path)) return ['error' => 'no readable index.json in ' . $dir . '.'];
+        // The folder's path stays out of the text: it reaches the page as part
+        // of a configuration error, and the administrator knows the setting.
+        if (!is_file($path) || !is_readable($path)) return ['error' => 'the folder has no readable index.json.'];
         $raw = @file_get_contents($path);
         $j = is_string($raw) ? json_decode($raw, true) : null;
         if (!is_array($j)) return ['error' => 'index.json is not valid JSON.'];
@@ -140,10 +169,13 @@ final class GrowthReference
         if (!in_array($e['adjust'], self::ADJUSTS, true)) return 'has "adjust" "' . $e['adjust'] . '"; it must be none or who-restricted.';
         if (!isset($e['valid']) || !is_array($e['valid'])) return 'needs "valid": {"min": ..., "max" or "below": ...}.';
         $v = $e['valid'];
-        if (!isset($v['min']) || !self::isNum($v['min'])) return 'needs "valid" "min" as a number in a string.';
-        if (isset($v['max']) === isset($v['below'])) return 'needs exactly one of "valid" "max" and "below".';
-        $hi = isset($v['max']) ? $v['max'] : $v['below'];
-        if (!self::isNum($hi)) return 'needs "valid" "' . (isset($v['max']) ? 'max' : 'below') . '" as a number in a string.';
+        // array_key_exists, not isset: "max": null is a key the browser sees
+        // (QRID_growthAxis tests "!== undefined"), so it must be refused here.
+        if (!array_key_exists('min', $v) || !self::isNum($v['min'])) return 'needs "valid" "min" as a number in a string.';
+        $hasMax = array_key_exists('max', $v);
+        if ($hasMax === array_key_exists('below', $v)) return 'needs exactly one of "valid" "max" and "below".';
+        $hi = $hasMax ? $v['max'] : $v['below'];
+        if (!self::isNum($hi)) return 'needs "valid" "' . ($hasMax ? 'max' : 'below') . '" as a number in a string.';
         if ((float) $hi < (float) $v['min']) return 'has a "valid" range that ends before it starts.';
         return null;
     }
@@ -185,14 +217,60 @@ final class GrowthReference
             foreach ($t[$sex] as $i => $row) {
                 if (!is_array($row) || count($row) !== 3 || array_keys($row) !== [0, 1, 2]) throw $bad('row ' . $i . ' of "' . $sex . '" is not [L, M, S].');
                 foreach ($row as $j => $p) {
-                    if (!is_int($p) && !is_float($p)) throw $bad('row ' . $i . ' of "' . $sex . '" holds something that is not a number.');
+                    // 1e400 decodes as INF, which json_encode cannot write into the page
+                    if ((!is_int($p) && !is_float($p)) || !is_finite((float) $p)) {
+                        throw $bad('row ' . $i . ' of "' . $sex . '" holds something that is not a finite number.');
+                    }
                     $t[$sex][$i][$j] = (float) $p;
                 }
                 if ($t[$sex][$i][1] <= 0 || $t[$sex][$i][2] <= 0) throw $bad('row ' . $i . ' of "' . $sex . '" has M or S at or below 0.');
             }
         }
         $out = ['scale' => $t['scale'], 'first' => $t['first'], 'male' => $t['male'], 'female' => $t['female']];
+        $gap = self::coverProblem($entry, $out);
+        if ($gap !== null) throw $bad($gap);
         return self::$tableMemo[$key] = $out;
+    }
+
+    /**
+     * A sentence when the rows do not reach every axis position "valid"
+     * admits, under the entry's lookup, for both sexes; null when they do.
+     * Without this check a position inside "valid" with no row gets no
+     * z-score: a rule problem on the server and silence on the page.
+     * Positions are in rows (axis value times "scale").
+     */
+    private static function coverProblem(array $entry, array $t)
+    {
+        $s = $t['scale'];
+        $v = $entry['valid'];
+        $incl = array_key_exists('max', $v);
+        $lo = (float) $v['min'] * $s;
+        $hi = (float) ($incl ? $v['max'] : $v['below']) * $s;
+        $loF = floor($lo);
+        $hiF = floor($hi);
+        $frac = $hi - $hiF;
+        if ($entry['lookup'] === 'round') {
+            $first = $lo - $loF >= 0.5 ? $loF + 1 : $loF;
+            // a value just below an exclusive end rounds like the end itself,
+            // except at .5, where it rounds down, and at a whole row, where it
+            // rounds up to that row
+            $last = $incl ? ($frac >= 0.5 ? $hiF + 1 : $hiF) : ($frac > 0.5 ? $hiF + 1 : $hiF);
+        } elseif ($entry['lookup'] === 'floor') {
+            $first = $loF;
+            $last = ($incl || $frac > 0) ? $hiF : $hiF - 1;
+        } else {
+            // linear reads the row at or below and, past it, the next one
+            $first = $loF;
+            $last = $frac > 0 ? $hiF + 1 : $hiF;
+        }
+        foreach (['male', 'female'] as $sex) {
+            $end = $t['first'] + count($t[$sex]) - 1;
+            if ($first < $t['first'] || $last > $end) {
+                return 'has "' . $sex . '" rows ' . $t['first'] . ' to ' . $end . ', but its "valid" range needs rows '
+                    . (int) $first . ' to ' . (int) $last . ' (a row is 1/' . $s . ' ' . $entry['axisUnit'] . ').';
+            }
+        }
+        return null;
     }
 
     /**
@@ -220,7 +298,7 @@ final class GrowthReference
     {
         $comma = !empty($in['comma']);
         if ($entry['axis'] !== 'age') {
-            $by = isset($in['by']) ? trim((string) $in['by']) : '';
+            $by = isset($in['by']) ? trim((string) $in['by'], " \t\r\n") : '';
             if ($by === '') return ['state' => 'blank', 'why' => 'the ' . $entry['axis'] . ' is blank'];
             $n = Logic::normalizeNumber($by, $comma);
             if ($n === null || $n === '') return ['state' => 'invalid', 'why' => 'the ' . $entry['axis'] . ' is not a number'];
@@ -235,7 +313,7 @@ final class GrowthReference
             $x = $entry['axisUnit'] === 'days' ? $days : $days / self::DAYS_PER_MONTH;
         } else {
             $unit = isset($in['days']) ? 'days' : (isset($in['months']) ? 'months' : null);
-            $raw = $unit === null ? '' : trim((string) $in[$unit]);
+            $raw = $unit === null ? '' : trim((string) $in[$unit], " \t\r\n");
             if ($raw === '') return ['state' => 'blank', 'why' => 'the age is blank'];
             $n = Logic::normalizeNumber($raw, $comma);
             if ($n === null || $n === '') return ['state' => 'invalid', 'why' => 'the age is not a number'];
@@ -345,14 +423,19 @@ final class GrowthReference
     /**
      * The z-score of measurement $y for 'male' or 'female' at axis position
      * $x, as text, or a state saying why there is none:
-     * ['state' => 'ok', 'z' => '-2.31'] | ['state' => 'outside'|'unknown'].
+     * ['state' => 'ok', 'z' => '-2.31'] | ['state' => 'outside'] (no row at
+     * $x; table() refuses a table whose rows do not cover its "valid" range).
      */
     public static function zScore(array $entry, array $table, $sex, $x, $y)
     {
         $lms = self::lms($entry, $table, $sex, $x);
         if ($lms === null) return ['state' => 'outside'];
         $z = self::zRaw($y, $lms, $entry['adjust'] === 'who-restricted');
-        if ($z === null) return ['state' => 'unknown'];
+        // No finite z: the measurement is too large (or too small) for the
+        // formula, as when hundreds of digits overflow to INF. It lies beyond
+        // every limit on its side of the median, which zText writes as the
+        // bound. Twin: QRID_growthZScore.
+        if ($z === null) $z = $y > $lms[1] ? self::MAX_Z_TEXT : -self::MAX_Z_TEXT;
         return ['state' => 'ok', 'z' => self::zText($z)];
     }
 }

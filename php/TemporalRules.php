@@ -261,7 +261,8 @@ final class TemporalRules
         }
         if($problems){$compiled['deferred']=true;$compiled['deferredWhy']=['Extended reference unavailable: '.implode(', ',array_unique($problems)).'.'];if($browser){foreach(ModeRegistry::condKeys() as $key)if(isset($compiled[$key.'Ast']))$compiled[$key.'Ast']=['const',false];foreach(ModeRegistry::operandKeys() as $rk)unset($compiled[$rk['op']]);}}
         if($snapshot)$compiled['snapshotFields']=['saved event/instance values'];
-        if($browser){unset($compiled['references']);$compiled['blockSave']='off';}
+        // extendedAdvisory: the same "never blocks here" for a mode with no blockSave of its own (@UVRANGE)
+        if($browser){unset($compiled['references']);$compiled['blockSave']='off';$compiled['extendedAdvisory']=true;}
         return ['rule'=>$compiled,'problems'=>array_values(array_unique($problems))];
     }
 }

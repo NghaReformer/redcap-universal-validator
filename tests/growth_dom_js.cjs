@@ -14,7 +14,9 @@
  *     respondent is told nothing; a date still being typed says nothing,
  *   - saved inputs (a snapshot) are used but never block; withheld inputs are
  *     not guessed at: staff are told the check runs on save,
- *   - a rule with event or instance references (blockSave "off") never blocks,
+ *   - a rule with event or instance references (extendedAdvisory) never blocks,
+ *     while the page-wide default blockSave "off" (page_defaults.json) does not
+ *     make an ordinary rule advisory,
  *   - a Missing Data Code in an input is a blank input,
  *   - a decimal comma in the measurement and in "by",
  *   - a table the page was not given is a configuration error, unless the
@@ -29,6 +31,9 @@
  */
 'use strict';
 const path = require('path');
+/* The page-wide defaults a real page carries (UniversalValidator::defaults(), among
+   them blockSave "off"): the engine fills every key a rule lacks from them. */
+const PAGE_DEFAULTS = require('./page_defaults.json').defaults;
 
 let n = 0, fail = 0;
 function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' + label); } }
@@ -88,7 +93,7 @@ function boot(els, config) {
   const win = {
     _alerts: [], _confirms: [], confirmAnswer: false,
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
-    INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, config),
+    INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
   global.document = doc; global.window = win;
   require(enginePath);
@@ -139,6 +144,18 @@ function rule(extra) {
 function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('visit_date', '2026-01-03'), el('weight', w)]; }
 
 // ---- 1) the z-score against the limits, live inputs -------------------------------
+{
+  // Dates with a time count their dates only: born a second before midnight on
+  // 1 January and measured a minute after midnight on 4 January is day 3 (13 kg
+  // usual there), though only 2 days and 2 minutes have passed (day 2: z 3.00).
+  const els = [el('sex', '1'), el('dob', '2026-01-01 23:59:59'), el('visit_date', '04-01-2026 00:01'), el('weight', '13')];
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({}, LIVE,
+    { rangeDobType: 'datetime_seconds', rangeDobFormat: 'ymd', rangeAtType: 'datetime', rangeAtFormat: 'dmy' }))] });
+  check('datetime inputs: read by date, day 3, usual (got ' + nMsg(env, 'weight').innerHTML + ')', !shown(nMsg(env, 'weight')));
+  els[2].value = '03-01-2026 23:59'; els[2].fire('change');
+  check('datetime inputs: a minute before midnight is day 2, z 3.00 (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /z-score 3\.00 on Test, age in days/.test(nMsg(env, 'weight').innerHTML));
+}
 {
   const els = inputs('1', '11');
   const [sex, dob, at, w] = els;
@@ -255,8 +272,9 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
 }
 {
   const els = inputs('1', '16');
-  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({ blockSave: 'off' }, LIVE))] });
-  check('event/instance rule (blockSave off): noted, never blocks', /plausible/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'saved');
+  // as TemporalRules::compile sends an event/instance rule to the browser
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({ blockSave: 'off', extendedAdvisory: true }, LIVE))] });
+  check('event/instance rule (extendedAdvisory): noted, never blocks', /plausible/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'saved');
 }
 
 // ---- 5) Missing Data Codes, decimal commas, inputs by age in days and by length ------
@@ -299,6 +317,28 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   check('no table on the page: configuration error', cfgErr(env, 'weight')
     && /growth reference &quot;t-days&quot; was not sent to this page|growth reference "t-days" was not sent to this page/.test(cfgErr(env, 'weight').innerHTML));
   check('no table: never blocks', save(env) === 'saved');
+  check('no table: test() is null and does not throw', env.NS.validators.weight.test() === null);
+  // a configuration error that does not stop the z-score: test() still answers null
+  const env2 = boot(inputs('1', '16'), { growth: GROWTH, rules: [rule(Object.assign({ rangeSoftBlock: 'bogus' }, LIVE))] });
+  check('a configuration error with the table there: test() is null, not a verdict', cfgErr(env2, 'weight')
+    && env2.NS.validators.weight.test() === null);
+}
+{
+  // A damaged table: "valid" runs past the rows (the server refuses such a table).
+  const els = inputs('1', '16');
+  els[2].value = '2026-01-06';   // 5 days old, and the rows end at day 3
+  const short = Object.assign({}, T_DAYS, { male: ROWS_M.slice(0, 4), female: ROWS_F.slice(0, 4) });
+  const env = boot(els, { growth: { 't-days': short }, rules: [rule(LIVE)] });
+  check('no row at that age: a grey note says so, never blocks (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /^&#8505; Not checked against Test, age in days: the reference has no row at this age\.$/.test(nMsg(env, 'weight').innerHTML)
+    && save(env) === 'saved');
+}
+{
+  // Hundreds of digits overflow to Infinity: beyond every limit, as in the audit.
+  const els = inputs('1', '1' + '0'.repeat(320));
+  const env = boot(els, { growth: GROWTH, rules: [rule(LIVE)] });
+  check('a measurement past what a number holds: implausible, held (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /above the plausible range \(z-score 999\.99 on Test, age in days/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'held');
 }
 {
   const CAP = ['this form already carries 4 growth reference tables, the most one page may carry (4), so this check runs when the record is saved.'];

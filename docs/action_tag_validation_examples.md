@@ -48,16 +48,16 @@ the dialog are the same rules through different doors, and they mix freely.
 
 ## The tags at a glance
 
-| Tag             | What it checks                                                                  | Field types it may sit on                                      |
-| --------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `@UVALIDATE`  | The value's**check character and/or format** (an ID is well-formed)       | Text, Notes                                                    |
-| `@UVASSERT`   | A**condition across fields** holds (end ≥ start, dose ≤ max)            | Text, Notes, dropdown, radio, yes/no, true/false, calc, slider |
-| `@UVREQUIRED` | The field is**not blank**, optionally only while a condition is true      | Same as above,**minus calc**                             |
-| `@UVUNIQUE`   | The value is**not used by another record**                                | Same as above,**minus calc**                             |
-| `@UVCHOICES`  | Which**options are offered** — show/hide choices while a condition holds | radio, dropdown, checkbox (not matrix)                         |
-| `@UVWINDOW`   | A date falls **within a window** around another date, or is not after today | Text with date, datetime or datetime-with-seconds validation   |
-| `@UVEXISTS`   | The value is **already saved** in the project: a record ID, or a value of another field | Text, dropdown, radio, SQL                                     |
-| `@UVRANGE`    | A number lies **within usual and plausible limits** (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
+| Tag           | What it checks                                                                                                          | Field types it may sit on                                      |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `@UVALIDATE`  | The value's check character and/or format (an ID is well-formed)                                                        | Text, Notes                                                    |
+| `@UVASSERT`   | A condition across fields holds (end ≥ start, dose ≤ max)                                                               | Text, Notes, dropdown, radio, yes/no, true/false, calc, slider |
+| `@UVREQUIRED` | The field is not blank, optionally only while a condition is true                                                       | Same as above, minus calc                                      |
+| `@UVUNIQUE`   | The value is not used by another record                                                                                 | Same as above, minus calc                                      |
+| `@UVCHOICES`  | Which options are offered — show/hide choices while a condition holds                                                   | radio, dropdown, checkbox (not matrix)                         |
+| `@UVWINDOW`   | A date falls within a window around another date, or is not after today                                                 | Text with date, datetime or datetime-with-seconds validation   |
+| `@UVEXISTS`   | The value is already saved in the project: a record ID, or a value of another field                                     | Text, dropdown, radio, SQL                                     |
+| `@UVRANGE`    | A number lies within usual and plausible limits (two levels of warning), or its z-score against a growth reference does | Text with no, integer or number validation, calc, slider       |
 
 Different tags on one field **compose** — all must pass, and each keeps its own
 save-block state. Several tags of the *same* kind on one field **branch** (one wins
@@ -1874,18 +1874,22 @@ one (see `data/references/README.md`).
   `who-wfl` or `who-wfh` to match, or record the corrected value. WHO gives no
   weight-based z-score for a child with oedema; skip the rule with `when`, e.g.
   `"when":"[oedema]<>'1'"`.
-- **Inputs on another form** are read when the page opens, and the rule does
-  not block on the page, as for a `when` on another form. A survey, and a user
-  without rights to that form, are not sent the values: the note says the
-  check runs when the record is saved, and the post-save audit checks it.
+- **Inputs on another form** are read when the page opens, and the rule's
+  note does not block on the page, as for a `when` on another form. A survey,
+  and a user without rights to that form, are not sent the values: the page
+  checks only that the value is a number above 0, and holds the save when it
+  is not. Staff see a note that the z-score is checked when the record is
+  saved; a survey shows no note. The post-save audit checks it.
 - **Inputs in another event** need event and instance references turned on in
   the project settings, e.g. `"dob":"[enrolment_arm_1][dob]"`. Such a rule never
   blocks on the page; the post-save audit and the scan check every entry.
 - **What the dictionary must hold.** The reference must exist, and its axis
-  decides between `age` and `by`. `sex` is a radio, dropdown, yes/no, Text,
-  calc or SQL field, and when it has choices, `male` and `female` must be among
-  them. `dob` and `at` are date or datetime fields; `days`, `months` and `by`
-  are number fields or calcs. No input may be the measured field itself.
+  decides between `age` and `by`. `sex` is a radio, dropdown, yes/no,
+  true/false, Text, calc or SQL field, and when it has choices, `male` and
+  `female` must be among them (yes/no and true/false store 1 and 0). `dob` and
+  `at` are date or datetime fields; `days`, `months` and `by` are Text fields
+  with integer or number validation, or calcs. No input may be the measured
+  field itself.
 - **Page size.** A page carries a copy of each table it uses (3 to 95 KB) and at
   most four different references. A rule needing a fifth is checked when the
   record is saved, and its note says so. A rule whose inputs are not sent to
@@ -1937,11 +1941,13 @@ one (see `data/references/README.md`).
   refused.
 - **The post-save audit checks each form and survey save.** It logs a value
   outside either range as `type: range`, with reason `soft-low`, `soft-high`,
-  `hard-low`, `hard-high` or `not-a-number`, whatever `softBlock` says. A
-  rule that only shows notes still leaves a record of each unusual value.
+  `hard-low`, `hard-high`, `not-a-number` or, for a growth reference,
+  `not-positive`, whatever `softBlock` says. A rule that only shows notes
+  still leaves a record of each unusual value.
 - **The Validation scan** counts these findings. Its report labels them
-  "Unusual value", "Implausible value" or "Not a number", with the limits in
-  the detail line ("Expected 12 to 17.5 g/dL." or "Allowed 3 to 25 g/dL.").
+  "Unusual value", "Implausible value", "Not a number" or "Not a positive
+  measurement", with the limits in the detail line ("Expected 12 to 17.5
+  g/dL." or "Allowed 3 to 25 g/dL.").
   The report page and its download are not available while the scan is being
   rebuilt (see the README); the scan page shows the count. The scan's own
   result names the branch that judged each value, so the report can show that
@@ -3131,7 +3137,7 @@ counts as the same value), `scope` narrows the **search** (which records are com
 #### Child growth
 
 ```text
-# on: weight_kg — under-fives: weight-for-age and, from the height, weight-for-height
+# on: weight_kg — weight-for-age for under-fives (weight-for-height needs its own field: one field takes one rule without "when")
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-6,5]}
 
 # on: height_cm — the date of birth is saved once, at enrolment, in another event

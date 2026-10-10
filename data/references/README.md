@@ -40,13 +40,14 @@ national reference) can be added without changing the module's code.
    row, then run `convert.php` from this folder:
 
    ```
-   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5
+   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5 --max-x 239.5
    ```
 
    `--x` names the age, length or height column. `--scale` is the number of
-   rows per unit (10 for a table with a row every 0.1 cm). `--x-offset` and
-   `--min-x` handle tables whose rows sit between whole units: CDC 2000 ages
-   are half months, where row 24.5 covers ages from 24 up to 25 months. The
+   rows per unit (10 for a table with a row every 0.1 cm). `--x-offset`,
+   `--min-x` and `--max-x` handle tables whose rows sit between whole units:
+   CDC 2000 ages are half months, where row 24.5 covers ages from 24 up to 25
+   months, and the whole-month rows at 24 and 240 are left out. The
    sex column defaults to `sex` with 1 for male and 2 for female; change it
    with `--sex`, `--male` and `--female`. The script prints the file's SHA-256
    and an index entry to start from. Check the first and last rows of the

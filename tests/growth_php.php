@@ -217,6 +217,9 @@ $entryCases = [
     'both max and below'      => [['mine' => ['valid' => ['min' => '0', 'max' => '1', 'below' => '1']] + $base], 'needs exactly one of "valid" "max" and "below".'],
     'neither max nor below'   => [['mine' => ['valid' => ['min' => '0']] + $base], 'needs exactly one of'],
     'a below that is text'    => [['mine' => ['valid' => ['min' => '0', 'below' => 'x']] + $base], 'needs "valid" "below" as a number in a string.'],
+    // the browser reads a key that is there, even as null ("!== undefined")
+    'a max of null'           => [['mine' => ['valid' => ['min' => '0', 'max' => null, 'below' => '9']] + $base], 'needs exactly one of "valid" "max" and "below".'],
+    'a lone max of null'      => [['mine' => ['valid' => ['min' => '0', 'max' => null]] + $base], 'needs "valid" "max" as a number in a string.'],
     'a range ending early'    => [['mine' => ['valid' => ['min' => '5', 'max' => '1']] + $base], 'has a "valid" range that ends before it starts.'],
 ];
 foreach ($entryCases as $label => $case) {
@@ -238,15 +241,31 @@ foreach ($indexCases as $label => $case) {
     file_put_contents($dir . '/index.json', $case[0]);
     G::reset();
     $p = implode(' ', G::catalog($dir)['problems']);
-    check('extra index: refused, ' . $label . ' (got ' . json_encode($p) . ')', strpos($p, $case[1]) !== false);
+    check('extra index: refused, ' . $label . ' (got ' . json_encode($p) . ')', strpos($p, $case[1]) !== false
+        && G::catalog($dir)['references'] === [] && G::entry('who-wfa', $dir) === null);
 }
+// A broken entry that replaces a bundled id takes the bundled one out too: an
+// upper-case sha256 (as PowerShell prints it) must not leave WHO's table in use.
+G::reset();
+writeIndex($dir, ['who-wfa' => ['sha256' => strtoupper($base['sha256'])] + $base]);
+check('extra: a broken replacement removes the bundled reference', G::entry('who-wfa', $dir) === null
+    && count(G::catalog($dir)['references']) === 11
+    && strpos((string) G::unavailableWhy('who-wfa', $dir), 'reference "who-wfa" needs "sha256" as 64 lower-case hex digits.') !== false
+    && G::unavailableWhy('who-lhfa', $dir) === null && G::entry('who-lhfa', $dir) !== null);
 writeIndex($dir, [], ['pageTables' => 0]);
 check('extra index: pageTables 0 is allowed and taken', G::catalog($dir)['pageTables'] === 0);
 G::reset();
 $missing = $dir . DIRECTORY_SEPARATOR . 'nowhere';
-check('extra: a folder with no index is a problem, the bundled references stay',
-    implode(' ', G::catalog($missing)['problems']) === 'the reference folder in the module settings: no readable index.json in ' . $missing . '.'
-    && count(G::catalog($missing)['references']) === 12);
+// Fail closed: the folder may hold replacements for any bundled id, so a folder
+// that cannot be read leaves no reference at all (a configuration error on every
+// growth rule) rather than the tables the administrator meant to replace. The
+// folder's path is not in the text, which reaches the page.
+$broken = 'the reference folder in the module settings: the folder has no readable index.json.';
+check('extra: a folder with no index is a problem, and no reference is used',
+    implode(' ', G::catalog($missing)['problems']) === $broken && G::catalog($missing)['references'] === []
+    && G::catalog($missing)['broken'] === $broken && G::unavailableWhy('who-wfa', $missing) === $broken
+    && strpos($broken, $missing) === false);
+check('extra: without a folder nothing is unavailable', G::unavailableWhy('who-wfa') === null && G::unavailableWhy('nope') === null);
 
 $tableErr = function ($content, $entryOver = []) use ($dir, $base) {
     if ($content !== null) file_put_contents($dir . '/t2.json', $content);
@@ -269,7 +288,7 @@ $tableCases = [
     'rows keyed'              => [$t(['male' => ['a' => [1, 10, 0.1]]]), 'needs a list of "male" rows.'],
     'a row of two'            => [$t(['male' => [[1, 10]]]), 'row 0 of "male" is not [L, M, S].'],
     'a row keyed'             => [$t(['male' => [['l' => 1, 'm' => 10, 's' => 0.1]]]), 'row 0 of "male" is not [L, M, S].'],
-    'a number as text'        => [$t(['female' => [[1, '10', 0.1]]]), 'row 0 of "female" holds something that is not a number.'],
+    'a number as text'        => [$t(['female' => [[1, '10', 0.1]]]), 'row 0 of "female" holds something that is not a finite number.'],
     'M of 0'                  => [$t(['male' => [[1, 10, 0.1], [1, 0, 0.1]]]), 'row 1 of "male" has M or S at or below 0.'],
     'S below 0'               => [$t(['male' => [[1, 10, -0.1]]]), 'row 0 of "male" has M or S at or below 0.'],
 ];
@@ -277,6 +296,32 @@ foreach ($tableCases as $label => $case) {
     $got = $tableErr($case[0]);
     check('table: ' . $label . ' (got ' . json_encode($got) . ')', $case[1] === '' ? $got === '' : strpos($got, $case[1]) !== false);
 }
+// 1e400 decodes as INF: it would break json_encode of the whole page config.
+check('table: a number past what a float holds', strpos($tableErr(str_replace('10', '1e400', $t([]))),
+    'row 0 of "male" holds something that is not a finite number.') !== false);
+// The rows must reach every position "valid" admits under the lookup (rows 0 and 1 here).
+$cover = [
+    'round, below 1.5 (1.49 rounds to row 1)'      => ['round', ['min' => '0', 'below' => '1.5'], true],
+    'round, below 1.51 (1.505 rounds to row 2)'    => ['round', ['min' => '0', 'below' => '1.51'], false],
+    'round, max 1.5 (rounds to row 2)'             => ['round', ['min' => '0', 'max' => '1.5'], false],
+    'round, max 1.49'                              => ['round', ['min' => '0', 'max' => '1.49'], true],
+    'round, below 2 (1.999 rounds to row 2)'       => ['round', ['min' => '0', 'below' => '2'], false],
+    'round, min -0.5 (rounds to row 0)'            => ['round', ['min' => '-0.5', 'below' => '1.5'], true],
+    'round, min -0.6 (rounds to row -1)'           => ['round', ['min' => '-0.6', 'below' => '1.5'], false],
+    'floor, below 2'                               => ['floor', ['min' => '0', 'below' => '2'], true],
+    'floor, max 2'                                 => ['floor', ['min' => '0', 'max' => '2'], false],
+    'floor, below 2.1'                             => ['floor', ['min' => '0', 'below' => '2.1'], false],
+    'linear, max 1'                                => ['linear', ['min' => '0', 'max' => '1'], true],
+    'linear, below 1 (0.99 reads rows 0 and 1)'    => ['linear', ['min' => '0', 'below' => '1'], true],
+    'linear, max 1.1 (reads row 2)'                => ['linear', ['min' => '0', 'max' => '1.1'], false],
+];
+foreach ($cover as $label => $c) {
+    $got = $tableErr($t([]), ['lookup' => $c[0], 'valid' => $c[1]]);
+    check('table: rows cover "valid", ' . $label . ' (got ' . json_encode($got) . ')',
+        $c[2] ? $got === '' : strpos($got, 'but its "valid" range needs rows') !== false);
+}
+check('table: a sex with fewer rows is named', strpos($tableErr($t(['female' => [[1, 10, 0.1]]])),
+    'has "female" rows 0 to 0, but its "valid" range needs rows 0 to 1') !== false);
 check('table: a sha256 that does not match', $tableErr($t([]), ['sha256' => str_repeat('a', 64)])
     === 'the table t2.json does not match the "sha256" in index.json; it was changed or damaged.');
 @unlink($dir . '/t2.json');

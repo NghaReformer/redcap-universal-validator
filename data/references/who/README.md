@@ -36,9 +36,10 @@ own code.
 The age tables were converted with `--x age`, the length and height tables
 with `--x length` or `--x height` and `--scale 10`. The table's `sex` column
 codes 1 for male and 2 for female. `tests/who_golden.json` holds z-scores
-computed by WHO's own R code from these packages (`tools/who_golden.R`
-writes it), and the module's tests check that both of its runtimes give the
-same two decimals.
+computed by WHO's own R code from these packages (`tools/who_golden.R` in
+the source repository writes it; the release package leaves `tools/` out),
+and the module's tests check that both of its runtimes give the same two
+decimals.
 
 ## How the module uses them
 

@@ -2007,12 +2007,14 @@ function QRID_growthMeasure(text, decimalComma){
   if(!(y > 0)) return { state: "not-positive" };
   return { state: "ok", y: y };
 }
-/* { state: "ok", z } | { state: "outside"|"unknown" } */
+/* { state: "ok", z } | { state: "outside" } (the table has no row there) */
 function QRID_growthZScore(ref, sex, x, y){
   var lms = QRID_growthLms(ref, sex, x);
   if(lms === null) return { state: "outside" };
   var z = QRID_growthZRaw(y, lms, ref.adjust === "who-restricted");
-  if(z === null) return { state: "unknown" };
+  /* no finite z (a measurement past what the formula holds): beyond every
+     limit on its side of the median. Twin: GrowthReference::zScore. */
+  if(z === null) z = y > lms[1] ? QRID_GROWTH_MAX_Z_TEXT : -QRID_GROWTH_MAX_Z_TEXT;
   return { state: "ok", z: QRID_growthZText(z) };
 }
 function QRID_whenCompare(op, a, b, blank, caseSensitive){
@@ -3663,10 +3665,12 @@ function QRIDRangeInit(QRID_CONFIG){
     /* blockSave is what QRID_buildVariants reads and turns "off" for a deferred
        rule or one whose branch was chosen from values read when the page opened;
        the tier's own setting applies only while it is not "off". A rule with
-       event or instance references arrives with blockSave "off" too: it never
-       blocks here, and the save re-checks it. */
+       event or instance references arrives marked extendedAdvisory
+       (TemporalRules::compile): it never blocks here, and the save re-checks it.
+       cfg.blockSave itself is never read: @UVRANGE refuses the key, so the
+       value here is the page-wide default ("off"), which cfgFor fills in. */
     return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
-             blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.blockSave === "off") ? "off" : HARD,
+             blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.extendedAdvisory === true) ? "off" : HARD,
              softBlock: SOFT, hardBlock: HARD,
              deferred: DEFERRED, snapshot: SNAPSHOT,
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
@@ -3757,7 +3761,9 @@ function QRIDRangeInit(QRID_CONFIG){
     var a = QRID_growthAxis(g.ref, input);
     if(a.state !== "ok") return { tier: "inert", why: a.why };
     var z = QRID_growthZScore(g.ref, sex, a.x, m.y);
-    if(z.state !== "ok") return { tier: "inert", why: null };
+    /* only "outside" (no row there): a server-sent table covers its "valid"
+       range (GrowthReference::table), so this is a damaged reference */
+    if(z.state !== "ok") return { tier: "inert", why: "the reference has no row at this " + (g.ref.axis === "age" ? "age" : g.ref.axis) };
     var r = QRID_rangeVerdict({ softLo: V.spec.softLo, softHi: V.spec.softHi, hardLo: V.spec.hardLo, hardHi: V.spec.hardHi }, z.z);
     r.z = z.z;
     return r;
@@ -3868,10 +3874,12 @@ function QRIDRangeInit(QRID_CONFIG){
   (QRID_CONFIG.fields || []).forEach(function(f){
     UV_validators[f] = { type: "range", mode: { range: true, configError: configError },
       test: function(){
+        if(configError) return null;   /* any variant's error (QRID_buildVariants): nothing is checked */
         var a = QRID_activeVariants(VS);
         if(a.length !== 1 || a[0].deferred) return null;
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var t = verdictOf(a[0], QRID_WHEN.readRef(f, null)).tier;
+        var t;
+        try { t = verdictOf(a[0], QRID_WHEN.readRef(f, null)).tier; } catch(e){ return null; }   /* fail open, as check() */
         return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
       } };
   });
@@ -5617,7 +5625,7 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
                       "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType",
                       "rangeDobFormat", "rangeAtType", "rangeAtFormat", "rangeAxisComma",
-                      "deferredOnSave"];
+                      "deferredOnSave", "extendedAdvisory"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",

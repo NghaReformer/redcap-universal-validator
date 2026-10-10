@@ -447,7 +447,7 @@ namespace {
         $r&&empty($r['configError'])&&empty($r['deferred']));
     check('growth inputs in another event: saved values as literals, the live date as a ref',($r['rangeSexOp']??null)===['lit','A']
         &&($r['rangeAgeDobOp']??null)===['lit','2025-01-10']&&($r['rangeAgeAtOp']??null)===['ref','visit',null]);
-    check('growth inputs in another event: advisory in the browser',($r['blockSave']??null)==='off'&&!empty($r['snapshotFields']));
+    check('growth inputs in another event: advisory in the browser',($r['blockSave']??null)==='off'&&($r['extendedAdvisory']??null)===true&&!empty($r['snapshotFields']));
     check('growth inputs in another event: the page carries the table',isset($p['cfg']['growth']['who-wfa']));
     $res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
@@ -470,7 +470,8 @@ namespace {
     $m=$growth('@UVRANGE={"hard":[0,10],"when":"[baseline_arm_1][key_b][2]=\'A\'"}');
     REDCap::$data[1]['repeat_instances'][1]['fa'][3]['a_val']='12';
     $r=ruleOf(render($m,'fa'),'a_val');
-    check('range with a qualified "when": accepted, advisory in the browser',$r&&empty($r['configError'])&&($r['blockSave']??null)==='off');
+    // @UVRANGE reads extendedAdvisory, not blockSave (the page-wide default is "off" for every rule)
+    check('range with a qualified "when": accepted, advisory in the browser',$r&&empty($r['configError'])&&($r['blockSave']??null)==='off'&&($r['extendedAdvisory']??null)===true);
     $res=$m->scanProject(PID);
     $hit=[];foreach($res['violations'] as $v)$hit[]=$v['event_id'].'/'.$v['instance'].':'.$v['reason'];sort($hit);
     check('range with a qualified "when": the scan judges by it (got '.json_encode($hit).')',$hit===['1/3:hard-high']&&!$res['unconfigurable']);

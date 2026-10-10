@@ -1,0 +1,21 @@
+{
+    "_comment": [
+        "The page-wide defaults of the browser config (UniversalValidator::defaults()).",
+        "The engine fills every key a rule does not carry from these (cfgFor), so the DOM",
+        "harnesses boot with them; tests/range_module_php.php checks this file still equals defaults()."
+    ],
+    "defaults": {
+        "algorithm": "iso7064_mod37_36",
+        "idPattern": null,
+        "alternates": null,
+        "source": "normalized_id",
+        "strip": "-/ _|\\",
+        "suggestFix": false,
+        "keepChars": "",
+        "idLengths": null,
+        "idMinLen": 8,
+        "idMaxLen": 14,
+        "expectedIds": null,
+        "blockSave": "off"
+    }
+}

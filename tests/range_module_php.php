@@ -373,6 +373,16 @@ namespace {
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'hard-low') === 'Implausible value'
         && \INSPIRE\UniversalValidator\ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number');
 
+    // tests/page_defaults.json is what the DOM harnesses boot with: it must stay the
+    // server's page-wide defaults, among them blockSave "off", which the engine fills
+    // into every rule that lacks the key (a range rule that read it never blocked).
+    $rd = new \ReflectionMethod($m, 'defaults'); $rd->setAccessible(true);
+    $fixture = json_decode(file_get_contents(__DIR__ . '/page_defaults.json'), true);
+    check('page_defaults.json equals UniversalValidator::defaults()', $fixture['defaults'] === $rd->invoke($m));
+    $p = page(mod($DICT, $DATA, $FULL, 'nurse'), 'form', '2', 'labs_form');
+    check('the page config carries the defaults at the top level', ($p['cfg']['blockSave'] ?? null) === 'off'
+        && ($p['cfg']['algorithm'] ?? null) === $fixture['defaults']['algorithm']);
+
     fwrite(STDOUT, "range_module_php: $n checks, $fail failure(s)\n");
     exit($fail ? 1 : 0);
 }

@@ -24,7 +24,8 @@
         "snapshotFields": [
             "saved event/instance values"
         ],
-        "blockSave": "off"
+        "blockSave": "off",
+        "extendedAdvisory": true
     },
     "audit": [
         [

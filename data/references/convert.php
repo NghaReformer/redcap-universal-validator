@@ -8,9 +8,10 @@
  *   php convert.php --in weianthro.txt --out who/who-wfa.json --x age
  *
  * and a CDC 2000 table, whose ages sit on half months (24.5 is the row for
- * ages from 24 up to 25 months, 25.5 for 25 up to 26, and so on):
+ * ages from 24 up to 25 months, 25.5 for 25 up to 26, and so on); its extra
+ * whole-month rows at 24 and 240 are left out with --min-x and --max-x:
  *
- *   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5
+ *   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5 --max-x 239.5
  *
  * Options:
  *   --in FILE        the table; the first line names the columns

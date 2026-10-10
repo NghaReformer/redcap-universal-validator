@@ -203,10 +203,11 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP growth references (z-scores vs fixture, WHO golden, parity hash, extra folder, grammar, hooks, page, audit, scan)
+      - name: PHP growth references (z-scores vs fixture, WHO golden, parity hash, extra folder, grammar, hooks, page, audit, scan, converter)
         run: |
           php tests/growth_php.php
           php tests/growth_module_php.php
+          php tests/convert_php.php
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
         run: php tests/missing_codes_php.php
       - name: PHP server-side audit (redcap_save_record) path

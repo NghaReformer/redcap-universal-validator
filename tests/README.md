@@ -30,6 +30,7 @@ node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points,
 php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
+php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/gen_mode_registry.cjs # rewrite the mode block in js/engine.js (--check: fail if stale)
@@ -261,8 +262,8 @@ measurement date, length or height, decimal commas), the L, M and S row
 restricted adjustment beyond ±3, its two-decimal text, and the measurement
 itself. `growth_php.php` runs them through `php/GrowthReference.php` and
 `growth_js.cjs` through the `QRID_growth*` twins in `js/engine.js`. Both also
-run the 2,880 points of `who_golden.json`, which `tools/who_golden.R` computed
-with WHO's own R code (`anthro` and `anthroplus`; the file says which commits),
+run the 2,880 points of `who_golden.json`, which `tools/who_golden.R` (in the
+source repository, not the release package) computed with WHO's own R code (`anthro` and `anthroplus`; the file says which commits),
 and 5,000 random points whose results must hash to the SHA-256 the fixture
 pins, so the two runtimes agree point for point. `growth_php.php` also checks
 every bundled table against its SHA-256 in `data/references/index.json`, and a
@@ -278,6 +279,14 @@ folder of extra references (added, replacing by id, every refusal).
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.
+
+`range_dom_js.cjs` and `growth_dom_js.cjs` start each page with
+`page_defaults.json`, the page-wide defaults the server sends
+(`UniversalValidator::defaults()`, which `range_module_php.php` compares it
+with). The engine fills every key a rule lacks from them, `blockSave` "off"
+among them, so a test page without them can pass a rule that a real page
+would not block. `convert_php.php` runs `data/references/convert.php` on
+WHO- and CDC-shaped tables and checks each refusal.
 
 ## `missing_codes_*` — Missing Data Codes
 

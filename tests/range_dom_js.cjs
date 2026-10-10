@@ -26,6 +26,9 @@
  */
 'use strict';
 const path = require('path');
+/* The page-wide defaults a real page carries (UniversalValidator::defaults(), among
+   them blockSave "off"): the engine fills every key a rule lacks from them. */
+const PAGE_DEFAULTS = require('./page_defaults.json').defaults;
 
 let n = 0, fail = 0;
 function check(label, cond) { n++; if (!cond) { fail++; console.error('FAIL: ' + label); } }
@@ -85,7 +88,7 @@ function boot(els, config, prep) {
   const win = {
     _alerts: [], _confirms: [], confirmAnswer: false,
     alert(m) { this._alerts.push(m); }, confirm(m) { this._confirms.push(m); return this.confirmAnswer; },
-    INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, config),
+    INSPIRE_VALIDATOR_CONFIG: Object.assign({ singleFields: [], pooledFields: [] }, PAGE_DEFAULTS, config),
   };
   if (prep) prep(win);
   global.document = doc; global.window = win;
