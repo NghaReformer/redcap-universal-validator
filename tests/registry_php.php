@@ -226,6 +226,22 @@ check('uniform branch keys of unique', ModeRegistry::uniformBranchKeys('unique')
 check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check') === []
     && ModeRegistry::uniformBranchKeys('exists') === []);
 
+// @UVRANGE "return" (2.7.0): a mode that writes values names the method that
+// works them out and the rule key holding value name => field name.
+check('range returns values through returnsRange, from rangeReturn',
+    ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn']);
+check('no other mode returns values', ModeRegistry::returns('check') === null && ModeRegistry::returns('unique') === null
+    && ModeRegistry::returns('window') === null && ModeRegistry::returns('exists') === null);
+check('rangeReturn is a branch key and a client key, not a server-only one',
+    in_array('rangeReturn', ModeRegistry::branchKeys('range'), true) && in_array('rangeReturn', ModeRegistry::clientKeys(), true)
+    && !in_array('rangeReturn', ModeRegistry::serverKeys(), true));
+$rr = ['type' => 'range', 'fields' => ['w'], 'rangeReturn' => ['z' => 'a_z', 'range' => 'a_rng'],
+       'branches' => [['when' => "[s]='1'", 'rangeReturn' => ['z' => 'a_z', 'lower' => 'a_lo']], ['when' => null, 'rangeReturn' => ['upper' => 'a_hi']]]];
+check('returnFields: the fields of the rule and of every branch, once', ModeRegistry::returnFields($rr) === ['a_z', 'a_rng', 'a_lo', 'a_hi']);
+check('returnFields: a rule without "return" owns none', ModeRegistry::returnFields(['type' => 'range', 'fields' => ['w']]) === []);
+check('returnFields: another mode owns none', ModeRegistry::returnFields(['type' => 'single', 'fields' => ['w'], 'rangeReturn' => ['z' => 'a']]) === []);
+check('returnFields: only strings count', ModeRegistry::returnFields(['type' => 'range', 'fields' => ['w'], 'rangeReturn' => ['z' => '', 'lower' => 5, 'upper' => 'u']]) === ['u']);
+
 // Operand keys (2.2.0): one field reference whose VALUE the verdict reads.
 check('operand keys', array_map(function ($rk) { return [$rk['key'], $rk['op'], $rk['value']]; }, ModeRegistry::operandKeys())
     === [['windowFrom', 'windowFromOp', 'windowFromValue'],
@@ -363,6 +379,12 @@ $cases = [
         return json_encode($g); })($good),
     'uniform keys as a list' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso'];
+        return json_encode($g); })($good),
+    'returns without a method' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') $g['modes'][$i]['returns'] = ['targets' => 'rangeReturn'];
+        return json_encode($g); })($good),
+    'returns targets not a branch key' => (function ($g) {
+        foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'range') $g['modes'][$i]['returns'] = ['method' => 'returnsRange', 'targets' => 'nope'];
         return json_encode($g); })($good),
     'uniform key without a name' => (function ($g) {
         foreach ($g['modes'] as $i => $m) if ($m['mode'] === 'unique') $g['modes'][$i]['uniformBranchKeys'] = ['uniqueAlso' => ''];

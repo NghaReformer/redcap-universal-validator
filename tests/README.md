@@ -36,6 +36,8 @@ node tests/growth_js.cjs         # growth references: fixture, 2,880 WHO points,
 php  tests/growth_php.php         # growth references, PHP twin: same cases, table SHA-256, extra folder, limits
 node tests/growth_dom_js.cjs     # @UVRANGE growth rule in the browser (z-score notes, inputs, cap)
 php  tests/growth_module_php.php  # @UVRANGE growth grammar, dictionary hook, page tables, audit, scan
+node tests/growth_return_dom_js.cjs  # @UVRANGE "return": z-score, bounds and range written into fields on the page
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches, repeats
 php  tests/convert_php.php        # data/references/convert.php: WHO and CDC shapes, sex codes, SHA-256, refusals
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
@@ -347,6 +349,22 @@ pass (`limitProblem`: the floor or ceiling of each row, checked against
   dictionary hook (reference, axis, input field kinds, sex codes, a limit out
   of reach), the page
   (folded inputs, tables in use, the cap), the audit and the scan.
+- `growth_return_dom_js.cjs` and `growth_return_module_php.php` cover what a
+  rule with `"return"` writes into fields. The values themselves are pinned by
+  the `outputs`, `valueAt`, `boundUnits` and `unitsText` sections of
+  `growth_fixture.json`, through both twins. The DOM suite checks the fill on
+  opening (no change event, so the form is not marked as changed), the refill
+  after a judgement (an `input` and a `change` event), a blank input emptying
+  the fields, `returnLimits`, `decimals` and each field's decimal mark, the
+  fields of a branched rule, a rule the page cannot judge leaving its fields
+  alone, and REDCap's `calculate` and `doBranching` being told. The module
+  suite checks the one `saveData` call per save and that it writes only
+  differing fields, the number spelled another way, clearing, a problem kept
+  and logged once, the order (rules that return values go first, so a rule
+  that reads a returned field sees it), the project setting that turns the
+  write off, the scan reading only, repeating forms, a form saved for an input
+  on another form, an input in another event, and the dictionary hook's
+  refusals.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.

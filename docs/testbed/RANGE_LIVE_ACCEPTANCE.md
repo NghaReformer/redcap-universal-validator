@@ -235,6 +235,44 @@ with the setup values (`ug_sex` = Male, `ug_dob` = 10-01-2025,
 
 ---
 
+## Section J: returned values
+
+Fixture: [`uvrange_return_test_fields.csv`](uvrange_return_test_fields.csv), 17
+fields on one new instrument, `uv_growth_return`. It holds its own inputs
+(`ugr_sex`, `ugr_dob`, `ugr_visit`), three rules that return values
+(`ugr_weight` writes all four, `ugr_head` only the z-score and needs no
+limits, `ugr_height` writes the range from the hard limits with no decimals),
+their `@READONLY` target fields, and three broken rules (`ugr_bad_*`). Before
+this section was written, the annotations were run offline through the module
+against this dictionary, and every value below is what `GrowthReference`
+answers for the boy and girl of 365 days.
+
+Setup:
+
+1. Append the 17 rows of the CSV, as in setup step 2. The diff must report one
+   new instrument and 17 new fields.
+2. Designate `uv_growth_return` on `event_1_arm_1` (351).
+3. Open the form for XE-1, event 351. It is new and blank.
+
+| # | Action | Expect |
+|---|---|---|
+| J1 | Look at the form | `ugr_bad_notes` shows "a returned value goes into a Text field"; `ugr_bad_clash_a` and `ugr_bad_clash_b` each show "a field takes the value of one rule" and name the other. The other fields show no error |
+| J2 | `ugr_sex` = Male, `ugr_dob` = 10-01-2025, `ugr_visit` = 2026-01-10 | Without a weight: `ugr_low` 7.8, `ugr_high` 11.9, `ugr_range` "7.8 to 11.9 kg", `ugr_height_range` "64 to 87 cm"; `ugr_z` and `ugr_head_z` stay empty |
+| J3 | `ugr_weight` = 9.6, leave | `ugr_z` -0.04. The weight has no note |
+| J4 | `ugr_weight` = 7.5, leave | `ugr_z` -2.28 and the amber note "lower than usual". The note and the value agree. Bounds do not change |
+| J5 | `ugr_sex` = Female | Without touching the weight: `ugr_z` -1.46, `ugr_low` 7.1, `ugr_high` 11.5, `ugr_range` "7.1 to 11.5 kg", `ugr_height_range` "62 to 86 cm" |
+| J6 | Clear `ugr_dob` | Every returned field is emptied. Set `ugr_dob` = 10-01-2025 again and `ugr_sex` = Male |
+| J7 | `ugr_head` = 46, leave. Then 0 | `ugr_head_z` -0.05 with no note (the rule has no limits). Then red "A measurement must be above 0." and `ugr_head_z` empty |
+| J8 | Try to type in `ugr_z` | The field is read-only |
+| J9 | `ugr_weight` = 9.6. Save | Saves. In Logging, record whether the update of this form shows the four returned fields, or a second update by the module that wrote them. Either is right; the second would say the page's values were not posted |
+| J10 | Data Import Tool, XE-2, event 351: `ugr_sex` 1, `ugr_dob` 10-01-2025, `ugr_visit` 2026-01-10, `ugr_weight` 9.6, no returned field in the file. Open XE-2 | `ugr_z` -0.04, `ugr_low` 7.8, `ugr_high` 11.9, `ugr_range` "7.8 to 11.9 kg", `ugr_height_range` "64 to 87 cm". Logging shows an update of XE-2 that wrote only these fields (if the save hook runs for imports on this server; record what it shows) |
+| J11 | Import `ugr_sex` = 2 for XE-2 and nothing else. Open XE-2 | `ugr_z` 0.57, `ugr_low` 7.1, `ugr_high` 11.5, `ugr_range` "7.1 to 11.5 kg" |
+| J12 | Tick the project setting "@UVRANGE returned values". Import `ugr_weight` = 7.5 for XE-2 | The returned fields keep the values of J11: the save writes nothing. Untick the setting |
+| J13 | Open XE-2 | The page fills the fields as it opens (z -1.46 for a girl of 7.5 kg). Leave the page without saving and record whether REDCap warns about unsaved changes: it should not, because the first fill sends no change event. Open it again and Save: the fields are written |
+| J14 | Enable `uv_growth_return` as a survey. For XE-3 fill sex, date of birth, date of the measurement and weight, then submit | The fields fill as you go, and the saved record holds the same values. Module log: no `uvalidate-audit-error` for the write |
+
+---
+
 ## Sign-off
 
 | # | Gate | Result |
@@ -248,9 +286,11 @@ with the setup values (`ug_sex` = Male, `ug_dob` = 10-01-2025,
 | 7 | Section G: survey behaviour, no field names in the notes | ☐ |
 | 8 | Section H: a missing data code is never judged | ☐ |
 | 9 | Section I: z-scores and verdicts match the values above; grey notes say why a check did not run; on a data entry form the z-scores of the rules on `uv_growth_more` and of event-qualified rules never block (a value that is not a number or is 0 or below on `uv_growth_more` does), and the fifth whole table is checked on save while the page still holds 0; two references on one field both judge; `measureScale`, `plausible` and a lower-case sex code work; on a survey only a value that is not a number above 0 is held; a reference's `when` and its event/instance values affect only that reference, and a rule whose `when` is settled false needs no table; the audit logs findings with their reference, their z-score only with raw values, and values not evaluated | ☐ |
+| 10 | Section J: the returned fields follow the inputs on the page, are emptied when an input is blank, are written for an import and a survey, and the project setting turns the save write off | ☐ |
 
 ## Cleanup
 
-Delete the `uv_range_test`, `uv_growth_test` and `uv_growth_more` instruments,
-or restore the dictionary downloaded in setup step 2. Remove the survey settings
-if G1 or I29 enabled them, and the missing data code if section H added it.
+Delete the `uv_range_test`, `uv_growth_test`, `uv_growth_more` and
+`uv_growth_return` instruments, or restore the dictionary downloaded in setup
+step 2. Remove the survey settings if G1, I29 or J14 enabled them, and the
+missing data code if section H added it.

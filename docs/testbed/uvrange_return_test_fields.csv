@@ -1,0 +1,18 @@
+Variable / Field Name,Form Name,Section Header,Field Type,Field Label,"Choices, Calculations, OR Slider Labels",Field Note,Text Validation Type OR Show Slider Number,Text Validation Min,Text Validation Max,Identifier?,Branching Logic (Show field only if...),Required Field?,Custom Alignment,Question Number (surveys only),Matrix Group Name,Matrix Ranking?,Field Annotation
+ugr_sex,uv_growth_return,"Returned values (UVRANGE ""return"")",radio,Sex,"1, Male | 2, Female",Read by every rule on this form.,,,,,,,,,,,
+ugr_dob,uv_growth_return,,text,Date of birth (D-M-Y),,Test child: 10-01-2025.,date_dmy,,,,,,,,,,
+ugr_visit,uv_growth_return,,text,Date of the measurement,,2026-01-10 makes the child 365 days old.,date_ymd,,,,,,,,,,
+ugr_weight,uv_growth_return,,text,"Weight (kg), weight-for-age",,"Boy, 365 days: 9.6 writes -0.04, 7.8, 11.9 and 7.8 to 11.9 kg.",number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-wfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""soft"":[-2,2],""hard"":[-5,5],""return"":{""z"":""[ugr_z]"",""lower"":""[ugr_low]"",""upper"":""[ugr_high]"",""range"":""[ugr_range]""}}"
+ugr_z,uv_growth_return,,text,z-score of the weight,,Written by the rule on ugr_weight.,number_2dp,,,,,,,,,,@READONLY
+ugr_low,uv_growth_return,,text,Weight at z -2 (kg),,Rounded up to one decimal.,number_1dp,,,,,,,,,,@READONLY
+ugr_high,uv_growth_return,,text,Weight at z 2 (kg),,Rounded down to one decimal.,number_1dp,,,,,,,,,,@READONLY
+ugr_range,uv_growth_return,,text,Usual weight range,,"""7.8 to 11.9 kg"" for the boy above.",,,,,,,,,,,@READONLY
+ugr_head,uv_growth_return,,text,Head circumference (cm),,Returns only the z-score: no limits are needed.,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-hcfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""return"":{""z"":""[ugr_head_z]""}}"
+ugr_head_z,uv_growth_return,,text,z-score of the head circumference,,,number_2dp,,,,,,,,,,@READONLY
+ugr_height,uv_growth_return,,text,Length/height (cm),,"Hard limits, no decimals: the plausible range as text.",number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-lhfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""returnLimits"":""hard"",""decimals"":0,""return"":{""range"":""[ugr_height_range]""}}"
+ugr_height_range,uv_growth_return,,text,Plausible length/height range,,,,,,,,,,,,,@READONLY
+ugr_notes,uv_growth_return,,notes,Notes,,,,,,,,,,,,,
+ugr_bad_notes,uv_growth_return,,text,Bad: returns to a Notes field,,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-wfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_notes]""}}"
+ugr_bad_clash_a,uv_growth_return,,text,Bad: shares a returned field (first),,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-wfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_clash_z]""}}"
+ugr_bad_clash_b,uv_growth_return,,text,Bad: shares a returned field (second),,,number_1dp,,,,,,,,,,"@UVRANGE={""reference"":""who-hcfa"",""sex"":""[ugr_sex]"",""male"":""1"",""female"":""2"",""age"":{""dob"":""[ugr_dob]"",""at"":""[ugr_visit]""},""hard"":[-5,5],""return"":{""z"":""[ugr_clash_z]""}}"
+ugr_clash_z,uv_growth_return,,text,Returned by both of the two above,,,number_2dp,,,,,,,,,,

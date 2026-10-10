@@ -2636,6 +2636,78 @@ case need `caseSensitive`.
   (not under the identifier-redacted mode), and the detail line then reads "Its
   z-score is -3.40 on the growth reference who-wfa."
 
+### Level 6 — write the z-score, the bounds or the range into fields
+
+A growth rule can also write what it worked out into Text fields of the same
+form, so the z-score or the usual range is on the record and in exports:
+
+```text
+# on: weight_kg — the z-score and the usual range of the weight, written beside it
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}}
+```
+
+For a boy of exactly one year weighing 9.6 kg:
+
+| Field | Written | What it is |
+| ----- | ------- | ---------- |
+| `wfa_z` | `-0.04` | the z-score of the measurement |
+| `wfa_low` | `7.8` | the weight at z -2, the low `soft` limit, rounded up to one decimal |
+| `wfa_high` | `11.9` | the weight at z 2, the high `soft` limit, rounded down |
+| `wfa_range` | `7.8 to 11.9 kg` | the two as text, with the reference's unit |
+
+For a girl of the same age the range is `7.1 to 11.5 kg`, and with the weight
+still blank the bounds are written and `wfa_z` stays empty.
+
+| Key | Value | Default |
+| --- | ----- | ------- |
+| `return` | `{"z":"[field]","lower":"[field]","upper":"[field]","range":"[field]"}`: any of the four, each to its own field | none |
+| `returnLimits` | `soft` or `hard`: the limits `lower`, `upper` and `range` are made from | `soft` |
+| `decimals` | 0 to 6: the decimals of `lower` and `upper` | the measured field's: `number_1dp` 1, `integer` 0, `number_2dp` 2, otherwise 1 |
+
+- **Rounded inward.** `lower` is rounded up and `upper` down, so a measurement
+  shown inside the range is inside the limits. When the band is narrower than
+  one unit of the last decimal, the two bounds cross and `range` stays empty.
+  With only a low limit `range` reads `at least 7.8 kg`, with only a high one
+  `at most 11.9 kg`. A limit the table cannot reach (a z-score no measurement
+  has) leaves its bound and the range empty.
+- **No limits needed for `z`.** A rule that returns only the z-score needs no
+  `soft` or `hard`; a bound needs the limit it is made from, and the rule is
+  refused without it.
+- **The fields.** Text fields on the same form as the measured field, so in
+  the same event and instance. Not the measured field, an input of the rule,
+  or the record ID, and no two values to one field. A `range` field takes no
+  validation; `z`, `lower` and `upper` take none or number validation with
+  room for the decimals (two for `z`, `decimals` for a bound; `number_2dp` is
+  too short for `decimals` 3). A field with comma-decimal validation gets a
+  comma, and a field without validation takes the mark of the measured field.
+  Two rules cannot return to one field: both are refused and name each other.
+- **When the values are written.** On the page: as the page opens, and again
+  after the measurement or an input changes, whatever the verdict (a weight
+  outside the limits still gets its z-score). The first fill does not mark the
+  form as changed. After a change REDCap hears an input and a change event, so
+  its calculations and branching logic that read the field run. On save: the
+  post-save audit works out the same values from the saved record and writes
+  those that differ, in one save, for a form, a survey, an import and the API.
+  The write appears in the record's log as an update by the user who saved. It
+  is not audited again. A rule that reads a returned field (an `@UVREQUIRED`
+  or `@UVRANGE` on the z-score field) is judged after the fill in the same
+  save, since rules that return values go first.
+- **The rule owns its fields.** When there is nothing to report the fields are
+  emptied: a blank sex, an age or length outside the reference, a `when` that
+  is false, a branch that does not apply. A branched rule owns the fields of
+  every branch, so the active branch fills its own and empties the others'. A
+  field that is blank is left alone, and a field holding the same number
+  spelled another way (`7.80` for `7.8`) is not rewritten. Mark the fields
+  `@READONLY`: a person who types there is overwritten at the next judgement.
+- **What is left as it is.** When an input is on a form the page may not show,
+  on a survey page that does not carry the field, or past the page's table
+  cap, the page does not write and the save does. A date the server cannot
+  read is logged as a rule problem and the fields keep their value. A form
+  that has no data yet in that event or instance is filled once it has.
+- **Turning the write on save off.** The project setting "@UVRANGE returned
+  values" (`range-return-no-save`) keeps the page fill and writes nothing when
+  a record is saved. The Validation scan never writes.
+
 ### Semantics worth knowing
 
 - **Eligible fields.** Text fields with no validation, integer validation or
@@ -2706,9 +2778,9 @@ case need `caseSensitive`.
 
 `soft`, `hard`, `softBlock`, `hardBlock`, `unit`, `when`, `message` and
 `caseSensitive`, and for a growth reference `reference`, `sex`, `male`,
-`female`, `age`, `by`, `plausible` and `measureScale`. A rule needs `soft` or
-`hard` limits. Any other key
-is a configuration error.
+`female`, `age`, `by`, `plausible`, `measureScale`, `return`, `returnLimits`
+and `decimals`. A rule needs `soft` or `hard` limits, unless it returns only
+`z`. Any other key is a configuration error.
 
 These are refused when the rule is saved:
 
@@ -2769,6 +2841,22 @@ These are refused when the rule is saved:
 # The growth keys need a reference.
 # refused: only apply with a "reference"
 @UVRANGE={"hard":[3,25],"sex":"[sex]","male":"1","female":"2"}
+
+# "return" writes what a growth reference gives.
+# refused: only apply with a "reference"
+@UVRANGE={"hard":[3,25],"return":{"z":"[wfa_z]"}}
+
+# Two values cannot go to one field.
+# refused: to the same field
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"z":"[wfa_z]","range":"[wfa_z]"}}
+
+# A bound needs the limit it comes from, and "soft" is the default.
+# refused: low "soft" limit
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"lower":"[wfa_low]"}}
+
+# "decimals" sets how the returned bounds are written.
+# refused: "decimals" must be a whole number from 0 to 6
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"z":"[wfa_z]"},"decimals":9}
 
 # A reference sets the unit itself.
 # refused: "unit" does not apply with a "reference"

@@ -779,6 +779,26 @@ slip:
   S 0.13 gives none above 3.85) is a configuration error that says which value
   to use. The inputs may sit on another form,
   or in another event with event and instance references on.
+- **Returning the z-score, the bounds or the range.** A growth rule can write
+  what it worked out into Text fields of the same form, so the result is on
+  the record and in exports:
+
+  ```text
+  @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}}
+  ```
+
+  For a boy of one year weighing 9.6 kg the fields read `-0.04`, `7.8`,
+  `11.9` and `7.8 to 11.9 kg`. `z` is the z-score, `lower` and `upper` the
+  measurements at the low and high limit of `soft` (`"returnLimits":"hard"`
+  takes the hard limits), rounded inward to `decimals` (default: the decimals
+  of the measured field) so the range never reaches past a limit, and `range`
+  the two as text with the reference's unit. Give any of the four, each its
+  own field. A rule that returns only `z` needs no limits. The page fills the
+  fields as it opens and after each change; the save fills them again, also
+  for an API or import save, and writes only the fields that differ. A field
+  with nothing to report (sex blank, age outside the reference) is emptied:
+  the rule owns its fields, so mark them `@READONLY`. The project setting
+  "@UVRANGE returned values" turns the save-time write off.
 
 ## The Validation scan — checking data that is already saved
 
@@ -991,6 +1011,10 @@ check-character primitive, but the full runtime path the module actually uses:
   withheld inputs, never blocking on saved or cross-event inputs) and
   `tests/growth_module_php.php` the server side: the grammar, the dictionary
   checks, the page's copy of the tables and its cap, the audit and the scan.
+  `tests/growth_return_dom_js.cjs` and `tests/growth_return_module_php.php`
+  cover the values a rule returns to fields: the fill on the page, and the one
+  save that writes only what differs, in the order that lets a rule on a
+  returned field see it.
 - `tests/missing_codes_dom_js.cjs` / `tests/missing_codes_php.php` — a field
   marked with a missing data code is not judged by any mode, on the page, in
   the audit, in the scan or by the lookup endpoints; `@UVREQUIRED` counts it
@@ -1051,6 +1075,8 @@ node tests/growth_js.cjs         # growth references: z-scores vs growth_fixture
 php  tests/growth_php.php         # growth references, PHP twin, same fixture, extra folder
 node tests/growth_dom_js.cjs     # growth references DOM contract (inputs, notes, withheld, no block)
 php  tests/growth_module_php.php  # growth references: grammar, dictionary, page tables, audit and scan
+node tests/growth_return_dom_js.cjs  # @UVRANGE "return": values written into fields on the page
+php  tests/growth_return_module_php.php  # @UVRANGE "return": the save writes them once; grammar, hook, branches
 node tests/missing_codes_dom_js.cjs  # Missing Data Codes on the page, every mode
 php  tests/missing_codes_php.php     # Missing Data Codes in the audit, scan, endpoints and page config
 node tests/pooled_dom_js.cjs  # pooled chip severity colors + marks

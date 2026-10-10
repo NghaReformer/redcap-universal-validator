@@ -71,10 +71,11 @@ jobs:
           node tests/range_dom_js.cjs
       - name: JS silent value changes (calc, slider, Today button are judged) and the save dialog's field labels
         run: node tests/silent_change_dom_js.cjs
-      - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract)
+      - name: JS growth references (@UVRANGE z-scores vs fixture, WHO golden, parity hash, DOM contract, returned values)
         run: |
           node tests/growth_js.cjs
           node tests/growth_dom_js.cjs
+          node tests/growth_return_dom_js.cjs
       - name: JS Missing Data Codes (a coded field is not judged in any mode; @UVREQUIRED counts it)
         run: node tests/missing_codes_dom_js.cjs
       - name: JS multi-format rules (alternates - single verdict, guidance, mixed pool)
@@ -210,10 +211,11 @@ jobs:
         run: |
           php tests/range_php.php
           php tests/range_module_php.php
-      - name: PHP growth references (z-scores vs fixture, WHO golden, parity hash, extra folder, grammar, hooks, page, audit, scan, converter)
+      - name: PHP growth references (z-scores vs fixture, WHO golden, parity hash, extra folder, grammar, hooks, page, audit, scan, returned values, converter)
         run: |
           php tests/growth_php.php
           php tests/growth_module_php.php
+          php tests/growth_return_module_php.php
           php tests/convert_php.php
       - name: PHP Missing Data Codes (audit, scan, endpoints and page skip coded fields)
         run: php tests/missing_codes_php.php

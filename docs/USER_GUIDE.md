@@ -1051,6 +1051,23 @@ in grams against a reference in kg, add `"measureScale":0.001`. Sex codes
 match without regard to letter case (`m` is `M`) unless `caseSensitive` is
 true.
 
+**Can the z-score or the expected range be written into a field?**
+Yes. Add `return` to a growth rule and name the Text fields that get the
+values, all on the same form as the measurement:
+`"return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}`.
+`z` is the z-score, `lower` and `upper` are the measurements at the low and high
+`soft` limit (`"returnLimits":"hard"` uses the hard ones), and `range` is the
+two as text, such as `7.8 to 11.9 kg`. The bounds are rounded inward, to the
+decimals of the measured field unless `decimals` says otherwise, so the range
+never reaches past a limit. The page fills the fields while the form is
+used, and the save fills them again, for an import or the API as well, writing
+only what differs. When there is nothing to report (the sex is blank, the age
+is outside the reference) the fields are emptied, so make them `@READONLY`:
+a value typed there is replaced. A `range` field takes no validation; `z`,
+`lower` and `upper` take none or number validation with room for the
+decimals (two for `z`). The project setting "@UVRANGE returned values" keeps
+the page fill and turns off the write on save.
+
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"
 button, or an imported `UNK` or `-99`) holds the code itself. REDCap does not
