@@ -249,6 +249,8 @@ jobs:
         run: php tests/scan_store_php.php
       - name: Durable scan entrypoints (feature flags, refusals, reason codes)
         run: php tests/scan_service_php.php
+      - name: Durable scan and @UVUNIQUE "also" (also values are evidence, not findings)
+        run: php tests/unique_also_scan_php.php
       - name: Scheduled scan maintenance is declared and wired (crons -> methods)
         run: php tests/scan_cron_php.php
       - name: Durable scan worker (phases, stable reads, catch-up, promotion)

@@ -200,6 +200,34 @@ const JSMO = 'EMStub.UV';
     stub.calls.length === 6 && stub.calls[5].payload.values.pid === '\u2003AB300');
 }
 
+// ---- 1b) @UVUNIQUE "also": the server names the field the value was found in --
+{
+  const stub = makeTransportStub();
+  const typed = makeEl('input'); typed.name = 'typed_id'; typed.value = 'P-001';
+  stub.next = { used: true, record: '7', field: 'scan_id' };
+  const env = boot([typed], {
+    singleFields: [], pooledFields: [], jsmoName: JSMO,
+    rules: [{ type: 'unique', fields: ['typed_id'], blockSave: 'hard' }],
+  }, stub);
+  const msg = uMsg(env, 'typed_id');
+  check('also: the message names the field and the record',
+    /already recorded in field <b>scan_id<\/b> \(record <b>7<\/b>\)\./.test(msg.innerHTML));
+  check('also: the request carries no "also" list (it stays on the server)',
+    stub.calls.length === 1 && Object.keys(stub.calls[0].payload.values).join() === 'typed_id');
+  const ev = submitEv(); env.doc.fire('submit', ev);
+  check('also: a value found in another field blocks like any duplicate', ev._prevented === true);
+  // A field name is escaped like the record id.
+  stub.next = { used: true, record: null, field: '<i>x</i>' };
+  typed.value = 'P-002';
+  typed.fire('change');
+  check('also: the field name is escaped', /in field <b>&lt;i&gt;x&lt;\/i&gt;<\/b>\./.test(msg.innerHTML));
+  // A survey answer carries neither.
+  stub.next = { used: true, record: null };
+  typed.value = 'P-003';
+  typed.fire('change');
+  check('also: no field and no record -> the plain message', /This value is already recorded\.$/.test(msg.innerHTML));
+}
+
 // ---- 2) custom message wins; composite "with" values travel -----------------
 {
   const stub = makeTransportStub();

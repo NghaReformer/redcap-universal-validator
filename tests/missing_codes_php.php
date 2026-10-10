@@ -272,6 +272,35 @@ namespace {
     check('exists-check: a code in a match field cannot be matched (got ' . json_encode($r) . ')',
         ($r['state'] ?? null) === 'unknown' && strpos((string) ($r['why'] ?? ''), 'missing data code') !== false);
 
+    // ---- 5b) @UVUNIQUE "also": a code saved in an "also" field matches nothing ----------
+    $alsoMod = function ($codes) use ($DICT, $DATA) {
+        $m = mod($codes);
+        \REDCap::$dictionary = $DICT + [
+            'm_typed' => f('result', '@UVUNIQUE={"also":["m_scan"]}'),
+            'm_scan'  => f('result'),
+        ];
+        \REDCap::$data = $DATA;
+        \REDCap::$data['1'][351]['m_scan'] = 'UNK';
+        \REDCap::$data['2'][351]['m_scan'] = 'P-7';
+        return $m;
+    };
+    check('also: "unk" typed is not a duplicate of a code saved in an "also" field',
+        ($ask($alsoMod($CODES), 'unique-check', 'm_typed', ['m_typed' => 'unk'])['used'] ?? null) === false);
+    check('also control: without codes "unk" is found in the "also" field',
+        ($ask($alsoMod(''), 'unique-check', 'm_typed', ['m_typed' => 'unk'])['field'] ?? null) === 'm_scan');
+    check('also: an ordinary value in the "also" field is still found',
+        ($ask($alsoMod($CODES), 'unique-check', 'm_typed', ['m_typed' => 'P-7'])['used'] ?? null) === true);
+    $m = $alsoMod($CODES);
+    \REDCap::$data['5'] = [351 => ['record_id' => '5', 'm_typed' => 'unk']];
+    $res = $m->scanProject(149);
+    $typed = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'm_typed'; }));
+    check('also scan: a code in an "also" field joins no duplicate group (got ' . json_encode($typed) . ')', $typed === []);
+    $m = $alsoMod('');
+    \REDCap::$data['5'] = [351 => ['record_id' => '5', 'm_typed' => 'unk']];
+    $res = $m->scanProject(149);
+    $typed = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'm_typed'; }));
+    check('also scan control: without codes it does', count($typed) === 1 && $typed[0]['record'] === '5');
+
     // ---- 6) the page --------------------------------------------------------------------
     $cfgOf = function ($m) {
         ob_start();

@@ -153,12 +153,16 @@ namespace {
          * records with an event row holding every value, as REDCap reads the
          * three forms the module writes: [f] = 'v' exactly (a case-sensitive
          * REDCap), lower([f]) = 'v' with the stored value lowered, and
-         * [f] = 7 by value. Off, the filter is ignored (a build that returns
-         * everything).
+         * [f] = 7 by value. A parenthesised group of clauses joined by " or "
+         * (@UVUNIQUE "also") holds when one of them does. Off, the filter is
+         * ignored (a build that returns everything).
          */
         public static $exactFilter = false;
+        /** Every filterLogic a read was narrowed by. */
+        public static $filterLogics = [];
         private static function filtered($logic) {
-            preg_match_all("/(lower\\()?\\[([a-z0-9_]+)\\]\\)? = (?:'([^']*)'|(-?[0-9.]+))/", $logic, $m, PREG_SET_ORDER);
+            self::$filterLogics[] = $logic;
+            $clause = "/(lower\\()?\\[([a-z0-9_]+)\\]\\)? = (?:'([^']*)'|(-?[0-9.]+))/";
             $ok = (function ($row, $c) {
                     if (!isset($row[$c[2]]) || is_array($row[$c[2]])) return false;
                     $s = (string) $row[$c[2]];
@@ -169,8 +173,13 @@ namespace {
             foreach (self::$data as $rec => $node) {
                 foreach ($node as $ev => $row) {
                     if (!is_array($row) || $ev === 'repeat_instances') continue;
+                    // Each clause becomes T or F; what is left is groups of
+                    // T/F joined by " or " inside parentheses, joined by " and ".
+                    $tf = preg_replace_callback($clause, function ($c) use ($row, $ok) { return $ok($row, $c) ? 'T' : 'F'; }, $logic);
                     $all = true;
-                    foreach ($m as $c) if (!$ok($row, $c)) { $all = false; break; }
+                    foreach (explode(' and ', $tf) as $part) {
+                        if (strpos(trim($part, '() '), 'T') === false) { $all = false; break; }
+                    }
                     if ($all) { $out[$rec] = $node; break; }
                 }
             }
@@ -1590,7 +1599,7 @@ namespace {
     // ---- validateSettings gate for the new modes ----
     function modeFlat($rows) {
         $keys = ['rule-type', 'fields', 'fields-csv', 'when', 'assert', 'message',
-                 'unique-with', 'unique-scope', 'unique-surveys', 'algorithm',
+                 'unique-with', 'unique-also', 'unique-scope', 'unique-surveys', 'algorithm',
                  'source', 'suggest-fix', 'pattern', 'strip', 'keep-chars', 'id-lengths',
                  'id-min-len', 'id-max-len', 'expected-count', 'block-save'];
         $flat = ['rules' => array_fill(0, count($rows), true)];
@@ -2879,6 +2888,247 @@ namespace {
         && strpos($ntLogs[0][1]['effect'], 'inert') !== false);
     check('no JSMO: jsmoName absent, so the client fails open', $cfg && !isset($cfg['jsmoName']));
     check('no JSMO: the rest of the config still ships', $cfg && !empty($cfg['rules']));
+
+    // ---- @UVUNIQUE "also": the value is looked for in other fields too ----
+    // A registration form with a scanned and a typed participant ID, a legacy
+    // ID on another form, a composite pair, and a pair of number fields.
+    $alDict = [
+        'record_id' => ['field_type' => 'text', 'field_annotation' => '', 'form_name' => 'reg'],
+        'scan_id'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["typed_id"]}'],
+        'typed_id'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["scan_id","legacy_id"]}'],
+        'legacy_id' => ['field_type' => 'text', 'form_name' => 'legacy', 'field_annotation' => ''],
+        'site'      => ['field_type' => 'dropdown', 'field_annotation' => '', 'form_name' => 'reg',
+                        'select_choices_or_calculations' => '1, North | 2, South'],
+        'spec'      => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"with":["site"],"also":["spec_b"]}'],
+        'spec_b'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        'num_a'     => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["num_b"]}',
+                        'text_validation_type_or_show_slider_number' => 'integer'],
+        'num_b'     => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '',
+                        'text_validation_type_or_show_slider_number' => 'integer'],
+        'cs_a'      => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["cs_b"],"caseSensitive":true}'],
+        'cs_b'      => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        'surv_a'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["surv_b"],"surveys":true}'],
+        'surv_b'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+        // refused configurations
+        'bad_self'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["bad_self"]}'],
+        'bad_none'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["no_such"]}'],
+        'bad_cb'    => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["cbx"]}'],
+        'cbx'       => ['field_type' => 'checkbox', 'form_name' => 'reg', 'field_annotation' => '',
+                        'select_choices_or_calculations' => '1, A | 2, B'],
+        'bad_num'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["num_b"]}'],
+        'bad_date'  => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["cs_b"]}',
+                        'text_validation_type_or_show_slider_number' => 'date_dmy'],
+        'bad_ident' => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '@UVUNIQUE={"also":["nat_b"],"surveys":true}'],
+        'nat_b'     => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => '', 'identifier' => 'y'],
+        'plain_t'   => ['field_type' => 'text', 'form_name' => 'reg', 'field_annotation' => ''],
+    ];
+    $alData = [
+        '1' => [351 => ['record_id' => '1', 'scan_id' => 'P-001', 'typed_id' => '', 'legacy_id' => 'L-9', 'site' => '1',
+                        'spec' => '', 'spec_b' => 'S-1', 'num_b' => '007', 'cs_b' => 'Ab-1', 'surv_b' => 'T-5',
+                        'redcap_data_access_group' => 'north']],
+        '2' => [351 => ['record_id' => '2', 'scan_id' => '', 'typed_id' => 'P-002', 'legacy_id' => '', 'site' => '2',
+                        'spec' => '', 'spec_b' => 'S-2', 'redcap_data_access_group' => 'south']],
+        // one record holding the same ID in both fields: never its own duplicate
+        '3' => [351 => ['record_id' => '3', 'scan_id' => 'P-010', 'typed_id' => 'P-010', 'legacy_id' => '',
+                        'redcap_data_access_group' => 'north']],
+    ];
+    function alCall($m, $field, $value, $record = '9', $survey = null, $user = 'staff1', $gid = null, array $more = []) {
+        return $m->redcap_module_ajax('unique-check', ['field' => $field, 'values' => [$field => $value] + $more], 149, $record,
+            'reg', 351, 1, $survey, null, null, 'DataEntry/index.php', '', $user, $gid);
+    }
+    $m = newModule([], $alDict, $alData, 149);
+    $r = alCall($m, 'typed_id', 'P-001');
+    check('also: a typed ID that was scanned in another record is used, and staff see where',
+        $r === ['used' => true, 'record' => '1', 'field' => 'scan_id']);
+    $r = alCall($m, 'typed_id', ' p-001 ');
+    check('also: trimmed and letter case ignored, as in the field itself', $r['used'] === true && $r['field'] === 'scan_id');
+    $r = alCall($m, 'typed_id', 'L-9');
+    check('also: a second "also" field on another form is searched', $r === ['used' => true, 'record' => '1', 'field' => 'legacy_id']);
+    $r = alCall($m, 'typed_id', 'P-002');
+    check('also: a hit in the field itself names no field', $r === ['used' => true, 'record' => '2']);
+    $r = alCall($m, 'scan_id', 'P-002');
+    check('also: the other direction needs, and has, its own tag', $r === ['used' => true, 'record' => '2', 'field' => 'typed_id']);
+    $r = alCall($m, 'scan_id', 'L-9');
+    check('also: a field that is not in "also" is not searched', $r['used'] === false);
+    $r = alCall($m, 'typed_id', 'P-010', '3');
+    check('also: the record being checked is left out, its other field included', $r['used'] === false);
+    $r = alCall($m, 'typed_id', 'P-001', '1');
+    check('also: a value is never a duplicate of its own record', $r['used'] === false);
+    $r = alCall($m, 'typed_id', 'P-010', '9');
+    check('also: another record holding the value in both fields is one hit', $r['used'] === true && $r['record'] === '3');
+    $r = alCall($m, 'typed_id', 'FRESH');
+    check('also: a value in no searched field is free', $r === ['used' => false, 'record' => null]);
+    $r = alCall($m, 'spec', 'S-1', '9', null, 'staff1', null, ['site' => '1']);
+    check('also: the composite must match in the entry the value was found in', $r['used'] === true && $r['field'] === 'spec_b');
+    $r = alCall($m, 'spec', 'S-1', '9', null, 'staff1', null, ['site' => '2']);
+    check('also: same value, other composite -> free', $r['used'] === false);
+    $r = alCall($m, 'num_a', '7');
+    check('also: numbers compare by value in both fields', $r['used'] === true && $r['field'] === 'num_b');
+    $r = alCall($m, 'cs_a', 'ab-1');
+    check('also: caseSensitive keeps letter case in the "also" field too', $r['used'] === false);
+    check('also: caseSensitive exact spelling is used', alCall($m, 'cs_a', 'Ab-1')['used'] === true);
+    // surveys: the answer is a bare yes/no, never a record or a field name
+    $r = alCall($m, 'surv_a', 'T-5', '9', 'shash', null);
+    check('also: a survey answer names neither the record nor the field', $r === ['used' => true, 'record' => null]);
+    // DAG: a record outside the user's group stays unnamed; the field may be named
+    \REDCap::$groupNames = [7 => 'south'];
+    $r = alCall($m, 'typed_id', 'P-001', '9', null, 'staff1', 7);
+    check('also: DAG masking still applies to the record id', $r['used'] === true && $r['record'] === null && $r['field'] === 'scan_id');
+    \REDCap::$groupNames = [];
+    // rights: a user who may not open the "also" field's form gets no answer
+    \REDCap::$formsWithheld = ['staff1' => ['legacy']];
+    $r = alCall($m, 'typed_id', 'L-9');
+    check('also: no answer about a field on a form the user cannot open', isset($r['error']) && !isset($r['used']));
+    check('also: a rule whose "also" forms the user may open still answers', alCall($m, 'scan_id', 'P-002')['used'] === true);
+    \REDCap::$formsWithheld = [];
+    // the narrowed read ORs the searched fields; a hit settles it without a full read
+    \REDCap::$exactFilter = true;
+    \REDCap::$filterLogics = [];
+    \REDCap::$getDataCalls = [];
+    $r = alCall($m, 'typed_id', 'P-001');
+    check('also: narrowed read finds the hit', $r['used'] === true && $r['field'] === 'scan_id');
+    check('also: the narrowed filter ORs the field and its "also" fields',
+        count(\REDCap::$filterLogics) === 1
+        && \REDCap::$filterLogics[0] === "(lower([typed_id]) = 'p-001' or lower([scan_id]) = 'p-001' or lower([legacy_id]) = 'p-001')");
+    check('also: no full read after a narrowed hit', count(\REDCap::$getDataCalls) === 1);
+    $r = alCall($m, 'spec', 'S-1', '9', null, 'staff1', null, ['site' => '1']);
+    check('also: the composite clause is ANDed with the OR group',
+        $r['used'] === true && end(\REDCap::$filterLogics) === "(lower([spec]) = 's-1' or lower([spec_b]) = 's-1') and [site] = '1'");
+    $r = alCall($m, 'num_a', '7');
+    check('also: a number field narrows by value in each field',
+        $r['used'] === true && end(\REDCap::$filterLogics) === '([num_a] = 7 or [num_b] = 7)');
+    \REDCap::$getDataCalls = [];
+    $r = alCall($m, 'typed_id', 'FRESH');
+    check('also: a narrowed miss is confirmed by a full read', $r['used'] === false && count(\REDCap::$getDataCalls) === 2
+        && !isset(\REDCap::$getDataCalls[1]['filterLogic']));
+    check('also: the full read asks for the field and its "also" fields',
+        \REDCap::$getDataCalls[1]['fields'] === ['typed_id', 'scan_id', 'legacy_id']);
+    \REDCap::$exactFilter = false;
+
+    // the page never learns which fields are searched
+    $p = pageCfg($m, 'entry', '9', 'reg');
+    $tr = ruleFor($p, 'typed_id');
+    check('also: the page config carries the rule without its "also" list', $tr !== null && !isset($tr['uniqueAlso'])
+        && strpos($p['raw'], 'legacy_id') === false);
+    // refused configurations surface as configuration errors
+    $why = function ($field) use ($p) { $r = ruleFor($p, $field); return ($r && isset($r['configError'])) ? $r['configError'] : ''; };
+    check('also: naming the field itself is refused', strpos($why('bad_self'), 'must not name the unique field itself') !== false);
+    check('also: a field not in the project is refused', strpos($why('bad_none'), '"also" field "no_such" is not in this project') !== false);
+    check('also: a checkbox is refused', strpos($why('bad_cb'), 'is a checkbox field') !== false);
+    check('also: text searched in a number field is refused',
+        strpos($why('bad_num'), '"bad_num" holds text and "also" field "num_b" holds numbers with a decimal point') !== false);
+    check('also: a date searched in a text field is refused',
+        strpos($why('bad_date'), '"bad_date" holds dates and "also" field "cs_b" holds no date or time') !== false);
+    check('also: the survey opt-in is refused when an "also" field is an Identifier',
+        strpos($why('bad_ident'), '"also" field "nat_b": the survey uniqueness check') !== false);
+    // On a survey a broken unique rule's error names no field: it may name the searched ones.
+    $ps = pageCfg($m, 'survey', '9', 'reg');
+    $sr = ruleFor($ps, 'bad_none');
+    check('also: a survey page gets a generic configuration error, never the field names',
+        $sr && isset($sr['configError']) && strpos($sr['configError'], 'no_such') === false
+        && strpos($ps['raw'], 'no_such') === false && strpos($ps['raw'], 'legacy_id') === false);
+    check('also: the sound rules carry no configuration error',
+        $why('scan_id') === '' && $why('typed_id') === '' && $why('spec') === '' && $why('num_a') === '' && $why('surv_a') === '');
+
+    // the post-save audit finds a typed ID scanned elsewhere, and never a record's own pair
+    $alSaved = $alData;
+    $alSaved['9'] = [351 => ['record_id' => '9', 'scan_id' => '', 'typed_id' => 'P-001', 'legacy_id' => '']];
+    $m = newModule([], $alDict, $alSaved, 149);
+    $m->redcap_save_record(149, '9', 'reg', 351, null, null, null, 1);
+    $uq = array_values(array_filter(invalidLogs($m), function ($L) { return $L[1]['type'] === 'unique'; }));
+    check('also: audit logs the typed ID found in another record\'s scanned field',
+        count($uq) === 1 && $uq[0][1]['field'] === 'typed_id' && $uq[0][1]['reason'] === 'duplicate-value');
+    $m = newModule([], $alDict, $alSaved, 149);
+    $m->redcap_save_record(149, '3', 'reg', 351, null, null, null, 1);
+    check('also: audit leaves a record\'s own scanned + typed pair alone',
+        count(array_filter(invalidLogs($m), function ($L) { return $L[1]['type'] === 'unique'; })) === 0);
+
+    // the Validation scan: "also" values are evidence, not findings
+    $m = newModule([], $alDict, $alSaved, 149);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $alHits = array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; }));
+    $alAt = array_map(function ($v) { return $v['record'] . ':' . $v['field']; }, $alHits);
+    sort($alAt);
+    check('also: scan reports both sides, each by its own rule (scan_id searches typed_id, typed_id searches scan_id)',
+        $alAt === ['1:scan_id', '9:typed_id']);
+    // legacy_id carries no rule: the typed ID that repeats it is reported, the legacy value is not
+    $alSavedL = $alData;
+    $alSavedL['9'] = [351 => ['record_id' => '9', 'scan_id' => '', 'typed_id' => 'L-9', 'legacy_id' => '']];
+    $m = newModule([], $alDict, $alSavedL, 149);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $alAt = array_map(function ($v) { return $v['record'] . ':' . $v['field']; },
+        array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })));
+    check('also: scan never reports the "also" field itself, only the field whose rule searched it', $alAt === ['9:typed_id']);
+    // the scanned ID repeated as a typed ID in another record: reported on the scan field's rule
+    $alSaved2 = $alData;
+    $alSaved2['9'] = [351 => ['record_id' => '9', 'scan_id' => 'P-002', 'typed_id' => '']];
+    $m = newModule([], $alDict, $alSaved2, 149);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $alAt = array_map(function ($v) { return $v['record'] . ':' . $v['field']; },
+        array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })));
+    sort($alAt);
+    check('also: scan, other direction: the scanned field and the typed one are each reported by their own rule',
+        $alAt === ['2:typed_id', '9:scan_id']);
+    // composite and numbers in the scan agree with the endpoint
+    $alSaved3 = $alData;
+    $alSaved3['9'] = [351 => ['record_id' => '9', 'spec' => 'S-1', 'site' => '1', 'num_a' => '7']];
+    $alSaved3['8'] = [351 => ['record_id' => '8', 'spec' => 'S-2', 'site' => '1']];
+    $m = newModule([], $alDict, $alSaved3, 149);
+    $res = $m->scanProject(149, null, 200, null, ['valueCeiling' => 'raw']);
+    $alAt = array_map(function ($v) { return $v['record'] . ':' . $v['field']; },
+        array_values(array_filter($res['violations'], function ($v) { return $v['type'] === 'unique'; })));
+    sort($alAt);
+    check('also: scan honours the composite and number comparison', $alAt === ['9:num_a', '9:spec']);
+
+    // the durable scan re-reads a group's values the way it was keyed: a
+    // field joined by "also" to one that ignores case ignores it too
+    $m = newModule([], $alDict, $alData, 149);
+    $plan = $m->durableScanContext(149, ['generation' => null])['plan'];
+    check('also plan: a caseSensitive rule keeps case on its field and its "also" field',
+        isset($plan['uniqueExact']['cs_a'], $plan['uniqueExact']['cs_b']));
+    check('also plan: fields joined to a case-ignoring rule are folded',
+        !isset($plan['uniqueExact']['scan_id']) && !isset($plan['uniqueExact']['typed_id']) && !isset($plan['uniqueExact']['legacy_id']));
+    check('also plan: where each rule\'s "also" fields live', in_array(['legacy' => ['legacy_id'], 'reg' => ['scan_id']],
+        $plan['uniqueMembers'], true) || in_array(['reg' => ['scan_id'], 'legacy' => ['legacy_id']], $plan['uniqueMembers'], true));
+    $csDict = $alDict;
+    $csDict['cs_b']['field_annotation'] = '@UVUNIQUE';   // cs_b now has a rule of its own that ignores case
+    $m = newModule([], $csDict, $alData, 149);
+    $plan = $m->durableScanContext(149, ['generation' => null])['plan'];
+    check('also plan: a case-ignoring rule on the "also" field folds the field that searches it',
+        !isset($plan['uniqueExact']['cs_a']) && !isset($plan['uniqueExact']['cs_b']));
+
+    // the Configure dialog: unique-also, with the same checks
+    $m = newModule([], $alDict, [], 149);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['plainx'], 'unique-also' => 'scan_id', 'block-save' => 'off'],
+    ]));
+    check('dialog also: an unknown covered field is still refused', is_string($msg));
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['typed_id'], 'unique-also' => 'scan_id, legacy_id', 'block-save' => 'hard'],
+    ]));
+    check('dialog also: a sound rule passes', $msg === null);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['typed_id'], 'unique-also' => 'typed_id', 'block-save' => 'off'],
+    ]));
+    check('dialog also: naming a covered field is refused', is_string($msg) && strpos($msg, 'must not name a field this rule validates') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['bad_num'], 'unique-also' => 'num_b', 'block-save' => 'off'],
+    ]));
+    check('dialog also: a number field searched from a text field is refused', is_string($msg) && strpos($msg, 'holds numbers with a decimal point') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['typed_id'], 'unique-also' => 'nope_field', 'block-save' => 'off'],
+    ]));
+    check('dialog also: an unknown "also" field is refused', is_string($msg) && strpos($msg, '"also" field "nope_field" is not in this project') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['typed_id'], 'unique-also' => 'nat_b', 'unique-surveys' => '1', 'block-save' => 'off'],
+    ]));
+    check('dialog also: the survey opt-in is refused when an "also" field is an Identifier', is_string($msg) && strpos($msg, 'field "nat_b"') !== false);
+    $msg = $m->validateSettings(modeFlat([
+        ['rule-type' => 'unique', 'fields' => ['plain_t'], 'when' => "[site]='1'", 'unique-also' => 'scan_id', 'block-save' => 'off'],
+        ['rule-type' => 'unique', 'fields' => ['plain_t'], 'when' => "[site]='2'", 'unique-also' => 'legacy_id', 'block-save' => 'off'],
+    ]));
+    check('dialog also: rules on one field that search different fields are refused', is_string($msg)
+        && strpos($msg, 'give "also" different values') !== false);
 
     echo sprintf("hook_php: %d checks, %d failure(s)\n", $n, $fail);
     exit($fail === 0 ? 0 : 1);

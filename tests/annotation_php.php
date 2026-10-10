@@ -456,6 +456,36 @@ check('checkFragment: unique bad scope -> error',
 check('checkFragment: unique empty with -> error',
     AnnotationRules::checkFragment(['type' => 'unique', 'uniqueWith' => []]) !== []);
 
+// @UVUNIQUE "also": other fields the value is looked for in
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["Typed_ID"," legacy_id "],"with":["site"]}');
+check('unique also -> uniqueAlso, lowercased and trimmed', !isset($f[0]['error'])
+    && $f[0]['uniqueAlso'] === ['typed_id', 'legacy_id'] && $f[0]['uniqueWith'] === ['site']);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":"typed_id"}');
+check('unique also must be a list', isset($f[0]['error']) && strpos($f[0]['error'], '"also" must be a list') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":[]}');
+check('unique also must not be empty', isset($f[0]['error']) && strpos($f[0]['error'], 'non-empty') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["a","b","c","d","e","f"]}');
+check('unique also capped at 5', isset($f[0]['error']) && strpos($f[0]['error'], 'limited to 5') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["a","b","c","d","e"]}');
+check('unique also: 5 fields are fine', !isset($f[0]['error']) && count($f[0]['uniqueAlso']) === 5);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["a","A"]}');
+check('unique also duplicate entry (any case) -> error', isset($f[0]['error']) && strpos($f[0]['error'], 'twice') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["1abc"]}');
+check('unique also entry must be a field name', isset($f[0]['error']) && strpos($f[0]['error'], 'not a valid REDCap field name') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":[7]}');
+check('unique also entry must be a string', isset($f[0]['error']));
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["site"],"with":["Site"]}');
+check('unique also and with must not share a field', isset($f[0]['error'])
+    && strpos($f[0]['error'], 'in both "with" and "also"') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["b"],"scope":"record"}', ['qualified' => true]);
+check('unique also is refused under the record scope', isset($f[0]['error'])
+    && strpos($f[0]['error'], '"also" cannot be used with "scope":"record"') !== false);
+$f = AnnotationRules::parseAllTags('@UVUNIQUE={"also":["b"],"scope":"dag"}');
+check('unique also with the dag scope is fine', !isset($f[0]['error']) && $f[0]['uniqueScope'] === 'dag');
+check('checkFragment: unique also reaches the checker',
+    AnnotationRules::checkFragment(['type' => 'unique', 'uniqueAlso' => 'x']) !== []
+    && AnnotationRules::checkFragment(['type' => 'unique', 'uniqueAlso' => ['x']]) === []);
+
 // ---- multi-format rules ("alternates") ------------------------------------
 // The sample-transportation case: four ID families in one field, three of them
 // carrying ISO 7064 Mod 37,36 and one (GHIT) carrying no check character.

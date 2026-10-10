@@ -119,6 +119,39 @@ $c = Branching::fieldConflicts($rules);
 check('mixed-type detected', isset($c['sid']) && $c['sid']['kind'] === 'mixed-type');
 check('mixed-type wording', strpos(Branching::message('sid', $c['sid']), 'same field type') !== false);
 
+// ---- illegal: @UVUNIQUE rules on one field that search different "also" fields ----
+$rules = [
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='1'", 'uniqueAlso' => ['typed', 'legacy']],
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='2'", 'uniqueAlso' => ['typed']],
+];
+$c = Branching::fieldConflicts($rules);
+check('differing "also" detected', isset($c['sid']) && $c['sid']['kind'] === 'differing-key' && $c['sid']['rules'] === [0, 1]);
+check('differing "also" wording names the tag and the option',
+    Branching::message('sid', $c['sid']) === 'field "sid" is covered by @UVUNIQUE rules that give "also" different values '
+        . '— every rule on one field must give "also" the same value.');
+$out = Branching::resolve($rules);
+check('differing "also" becomes a configError rule', count($out) === 1 && !empty($out[0]['configError']));
+$rules = [
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='1'", 'uniqueAlso' => ['typed', 'legacy']],
+    ['type' => 'unique', 'fields' => ['sid'], 'uniqueAlso' => ['legacy', 'typed', 'typed']],
+];
+check('"also" compared as a set (order, repeats)', Branching::fieldConflicts($rules) === []);
+$out = Branching::resolve($rules);
+check('the same "also" travels on every branch', isset($out[0]['branches'])
+    && $out[0]['branches'][0]['uniqueAlso'] === ['typed', 'legacy']
+    && $out[0]['branches'][1]['uniqueAlso'] === ['legacy', 'typed', 'typed']);
+$rules = [
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='1'", 'uniqueAlso' => ['typed']],
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='2'"],
+];
+$c = Branching::fieldConflicts($rules);
+check('"also" on one branch only is a difference', isset($c['sid']) && $c['sid']['kind'] === 'differing-key');
+$rules = [
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='1'", 'uniqueWith' => ['x']],
+    ['type' => 'unique', 'fields' => ['sid'], 'when' => "[a]='2'", 'uniqueWith' => ['y']],
+];
+check('"with" may still differ between branches', Branching::fieldConflicts($rules) === []);
+
 // ---- priority: two-unconditional wins over identical-when and mixed-type ----
 $rules = [
     rule(['sid'], ['when' => "[a]='1'"]),
