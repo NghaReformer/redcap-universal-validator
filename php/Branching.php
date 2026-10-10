@@ -24,12 +24,20 @@
  *     active => validate under it; none => the field is inert; MORE than one
  *     => a branch CONFLICT — show/log a configuration-style problem, validate
  *     nothing, and never block a save (the else can never conflict).
+ *   - Branch groups: a mode with a "branchGroup" in php/modes.json (@UVRANGE:
+ *     its "reference") resolves the rules above once PER GROUP, the group
+ *     being the value a rule gives that key (none = one group of its own).
+ *     Each group has its own else; the active branch of every group is
+ *     validated, and all must pass. Two active branches in ONE group are a
+ *     conflict for the whole field, as above. A mode without a branchGroup
+ *     has one group, so its resolution is the one described above.
  *   - Config-time legality (a violation becomes a per-field configError rule
- *     instead of a branch rule): at most one sharing rule without "when";
- *     no two sharing rules with byte-identical "when" strings (they could
- *     never be told apart); all sharing rules must have the same type
- *     (single/pooled); all sharing rules must give each of their mode's
- *     uniformBranchKeys the same value (php/modes.json; @UVUNIQUE "also").
+ *     instead of a branch rule): at most one sharing rule without "when" per
+ *     group; no two sharing rules of one group with byte-identical "when"
+ *     strings (they could never be told apart); all sharing rules must have
+ *     the same type (single/pooled); all sharing rules must give each of
+ *     their mode's uniformBranchKeys the same value (php/modes.json;
+ *     @UVUNIQUE "also").
  *
  * Fields claimed by exactly one rule pass through UNTOUCHED — resolve() is
  * the identity for rule lists without sharing, so single-rule projects take
@@ -129,13 +137,13 @@ class Branching
                 continue;
             }
             $branches = [];
-            $else = null;
+            $elses = [];   // one per branch group at most (conflictOf)
             foreach ($idxs as $i) {
                 $b = self::branchOf($rules[$i]);
-                if ($b['when'] === null) $else = $b;
+                if ($b['when'] === null) $elses[] = $b;
                 else $branches[] = $b;
             }
-            if ($else !== null) $branches[] = $else;   // else is always LAST
+            foreach ($elses as $b) $branches[] = $b;   // elses are always LAST
             $first = $rules[$idxs[0]];
             $extra[] = [
                 'type'     => (isset($first['type']) && $first['type'] !== '') ? $first['type'] : 'single',
@@ -177,14 +185,16 @@ class Branching
     /** The user-facing message for one fieldConflicts() entry. */
     public static function message($field, array $conflict)
     {
+        // A mode with branch groups names what makes two rules one group.
+        $same = isset($conflict['group']) ? ' and the same "' . $conflict['group'] . '"' : '';
         switch ($conflict['kind']) {
             case 'two-unconditional':
                 return 'field "' . $field . '" is covered by ' . $conflict['detail']
-                    . ' rules with no "when" condition — at most ONE unconditional rule may share a '
+                    . ' rules with no "when" condition' . $same . ' — at most ONE unconditional rule may share a '
                     . 'field (it becomes the fallback). Add "when" conditions or remove the extra rule(s).';
             case 'identical-when':
                 return 'field "' . $field . '" is covered by 2 rules with the identical condition "'
-                    . $conflict['detail'] . '" — the branches could never be told apart. '
+                    . $conflict['detail'] . '"' . $same . ' — the branches could never be told apart. '
                     . 'Make the conditions differ or merge the rules.';
             case 'mixed-type':
                 return 'field "' . $field . '" is covered by both a single-value rule and a pooled rule '
@@ -224,6 +234,18 @@ class Branching
         return $claims;
     }
 
+    /**
+     * The branch group a rule or branch belongs to: the value it gives its
+     * mode's branchGroup key, '' when it gives none or the mode has none.
+     * Public so the server and the scan resolve branches with the same groups
+     * (UniversalValidator::ruleFindings).
+     */
+    public static function groupOf(array $rule, $groupKey)
+    {
+        if ($groupKey === null || !isset($rule[$groupKey]) || !is_scalar($rule[$groupKey])) return '';
+        return (string) $rule[$groupKey];
+    }
+
     /** The rule's trimmed "when" string, or null when it has none. */
     private static function whenOf(array $rule)
     {
@@ -240,33 +262,38 @@ class Branching
      */
     private static function conflictOf(array $rules, $field, array $idxs)
     {
-        $unconditional = [];
-        $whens = [];
+        $t = (isset($rules[$idxs[0]]['type']) && $rules[$idxs[0]]['type'] !== '') ? $rules[$idxs[0]]['type'] : 'single';
+        $mode = self::modeOfType($t);
+        $groupKey = ModeRegistry::branchGroup($mode);
+        $unconditional = [];   // group => [ruleIndex, ...]
+        $whens = [];           // group => [when => ruleIndex]
         $identical = null;
         $types = [];
         foreach ($idxs as $i) {
+            $g = self::groupOf($rules[$i], $groupKey);
             $w = self::whenOf($rules[$i]);
             if ($w === null) {
-                $unconditional[] = $i;
-            } elseif (isset($whens[$w])) {
+                $unconditional[$g][] = $i;
+            } elseif (isset($whens[$g][$w])) {
                 if ($identical === null) {
-                    $identical = ['kind' => 'identical-when', 'rules' => [$whens[$w], $i], 'detail' => $w];
+                    $identical = ['kind' => 'identical-when', 'rules' => [$whens[$g][$w], $i], 'detail' => $w];
                 }
             } else {
-                $whens[$w] = $i;
+                $whens[$g][$w] = $i;
             }
             $t = (isset($rules[$i]['type']) && $rules[$i]['type'] !== '') ? $rules[$i]['type'] : 'single';
             $types[$t] = $i;
         }
-        if (count($unconditional) >= 2) {
-            return ['kind' => 'two-unconditional', 'rules' => $unconditional, 'detail' => count($unconditional)];
+        $named = $groupKey !== null ? ['group' => ModeRegistry::branchGroupName($mode)] : [];
+        foreach ($unconditional as $list) {
+            if (count($list) >= 2) {
+                return ['kind' => 'two-unconditional', 'rules' => $list, 'detail' => count($list)] + $named;
+            }
         }
-        if ($identical !== null) return $identical;
+        if ($identical !== null) return $identical + $named;
         if (count($types) > 1) {
             return ['kind' => 'mixed-type', 'rules' => array_values($types), 'detail' => array_keys($types)];
         }
-        $t = (isset($rules[$idxs[0]]['type']) && $rules[$idxs[0]]['type'] !== '') ? $rules[$idxs[0]]['type'] : 'single';
-        $mode = self::modeOfType($t);
         foreach (ModeRegistry::uniformBranchKeys($mode) as $k => $name) {
             $first = self::uniformValue($rules[$idxs[0]], $k);
             foreach ($idxs as $i) {

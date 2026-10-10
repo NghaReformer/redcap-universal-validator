@@ -29,6 +29,7 @@ if (!reg || !Array.isArray(reg.modes) || !reg.modes.length) fail('php/modes.json
 const defaultKeys = [];
 const modeOfType = {};
 const factoryOfType = {};
+const branchGroupOfType = {};
 const types = [];
 for (const m of reg.modes) {
   for (const k of m.clientKeys || []) if (!defaultKeys.includes(k)) defaultKeys.push(k);
@@ -39,6 +40,7 @@ for (const m of reg.modes) {
     const f = m.js && m.js.factories && m.js.factories[t];
     if (!f) fail('mode "' + m.mode + '" names no js factory for type "' + t + '"');
     factoryOfType[t] = f;
+    if (m.branchGroup && m.branchGroup.key) branchGroupOfType[t] = m.branchGroup.key;
   }
 }
 
@@ -67,6 +69,7 @@ const block = [
   wrapArray('DEFAULT_KEYS', defaultKeys),
   obj('MODE_OF_TYPE', modeOfType),
   obj('FACTORY_OF_TYPE', factoryOfType),
+  obj('BRANCH_GROUP_OF_TYPE', branchGroupOfType),
   '  var KNOWN_TYPES_TEXT = ' + q(list(types)) + ';',
   '  ' + END,
 ].join('\n');

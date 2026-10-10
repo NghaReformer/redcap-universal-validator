@@ -403,7 +403,9 @@ class UniversalValidator extends AbstractExternalModule
         // php/Branching.php: one active -> validate; none -> the else branch
         // if present, otherwise inert; more than one -> a branch conflict is
         // a reportable configuration problem, never a silent pass and never a
-        // guessed algorithm.
+        // guessed algorithm. A mode with branch groups (@UVRANGE: one group
+        // per reference) makes that choice once per group and evaluates every
+        // group's pick (Branching).
         if (isset($rule['branches']) && is_array($rule['branches'])) {
             if ($whenAst === null) {
                 // Scan path: parse each branch condition here (false = no parse).
@@ -416,11 +418,15 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 $asts = (is_array($whenAst) && isset($whenAst['branches'])) ? $whenAst['branches'] : [];
             }
-            $active = [];
-            $else = null;
+            $groupKey = ModeRegistry::branchGroup(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+            $active = [];   // group => [branch index, ...]
+            $else = [];     // group => branch index
+            $groups = [];   // group => true, in branch order
             foreach ($rule['branches'] as $bi => $b) {
+                $g = Branching::groupOf($b, $groupKey);
+                $groups[$g] = true;
                 if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') {
-                    $else = $bi;
+                    $else[$g] = $bi;
                     continue;
                 }
                 $ast = isset($asts[$bi]) ? $asts[$bi] : false;
@@ -445,30 +451,42 @@ class UniversalValidator extends AbstractExternalModule
                         return $out;
                     }
                 }
-                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[] = $bi;
+                if (Logic::evaluate($ast, $values, Logic::BLANK_INERT, !empty($b['caseSensitive']))) $active[Branching::groupOf($b, $groupKey)][] = $bi;
             }
-            if (count($active) > 1) {
-                $out['unconfigurable'][] = ['fields' => $rule['fields'],
-                    'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
-                    . $rule['branches'][$active[0]]['when'] . '" | "' . $rule['branches'][$active[1]]['when'] . '"'];
-                return $out;
+            foreach ($active as $list) {
+                if (count($list) > 1) {
+                    $out['unconfigurable'][] = ['fields' => $rule['fields'],
+                        'why' => 'more than one "when" condition is true for this field (branch conflict) — field skipped: "'
+                        . $rule['branches'][$list[0]]['when'] . '" | "' . $rule['branches'][$list[1]]['when'] . '"'];
+                    return $out;
+                }
             }
-            if (count($active) === 1) $pick = $active[0];
-            elseif ($else !== null) $pick = $else;
-            else return $out; // no branch applies to this context — the field is inert
-
-            $branch = $rule['branches'][$pick];
-            unset($branch['when']);
-            $flat = array_merge([
-                'type'   => isset($rule['type']) ? $rule['type'] : 'single',
-                'fields' => $rule['fields'],
-            ], $branch);
-            $r = $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
-            // Each finding names the branch that judged it, so a report can show
-            // that branch's message and limits (ScanDimensions keeps one
-            // snapshot per branch), not the first branch's or none.
-            foreach ($r['invalid'] as $k => $v) $r['invalid'][$k]['branch'] = $pick;
-            return $r;
+            // A rule with several groups names the group on each finding (its
+            // "locus"), so the findings of two references on one field keep
+            // identities of their own (Scan\Hmac::findingIdentity).
+            $several = (isset($rule['_groups']) ? (int) $rule['_groups'] : count($groups)) > 1;
+            foreach (array_keys($groups) as $g) {
+                if (isset($active[$g])) $pick = $active[$g][0];
+                elseif (isset($else[$g])) $pick = $else[$g];
+                else continue; // no branch of this group applies to this context
+                $branch = $rule['branches'][$pick];
+                unset($branch['when']);
+                $flat = array_merge([
+                    'type'   => isset($rule['type']) ? $rule['type'] : 'single',
+                    'fields' => $rule['fields'],
+                ], $branch);
+                $r = $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
+                // Each finding names the branch that judged it, so a report can show
+                // that branch's message and limits (ScanDimensions keeps one
+                // snapshot per branch), not the first branch's or none.
+                foreach ($r['invalid'] as $v) {
+                    $v['branch'] = $pick;
+                    if ($several && !isset($v['locus'])) $v['locus'] = (string) $g;
+                    $out['invalid'][] = $v;
+                }
+                foreach ($r['unconfigurable'] as $u) $out['unconfigurable'][] = $u;
+            }
+            return $out;
         }
 
         $type    = isset($rule['type']) && $rule['type'] !== '' ? $rule['type'] : 'single';

@@ -246,6 +246,7 @@
       "hooks": {"field": "annotateRangeField", "dictionary": "annotateRangeDictionary"},
       "evaluator": "findingsRange",
       "missingCodes": "skip",
+      "branchGroup": {"key": "rangeReference", "name": "reference"},
       "refKeys": [
         {"key": "rangeSex", "kind": "operand", "role": "test", "op": "rangeSexOp", "value": "rangeSexValue"},
         {"key": "rangeAgeDob", "kind": "operand", "role": "test", "op": "rangeAgeDobOp", "value": "rangeAgeDobValue"},

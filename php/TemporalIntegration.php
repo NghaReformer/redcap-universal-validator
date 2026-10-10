@@ -67,6 +67,10 @@ trait TemporalIntegration
         $resolver=$this->temporalResolverFor($shape,$node,$browser);
         if(isset($rule['branches'])){
             $out=$rule;$problems=[];$active=[];$fallback=null;$selectorUnknown=false;$selectorStale=false;
+            // A mode with branch groups (@UVRANGE: one per reference) picks one branch per group (Branching).
+            $groupKey=ModeRegistry::branchGroup(ModeRegistry::modeOfType($rule['type']??''));$group=[];$picks=[];
+            foreach($rule['branches'] as $i=>$branch)$group[$i]=Branching::groupOf($branch,$groupKey);
+            $grouped=count(array_unique($group))>1;
             foreach($rule['branches'] as $i=>$branch){
                 $flat=array_merge($rule,$branch);unset($flat['branches']);
                 // The selector alone: a test or an operand that cannot be resolved belongs to its branch, not to the choice of branch.
@@ -85,9 +89,9 @@ trait TemporalIntegration
                     if($g['problems'])$selectorUnknown=true;
                     if(!empty($g['stale']))$selectorStale=true;
                 }else{
-                    if(empty($branch['when']))$fallback=$i;
+                    if(empty($branch['when'])){$fallback=$i;if(!isset($picks[$group[$i]]))$picks[$group[$i]]=['else'=>$i,'active'=>[]];else $picks[$group[$i]]['else']=$i;}
                     elseif($g['problems'])$selectorUnknown=true;
-                    elseif(($g['rule']['when']??'')==='1=1')$active[]=$i;
+                    elseif(($g['rule']['when']??'')==='1=1'){$active[]=$i;$picks[$group[$i]]['active'][]=$i;}
                 }
             }
             if($selectorUnknown)return ['rule'=>$out,'problems'=>['unresolved branch selector']];
@@ -101,6 +105,24 @@ trait TemporalIntegration
                     $out['snapshotFields']=['saved event/instance values'];
                 }
                 $out['blockSave']='off';return ['rule'=>$out,'problems'=>[]];}
+            if($grouped){
+                // Each group's pick, prepared on its own, travels as an else branch of that group under its own
+                // index, so ruleFindings evaluates every group and names the branch that judged each finding.
+                // "_groups" keeps the rule's group count, which decides whether findings carry their group.
+                $flatOut=['type'=>$rule['type']??'single','fields'=>$rule['fields'],'branches'=>[],'_groups'=>count(array_unique($group))];
+                foreach($picks as $p){
+                    if(count($p['active'])>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
+                    $pick=$p['active']?$p['active'][0]:($p['else']??null);
+                    if($pick===null)continue;
+                    $flat=array_merge($rule,$rule['branches'][$pick]);unset($flat['branches']);
+                    $res=$this->temporalPrepared($flat,$shape,$node,$ctx,false,null);
+                    if($res['problems'])return $res;
+                    $b=$res['rule'];unset($b['type'],$b['fields']);if(($b['when']??null)!=='1=0')unset($b['when']);
+                    $flatOut['branches'][$pick]=$b;
+                }
+                if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}
+                return ['rule'=>$flatOut,'problems'=>[]];
+            }
             if(count($active)>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
             $pick=$active?$active[0]:$fallback;
             if($pick===null){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[]];}

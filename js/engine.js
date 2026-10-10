@@ -2924,23 +2924,36 @@ function QRID_configErrorNotice(message){
 function QRID_buildVariants(cfg, makeVariant){
   var variants = [], elseVariant = null;
   var unresolved = !!cfg.deferred;
+  /* Branch groups (php/Branching.php): a mode whose branches split by the
+     value of one key (@UVRANGE: its reference) resolves them once per group,
+     with an else per group. The dispatcher names the key (cfgFor). */
+  var groupKey = (typeof cfg.branchGroup === "string" && cfg.branchGroup !== "") ? cfg.branchGroup : null;
+  var groups = [], elseByGroup = Object.create(null), seenGroup = Object.create(null);
   function build(input){
     var v = makeVariant(input);
     v.unavailable = !!input.deferred && v.deferred === undefined;
     if(input.deferred || (input.snapshotFields && input.snapshotFields.length)
         || (cfg.snapshotFields && cfg.snapshotFields.length)) v.blockSave = "off";
+    var g = groupKey && input[groupKey] != null ? String(input[groupKey]) : "";
+    v.group = g;
+    if(!seenGroup[g]){ seenGroup[g] = true; groups.push(g); }
     return v;
   }
+  var elses = [];
   if(cfg.branches && cfg.branches.length){
     for(var i = 0; i < cfg.branches.length; i++){
       var v = build(cfg.branches[i]);
-      if(v.when === null) elseVariant = v;
+      if(v.when === null){
+        if(!elseVariant) elseVariant = v;
+        if(!elseByGroup[v.group]) elseByGroup[v.group] = v;
+        elses.push(v);
+      }
       else variants.push(v);
     }
   } else {
     variants = [build(cfg)];
   }
-  var all = elseVariant ? variants.concat([elseVariant]) : variants;
+  var all = elses.length ? variants.concat(elses) : variants;
   var configError = "";
   for(var c = 0; c < all.length; c++){
     if(all[c].configError){ configError = all[c].configError; break; }
@@ -2950,11 +2963,14 @@ function QRID_buildVariants(cfg, makeVariant){
     if(all[b].blockSave !== "off"){ firstBlock = all[b].blockSave; break; }
   }
   return { variants: variants, elseVariant: elseVariant, all: all,
+           grouped: groups.length > 1, groups: groups, elseByGroup: elseByGroup,
            configError: configError, firstBlock: firstBlock, unresolved: unresolved, config: cfg };
 }
 /* The variants whose gate is true right now; the else variant only when no
    conditional one is active. A gate-less variant (legacy rule without "when")
-   is always active. */
+   is always active. With branch groups this holds per group: the result has
+   one variant per group that applies, and two active variants of ONE group
+   come back alone, marked "conflict". */
 function QRID_activeVariants(vs){
   vs.config.dynamicDeferred = false;
   if(vs.unresolved && !vs.configError) return [];
@@ -2964,7 +2980,19 @@ function QRID_activeVariants(vs){
     if(!g || g.active()) act.push(vs.variants[i]);
     if(g && g.unresolved && g.unresolved()){ vs.config.dynamicDeferred = true; return []; }
   }
-  if(!act.length && vs.elseVariant) act = [vs.elseVariant];
+  if(vs.grouped){
+    var byGroup = Object.create(null), gi, k;
+    for(k = 0; k < act.length; k++) (byGroup[act[k].group] = byGroup[act[k].group] || []).push(act[k]);
+    for(gi = 0; gi < vs.groups.length; gi++){
+      var list = byGroup[vs.groups[gi]];
+      if(list && list.length > 1){ var clash = list.slice(0, 2); clash.conflict = true; return clash; }
+    }
+    act = [];
+    for(gi = 0; gi < vs.groups.length; gi++){
+      var one = byGroup[vs.groups[gi]] ? byGroup[vs.groups[gi]][0] : vs.elseByGroup[vs.groups[gi]];
+      if(one) act.push(one);
+    }
+  } else if(!act.length && vs.elseVariant) act = [vs.elseVariant];
   for(var a = 0; a < act.length; a++) if(act[a].unavailable) return [];
   return act;
 }
@@ -4260,41 +4288,25 @@ function QRIDRangeInit(QRID_CONFIG){
       if(QRID_IS_SURVEY || !why || !why.length){ inert(); return; }
       infoNote("Not checked on this page: " + QRID_escapeHtml(why.join(" ")));
     }
-    function check(){
-      var act = QRID_activeVariants(VS);
-      if(!act.length){
-        if(QRID_CONFIG.deferred && QRID_CONFIG.deferredOnSave === true){ onSaveNotice(QRID_CONFIG.deferredWhy); return; }
-        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
-        inert(); return;
-      }
-      if(act.length > 1){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
-      var V = act[0];
+    /* What one active variant says about the typed value: { kind: "none" }
+       (nothing to show), "deferral" (why), "info" (html, a grey note for
+       staff), or "warn" / "bad" (html, block). */
+    function judge(V, typed){
       if(V.deferred){
-        if(V.deferredWhy && !QRID_IS_SURVEY){
-          QRID_renderDeferralNotice(msg, input, V.deferredWhy, "n");
-          setGuard(false); QRID_setModeState(input, "n", null);
-          return;
-        }
-        inert(); return;
+        return (V.deferredWhy && !QRID_IS_SURVEY) ? { kind: "deferral", why: V.deferredWhy } : { kind: "none" };
       }
-      var r, typed = QRID_WHEN.readRef(fieldName, null);
-      if(QRID_isMissingCode(typed)){ inert(); return; }
-      try { r = verdictOf(V, typed); } catch(e){ inert(); return; }   /* fail open */
+      var r;
+      try { r = verdictOf(V, typed); } catch(e){ return { kind: "none" }; }   /* fail open */
       if(r.tier === "withheld" || (r.tier === "inert" && r.why)){
         /* Staff are told why a growth check did not run; a survey respondent
            is told nothing. */
-        if(QRID_IS_SURVEY){ inert(); return; }
-        infoNote(r.tier === "withheld"
+        if(QRID_IS_SURVEY) return { kind: "none" };
+        return { kind: "info", html: r.tier === "withheld"
           ? "Not checked against " + QRID_escapeHtml(V.growth.ref ? V.growth.ref.title : "its growth reference") +
             " on this page: an input is on a form you cannot view here. It is checked when the record is saved."
-          : "Not checked against " + QRID_escapeHtml(V.growth.ref.title) + ": " + QRID_escapeHtml(r.why) + ".");
-        return;
+          : "Not checked against " + QRID_escapeHtml(V.growth.ref.title) + ": " + QRID_escapeHtml(r.why) + "." };
       }
-      if(r.tier !== "soft" && r.tier !== "hard"){ inert(); return; }
-      var kind = r.tier === "soft" ? "warn" : "bad";
-      styleMsg(msg, kind);
-      QRID_setModeState(input, "n", kind);
-      setGuard(true, blockFor(V, r.tier));
+      if(r.tier !== "soft" && r.tier !== "hard") return { kind: "none" };
       var base = describe(V, r);
       if(V.snapshot && !QRID_IS_SURVEY){
         /* A growth rule's saved values are its inputs (sex, dates, age, length),
@@ -4304,7 +4316,58 @@ function QRIDRangeInit(QRID_CONFIG){
           ", read when this page was opened — reload if it has changed since." +
           " This check does not block saving; it is re-checked after the save.)</span>";
       }
-      msg.innerHTML = (kind === "warn" ? "&#9888; " : "&#10007; ") + base;
+      return { kind: r.tier === "soft" ? "warn" : "bad", html: base, block: blockFor(V, r.tier) };
+    }
+    var ICON = { warn: "&#9888; ", bad: "&#10007; ", info: "&#8505; ", deferral: "&#9888; " };
+    var BLOCK_RANK = { off: 0, confirm: 1, hard: 2 };
+    function check(){
+      var act = QRID_activeVariants(VS);
+      if(!act.length){
+        if(QRID_CONFIG.deferred && QRID_CONFIG.deferredOnSave === true){ onSaveNotice(QRID_CONFIG.deferredWhy); return; }
+        if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "n")){ setGuard(false); QRID_setModeState(input, "n", null); return; }
+        inert(); return;
+      }
+      if(act.conflict || (act.length > 1 && !VS.grouped)){ QRID_renderConflict(msg, input, act, "n"); setGuard(false); return; }
+      var typed = QRID_WHEN.readRef(fieldName, null);
+      if(act.length === 1){
+        var j = act[0].deferred ? judge(act[0], typed) : QRID_isMissingCode(typed) ? { kind: "none" } : judge(act[0], typed);
+        if(j.kind === "deferral"){
+          QRID_renderDeferralNotice(msg, input, j.why, "n");
+          setGuard(false); QRID_setModeState(input, "n", null);
+          return;
+        }
+        if(j.kind === "info"){ infoNote(j.html); return; }
+        if(j.kind === "none"){ inert(); return; }
+        styleMsg(msg, j.kind);
+        QRID_setModeState(input, "n", j.kind);
+        setGuard(true, j.block);
+        msg.innerHTML = ICON[j.kind] + j.html;
+        return;
+      }
+      /* Several references on one field (branch groups): every one judges the
+         value, the note has a line for each that has something to say, and
+         the worst decides the colour and the guard. */
+      if(QRID_isMissingCode(typed)){ inert(); return; }
+      var lines = [], seen = Object.create(null), worst = null, block = "off";
+      for(var ai = 0; ai < act.length; ai++){
+        var one = judge(act[ai], typed);
+        if(one.kind === "none") continue;
+        var line = ICON[one.kind] + (one.kind === "deferral"
+          ? "Not checked on this page: " + QRID_escapeHtml(one.why.join(" ")) : one.html);
+        if(!seen[line]){ seen[line] = true; lines.push(line); }
+        if(one.kind === "bad") worst = "bad";
+        else if(one.kind === "warn" && worst !== "bad") worst = "warn";
+        if(one.block && BLOCK_RANK[one.block] > BLOCK_RANK[block]) block = one.block;
+      }
+      if(!lines.length){ inert(); return; }
+      if(worst === null){
+        infoNote(lines.join("<br>").replace(/^&#8505; /, ""));
+        return;
+      }
+      styleMsg(msg, worst);
+      QRID_setModeState(input, "n", worst);
+      setGuard(true, block);
+      msg.innerHTML = lines.join("<br>");
     }
     /* Typing clears the note; leaving the field (or a change from a script,
        a calc or the slider) judges the value. The self-watch below also hears
@@ -4329,11 +4392,18 @@ function QRIDRangeInit(QRID_CONFIG){
       test: function(){
         if(configError) return null;   /* any variant's error (QRID_buildVariants): nothing is checked */
         var a = QRID_activeVariants(VS);
-        if(a.length !== 1 || a[0].deferred) return null;
+        if(!a.length || a.conflict || (a.length > 1 && !VS.grouped)) return null;
         if(QRID_isMissingCode(QRID_WHEN.readRef(f, null))) return null;
-        var t;
-        try { t = verdictOf(a[0], QRID_WHEN.readRef(f, null)).tier; } catch(e){ return null; }   /* fail open, as check() */
-        return t === "ok" ? true : (t === "soft" || t === "hard") ? false : null;
+        /* every reference must pass; one that cannot judge leaves the answer open */
+        var open = false;
+        for(var ti = 0; ti < a.length; ti++){
+          if(a[ti].deferred){ open = true; continue; }
+          var t;
+          try { t = verdictOf(a[ti], QRID_WHEN.readRef(f, null)).tier; } catch(e){ open = true; continue; }   /* fail open, as check() */
+          if(t === "soft" || t === "hard") return false;
+          if(t !== "ok") open = true;
+        }
+        return open ? null : true;
       } };
   });
   function boot(){
@@ -6132,6 +6202,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
     "exists": "QRIDExistsInit",
     "range": "QRIDRangeInit"
   };
+  var BRANCH_GROUP_OF_TYPE = {
+    "range": "rangeReference"
+  };
   var KNOWN_TYPES_TEXT = "\"single\", \"pooled\", \"constraint\", \"required\", \"unique\", \"choices\", \"window\", \"exists\" or \"range\"";
   /* @generated mode-registry END */
   /* The factories the registry may name. Hand-written, because a name in a
@@ -6194,6 +6267,8 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
         cfg.branches.push(bc);
       }
       cfg.fields = rule.fields || [];
+      /* branches split by this key resolve per group (QRID_buildVariants) */
+      cfg.branchGroup = (typeof rule.type === "string" && own(BRANCH_GROUP_OF_TYPE, rule.type)) ? BRANCH_GROUP_OF_TYPE[rule.type] : null;
       if(rule.configError) cfg.configErrorOverride = rule.configError;
       return cfg;
     }

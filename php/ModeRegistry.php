@@ -82,6 +82,13 @@ final class ModeRegistry
                     }
                 }
             }
+            if (isset($m['branchGroup'])) {
+                $g = $m['branchGroup'];
+                if (!is_array($g) || !isset($g['key'], $g['name']) || !is_string($g['name']) || $g['name'] === ''
+                    || !in_array($g['key'], $m['branchKeys'], true)) {
+                    throw new \RuntimeException('mode "' . $m['mode'] . '" has a branchGroup that is not {key: one of its branchKeys, name}');
+                }
+            }
             if (!isset($m['eligibility']['fieldTypes']) || !is_array($m['eligibility']['fieldTypes'])) {
                 throw new \RuntimeException('mode "' . $m['mode'] . '" has no eligibility.fieldTypes');
             }
@@ -207,6 +214,25 @@ final class ModeRegistry
     {
         $m = self::mode($mode);
         return (isset($m['uniformBranchKeys']) && is_array($m['uniformBranchKeys'])) ? $m['uniformBranchKeys'] : [];
+    }
+
+    /**
+     * The branch key whose value splits a mode's rules on one field into
+     * groups that each branch on their own (php/Branching.php), or null when
+     * the mode has none: @UVRANGE's "reference", so one field can be checked
+     * against several growth references at once.
+     */
+    public static function branchGroup($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['branchGroup']['key']) ? $m['branchGroup']['key'] : null;
+    }
+
+    /** The option name a branch-group refusal shows ("reference"), or null. */
+    public static function branchGroupName($mode)
+    {
+        $m = self::mode($mode);
+        return isset($m['branchGroup']['name']) ? $m['branchGroup']['name'] : null;
     }
 
     /**

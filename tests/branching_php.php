@@ -228,5 +228,40 @@ $n++;
         && !isset($br[1]['alternates']) && $br[1]['algorithm'] === 'verhoeff');
 }
 
+// ---- branch groups: @UVRANGE resolves per reference ------------------------
+{
+    $rg = function ($ref, $extra = []) {
+        return array_merge(['type' => 'range', 'fields' => ['wt'], 'rangeHardLo' => '-5', 'rangeHardHi' => '5'],
+            $ref === null ? [] : ['rangeReference' => $ref], $extra);
+    };
+    $out = Branching::resolve([$rg('who-wfa'), $rg('who-wfh')]);
+    $br = isset($out[0]['branches']) ? $out[0]['branches'] : [];
+    check('groups: two unconditional rules with different references branch, an else each',
+        count($out) === 1 && count($br) === 2 && $br[0]['rangeReference'] === 'who-wfa' && $br[0]['when'] === null
+        && $br[1]['rangeReference'] === 'who-wfh' && $br[1]['when'] === null && empty($out[0]['configError']));
+    $c = Branching::fieldConflicts([$rg('who-wfa'), $rg('who-wfa', ['rangeHardLo' => '-6'])]);
+    check('groups: two unconditional rules with the same reference conflict',
+        isset($c['wt']) && $c['wt']['kind'] === 'two-unconditional' && $c['wt']['group'] === 'reference'
+        && strpos(Branching::message('wt', $c['wt']), 'no "when" condition and the same "reference"') !== false);
+    check('groups: fixed limits are a group of their own', Branching::fieldConflicts([$rg(null), $rg('who-wfa')]) === []);
+    check('groups: two fixed-limit rules with no "when" still conflict',
+        isset(Branching::fieldConflicts([$rg(null), $rg(null)])['wt']));
+    $c = Branching::fieldConflicts([$rg('who-wfa', ['when' => "[a]='1'"]), $rg('who-wfa', ['when' => "[a]='1'"])]);
+    check('groups: an identical "when" within one reference conflicts',
+        isset($c['wt']) && $c['wt']['kind'] === 'identical-when'
+        && strpos(Branching::message('wt', $c['wt']), "the identical condition \"[a]='1'\" and the same \"reference\"") !== false);
+    check('groups: an identical "when" in two references is fine',
+        Branching::fieldConflicts([$rg('who-wfa', ['when' => "[a]='1'"]), $rg('who-wfh', ['when' => "[a]='1'"])]) === []);
+    $out = Branching::resolve([$rg('who-wfa'), $rg('who-wfh', ['when' => "[b]='1'"]), $rg('who-wfh')]);
+    $br = isset($out[0]['branches']) ? $out[0]['branches'] : [];
+    check('groups: the elses go last, in rule order',
+        count($br) === 3 && $br[0]['when'] === "[b]='1'" && $br[1]['rangeReference'] === 'who-wfa' && $br[1]['when'] === null
+        && $br[2]['rangeReference'] === 'who-wfh' && $br[2]['when'] === null);
+    check('groups: a mode without a branchGroup keeps one group (check mode)',
+        isset(Branching::fieldConflicts([rule(['x'], ['algorithm' => 'damm']), rule(['x'], ['algorithm' => 'luhn'])])['x']));
+    check('groups: groupOf reads the key, "" without one', Branching::groupOf(['rangeReference' => 'r'], 'rangeReference') === 'r'
+        && Branching::groupOf([], 'rangeReference') === '' && Branching::groupOf(['rangeReference' => 'r'], null) === '');
+}
+
 echo sprintf("branching_php: %d checks, %d failure(s)\n", $n, $fail);
 exit($fail === 0 ? 0 : 1);

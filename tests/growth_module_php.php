@@ -517,6 +517,78 @@ namespace {
     list($by) = audit($BR, $br);
     check('audit: the branch that applies judges (by height: 13 kg at 80 cm, z 2.40)', ($by['wt_br'] ?? null) === 'soft-high');
 
+    // ---- 5d) several references on one field: each judges, all must pass ---------------------
+    // 6.6 kg, a boy of 365 days and 80 cm: weight-for-age z -3.40 (unusual), weight-for-height
+    // z -5.59 (implausible). 12.5 kg: -for-age z 2.39 (unusual), -for-height z 1.95 (fine).
+    $TWO = $DICT + [
+        'wt_two'  => f('anthro_form', tag('who-wfa', $AGE) . ' ' . tag('who-wfh', '"by":"[height]"'), 'number_1dp'),
+        'wt_same' => f('anthro_form', tag('who-wfa', $AGE) . ' ' . tag('who-wfa', $AGE, '"hard":[-6,5]'), 'number_1dp'),
+        'wt_fix'  => f('anthro_form', '@UVRANGE={"hard":[0.5,40]} ' . tag('who-wfa', $AGE), 'number_1dp'),
+        'wt_band' => f('anthro_form', substr(tag('who-wfa', $AGE), 0, -1) . ',"when":"[age_days]<1826"} '
+                                    . substr(tag('who2007-wfa', $AGE), 0, -1) . ',"when":"[age_days]>=1826"} '
+                                    . tag('who-wfh', '"by":"[height]"'), 'number_1dp'),
+    ];
+    $two = $DATA; $two['2'][351] += ['wt_two' => '6.6', 'wt_same' => '6.6', 'wt_fix' => '6.6', 'wt_band' => '6.6'];
+    $p = page(mod($TWO, $two, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r = ruleFor($p, 'wt_two');
+    $refs = $r ? array_map(function ($b) { return [$b['rangeReference'] ?? null, $b['when'] ?? null]; }, $r['branches'] ?? []) : [];
+    check('several references: two tags with no "when" and different references are one branched rule, an else each (got '
+        . json_encode([$refs, $r['configError'] ?? null]) . ')',
+        $refs === [['who-wfa', null], ['who-wfh', null]] && empty($r['configError']));
+    check('several references: the page carries both tables', isset($p['cfg']['growth']['who-wfa'], $p['cfg']['growth']['who-wfh']));
+    check('several references: two with no "when" and the SAME reference are refused, naming the reference (got '
+        . json_encode($err($p, 'wt_same')) . ')',
+        strpos($err($p, 'wt_same'), 'covered by 2 rules with no "when" condition and the same "reference"') !== false);
+    check('several references: fixed limits are a reference of their own', $err($p, 'wt_fix') === '');
+    $r = ruleFor($p, 'wt_band');
+    check('several references: age bands and a third reference (got ' . json_encode($r['configError'] ?? null) . ')',
+        $r && count($r['branches'] ?? []) === 3 && empty($r['configError']));
+    $sevAudit = function ($dict, $data) {
+        global $FULL;
+        $m = mod($dict, $data, $FULL, 'nurse');
+        $m->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
+        $out = [];
+        foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $out[$e['field']][] = $e['reason'];
+        foreach ($out as $k => $v) sort($out[$k]);
+        $un = [];
+        foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
+        return [$out, $un];
+    };
+    list($sev, $un) = $sevAudit($TWO, $two);
+    check('audit: each reference judges the weight, one finding each (got ' . json_encode([$sev, $un]) . ')',
+        ($sev['wt_two'] ?? null) === ['hard-low', 'soft-low'] && !$un);
+    check('audit: fixed limits pass, the reference does not', ($sev['wt_fix'] ?? null) === ['soft-low']);
+    check('audit: the age band that applies, and the third reference', ($sev['wt_band'] ?? null) === ['hard-low', 'soft-low']);
+    $two['2'][351]['wt_two'] = '12.5';
+    list($sev) = $sevAudit($TWO, $two);
+    check('audit: one reference out of range is one finding', ($sev['wt_two'] ?? null) === ['soft-high']);
+    $two['2'][351]['wt_two'] = '9.5';
+    list($sev) = $sevAudit($TWO, $two);
+    check('audit: all references pass, nothing', !isset($sev['wt_two']));
+    $two['2'][351]['wt_two'] = '6.6';
+    $res = mod($TWO, $two, $FULL, 'nurse')->scanProject(149);
+    $sc = [];
+    foreach ($res['violations'] as $v) if ($v['field'] === 'wt_two') $sc[] = $v['reason'];
+    sort($sc);
+    check('scan: one finding per reference (got ' . json_encode($sc) . ')', $sc === ['hard-low', 'soft-low']);
+    // The durable scan keeps both: each names its reference (the locus of its identity).
+    $m = mod($TWO, $two, $FULL, 'nurse');
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', $two['2'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $dw = array_values(array_filter($dur['findings'], function ($x) { return $x['field'] === 'wt_two'; }));
+    check('durable: two findings on the field, two identities, nothing collapsed (got ' . count($dw) . ', ' . $dur['collapsed'] . ')',
+        count($dw) === 2 && $dw[0]['identity'] !== $dw[1]['identity'] && $dur['collapsed'] === 0);
+    // A finding's identity names its reference only when the rule has several: a field
+    // with one growth rule keeps the identity it had.
+    $m = mod($DICT, $DATA, $FULL, 'nurse');
+    $ctx = $m->durableScanContext(149, ['generation' => null]);
+    $dur = $m->durableEvaluateRecord($ctx['plan'], 149, '2', $DATA['2'], 1, str_repeat('k', 32), $ctx['plan']['ruleIds']);
+    $dw = array_values(array_filter($dur['findings'], function ($x) { return $x['field'] === 'weight'; }));
+    $loc = ['record' => '2', 'event_id' => 351, 'instance' => 1, 'host_form' => 'anthro_form', 'field' => 'weight',
+            'rule_source_id' => $dw ? $dw[0]['rule_source_id'] : '', 'reason_code' => \INSPIRE\UniversalValidator\Scan\ReasonCode::code('soft-low'), 'locus' => ''];
+    check('durable: one growth rule, no locus in its identity',
+        count($dw) === 1 && $dw[0]['identity'] === \INSPIRE\UniversalValidator\Scan\Hmac::findingIdentity(149, $loc, str_repeat('k', 32)));
+
     // ---- 5c) the docs: reference ids and the worked example --------------------------------------
     // Every reference id a document names is one the module ships; "who-nope" is
     // the refused example's unknown id. (JSON in config.json escapes its quotes,

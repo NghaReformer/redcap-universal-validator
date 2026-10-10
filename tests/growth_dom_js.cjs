@@ -23,7 +23,11 @@
  *     rule is deferred or an input is withheld (no z-score there, so no table),
  *   - a rule deferred by the page's table cap (deferredOnSave) gets a grey
  *     note that the save checks it, not the "not checked at all" notice,
- *   - UV_validators[field].test() answers by the z-score.
+ *   - UV_validators[field].test() answers by the z-score,
+ *   - several references on one field (branch groups): each judges, the note
+ *     has a line for each that has something to say, the worst decides the
+ *     colour and the guard, and two active branches of one reference are a
+ *     conflict.
  *
  * The z-score itself is parity-locked by tests/growth_js.cjs + growth_php.php.
  *
@@ -399,6 +403,88 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   check('test(): no sex is null (not checked)', t() === null);
   w.value = 'abc';
   check('test(): not a number is false', t() === false);
+}
+
+// ---- 8) several references on one field ----------------------------------------------------
+/* A second reference by age: M 11 on every day, for both sexes. */
+const T_DAYS2 = Object.assign({}, T_DAYS, { title: 'Second test', male: ROWS_M.map(() => [1, 11, 0.1]), female: ROWS_M.map(() => [1, 11, 0.1]) });
+const GROWTH2 = { 't-days': T_DAYS, 't-days2': T_DAYS2 };
+function br(extra) {
+  const r = rule(Object.assign({}, LIVE, extra));
+  delete r.type; delete r.fields;
+  if (r.when === undefined) r.when = null;
+  return r;
+}
+function twoRefs(extraA, extraB) {
+  return { type: 'range', fields: ['weight'], branches: [br(extraA), br(Object.assign({ rangeReference: 't-days2' }, extraB))] };
+}
+{
+  const els = inputs('1', '11');
+  const [sex, , , w] = els;
+  const env = boot(els, { growth: GROWTH2, rules: [twoRefs()] });
+  const msg = nMsg(env, 'weight');
+  const t = () => env.NS.validators.weight.test();
+  check('two references: both pass (z 1.00 and 0.00), nothing shown', !shown(msg) && save(env) === 'saved' && t() === true);
+  w.value = '13'; w.fire('change');
+  check('two references: one unusual, one line, amber (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#9888; This value is higher than usual (z-score 3.00 on Test, age in days; expected z-score -2 to 2).'
+    && save(env) === 'asked' && t() === false);
+  w.value = '16'; w.fire('change');
+  check('two references: implausible on one, unusual on the other: two lines, red, held (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#10007; This value is above the plausible range (z-score 6.00 on Test, age in days; allowed z-score -5 to 5).'
+      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
+    && /#c62828/.test(msg.style.cssText) && save(env) === 'held' && t() === false);
+  w.value = 'abc'; w.fire('change');
+  check('two references: the same line from both is shown once (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#10007; This is not a number.' && save(env) === 'held');
+  w.value = '11'; w.fire('change');
+  sex.value = ''; sex.fire('change');
+  check('two references: neither can judge, a grey line each for staff (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#8505; Not checked against Test, age in days: the sex is blank.'
+      + '<br>&#8505; Not checked against Second test: the sex is blank.'
+    && save(env) === 'saved' && t() === null);
+}
+{
+  // The second reference is read by length, which is blank: it says why, the first still judges.
+  const els = inputs('1', '13').concat([el('len', '')]);
+  const env = boot(els, { growth: { 't-days': T_DAYS, 't-len': T_LEN }, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br(), Object.assign(br({ rangeReference: 't-len' }), { rangeAgeDobOp: undefined, rangeAgeAtOp: undefined, rangeByOp: ['ref', 'len', null] })] }] });
+  const msg = nMsg(env, 'weight');
+  check('two references: a verdict and a reference that cannot judge share the note (got ' + msg.innerHTML + ')',
+    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days; expected z-score -2 to 2\)\.<br>&#8505; Not checked against Test, by length: /.test(msg.innerHTML)
+    && save(env) === 'asked');
+}
+{
+  // The strongest block of the references with a verdict decides: unusual (asks) and
+  // implausible with hardBlock "confirm" (asks) asks; with the default hard, held.
+  const els = inputs('1', '16');
+  let env = boot(els, { growth: GROWTH2, rules: [twoRefs({ rangeHardBlock: 'confirm' })] });
+  check('two references: implausible with hardBlock confirm and unusual: the save asks', save(env) === 'asked');
+  env = boot(inputs('1', '16'), { growth: GROWTH2, rules: [twoRefs({ rangeHardBlock: 'confirm' }, { rangeSoftBlock: 'off' })] });
+  check('two references: ... and with the other one\'s softBlock off, still asks', save(env) === 'asked');
+}
+{
+  // Two references, the first branched by "when": the conditional one applies when true, the else otherwise.
+  const els = inputs('1', '13').concat([el('band', '1')]);
+  const [, , , w, band] = els;
+  const env = boot(els, { growth: GROWTH2, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: "[band]='1'", rangeSoftHi: '5', rangeSoftText: 'z-score -2 to 5' }), br({ rangeReference: 't-days2' }), br()] }] });
+  const msg = nMsg(env, 'weight');
+  check('branched reference: the "when" branch applies (soft up to 5), the other reference passes', !shown(msg));
+  band.value = '2'; band.fire('change');
+  check('branched reference: false, the else of that reference applies (got ' + msg.innerHTML + ')',
+    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days/.test(msg.innerHTML));
+  w.value = '11'; w.fire('change');
+  check('branched reference: back to usual', !shown(msg));
+}
+{
+  // Two active branches of ONE reference: a conflict, nothing judged, never held.
+  const els = inputs('1', '16');
+  const env = boot(els, { growth: GROWTH2, rules: [{ type: 'range', fields: ['weight'], branches: [
+    br({ when: "[sex]='1'" }), br({ when: "[visit_date]<>''" }), br({ rangeReference: 't-days2' })] }] });
+  const msg = nMsg(env, 'weight');
+  check('one reference, two active branches: a conflict (got ' + msg.innerHTML + ')',
+    /Validation conflict/.test(msg.innerHTML) && save(env) === 'saved' && env.NS.validators.weight.test() === null);
 }
 
 console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
