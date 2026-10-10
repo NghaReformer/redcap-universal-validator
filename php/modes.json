@@ -260,12 +260,14 @@
                      "rangeReference", "rangeSex", "rangeMale", "rangeFemale", "rangeAgeDob", "rangeAgeAt",
                      "rangeAgeDays", "rangeAgeMonths", "rangeBy", "rangeDobType", "rangeDobFormat",
                      "rangeAtType", "rangeAtFormat", "rangeAxisComma",
+                     "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
                      "caseSensitive", "message"],
       "clientKeys": ["rangeSoftLo", "rangeSoftHi", "rangeHardLo", "rangeHardHi", "rangeSoftBlock", "rangeHardBlock",
                      "rangeUnit", "rangeSoftText", "rangeHardText", "decimalComma", "rangeComputed",
                      "rangeReference", "rangeSexOp", "rangeMale", "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp",
                      "rangeAgeDaysOp", "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
                      "rangeAtType", "rangeAtFormat", "rangeAxisComma",
+                     "rangePlausibleLo", "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
                      "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                      "deferredOnSave", "extendedAdvisory"],
       "needs": [],
@@ -274,8 +276,9 @@
       "scan": {"issueLabels": {"soft-low": "Unusual value", "soft-high": "Unusual value",
                                "hard-low": "Implausible value", "hard-high": "Implausible value",
                                "not-a-number": "Not a number", "not-positive": "Not a positive measurement",
+                               "plausible-low": "Implausible value", "plausible-high": "Implausible value",
                                "*": "Implausible value"},
-               "detailKeys": ["rangeSoftText", "rangeHardText"]}
+               "detailKeys": ["rangeSoftText", "rangeHardText", "rangePlausibleText"]}
     }
   ]
 }

@@ -166,7 +166,9 @@ namespace {
         foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $by[$e['field']] = $e['reason'];
         $un = [];
         foreach (findings($m, 'uvalidate-unconfigurable') as $e) $un[] = (string) $e['fields'] . ': ' . (string) $e['why'];
-        return [$by, $un];
+        $ne = [];
+        foreach (findings($m, 'uvalidate-not-evaluated') as $e) $ne[$e['field']] = $e['why'];
+        return [$by, $un, $ne, $m];
     }
     function errOf($tag, $opts = []) {
         $f = AnnotationRules::parseAllTags($tag, $opts);
@@ -218,6 +220,16 @@ namespace {
         'sex a condition'           => ['@UVRANGE={"reference":"who-wfa","sex":"[sex]=\'1\'","male":"1","female":"2",' . $AGE . ',"hard":[-5,5]}', '"sex" must be exactly one field reference'],
         'by a checkbox code'        => [tag('who-wfh', '"by":"[h(1)]"'), '"by" must be exactly one field reference'],
         'dob in another event'      => [tag('who-wfa', '"age":{"dob":"[enrol_arm_1][dob]","at":"[visit_date]"}'), 'needs event and instance references'],
+        'plausible, no reference'   => ['@UVRANGE={"hard":[1,2],"plausible":[0.5,30]}', '"plausible" and "measureScale" only apply with a "reference"'],
+        'measureScale, no reference' => ['@UVRANGE={"hard":[1,2],"measureScale":0.001}', '"plausible" and "measureScale" only apply with a "reference"'],
+        'plausible upside down'     => [tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[30,0.5]'), 'the "plausible" low limit (30) is above its high limit (0.5).'],
+        'plausible not a pair'      => [tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":5'), '"plausible" must be a list of two limits'],
+        'plausible with no limit'   => [tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[null,null]'), '"plausible" needs at least one limit'],
+        'plausible as text'         => [tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":["a",30]'), 'the "plausible" low limit must be a number'],
+        'measureScale of 0'         => [tag('who-wfa', $AGE, '"hard":[-5,5],"measureScale":0'), '"measureScale" must be a number from 0.000001 to 1000000, such as 0.001 for grams typed into a reference in kg — got 0.'],
+        'measureScale past a million' => [tag('who-wfa', $AGE, '"hard":[-5,5],"measureScale":1e7'), '"measureScale" must be a number from 0.000001 to 1000000'],
+        'measureScale negative'     => [tag('who-wfa', $AGE, '"hard":[-5,5],"measureScale":-0.001'), '"measureScale" must be a number from 0.000001'],
+        'measureScale as a word'    => [tag('who-wfa', $AGE, '"hard":[-5,5],"measureScale":"grams"'), '"measureScale" must be a number such as 0.001 (grams typed into a reference in kg) — got "grams".'],
     ];
     foreach ($refused as $label => $pair) {
         $e = errOf($pair[0]);
@@ -235,6 +247,17 @@ namespace {
         strpos(errOf(tag('who-wfa', '"age":{"dob":"[dob][all-instances]","at":"[visit_date]"}'), ['qualified' => true]),
             '"age" "dob" must be exactly one field reference') !== false);
     check('z limits of exactly -20 and 20 are fine', errOf(tag('who-wfa', $AGE, '"hard":[-20,20]')) === '');
+    // "plausible" is in the reference's unit, not z-scores: 30 kg is no z limit past 20
+    check('plausible and measureScale are taken, and plausible is not a z-score (got '
+        . json_encode(errOf(tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[0.5,30],"measureScale":0.001'))) . ')',
+        errOf(tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[0.5,30],"measureScale":0.001')) === '');
+    check('a one-sided plausible and the measureScale bounds are taken',
+        errOf(tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[null,30],"measureScale":0.000001')) === ''
+        && errOf(tag('who-wfa', $AGE, '"hard":[-5,5],"measureScale":1000000')) === '');
+    $pf = AnnotationRules::parseAllTags(tag('who-wfa', $AGE, '"hard":[-5,5],"plausible":[0.50,30],"measureScale":1e-3'));
+    check('plausible and measureScale keep the digits typed (exponents written out)',
+        ($pf[0]['rangePlausibleLo'] ?? null) === '0.50' && ($pf[0]['rangePlausibleHi'] ?? null) === '30'
+        && ($pf[0]['rangeMeasureScale'] ?? null) === '0.001');
     check('male and female differing in case are fine with caseSensitive',
         errOf('@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"M","female":"m",' . $AGE . ',"hard":[-5,5],"caseSensitive":true}') === '');
 
@@ -510,13 +533,15 @@ namespace {
         !isset($by['weight']) && !isset($by['wt_h']) && !isset($by['hc']) && !$un);
     \Project::$codes = '';
     // A saved date that does not read as one is a rule problem for a value there is to judge.
+    // A saved date that does not read as one is the value's problem, not the rule's:
+    // the value is not evaluated, and the log says why (the browser's words).
     $baddate = $DATA; $baddate['2'][351]['dob'] = '10-01-2025';
-    list($by, $un) = audit($DICT, $baddate);
-    check('audit: an unreadable date of birth is a rule problem (got ' . json_encode($un) . ')', !isset($by['weight'])
-        && count(array_filter($un, function ($u) { return strpos($u, 'weight') === 0 && strpos($u, 'the date of birth [dob] is not a date this rule can read') !== false; })) === 1);
+    list($by, $un, $ne) = audit($DICT, $baddate);
+    check('audit: an unreadable date of birth: not evaluated, not a rule problem (got ' . json_encode([$un, $ne]) . ')', !isset($by['weight'])
+        && !$un && ($ne['weight'] ?? null) === 'the date of birth is not a date this rule can read');
     $baddate['2'][351]['weight'] = '';
-    list($by, $un) = audit($DICT, $baddate);
-    check('audit: ... but not for a blank value', !$un);
+    list($by, $un, $ne) = audit($DICT, $baddate);
+    check('audit: ... and a blank value is not listed at all', !$un && !isset($ne['weight']));
     // Saving the form that holds the inputs re-checks the measurements.
     list($by) = audit($DICT, $DATA, 'enrol_form');
     check('audit: a save of enrol_form re-checks the rules whose inputs it holds (got ' . json_encode(array_keys($by)) . ')',
@@ -534,7 +559,8 @@ namespace {
     $wt = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'weight'; }));
     $row = \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, $cols);
     check('scan: the detail names the z-score limits (got ' . json_encode($row['problem'] ?? null) . ')',
-        ($row['problem'] ?? '') === 'The value is lower than usual for this field. Expected z-score -2 to 2.');
+        ($row['problem'] ?? '') === 'The value is lower than usual for this field. Expected z-score -2 to 2. '
+            . 'Its z-score is -3.40 on the growth reference who-wfa.');
     $m = mod($DICT, $weird, $FULL, 'nurse');
     $res = $m->scanProject(149);
     $np = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'wt_h'; }));
@@ -556,7 +582,8 @@ namespace {
     $row = $bm ? \INSPIRE\UniversalValidator\ScanColumns::row($bm[0], $dims, $cols) : [];
     check('scan: a hard finding names the hard z-score limits (got ' . json_encode([$row['issue'] ?? null, $row['problem'] ?? null]) . ')',
         ($row['issue'] ?? '') === 'Implausible value'
-        && ($row['problem'] ?? '') === 'The value is above the highest plausible value for this field. Allowed z-score -5 to 5.');
+        && ($row['problem'] ?? '') === 'The value is above the highest plausible value for this field. Allowed z-score -5 to 5. '
+            . 'Its z-score is 5.03 on the growth reference who2007-bfa.');
 
     // ---- 5b) more inputs: trim, overflow, dates with a time, "when", branches ------------------
     // \v is not whitespace in the browser (QRID_whenTrim): the height is not a number there, so not here either
@@ -656,6 +683,15 @@ namespace {
         ($sev['wt_two'] ?? null) === ['hard-low', 'soft-low'] && !$un);
     check('audit: fixed limits pass, the reference does not', ($sev['wt_fix'] ?? null) === ['soft-low']);
     check('audit: the age band that applies, and the third reference', ($sev['wt_band'] ?? null) === ['hard-low', 'soft-low']);
+    // A blank height leaves who-wfh without a z-score: that reference's value is
+    // not evaluated, and who-wfa still judges.
+    $nh = $two; $nh['2'][351]['height'] = '';
+    list(, , $ne, $mm) = audit($TWO, $nh);
+    $nel = array_values(array_filter(findings($mm, 'uvalidate-not-evaluated'), function ($e) { return $e['field'] === 'wt_two'; }));
+    check('audit: two references, a blank height: who-wfh not evaluated, named (got ' . json_encode($nel) . ')',
+        count($nel) === 1 && $nel[0]['reference'] === 'who-wfh' && $nel[0]['why'] === 'the height is blank');
+    list($sev) = $sevAudit($TWO, $nh);
+    check('audit: ... and who-wfa still judges', ($sev['wt_two'] ?? null) === ['soft-low']);
     $two['2'][351]['wt_two'] = '12.5';
     list($sev) = $sevAudit($TWO, $two);
     check('audit: one reference out of range is one finding', ($sev['wt_two'] ?? null) === ['soft-high']);
@@ -685,6 +721,92 @@ namespace {
             'rule_source_id' => $dw ? $dw[0]['rule_source_id'] : '', 'reason_code' => \INSPIRE\UniversalValidator\Scan\ReasonCode::code('soft-low'), 'locus' => ''];
     check('durable: one growth rule, no locus in its identity',
         count($dw) === 1 && $dw[0]['identity'] === \INSPIRE\UniversalValidator\Scan\Hmac::findingIdentity(149, $loc, str_repeat('k', 32)));
+    check('durable: the finding row carries its z-score (got ' . json_encode($dw[0]['z_score'] ?? null) . ')', ($dw[0]['z_score'] ?? null) === '-3.40');
+
+    // ---- 5e) no z-score: "plausible", "measureScale", the z-score on findings, values not evaluated ----
+    $PL = $DICT;
+    $PL['weight'] = f('anthro_form', tag('who-wfa', $AGE, '"soft":[-2,2],"hard":[-5,5],"plausible":[2,30]'), 'number_1dp');
+    $PL['wt_g'] = f('anthro_form', tag('who-wfa', $AGE, '"soft":[-2,2],"hard":[-5,5],"plausible":[2,30],"measureScale":0.001'), 'integer');
+    $pl = $DATA; $pl['2'][351]['wt_g'] = '6600';
+    list($by, $un, $ne, $m) = audit($PL, $pl);
+    check('measureScale: 6600 g reads as 6.6 kg, the same z-score (got ' . json_encode([$by['wt_g'] ?? null, $by['weight'] ?? null]) . ')',
+        ($by['wt_g'] ?? null) === 'soft-low' && ($by['weight'] ?? null) === 'soft-low' && !$ne);
+    $logged = [];
+    foreach (findings($m) as $e) if (($e['type'] ?? '') === 'range') $logged[$e['field']] = [$e['z'] ?? null, $e['reference'] ?? null];
+    check('log: a growth finding carries its z-score and reference (got ' . json_encode($logged) . ')',
+        ($logged['weight'] ?? null) === ['-3.40', 'who-wfa'] && ($logged['wt_g'] ?? null) === ['-3.40', 'who-wfa']
+        && ($logged['bmi'] ?? null) === ['5.03', 'who2007-bfa']);
+    $p = page(mod($PL, $pl, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    $r = ruleFor($p, 'wt_g');
+    check('page: plausible, its text in the reference\'s unit, and measureScale travel (got '
+        . json_encode([$r['rangePlausibleLo'] ?? null, $r['rangePlausibleHi'] ?? null, $r['rangePlausibleText'] ?? null, $r['rangeMeasureScale'] ?? null]) . ')',
+        $r && $r['rangePlausibleLo'] === '2' && $r['rangePlausibleHi'] === '30' && $r['rangePlausibleText'] === '2 to 30 kg'
+        && $r['rangeMeasureScale'] === '0.001');
+    // with a z-score the z-score decides, whatever "plausible" says
+    $pl['2'][351]['weight'] = '1.5';
+    list($by) = audit($PL, $pl);
+    check('plausible: with a z-score, 1.5 kg is judged by its z-score, not by "plausible" (got ' . json_encode($by['weight'] ?? null) . ')',
+        ($by['weight'] ?? null) === 'hard-low');
+    // no date of birth: the plausible range judges, and the value is listed as not evaluated
+    $nodob = $pl; $nodob['2'][351]['dob'] = ''; $nodob['2'][351]['weight'] = '95'; $nodob['2'][351]['wt_g'] = '95000';
+    list($by, $un, $ne, $m) = audit($PL, $nodob);
+    check('plausible: no date of birth, 95 kg is above the plausible range (got ' . json_encode([$by, $ne]) . ')',
+        ($by['weight'] ?? null) === 'plausible-high' && ($by['wt_g'] ?? null) === 'plausible-high' && !$un
+        && ($ne['weight'] ?? null) === 'the date of birth or the date of the measurement is blank');
+    $logged = [];
+    foreach (findings($m) as $e) if (($e['field'] ?? '') === 'weight') $logged = $e;
+    check('log: a plausible finding names its reference and no z-score', ($logged['reference'] ?? null) === 'who-wfa' && !isset($logged['z']));
+    $nel = array_values(array_filter(findings($m, 'uvalidate-not-evaluated'), function ($e) { return $e['field'] === 'weight'; }));
+    check('log: the value not evaluated: rule, field, reason, reference, record, no value (got ' . json_encode($nel) . ')',
+        count($nel) === 1 && $nel[0]['reference'] === 'who-wfa' && $nel[0]['record'] === '2' && $nel[0]['instrument'] === 'anthro_form'
+        && ctype_digit($nel[0]['rule']) && !isset($nel[0]['value']));
+    $nodob['2'][351]['weight'] = '1.5';
+    list($by) = audit($PL, $nodob);
+    check('plausible: ... 1.5 kg below it', ($by['weight'] ?? null) === 'plausible-low');
+    $nodob['2'][351]['weight'] = '9';
+    list($by, $un, $ne) = audit($PL, $nodob);
+    check('plausible: ... 9 kg inside it: no finding, still not evaluated', !isset($by['weight']) && isset($ne['weight']));
+    $nodob['2'][351]['weight'] = 'abc';
+    list($by, $un, $ne) = audit($PL, $nodob);
+    check('plausible: ... not a number is still not a number, and not listed as not evaluated',
+        ($by['weight'] ?? null) === 'not-a-number' && !isset($ne['weight']));
+    $nosex = $pl; $nosex['2'][351]['sex'] = '3'; $nosex['2'][351]['weight'] = '95';
+    list($by, $un, $ne) = audit($PL, $nosex);
+    check('plausible: a sex code that is neither: the plausible range judges (got ' . json_encode([$by['weight'] ?? null, $ne['weight'] ?? null]) . ')',
+        ($by['weight'] ?? null) === 'plausible-high' && ($ne['weight'] ?? null) === 'the sex code is neither 1 (male) nor 2 (female)');
+    $old = $pl; $old['2'][351]['dob'] = '2019-01-10'; $old['2'][351]['weight'] = '40';
+    list($by, $un, $ne) = audit($PL, $old);
+    check('plausible: outside the reference: judged, and the reason is the browser\'s (got ' . json_encode($ne['weight'] ?? null) . ')',
+        ($by['weight'] ?? null) === 'plausible-high' && strpos((string) ($ne['weight'] ?? ''), 'the age is outside the reference (0 to under 1826.25 days)') === 0);
+    $nodob['2'][351]['weight'] = '95';
+    list($by, $un, $ne) = audit($DICT, $nodob);
+    check('no "plausible": 95 kg with no date of birth: nothing judged, still listed', !isset($by['weight']) && isset($ne['weight']));
+    $off = mod($PL, $nodob, $FULL, 'nurse');
+    $off->projectSettings['log-values'] = 'off';
+    $off->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
+    check('log mode off: nothing is logged as not evaluated', !findings($off, 'uvalidate-not-evaluated'));
+    $hashed = mod($PL, $nodob, $FULL, 'nurse');
+    $hashed->projectSettings['log-values'] = 'none';
+    $hashed->redcap_save_record(149, '2', 'anthro_form', 351, null, null, null, 1);
+    $hn = findings($hashed, 'uvalidate-not-evaluated');
+    check('log mode none: the record is not named', $hn && !isset($hn[0]['record']) && (isset($hn[0]['record_hmac']) || isset($hn[0]['hmac_unavailable'])));
+    // the scan: the same verdicts, and the plausible range in the detail
+    $m = mod($PL, $nodob, $FULL, 'nurse');
+    $res = $m->scanProject(149);
+    $dims = $m->scanDimensions(149, $res['rules'] ?? null);
+    $cols = \INSPIRE\UniversalValidator\ScanColumns::all($dims);
+    $wt = array_values(array_filter($res['violations'], function ($v) { return $v['field'] === 'wt_g'; }));
+    $row = $wt ? \INSPIRE\UniversalValidator\ScanColumns::row($wt[0], $dims, $cols) : [];
+    check('scan: a plausible finding, its label and detail (got ' . json_encode([$row['issue'] ?? null, $row['problem'] ?? null]) . ')',
+        ($wt[0]['reason'] ?? null) === 'plausible-high' && ($wt[0]['reference'] ?? null) === 'who-wfa' && !isset($wt[0]['z'])
+        && ($row['issue'] ?? '') === 'Implausible value'
+        && ($row['problem'] ?? '') === 'The value is above the plausible range of its growth rule, which judged it because its z-score '
+            . 'could not be worked out. Allowed 2 to 30 kg.');
+    // the dictionary: "plausible" needs no reach check, and keeps the reference's unit
+    $DP = $DICT + ['muac_p' => f('anthro_form', tag('who-acfa', $AGE, '"hard":[-5,5],"plausible":[5,30]'), 'number_1dp')];
+    $p = page(mod($DP, $DATA, $FULL, 'nurse'), 'form', '2', 'anthro_form');
+    check('page: the plausible text names the reference\'s unit (cm for arm circumference)',
+        (ruleFor($p, 'muac_p')['rangePlausibleText'] ?? null) === '5 to 30 cm');
 
     // ---- 5c) the docs: reference ids and the worked example --------------------------------------
     // Every reference id a document names is one the module ships; "who-nope" is

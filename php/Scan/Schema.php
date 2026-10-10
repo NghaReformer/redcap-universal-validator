@@ -35,7 +35,7 @@ final class Schema
      * case untouched. An installation reports the version it is AT; migrate()
      * applies each missing version in order.
      */
-    const VERSION = 4;
+    const VERSION = 5;
 
     // VERSION 1 IS FROZEN, BYTE FOR BYTE, FOREVER.
     //
@@ -139,6 +139,7 @@ final class Schema
      */
     public static function statements($version)
     {
+        if ((int) $version === 5) return self::statementsV5();
         if ((int) $version === 4) return self::statementsV4();
         if ((int) $version === 3) return self::statementsV3();
         if ((int) $version === 2) return self::statementsV2();
@@ -682,6 +683,20 @@ final class Schema
     }
 
     /**
+     * Version 5: the z-score of a growth-reference (@UVRANGE "reference")
+     * finding, as the text both runtimes print ("-3.40"), for the report. NULL
+     * for every other finding. One ALTER, skipped when the column is there.
+     *
+     * @return array[] each ['sql' => string, 'skipIf' => ?array]
+     */
+    private static function statementsV5()
+    {
+        $f = self::table('finding');
+        return [['sql' => 'ALTER TABLE ' . $f . ' ADD COLUMN z_score VARCHAR(16) NULL',
+                 'skipIf' => ['column', $f, 'z_score']]];
+    }
+
+    /**
      * Every statement needed to bring an installation from $from to VERSION.
      *
      * Separate from statements() so a caller can see the whole plan before
@@ -884,6 +899,11 @@ final class Schema
                 return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
                         'why' => 'schema version 4 did not verify after it was applied: the unique candidate table '
                                . 'has no lookup column. The version is NOT recorded and the scan stays disabled.'];
+            }
+            if ($v === 5 && !self::alreadyApplied($module, ['column', self::table('finding'), 'z_score'])) {
+                return ['ok' => false, 'from' => $from, 'to' => self::VERSION, 'applied' => $applied,
+                        'why' => 'schema version 5 did not verify after it was applied: the finding table '
+                               . 'has no z_score column. The version is NOT recorded and the scan stays disabled.'];
             }
             try {
                 $module->query('INSERT IGNORE INTO ' . self::table('schema_version')

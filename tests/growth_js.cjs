@@ -49,8 +49,12 @@ for (const c of fx.zRaw) {
   check('zRaw: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.zText);
 }
 for (const [z, want] of fx.zText) check('zText(' + z + ') => ' + want + ' (got ' + G.zText(z) + ')', G.zText(z) === want);
+for (const c of fx.plausible) {
+  const got = G.plausible(c.y, c.lo, c.hi);
+  check('plausible(' + c.y + ', ' + c.lo + ', ' + c.hi + ') (got ' + got + ')', got === c.want);
+}
 for (const c of fx.measure) {
-  const got = G.measure(c.text, c.comma);
+  const got = G.measure(c.text, c.comma, c.scale);
   check('measure(' + JSON.stringify(c.text) + ', comma ' + c.comma + ') (got ' + JSON.stringify(got) + ')', sameState(got, c.want));
 }
 for (const c of fx.zScore) {

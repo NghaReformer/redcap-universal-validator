@@ -863,8 +863,11 @@ final class ScanService
      * started under the old meaning stops instead of mixing both.
      * engine-2: @UVEXISTS and @UVUNIQUE ignore letter case unless the rule is
      * caseSensitive, and compare numbers by value.
+     * engine-3: @UVRANGE takes several references on one field, ignores the
+     * letter case of sex codes, and judges a value with no z-score by its
+     * "plausible" range.
      */
-    const ENGINE_VERSION = 'engine-2';
+    const ENGINE_VERSION = 'engine-3';
 
     private function engineVersion()
     {

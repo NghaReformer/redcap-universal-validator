@@ -89,6 +89,16 @@
     "survey": "This value is too high.",
     "detail": "Allowed {rangeHardText}."
   },
+  "range/plausible-low": {
+    "staff":  "The value is below the plausible range of its growth rule, which judged it because its z-score could not be worked out.",
+    "survey": "This value is too low.",
+    "detail": "Allowed {rangePlausibleText}."
+  },
+  "range/plausible-high": {
+    "staff":  "The value is above the plausible range of its growth rule, which judged it because its z-score could not be worked out.",
+    "survey": "This value is too high.",
+    "detail": "Allowed {rangePlausibleText}."
+  },
   "range/not-a-number": {
     "staff":  "The value is not a number.",
     "survey": "Please enter a number."
@@ -99,7 +109,8 @@
   },
   "range/*": {
     "staff":  "The value is outside its plausible range.",
-    "survey": "This value is not allowed here."
+    "survey": "This value is not allowed here.",
+    "zScore": "Its z-score is {z} on the growth reference {reference}."
   },
   "constraint/assert": {
     "staff":  "The value does not satisfy this rule's condition.",

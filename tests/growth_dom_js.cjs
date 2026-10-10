@@ -173,10 +173,10 @@ function inputs(sex, w) { return [el('sex', sex), el('dob', '01-01-2026'), el('v
   check('z 1.00: usual, says nothing', !shown(msg) && save(env) === 'saved');
   w.value = '13'; w.fire('change');
   check('z 3.00: unusual, amber, names the z-score, the reference and the range (got ' + msg.innerHTML + ')',
-    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days; expected z-score -2 to 2\)\.$/.test(msg.innerHTML));
+    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days, in kg; expected z-score -2 to 2\)\.$/.test(msg.innerHTML));
   check('z 3.00: the save asks first', save(env) === 'asked');
   w.value = '16'; w.fire('change');
-  check('z 6.00 (restricted): implausible, held', /above the plausible range \(z-score 6\.00 on Test, age in days; allowed z-score -5 to 5\)/.test(msg.innerHTML)
+  check('z 6.00 (restricted): implausible, held', /above the plausible range \(z-score 6\.00 on Test, age in days, in kg; allowed z-score -5 to 5\)/.test(msg.innerHTML)
     && save(env) === 'held');
   w.value = '6.9'; w.fire('change');
   check('z -3.10: lower than usual', /lower than usual \(z-score -3\.10/.test(msg.innerHTML));
@@ -432,12 +432,12 @@ function twoRefs(extraA, extraB) {
   check('two references: both pass (z 1.00 and 0.00), nothing shown', !shown(msg) && save(env) === 'saved' && t() === true);
   w.value = '13'; w.fire('change');
   check('two references: one unusual, one line, amber (got ' + msg.innerHTML + ')',
-    msg.innerHTML === '&#9888; This value is higher than usual (z-score 3.00 on Test, age in days; expected z-score -2 to 2).'
+    msg.innerHTML === '&#9888; This value is higher than usual (z-score 3.00 on Test, age in days, in kg; expected z-score -2 to 2).'
     && save(env) === 'asked' && t() === false);
   w.value = '16'; w.fire('change');
   check('two references: implausible on one, unusual on the other: two lines, red, held (got ' + msg.innerHTML + ')',
-    msg.innerHTML === '&#10007; This value is above the plausible range (z-score 6.00 on Test, age in days; allowed z-score -5 to 5).'
-      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
+    msg.innerHTML === '&#10007; This value is above the plausible range (z-score 6.00 on Test, age in days, in kg; allowed z-score -5 to 5).'
+      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).'
     && /#c62828/.test(msg.style.cssText) && save(env) === 'held' && t() === false);
   w.value = 'abc'; w.fire('change');
   check('two references: the same line from both is shown once (got ' + msg.innerHTML + ')',
@@ -456,7 +456,7 @@ function twoRefs(extraA, extraB) {
     br(), Object.assign(br({ rangeReference: 't-len' }), { rangeAgeDobOp: undefined, rangeAgeAtOp: undefined, rangeByOp: ['ref', 'len', null] })] }] });
   const msg = nMsg(env, 'weight');
   check('two references: a verdict and a reference that cannot judge share the note (got ' + msg.innerHTML + ')',
-    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days; expected z-score -2 to 2\)\.<br>&#8505; Not checked against Test, by length: /.test(msg.innerHTML)
+    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days, in kg; expected z-score -2 to 2\)\.<br>&#8505; Not checked against Test, by length: /.test(msg.innerHTML)
     && save(env) === 'asked');
 }
 {
@@ -547,8 +547,8 @@ function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w
     br({ deferred: true, deferredOnSave: true, deferredWhy: CAP }), br({ rangeReference: 't-days2' })] }] });
   check('cap, one reference of two: its grey line beside the other\'s verdict (got ' + nMsg(env2, 'weight').innerHTML + ')',
     nMsg(env2, 'weight').innerHTML === '&#8505; Not checked on this page: ' + CAP[0]
-      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
-    || nMsg(env2, 'weight').innerHTML === '&#9888; This value is higher than usual (z-score 4.55 on Second test; expected z-score -2 to 2).'
+      + '<br>&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).'
+    || nMsg(env2, 'weight').innerHTML === '&#9888; This value is higher than usual (z-score 4.55 on Second test, in kg; expected z-score -2 to 2).'
       + '<br>&#8505; Not checked on this page: ' + CAP[0]);
   const env3 = boot(inputs('1', 'abc'), { context: 'survey', rules: [rule(Object.assign({ deferred: true, deferredOnSave: true, deferredWhy: CAP }, LIVE))] });
   check('cap, survey: not a number is still held', save(env3) === 'held');
@@ -583,6 +583,69 @@ function savedInputs(w) { return [el('visit_date', '2026-01-03'), el('weight', w
   // a verdict on saved inputs never blocks (section 9), so read the note
   check('a saved sex "m" is the male code too (got ' + nMsg(env5, 'weight').innerHTML + ')',
     /above the plausible range \(z-score 6\.00/.test(nMsg(env5, 'weight').innerHTML));
+}
+
+// ---- 12) no z-score: "plausible" judges; "measureScale"; the unit in the note ------------------
+const PL = { rangePlausibleLo: '2', rangePlausibleHi: '30', rangePlausibleText: '2 to 30 kg' };
+{
+  const els = inputs('', '95');
+  const [sex, , , w] = els;
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({}, PL, LIVE))] });
+  const msg = nMsg(env, 'weight');
+  check('plausible: no sex, 95 kg is above the plausible range, held (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#10007; This value is above the plausible range (allowed 2 to 30 kg; no z-score on Test, age in days: the sex is blank).'
+    && save(env) === 'held' && env.NS.validators.weight.test() === false);
+  w.value = '1'; w.fire('change');
+  check('plausible: 1 kg is below it', /^&#10007; This value is below the plausible range \(allowed 2 to 30 kg; no z-score/.test(msg.innerHTML) && save(env) === 'held');
+  w.value = '9'; w.fire('change');
+  check('plausible: 9 kg inside it: the grey note, saved, test() open (got ' + msg.innerHTML + ')',
+    /^&#8505; Not checked against Test, age in days: the sex is blank\.$/.test(msg.innerHTML) && save(env) === 'saved'
+    && env.NS.validators.weight.test() === null);
+  sex.value = '1'; sex.fire('change'); w.value = '13'; w.fire('change');
+  check('plausible: with a z-score the z-score decides (got ' + msg.innerHTML + ')',
+    /^&#9888; This value is higher than usual \(z-score 3\.00 on Test, age in days, in kg; expected z-score -2 to 2\)\.$/.test(msg.innerHTML));
+  w.value = '31'; w.fire('change');
+  check('plausible: ... and 31 kg is judged by its z-score, not by "plausible"', /z-score/.test(msg.innerHTML) && !/no z-score/.test(msg.innerHTML));
+}
+{
+  const env = boot(inputs('3', '95'), { growth: GROWTH, rules: [rule(Object.assign({ rangeHardBlock: 'confirm' }, PL, LIVE))] });
+  check('plausible: a sex code that is neither, hardBlock confirm asks (got ' + nMsg(env, 'weight').innerHTML + ')',
+    /no z-score on Test, age in days: the sex code is neither 1 \(male\) nor 2 \(female\)/.test(nMsg(env, 'weight').innerHTML) && save(env) === 'asked');
+}
+{
+  // a date on the page still being typed says nothing, plausible or not
+  const els = inputs('1', '95');
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({}, PL, LIVE))] });
+  els[2].value = '2026-01-0'; els[2].fire('change');
+  check('plausible: a date still being typed: nothing at all', !shown(nMsg(env, 'weight')) && save(env) === 'saved');
+}
+{
+  // a saved date of birth the rule cannot read: the server's words
+  const BAD = Object.assign({}, SAVED, { rangeAgeDobOp: ['lit', '10-01-2025'] });
+  const env = boot(savedInputs('9'), { growth: GROWTH, rules: [rule(BAD)] });
+  check('a saved date of birth it cannot read: the grey note (got ' + nMsg(env, 'weight').innerHTML + ')',
+    nMsg(env, 'weight').innerHTML === '&#8505; Not checked against Test, age in days: the date of birth is not a date this rule can read.');
+  // with "plausible", it judges; a verdict from saved values never blocks
+  const env2 = boot(savedInputs('95'), { growth: GROWTH, rules: [rule(Object.assign({}, PL, BAD))] });
+  check('... with "plausible": judged, worked out with the saved values, never blocks (got ' + nMsg(env2, 'weight').innerHTML + ')',
+    /above the plausible range \(allowed 2 to 30 kg; no z-score on Test, age in days: the date of birth is not a date this rule can read\)/.test(nMsg(env2, 'weight').innerHTML)
+    && /worked out with sex, dob/.test(nMsg(env2, 'weight').innerHTML) && save(env2) === 'saved');
+}
+{
+  // measureScale: grams into a table in kg
+  const els = inputs('1', '13000');
+  const env = boot(els, { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: '0.001' }, LIVE))] });
+  const msg = nMsg(env, 'weight');
+  check('measureScale: 13000 g is 13 kg, z 3.00, and the note says so (got ' + msg.innerHTML + ')',
+    msg.innerHTML === '&#9888; This value is higher than usual (z-score 3.00 on Test, age in days, in kg after × 0.001; expected z-score -2 to 2).');
+  els[3].value = '0'; els[3].fire('change');
+  check('measureScale: 0 is still not a measurement', /must be above 0/.test(msg.innerHTML) && save(env) === 'held');
+  const env2 = boot(inputs('', '95000'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: '0.001' }, PL, LIVE))] });
+  check('measureScale: "plausible" is in the reference\'s unit, after the scale', /above the plausible range \(allowed 2 to 30 kg/.test(nMsg(env2, 'weight').innerHTML));
+  const env3 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangeMeasureScale: 'grams' }, LIVE))] });
+  check('measureScale that is not a number: a configuration error', !!cfgErr(env3, 'weight') && /rangeMeasureScale is not a number/.test(cfgErr(env3, 'weight').innerHTML));
+  const env4 = boot(inputs('1', '13'), { growth: GROWTH, rules: [rule(Object.assign({ rangePlausibleLo: 'x' }, LIVE))] });
+  check('a plausible limit that is not a number: a configuration error', !!cfgErr(env4, 'weight') && /rangePlausibleLo is not a number/.test(cfgErr(env4, 'weight').innerHTML));
 }
 
 console.log('growth_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');

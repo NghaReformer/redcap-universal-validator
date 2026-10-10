@@ -98,7 +98,25 @@
     {"text": "-0.0",  "comma": false, "want": {"state": "not-positive"}},
     {"text": "-3",    "comma": false, "want": {"state": "not-positive"}},
     {"text": "5e-1",  "comma": false, "want": {"state": "ok", "y": 0.5}},
-    {"text": "1e999", "comma": false, "want": {"state": "ok", "y": 1e70}}
+    {"text": "1e999", "comma": false, "want": {"state": "ok", "y": 1e70}},
+    {"text": "6600",  "comma": false, "scale": "0.001",    "want": {"state": "ok", "y": 6.6000000000000005}},
+    {"text": "125",   "comma": false, "scale": "0.1",      "want": {"state": "ok", "y": 12.5}},
+    {"text": "1,5",   "comma": true,  "scale": "1000",     "want": {"state": "ok", "y": 1500}},
+    {"text": "7",     "comma": false, "scale": "0.000001", "want": {"state": "ok", "y": 7e-06}},
+    {"text": "0",     "comma": false, "scale": "0.001",    "want": {"state": "not-positive"}},
+    {"text": "abc",   "comma": false, "scale": "0.001",    "want": {"state": "not-a-number"}}
+  ],
+  "plausible": [
+    {"y": 2,         "lo": "2",  "hi": "30", "want": null},
+    {"y": 30,        "lo": "2",  "hi": "30", "want": null},
+    {"y": 1.999,     "lo": "2",  "hi": "30", "want": "plausible-low"},
+    {"y": 30.000001, "lo": "2",  "hi": "30", "want": "plausible-high"},
+    {"y": 95,        "lo": null, "hi": "30", "want": "plausible-high"},
+    {"y": 0.1,       "lo": null, "hi": "30", "want": null},
+    {"y": 0.1,       "lo": "0.5", "hi": null, "want": "plausible-low"},
+    {"y": 1e70,      "lo": "0.5", "hi": null, "want": null},
+    {"y": 9,         "lo": null, "hi": null, "want": null},
+    {"y": 6.6000000000000005, "lo": "6.6", "hi": "6.6", "want": "plausible-high"}
   ],
   "zScore": [
     {"name": "restricted, beyond +3",    "ref": "t-days",   "sex": "male",   "x": 3,    "y": 27,   "want": {"state": "ok", "z": "5.24"}},

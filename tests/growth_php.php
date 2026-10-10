@@ -70,9 +70,14 @@ foreach ($fx['zText'] as $c) {
     check('zText(' . json_encode($c[0]) . ') => ' . $c[1] . ' (got ' . G::zText($c[0]) . ')', G::zText($c[0]) === $c[1]);
 }
 foreach ($fx['measure'] as $c) {
-    $got = G::measure($c['text'], $c['comma']);
-    check('measure(' . json_encode($c['text']) . ', comma ' . json_encode($c['comma']) . ') (got ' . json_encode($got) . ')',
-        sameState($got, $c['want']));
+    $got = G::measure($c['text'], $c['comma'], isset($c['scale']) ? $c['scale'] : null);
+    check('measure(' . json_encode($c['text']) . ', comma ' . json_encode($c['comma']) . ', scale ' . json_encode($c['scale'] ?? null)
+        . ') (got ' . json_encode($got) . ')', sameState($got, $c['want']));
+}
+foreach ($fx['plausible'] as $c) {
+    $got = G::plausible((float) $c['y'], $c['lo'], $c['hi']);
+    check('plausible(' . json_encode($c['y']) . ', ' . json_encode($c['lo']) . ', ' . json_encode($c['hi']) . ') (got ' . json_encode($got) . ')',
+        $got === $c['want']);
 }
 foreach ($fx['zScore'] as $c) {
     $got = G::zScore($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y']);

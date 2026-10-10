@@ -85,6 +85,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'rangeReference', 'rangeSex', 'rangeMale', 'rangeFemale', 'rangeAgeDob', 'rangeAgeAt',
     'rangeAgeDays', 'rangeAgeMonths', 'rangeBy', 'rangeDobType', 'rangeDobFormat',
     'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
+    // @UVRANGE "plausible" and "measureScale"
+    'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
 ]);
 
 // The engine's DEFAULT_KEYS, in order.
@@ -111,7 +113,10 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     // deferredOnSave marks a rule the page could not carry but the save checks)
     'rangeReference', 'rangeSexOp', 'rangeMale', 'rangeFemale', 'rangeAgeDobOp', 'rangeAgeAtOp',
     'rangeAgeDaysOp', 'rangeAgeMonthsOp', 'rangeByOp', 'rangeDobType', 'rangeDobFormat',
-    'rangeAtType', 'rangeAtFormat', 'rangeAxisComma', 'deferredOnSave', 'extendedAdvisory',
+    'rangeAtType', 'rangeAtFormat', 'rangeAxisComma',
+    // "plausible" (its text in the reference's unit) and "measureScale"
+    'rangePlausibleLo', 'rangePlausibleHi', 'rangePlausibleText', 'rangeMeasureScale',
+    'deferredOnSave', 'extendedAdvisory',
 ]);
 
 // Branching::modeOfType.
@@ -272,8 +277,10 @@ check('range issue labels', ModeRegistry::issueLabel('range', 'soft-low') === 'U
     && ModeRegistry::issueLabel('range', 'soft-high') === 'Unusual value'
     && ModeRegistry::issueLabel('range', 'hard-low') === 'Implausible value'
     && ModeRegistry::issueLabel('range', 'hard-high') === 'Implausible value'
-    && ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number');
-check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText']);
+    && ModeRegistry::issueLabel('range', 'not-a-number') === 'Not a number'
+    && ModeRegistry::issueLabel('range', 'plausible-low') === 'Implausible value'
+    && ModeRegistry::issueLabel('range', 'plausible-high') === 'Implausible value');
+check('range detail keys', ModeRegistry::detailKeys('range') === ['rangeSoftText', 'rangeHardText', 'rangePlausibleText']);
 $tv = ModeRegistry::eligibility('range')['textValidations'];
 foreach (['' => true, 'integer' => true, 'int' => true, 'float' => true, 'number' => true, 'number_2dp' => true,
           'number_comma_decimal' => true, 'number_1dp_comma_decimal' => true, 'date_ymd' => false, 'email' => false,

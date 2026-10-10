@@ -51,6 +51,9 @@ class AnnotationRules
     const MAX_RANGE_BOUND = 64;
     /** With a growth "reference", the limits are z-scores no further than this from 0. */
     const MAX_GROWTH_Z = 20;
+    /** "measureScale" bounds: a millionth (micrograms to grams) to a million. */
+    const MIN_MEASURE_SCALE = '0.000001';
+    const MAX_MEASURE_SCALE = '1000000';
 
     /** Where an @UVEXISTS lookup may search: the whole project (default), the
      *  record's own Data Access Group, or the event of the entry being checked. */
@@ -812,14 +815,16 @@ class AnnotationRules
                 . 'for values outside "soft", and "hardBlock" (confirm or hard) for values outside "hard".'];
         }
         $allowed = ['soft', 'hard', 'softBlock', 'hardBlock', 'unit', 'when', 'message', 'caseSensitive',
-                    'reference', 'sex', 'male', 'female', 'age', 'by'];
+                    'reference', 'sex', 'male', 'female', 'age', 'by', 'plausible', 'measureScale'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_RANGE . ' option(s): ' . implode(', ', $unknown)
                 . ' — valid: ' . implode(', ', $allowed) . '.'];
         }
         $out = ['type' => 'range'];
-        foreach (['soft' => 'rangeSoft', 'hard' => 'rangeHard'] as $k => $prefix) {
+        // "plausible" (growth references only) is a pair like "soft" and "hard",
+        // in the reference's unit rather than in z-scores.
+        foreach (['soft' => 'rangeSoft', 'hard' => 'rangeHard', 'plausible' => 'rangePlausible'] as $k => $prefix) {
             if (!array_key_exists($k, $cfg)) continue;
             $pair = $cfg[$k];
             if (!is_array($pair) || array_keys($pair) !== [0, 1]) {
@@ -842,6 +847,15 @@ class AnnotationRules
                 }
                 $out[$prefix . $side] = $b;
             }
+        }
+        if (array_key_exists('measureScale', $cfg)) {
+            $typed = isset($exact['measureScale']) && is_string($exact['measureScale']) ? $exact['measureScale'] : null;
+            $b = self::rangeBound($cfg['measureScale'], $typed);
+            if ($b === null || $b === false) {
+                return ['error' => '"measureScale" must be a number such as 0.001 (grams typed into a reference in kg) — got '
+                    . ((is_int($cfg['measureScale']) || is_float($cfg['measureScale'])) && $typed !== null ? $typed : json_encode($cfg['measureScale'])) . '.'];
+            }
+            $out['rangeMeasureScale'] = $b;
         }
         foreach (['softBlock' => 'rangeSoftBlock', 'hardBlock' => 'rangeHardBlock', 'unit' => 'rangeUnit',
                   'when' => 'when', 'message' => 'message'] as $k => $key) {
@@ -1947,10 +1961,30 @@ class AnnotationRules
             }
             $b[$k] = $frag[$k];
         }
+        foreach (['rangePlausibleLo' => 'plausible low', 'rangePlausibleHi' => 'plausible high'] as $k => $label) {
+            if (!array_key_exists($k, $frag)) continue;
+            if (!is_string($frag[$k]) || !preg_match(Logic::NUM_RE, $frag[$k])) {
+                $errors[] = 'the ' . $label . ' limit must be a number — got ' . json_encode($frag[$k]) . '.';
+                continue;
+            }
+            $b[$k] = $frag[$k];
+        }
+        if (isset($b['rangePlausibleLo'], $b['rangePlausibleHi']) && Logic::numCompare($b['rangePlausibleLo'], $b['rangePlausibleHi']) > 0) {
+            $errors[] = 'the "plausible" low limit (' . $b['rangePlausibleLo'] . ') is above its high limit (' . $b['rangePlausibleHi'] . ').';
+        }
+        if (array_key_exists('rangeMeasureScale', $frag)) {
+            $s = $frag['rangeMeasureScale'];
+            if (!is_string($s) || !preg_match(Logic::NUM_RE, $s)
+                    || Logic::numCompare($s, self::MIN_MEASURE_SCALE) < 0 || Logic::numCompare($s, self::MAX_MEASURE_SCALE) > 0) {
+                $errors[] = '"measureScale" must be a number from ' . self::MIN_MEASURE_SCALE . ' to ' . self::MAX_MEASURE_SCALE
+                    . ', such as 0.001 for grams typed into a reference in kg — got ' . (is_string($s) ? $s : json_encode($s)) . '.';
+            }
+        }
         if (!array_key_exists('rangeSoftLo', $frag) && !array_key_exists('rangeSoftHi', $frag)
                 && !array_key_exists('rangeHardLo', $frag) && !array_key_exists('rangeHardHi', $frag)) {
             $errors[] = self::TAG_RANGE . ' needs "soft" or "hard" limits, e.g. "soft":[12,17.5],"hard":[3,25].';
         }
+        $zLimits = array_intersect_key($b, array_flip(['rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi']));
         foreach (['Soft' => 'soft', 'Hard' => 'hard'] as $t => $label) {
             if (isset($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi'])
                     && Logic::numCompare($b['range' . $t . 'Lo'], $b['range' . $t . 'Hi']) > 0) {
@@ -1980,7 +2014,7 @@ class AnnotationRules
                 $errors[] = '"unit" must be a short label of up to ' . self::MAX_RANGE_UNIT . ' characters, such as "g/dL".';
             }
         }
-        return array_merge($errors, self::checkGrowth($frag, $b, $opts), self::checkCommon($frag, $opts));
+        return array_merge($errors, self::checkGrowth($frag, $zLimits, $opts), self::checkCommon($frag, $opts));
     }
 
     /**
@@ -2002,6 +2036,12 @@ class AnnotationRules
             foreach (array_merge(array_keys($inputs), ['rangeMale', 'rangeFemale']) as $k) {
                 if (array_key_exists($k, $frag)) {
                     return ['"sex", "male", "female", "age" and "by" only apply with a "reference", such as "reference":"who-wfa".'];
+                }
+            }
+            foreach (['rangePlausibleLo', 'rangePlausibleHi', 'rangeMeasureScale'] as $k) {
+                if (array_key_exists($k, $frag)) {
+                    return ['"plausible" and "measureScale" only apply with a "reference" — without one, "soft" and "hard" '
+                        . 'are already in the unit the field holds.'];
                 }
             }
             return [];

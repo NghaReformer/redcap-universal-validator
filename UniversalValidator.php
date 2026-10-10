@@ -374,8 +374,16 @@ class UniversalValidator extends AbstractExternalModule
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
         }
         foreach ($f['invalid'] as $v) {
+            $extra = [];
+            if (isset($v['asOf'])) $extra['as_of'] = (string) $v['asOf'];
+            // a growth finding: its z-score (when there is one) and its reference
+            if (isset($v['z'])) $extra['z'] = (string) $v['z'];
+            if (isset($v['reference'])) $extra['reference'] = (string) $v['reference'];
             $this->logInvalid($logMode, $project_id, $record, $v['field'], $v['value'], $v['algo'], $v['type'], $instrument, $event_id, $repeat_instance, $v['reason'],
-                isset($v['asOf']) ? ['as_of' => (string) $v['asOf']] : []);
+                $extra);
+        }
+        foreach ((isset($f['unevaluated']) ? $f['unevaluated'] : []) as $u) {
+            $this->logNotEvaluated($logMode, $project_id, $record, $ruleIndex, $u, $instrument, $event_id, $repeat_instance);
         }
     }
 
@@ -391,7 +399,9 @@ class UniversalValidator extends AbstractExternalModule
      * record beyond its values: 'dag' (the record's Data Access Group, null for
      * none; absent = not known, read when a rule needs it). Returns:
      *   ['invalid'         => [ ['field','value','algo','type','reason'], ... ],
-     *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ]]
+     *    'unconfigurable'  => [ ['fields' => [...], 'why' => string], ... ],
+     *    'unevaluated'     => [ ['field', 'why', ...], ... ] (optional: values a
+     *                         growth rule could not work out a z-score for)]
      */
     private function ruleFindings(array $rule, $ruleIndex, array $values, array $dupes, $onForm, $project_id, $record, $event_id, $whenAst = null, array $resolution = [], array $meta = [])
     {
@@ -485,6 +495,7 @@ class UniversalValidator extends AbstractExternalModule
                     $out['invalid'][] = $v;
                 }
                 foreach ($r['unconfigurable'] as $u) $out['unconfigurable'][] = $u;
+                foreach ((isset($r['unevaluated']) ? $r['unevaluated'] : []) as $u) $out['unevaluated'][] = $u + ['branch' => $pick];
             }
             return $out;
         }
@@ -2310,11 +2321,17 @@ class UniversalValidator extends AbstractExternalModule
      *
      * With a growth "reference" the limits apply to the value's z-score
      * against that reference (GrowthReference), for the sex and the age, or
-     * the length or height, the rule reads from other fields. A measurement at
-     * or below 0 is implausible ("not-positive"). Blank inputs, a sex code that
-     * is neither "male" nor "female", and an age or length outside the
-     * reference check nothing; an input this context could not resolve, and a
-     * reference that cannot be read, are reported as rule problems.
+     * the length or height, the rule reads from other fields. The value is
+     * first multiplied by the rule's "measureScale", if any. A measurement at
+     * or below 0 is implausible ("not-positive"). When there is no z-score (a
+     * blank or unreadable input, a sex code that is neither "male" nor
+     * "female", an age or length outside the reference) the rule's
+     * "plausible" range, in the reference's unit, judges the value
+     * ("plausible-low", "plausible-high"), and the value is listed under
+     * 'unevaluated' with the reason. An input this context could not
+     * resolve, and a reference that cannot be read, are rule problems. A
+     * growth finding carries the reference id, and the z-score when there is
+     * one.
      */
     private function findingsRange(array $rule, $type, array $values, array $dupes, $onForm, $project_id, $record, $event_id, array $resolution)
     {
@@ -2333,12 +2350,15 @@ class UniversalValidator extends AbstractExternalModule
             $value = isset($values[$field]) ? $values[$field] : null;
             if ($value === null || is_array($value)) continue;
             $verdictOf = (string) $value;
+            $extra = [];
             if ($isGrowth) {
-                $m = GrowthReference::measure((string) $value, !empty($rule['decimalComma']));
+                $m = GrowthReference::measure((string) $value, !empty($rule['decimalComma']),
+                    isset($rule['rangeMeasureScale']) ? $rule['rangeMeasureScale'] : null);
                 if ($m['state'] === 'blank') continue;
+                $extra = ['reference' => (string) $rule['rangeReference']];
                 if ($m['state'] !== 'ok') {
                     $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
-                                         'reason' => $m['state']];
+                                         'reason' => $m['state']] + $extra;
                     continue;
                 }
                 // The inputs are the same for every field of the rule: read once,
@@ -2348,7 +2368,17 @@ class UniversalValidator extends AbstractExternalModule
                     $out['unconfigurable'][] = ['fields' => [$field], 'why' => $growth['problem']];
                     continue;
                 }
-                if ($growth['state'] !== 'ok') continue;
+                if ($growth['state'] !== 'ok') {
+                    // No z-score: the "plausible" range judges, if the rule has one.
+                    $p = GrowthReference::plausible($m['y'], isset($rule['rangePlausibleLo']) ? $rule['rangePlausibleLo'] : null,
+                        isset($rule['rangePlausibleHi']) ? $rule['rangePlausibleHi'] : null);
+                    if ($p !== null) {
+                        $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
+                                             'reason' => $p] + $extra;
+                    }
+                    $out['unevaluated'][] = ['field' => $field, 'why' => $growth['why']] + $extra;
+                    continue;
+                }
                 $z = GrowthReference::zScore($growth['entry'], $growth['table'], $growth['sex'], $growth['x'], $m['y']);
                 if ($z['state'] !== 'ok') {
                     // only "outside": table() refuses rows that do not cover "valid"
@@ -2358,11 +2388,12 @@ class UniversalValidator extends AbstractExternalModule
                     continue;
                 }
                 $verdictOf = $z['z'];
+                $extra['z'] = $z['z'];
             }
             $r = Logic::rangeVerdict($spec, $verdictOf);
             if ($r['tier'] === 'ok' || $r['tier'] === 'inert') continue;
             $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'range', 'type' => 'range',
-                                 'reason' => $r['reason']];
+                                 'reason' => $r['reason']] + $extra;
         }
         return $out;
     }
@@ -2385,10 +2416,11 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * The inputs of a growth-reference range rule, read for one entry:
      * ['state' => 'ok', 'entry', 'table', 'sex' => 'male'|'female', 'x'], or
-     * ['state' => 'inert'] when an input is blank (or a Missing Data Code),
-     * the sex code is neither "male" nor "female", or the age, length or
-     * height is outside the reference, or ['problem' => why] when an input
-     * could not be resolved or the reference cannot be read.
+     * ['state' => 'inert', 'why'] when an input is blank (or a Missing Data
+     * Code) or unreadable, the sex code is neither "male" nor "female", or the
+     * age, length or height is outside the reference, or ['problem' => why]
+     * when an input could not be resolved or the reference cannot be read. The
+     * reasons are the browser's (growthVerdict in js/engine.js).
      */
     private function growthInputs(array $rule, array $values, array $resolution, $pid)
     {
@@ -2428,16 +2460,20 @@ class UniversalValidator extends AbstractExternalModule
         // Letter case is ignored unless the rule is caseSensitive, the fold of
         // @UVASSERT (twin: growthVerdict in js/engine.js).
         $sex = self::growthSexOf($sexCode, $rule);
-        if ($sex === null) return ['state' => 'inert'];
+        if ($sex === null) {
+            return ['state' => 'inert', 'why' => $sexCode === '' ? 'the sex is blank'
+                : 'the sex code is neither ' . $rule['rangeMale'] . ' (male) nor ' . $rule['rangeFemale'] . ' (female)'];
+        }
         $in = ['comma' => !empty($rule['rangeAxisComma'])];
         if (isset($rule['rangeAgeDob'])) {
             foreach (['dob' => 'rangeAgeDob', 'at' => 'rangeAgeAt'] as $w => $k) {
                 $type = isset($rule['range' . ucfirst($w) . 'Type']) ? $rule['range' . ucfirst($w) . 'Type'] : 'date';
                 $p = TemporalValue::parse(isset($read[$k]) ? $read[$k] : '', $type, 'ymd');
                 if ($p['state'] === 'absent') { $in[$w . 'Days'] = null; continue; }
+                // a saved value, not the rule: not evaluated, as in the browser
                 if ($p['state'] !== 'ok') {
-                    return ['problem' => 'the ' . ($w === 'dob' ? 'date of birth' : 'measurement date') . ' ' . $rule[$k]
-                        . ' is not a date this rule can read — field skipped'];
+                    return ['state' => 'inert', 'why' => 'the ' . ($w === 'dob' ? 'date of birth' : 'date of the measurement')
+                        . ' is not a date this rule can read'];
                 }
                 $in[$w . 'Days'] = (int) floor($p['seconds'] / 86400);
             }
@@ -2447,7 +2483,7 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         $a = GrowthReference::axisValue($entry, $in);
-        if ($a['state'] !== 'ok') return ['state' => 'inert'];
+        if ($a['state'] !== 'ok') return ['state' => 'inert', 'why' => $a['why']];
         return ['state' => 'ok', 'entry' => $entry, 'table' => $table, 'sex' => $sex, 'x' => $a['x']];
     }
 
@@ -2718,6 +2754,38 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /** A rule the server could not evaluate — operational signal, no identifiers. */
+    /**
+     * A value a growth rule could not work out a z-score for (a blank or
+     * unreadable input, a sex code that is neither code, an age outside the
+     * reference): not a finding and not a rule problem, but a project missing
+     * its dates of birth should not read as one with no findings. Holds no
+     * value; the record follows the project's log mode, as a finding's does.
+     */
+    private function logNotEvaluated($mode, $pid, $record, $ruleIndex, array $u, $instrument, $event_id, $repeat_instance)
+    {
+        if ($mode === 'off') return;
+        try {
+            $entry = [
+                'rule'       => (string) ($ruleIndex + 1),
+                'field'      => (string) $u['field'],
+                'why'        => (string) $u['why'],
+                'instrument' => (string) $instrument,
+                'event_id'   => (string) $event_id,
+                'instance'   => (string) ($repeat_instance ?: 1),
+            ];
+            if (isset($u['reference'])) $entry['reference'] = (string) $u['reference'];
+            if ($mode === 'none') {
+                $h = $this->hashedIdentifier($pid, (string) $record);
+                if ($h !== null) $entry['record_hmac'] = $h;
+                else $entry['hmac_unavailable'] = '1';
+            } else {
+                $entry['record'] = (string) $record;
+            }
+            $this->log('uvalidate-not-evaluated', $entry);
+        } catch (\Throwable $ignored) {
+        }
+    }
+
     private function logUnconfigurable($ruleIndex, array $fields, $why, $instrument, $event_id, $repeat_instance)
     {
         try {
@@ -4926,6 +4994,9 @@ class UniversalValidator extends AbstractExternalModule
             return $refuse('"reference" "' . $id . '" cannot be used: ' . $e->getMessage());
         }
         if ($out !== null) return $refuse('"reference" "' . $id . '": ' . $out);
+        // "plausible" is in the reference's unit, after "measureScale"
+        $pt = self::rangeText($lim('rangePlausibleLo'), $lim('rangePlausibleHi'), (string) $entry['unit'], false);
+        if ($pt !== null) $frag['rangePlausibleText'] = $pt;
         $byAge = $entry['axis'] === 'age';
         if ($byAge && isset($frag['rangeBy'])) {
             return $refuse('"' . $id . '" is read by age — give "age" instead of "by".');
@@ -6537,6 +6608,8 @@ class UniversalValidator extends AbstractExternalModule
                 'value_expires_at' => ($blob === null) ? null : $valueExpiry,
                 // The day a @UVWINDOW verdict was judged against, for the report.
                 'as_of' => isset($v['asOf']) ? (string) $v['asOf'] : null,
+                // A growth finding's z-score (the reference is the rule's).
+                'z_score' => isset($v['z']) ? (string) $v['z'] : null,
             ];
         }
 
@@ -7229,7 +7302,10 @@ class UniversalValidator extends AbstractExternalModule
                             'instrument' => $hostForm, 'dag' => $recDag,
                         ] + (isset($v['branch']) ? ['branch' => (int) $v['branch']] : [])
                           // the day a today-relative @UVWINDOW part was judged against
-                          + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : []));
+                          + (isset($v['asOf']) ? ['asOf' => (string) $v['asOf']] : [])
+                          // a growth finding's z-score and reference
+                          + (isset($v['z']) ? ['z' => (string) $v['z']] : [])
+                          + (isset($v['reference']) ? ['reference' => (string) $v['reference']] : []));
                     }
                     foreach ($f['unconfigurable'] as $u) {
                         $key = $i . '|' . $u['why'];

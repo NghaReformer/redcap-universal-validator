@@ -625,14 +625,30 @@ final class GrowthReference
      * inputs, so a value that is no measurement at all is reported whatever
      * the sex and age say.
      */
-    public static function measure($text, $decimalComma = false)
+    public static function measure($text, $decimalComma = false, $scale = null)
     {
         $n = Logic::normalizeNumber($text, $decimalComma);
         if ($n === '') return ['state' => 'blank'];
         if ($n === null) return ['state' => 'not-a-number'];
         $y = (float) $n;
         if (!($y > 0)) return ['state' => 'not-positive'];
+        // A rule's "measureScale" (0.001 for grams typed into a reference in kg),
+        // one double multiplication in both runtimes. Twin: QRID_growthMeasure.
+        if ($scale !== null) $y *= (float) $scale;
         return ['state' => 'ok', 'y' => $y];
+    }
+
+    /**
+     * 'plausible-low', 'plausible-high' or null: measurement $y, in the
+     * reference's unit, against a rule's "plausible" limits (texts, or null
+     * for no limit on that side). Doubles compared as doubles: "30" is the
+     * same double in both runtimes, and $y is too. Twin: QRID_growthPlausible.
+     */
+    public static function plausible($y, $lo, $hi)
+    {
+        if ($lo !== null && $y < (float) $lo) return 'plausible-low';
+        if ($hi !== null && $y > (float) $hi) return 'plausible-high';
+        return null;
     }
 
     /**

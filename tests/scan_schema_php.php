@@ -298,7 +298,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $r = Schema::migrate($m);
         check('v3: an installation at version 2 applies the as_of column',
             $r['ok'] === true && $r['from'] === 2 && $r['to'] === Schema::VERSION
-            && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4))
+            && $r['applied'] === count(Schema::statements(3)) + count(Schema::statements(4)) + count(Schema::statements(5))
             && (bool) array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE uv_finding ADD COLUMN as_of') === 0; }));
         check('v3: and records version 3', (bool) array_filter($m->sql, function ($q) {
             return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
@@ -307,7 +307,7 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->columns[] = 'uv_finding.as_of';
         $r = Schema::migrate($m);
         check('v3: a column already there is not added twice', $r['ok'] === true
-            && $r['applied'] === count(Schema::statements(4))
+            && $r['applied'] === count(Schema::statements(4)) + count(Schema::statements(5))
             && !array_filter($m->sql, function ($q) { return strpos($q, 'ADD COLUMN as_of') !== false; }));
         $m = new \FakeModule();
         $m->version = '2';
@@ -459,10 +459,10 @@ namespace INSPIRE\UniversalValidator\Scan {
         $m->version = '3';
         $r = Schema::migrate($m);
         $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
-        check('v4: an installation at version 3 moves to version 4',
-            $r['ok'] === true && $r['from'] === 3 && $r['to'] === 4 && Schema::VERSION === 4);
+        check('v4: an installation at version 3 moves past version 4',
+            $r['ok'] === true && $r['from'] === 3 && $r['to'] === Schema::VERSION && Schema::VERSION >= 4);
         check('v4: by one ALTER that adds uv_unique_candidate.lookup, 0 for every existing row',
-            count($alters) === 1
+            count(Schema::statements(4)) === 1
             && $alters[0] === 'ALTER TABLE uv_unique_candidate ADD COLUMN lookup TINYINT UNSIGNED NOT NULL DEFAULT 0');
         check('v4: with no data step',
             !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
@@ -471,7 +471,7 @@ namespace INSPIRE\UniversalValidator\Scan {
 
         $have = new \FakeModule();
         $have->version = '3';
-        $have->columns = ['uv_unique_candidate.lookup'];
+        $have->columns = ['uv_unique_candidate.lookup', 'uv_finding.z_score'];
         $rh = Schema::migrate($have);
         check('v4: a column already there is not added again',
             $rh['ok'] === true && $rh['applied'] === 0
@@ -485,6 +485,42 @@ namespace INSPIRE\UniversalValidator\Scan {
             && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
         check('v4: a fresh install ends with the column',
             strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN lookup TINYINT') !== false);
+    }
+
+    /* =====================================================================
+     * V5  uv_finding.z_score
+     *
+     * The z-score of a growth-reference finding, for the report. NULL for
+     * every other finding, so no data step.
+     * ===================================================================== */
+    {
+        $m = new \FakeModule();
+        $m->version = '4';
+        $r = Schema::migrate($m);
+        $alters = array_values(array_filter($m->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        check('v5: an installation at version 4 moves to version 5',
+            $r['ok'] === true && $r['from'] === 4 && $r['to'] === 5 && Schema::VERSION === 5);
+        check('v5: by one ALTER that adds uv_finding.z_score, NULL for every existing row (got ' . json_encode($alters) . ')',
+            $alters === ['ALTER TABLE uv_finding ADD COLUMN z_score VARCHAR(16) NULL']);
+        check('v5: with no data step', !array_filter($m->sql, function ($q) { return strpos($q, 'DELETE FROM uv_') === 0; }));
+        check('v5: and records version 5',
+            (bool) array_filter($m->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        $have = new \FakeModule();
+        $have->version = '4';
+        $have->columns = ['uv_finding.z_score'];
+        $rh = Schema::migrate($have);
+        check('v5: a column already there is not added again',
+            $rh['ok'] === true && $rh['applied'] === 0
+            && !array_filter($have->sql, function ($q) { return strpos($q, 'ALTER TABLE') === 0; }));
+        $inert = new \FakeModule();
+        $inert->version = '4';
+        $inert->inertAlter = 'ADD COLUMN z_score';
+        $ri = Schema::migrate($inert);
+        check('v5: an ALTER that did not take is not recorded', $ri['ok'] === false
+            && strpos((string) $ri['why'], 'version 5 did not verify') !== false
+            && !array_filter($inert->sql, function ($q) { return strpos($q, 'INSERT IGNORE INTO uv_schema_version') === 0; }));
+        check('v5: a fresh install ends with the column',
+            strpos(implode(' ;; ', Schema::plan(0)), 'ADD COLUMN z_score VARCHAR(16)') !== false);
     }
 
     /* =====================================================================
@@ -509,7 +545,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             $r['ok'] === true && $r['from'] === 1 && $r['to'] === Schema::VERSION);
         check('v2: and applies only the versions after 1, not version 1 again',
             $r['applied'] === count(Schema::statements(2)) + count(Schema::statements(3))
-                             + count(Schema::statements(4)));
+                             + count(Schema::statements(4)) + count(Schema::statements(5)));
 
         foreach ($m->sql as $q) if (strpos($q, 'DELETE FROM uv_') === 0) $deletes++;
         // Four tables gain a project_id their existing rows cannot be given.
@@ -555,7 +591,7 @@ namespace INSPIRE\UniversalValidator\Scan {
             $rh['ok'] === true);
         check('v2: and skips exactly the statements already applied',
             $rh['applied'] === count(Schema::statements(2)) - 3 + count(Schema::statements(3))
-                               + count(Schema::statements(4)));
+                               + count(Schema::statements(4)) + count(Schema::statements(5)));
 
         // THE VERIFICATION IS NOT DECORATION. migrate() used to report ok on the
         // strength of having executed statements without an error; with

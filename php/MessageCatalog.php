@@ -155,7 +155,10 @@ final class MessageCatalog
      *
      * A finding judged against the day its value was saved (a today-relative
      * @UVWINDOW part) carries that day as 'asOf'; an "asOf" template on the
-     * entry, or on its type's wildcard entry, adds a sentence naming it.
+     * entry, or on its type's wildcard entry, adds a sentence naming it. A
+     * growth-reference finding carries its z-score as 'z' and its reference
+     * as 'reference' (else the rule's "rangeReference"); a "zScore" template
+     * adds a sentence with both.
      */
     public static function detail(array $finding, array $rule)
     {
@@ -183,10 +186,19 @@ final class MessageCatalog
             break;
         }
         $asOf = isset($finding['asOf']) && is_scalar($finding['asOf']) ? (string) $finding['asOf'] : '';
-        if ($asOf !== '') {
+        // A growth finding's z-score ('z_score' as the durable store reads it
+        // back); its reference is the finding's, else the rule's.
+        $z = isset($finding['z']) && is_scalar($finding['z']) ? (string) $finding['z']
+           : (isset($finding['z_score']) && is_scalar($finding['z_score']) ? (string) $finding['z_score'] : '');
+        $ref = isset($finding['reference']) && is_scalar($finding['reference']) ? (string) $finding['reference']
+             : (isset($rule['rangeReference']) && is_string($rule['rangeReference']) ? $rule['rangeReference'] : '');
+        $notes = [];
+        if ($asOf !== '') $notes['asOf'] = ['asOf' => $asOf];
+        if ($z !== '' && $ref !== '') $notes['zScore'] = ['z' => $z, 'reference' => $ref];
+        foreach ($notes as $key => $fill) {
             foreach ([$type . '/' . $code, $type . '/*'] as $ck) {
-                if (!isset($cat[$ck]['asOf']) || !is_string($cat[$ck]['asOf'])) continue;
-                $note = self::fillAll($cat[$ck]['asOf'], ['asOf' => $asOf]);
+                if (!isset($cat[$ck][$key]) || !is_string($cat[$ck][$key])) continue;
+                $note = self::fillAll($cat[$ck][$key], $fill);
                 if ($note !== null) $text = $text === '' ? $note : $text . ' ' . $note;
                 break;
             }

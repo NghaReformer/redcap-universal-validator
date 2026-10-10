@@ -2285,13 +2285,23 @@ function QRID_growthZText(z){
   return (z < 0 && n !== 0 ? "-" : "") + Math.floor(n / 100) + "." + (frac.length < 2 ? "0" + frac : frac);
 }
 /* A typed measurement: { state: "ok", y } | { state: "blank"|"not-a-number"|"not-positive" }. */
-function QRID_growthMeasure(text, decimalComma){
+function QRID_growthMeasure(text, decimalComma, scale){
   var n = QRID_rangeNumber(text, !!decimalComma);
   if(n === "") return { state: "blank" };
   if(n === null) return { state: "not-a-number" };
   var y = parseFloat(n);
   if(!(y > 0)) return { state: "not-positive" };
+  /* a rule's "measureScale": one double multiplication, as on the server */
+  if(scale != null) y = y * parseFloat(scale);
   return { state: "ok", y: y };
+}
+/* "plausible-low" | "plausible-high" | null: y (in the reference's unit)
+   against a rule's "plausible" limits, texts or null. Twin:
+   GrowthReference::plausible. */
+function QRID_growthPlausible(y, lo, hi){
+  if(lo != null && y < parseFloat(lo)) return "plausible-low";
+  if(hi != null && y > parseFloat(hi)) return "plausible-high";
+  return null;
 }
 /* { state: "ok", z } | { state: "outside" } (the table has no row there) */
 function QRID_growthZScore(ref, sex, x, y){
@@ -4108,6 +4118,14 @@ function QRIDRangeInit(QRID_CONFIG){
     /* A deferred stub (the page could not be given this rule) carries no limits:
        it reports its deferral, not a configuration error. */
     if(!configError && !cfg.deferred && !any) configError = "@UVRANGE has no limits to check.";
+    /* growth only: "plausible" in the reference's unit, and "measureScale" */
+    var opt = function(key){
+      var v = cfg[key];
+      if(v === undefined || v === null || v === "") return null;
+      if(typeof v !== "string" || !NUM.test(v)){ if(!configError) configError = "@UVRANGE " + key + " is not a number."; return null; }
+      return v;
+    };
+    var plausibleLo = opt("rangePlausibleLo"), plausibleHi = opt("rangePlausibleHi"), scale = opt("rangeMeasureScale");
     /* A growth reference: the limits are z-scores, read with the page's copy of
        the table (config.growth) and the inputs the server folded into ops. */
     var growth = null;
@@ -4176,6 +4194,8 @@ function QRIDRangeInit(QRID_CONFIG){
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              spec: spec,
+             plausibleLo: plausibleLo, plausibleHi: plausibleHi, scale: scale,
+             plausibleText: (typeof cfg.rangePlausibleText === "string") ? cfg.rangePlausibleText : "",
              softText: (typeof cfg.rangeSoftText === "string") ? cfg.rangeSoftText : "",
              hardText: (typeof cfg.rangeHardText === "string") ? cfg.rangeHardText : "",
              mode: { range: true } };
@@ -4198,7 +4218,7 @@ function QRIDRangeInit(QRID_CONFIG){
      below, else null. A plain rule's number check is QRID_rangeVerdict's. */
   function measureOnly(V, typed){
     if(V.growth){
-      var m = QRID_growthMeasure(typed, V.spec.decimalComma);
+      var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
       return (m.state === "not-a-number" || m.state === "not-positive") ? { tier: "hard", reason: m.state } : null;
     }
     var r = QRID_rangeVerdict({ decimalComma: V.spec.decimalComma }, typed);
@@ -4208,13 +4228,23 @@ function QRIDRangeInit(QRID_CONFIG){
     if(V.message) return QRID_escapeHtml(V.message);
     if(r.reason === "not-a-number") return "This is not a number.";
     if(r.reason === "not-positive") return "A measurement must be above 0.";
+    if(r.reason === "plausible-low" || r.reason === "plausible-high"){
+      /* no z-score, so the rule's "plausible" range judged it */
+      var pn = [];
+      if(V.plausibleText) pn.push("allowed " + V.plausibleText);
+      pn.push("no z-score on " + V.growth.ref.title + (r.why ? ": " + r.why : ""));
+      return (r.reason === "plausible-low" ? "This value is below the plausible range" : "This value is above the plausible range") +
+        " (" + QRID_escapeHtml(pn.join("; ")) + ").";
+    }
     var t = r.tier === "soft" ? V.softText : V.hardText;
     var low = r.reason === "soft-low" || r.reason === "hard-low";
     var text = r.tier === "soft"
       ? (low ? "This value is lower than usual" : "This value is higher than usual")
       : (low ? "This value is below the plausible range" : "This value is above the plausible range");
     var notes = [];
-    if(r.z !== undefined) notes.push("z-score " + r.z + " on " + V.growth.ref.title);
+    /* the reference's unit, so a value typed in another unit shows why its z-score is extreme */
+    if(r.z !== undefined) notes.push("z-score " + r.z + " on " + V.growth.ref.title +
+      (V.growth.ref.unit ? ", in " + V.growth.ref.unit + (V.scale !== null ? " after × " + V.scale : "") : ""));
     if(t) notes.push((r.tier === "soft" ? "expected " : "allowed ") + t);
     return text + (notes.length ? " (" + QRID_escapeHtml(notes.join("; ")) + ")" : "") + ".";
   }
@@ -4239,12 +4269,18 @@ function QRIDRangeInit(QRID_CONFIG){
   }
   /* The verdict of a growth rule: the measurement first (not a number, at or
      below 0), then the z-score's tier against the limits. { tier: "withheld" }
-     when an input was not sent to this page; { tier: "inert", why } when an
-     input is blank or outside the reference. Server twin:
+     when an input was not sent to this page. With no z-score (an input blank
+     or unreadable, a sex code that is neither, outside the reference) the
+     "plausible" range judges ({ tier: "hard", reason: "plausible-low" |
+     "plausible-high", why }), else { tier: "inert", why }. Server twin:
      UniversalValidator::findingsRange and growthInputs. */
   function growthVerdict(V, typed){
     var g = V.growth;
-    var m = QRID_growthMeasure(typed, V.spec.decimalComma);
+    var m = QRID_growthMeasure(typed, V.spec.decimalComma, V.scale);
+    var noZ = function(why){
+      var p = QRID_growthPlausible(m.y, V.plausibleLo, V.plausibleHi);
+      return p ? { tier: "hard", reason: p, why: why } : { tier: "inert", why: why };
+    };
     if(m.state === "blank") return { tier: "inert", why: null };
     if(m.state !== "ok") return { tier: "hard", reason: m.state };
     var withheld = false, ins = {}, k;
@@ -4258,21 +4294,29 @@ function QRIDRangeInit(QRID_CONFIG){
     var sexKey = function(v){ return g.fold ? QRID_whenFoldCase(v) : v; };
     var sex = sexKey(ins.Sex) === sexKey(g.male) ? "male" : (sexKey(ins.Sex) === sexKey(g.female) ? "female" : null);
     if(sex === null){
-      return { tier: "inert", why: ins.Sex === "" ? "the sex is blank"
-        : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)" };
+      return noZ(ins.Sex === "" ? "the sex is blank"
+        : "the sex code is neither " + g.male + " (male) nor " + g.female + " (female)");
     }
     var input = { comma: g.comma };
     if(g.ops.AgeDob){
       input.dobDays = growthDays(g.ops.AgeDob, g.dobType, g.dobFormat);
       input.atDays = growthDays(g.ops.AgeAt, g.atType, g.atFormat);
-      if(input.dobDays === undefined || input.atDays === undefined) return { tier: "inert", why: null };
+      if(input.dobDays === undefined || input.atDays === undefined){
+        var dobBad = input.dobDays === undefined;
+        /* A date on this page is re-read at every keystroke: one still being
+           typed says nothing. A saved one the rule cannot read gets the
+           server's words (growthInputs). */
+        if((dobBad ? g.ops.AgeDob : g.ops.AgeAt)[0] !== "lit") return { tier: "inert", why: null };
+        return noZ(dobBad ? "the date of birth is not a date this rule can read"
+                          : "the date of the measurement is not a date this rule can read");
+      }
     } else {
       if(g.ops.AgeDays) input.days = ins.AgeDays;
       if(g.ops.AgeMonths) input.months = ins.AgeMonths;
       if(g.ops.By) input.by = ins.By;
     }
     var a = QRID_growthAxis(g.ref, input);
-    if(a.state !== "ok") return { tier: "inert", why: a.why };
+    if(a.state !== "ok") return noZ(a.why);
     var z = QRID_growthZScore(g.ref, sex, a.x, m.y);
     /* only "outside" (no row there): a server-sent table covers its "valid"
        range (GrowthReference::table), so this is a damaged reference */
@@ -6221,8 +6265,9 @@ function QRIDPooledInit(QRID_MULTI_CONFIG){
                       "rangeComputed", "rangeReference", "rangeSexOp", "rangeMale",
                       "rangeFemale", "rangeAgeDobOp", "rangeAgeAtOp", "rangeAgeDaysOp",
                       "rangeAgeMonthsOp", "rangeByOp", "rangeDobType", "rangeDobFormat",
-                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "deferredOnSave",
-                      "extendedAdvisory"];
+                      "rangeAtType", "rangeAtFormat", "rangeAxisComma", "rangePlausibleLo",
+                      "rangePlausibleHi", "rangePlausibleText", "rangeMeasureScale",
+                      "deferredOnSave", "extendedAdvisory"];
   var MODE_OF_TYPE = {
     "single": "check",
     "pooled": "check",
@@ -6423,7 +6468,7 @@ window.INSPIREUniversalValidator = {
   },
   growthLogic: {                             /* @UVRANGE growth references, locked by tests/growth_js.cjs */
     axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,
-    measure: QRID_growthMeasure, zScore: QRID_growthZScore
+    measure: QRID_growthMeasure, zScore: QRID_growthZScore, plausible: QRID_growthPlausible
   },
   singleInit: QRIDSingleInit,
   pooledInit: QRIDPooledInit,
