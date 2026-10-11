@@ -23,7 +23,8 @@
  *   - the writer itself (NS.returnWriter.write, shared with @UVEXISTS
  *     "return") on each kind of field: a dropdown and its autocomplete
  *     companion, a radio's hidden mirror and buttons, a textarea, and the
- *     "exact" flag that keeps "007" from passing for "7".
+ *     "exact" flag that keeps "007" from passing for "7"; a dropdown or radio
+ *     code the page does not offer empties the field and names it.
  *
  * The values themselves are parity-locked by tests/growth_js.cjs and
  * tests/growth_php.php (the "outputs" fixture section).
@@ -573,7 +574,15 @@ function radioGroup(name, codes) {
   check('writer: a dropdown takes a code it offers', W('site', '2', true) === true && s.value === '2');
   check('... its autocomplete companion shows the label', comp.value === 'South');
   check('... and REDCap hears input and change on the select', s._events.join(',') === 'input,change');
-  check('writer: a code the dropdown does not offer writes nothing', W('site', '9', true) === false && s.value === '2' && comp.value === 'South');
+  const lostSite = [];
+  s._events = [];
+  check('writer: a code the dropdown does not offer empties it and its companion, and names the field',
+    W('site', '9', true, true, lostSite) === true && s.value === '' && comp.value === '' && lostSite.join() === 'site'
+    && s._events.join(',') === 'input,change');
+  const lostAgain = [];
+  check('... already empty: nothing to write, the field is still named', W('site', '9', true, true, lostAgain) === false && lostAgain.join() === 'site');
+  check('... and without a list to name it in, still emptied', W('site', '1', true) === true && W('site', '9', true) === true && s.value === '' && comp.value === '');
+  W('site', '2', true);
   check('writer: "" empties the dropdown and its companion', W('site', '', true) === true && s.value === '' && comp.value === '');
   check('writer: a radio gets the code in its mirror and the matching button checked',
     W('arm', '2', true) === true && mirror.value === '2' && buttons.map((b) => b.checked).join() === 'false,true,false');
@@ -581,12 +590,18 @@ function radioGroup(name, codes) {
   check('writer: another code moves the check', W('arm', '3', false) === true && buttons.map((b) => b.checked).join() === 'false,false,true');
   check('... silently when not announced', !buttons[2]._events.length && mirror._events.join(',') === 'input,change');
   check('writer: "" unchecks every button', W('arm', '', true) === true && mirror.value === '' && buttons.every((b) => !b.checked));
+  W('arm', '1', true);
+  const lostArm = [];
+  check('writer: a code no radio button carries empties the mirror and unchecks every button, and names the field',
+    W('arm', '7', true, true, lostArm) === true && mirror.value === '' && buttons.every((b) => !b.checked) && lostArm.join() === 'arm');
   check('writer: a textarea takes text', W('note', 'line one', true) === true && area.value === 'line one');
   check('writer: exact — a Text field holding "007" takes "7"', W('code_id', '7', true, true) === true && txt.value === '7');
   check('writer: not exact — "7.8" is the same number as "7.80", left alone', W('dose', '7.8', true) === false && num.value === '7.80');
   check('writer: exact — "7.8" replaces "7.80"', W('dose', '7.8', true, true) === true && num.value === '7.8');
   check('writer: the same value writes nothing', W('note', 'line one', true) === false);
   check('writer: a field the page does not carry writes nothing', W('absent', 'x', true) === false);
+  const lostText = [];
+  check('writer: a Text field takes any text, and names nothing', W('code_id', '9', true, true, lostText) === true && txt.value === '9' && !lostText.length);
   check('writer: calculate and doBranching hear every write', env.win._calc.includes('site') && env.win._branch.includes('arm'));
 }
 

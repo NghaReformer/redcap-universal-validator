@@ -403,6 +403,238 @@ for (const [label, reply, note] of [
   check('fields this page does not carry are skipped', f.from.value === '1' && /Found/.test(xMsg(env, 'spec').innerHTML));
 }
 
+// ---- 7) values that change with no event; how long answers count ------------------------------------------------
+/* Date.now moved on by ms while fn runs (the answer cache stamps with Date.now). */
+function later(ms, fn) {
+  const realNow = Date.now, t0 = realNow();
+  Date.now = () => t0 + ms;
+  try { fn(); } finally { Date.now = realNow; }
+}
+{
+  // A date picker, an autocomplete pick, a Today button or @SETVALUE changes the value with no
+  // native event: check() hears of it only after the silent-change poll and the pause.
+  const f = form('SP-1', HELD);
+  const stub = makeDeferredStub();
+  const env = boot(f.list, { rules: [rule()] }, stub);
+  f.spec.value = 'SP-2';
+  stub.answer(0, FOUND_1);
+  check('an answer for a value the field no longer holds writes nothing (got ' + f.snapshot() + ')', f.snapshot() === HELD_SNAP && f.events() === 0);
+  check('...and leaves the note as it was', /checking/.test(xMsg(env, 'spec').innerHTML));
+  f.spec.fire('change');
+  check('...the value the field holds is asked next', stub.calls.length === 2 && stub.calls[1].payload.values.spec === 'SP-2');
+  stub.answer(0, FOUND_2);
+  check('...and its answer fills', f.from.value === '2' && f.date.value === '02-04-2026');
+}
+{
+  // Typing clears the verdict even when the value ends up as it was (a character typed and deleted).
+  const f = form('SP-1', HELD);
+  const stub = makeDeferredStub();
+  boot(f.list, { rules: [rule()] }, stub);
+  f.spec.fire('input');
+  stub.answer(0, FOUND_1);
+  check('an answer that lands while the field is being typed in writes nothing', f.snapshot() === HELD_SNAP);
+  f.spec.fire('change');
+  stub.answer(0, FOUND_1);
+  check('...the value is asked again when the typing ends, and fills', stub.calls.length === 2 && f.from.value === '1');
+}
+{
+  const f = form('SP-1', HELD);
+  const m = el('m', 'X1');
+  const stub = makeDeferredStub();
+  boot(f.list.concat([m]), { rules: [rule({ existsLocal: ['m'] })] }, stub);
+  m.value = 'X2';
+  stub.answer(0, FOUND_1);
+  check('an answer for a match value the page no longer holds writes nothing', stub.calls[0].payload.values.m === 'X1' && f.snapshot() === HELD_SNAP);
+}
+{
+  const f = form('SP-1', HELD);
+  const k = select('k', [['A', 'a'], ['B', 'b']], 'A');
+  const stub = makeDeferredStub();
+  boot(f.list.concat([k]), { rules: [{ type: 'exists', fields: ['spec'], branches: [
+    { when: "[k]='A'", blockSave: 'off', existsReturnFields: ['r_from'] },
+    { when: "[k]='B'", blockSave: 'off', existsReturnFields: ['r_date'] }] }] }, stub);
+  k.value = 'B';
+  stub.answer(0, FOUND_1);
+  check('an answer for a branch the page no longer selects writes nothing', f.from.value === 'old' && f.date.value === '09-09-2020');
+}
+{
+  // A not-found grows old: a rule that cannot block does not ask again at Save, one that can does.
+  for (const mode of ['off', 'confirm']) {
+    const f = form('SP-404');
+    const stub = makeDeferredStub();
+    const env = boot(f.list, { rules: [rule({ blockSave: mode })] }, stub);
+    stub.answer(0, { state: 'not-found' });
+    later(31000, () => {
+      const ok = saved(env);
+      if (mode === 'off') {
+        check('"blockSave":"off": Save after a not-found 31 s old goes through at once, nothing asked again',
+          ok && stub.calls.length === 1 && !env.win._alerts.length);
+      } else {
+        check('"blockSave":"confirm": Save asks again about a not-found 31 s old and waits for the answer',
+          !ok && stub.calls.length === 2 && /please wait a moment/.test(env.win._alerts.slice(-1)[0] || ''));
+      }
+    });
+  }
+}
+{
+  // A re-ask at Save that gets no usable answer keeps the old not-found, and is heard.
+  const f = form('SP-404');
+  const stub = makeTransportStub();
+  stub.next = { state: 'not-found' };
+  const env = boot(f.list, { rules: [rule({ blockSave: 'confirm' })] }, stub);
+  f.from.value = 'typed by hand';
+  f.clearEvents();
+  stub.next = { state: 'unknown', why: 'the saved values could not be read just now' };
+  later(31000, () => { saved(env); });
+  check('a re-ask at Save answered "unknown" keeps the not-found: the fields are emptied, heard',
+    stub.calls.length === 2 && f.from.value === '' && f.from._events.join(',') === 'input,change' && /not saved/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  const f = form('SP-1');
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1 };
+  const env = boot(f.list, { rules: [rule()] }, stub);
+  f.spec.fire('change');
+  check('a found answer is used again within 30 s', stub.calls.length === 1);
+  stub.byValue = { 'SP-1': FOUND_2 };
+  later(31000, () => {
+    check('Save goes by a found answer however old, and asks nothing', saved(env) && stub.calls.length === 1 && f.from.value === '1');
+    f.spec.fire('change');
+    check('judged again after 30 s, a found answer is asked again and the entry\'s new values fill',
+      stub.calls.length === 2 && f.from.value === '2' && f.site.value === '1');
+  });
+}
+{
+  const f = form('SP-1');
+  const stub = makeTransportStub();
+  stub.next = { state: 'found', record: null };
+  boot(f.list, { rules: [{ type: 'exists', fields: ['spec'], blockSave: 'off' }] }, stub);
+  later(31000, () => { f.spec.fire('change'); });
+  check('a rule that fills nothing goes by its found answer however old', stub.calls.length === 1);
+}
+
+// ---- 8) codes the page does not offer; a read-only field ----------------------------------------------------------
+{
+  const f = form('SP-1');
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1,
+    'SP-3': { state: 'found', record: null, values: { r_site: '3', r_date: '05-05-2025', r_dose: '9', r_from: '9', r_arm: '7' } } };
+  const env = boot(f.list, { rules: [rule()] }, stub);
+  f.spec.value = 'SP-3'; f.spec.fire('change');
+  check('codes the page does not offer: the dropdown and the radio are emptied, the rest take the new entry (got ' + f.snapshot() + ')',
+    f.snapshot() === '||05-05-2025|9|9||---');
+  const html = xMsg(env, 'spec').innerHTML;
+  check('...a green "Found" with an amber line naming each field',
+    /^&#10003; Found\./.test(html) && /#7a5c00/.test(html)
+    && html.indexOf('The value to copy into [r_site] is not offered on this page, so the field is left empty.') >= 0
+    && html.indexOf('The value to copy into [r_arm] is not offered on this page, so the field is left empty.') >= 0);
+  f.spec.value = 'SP-1'; f.spec.fire('change');
+  check('...an entry whose codes are offered fills them again, without the line',
+    f.snapshot() === '2|South|01-03-2026|7.5|1|3|--x' && !/not offered/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  const s = select('r<i>', [['', ''], ['1', 'one']]);
+  const spec = el('spec', 'SP-1');
+  const stub = makeTransportStub();
+  stub.next = { state: 'found', record: null, values: { 'r<i>': '9' } };
+  const env = boot([spec, s], { rules: [rule({ existsReturnFields: ['r<i>'], existsReturnNumbers: [] })] }, stub);
+  const html = xMsg(env, 'spec').innerHTML;
+  check('...the field named in the line is escaped', html.indexOf('[r&lt;i&gt;]') >= 0 && html.indexOf('<i>') < 0);
+}
+{
+  // A field the rule fills is also one its "when" reads: writing it judges the field again
+  // at once, and that newer judgement keeps its own message.
+  const f = form('SP-0', HELD);
+  const stub = makeTransportStub();
+  const reply = (p) => (p.values.spec !== 'SP-1' ? { state: 'found', record: 'R0', values: {} }
+    : p.cond.r_from === '9' ? { state: 'found', record: 'R2', values: { r_site: '1', r_from: '9' } }
+      : { state: 'found', record: 'R1', values: { r_site: '3', r_from: '9' } });
+  stub.obj.ajax = (action, payload) => {
+    stub.calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
+    return { then(res) { res(reply(payload)); } };
+  };
+  const env = boot(f.list, { rules: [rule({ when: "[r_from]<>'zzz'" })] }, stub);
+  f.spec.value = 'SP-1'; f.spec.fire('change');
+  const html = xMsg(env, 'spec').innerHTML;
+  check('a write that judged the field again leaves the newer message (got ' + html + ')',
+    /record <b>R2<\/b>/.test(html) && !/not offered/.test(html) && f.site.value === '1');
+}
+{
+  const f = form('SP-1');
+  f.spec.readOnly = true;
+  const stub = makeTransportStub();
+  stub.next = 'HANG';
+  const env = boot(f.list, { rules: [rule({ blockSave: 'hard' })] }, stub);
+  check('a read-only field (@READONLY): a lookup on its way still holds the save', !saved(env)
+    && /still being checked/.test(env.win._alerts.slice(-1)[0] || ''));
+  flushAll();
+  check('...no longer than the wait', saved(env));
+}
+{
+  const f = form('SP-404');
+  f.spec.readOnly = true;
+  const stub = makeTransportStub();
+  stub.next = { state: 'not-found' };
+  const env = boot(f.list, { rules: [rule({ blockSave: 'hard' })] }, stub);
+  check('a read-only field: not-found never blocks the save', saved(env) && !env.win._alerts.length && /not saved/.test(xMsg(env, 'spec').innerHTML));
+  later(31000, () => {
+    check('...and Save does not ask again 31 s later', saved(env) && stub.calls.length === 1 && !env.win._alerts.length);
+  });
+}
+
+// ---- 9) more that must hold ------------------------------------------------------------------------------------------
+{
+  const f = form('SP-1', HELD);
+  const stub = makeTransportStub();
+  stub.next = FOUND_1;
+  const env = boot(f.list, { rules: [rule({ when: '[visit_1][grp]=1',
+    whenAst: ['cmp', '=', ['qref', 'visit_1', 'grp', null], ['lit', '1']] })] }, stub);
+  check('a "when" this page cannot resolve (another event) leaves the fields and asks nothing',
+    f.snapshot() === HELD_SNAP && stub.calls.length === 0 && /cannot resolve/.test(xMsg(env, 'spec').innerHTML));
+}
+{
+  const f = form('SP-1');
+  const stub = makeTransportStub();
+  stub.byValue = { 'SP-1': FOUND_1, 'SP-2': FOUND_2 };
+  boot(f.list, { rules: [rule()] }, stub);
+  f.spec.value = 'SP-2'; f.spec.fire('change');
+  f.clearEvents();
+  f.spec.value = 'SP-1'; f.spec.fire('change');
+  check('a cached answer that fills again is heard, as from typing', stub.calls.length === 2
+    && f.from.value === '1' && f.from._events.join(',') === 'input,change');
+}
+{
+  const f = form('SP-1', HELD);
+  const m = el('m', '');
+  const stub = makeTransportStub();
+  stub.next = FOUND_1;
+  boot(f.list.concat([m]), { rules: [rule({ existsLocal: ['m'] })] }, stub);
+  check('a blank match field: the fields keep what they hold, nothing asked', f.snapshot() === HELD_SNAP && stub.calls.length === 0);
+  m.value = 'X1'; m.fire('change');
+  m.value = ''; m.fire('change');
+  check('...also after a fill', stub.calls.length === 1 && f.snapshot() === '2|South|01-03-2026|7.5|1|3|--x');
+}
+{
+  // Five lookups in a chain, each filling the field the next one searches: a write sets off
+  // the next lookup's write only QRID_RETURN_DEPTH_MAX (4) deep.
+  const chain = ['c0', 'c1', 'c2', 'c3', 'c4', 'c5'].map((nm, i) => el(nm, i === 0 ? 'K' : ''));
+  const stub = { calls: [] };
+  stub.obj = {
+    ajax(action, payload) {
+      stub.calls.push(payload.field);
+      const values = {};
+      values['c' + (Number(payload.field.slice(1)) + 1)] = payload.values[payload.field] + '>';
+      return { then(res) { res({ state: 'found', record: null, values }); } };
+    },
+  };
+  const rules = [0, 1, 2, 3, 4].map((i) => ({ type: 'exists', fields: ['c' + i], existsReturnFields: ['c' + (i + 1)], blockSave: 'off' }));
+  boot(chain, { rules }, stub);
+  check('a chain of lookups fills at page open, one rule after the other', chain[5].value === 'K>>>>>');
+  chain[0].value = 'J'; chain[0].fire('change');
+  check('...a change runs down the chain four writes deep, and the fifth is not made (got ' + chain.map((e) => e.value).join(' ') + ')',
+    chain[4].value === 'J>>>>' && chain[5].value === 'K>>>>>');
+}
+
 global.setTimeout = realSetTimeout; global.clearTimeout = realClearTimeout; console.error = realConsoleError;
 console.log(`exists_return_dom_js: ${n} checks, ${fail} failure(s)`);
 process.exit(fail === 0 ? 0 : 1);

@@ -2462,31 +2462,41 @@ function QRID_selectOption(sel, code){
    is written when the page does not carry the field (another page of a
    survey) or it already holds the value, or the same number spelled another
    way (unless exact: a Text field that holds text, where "007" is not "7").
-   A dropdown takes only a code it offers (another rule may have hidden the
-   option); its autocomplete companion shows the option's label. A radio,
-   yes/no or true/false field gets the code in its hidden mirror and the
-   matching button checked, every button unchecked for "". announce is false
-   for the fill made when the page opens: it must not mark the form as
-   changed, and the save writes the value either way. Otherwise REDCap hears
-   an input and a change event, as from typing, and the calculations and
-   branching logic that read the field run. Server twin:
-   UniversalValidator::applyReturns. */
-function QRID_writeReturned(name, text, announce, exact){
+   A dropdown or a radio, yes/no or true/false field takes only a code it
+   offers: when @HIDECHOICE or another rule (@UVCHOICES) took the option off
+   the page, the field is emptied instead of keeping the previous entry's
+   code, and its name goes into lost (when given) so the caller can say why.
+   A dropdown's autocomplete companion shows the option's label. A radio gets
+   the code in its hidden mirror and the matching button checked, every
+   button unchecked for "". announce is false for the fill made when the page
+   opens: it must not mark the form as changed, and the save writes the value
+   either way. Otherwise REDCap hears an input and a change event, as from
+   typing, and the calculations and branching logic that read the field run.
+   Server twin: UniversalValidator::applyReturns. */
+function QRID_writeReturned(name, text, announce, exact, lost){
   var el = QRID_returnElement(name);
   if(!el || typeof el.value !== "string") return false;
   var cur = el.value;
   if(cur === text) return false;
   if(!exact && text !== "" && cur !== "" && QRID_sameNumber(cur, text)) return false;
+  var isSelect = (el.tagName || "").toLowerCase() === "select";
+  var radios = (!isSelect && document.getElementsByName) ? document.getElementsByName(name + "___radio") : [];
+  var opt = null;   /* the option or button that carries the code */
+  if(text !== ""){
+    if(isSelect) opt = QRID_selectOption(el, text);
+    else for(var oi = 0; oi < radios.length && !opt; oi++) if(radios[oi].value === text) opt = radios[oi];
+    if(!opt && (isSelect || radios.length)){
+      if(lost) lost.push(name);
+      text = "";
+      if(cur === "") return false;
+    }
+  }
   var shown = [];   /* the elements a person sees change */
-  if((el.tagName || "").toLowerCase() === "select"){
-    var opt = text === "" ? null : QRID_selectOption(el, text);
-    if(text !== "" && !opt) return false;
-    el.value = text;
+  el.value = text;
+  if(isSelect){
     var comp = typeof document.getElementById === "function" ? document.getElementById("rc-ac-input_" + name) : null;
     if(comp && typeof comp.value === "string") comp.value = opt ? String(opt.text != null ? opt.text : opt.value) : "";
   } else {
-    el.value = text;
-    var radios = document.getElementsByName ? document.getElementsByName(name + "___radio") : [];
     for(var ri = 0; ri < radios.length; ri++){
       var on = text !== "" && radios[ri].value === text;
       if(radios[ri].checked !== on){ radios[ri].checked = on; shown.push(radios[ri]); }
@@ -5879,15 +5889,19 @@ function QRIDExistsInit(QRID_CONFIG){
     QRID_followWidget(input, msg, fieldName);
     var GITEM = null;
     /* A rule that fills fields holds the save while its answer is on the way,
-       even with "blockSave":"off": the values come with the answer. */
-    if((ANY_BLOCK || OWNED_ANY) && !configError && !input.readOnly && !input.disabled){
+       even with "blockSave":"off": the values come with the answer. A field
+       the user cannot edit (@READONLY) never blocks the save (UX-003, see
+       QRID_registerBlocker), but a rule that fills fields still holds it
+       while its answer is on the way, and no longer than QRID_PENDING_MS. */
+    var EDITABLE = !input.readOnly && !input.disabled;
+    if(!configError && ((ANY_BLOCK && EDITABLE) || OWNED_ANY)){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
                 readOnly: false, disabled: false,
                 focus: function(){ try { input.focus(); } catch(e){} } };
-      QRID_registerBlocker(GITEM, fieldName, VS.firstBlock);
+      QRID_registerBlocker(GITEM, fieldName, EDITABLE ? VS.firstBlock : "off");
     }
-    function setGuard(invalid, mode){ if(GITEM){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
+    function setGuard(invalid, mode){ if(GITEM && EDITABLE){ GITEM.__qridInvalid = invalid; GITEM.__qridBlockMode = invalid ? (mode || "off") : "off"; } }
     function setPending(on){ if(GITEM) GITEM.__qridPending = !!on; }
     function inert(){ msg.style.display = "none"; msg.innerHTML = ""; setGuard(false); setPending(false); QRID_setModeState(input, "x", null); }
     var seq = 0;            /* stale-response guard: only the LATEST request may render */
@@ -5914,16 +5928,20 @@ function QRIDExistsInit(QRID_CONFIG){
        does not name keeps what it holds. quiet for the fill made as the page
        opens: it does not mark the form as changed (QRID_writeReturned). A
        survey page never fills: a rule that fills fields is not open to
-       surveys, and a survey save writes nothing. */
+       surveys, and a survey save writes nothing. Returns the dropdown and
+       radio fields that were emptied because the page does not offer the
+       code to copy. */
     function fill(vals, quiet){
-      if(!OWNED_ANY || QRID_IS_SURVEY || QRID_returnDepth >= QRID_RETURN_DEPTH_MAX) return;
+      var lost = [];
+      if(!OWNED_ANY || QRID_IS_SURVEY || QRID_returnDepth >= QRID_RETURN_DEPTH_MAX) return lost;
       QRID_returnDepth++;
       try {
         for(var fi = 0; fi < OWNED.length; fi++){
           var ff = OWNED[fi];
-          if(Object.prototype.hasOwnProperty.call(vals, ff)) QRID_writeReturned(ff, vals[ff], !quiet, NUMBERS[ff] !== true);
+          if(Object.prototype.hasOwnProperty.call(vals, ff)) QRID_writeReturned(ff, vals[ff], !quiet, NUMBERS[ff] !== true, lost);
         }
       } finally { QRID_returnDepth--; }
+      return lost;
     }
     function emptyOwned(quiet){
       var none = {};
@@ -5956,16 +5974,28 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       return "";
     }
+    function amberLine(text){ return '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(text) + "</div>"; }
     function renderResp(resp, V, quiet){
       if(resp.state === "found"){
         styleMsg(msg, "ok");
         QRID_setModeState(input, "x", "ok");
         setGuard(false);
         var kept = returnsOf(V).length ? keptNote(resp) : "";
-        msg.innerHTML = "&#10003; Found" +
+        var html = "&#10003; Found" +
           (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + "." +
-          (kept ? '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(kept) + "</div>" : "");
-        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object") fill(foundValues(V, resp.values), quiet);
+          (kept ? amberLine(kept) : "");
+        msg.innerHTML = html;
+        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object"){
+          var at = seq, lost = fill(foundValues(V, resp.values), quiet);
+          /* A write that set off a new judgement of this field (a "when"
+             field it fills) left its own message: seq moved. */
+          if(lost.length && seq === at){
+            for(var lk = 0; lk < lost.length; lk++){
+              html += amberLine("The value to copy into [" + lost[lk] + "] is not offered on this page, so the field is left empty.");
+            }
+            msg.innerHTML = html;
+          }
+        }
       } else if(resp.state === "not-found"){
         styleMsg(msg, "bad");
         QRID_setModeState(input, "x", "bad");
@@ -5977,6 +6007,21 @@ function QRIDExistsInit(QRID_CONFIG){
         unknown(V, resp.why);
       }
     }
+    /* The values a lookup for V sends, as the page holds them now: the value
+       searched, then each match field. A match field this page does not
+       carry (another form, another survey page) is left out: the server
+       reads its saved value. */
+    function lookupValues(V){
+      var out = {};
+      out[fieldName] = trim(QRID_WHEN.readRef(fieldName, null));
+      for(var li = 0; li < V.locals.length; li++){
+        var lf = V.locals[li];
+        if(QRID_WHEN.has(lf, null)) out[lf] = trim(QRID_WHEN.readRef(lf, null));
+      }
+      return out;
+    }
+    /* One lookup: its values and the branch values sent with them. */
+    function lookupKey(values, cond){ return JSON.stringify([values, cond]); }
     var activeVariant = null;
     var opening = true;
     function check(saving){
@@ -6010,27 +6055,30 @@ function QRIDExistsInit(QRID_CONFIG){
       /* A branch without "return": the fields the other branches fill are
          emptied, whatever the answer. */
       if(!returnsOf(V).length) emptyOwned(quiet);
-      var val = trim(QRID_WHEN.readRef(fieldName, null));
+      var vals = lookupValues(V), val = vals[fieldName];
       if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); emptyOwned(quiet); return; }
-      var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
-      payload.values[fieldName] = val;
       for(var li = 0; li < V.locals.length; li++){
-        var lf = V.locals[li];
-        /* A match field this page does not carry (another form, another
-           survey page) is left out: the server reads its saved value. */
-        if(!QRID_WHEN.has(lf, null)) continue;
-        var lv = trim(QRID_WHEN.readRef(lf, null));
-        /* A match field on this page that is blank: nothing to narrow by yet. */
+        if(!Object.prototype.hasOwnProperty.call(vals, V.locals[li])) continue;
+        var lv = vals[V.locals[li]];
+        /* A match field on this page that is blank: nothing to narrow by
+           yet, and the fields keep what they hold (as the save does). */
         if(lv === "" || QRID_isMissingCode(lv)){ ++seq; pendingKey = null; inert(); return; }
-        payload.values[lf] = lv;
       }
-      var key = JSON.stringify([payload.values, payload.cond]);
+      var payload = { field: fieldName, values: vals, cond: QRID_condValues(VS.all) };
+      var key = lookupKey(vals, payload.cond);
       var cached = answers.get(key);
-      /* Save asks again about a cached "not found" older than QRID_RECHECK_MS:
-         the value may have been saved elsewhere since (another tab, a
-         colleague). The guard holds the save until the answer lands. A
-         re-ask that gets no usable answer keeps the old one. */
-      var prior = (cached && saving === true && cached.state === "not-found" && QRID_answerStale(cached)) ? cached : null;
+      /* A found answer of a rule that fills fields ages too: the entry it
+         copies from may have changed since. Judging the field again after
+         QRID_RECHECK_MS asks again; Save does not, it goes by what it has. */
+      if(cached && cached.state === "found" && saving !== true && returnsOf(V).length && QRID_answerStale(cached)) cached = null;
+      /* Save asks again about a cached "not found" older than QRID_RECHECK_MS
+         when the rule can block: the value may have been saved elsewhere
+         since (another tab, a colleague). The guard holds the save until the
+         answer lands. A re-ask that gets no usable answer keeps the old one.
+         A rule that cannot block holds the save only while a lookup is
+         already on its way. */
+      var prior = (cached && saving === true && cached.state === "not-found" && V.blockSave !== "off" && EDITABLE
+                   && QRID_answerStale(cached)) ? cached : null;
       if(cached && !prior){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
@@ -6053,7 +6101,7 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
-      setPending(V.blockSave !== "off" || returnsOf(V).length > 0);
+      setPending((V.blockSave !== "off" && EDITABLE) || returnsOf(V).length > 0);
       setTimeout(function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
@@ -6064,6 +6112,11 @@ function QRIDExistsInit(QRID_CONFIG){
       }, QRID_PENDING_MS);
       function render(err, resp){
         if(my !== seq) return;
+        /* An answer for values the page no longer holds is stale too: a
+           change no event reported (a date picker, an autocomplete pick,
+           @SETVALUE) reaches check() only after the silent-change poll and
+           the pause, and the answer may land before. check() asks again. */
+        if(lookupKey(lookupValues(V), QRID_condValues(VS.all)) !== key) return;
         pendingKey = null;
         setPending(false);
         if(err || !resp || resp.error || (resp.state !== "found" && resp.state !== "not-found" && resp.state !== "unknown")){
