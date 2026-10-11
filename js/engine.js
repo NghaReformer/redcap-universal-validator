@@ -2967,8 +2967,9 @@ function QRID_registerBlocker(input, fieldName, blockMode){
     /* A lookup still in flight holds the save. Clicking Save blurs the field,
        and the blur is when a lookup asks: letting the save through would
        decide it before the answer that may block it arrives. Only items whose
-       active rule can block set __qridPending, and they drop it when the
-       answer comes or after QRID_PENDING_MS. */
+       active rule can block, or fills fields from the answer (@UVEXISTS
+       "return"), set __qridPending, and they drop it when the answer comes
+       or after QRID_PENDING_MS. */
     var pend = UV_guard.items.filter(function(el){ return el.__qridPending && bad.indexOf(el) < 0; });
     if(!bad.length && !pend.length) return;
     var label = function(el){ return el.__qridFieldLabel || el.__qridFieldName; };
@@ -5815,8 +5816,14 @@ function QRIDUniqueInit(QRID_CONFIG){
    typing clears the verdict, so a half-typed value never reads "not found".
    Answers: found (green), not-found (red; blocks per blockSave), unknown
    (amber "could not check"; never blocks). Every failure is unknown.
-   tests/exists_dom_js.cjs locks this contract; existsCheck() in
-   UniversalValidator.php is the server twin. */
+   A rule with "return" fills fields of this form from the entry found: a
+   found answer carries the values (or why none were copied: several entries
+   that disagree, or one outside the user's Data Access Group, and the fields
+   keep what they hold); not-found, a blank value and a rule that does not
+   apply empty them; unknown leaves them. The save writes the same values
+   (UniversalValidator::returnsExists).
+   tests/exists_dom_js.cjs and tests/exists_return_dom_js.cjs lock this
+   contract; existsCheck() in UniversalValidator.php is the server twin. */
 function QRIDExistsInit(QRID_CONFIG){
   function styleMsg(el, kind){   /* "ok" | "bad" | "warn" | "info" */
     var c = (kind === "ok") ? "#bcd9bd;background:#eef7ef;color:#2e7d32"
@@ -5838,6 +5845,8 @@ function QRIDExistsInit(QRID_CONFIG){
              deferredWhy: (cfg.deferredWhy && cfg.deferredWhy.length) ? cfg.deferredWhy : null,
              message: (typeof cfg.message === "string" && cfg.message !== "") ? cfg.message : "",
              locals: (cfg.existsLocal && cfg.existsLocal.length) ? cfg.existsLocal.slice() : [],
+             returns: (cfg.existsReturnFields && cfg.existsReturnFields.length) ? cfg.existsReturnFields.slice() : [],
+             numbers: (cfg.existsReturnNumbers && cfg.existsReturnNumbers.length) ? cfg.existsReturnNumbers.slice() : [],
              surveys: cfg.existsSurveys === true,
              when: (typeof cfg.when === "string" && cfg.when !== "") ? cfg.when : null,
              mode: { exists: true } };
@@ -5847,6 +5856,19 @@ function QRIDExistsInit(QRID_CONFIG){
   var configError = VS.configError;
   var ANY_BLOCK = VS.firstBlock !== "off";
   function trim(v){ return QRID_lookupTrim(v); }
+  /* The fields the rule fills from the entry it finds ("return"): every
+     branch's, since the rule owns them all, and a branch that is not picked
+     (or none) empties them, as the save does (UniversalValidator::ruleFindings,
+     ownedReturns). NUMBERS: those that hold numbers, where "7.80" is "7.8";
+     any other is written exactly ("007" is not "7"). */
+  var OWNED = [], NUMBERS = Object.create(null);
+  for(var ovi = 0; ovi < VS.all.length; ovi++){
+    for(var ori = 0; ori < VS.all[ovi].returns.length; ori++){
+      if(OWNED.indexOf(VS.all[ovi].returns[ori]) < 0) OWNED.push(VS.all[ovi].returns[ori]);
+    }
+    for(var oni = 0; oni < VS.all[ovi].numbers.length; oni++) NUMBERS[VS.all[ovi].numbers[oni]] = true;
+  }
+  var OWNED_ANY = OWNED.length > 0;
 
   function attach(fieldName){
     var input = QRID_findAnchor(fieldName);
@@ -5856,7 +5878,9 @@ function QRIDExistsInit(QRID_CONFIG){
     var msg = QRID_attachMsgRegion(input, fieldName, "x");
     QRID_followWidget(input, msg, fieldName);
     var GITEM = null;
-    if(ANY_BLOCK && !configError && !input.readOnly && !input.disabled){
+    /* A rule that fills fields holds the save while its answer is on the way,
+       even with "blockSave":"off": the values come with the answer. */
+    if((ANY_BLOCK || OWNED_ANY) && !configError && !input.readOnly && !input.disabled){
       GITEM = { __qridInvalid: false, __qridBlockMode: "off",
                 __qridFieldName: fieldName, __qridFieldLabel: QRID_fieldLabel(input, fieldName),
                 readOnly: false, disabled: false,
@@ -5886,30 +5910,88 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#9888; Could not check this value just now" +
         (why ? " (" + QRID_escapeHtml(String(why)) + ")" : "") + ".";
     }
-    function renderResp(resp, V){
+    /* Write the fields the rule fills: vals is field -> text, and a field it
+       does not name keeps what it holds. quiet for the fill made as the page
+       opens: it does not mark the form as changed (QRID_writeReturned). A
+       survey page never fills: a rule that fills fields is not open to
+       surveys, and a survey save writes nothing. */
+    function fill(vals, quiet){
+      if(!OWNED_ANY || QRID_IS_SURVEY || QRID_returnDepth >= QRID_RETURN_DEPTH_MAX) return;
+      QRID_returnDepth++;
+      try {
+        for(var fi = 0; fi < OWNED.length; fi++){
+          var ff = OWNED[fi];
+          if(Object.prototype.hasOwnProperty.call(vals, ff)) QRID_writeReturned(ff, vals[ff], !quiet, NUMBERS[ff] !== true);
+        }
+      } finally { QRID_returnDepth--; }
+    }
+    function emptyOwned(quiet){
+      var none = {};
+      for(var ei = 0; ei < OWNED.length; ei++) none[OWNED[ei]] = "";
+      fill(none, quiet);
+    }
+    function returnsOf(V){ return (V && V.returns) ? V.returns : []; }
+    /* What a found answer copies: the picked branch's fields get the values
+       the server sent (as the page shows them: a date in the field's order),
+       the other fields the rule owns are emptied. A field the answer does not
+       name keeps what it holds. */
+    function foundValues(V, values){
+      var out = {}, mine = returnsOf(V);
+      for(var vi2 = 0; vi2 < OWNED.length; vi2++){
+        var of2 = OWNED[vi2];
+        if(mine.indexOf(of2) < 0) out[of2] = "";
+        else if(Object.prototype.hasOwnProperty.call(values, of2) && typeof values[of2] === "string") out[of2] = values[of2];
+      }
+      return out;
+    }
+    /* Why a found answer copied nothing: the fields keep what they hold, and
+       the save leaves them too (UniversalValidator::returnsExists). */
+    function keptNote(resp){
+      if(resp.fill === "conflict"){
+        var n = typeof resp.count === "number" && resp.count > 1 ? String(Math.floor(resp.count)) : "Several";
+        return n + " saved entries hold this value with different values to copy, so the fields this lookup fills are left as they are.";
+      }
+      if(resp.fill === "withheld"){
+        return "It is saved outside your Data Access Group, so the fields this lookup fills are left as they are.";
+      }
+      return "";
+    }
+    function renderResp(resp, V, quiet){
       if(resp.state === "found"){
         styleMsg(msg, "ok");
         QRID_setModeState(input, "x", "ok");
         setGuard(false);
+        var kept = returnsOf(V).length ? keptNote(resp) : "";
         msg.innerHTML = "&#10003; Found" +
-          (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + ".";
+          (resp.record ? " (record <b>" + QRID_escapeHtml(String(resp.record)) + "</b>)" : "") + "." +
+          (kept ? '<div style="margin-top:4px;color:#7a5c00">&#9888; ' + QRID_escapeHtml(kept) + "</div>" : "");
+        if(!kept && returnsOf(V).length && resp.values && typeof resp.values === "object") fill(foundValues(V, resp.values), quiet);
       } else if(resp.state === "not-found"){
         styleMsg(msg, "bad");
         QRID_setModeState(input, "x", "bad");
         setGuard(true, V.blockSave);
         msg.innerHTML = "&#10007; " + (V.message ? QRID_escapeHtml(V.message)
           : "This value is not saved where it should be. Check it, or record it there first.");
+        emptyOwned(quiet);
       } else {
         unknown(V, resp.why);
       }
     }
     var activeVariant = null;
+    var opening = true;
     function check(saving){
+      /* Only the first judgement, made as the page opens, fills quietly. */
+      var quiet = opening;
+      opening = false;
       QRID_followWidget(input, msg, fieldName);
       var act = QRID_activeVariants(VS);
       var nextVariant = act.length === 1 ? act[0] : null;
       if(activeVariant !== nextVariant){ ++seq; pendingKey = null; setPending(false); activeVariant = nextVariant; }
       if(!act.length){
+        /* No branch applies, or "when" is false: the fields are emptied. A
+           rule this page cannot judge at all (deferred, or a selector it
+           cannot read) leaves them for the save. */
+        if(!VS.unresolved && !QRID_CONFIG.dynamicDeferred) emptyOwned(quiet);
         if(QRID_renderRuleDeferral(msg, input, QRID_CONFIG, "x")){ setGuard(false); setPending(false); QRID_setModeState(input, "x", null); return; }
         inert(); return;
       }
@@ -5925,8 +6007,11 @@ function QRIDExistsInit(QRID_CONFIG){
       }
       /* Surveys are opt-in per rule, as for @UVUNIQUE. */
       if(QRID_IS_SURVEY && !V.surveys){ inert(); return; }
+      /* A branch without "return": the fields the other branches fill are
+         emptied, whatever the answer. */
+      if(!returnsOf(V).length) emptyOwned(quiet);
       var val = trim(QRID_WHEN.readRef(fieldName, null));
-      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); return; }
+      if(val === "" || QRID_isMissingCode(val)){ ++seq; pendingKey = null; inert(); emptyOwned(quiet); return; }
       var payload = { field: fieldName, values: {}, cond: QRID_condValues(VS.all) };
       payload.values[fieldName] = val;
       for(var li = 0; li < V.locals.length; li++){
@@ -5950,11 +6035,11 @@ function QRIDExistsInit(QRID_CONFIG){
         /* A cached answer is the latest word: an older request still in
            flight must not paint over it when it lands. */
         ++seq; pendingKey = null; setPending(false);
-        renderResp(cached, V); return;
+        renderResp(cached, V, quiet); return;
       }
       if(pendingKey === key) return;
       if(saving === true && unanswered.key === key && !prior){ ++seq; pendingKey = null; unknown(V, unanswered.why); return; }
-      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V); }
+      function keepPrior(){ answers.put(key, QRID_stampAnswer(prior)); renderResp(prior, V, quiet); }
       var t = QRID_ajaxTransport();
       if(!t){
         try { if(typeof console !== "undefined" && console.error) console.error("Universal Field Validator: no AJAX transport for the lookup — rule inert."); } catch(e){}
@@ -5968,7 +6053,7 @@ function QRIDExistsInit(QRID_CONFIG){
       msg.innerHTML = "&#8230; checking&hellip;";
       QRID_setModeState(input, "x", "info");
       setGuard(false);
-      setPending(V.blockSave !== "off");
+      setPending(V.blockSave !== "off" || returnsOf(V).length > 0);
       setTimeout(function(){
         if(my === seq && pendingKey === key){
           ++seq; pendingKey = null; setPending(false);
@@ -5990,7 +6075,7 @@ function QRIDExistsInit(QRID_CONFIG){
         if(resp.state === "unknown" && prior){ keepPrior(); return; }
         if(resp.state !== "unknown") answers.put(key, QRID_stampAnswer(resp));
         else unanswered = { key: key, why: resp.why || null };
-        renderResp(resp, V);
+        renderResp(resp, V, quiet);
       }
       try {
         var p = t.ajax("exists-check", payload);
