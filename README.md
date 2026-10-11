@@ -720,7 +720,8 @@ the specimen ID on the collection form.
   validation), an Identifier goes only into an Identifier. Refused with
   `"surveys":true`. Another project must list the fields it lets others copy,
   under "Only users who have rights"; its probe log then names the fields
-  copied and the record they came from.
+  the rule copies and, when values were handed over, the record they came
+  from.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.

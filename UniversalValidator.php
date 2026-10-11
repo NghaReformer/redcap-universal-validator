@@ -1354,12 +1354,13 @@ class UniversalValidator extends AbstractExternalModule
             if ($eventId === null || $eventId === '') return null;
             $event = $eventId;
         }
-        // A saved Missing Data Code is no value: "NA" saved there is not found
-        // by "na" typed here, letter case ignored or not.
+        // The fields "return" copies from the entry found ("record": its ID).
         $returns = [];
         foreach ((isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [] as $s => $_) {
             $returns[] = (string) $s;
         }
+        // A saved Missing Data Code is no value: "NA" saved there is not found
+        // by "na" typed here, letter case ignored or not.
         return ['in' => $in, 'target' => $target, 'keys' => $keys, 'fold' => $fold, 'marks' => $marks,
                 'recordMark' => $recordMark, 'codes' => $this->missingDataCodes($pid), 'event' => $event,
                 'returns' => $returns];
@@ -1557,10 +1558,8 @@ class UniversalValidator extends AbstractExternalModule
                 $this->existsIndexes[$key] = false;
                 if ($over === 'log') $this->logCrossIndexRead($pid, $fields, 'throttled');
             } else {
-                // With "in":"record", "event" is where "return" copies from; the
-                // record ID itself belongs to the whole record.
                 $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
-                    (!empty($rule['existsEvent']) && $spec['in'] !== 'record') ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks'],
+                    !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks'],
                     $spec['recordMark'], $spec['codes']);
                 if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
             }
@@ -5242,7 +5241,8 @@ class UniversalValidator extends AbstractExternalModule
                 return $short . $there . ' is a ' . $ts . ' field — "return" copies one value per field.';
             }
             $form = isset($ms['form_name']) ? (string) $ms['form_name'] : '';
-            if (isset($repeating[$form]) && ($in === 'record' || $form !== $inForm)) {
+            // $inForm is null with "in":"record": no repeating form is allowed
+            if (isset($repeating[$form]) && $form !== $inForm) {
                 return $short . $there . ' is on the repeating form "' . $form . '"'
                     . ($in === 'record' ? '' : ', not on "' . (string) $inForm . '" with "' . $in . '"')
                     . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.';

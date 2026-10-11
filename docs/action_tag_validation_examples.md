@@ -1997,10 +1997,11 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   the line says `extra_read: record ids`. Nothing is written there while the
   Control Center switch is off or the module is not enabled in that project.
   Over a budget, only the first refused lookup of the minute is logged, so a
-  flood of refused lookups is not a flood of log lines. A lookup that copied
-  values adds `returned` (the fields copied) and `copied_from` (the record
-  they came from); with "How to log invalid values" set to "none" the record
-  is kept as a keyed hash (`copied_from_hmac`), and with "off" it is left out.
+  flood of refused lookups is not a flood of log lines. A lookup by a rule
+  that copies values adds `returned` (the fields the rule copies), and, when
+  values were handed over, `copied_from` (the record they came from); with
+  "How to log invalid values" set to "none" that record is kept as a keyed
+  hash (`copied_from_hmac`), and with "off" it is left out.
 - **Budgets.** Each searched project keeps three counters, so no kind of caller
   can use up another's: staff lookups (1,200 a minute from every project
   together, plus 30 a minute per signed-in session), survey lookups (120 a

@@ -220,6 +220,19 @@ namespace {
         'r_dn'       => f('result', '', '', 'text', 'y'),
         'r_off'      => f('result', ux('{"in":"[specimen_id]","return":{"lab_site":"[r_off_site]"},"blockSave":"off"}')),
         'r_off_site' => f('result'),
+        'site_note'  => f('lab_meta'),
+        'r_meta'     => f('result', ux('{"in":"[specimen_id]","return":{"site_note":"[r_meta_note]"}}')),
+        'r_meta_note'=> f('result'),
+        'r_dag'      => f('result', ux('{"in":"[specimen_id]","scope":"dag","return":{"lab_site":"[r_dag_site]"}}')),
+        'r_dag_site' => f('result'),
+        'r_br'       => f('result', ux('{"in":"[specimen_id]","when":"[home]=\'A\'","return":{"lab_site":"[r_br_site]"}}')
+                                . ' ' . ux('{"in":"[specimen_id]","when":"[home]=\'Z\'"}')),
+        'r_br_site'  => f('result'),
+        'r_rec_rep'  => f('result', ux('{"in":"record","return":{"rep_val":"[t_any2]"}}')),
+        't_any2'     => f('result'),
+        'r_m'        => f('result', ux('{"in":"[specimen_id]","match":{"code_id":"[r_mloc]"},"return":{"lab_site":"[r_m_site]"}}')),
+        'r_mloc'     => f('result'),
+        'r_m_site'   => f('result'),
     ];
     // Refused set-ups: field => [the "return" (or whole tag), the words the refusal holds]
     $BAD = [
@@ -257,7 +270,7 @@ namespace {
 
     $DATA = [
         '1' => [351 => ['record_id' => '1', 'home' => 'A', 'specimen_id' => 'SP-1', 'lab_site' => '1', 'coll_date' => '2026-03-01',
-                        'dose' => '7.5', 'code_id' => '007', 'donor' => 'Ada', 'redcap_data_access_group' => 'north']],
+                        'dose' => '7.5', 'code_id' => '007', 'donor' => 'Ada', 'site_note' => 'N1', 'redcap_data_access_group' => 'north']],
         '2' => [351 => ['record_id' => '2', 'home' => 'B', 'specimen_id' => 'SP-2', 'lab_site' => '2', 'coll_date' => '2026-04-02',
                         'dose' => '8', 'redcap_data_access_group' => 'south'],
                 352 => ['record_id' => '2', 'home' => 'B2']],
@@ -269,11 +282,13 @@ namespace {
         '8' => [351 => ['record_id' => '8', 'specimen_id' => 'SP-NA', 'lab_site' => 'NA', 'redcap_data_access_group' => 'north']],
         '9' => [351 => ['record_id' => '9', 'home' => 'Z', 'r_spec' => 'SP-1', 'r_site' => '', 'redcap_data_access_group' => 'north']],
     ];
-    $FULL = ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '1', 'rep_form' => '1'], 'group_id' => null, 'expiration' => ''];
-    $NOLAB = ['forms' => ['enrol' => '1', 'lab_reg' => '0', 'result' => '1'], 'group_id' => null, 'expiration' => ''];
+    $FULL = ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '1', 'rep_form' => '1', 'lab_meta' => '1'], 'group_id' => null, 'expiration' => ''];
+    $NOLAB = ['forms' => ['enrol' => '1', 'lab_reg' => '0', 'result' => '1', 'lab_meta' => '1'], 'group_id' => null, 'expiration' => ''];
+    // may search the lab register, may not read the form one copied field is on
+    $NOMETA = ['forms' => ['enrol' => '1', 'lab_reg' => '1', 'result' => '1', 'rep_form' => '1', 'lab_meta' => '0'], 'group_id' => null, 'expiration' => ''];
 
     function mod($user = 'nurse', array $settings = []) {
-        global $DICT, $DATA, $FULL, $NOLAB;
+        global $DICT, $DATA, $FULL, $NOLAB, $NOMETA;
         $GLOBALS['__TEST_USER'] = $user;
         $m = new \INSPIRE\UniversalValidator\UniversalValidator();
         $m->projectIdReturn = 149;
@@ -281,7 +296,7 @@ namespace {
         \REDCap::$dictionaries = [149 => $DICT];
         \REDCap::$data = [149 => $DATA];
         \REDCap::$repeats = [149 => [351 => ['rep_form' => null]]];
-        \REDCap::$rightsBy = [149 => ['nurse' => $FULL, 'nolab' => $NOLAB, 'north' => ['group_id' => 7] + $FULL]];
+        \REDCap::$rightsBy = [149 => ['nurse' => $FULL, 'nolab' => $NOLAB, 'nometa' => $NOMETA, 'north' => ['group_id' => 7] + $FULL]];
         \REDCap::reset();
         return $m;
     }
@@ -360,6 +375,8 @@ namespace {
         && strpos(json_encode($rule), 'coll_date') === false);
     check('an Identifier there into an Identifier here is fine', errOf($cfg, 'r_donor') === '');
     check('"record" copied needs no field there', errOf($cfg, 'r_rec') === '');
+    check('"in":"record" copies no field of a repeating form', strpos(errOf($cfg, 'r_rec_rep'), 'is on the repeating form "rep_form"') !== false);
+    check('a branched rule with "return" in one branch sets up', errOf($cfg, 'r_br') === '' && errOf($cfg, 'r_dag') === '' && errOf($cfg, 'r_meta') === '');
     // a longitudinal project needs "event" for "in":"record"
     \Project::$long[149] = true;
     $cfg2 = page(mod());
@@ -404,6 +421,10 @@ namespace {
     $m = mod();
     check('text is copied exactly: "007"', (ask($m, 'r_text', 'SP-1')['values'] ?? null) === ['r_code' => '007']);
     $m = mod();
+    ask($m, 'r_spec', 'SP-1');
+    check('one module asked about two values answers each (got ' . json_encode(ask($m, 'r_spec', 'SP-2')) . ')',
+        (ask($m, 'r_spec', 'SP-2')['values']['r_site'] ?? null) === '2');
+    $m = mod();
     $r = ask($m, 'r_spec', 'SP-404');
     check('not found: no values', ($r['state'] ?? null) === 'not-found' && !isset($r['values']) && !isset($r['fill']));
     $m = mod();
@@ -422,9 +443,30 @@ namespace {
     $m = mod('north');
     $r = ask($m, 'r_spec', 'SP-DUP', 7);
     check('a group user sees only their group: the disagreeing entry of another group does not count', ($r['values']['r_site'] ?? null) === '1');
+    $m = mod('north');
+    $r = ask($m, 'r_spec', 'sp-dup', 7);
+    check('...and is shown the entry of their own group, though another is spelled as typed (got ' . json_encode($r) . ')',
+        ($r['record'] ?? null) === '3' && ($r['values']['r_site'] ?? null) === '1');
+    $m = mod('north');
+    $r = ask($m, 'r_rec', '2', 7);
+    check('"in":"record": a record of another group copies nothing for a group user (got ' . json_encode($r) . ')',
+        ($r['state'] ?? null) === 'found' && !isset($r['values']) && ($r['fill'] ?? null) === 'withheld');
+    $m = mod();
+    $r = ask($m, 'r_dag', 'SP-2');
+    check('"scope":"dag": an entry of another group is not found (got ' . json_encode($r) . ')', ($r['state'] ?? null) === 'not-found');
+    $m = mod();
+    check('"scope":"dag": an entry of the record\'s group copies', (ask($m, 'r_dag', 'SP-1')['values'] ?? null) === ['r_dag_site' => '1']);
     $m = mod('nolab');
     $r = ask($m, 'r_off', 'SP-1');
     check('no rights to the form of a copied field: could not check, no values', ($r['state'] ?? null) === 'unknown' && !isset($r['values']));
+    $m = mod('nometa');
+    $r = ask($m, 'r_meta', 'SP-1');
+    check('...also when the searched form is readable and only a copied field\'s form is not (got ' . json_encode($r) . ')',
+        ($r['state'] ?? null) === 'unknown' && !isset($r['values']));
+    $m = mod('nometa');
+    check('...while the same user gets values from forms they may open', (ask($m, 'r_off', 'SP-1')['values'] ?? null) === ['r_off_site' => '1']);
+    $m = mod();
+    check('a copied field on another form that does not repeat', (ask($m, 'r_meta', 'SP-1')['values'] ?? null) === ['r_meta_note' => 'N1']);
     $m = mod();
     check('a saved Missing Data Code is no value to copy', (ask($m, 'r_spec', 'SP-NA')['values']['r_site'] ?? null) === '');
     $m = mod();
@@ -448,6 +490,28 @@ namespace {
     \REDCap::reset();
     save($m);
     check('save again: nothing differs, nothing written', !\REDCap::$saves);
+    \REDCap::$data[149]['1'][351]['lab_site'] = '2';
+    \REDCap::reset();
+    save($m);
+    check('a later save looks again: the entry found changed since (got ' . json_encode(written()) . ')', written() === ['r_site' => '2']);
+    $m = mod();
+    row9(['r_spec' => 'NA', 'r_site' => '2']);
+    save($m);
+    check('a Missing Data Code empties the fields', written() === ['r_site' => '']);
+    $m = mod();
+    row9(['r_br' => 'SP-1', 'r_br_site' => 'held']);
+    save($m);
+    check('a branch without "return" empties the fields of the branch that has one (got ' . json_encode(written()) . ')',
+        array_key_exists('r_br_site', written()) && written()['r_br_site'] === '');
+    $m = mod();
+    row9(['home' => 'A', 'r_br' => 'SP-1']);
+    save($m);
+    check('...and the branch with it fills them', (written()['r_br_site'] ?? null) === '1');
+    $m = mod('nometa');
+    row9(['r_meta' => 'SP-1']);
+    save($m);
+    check('a saver who may search but not read a copied field\'s form: nothing written for it, a rule problem',
+        !isset(written()['r_meta_note']) && strpos(implode(' ', unconfigurable($m)), 'may not open every form "return" copies from') !== false);
     $m = mod();
     row9(['r_spec' => 'SP-404', 'r_site' => '2', 'r_date' => '2026-01-01', 'r_dose' => '1.0', 'r_from' => '2']);
     save($m);
@@ -464,7 +528,11 @@ namespace {
         && strpos(implode(' ', $u), 'different values to copy') !== false);
     $m = mod(null);
     save($m);
-    check('a save with no signed-in user (a survey) writes nothing', !\REDCap::$saves);
+    check('a save with no signed-in user (a survey) writes nothing, and that is no rule problem', !\REDCap::$saves && !unconfigurable($m));
+    $m = mod();
+    row9(['r_m' => 'SP-2', 'r_mloc' => '', 'r_m_site' => 'held']);
+    save($m);
+    check('a blank "match" field: nothing to narrow by yet, the fields keep their values', !isset(written()['r_m_site']));
     $m = mod('nolab');
     save($m);
     check('a saver who may not read the copied fields: nothing written, a rule problem', !\REDCap::$saves
@@ -503,6 +571,19 @@ namespace {
     check('the scan path works nothing out', !isset($scanned['returns']));
     $audited = $rf->invoke($m, $rule, 0, $vals, [], null, 149, '9', 351, null, $res, ['returns' => true]);
     check('the audit path does', ($audited['returns']['r_site'] ?? null) === '1');
+    $rule = null;
+    foreach ($gr->invoke($m, 149) as $rr) if (in_array('r_rec_ev', $rr['fields'], true)) $rule = $rr;
+    $el = new \ReflectionMethod($m, 'existsLookup');
+    $el->setAccessible(true);
+    $rule2 = null;
+    foreach ($gr->invoke($m, 149) as $rr) if (in_array('r_spec', $rr['fields'], true)) $rule2 = $rr;
+    $a1 = $el->invoke($m, 149, $rule2, 'SP-1', [], 351, '9', ['callerGroup' => null]);
+    $a2 = $el->invoke($m, 149, $rule2, 'SP-2', [], 351, '9', ['callerGroup' => null]);
+    check('one save asking about two values gets an answer for each (the memo keys on the value)',
+        ($a1['returned']['lab_site'] ?? null) === '1' && ($a2['returned']['lab_site'] ?? null) === '2');
+    $sc = $rf->invoke($m, $rule, 0, ['r_rec_ev' => '1'], [], null, 149, '9', 351, null, $res, ['existsIndex' => true]);
+    check('the scan: "in":"record" with "event" finds a record that has no row in that event (got ' . json_encode($sc) . ')',
+        !$sc['invalid'] && !$sc['unconfigurable']);
 
     // ---- 6) another project ------------------------------------------------------------------------------
     $DICT_B = [
@@ -511,6 +592,7 @@ namespace {
         'site_code'   => f('lab'),
         'lab_date'    => f('lab', '', 'date_ymd'),
         'donor_name'  => f('lab', '', '', 'text', 'y'),
+        'lab_note'    => f('lab2'),
     ];
     foreach ($DICT_B as $k => $_) $DICT_B[$k]['field_name'] = $k;
     $DICT_X = $DICT;
@@ -520,6 +602,8 @@ namespace {
     $DICT_X['x_from'] = f('result');
     $DICT_X['x_donor'] = f('result', ux('{"in":"[specimen_id]","project":300,"return":{"donor_name":"[x_dn]"}}'));
     $DICT_X['x_dn'] = f('result');
+    $DICT_X['x_note'] = f('result', ux('{"in":"[specimen_id]","project":300,"return":{"lab_note":"[x_note_t]"}}'));
+    $DICT_X['x_note_t'] = f('result');
     foreach ($DICT_X as $k => $_) $DICT_X[$k]['field_name'] = $k;
     function xmod($user = 'nurse', array $row = null, $logMode = 'hashed') {
         global $DICT_X, $DICT_B, $DATA, $FULL;
@@ -528,14 +612,15 @@ namespace {
         $m->settingsBy[300] = ['log-values' => $logMode];
         $m->subSettingsBy = [300 => ['exists-consumers' => [$row === null ? [
             'exists-consumer-project' => '149', 'exists-consumer-targets' => 'specimen_id',
-            'exists-consumer-returns' => 'site_code, lab_date, record', 'exists-consumer-mode' => 'rights'] : $row]]];
+            'exists-consumer-returns' => 'site_code, lab_date, record, lab_note', 'exists-consumer-mode' => 'rights'] : $row]]];
         \REDCap::$dictionaries = [149 => $DICT_X, 300 => $DICT_B];
         \REDCap::$data = [149 => $DATA, 300 => [
-            'L1' => [901 => ['record_id' => 'L1', 'specimen_id' => 'LS-1', 'site_code' => 'North', 'lab_date' => '2026-02-01', 'donor_name' => 'Ada']],
+            'L1' => [901 => ['record_id' => 'L1', 'specimen_id' => 'LS-1', 'site_code' => 'North', 'lab_date' => '2026-02-01', 'donor_name' => 'Ada',
+                             'lab_note' => 'kept cold']],
         ]];
         \REDCap::$repeats = [149 => [351 => ['rep_form' => null]], 300 => []];
-        \REDCap::$rightsBy[300] = ['nurse' => ['forms' => ['lab' => '1'], 'group_id' => null, 'expiration' => ''],
-                                   'nolab' => ['forms' => ['lab' => '0'], 'group_id' => null, 'expiration' => '']];
+        \REDCap::$rightsBy[300] = ['nurse' => ['forms' => ['lab' => '1', 'lab2' => '0'], 'group_id' => null, 'expiration' => ''],
+                                   'nolab' => ['forms' => ['lab' => '0', 'lab2' => '0'], 'group_id' => null, 'expiration' => '']];
         \REDCap::$rightsBy[149]['nolab'] = $FULL;
         return $m;
     }
@@ -554,9 +639,19 @@ namespace {
     ask($m, 'x_spec', 'LS-1');
     $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
     check('...a log that keeps no values keeps the record as a keyed hash', !isset($probe[0][1]['copied_from']) && isset($probe[0][1]['copied_from_hmac']));
+    $m = xmod();
+    ask($m, 'x_spec', 'LS-404');
+    $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
+    check('...a lookup that copied nothing names the fields the rule copies, and no record',
+        ($probe[0][1]['returned'] ?? null) === 'site_code,lab_date,record' && !isset($probe[0][1]['copied_from'])
+        && !isset($probe[0][1]['copied_from_hmac']));
     $m = xmod('nolab');
     $r = ask($m, 'x_spec', 'LS-1');
     check('another project: no rights there to a copied field: no values', ($r['state'] ?? null) === 'unknown' && !isset($r['values']));
+    $m = xmod();
+    $r = ask($m, 'x_note', 'LS-1');
+    check('...also when the searched form there is readable and only a copied field\'s form is not (got ' . json_encode($r) . ')',
+        ($r['state'] ?? null) === 'unknown' && !isset($r['values']));
     $m = xmod('nurse', ['exists-consumer-project' => '149', 'exists-consumer-targets' => 'specimen_id',
         'exists-consumer-returns' => 'site_code, lab_date, record', 'exists-consumer-mode' => 'answer']);
     check('another project: the "answer" mode never lets values be copied', strpos(errOf(page($m), 'x_spec'), 'cannot be searched from this project') !== false);
@@ -572,7 +667,7 @@ namespace {
         'exists-consumer-returns' => 'site_code, lab_date', 'exists-consumer-mode' => 'rights']);
     check('another project: copying its record ID needs "record" on the list', strpos(errOf(page($m), 'x_spec'), 'cannot be searched from this project') !== false);
     $d = $DICT_X;
-    unset($d['x_spec']);
+    unset($d['x_spec'], $d['x_note']);
     $m = xmod();
     \REDCap::$dictionaries[149] = $d;
     \REDCap::reset();

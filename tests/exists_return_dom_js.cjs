@@ -273,6 +273,13 @@ for (const [label, reply, note] of [
 {
   const f = form('SP-1', HELD);
   const stub = makeTransportStub();
+  stub.next = { state: 'found', record: null, values: { r_from: 7, r_date: null, r_site: '2' } };
+  boot(f.list, { rules: [rule()] }, stub);
+  check('a value that is not text is not written; the others are', f.from.value === 'old' && f.date.value === '09-09-2020' && f.site.value === '2');
+}
+{
+  const f = form('SP-1', HELD);
+  const stub = makeTransportStub();
   stub.next = FOUND_1;
   boot(f.list, { rules: [rule({ deferred: true, deferredWhy: ['[x] is on another form.'] })] }, stub);
   check('a deferred rule leaves the fields and asks nothing', f.snapshot() === HELD_SNAP && stub.calls.length === 0);
