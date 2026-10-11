@@ -428,6 +428,16 @@ NASK, Not asked";
     refused(dict([], tag('"return":{"z":"[weight]"}')), 'is the measured field itself', 'returning to the measured field is refused');
     refused(dict([], tag('"return":{"z":"[sex]"}')), 'which this rule reads', 'returning to an input is refused');
     refused(dict([], tag('"return":{"z":"[record_id]"}')), 'is the record ID', 'returning to the record id is refused');
+    // REDCap's own writers would overwrite the returned value (returnTargetBasics, every mode).
+    foreach (['@CALCTEXT(if([sex]=\'1\',\'m\',\'f\'))' => 'CALCTEXT', '@CALCDATE([dob],1,\'y\')' => 'CALCDATE', '@SETVALUE=\'1\'' => 'SETVALUE',
+              '@HIDDEN @setvalue="2"' => 'SETVALUE'] as $note => $which) {
+        refused(dict(['wfa_z' => f('anthro_form', $note)]), 'filled by REDCap\'s @' . $which, 'a target REDCap fills with @' . $which . ' is refused');
+    }
+    $m = mod(dict(['wfa_z' => f('anthro_form', '@READONLY @UVCALCTEXT_NOT_A_TAG')]), ['2' => [EVT => row()]]);
+    $all = $rules->invoke($m, PID);
+    $okRead = true;
+    foreach ($all as $r) if (in_array('weight', $r['fields'], true) && !empty($r['configError'])) $okRead = false;
+    check('@READONLY on a target, or a longer tag name that only contains CALCTEXT, is no refusal', $okRead);
     $clash = dict(['other' => f('anthro_form', tag('"return":{"z":"[wfa_z]"}'), 'number_1dp')]);
     $m = mod($clash, ['2' => [EVT => row()]]);
     $all = $rules->invoke($m, PID);

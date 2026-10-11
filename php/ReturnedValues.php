@@ -132,17 +132,47 @@ trait ReturnedValues
         return $fields;
     }
 
-    /** Queue what one audited context returned (auditRule). */
-    private function queueReturns(array $values, array $measured, $event, $instance)
+    /**
+     * Queue what one audited context returned (auditRule). $loose: the
+     * returned fields that are not rewritten when they already hold the same
+     * number spelled another way, whatever their validation (a mode whose
+     * values are all numbers, php/modes.json "returns" "sameNumber":"always").
+     * Any other field is compared that way only when it holds numbers
+     * (numberMarkOf), so "007" in a Text field is not "7".
+     */
+    private function queueReturns(array $values, array $measured, $event, $instance, array $loose = [])
     {
         if (!$values) return;
         $inst = (int) ($instance ?: 1);
         $key = (string) $event . '|' . $inst;
         if (!isset($this->returnQueue[$key])) {
-            $this->returnQueue[$key] = ['event' => $event, 'instance' => $inst, 'values' => [], 'fields' => []];
+            $this->returnQueue[$key] = ['event' => $event, 'instance' => $inst, 'values' => [], 'fields' => [], 'loose' => []];
         }
         foreach ($values as $f => $text) $this->returnQueue[$key]['values'][(string) $f] = (string) $text;
         foreach ($measured as $f) $this->returnQueue[$key]['fields'][(string) $f] = true;
+        foreach ($loose as $f) $this->returnQueue[$key]['loose'][(string) $f] = true;
+    }
+
+    /**
+     * Whether the project turned off the write on save for the values this
+     * rule's mode returns (php/modes.json "returns" "noSave" names the
+     * checkbox setting: "range-return-no-save", "exists-return-no-save"). The
+     * page still fills the fields.
+     */
+    private function returnsOffOnSave(array $rule, $pid)
+    {
+        $rt = ModeRegistry::returns(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+        $key = ($rt !== null && isset($rt['noSave']) && is_string($rt['noSave'])) ? $rt['noSave'] : null;
+        if ($key === null) return false;
+        $off = $this->getProjectSetting($key, $pid);
+        return $off === true || $off === 1 || $off === '1';
+    }
+
+    /** The returned fields of $rule queueReturns compares as numbers whatever they hold ("sameNumber":"always"). */
+    private static function looseReturns(array $rule, array $returned)
+    {
+        $rt = ModeRegistry::returns(ModeRegistry::modeOfType(isset($rule['type']) ? $rule['type'] : ''));
+        return ($rt !== null && isset($rt['sameNumber']) && $rt['sameNumber'] === 'always') ? array_keys($returned) : [];
     }
 
     /** Whether two texts are the same number: "7.70" and "7.7", "7,7" and "7.7". Twin: QRID_sameNumber. */
@@ -156,8 +186,9 @@ trait ReturnedValues
     /**
      * Write the queued values where they differ from what the record holds.
      * Returns whether anything was written (the caller then reads the record
-     * again). Never throws: a failure is logged and the audit goes on. The
-     * project setting "range-return-no-save" turns the write off.
+     * again). Never throws: a failure is logged and the audit goes on. A
+     * mode's "noSave" project setting keeps its values out of the queue
+     * (auditRule, returnsOffOnSave).
      *
      * Where a value goes is read from the record itself (the same contexts the
      * audit uses): the event's own row, the instance of a repeating form, or
@@ -177,8 +208,6 @@ trait ReturnedValues
         $this->returnQueue = [];
         if (!$queue) return false;
         try {
-            $off = $this->getProjectSetting('range-return-no-save', $pid);
-            if ($off === true || $off === 1 || $off === '1') return false;
             $dd = $this->dataDictionary($pid);
             if (!$dd) return false;
             $read = [];
@@ -215,7 +244,8 @@ trait ReturnedValues
                     foreach ($vals as $f => $text) {
                         $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
                         if ($cur === $text) continue;
-                        if ($cur !== '' && $text !== '' && self::sameReturnedNumber($cur, $text)) continue;
+                        $loose = isset($q['loose'][$f]) || self::numberMarkOf($dd[$f]) !== null;
+                        if ($loose && $cur !== '' && $text !== '' && self::sameReturnedNumber($cur, $text)) continue;
                         if (!isset($writes[$key])) {
                             $writes[$key] = ['event_id' => $ctx['event_id'], 'instance' => (int) $ctx['instance'], 'data' => []];
                         }

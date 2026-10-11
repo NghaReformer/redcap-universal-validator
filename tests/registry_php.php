@@ -227,9 +227,18 @@ check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check
     && ModeRegistry::uniformBranchKeys('exists') === []);
 
 // @UVRANGE "return" (2.7.0): a mode that writes values names the method that
-// works them out and the rule key holding value name => field name.
+// works them out, the rule key holding value name => field name, the project
+// setting that turns the write on save off, and whether every returned field
+// is compared as a number ("7.80" is "7.8") whatever its validation.
 check('range returns values through returnsRange, from rangeReturn',
-    ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn']);
+    ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn',
+                                        'noSave' => 'range-return-no-save', 'sameNumber' => 'always']);
+$cfgKeys = [];
+foreach (json_decode(file_get_contents($root . '/config.json'), true)['project-settings'] as $s) $cfgKeys[$s['key']] = $s['type'];
+foreach (['range'] as $rm) {
+    $ns = ModeRegistry::returns($rm)['noSave'];
+    check($rm . ': its "noSave" is a checkbox project setting', isset($cfgKeys[$ns]) && $cfgKeys[$ns] === 'checkbox');
+}
 check('no other mode returns values', ModeRegistry::returns('check') === null && ModeRegistry::returns('unique') === null
     && ModeRegistry::returns('window') === null && ModeRegistry::returns('exists') === null);
 check('rangeReturn is a branch key and a client key, not a server-only one',

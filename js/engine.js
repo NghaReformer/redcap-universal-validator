@@ -2438,25 +2438,67 @@ function QRID_sameNumber(a, b){
   a = QRID_whenTrim(a).replace(",", "."); b = QRID_whenTrim(b).replace(",", ".");
   return QRID_WHEN_NUM_RE.test(a) && QRID_WHEN_NUM_RE.test(b) && QRID_whenDecCmp(a, b) === 0;
 }
+/* The element a returned value is written to: a dropdown's <select> (REDCap
+   may put a hidden mirror input of the same name before it), else the input
+   or textarea named after the field (for a radio, yes/no or true/false field
+   that is the hidden mirror holding the code). */
+function QRID_returnElement(name){
+  var els = document.getElementsByName ? document.getElementsByName(name) : [];
+  var input = null;
+  for(var i = 0; i < els.length; i++){
+    var tag = (els[i].tagName || "").toLowerCase();
+    if(tag === "select") return els[i];
+    if(!input && (tag === "input" || tag === "textarea")) input = els[i];
+  }
+  return input;
+}
+/* The option of a <select> that carries code, or null. */
+function QRID_selectOption(sel, code){
+  var opts = sel.options || [];
+  for(var i = 0; i < opts.length; i++) if(opts[i] && opts[i].value === code) return opts[i];
+  return null;
+}
 /* Put a returned value into its field; true when the field changed. Nothing
    is written when the page does not carry the field (another page of a
    survey) or it already holds the value, or the same number spelled another
-   way. announce is false for the fill made when the page opens: it must not
-   mark the form as changed, and the save writes the value either way.
-   Otherwise REDCap hears an input and a change event, as from typing, and the
-   calculations and branching logic that read the field run. Server twin:
+   way (unless exact: a Text field that holds text, where "007" is not "7").
+   A dropdown takes only a code it offers (another rule may have hidden the
+   option); its autocomplete companion shows the option's label. A radio,
+   yes/no or true/false field gets the code in its hidden mirror and the
+   matching button checked, every button unchecked for "". announce is false
+   for the fill made when the page opens: it must not mark the form as
+   changed, and the save writes the value either way. Otherwise REDCap hears
+   an input and a change event, as from typing, and the calculations and
+   branching logic that read the field run. Server twin:
    UniversalValidator::applyReturns. */
-function QRID_writeReturned(name, text, announce){
-  var el = QRID_findField(name);
+function QRID_writeReturned(name, text, announce, exact){
+  var el = QRID_returnElement(name);
   if(!el || typeof el.value !== "string") return false;
   var cur = el.value;
   if(cur === text) return false;
-  if(text !== "" && cur !== "" && QRID_sameNumber(cur, text)) return false;
-  el.value = text;
+  if(!exact && text !== "" && cur !== "" && QRID_sameNumber(cur, text)) return false;
+  var shown = [];   /* the elements a person sees change */
+  if((el.tagName || "").toLowerCase() === "select"){
+    var opt = text === "" ? null : QRID_selectOption(el, text);
+    if(text !== "" && !opt) return false;
+    el.value = text;
+    var comp = typeof document.getElementById === "function" ? document.getElementById("rc-ac-input_" + name) : null;
+    if(comp && typeof comp.value === "string") comp.value = opt ? String(opt.text != null ? opt.text : opt.value) : "";
+  } else {
+    el.value = text;
+    var radios = document.getElementsByName ? document.getElementsByName(name + "___radio") : [];
+    for(var ri = 0; ri < radios.length; ri++){
+      var on = text !== "" && radios[ri].value === text;
+      if(radios[ri].checked !== on){ radios[ri].checked = on; shown.push(radios[ri]); }
+    }
+  }
   if(announce && typeof el.dispatchEvent === "function" && typeof Event === "function"){
     try {
       el.dispatchEvent(new Event("input", { bubbles: true }));
       el.dispatchEvent(new Event("change", { bubbles: true }));
+      for(var si = 0; si < shown.length; si++){
+        if(shown[si].checked && typeof shown[si].dispatchEvent === "function") shown[si].dispatchEvent(new Event("change", { bubbles: true }));
+      }
     } catch(e){}
   }
   var w = typeof window !== "undefined" ? window : null;
@@ -6853,6 +6895,9 @@ window.INSPIREUniversalValidator = {
   },
   rangeLogic: {                              /* @UVRANGE twins, locked by tests/range_js.cjs */
     verdict: QRID_rangeVerdict, number: QRID_rangeNumber, plainDecimal: QRID_plainDecimal
+  },
+  returnWriter: {                            /* the one writer of returned values, locked by tests/growth_return_dom_js.cjs */
+    write: QRID_writeReturned
   },
   lookupLogic: {                             /* @UVEXISTS/@UVUNIQUE comparison twins, locked by tests/lookup_js.cjs */
     key: QRID_lookupKey, number: QRID_numberKey, trim: QRID_lookupTrim, sameFlags: QRID_sameFlags

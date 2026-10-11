@@ -426,11 +426,13 @@ class UniversalValidator extends AbstractExternalModule
         $meta['instance'] = $repeat_instance;
         // The save audit also works out the values a rule returns to fields
         // (the scan, which calls ruleFindings itself, does not): they are
-        // queued and written once the audit is done (applyReturns).
+        // queued and written once the audit is done (applyReturns), unless the
+        // project turned that write off for the rule's mode.
         $meta['returns'] = true;
         $f = $this->ruleFindings($rule, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, $whenAst, $resolution, $meta);
-        if (isset($f['returns']) && is_array($f['returns'])) {
-            $this->queueReturns($f['returns'], (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [], $event_id, $repeat_instance);
+        if (isset($f['returns']) && is_array($f['returns']) && !$this->returnsOffOnSave($rule, $project_id)) {
+            $this->queueReturns($f['returns'], (isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [], $event_id, $repeat_instance,
+                self::looseReturns($rule, $f['returns']));
         }
         foreach ($f['unconfigurable'] as $u) {
             $this->logUnconfigurable($ruleIndex, $u['fields'], $u['why'], $instrument, $event_id, $repeat_instance);
@@ -4029,8 +4031,8 @@ class UniversalValidator extends AbstractExternalModule
             foreach (TemporalRules::fields($r) as $f) {
                 if (!isset($owner[$f])) continue;
                 $by = $owner[$f] === $i ? 'this rule' : 'the rule on "' . (isset($rules[$owner[$f]]['fields'][0]) ? $rules[$owner[$f]]['fields'][0] : '?') . '"';
-                $why[$i][] = 'it reads "[' . $f . ']", which ' . $by . ' returns a value to — a rule that returns values reads the '
-                    . 'measurement and its inputs, never a returned value.';
+                $why[$i][] = 'it reads "[' . $f . ']", which ' . $by . ' returns a value to — a rule that returns values never '
+                    . 'reads a returned value, since the save works every returned value out before it writes any.';
             }
         }
         foreach ($clash as $i => $fields) {
@@ -5305,26 +5307,17 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function returnTargetsProblem(array $frag, $name, array $dd, array $inputs, array &$marks)
     {
-        $home = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : null;
-        $pk = $dd ? array_keys($dd)[0] : null;
         $own = !empty($frag['decimalComma']);
         $decimals = isset($frag['rangeDecimals']) ? (int) $frag['rangeDecimals'] : 1;
         foreach ($frag['rangeReturn'] as $k => $t) {
             $label = '"return" "' . $k . '" field "' . $t . '"';
-            if (!isset($dd[$t])) return $label . ' is not a field in this project.';
-            if ($t === $name) return '"return" "' . $k . '" is the measured field itself — write the value to a field of its own.';
-            if (isset($inputs[$t])) return $label . ' is read by this rule — write the value to a field of its own.';
-            if ($t === $pk) return $label . ' is the record ID.';
+            $why = self::returnTargetBasics($t, '"return" "' . $k . '"', $label, $name, 'the measured field', $dd, $inputs,
+                function (array $m) use ($label) {
+                    $ftype = isset($m['field_type']) ? $m['field_type'] : '';
+                    return $ftype !== 'text' ? $label . ' is a ' . $ftype . ' field — a returned value goes into a Text field.' : null;
+                });
+            if ($why !== null) return $why;
             $m = $dd[$t];
-            $ftype = isset($m['field_type']) ? $m['field_type'] : '';
-            if ($ftype !== 'text') {
-                return $label . ' is a ' . $ftype . ' field — a returned value goes into a Text field.';
-            }
-            $form = isset($m['form_name']) ? (string) $m['form_name'] : null;
-            if ($home === null || $form !== $home) {
-                return $label . ' is on the form "' . ($form === null ? '?' : $form) . '", not on "' . ($home === null ? '?' : $home)
-                    . '" with the measured field — a value is written into the page being edited, so the field must be on that form.';
-            }
             $v = strtolower(self::validationOf($m));
             if ($k === 'range') {
                 if ($v !== '') {
@@ -5357,6 +5350,44 @@ class UniversalValidator extends AbstractExternalModule
                     . ' — give it number validation without a place count' . ($k === 'z' ? ', or number_2dp' : ', or lower "decimals" to ' . $room) . '.';
             }
             $marks[$k] = !empty($mm[2]);
+        }
+        return null;
+    }
+
+    /**
+     * Why field $t cannot take a value a rule on $name returns, by the checks
+     * every mode shares, or null. A value is written into the page being
+     * edited, so $t must be a field of this project on $name's form (and so in
+     * its event and instance), and not $name itself ($what names it in the
+     * message), a field the rule reads ($inputs), or the record ID. $type, when
+     * given, says why the field's type cannot hold the value (null when it
+     * can); it runs before the form is compared. Last, REDCap must not fill $t
+     * itself: @CALCTEXT, @CALCDATE and @SETVALUE write their own value, and
+     * the two writers would overwrite each other. $short names the "return"
+     * entry and $label the entry with its field.
+     */
+    private static function returnTargetBasics($t, $short, $label, $name, $what, array $dd, array $inputs, ?callable $type = null)
+    {
+        if (!isset($dd[$t])) return $label . ' is not a field in this project.';
+        if ($t === $name) return $short . ' is ' . $what . ' itself — write the value to a field of its own.';
+        if (isset($inputs[$t])) return $label . ' is read by this rule — write the value to a field of its own.';
+        $pk = $dd ? array_keys($dd)[0] : null;
+        if ($t === $pk) return $label . ' is the record ID.';
+        $m = $dd[$t];
+        if ($type !== null) {
+            $why = $type($m);
+            if ($why !== null) return $why;
+        }
+        $home = isset($dd[$name]['form_name']) ? (string) $dd[$name]['form_name'] : null;
+        $form = isset($m['form_name']) ? (string) $m['form_name'] : null;
+        if ($home === null || $form !== $home) {
+            return $label . ' is on the form "' . ($form === null ? '?' : $form) . '", not on "' . ($home === null ? '?' : $home)
+                . '" with ' . $what . ' — a value is written into the page being edited, so the field must be on that form.';
+        }
+        $note = isset($m['field_annotation']) ? (string) $m['field_annotation'] : '';
+        if (preg_match('/@(CALCTEXT|CALCDATE|SETVALUE)\b/i', $note, $tag)) {
+            return $label . ' is filled by REDCap\'s @' . strtoupper($tag[1]) . ', which would overwrite the returned value '
+                . '(and the other way round) — remove @' . strtoupper($tag[1]) . ', or write to another field.';
         }
         return null;
     }

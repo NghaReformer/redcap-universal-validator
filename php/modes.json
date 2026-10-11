@@ -272,7 +272,7 @@
                      "rangeReturn", "rangeReturnLimits", "rangeDecimals", "rangeReturnComma",
                      "when", "whenAst", "caseSensitive", "message", "deferred", "deferredWhy", "snapshotFields",
                      "deferredOnSave", "extendedAdvisory", "growthIdle", "selectorBlocked"],
-      "returns": {"method": "returnsRange", "targets": "rangeReturn"},
+      "returns": {"method": "returnsRange", "targets": "rangeReturn", "noSave": "range-return-no-save", "sameNumber": "always"},
       "needs": [],
       "dialog": false,
       "js": {"factories": {"range": "QRIDRangeInit"}},

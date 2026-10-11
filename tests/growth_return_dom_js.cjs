@@ -19,7 +19,11 @@
  *     unresolved branch condition) leaves its fields as they are,
  *   - REDCap's calculations and branching logic are told about a new value,
  *   - a field that is not on the page, a Missing Data Code in the
- *     measurement, a survey, and the configuration errors.
+ *     measurement, a survey, and the configuration errors,
+ *   - the writer itself (NS.returnWriter.write, shared with @UVEXISTS
+ *     "return") on each kind of field: a dropdown and its autocomplete
+ *     companion, a radio's hidden mirror and buttons, a textarea, and the
+ *     "exact" flag that keeps "007" from passing for "7".
  *
  * The values themselves are parity-locked by tests/growth_js.cjs and
  * tests/growth_php.php (the "outputs" fixture section).
@@ -543,6 +547,47 @@ function link(from, to) {
   const env = boot(els, { growth: GROWTH, rules: [{ type: 'range', fields: ['weight'], rangeReference: 't-days', rangeMale: '1',
     rangeFemale: '2', rangeReturn: { z: 'wfa_z', range: 'wfa_rng' } }].map((r) => Object.assign(r, LIVE)) });
   check('no limits and more than z: the usual "no limits" error', cfgErr(env, 'weight') && /has no limits to check/.test(cfgErr(env, 'weight').innerHTML));
+}
+
+/* ---- the writer by field type (QRID_writeReturned, shared with @UVEXISTS "return") ---- */
+function opt(value, text) { return { value: value, text: text }; }
+function select(name, codes) {
+  const s = makeEl('select'); s.name = name;
+  s.options = codes.map(([v, t]) => opt(v, t));
+  return s;
+}
+function radioGroup(name, codes) {
+  const mirror = el(name, ''); mirror.type = 'hidden';
+  const buttons = codes.map((c) => { const r = el(name + '___radio', c); r.type = 'radio'; return r; });
+  return [mirror].concat(buttons);
+}
+{
+  const s = select('site', [['', ''], ['1', 'North'], ['2', 'South']]);
+  const comp = el('site_ac', ''); comp.setAttribute('id', 'rc-ac-input_site');
+  const [mirror, ...buttons] = radioGroup('arm', ['1', '2', '3']);
+  const area = makeEl('textarea'); area.name = 'note'; area.value = '';
+  const txt = el('code_id', '007');
+  const num = el('dose', '7.80');
+  const env = boot([s, comp, mirror].concat(buttons, [area, txt, num]), { rules: [] });
+  const W = env.NS.returnWriter.write;
+  check('writer: a dropdown takes a code it offers', W('site', '2', true) === true && s.value === '2');
+  check('... its autocomplete companion shows the label', comp.value === 'South');
+  check('... and REDCap hears input and change on the select', s._events.join(',') === 'input,change');
+  check('writer: a code the dropdown does not offer writes nothing', W('site', '9', true) === false && s.value === '2' && comp.value === 'South');
+  check('writer: "" empties the dropdown and its companion', W('site', '', true) === true && s.value === '' && comp.value === '');
+  check('writer: a radio gets the code in its mirror and the matching button checked',
+    W('arm', '2', true) === true && mirror.value === '2' && buttons.map((b) => b.checked).join() === 'false,true,false');
+  check('... the newly checked button raises change', buttons[1]._events.includes('change') && !buttons[0]._events.includes('change'));
+  check('writer: another code moves the check', W('arm', '3', false) === true && buttons.map((b) => b.checked).join() === 'false,false,true');
+  check('... silently when not announced', !buttons[2]._events.length && mirror._events.join(',') === 'input,change');
+  check('writer: "" unchecks every button', W('arm', '', true) === true && mirror.value === '' && buttons.every((b) => !b.checked));
+  check('writer: a textarea takes text', W('note', 'line one', true) === true && area.value === 'line one');
+  check('writer: exact — a Text field holding "007" takes "7"', W('code_id', '7', true, true) === true && txt.value === '7');
+  check('writer: not exact — "7.8" is the same number as "7.80", left alone', W('dose', '7.8', true) === false && num.value === '7.80');
+  check('writer: exact — "7.8" replaces "7.80"', W('dose', '7.8', true, true) === true && num.value === '7.8');
+  check('writer: the same value writes nothing', W('note', 'line one', true) === false);
+  check('writer: a field the page does not carry writes nothing', W('absent', 'x', true) === false);
+  check('writer: calculate and doBranching hear every write', env.win._calc.includes('site') && env.win._branch.includes('arm'));
 }
 
 console.log('growth_return_dom_js: ' + n + ' checks, ' + fail + ' failure(s)');
