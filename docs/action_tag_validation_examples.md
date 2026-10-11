@@ -1817,20 +1817,27 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
 - **Several entries.** When more than one saved entry holds the value, the
   values are copied only when every entry holds the same ones. Otherwise
   nothing is copied, the page adds an amber line under the green *Found* ("3
-  saved entries hold this value with different values to copy"), and the
-  post-save audit logs a rule problem. Narrow the lookup with `match`. Copying
-  `record` from two records is a disagreement too.
+  saved entries hold this value with different values to copy", counting the
+  entries the user can see, agreeing or not), and the post-save audit logs a
+  rule problem. Narrow the lookup with `match`. Copying `record` from two
+  records is a disagreement too.
 - **Data Access Groups.** A user in a group gets values only from entries of
-  their own group. A value found only in another group is still *found*, but
-  nothing is copied and the amber line says so.
+  their own group. When REDCap lets the module see the other groups' records
+  for that user, a value found only in another group is still *found*, nothing
+  is copied, and the amber line says so. When REDCap confines the user's reads
+  to their group, such a value reads as *could not check*, as for a rule
+  without `return`.
 - **Where the values come from.** The entry where `in` and every `match`
   matched: the same record, event and repeat instance. A copied field must be
   on the form of `in` or on a form that does not repeat; a field of another
   repeating form is refused, since the entry found has many instances of it.
-  A copied field whose form is not in the event of the entry found copies as
-  blank. With `"in":"record"` every copied field must be on a form that does
-  not repeat, and a longitudinal project names the event the values are read
-  from with `event`, which must not be a repeating event.
+  In a longitudinal project the form of each copied field must also be in
+  every event the entry can be found in (the `event` named, or else every
+  event that holds the form of `in`); otherwise the rule is refused, since
+  the entry found there would have no value for it. With `"in":"record"`
+  every copied field must be on a form that does not repeat, and a
+  longitudinal project names the event the values are read from with
+  `event`, which must not be a repeating event.
 - **What a field here can take.** The value is copied as REDCap stores it, so
   the field here must be able to hold every value the field there can:
 
@@ -1839,36 +1846,55 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   | any value | a Text field without validation, or a Notes field |
   | dropdown, radio, yes/no, true/false | a choice field that has each of its codes, or a Text field without validation (it gets the code) |
   | a date, datetime or time | a Text field with the same kind of date or time; the order it shows the date in may differ |
-  | a number | a Text field with number validation, the same decimal mark and at least as many decimal places; an integer field only from an integer |
+  | a number | a Text field with number validation and the same decimal mark; when the field here fixes its decimal places (integer, `number_1dp`, `number_2dp` …), the field there must fix the same number of them, because REDCap's `number_2dp` takes exactly two places and `7.5` would fail it |
   | any other validation | a Text field with the same validation |
 
   The field here must be on this form, not this field, not a field the lookup
   reads, not the record ID, and not a calc, slider, SQL, checkbox, file or
   descriptive field, nor a field filled by `@CALCTEXT`, `@CALCDATE` or
-  `@SETVALUE`. A field flagged Identifier there may go only into a field
-  flagged Identifier here, so a de-identified export does not carry it.
+  `@SETVALUE`, nor one that shows a widget keeping its own text (`@RICHTEXT`,
+  a BioPortal ontology search). A field flagged Identifier there may go only
+  into a field flagged Identifier here, so a de-identified export does not
+  carry it.
+- **One writer per field.** Two rules that write one field are both refused,
+  whether both are `@UVEXISTS` rules or one is an `@UVRANGE` rule with
+  `return`.
 - **Rights.** A copied value is data, not only *found*. The page fills the
-  fields only for a user who may open every form the copied fields are on,
-  besides the forms the lookup reads; anyone else gets *could not check*. The
-  save checks the person who saved the same way. A rule with `return` cannot
-  use `"surveys":true`, and a save with no signed-in user (a survey) writes
-  nothing.
+  fields only for a user who may open every form the lookup reads: the form of
+  the searched field, of each `match` field and of each copied field. Anyone
+  else gets *could not check*. The save checks the person who saved the same
+  way: without those rights the fields keep their values and the audit logs a
+  rule problem. A rule with `return` cannot use `"surveys":true`.
+- **Surveys and saves without a user.** A survey respondent's save neither
+  fills nor empties the fields, even when the form is also a survey. A save
+  REDCap runs without a signed-in user (a scheduled job, for example) copies
+  no value; a blank value or a Missing Data Code still empties the fields.
 - **When the values are written.** The page fills the fields as it opens and
-  after each answer. The first fill does not mark the form as changed; later
-  fills raise an input and a change event, so calculations and branching logic
-  that read the fields run. Save waits for a lookup on its way, even with
-  `"blockSave":"off"`. After the save, the post-save audit asks again as the
-  person who saved and writes the values that differ, together with any
-  `@UVRANGE` returned values, in one save per entry. A number field holding
-  the same number spelled another way (`7.80` for `7.8`) is not rewritten;
-  any other field is written exactly, so `007` replaces `7`.
+  after each answer. The fill made as the page opens does not mark the form as
+  changed, though calculations and branching logic that read the fields still
+  run; later fills also raise an input and a change event, as typing does.
+  Save waits for a lookup on its way, even with `"blockSave":"off"` and on a
+  `@READONLY` field. An answer that lands after the value changed (a date
+  picker or an autocomplete pick can change it without an event) is dropped
+  and the value asked again. A *found* answer is asked again when the field is
+  judged 30 seconds or more after it; Save goes by the answer it has. After
+  the save, the post-save audit asks again as the person who saved and writes
+  the values that differ, together with any `@UVRANGE` returned values, in one
+  save per event and instance of this record. A number field holding the same
+  number spelled another way (`7.80` for `7.8`) is not rewritten; any other
+  field is written exactly, so `007` replaces `7`.
+- **A choice the page does not offer.** When `@HIDECHOICE` or `@UVCHOICES`
+  took the option off the page, the page empties the dropdown or radio field
+  instead of keeping an older code, and an amber line names the field. The
+  save writes the code all the same: the field's choice list holds it.
 - **A copy, not a link.** The values are copied when this record is judged. A
   later change to the entry found shows on the page when this form is opened,
   and reaches the saved record when this record is saved again.
 - **The cost.** A rule with `return` reads every saved value of the searched
-  field and of the copied fields on each lookup, the read a *not found* makes
-  for any other rule, because a narrowed read can miss an entry spelled
-  another way.
+  field and of the copied fields, the read a *not found* makes for any other
+  rule, because a narrowed read can miss an entry spelled another way. The
+  read is kept for the rest of the request: an import of many records reads
+  the searched project once, and each record saved during it is read back in.
 - **No chains.** A rule that copies values cannot read a field that a rule
   copies or returns to: not as its own field, nor in `in`, `match` or `when`.
   The save works out every value before it writes any, so a chain would lag
@@ -1876,12 +1902,17 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   writes.
 - **Turning the write on save off.** The project setting "@UVEXISTS returned
   values" (`exists-return-no-save`) keeps the page fill and writes nothing when
-  a record is saved. The Validation scan never writes.
+  a record is saved; the lookups made at the save then ask for no values. The
+  Validation scan never writes.
 - **Another project.** The searched project lists the fields others may copy,
   separately from the fields they may search ("Fields of this project whose
   values it may copy", `record` for its record ID), and only under "Only users
   who have rights". A rule that copies a field not on that list gets the same
-  setup error as any other refusal there.
+  setup error as any other refusal there. A refusal that would describe how
+  that project is built (a copied field on a repeating form or missing from an
+  event, an event that repeats) gives one message instead: "project N cannot
+  give the values "return" asks for". A choice field here that lacks a code of
+  the field there is refused without naming the code.
 
 ### Semantics worth knowing
 
@@ -1923,9 +1954,9 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   typed and saved at once is asked before the save is decided, and the save is
   held while the answer is on its way. After 10 seconds without one, the value
   counts as *could not check*. A *not found* the page has held for 30 seconds or
-  more is asked again at Save, since the value may have been saved elsewhere
-  since. If the server cannot answer that second question, the earlier *not
-  found* stands and is enforced.
+  more is asked again at Save when the rule can block it, since the value may
+  have been saved elsewhere since. If the server cannot answer that second
+  question, the earlier *not found* stands and is enforced.
 - **Three answers.** *Found* (green), *not found* (red; enforced per `blockSave`),
   and *could not check* (amber; never blocks). A failed read, a `match` field that
   is blank on another form, a busy server and missing rights all answer *could not
@@ -1941,8 +1972,9 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   reads them from the stored rule. On a survey, a configuration error shows as a
   general notice, and the "no access" reason does not name a form or field.
 - **Rights.** A signed-in user is answered only when they may open the forms that
-  hold the searched field and the `match` fields. A record-ID lookup needs no extra
-  form. At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
+  hold the searched field and the `match` fields, and, for a rule with `return`,
+  the copied fields. A record-ID lookup needs no extra form.
+  At most 60 lookups a minute per user session, shared with `@UVUNIQUE`. A
   user in a Data Access Group is answered only on records of their own group.
 - **Data Access Groups.** A group user's reads may be confined to their group. A
   *not found* from a rule that looks across groups is kept only when the module
@@ -1997,11 +2029,13 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   the line says `extra_read: record ids`. Nothing is written there while the
   Control Center switch is off or the module is not enabled in that project.
   Over a budget, only the first refused lookup of the minute is logged, so a
-  flood of refused lookups is not a flood of log lines. A lookup by a rule
-  that copies values adds `returned` (the fields the rule copies), and, when
-  values were handed over, `copied_from` (the record they came from); with
-  "How to log invalid values" set to "none" that record is kept as a keyed
-  hash (`copied_from_hmac`), and with "off" it is left out.
+  flood of refused lookups is not a flood of log lines. A lookup that asks for
+  values (from a data-entry form, for a signed-in person, or at a save that
+  writes them) adds `returned` (the fields the rule copies), and, when values
+  were handed over, `copied_from` (the record they came from); with "How to
+  log invalid values" set to "none" that record is kept as a keyed hash
+  (`copied_from_hmac`), and with "off" it is left out. A lookup that asks for
+  none (from a survey page, or at a save that writes nothing) adds neither.
 - **Budgets.** Each searched project keeps three counters, so no kind of caller
   can use up another's: staff lookups (1,200 a minute from every project
   together, plus 30 a minute per signed-in session), survey lookups (120 a
@@ -2814,11 +2848,15 @@ Without `unit` it reads `7737 to 11989`: the table's kg would be wrong.
 - **The fields.** Text fields on the same form as the measured field, so in
   the same event and instance. Not the measured field, an input of the rule,
   or the record ID, and no two values to one field. A `range` field takes no
-  validation; `z`, `lower` and `upper` take none or number validation with
-  room for the decimals (two for `z`, `decimals` for a bound; `number_2dp` is
-  too short for `decimals` 3), and a bound with `"decimals":0` may go into an
-  integer field. A field with comma-decimal validation gets a comma, and a
-  field without validation takes the mark of the measured field. Two rules
+  validation; `z`, `lower` and `upper` take none, number validation without a
+  place count, or a place count equal to the decimals they are written with
+  (two for `z`, `decimals` for a bound): REDCap's `number_2dp` takes exactly
+  two places, so it refuses `7.5` as it refuses `7.512`. A bound with
+  `"decimals":0` may go into an integer field. A field with comma-decimal
+  validation gets a comma, and a field without validation takes the mark of
+  the measured field. Nor a field filled by `@CALCTEXT`, `@CALCDATE` or
+  `@SETVALUE`, or one that shows a widget keeping its own text (`@RICHTEXT`,
+  a BioPortal ontology search). Two rules
   cannot return to one field, and both are refused, naming each other. Two
   references on one field are judged at the same time, so each fills the
   fields of its own branches and they cannot share one.
@@ -4510,10 +4548,11 @@ target the same field: different kinds compose, and the same kind branches by `w
 | ----------------- | --------------- | -------------- | ---------------------------------------------------------------------- |
 | `in`            | string          | *(none)*     | `record`, or one field reference such as `[specimen_id]`; the shorthand `@UVEXISTS=[field]` sets it |
 | `project`       | number or string | *(this project)* | Another project's id, or an alias from this project's settings. Not with `"scope":"dag"` or `"scope":"event"` |
-| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"` or `"in":"record"` |
+| `event`         | string          | *(any)*      | One unique event name to look in. Not with `"scope":"event"`; with `"in":"record"` only beside `return`, where it names the event the values are read from |
 | `scope`         | string          | `project`    | `project`, `dag` (this record's group), `event` (this entry's event)   |
 | `match`         | object          | *(none)*     | `{"target_field":"[field of this record]"}`, up to 5 pairs, same entry as the searched value |
-| `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier   |
+| `return`        | object          | *(none)*     | `{"field there":"[field of this form]"}`, up to 10 pairs; `record` copies the record ID found. Fills the fields from the entry found |
+| `surveys`       | boolean         | `false`      | Also check on surveys; refused when a touched field is an Identifier, and with `return` |
 | `when`          | string          | *(none)*     | Check only while true                                                  |
 | `message`       | string          | generic line   | Replaces the "not found" line                                          |
 | `blockSave`     | string          | `off`        | `off`, `confirm`, `hard`; "could not check" never blocks          |

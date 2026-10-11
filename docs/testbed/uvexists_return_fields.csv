@@ -6,7 +6,7 @@ uxr_from,uv_exists_return,,text,Record the specimen was registered in (copied),,
 uxr_code,uv_exists_return,,text,Participant code: copy the enrolment site and consent date,,PX-0002: North (radio) and 2026-01-10. PX-9999: not found.,,,,,,,,,,,"@UVEXISTS={""in"":""[xe_code]"",""return"":{""xe_site"":""[uxr_site]"",""xe_consent_date"":""[uxr_consent]""}}"
 uxr_site,uv_exists_return,,radio,Enrolment site (copied),"1, North | 2, South | 3, East",,,,,,,,,,,,@READONLY
 uxr_consent,uv_exists_return,,text,Consent date (copied),,,date_ymd,,,,,,,,,,@READONLY
-uxr_rec,uv_exists_return,,text,Record ID: copy its participant code and enrolment weight,,"XE-2: PX-0002 and 70, read from event_1_arm_1.",,,,,,,,,,,"@UVEXISTS={""in"":""record"",""event"":""event_1_arm_1"",""return"":{""xe_code"":""[uxr_rec_code]"",""xe_weight"":""[uxr_rec_wt]""}}"
+uxr_rec,uv_exists_return,,text,Record ID: copy its participant code and enrolment weight,,"XE-1: PX-0001 and 70, read from event_1_arm_1. On XE-2, typing XE-2 finds nothing: a record-ID lookup never finds the record being edited.",,,,,,,,,,,"@UVEXISTS={""in"":""record"",""event"":""event_1_arm_1"",""return"":{""xe_code"":""[uxr_rec_code]"",""xe_weight"":""[uxr_rec_wt]""}}"
 uxr_rec_code,uv_exists_return,,text,Participant code (copied),,,,,,,,,,,,,@READONLY
 uxr_rec_wt,uv_exists_return,,text,Enrolment weight (copied),,"A number field: 70.0 here is not rewritten to 70.",number,,,,,,,,,,@READONLY
 uxr_gate,uv_exists_return,,yesno,Copy the barcode?,,,,,,,,,,,,,

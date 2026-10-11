@@ -711,17 +711,18 @@ the specimen ID on the collection form.
   `when` empties, *could not check* leaves them. Several entries with
   different values copy nothing and an amber line says so; a user in a Data
   Access Group gets values only from their own group. The page fills the
-  fields for a user who may open the forms they come from, and the post-save
-  audit writes the values that differ as the person who saved (the project
-  setting "@UVEXISTS returned values" turns that write off). The setup is
+  fields for a user who may open every form the lookup reads, and the
+  post-save audit, checking the same rights, writes the values that differ as
+  the person who saved (the project setting "@UVEXISTS returned values" turns
+  that write off; a survey respondent's save writes nothing). The setup is
   checked when the rule is saved: copied fields hold one value on the form of
-  `in` or a form that does not repeat, each field here can hold what the field
-  there holds (choice codes, kind of date, decimal mark and places,
-  validation), an Identifier goes only into an Identifier. Refused with
-  `"surveys":true`. Another project must list the fields it lets others copy,
-  under "Only users who have rights"; its probe log then names the fields
-  the rule copies and, when values were handed over, the record they came
-  from.
+  `in` or a form that does not repeat (in every event the entry can be found
+  in), each field here can hold what the field there holds (choice codes, kind
+  of date, decimal mark and places, validation), an Identifier goes only into
+  an Identifier. Refused with `"surveys":true`. Another project must list
+  the fields it lets others copy, under "Only users who have rights"; its
+  probe log then names the fields the rule copies and, when values were
+  handed over, the record they came from.
 - Works on Text, dropdown, radio and SQL fields; composes with the other modes on
   the same field (for example `@UVEXISTS` with `@UVUNIQUE`). Configure via field
   annotation only.

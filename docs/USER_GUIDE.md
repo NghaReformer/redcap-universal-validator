@@ -993,19 +993,21 @@ Yes. Add `return` and map fields of the entry found to fields of this form:
 values come from the entry where the value matched (same record, event and
 repeat instance), so each copied field must be on the form of `in` or on a
 form that does not repeat. With `"in":"record"` in a longitudinal project,
-`event` names the event the values are read from. The rule owns the fields:
-a value found fills them, "not found", a blank value or a `when` that is
-false empties them, and "could not check" leaves them, so make them
-`@READONLY`. When several saved entries hold the value with different values
-to copy, nothing is copied and an amber line says so; add `match` to narrow
-the lookup. A user in a Data Access Group gets values only from entries of
-their own group. The page fills the fields only for a user who may open the
-forms the copied fields are on, and the save fills them again, writing only
-what differs, as the person who saved. A rule with `return` cannot be used on
-a survey. Each field here must hold what the field there holds: a choice
-field needs every code, a date field the same kind of date (the order shown
-may differ), a number field the same decimal mark and enough decimal places;
-a Text field without validation takes anything. A field flagged Identifier
+`event` names the event the values are read from. The rule owns the fields,
+so make them `@READONLY`: a value found fills them, "not found", a blank
+value or a `when` that is false empties them, and "could not check" leaves
+them. When several saved entries hold the value with different values to
+copy, nothing is copied and an amber line says so; add `match` to narrow the
+lookup. A user in a Data Access Group gets values only from entries of their
+own group. The page fills the fields only for a user who may open every form
+the lookup reads (the searched field's, the `match` fields' and the copied
+fields'), and the save fills them again, writing only what differs, as the
+person who saved. A rule with `return` cannot use `"surveys":true`, and a
+survey respondent's save leaves the fields as they are. Each field here must
+hold what the field there holds: a choice field needs every code, a date
+field the same kind of date (the order shown may differ), a number field the
+same decimal mark and, when it fixes its decimal places, the same number of
+them; a Text field without validation takes anything. A field flagged Identifier
 there only goes into one flagged Identifier here. From another project, the
 lab project must also list the fields it lets this project copy, under "Only
 users who have rights". The project setting "@UVEXISTS returned values" keeps

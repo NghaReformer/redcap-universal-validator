@@ -299,23 +299,29 @@ the Configure dialog checks of the alias and agreement rows.
 
 `exists_return_php.php` covers `"return"`, the fields a lookup copies from the
 entry it found. Its mocks join the two above and keep settings, dictionaries,
-data, rights and repeating forms per project id, `REDCap::getData` honouring
-records, events and `filterLogic`, and `REDCap::saveData` recording each
-write. It covers the grammar, every setup refusal and its wording (fields
-there on a repeating form, fields here of a kind that cannot hold the value,
-an Identifier into a field that is not one, a repeating event with
-`"in":"record"`), the page config (the fields filled, never where the values
-come from), the endpoint (values as the page shows them, entries that agree
-or disagree, an entry only in another group, the form rights of the copied
-fields, the full read a rule with `"return"` always makes), the save (stored
-values, only what differs, one lookup per save, the survey and the saver
-without rights writing nothing, the `exists-return-no-save` switch), the
-scan that never asks for values, and another project (the agreement's list of
-fields it may copy, the "answer" mode, the probe log, the Configure dialog
-checks). `exists_return_dom_js.cjs` drives the page fill: each kind of field,
-the quiet fill as the page opens, the answers that fill, empty or leave the
-fields, branches, the save held while a lookup is on its way, and late
-answers.
+data, rights, repeating forms and the forms of each event per project id,
+`REDCap::getData` honouring records, events and `filterLogic`, and
+`REDCap::saveData` recording each write (repeat instances too). It covers the
+grammar, every setup refusal and its wording (fields there on a repeating
+form or missing from an event the entry can be found in, fields here of a
+kind that cannot hold the value, number places that differ, `@RICHTEXT` and
+ontology targets, an Identifier into a field that is not one, a repeating
+event with `"in":"record"`), the page config (the fields filled, never where
+the values come from), the endpoint (values as the page shows them, entries
+that agree or disagree and how many, values that are not valid UTF-8, an
+entry only in another group, the form rights of the searched, `match` and
+copied fields, the full read a rule with `"return"` always makes, a
+signed-in caller on a survey page), the save (stored values, only what
+differs, one lookup per save, the read kept for the request and refreshed by
+each save, survey saves and savers without rights writing nothing, the
+`exists-return-no-save` switch asking for no values), the scan that never
+asks for values, and another project (the agreement's list of fields it may
+copy, the "answer" mode, the probe log, refusals that would describe that
+project, the Configure dialog checks). `exists_return_dom_js.cjs` drives the
+page fill: each kind of field, the quiet fill as the page opens, the answers
+that fill, empty or leave the fields, branches, the save held while a lookup
+is on its way (on a `@READONLY` field too), late and stale answers, a choice
+the page does not offer, and found answers asked again after 30 seconds.
 
 ## `range_*` — the plausibility contract
 
