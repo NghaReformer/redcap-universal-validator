@@ -17,8 +17,9 @@ CLAUDE.md
 # Version history and dated review reports. Most findings in reports/ are
 # already fixed, and IDs such as H-01 repeat across reports, so extracting them
 # would put stale claims in the graph with no reliable link to code.
-# Delete these two lines to include them (about 110k words of LLM extraction).
+# Delete these lines to include them (about 150k words of LLM extraction).
 CHANGELOG.md
+CHANGELOG-ARCHIVE.md
 reports/
 
 # Documentation website: its own build, with pages that restate README sections
