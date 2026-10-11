@@ -2327,7 +2327,7 @@ packages) computes: the same tables, the same restricted method beyond 3 SD for
 the weight, BMI, arm circumference and skinfold indicators, and the same
 rounding to two decimals (half away from zero). The module's tests compare 2,880 points with WHO's
 code. An administrator can add other references, such as CDC 2000 or a national
-one (see [A reference of your own](#a-reference-of-your-own) below).
+one ([Level 7](#level-7--a-growth-reference-of-your-own) shows how, step by step).
 
 #### WHO's limits for each indicator
 
@@ -2601,64 +2601,20 @@ check every entry.
 
 #### A reference of your own
 
-Any reference published as L, M and S values per sex can be added without
-changing the module's code: CDC 2000, a national reference, or a reference
-by gestational age. The administrator does it once per server.
+Any reference published as L, M and S values per sex, or as a mean and a
+standard deviation, can be added without changing the module's code: CDC
+2000, a national reference, a reference by gestational age. The
+administrator adds its table to a folder on the server once, and every
+project then names it like a WHO reference:
 
-1. Convert the table with `convert.php` in the module's
-   `data/references` folder. For the CDC 2000 weight-for-age table, saved
-   from the CDC website as `wtage.csv`:
+```text
+# on: weight_kg — CDC 2000 weight-for-age, 2 to 20 years, added by the administrator as "cdc-wfa"
+@UVRANGE={"reference":"cdc-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
+```
 
-   ```bash
-   php convert.php --in wtage.csv --out cdc-wfa.json --x Agemos --x-offset 0.5 --min-x 24.5 --max-x 239.5
-   ```
-
-   It prints the table's SHA-256 and an index entry to start from.
-
-2. Put `cdc-wfa.json` and an `index.json` in a folder on the REDCap server,
-   outside the module folder, such as `/var/redcap/growth`:
-
-   ```json
-   {
-     "format": "uv-references-1",
-     "references": {
-       "cdc-wfa": {
-         "title": "Weight-for-age, CDC 2000 (2 to 20 years)",
-         "file": "cdc-wfa.json",
-         "sha256": "the value convert.php printed",
-         "measure": "weight", "unit": "kg",
-         "axis": "age", "axisUnit": "months", "lookup": "floor",
-         "valid": {"min": "24", "below": "240"},
-         "adjust": "none"
-       }
-     }
-   }
-   ```
-
-3. In Control Center, External Modules, Universal Field Validator,
-   Configure, set "folder of extra growth references" to that folder.
-
-4. Check one value with the module's own code, and compare it with one you
-   trust, such as a z-score from the source's own software:
-
-   ```bash
-   php convert.php --check cdc-wfa --folder /var/redcap/growth --sex male --x 30 --y 12.5
-   ```
-
-5. Use it in a rule:
-
-   ```text
-   # on: weight_kg — CDC 2000 weight-for-age, 2 to 20 years
-   @UVRANGE={"reference":"cdc-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-3,3],"hard":[-5,5]}
-   ```
-
-6. Enter a test record with the sex, age and weight you checked in step 4.
-   The note shows the same z-score.
-
-If a limit lies beyond what the table can reach, the configuration error
-names the row and the value the limit must stay under. `data/references/README.md` covers
-tables with one set of rows for both sexes, tables given as a mean and a
-standard deviation, references by gestational age, and the CDC infant tables.
+[Level 7](#level-7--a-growth-reference-of-your-own) walks through it step by
+step with three worked tables: one by month, one by length, and one built
+from a mean and an SD per week of gestation.
 
 #### A blank date of birth (`plausible`)
 
@@ -2912,6 +2868,437 @@ Without `unit` it reads `7737 to 11989`: the table's kg would be wrong.
 - **Turning the write on save off.** The project setting "@UVRANGE returned
   values" (`range-return-no-save`) keeps the page fill and writes nothing when
   a record is saved. The Validation scan never writes.
+
+### Level 7 — a growth reference of your own
+
+The WHO tables that ship cover most child growth checks. A programme may also
+need a national reference, CDC 2000, a reference by gestational age, or a newer
+edition of a WHO table. Any reference published as L, M and S values for each
+sex, or as a mean and a standard deviation, can be added without changing the
+module's code. The REDCap administrator adds it once per server. After that,
+every project on the server names it in `"reference"` as it names `who-wfa`.
+
+This level builds a folder of three references from three tables, each shaped
+the way such references are published. The tables are in the module's
+`data/references/examples/` folder. Their numbers are made up: use them to
+practise, never for real children.
+
+| Reference | Source table | What it shows |
+| --------- | ------------ | ------------- |
+| `example-hfa` | `hfa-national.csv` | height-for-age with L, M and S for each whole month, read between months |
+| `example-wfl` | `wfl-national.csv` | weight-for-length with a row every 0.5 cm |
+| `example-bwga` | `bwga-weekly.csv` | birth weight for gestational age, as a mean and an SD for each week |
+
+#### How the module reads a reference
+
+A reference is a list of rows for males and a list for females. Each row
+holds three numbers, L, M and S, for one position on the reference's axis: an
+age (in days or months), a length (in cm, measured lying) or a height (in cm,
+measured standing). For a measurement y read at a row, the z-score is
+
+```text
+z = ((y / M)^L - 1) / (L × S)     when L is not 0
+z = ln(y / M) / S                 when L is 0
+```
+
+With L = 1 this is (y − M) / (M × S): M is the mean and M × S is the standard
+deviation. That is how a reference given as a mean and an SD is written
+(Example 3).
+
+The rows sit on an even grid: one row every 1/`scale` of the axis unit, with
+no row missing between the first and the last, and both sexes starting at the
+same position. The WHO 2006 weight-for-age table has a row per day (scale 1,
+days); WHO weight-for-length has a row per millimetre (scale 10, cm).
+
+Three things make a reference usable:
+
+1. **The table**, a JSON file in the module's `uv-lms-1` format.
+   `convert.php`, in the module's `data/references` folder, writes it from a
+   CSV or tab-separated file.
+2. **An entry in an `index.json`** beside the table. It names the table and
+   its SHA-256, the unit, the axis, and how an age or a length finds its row.
+3. **The folder** holding both, named in the module's system settings.
+
+#### Example 1 — height-for-age by month
+
+**Step 1. Save the table as CSV**, with a header row and one row per sex and
+month. `hfa-national.csv` begins:
+
+```text
+sex,agemos,l,m,s
+1,60,1,110,0.042
+1,61,1,110.55,0.042
+1,62,1,111.1,0.042
+```
+
+`convert.php` finds the columns `sex`, `l`, `m` and `s` by name, in any order
+and letter case, and `--x` names the column of the axis. A table with other
+names takes `--sex`, `--l`, `--m` and `--s`; one that codes the sexes other
+than 1 and 2 takes `--male` and `--female` (for example `--male M --female F`).
+
+**Step 2. Convert it.** From the module's `data/references` folder:
+
+```bash
+php convert.php --in examples/hfa-national.csv --out examples/example-hfa.json --x agemos
+```
+
+It prints the table's SHA-256 and an index entry to start from:
+
+```text
+wrote examples/example-hfa.json: 13 male and 13 female rows, x 60 to 72
+sha256 b58f4fda71110943cdc86c88774cbdcf62d8d0fc12cd6f917d0210befda86644
+index.json entry to start from (edit title, measure, unit, axis, axisUnit, lookup, valid, adjust):
+{
+    "title": "",
+    "source": "",
+    "file": "example-hfa.json",
+    "sha256": "b58f4fda71110943cdc86c88774cbdcf62d8d0fc12cd6f917d0210befda86644",
+    "measure": "",
+    "unit": "",
+    "axis": "age",
+    "axisUnit": "days",
+    "lookup": "round",
+    "valid": {
+        "min": "60",
+        "max": "72"
+    },
+    "adjust": "none"
+}
+```
+
+It refuses a table it cannot convert and says why. A row off the grid, a
+second row for one position, a sex code that is neither `--male` nor
+`--female`, an M or S at or below 0, an S below 0.0001, or an L that is not 0
+but smaller than 0.000001 is named by its line; a gap in a sex's rows, or
+sexes that start at different positions, is named by the sex.
+
+**Step 3. Write the index entry.** Edit the printed entry and give it the id
+rules will name:
+
+```json
+"example-hfa": {
+  "title": "Height-for-age, example national reference (5 to 6 years)",
+  "file": "example-hfa.json",
+  "sha256": "b58f4fda71110943cdc86c88774cbdcf62d8d0fc12cd6f917d0210befda86644",
+  "measure": "height",
+  "unit": "cm",
+  "axis": "age",
+  "axisUnit": "months",
+  "lookup": "linear",
+  "valid": {"min": "60", "max": "72"},
+  "adjust": "none"
+}
+```
+
+- **The id** (`example-hfa`) is 1 to 64 lower-case letters, digits, `.`, `_`
+  or `-`. Rules name it in `"reference"`.
+- **`title`** is shown to staff in the notes, and printed by `--check`.
+- **`measure` and `unit`** describe the measurement, here height in cm.
+- **`axisUnit`** is `months`, since the rows are months. `convert.php` always
+  starts from `days`.
+- **`lookup`** is `linear`: an age of 66.5 months is read halfway between the
+  rows for 66 and 67, as the WHO 2007 tables are. `round` would read the
+  nearest month, and `floor` the month completed.
+- **`valid`** is the range checked, 60 to 72 months. Outside it the page shows
+  a grey "not checked" note.
+- **`adjust`** is `none`. Use `who-restricted` only for a WHO table of a
+  weight-based indicator.
+- **`source`**, which `convert.php` prints empty, is a note for people: fill it
+  in or delete it, the module does not read it.
+
+**Step 4. Put the folder on the REDCap server.** Copy the table and the
+`index.json` to a folder outside the module folder, so that an upgrade of the
+module does not remove them: `/var/redcap/growth` on Linux, for example, or
+`D:\redcap\growth` on Windows. The account the web server runs as must be able
+to read it. The full `index.json` of this level is shown under Example 3.
+
+**Step 5. Point the module at it.** In Control Center, External Modules,
+Universal Field Validator, Configure, set "@UVRANGE growth references —
+folder of extra growth references" to the folder's full path. Only an
+administrator can, and it applies to every project on the server. Its
+references are added to the WHO ones.
+
+**Step 6. Check one value with the module's own code** before any rule uses
+the reference. `--folder` names the folder, `--x` is the position in the axis
+unit and `--y` the measurement:
+
+```bash
+php convert.php --check example-hfa --folder examples --sex male --x 66 --y 115
+```
+
+```text
+Height-for-age, example national reference (5 to 6 years), male, age 66 months: L 1, M 113.3, S 0.042
+z-score 0.36 for 115 cm
+```
+
+By hand: (115 − 113.3) / (113.3 × 0.042) = 0.357, which rounds to 0.36. With
+a real reference, compare the result with a z-score from the publisher's own
+software or tables; a difference means a column, a scale or a unit is wrong.
+
+**Step 7. Use it in a rule.** Any form on the server can now name it:
+
+```text
+# on: height_cm — height-for-age against the example reference, 5 to 6 years
+@UVRANGE={"reference":"example-hfa","sex":"[sex]","male":"1","female":"2","age":{"months":"[age_months]"},"soft":[-3,3],"hard":[-6,6]}
+```
+
+```text expect
+115 with sex=1, age_months=66     => ok, z 0.36
+115 with sex=1, age_months=66.5   => ok, z 0.30
+108 with sex=2, age_months=72     => ok, z -1.65
+99 with sex=1, age_months=66      => soft-low, z -3.01
+115 with sex=1, age_months=73     => not evaluated
+```
+
+`"age":{"dob":"[dob]","at":"[visit_date]"}` works too: the module counts the
+days between the dates and divides by 30.4375 for a reference by month.
+
+**Step 8. Enter a test record** with the sex, age and height you checked in
+step 6. The note under the field names the reference by its `title`, and the
+z-score is the one `--check` printed.
+
+#### Example 2 — weight-for-length every half centimetre
+
+`wfl-national.csv` has a row every 0.5 cm, so there are 2 rows per cm:
+
+```text
+Sex,Length,L,M,S
+1,45,-0.3521,2.441,0.0918
+1,45.5,-0.3521,2.5315,0.0914
+1,46,-0.3521,2.622,0.091
+```
+
+`--scale` gives the rows per unit of the axis:
+
+```bash
+php convert.php --in examples/wfl-national.csv --out examples/example-wfl.json --x Length --scale 2
+```
+
+In the entry, `"axis": "length"` and `"axisUnit": "cm"`, and `"lookup":
+"linear"`, as WHO reads its own weight-for-length table. A length of 47.3 cm
+lies three fifths of the way from the row for 47.0 to the row for 47.5, and L,
+M and S are read three fifths of the way between the two rows:
+
+```bash
+php convert.php --check example-wfl --folder examples --sex female --x 47.3 --y 2.5
+```
+
+```text
+Weight-for-length, example national reference (45 to 50 cm), female, length 47.3 cm: L -0.3833, M 2.8704, S 0.08846
+z-score -1.60 for 2.5 kg
+```
+
+A reference by length or height takes `by` in place of `age`:
+
+```text
+# on: weight_kg — weight-for-length against the example reference
+@UVRANGE={"reference":"example-wfl","sex":"[sex]","male":"1","female":"2","by":"[length_cm]","soft":[-3,3],"hard":[-5,5]}
+```
+
+```text expect
+2.5 with sex=2, length_cm=47.3   => ok, z -1.60
+2.9 with sex=1, length_cm=47.5   => ok, z 0.02
+2.0 with sex=1, length_cm=47.5   => soft-low, z -4.39
+2.5 with sex=1, length_cm=44     => not evaluated
+```
+
+A reference by height, measured standing, is the same with `"axis":
+"height"`. WHO's 0.7 cm correction between length and height is shown under
+Level 5.
+
+#### Example 3 — a mean and an SD per week of gestation
+
+Birth weight references are often published as a mean and a standard
+deviation for each completed week of gestation. `bwga-weekly.csv`:
+
+```text
+sex,ga_weeks,mean,sd
+1,37,2.95,0.42
+1,38,3.15,0.42
+1,39,3.31,0.43
+1,40,3.44,0.44
+1,41,3.54,0.45
+1,42,3.58,0.46
+2,37,2.85,0.41
+```
+
+Two changes turn it into a table the module reads:
+
+1. **Write each row as L, M and S.** L is 1, M is the mean and S is the SD
+   divided by the mean. With L = 1 the z-score is (y − mean) / SD.
+2. **Give the axis a unit the module knows.** An age is in days or months, and
+   the rows sit on an even grid, so a row per week becomes seven rows, one per
+   day. Days 259 to 265 (37 weeks and 0 to 6 days) all take the values of week
+   37.
+
+In a spreadsheet, with the weekly table in columns A to D (sex, weeks, mean,
+SD) and one row per day below it, the day is `weeks × 7 + 0` to `weeks × 7 + 6`,
+L is `1`, M is the mean and S is `=ROUND(D2/C2, 6)`. Save the result as CSV.
+`bwga-daily.csv` begins:
+
+```text
+sex,ga_days,l,m,s
+1,259,1,2.95,0.142373
+1,260,1,2.95,0.142373
+```
+
+```bash
+php convert.php --in examples/bwga-daily.csv --out examples/example-bwga.json --x ga_days
+```
+
+In the entry, `"axisUnit": "days"`, `"lookup": "floor"` (each row stands for a
+whole day, so 286.4 days reads the row for day 286), and `"valid": {"min":
+"259", "below": "301"}`, which is 37 weeks 0 days up to the end of 42 weeks 6
+days.
+
+```bash
+php convert.php --check example-bwga --folder examples --sex male --x 286 --y 2.2
+```
+
+```text
+Birth weight for gestational age, example (37 to 42 weeks), male, age 286 days: L 1, M 3.44, S 0.127907
+z-score -2.82 for 2.2 kg
+```
+
+By hand: 286 days is 40 weeks and 6 days, and week 40 for boys has a mean of
+3.44 kg and an SD of 0.44 kg, so (2.2 − 3.44) / 0.44 = −2.82.
+
+The rule gives the gestational age in days with `age`'s `days`, from a calc
+field. `dob` and `at` would give the age since birth, which is not what this
+reference is read by:
+
+```text
+# on: birth_weight_kg — birth weight for gestational age; ga_days is a calc: [ga_weeks]*7 + [ga_extra_days]
+@UVRANGE={"reference":"example-bwga","sex":"[sex]","male":"1","female":"2","age":{"days":"[ga_days]"},"soft":[-2,2],"softBlock":"off","hard":[-5,5]}
+```
+
+```text expect
+3.44 with sex=1, ga_days=280   => ok, z 0.00
+2.2 with sex=1, ga_days=286    => soft-low, z -2.82
+4.5 with sex=2, ga_days=266    => soft-high, z 3.56
+0.9 with sex=1, ga_days=280    => hard-low, z -5.77
+3.0 with sex=1, ga_days=258    => not evaluated
+```
+
+A table written from a mean and an SD has a floor: a weight of 0 scores
+−mean / SD, and nothing typed can score lower. For girls at 37 weeks that is
+−6.95, so a `hard` low limit of −7 could never be passed, and the module
+refuses it on the form and in the scan with:
+
+> "reference" "example-bwga": its "hard" low limit -7 is out of reach: with "example-bwga" no measurement scores below -6.95 at 259 days (female), so a low limit must be above -6.95.
+
+The whole `index.json` of this level, beside the three tables:
+
+```json
+{
+  "format": "uv-references-1",
+  "references": {
+    "example-hfa": {
+      "title": "Height-for-age, example national reference (5 to 6 years)",
+      "file": "example-hfa.json",
+      "sha256": "b58f4fda71110943cdc86c88774cbdcf62d8d0fc12cd6f917d0210befda86644",
+      "measure": "height", "unit": "cm",
+      "axis": "age", "axisUnit": "months", "lookup": "linear",
+      "valid": {"min": "60", "max": "72"},
+      "adjust": "none"
+    },
+    "example-wfl": {
+      "title": "Weight-for-length, example national reference (45 to 50 cm)",
+      "file": "example-wfl.json",
+      "sha256": "0d717f0d88de4d226a2148f3e5c768cf4e5ee9cc9b89b1ec8e895fe834422da4",
+      "measure": "weight", "unit": "kg",
+      "axis": "length", "axisUnit": "cm", "lookup": "linear",
+      "valid": {"min": "45", "max": "50"},
+      "adjust": "none"
+    },
+    "example-bwga": {
+      "title": "Birth weight for gestational age, example (37 to 42 weeks)",
+      "file": "example-bwga.json",
+      "sha256": "0593e3a7a87334761f5cf6b28c396f45f5afd8c465365bfa5a6fec9e8233d90e",
+      "measure": "weight", "unit": "kg",
+      "axis": "age", "axisUnit": "days", "lookup": "floor",
+      "valid": {"min": "259", "below": "301"},
+      "adjust": "none"
+    }
+  }
+}
+```
+
+#### Choosing `lookup`, `valid` and `adjust`
+
+| The table has | `lookup` | Example |
+| ------------- | -------- | ------- |
+| a row per day, read at the nearest day | `round` | WHO 2006, birth to 5 years |
+| a row per month or per length step, read between two rows | `linear` | WHO 2007, WHO weight-for-length, Examples 1 and 2 |
+| rows that each stand for an interval: a completed day, week or half month | `floor` | CDC 2000 half months, Example 3 |
+
+- **`valid`** takes `min` and either `max` (included) or `below` (excluded),
+  in the axis unit, as text. Keep it inside the rows: a range that needs a row
+  the table lacks is refused, with a message such as "the table
+  example-hfa.json has "male" rows 60 to 72, but its "valid" range needs rows
+  60 to 80 (a row is 1/1 months)". `convert.php` prints a range the rows cover;
+  narrow it if the source says the reference holds for less.
+- **`adjust`** is `none` for every reference except WHO's own weight, BMI, arm
+  circumference and skinfold tables, which WHO reads beyond ±3 SD with its
+  restricted method (`who-restricted`).
+- **Several references in one folder** are entries of one `index.json`. Two
+  entries may share one table file with a different `valid` or `lookup`.
+- **`pageTables`**, at the top of the folder's `index.json`, sets how many
+  tables one page carries (0 to 50, default 4).
+
+#### Tables of other shapes
+
+- **CDC 2000.** Its rows sit on half months: the row at 24.5 covers ages from
+  24 up to 25 months. Convert with `--x-offset 0.5`, skip the extra
+  whole-month rows with `--min-x` and `--max-x`, and use `"lookup": "floor"`
+  with `"axisUnit": "months"`. `data/references/README.md` gives the commands
+  for the infant and the 2 to 20 year tables.
+- **A table by year.** The rows must sit on a grid of days or months, so
+  write each year as twelve monthly rows: the same values twelve times with
+  `floor`, or values worked out between the years in the spreadsheet with
+  `linear`.
+- **One set of rows for both sexes.** Write every row twice, once with each
+  sex code. A rule still names a sex field; on a project without one, a calc
+  field whose equation is `1` serves.
+- **A log-normal reference** (a median and the SD of the log of the
+  measurement): L is 0, M the median and S that SD.
+- **A newer WHO table.** An entry with the id of a shipped reference, such as
+  `who-wfa`, replaces it for every project on the server.
+- **Curves that are not L, M and S.** Box-Cox t or power exponential curves
+  with four parameters, as some INTERGROWTH-21st standards use, cannot be
+  written as L, M and S, and the module does not read them.
+
+#### Changing a table later
+
+Convert the new table and copy its SHA-256 into the entry. A table that no
+longer matches the SHA-256 in `index.json` is not used: every rule naming it
+shows a configuration error until the two agree. To avoid that gap, write the
+new table under a new file name and change `file` and `sha256` in one edit of
+`index.json`. Values already saved are not judged again until the record is
+saved or a Validation scan runs.
+
+#### When a reference cannot be used
+
+A rule that names a reference the module cannot use shows a configuration
+error under the field and in the Validation scan, and the post-save audit
+skips it. The folder fails closed: an `index.json` the module cannot read
+stops every growth reference, the WHO ones included, so a mistake is seen
+instead of rules quietly judging against a table that was meant to be
+replaced.
+
+| The error says | What to do |
+| -------------- | ---------- |
+| `is not a growth reference this server has — it has …` | The id is wrong, or the folder is not set: compare the id with the `index.json` keys |
+| `the folder has no readable index.json.` | The path in the setting is wrong, or the web server cannot read the folder |
+| `index.json is not valid JSON.` | A comma or a quote is missing; check the file with a JSON validator |
+| `index.json must say "format": "uv-references-1".` | Add that line at the top |
+| `reference "…" needs "unit".` (or another key) | Fill in the key; that id stays out of use until then |
+| `the table … does not match the "sha256" in index.json` | The table changed after `convert.php` printed the SHA-256; copy the new value in |
+| `has "male" rows …, but its "valid" range needs rows …` | `valid` reaches past the rows; narrow it |
+| `its "hard" low limit … is out of reach` | The limit lies beyond what any measurement can score; move it inside the value the message gives |
+
+`php convert.php --check <id> --folder <folder> …` prints the same problems
+for the folder before a rule meets them.
 
 ### Semantics worth knowing
 

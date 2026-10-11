@@ -1056,9 +1056,11 @@ z-score beyond a point (a CDC-style BMI row with L -2 and S 0.13 gives none
 above 3.85), and the error says which value the limit must clear. To check
 against CDC 2000 or a national
 reference, your REDCap administrator adds its table in a folder named in the
-module's system settings (`data/references/README.md` in the module explains
-how, and `convert.php --check` prints a z-score from the new table to compare
-with the source). WHO's 0.7 cm correction for a length measured standing, or a
+module's system settings. Level 7 of `@UVRANGE` in the guide of examples
+walks through it with three worked tables (by month, by length, and from a
+mean and an SD per week of gestation), `data/references/README.md` in the
+module describes the formats, and `convert.php --check` prints a z-score from
+the new table to compare with the source. WHO's 0.7 cm correction for a length measured standing, or a
 height measured lying, is not applied by the module; a calc field can apply it,
 as the guide of examples shows.
 

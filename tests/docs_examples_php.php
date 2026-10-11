@@ -44,7 +44,9 @@
  *     blank, not-a-number, not-positive
  *
  * The inputs are read by GrowthReference::inputsFor, the reading the
- * post-save audit uses, against the references the module ships.
+ * post-save audit uses, against the references the module ships and the
+ * made-up ones in data/references/examples, read as a folder of extra
+ * references is ($examples below).
  *
  * The value runs through the same verdict the post-save audit uses. Every
  * expect line is also written to tests/docs_expect_fixture.json, which
@@ -67,6 +69,13 @@ $docs = [
     'docs/region-site-choices-example.txt',
 ];
 $fixturePath = __DIR__ . '/docs_expect_fixture.json';
+// The folder of extra references the guide's walkthrough of a reference of
+// your own builds; a problem in it fails the run before any doc is read.
+$examples = __DIR__ . '/../data/references/examples';
+foreach (GrowthReference::catalog($examples)['problems'] as $p) {
+    fwrite(STDERR, "FAIL data/references/examples: $p\n");
+    exit(1);
+}
 $write = in_array('--write', array_slice($argv, 1), true);
 
 $checks = 0;
@@ -147,8 +156,8 @@ $norm = function ($s) { return preg_replace('/\s+/', ' ', trim($s)); };
  * A growth rule's documented outcome (UniversalValidator::findingsRange):
  * [outcome text, fixture case]. $inputs maps field name => value.
  */
-$growth = function (array $frag, $value, array $inputs) use ($rangeSpec) {
-    $entry = GrowthReference::entry($frag['rangeReference']);
+$growth = function (array $frag, $value, array $inputs) use ($rangeSpec, $examples) {
+    $entry = GrowthReference::entry($frag['rangeReference'], $examples);
     if ($entry === null) return ['unknown reference ' . $frag['rangeReference'], null];
     $table = GrowthReference::table($entry);
     $scale = isset($frag['rangeMeasureScale']) ? $frag['rangeMeasureScale'] : null;

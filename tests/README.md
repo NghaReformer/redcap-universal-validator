@@ -420,7 +420,13 @@ with). The engine fills every key a rule lacks from them, `blockSave` "off"
 among them, so a test page without them can pass a rule that a real page
 would not block. `convert_php.php` runs `data/references/convert.php` on
 WHO- and CDC-shaped tables, checks that the index entry it prints is accepted
-as printed, and checks each refusal.
+as printed, and checks each refusal. It also runs each conversion and each
+`--check` that Level 7 of the `@UVRANGE` guide prints on the made-up tables in
+`data/references/examples/`: the guide must print the command verbatim, the
+conversion must rebuild the committed table byte for byte, and the check must
+print what the guide shows. `docs_examples_php.php` and `docs_examples_js.cjs`
+read that folder as a folder of extra references, so the guide's rules on
+`example-hfa`, `example-wfl` and `example-bwga` are tested like the WHO ones.
 
 ## `missing_codes_*` — Missing Data Codes
 

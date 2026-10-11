@@ -35,6 +35,11 @@ A value outside "Valid for" is not checked; the page tells staff why.
 
 Any reference published as L, M and S values per sex (WHO, CDC 2000, a
 national reference) can be added without changing the module's code.
+`docs/action_tag_validation_examples.md` (`@UVRANGE`, Level 7) walks through
+it with three worked tables, built from the files in `examples/` with every
+command's output shown: a table by month, a table by length every 0.5 cm, and
+one built from a mean and an SD per week of gestation. The numbers in
+`examples/` are made up; do not use them for real data.
 
 1. **Convert the table.** Save it as CSV or tab-separated text with a header
    row, then run `convert.php` from this folder:
@@ -160,7 +165,17 @@ with `"male":"1","female":"2"`.
 the mean and S as the SD divided by the mean; the LMS formula then gives
 (y − mean) / SD. For a log-normal reference, write L as 0, M as the median
 and S as the SD of the natural log of the measurement. Work the columns out
-in a spreadsheet, save it as CSV and convert it.
+in a spreadsheet, save it as CSV and convert it. Such a table has a floor:
+a measurement of 0 scores −mean / SD, so a low limit at or below the highest
+such floor is refused.
+
+**A reference given per year or per week.** The rows must sit on an even
+grid of the axis unit (days or months for an age, cm for a length or
+height), with no gap. Write a yearly table as twelve monthly rows per year
+and a weekly one as seven daily rows per week: the same values repeated, read
+with `floor`, or values worked out in between, read with `linear`.
+`examples/bwga-daily.csv` is the weekly `examples/bwga-weekly.csv` written per
+day.
 
 **Gestational age.** A reference by gestational age (birth weight for
 gestational age, for example) uses `"axis": "age"` and `"axisUnit": "days"`,

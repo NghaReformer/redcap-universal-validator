@@ -1,0 +1,41 @@
+{
+  "format": "uv-references-1",
+  "references": {
+    "example-hfa": {
+      "title": "Height-for-age, example national reference (5 to 6 years)",
+      "file": "example-hfa.json",
+      "sha256": "b58f4fda71110943cdc86c88774cbdcf62d8d0fc12cd6f917d0210befda86644",
+      "measure": "height",
+      "unit": "cm",
+      "axis": "age",
+      "axisUnit": "months",
+      "lookup": "linear",
+      "valid": {"min": "60", "max": "72"},
+      "adjust": "none"
+    },
+    "example-wfl": {
+      "title": "Weight-for-length, example national reference (45 to 50 cm)",
+      "file": "example-wfl.json",
+      "sha256": "0d717f0d88de4d226a2148f3e5c768cf4e5ee9cc9b89b1ec8e895fe834422da4",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "length",
+      "axisUnit": "cm",
+      "lookup": "linear",
+      "valid": {"min": "45", "max": "50"},
+      "adjust": "none"
+    },
+    "example-bwga": {
+      "title": "Birth weight for gestational age, example (37 to 42 weeks)",
+      "file": "example-bwga.json",
+      "sha256": "0593e3a7a87334761f5cf6b28c396f45f5afd8c465365bfa5a6fec9e8233d90e",
+      "measure": "weight",
+      "unit": "kg",
+      "axis": "age",
+      "axisUnit": "days",
+      "lookup": "floor",
+      "valid": {"min": "259", "below": "301"},
+      "adjust": "none"
+    }
+  }
+}

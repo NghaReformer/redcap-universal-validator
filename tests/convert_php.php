@@ -17,7 +17,10 @@
  *     column, missing options,
  *   - --check: a z-score from a shipped reference and from a folder of extra
  *     ones, and why there is none (an unknown id, x outside the reference, a
- *     bad --sex, --y or table).
+ *     bad --sex, --y or table),
+ *   - data/references/examples: every conversion and check the action tag
+ *     guide prints is printed there verbatim, rebuilds the committed table
+ *     byte for byte, and prints what the guide shows.
  *
  * Run:  php tests/convert_php.php
  */
@@ -208,6 +211,49 @@ namespace {
     foreach ($fails as $label => $c) {
         $r = run($c[0]);
         check('check refused: ' . $label . ' (got ' . json_encode($r['err']) . ')', $r['code'] === 1 && $r['out'] === '' && strpos($r['err'], $c[1]) !== false);
+    }
+
+    // ---- data/references/examples: the guide's walkthrough of a reference of your own.
+    // Each command the guide prints, run from data/references, must rebuild the
+    // committed table byte for byte (its SHA-256 is the one in examples/index.json),
+    // and each --check the guide prints must print what the guide shows.
+    $refs = realpath(__DIR__ . '/../data/references');
+    $guide = (string) file_get_contents(__DIR__ . '/../docs/action_tag_validation_examples.md');
+    $exIndex = json_decode((string) file_get_contents($refs . '/examples/index.json'), true);
+    $converts = [
+        'example-hfa'  => ['--in', 'examples/hfa-national.csv', '--out', 'examples/example-hfa.json', '--x', 'agemos'],
+        'example-wfl'  => ['--in', 'examples/wfl-national.csv', '--out', 'examples/example-wfl.json', '--x', 'Length', '--scale', '2'],
+        'example-bwga' => ['--in', 'examples/bwga-daily.csv', '--out', 'examples/example-bwga.json', '--x', 'ga_days'],
+    ];
+    foreach ($converts as $id => $args) {
+        $shown = 'php convert.php ' . implode(' ', $args);
+        check('examples: the guide prints the command for ' . $id, strpos($guide, $shown) !== false);
+        $tmp = $dir . DIRECTORY_SEPARATOR . $id . '.json';
+        $a = $args;
+        foreach ($a as $i => $v) {
+            if ($i > 0 && $a[$i - 1] === '--in') $a[$i] = $refs . DIRECTORY_SEPARATOR . $v;
+            if ($i > 0 && $a[$i - 1] === '--out') $a[$i] = $tmp;
+        }
+        $r = run($a);
+        $sha = is_file($tmp) ? hash_file('sha256', $tmp) : '';
+        check('examples: ' . $id . ' rebuilds as committed (got ' . json_encode($r['err']) . ')', $r['code'] === 0
+            && $sha === ($exIndex['references'][$id]['sha256'] ?? null)
+            && $sha === hash_file('sha256', $refs . '/examples/' . $exIndex['references'][$id]['file']));
+    }
+    $exChecks = [
+        ['example-hfa', 'male', '66', '115'],
+        ['example-wfl', 'female', '47.3', '2.5'],
+        ['example-bwga', 'male', '286', '2.2'],
+    ];
+    foreach ($exChecks as $c) {
+        $args = ['--check', $c[0], '--folder', 'examples', '--sex', $c[1], '--x', $c[2], '--y', $c[3]];
+        check('examples: the guide prints the check of ' . $c[0], strpos($guide, 'php convert.php ' . implode(' ', $args)) !== false);
+        $args[3] = $refs . DIRECTORY_SEPARATOR . 'examples';
+        $r = run($args);
+        $lines = array_filter(explode("\n", str_replace("\r", '', $r['out'])));
+        $shownAll = (bool) $lines;
+        foreach ($lines as $l) $shownAll = $shownAll && strpos($guide, $l) !== false;
+        check('examples: the check of ' . $c[0] . ' prints what the guide shows (got ' . json_encode($r) . ')', $r['code'] === 0 && $shownAll);
     }
 
     foreach (glob($dir . DIRECTORY_SEPARATOR . '*') ?: [] as $f) unlink($f);

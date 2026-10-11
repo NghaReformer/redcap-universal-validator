@@ -95,14 +95,18 @@ function rangeLogic() {
   return global.window.INSPIREUniversalValidator.rangeLogic;
 }
 
-// The shipped growth references, as the page receives them (entry + table).
+// The growth references the docs use, as the page receives them (entry +
+// table): the shipped ones, then the made-up examples of a folder of extra
+// references (data/references/examples), as tests/docs_examples_php.php reads them.
 function bundledRefs() {
-  const dir = path.join(__dirname, '..', 'data', 'references');
-  const idx = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));
+  const base = path.join(__dirname, '..', 'data', 'references');
   const out = {};
-  for (const id of Object.keys(idx.references)) {
-    const e = idx.references[id];
-    out[id] = Object.assign({}, e, JSON.parse(fs.readFileSync(path.join(dir, e.file), 'utf8')));
+  for (const dir of [base, path.join(base, 'examples')]) {
+    const idx = JSON.parse(fs.readFileSync(path.join(dir, 'index.json'), 'utf8'));
+    for (const id of Object.keys(idx.references)) {
+      const e = idx.references[id];
+      out[id] = Object.assign({}, e, JSON.parse(fs.readFileSync(path.join(dir, e.file), 'utf8')));
+    }
   }
   return out;
 }

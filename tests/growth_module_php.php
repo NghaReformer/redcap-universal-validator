@@ -961,9 +961,11 @@ namespace {
         (ruleFor($p, 'muac_p')['rangePlausibleText'] ?? null) === '5 to 30 cm');
 
     // ---- 5c) the docs: reference ids and the worked example --------------------------------------
-    // Every reference id a document names is one the module ships; "who-nope" is
-    // the refused example's unknown id, and "cdc-wfa" the guide's reference of your own. (JSON in config.json escapes its quotes,
-    // the testbed CSV doubles them.)
+    // Every reference id a document names is one the module ships or one of the
+    // made-up examples in data/references/examples (the guide's Level 7, read as
+    // a folder of extra references); "who-nope" is the refused example's unknown
+    // id, and "cdc-wfa" the guide's reference of your own. (JSON in config.json
+    // escapes its quotes, the testbed CSV doubles them.)
     $named = [];
     foreach (['docs/action_tag_validation_examples.md', 'README.md', 'docs/USER_GUIDE.md', 'site/content/uvrange.html',
               'config.json', 'docs/testbed/uvrange_growth_test_fields.csv', 'docs/testbed/RANGE_LIVE_ACCEPTANCE.md'] as $doc) {
@@ -971,7 +973,8 @@ namespace {
         preg_match_all('/"reference"\s*:\s*"([^"]*)"/', $text, $mm);
         foreach ($mm[1] as $id) $named[$id][] = $doc;
     }
-    $unknown = array_diff(array_keys($named), array_keys(GrowthReference::catalog()['references']), ['who-nope', 'cdc-wfa']);
+    $unknown = array_diff(array_keys($named), array_keys(GrowthReference::catalog(__DIR__ . '/../data/references/examples')['references']),
+        ['who-nope', 'cdc-wfa']);
     check('docs: every reference id named is shipped (unknown: ' . json_encode(array_values($unknown)) . ')',
         count($named) >= 5 && !$unknown);
     // The Level 5 example: 6.6 kg for a boy of exactly one year.
