@@ -2330,15 +2330,58 @@ function QRID_growthValueAt(z, lms, restricted){
   else y = sd(z);
   return (isFinite(y) && y > 0) ? y : null;
 }
-/* y in whole units of 10^-decimals, rounded inward: up for a low bound, down
-   for a high one. Null beyond QRID_GROWTH_MAX_BOUND_UNITS. Twin of
-   GrowthReference::boundUnits. */
-var QRID_GROWTH_BOUND_SLACK = 1e-12, QRID_GROWTH_MAX_BOUND_UNITS = 1e15;
-function QRID_growthBoundUnits(y, decimals, up){
-  var n = y * Math.pow(10, decimals);
-  if(!isFinite(n) || Math.abs(n) > QRID_GROWTH_MAX_BOUND_UNITS) return null;
-  var slack = QRID_GROWTH_BOUND_SLACK * Math.max(1, Math.abs(n));
-  return (up ? Math.ceil(n - slack) : Math.floor(n + slack)) + 0;   /* "+ 0": no -0 */
+/* The bound of one limit as a count of units of 10^-decimals of the measured
+   field's unit: the smallest measurement the verdict passes for a low limit,
+   the largest for a high one, or null. A measurement passes when its text,
+   read as a typed value is (QRID_growthMeasure, times scale), scores a
+   two-decimal z-score inside the limit, so a value at the bound passes and
+   one unit beyond it does not. Found by halving between two measurements
+   that bracket the edge. Twin of GrowthReference::bound. */
+var QRID_GROWTH_MAX_BOUND_UNITS = 1e15, QRID_GROWTH_BOUND_BRACKETS = [0.02, 0.01, 0.006];
+function QRID_growthBound(ref, sex, x, lim, decimals, low, scale){
+  var lms = QRID_growthLms(ref, sex, x);
+  if(lms === null) return null;
+  var restricted = ref.adjust === "who-restricted";
+  var f = (scale === null || scale === undefined) ? 1 : parseFloat(scale);
+  lim = String(lim);
+  function passes(k){
+    if(k < 1) return false;     /* a measurement at or below 0 is none */
+    var m = QRID_growthMeasure(QRID_growthUnitsText(k, decimals), false, scale);
+    if(m.state !== "ok") return false;
+    var z = QRID_growthZRaw(m.y, lms, restricted);
+    if(z === null) z = m.y > lms[1] ? QRID_GROWTH_MAX_Z_TEXT : -QRID_GROWTH_MAX_Z_TEXT;
+    var c = QRID_whenDecCmp(QRID_growthZText(z), lim);
+    return low ? c >= 0 : c <= 0;
+  }
+  function units(z){
+    var v = QRID_growthValueAt(z, lms, restricted);
+    if(v === null) return null;
+    var n = v / f * Math.pow(10, decimals);
+    return (isFinite(n) && n <= QRID_GROWTH_MAX_BOUND_UNITS) ? n : null;
+  }
+  var inside = null, outside = null, b;
+  for(b = 0; b < QRID_GROWTH_BOUND_BRACKETS.length; b++){
+    var dz = QRID_GROWTH_BOUND_BRACKETS[b];
+    if(inside === null) inside = units(parseFloat(lim) + (low ? dz : -dz));
+    if(outside === null) outside = units(parseFloat(lim) + (low ? -dz : dz));
+  }
+  var pin, pout;
+  if(low){
+    if(inside === null) return null;
+    pin = Math.ceil(inside) + 1;
+    pout = outside === null ? 0 : Math.max(0, Math.floor(outside) - 1);
+  } else {
+    if(outside === null) return null;
+    pout = Math.ceil(outside) + 1;
+    pin = inside === null ? 1 : Math.max(1, Math.floor(inside) - 1);
+  }
+  if(Math.max(pin, pout) > QRID_GROWTH_MAX_BOUND_UNITS || !passes(pin) || passes(pout)) return null;
+  while(Math.abs(pin - pout) > 1){
+    var mid = Math.floor((pin + pout) / 2);
+    if(passes(mid)) pin = mid;
+    else pout = mid;
+  }
+  return pin;
 }
 /* units of 10^-decimals as text with all its decimals: (77, 1) is "7.7". */
 function QRID_growthUnitsText(units, decimals){
@@ -2350,10 +2393,14 @@ function QRID_growthUnitsText(units, decimals){
 /* A number as text with the decimal mark of the field it is written to. */
 function QRID_growthMarkText(text, comma){ return comma ? String(text).replace(/\./g, ",") : String(text); }
 /* What a rule that returns values writes for one child: { z, lower, upper,
-   range }, each text or null (nothing to write). limits is { lo, hi }, each a
-   z limit as text or null. Twin of GrowthReference::outputs. */
-function QRID_growthOutputs(ref, sex, x, y, limits, decimals, comma){
+   range }, each text or null (nothing to write). y is in the reference's
+   unit; the bounds are in the measured field's (divided by scale). limits is
+   { lo, hi }, each a z limit as text or null. The range names unit when
+   given, else the reference's unit when there is no scale, else none. Twin
+   of GrowthReference::outputs. */
+function QRID_growthOutputs(ref, sex, x, y, limits, decimals, comma, scale, unit){
   var out = { z: null, lower: null, upper: null, range: null };
+  if(scale === undefined) scale = null;
   if(y !== null && y !== undefined){
     var z = QRID_growthZScore(ref, sex, x, y);
     if(z.state === "ok") out.z = z.z;
@@ -2364,14 +2411,11 @@ function QRID_growthOutputs(ref, sex, x, y, limits, decimals, comma){
     var lim = limits ? limits[sides[i][0]] : null;
     if(lim === null || lim === undefined || lim === "") continue;
     want[sides[i][0]] = true;
-    var lms = QRID_growthLms(ref, sex, x);
-    var v = lms === null ? null : QRID_growthValueAt(parseFloat(lim), lms, ref.adjust === "who-restricted");
-    if(v === null) continue;
-    var k = QRID_growthBoundUnits(v, decimals, sides[i][2]);
+    var k = QRID_growthBound(ref, sex, x, lim, decimals, sides[i][2], scale);
     if(k !== null) out[sides[i][1]] = QRID_growthUnitsText(k, decimals);
   }
   if((want.lo || want.hi) && (!want.lo || out.lower !== null) && (!want.hi || out.upper !== null)){
-    var unit = " " + ref.unit;
+    unit = (typeof unit === "string" && unit !== "") ? " " + unit : (scale === null ? " " + ref.unit : "");
     if(want.lo && want.hi){
       if(QRID_whenDecCmp(out.lower, out.upper) <= 0){
         out.range = QRID_growthMarkText(out.lower, comma) + " to " + QRID_growthMarkText(out.upper, comma) + unit;
@@ -4416,6 +4460,10 @@ function QRIDRangeInit(QRID_CONFIG){
       || (DEFERRED && !ON_SAVE)) ? "off" : HARD;
     return { configError: configError, gate: GATE, watch: WATCH, growth: growth,
              returns: configError ? null : returns, returnLimits: retLimits, decimals: retDecimals, returnComma: retComma,
+             /* the unit "range" is written in: "unit" (allowed with a reference
+                only beside "measureScale"), else the reference's own when the
+                field holds that unit, else none (GrowthReference::outputs) */
+             returnUnit: (typeof cfg.rangeUnit === "string" && cfg.rangeUnit !== "") ? cfg.rangeUnit : null,
              blockSave: (cfg.rangeComputed === true || DEFERRED || cfg.extendedAdvisory === true) ? "off" : HARD,
              measureBlock: MEASURE_BLOCK,
              softBlock: SOFT, hardBlock: HARD,
@@ -4601,7 +4649,7 @@ function QRIDRangeInit(QRID_CONFIG){
       var lim = V.returnLimits === "hard" ? { lo: V.spec.hardLo, hi: V.spec.hardHi } : { lo: V.spec.softLo, hi: V.spec.softHi };
       o = QRID_growthOutputs(V.growth.ref, p.sex, p.x, m.state === "ok" ? m.y : null,
         { lo: lim.lo === undefined ? null : lim.lo, hi: lim.hi === undefined ? null : lim.hi },
-        V.decimals, V.returnComma.range === true);
+        V.decimals, V.returnComma.range === true, V.scale, V.returnUnit);
     }
     var out = {};
     for(var k in V.returns){
@@ -6812,7 +6860,7 @@ window.INSPIREUniversalValidator = {
   growthLogic: {                             /* @UVRANGE growth references, locked by tests/growth_js.cjs */
     axis: QRID_growthAxis, lms: QRID_growthLms, zRaw: QRID_growthZRaw, zText: QRID_growthZText,
     measure: QRID_growthMeasure, zScore: QRID_growthZScore, plausible: QRID_growthPlausible,
-    valueAt: QRID_growthValueAt, boundUnits: QRID_growthBoundUnits, unitsText: QRID_growthUnitsText,
+    valueAt: QRID_growthValueAt, bound: QRID_growthBound, unitsText: QRID_growthUnitsText,
     markText: QRID_growthMarkText, outputs: QRID_growthOutputs
   },
   singleInit: QRIDSingleInit,

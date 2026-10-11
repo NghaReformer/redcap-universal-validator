@@ -237,30 +237,31 @@ with the setup values (`ug_sex` = Male, `ug_dob` = 10-01-2025,
 
 ## Section J: returned values
 
-Fixture: [`uvrange_return_test_fields.csv`](uvrange_return_test_fields.csv), 17
+Fixture: [`uvrange_return_test_fields.csv`](uvrange_return_test_fields.csv), 21
 fields on one new instrument, `uv_growth_return`. It holds its own inputs
-(`ugr_sex`, `ugr_dob`, `ugr_visit`), three rules that return values
+(`ugr_sex`, `ugr_dob`, `ugr_visit`), four rules that return values
 (`ugr_weight` writes all four, `ugr_head` only the z-score and needs no
-limits, `ugr_height` writes the range from the hard limits with no decimals),
-their `@READONLY` target fields, and three broken rules (`ugr_bad_*`). Before
-this section was written, the annotations were run offline through the module
-against this dictionary, and every value below is what `GrowthReference`
-answers for the boy and girl of 365 days.
+limits, `ugr_height` writes the range from the hard limits with no decimals,
+`ugr_weight_g` reads grams with `"measureScale":0.001` and writes the range in
+grams), their `@READONLY` target fields, and four broken rules (`ugr_bad_*`).
+`tests/growth_return_module_php.php` loads this CSV as the data dictionary
+and checks the rule errors of J1 and the values of J2 and J3 for the boy of
+365 days; the girl's values are what `GrowthReference` answers for her.
 
 Setup:
 
-1. Append the 17 rows of the CSV, as in setup step 2. The diff must report one
-   new instrument and 17 new fields.
+1. Append the 21 rows of the CSV, as in setup step 2. The diff must report one
+   new instrument and 21 new fields.
 2. Designate `uv_growth_return` on `event_1_arm_1` (351).
 3. Open the form for XE-1, event 351. It is new and blank.
 
 | # | Action | Expect |
 |---|---|---|
-| J1 | Look at the form | `ugr_bad_notes` shows "a returned value goes into a Text field"; `ugr_bad_clash_a` and `ugr_bad_clash_b` each show "a field takes the value of one rule" and name the other. The other fields show no error |
-| J2 | `ugr_sex` = Male, `ugr_dob` = 10-01-2025, `ugr_visit` = 2026-01-10 | Without a weight: `ugr_low` 7.8, `ugr_high` 11.9, `ugr_range` "7.8 to 11.9 kg", `ugr_height_range` "64 to 87 cm"; `ugr_z` and `ugr_head_z` stay empty |
+| J1 | Look at the form | `ugr_bad_notes` shows "a returned value goes into a Text field"; `ugr_bad_clash_a` and `ugr_bad_clash_b` each show "a field takes the value of one rule" and name the other; `ugr_bad_chain` shows "it reads "[ugr_z]", which the rule on "ugr_weight" returns a value to". The other fields show no error |
+| J2 | `ugr_sex` = Male, `ugr_dob` = 10-01-2025, `ugr_visit` = 2026-01-10 | Without a weight: `ugr_low` 7.8, `ugr_high` 11.9, `ugr_range` "7.8 to 11.9 kg", `ugr_height_range` "64 to 87 cm", `ugr_range_g` "7737 to 11989 g"; `ugr_z` and `ugr_head_z` stay empty |
 | J3 | `ugr_weight` = 9.6, leave | `ugr_z` -0.04. The weight has no note |
 | J4 | `ugr_weight` = 7.5, leave | `ugr_z` -2.28 and the amber note "lower than usual". The note and the value agree. Bounds do not change |
-| J5 | `ugr_sex` = Female | Without touching the weight: `ugr_z` -1.46, `ugr_low` 7.1, `ugr_high` 11.5, `ugr_range` "7.1 to 11.5 kg", `ugr_height_range` "62 to 86 cm" |
+| J5 | `ugr_sex` = Female | Without touching the weight: `ugr_z` -1.46, `ugr_low` 7.1, `ugr_high` 11.5, `ugr_range` "7.1 to 11.5 kg", `ugr_height_range` "62 to 86 cm", `ugr_range_g` "7038 to 11513 g" |
 | J6 | Clear `ugr_dob` | Every returned field is emptied. Set `ugr_dob` = 10-01-2025 again and `ugr_sex` = Male |
 | J7 | `ugr_head` = 46, leave. Then 0 | `ugr_head_z` -0.05 with no note (the rule has no limits). Then red "A measurement must be above 0." and `ugr_head_z` empty |
 | J8 | Try to type in `ugr_z` | The field is read-only |
@@ -270,6 +271,8 @@ Setup:
 | J12 | Tick the project setting "@UVRANGE returned values". Import `ugr_weight` = 7.5 for XE-2 | The returned fields keep the values of J11: the save writes nothing. Untick the setting |
 | J13 | Open XE-2 | The page fills the fields as it opens (z -1.46 for a girl of 7.5 kg). Leave the page without saving and record whether REDCap warns about unsaved changes: it should not, because the first fill sends no change event. Open it again and Save: the fields are written |
 | J14 | Enable `uv_growth_return` as a survey. For XE-3 fill sex, date of birth, date of the measurement and weight, then submit | The fields fill as you go, and the saved record holds the same values. Module log: no `uvalidate-audit-error` for the write |
+| J15 | Open XE-1 again (a boy). `ugr_weight_g` = 7737, leave. Then 7736 | At 7737 no note shows, since 7737 g is the lowest weight the check accepts. At 7736 the amber note "lower than usual" shows. `ugr_range_g` stays "7737 to 11989 g" |
+| J16 | `ugr_weight_g` = 11989, leave. Then 11990 | At 11989 no note shows. At 11990 the amber note "higher than usual" shows |
 
 ---
 

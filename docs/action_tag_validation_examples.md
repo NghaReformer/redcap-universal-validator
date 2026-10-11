@@ -2651,12 +2651,23 @@ For a boy of exactly one year weighing 9.6 kg:
 | Field | Written | What it is |
 | ----- | ------- | ---------- |
 | `wfa_z` | `-0.04` | the z-score of the measurement |
-| `wfa_low` | `7.8` | the weight at z -2, the low `soft` limit, rounded up to one decimal |
-| `wfa_high` | `11.9` | the weight at z 2, the high `soft` limit, rounded down |
+| `wfa_low` | `7.8` | the lightest weight, to one decimal, whose z-score passes -2, the low `soft` limit |
+| `wfa_high` | `11.9` | the heaviest weight, to one decimal, whose z-score passes 2, the high `soft` limit |
 | `wfa_range` | `7.8 to 11.9 kg` | the two as text, with the reference's unit |
 
 For a girl of the same age the range is `7.1 to 11.5 kg`, and with the weight
 still blank the bounds are written and `wfa_z` stays empty.
+
+A weight typed in grams is read against the table in kg with `measureScale`,
+and the bounds are then in grams. `unit` names the unit `range` is written in:
+
+```text
+# on: weight_g, the weight in grams against the WHO table in kg
+@UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"dob":"[dob]","at":"[visit_date]"},"soft":[-2,2],"hard":[-5,5],"measureScale":0.001,"unit":"g","return":{"range":"[wfa_range_g]"}}
+```
+
+For the same boy weighing 9600 g, `wfa_range_g` reads `7737 to 11989 g`.
+Without `unit` it reads `7737 to 11989`: the table's kg would be wrong.
 
 | Key | Value | Default |
 | --- | ----- | ------- |
@@ -2664,9 +2675,12 @@ still blank the bounds are written and `wfa_z` stays empty.
 | `returnLimits` | `soft` or `hard`: the limits `lower`, `upper` and `range` are made from | `soft` |
 | `decimals` | 0 to 6: the decimals of `lower` and `upper` | the measured field's: `number_1dp` 1, `integer` 0, `number_2dp` 2, otherwise 1 |
 
-- **Rounded inward.** `lower` is rounded up and `upper` down, so a measurement
-  shown inside the range is inside the limits. When the band is narrower than
-  one unit of the last decimal, the two bounds cross and `range` stays empty.
+- **The last value that passes.** `lower` is the smallest and `upper` the
+  largest measurement, written with `decimals`, whose two-decimal z-score the
+  rule accepts. A measurement shown inside the range passes, and one unit of
+  the last decimal beyond a bound is flagged, for a limit with three decimals
+  too. When the band is narrower than one unit of the last decimal, the two
+  bounds cross and `range` stays empty.
   With only a low limit `range` reads `at least 7.8 kg`, with only a high one
   `at most 11.9 kg`. A limit the table cannot reach (a z-score no measurement
   has) leaves its bound and the range empty.
@@ -2678,32 +2692,47 @@ still blank the bounds are written and `wfa_z` stays empty.
   or the record ID, and no two values to one field. A `range` field takes no
   validation; `z`, `lower` and `upper` take none or number validation with
   room for the decimals (two for `z`, `decimals` for a bound; `number_2dp` is
-  too short for `decimals` 3). A field with comma-decimal validation gets a
-  comma, and a field without validation takes the mark of the measured field.
-  Two rules cannot return to one field: both are refused and name each other.
+  too short for `decimals` 3), and a bound with `"decimals":0` may go into an
+  integer field. A field with comma-decimal validation gets a comma, and a
+  field without validation takes the mark of the measured field. Two rules
+  cannot return to one field, and both are refused, naming each other. Two
+  references on one field are judged at the same time, so each fills the
+  fields of its own branches and they cannot share one.
+- **No chains.** A rule that returns values cannot read a returned field, its
+  own or another rule's, in its `when`, an input or its measurement. The save
+  works out every returned value from the record as it was saved, so a chain
+  would always lag one save behind. The rule that reads is refused and names
+  the rule that writes.
 - **When the values are written.** On the page: as the page opens, and again
   after the measurement or an input changes, whatever the verdict (a weight
   outside the limits still gets its z-score). The first fill does not mark the
   form as changed. After a change REDCap hears an input and a change event, so
   its calculations and branching logic that read the field run. On save: the
   post-save audit works out the same values from the saved record and writes
-  those that differ, in one save, for a form, a survey, an import and the API.
-  The write appears in the record's log as an update by the user who saved. It
-  is not audited again. A rule that reads a returned field (an `@UVREQUIRED`
-  or `@UVRANGE` on the z-score field) is judged after the fill in the same
-  save, since rules that return values go first.
+  those that differ, for a form, a survey, an import and the API, with one
+  save per entry (event and instance), the entry being saved first. An entry
+  REDCap refuses to write (a locked form) is logged, and the others are still
+  written. The write appears in the record's log as an update by the user who
+  saved. It is not audited again. The rules that return values are checked
+  first, those with event or instance references too, and their values are
+  written before any other rule is checked, so a rule that reads a returned
+  field (an `@UVREQUIRED` on the z-score field) checks the new value. A rule
+  with an input in another event is checked in every visit it applies to, so
+  saving the enrolment form after correcting the date of birth refills the
+  fields of every visit.
 - **The rule owns its fields.** When there is nothing to report the fields are
-  emptied: a blank sex, an age or length outside the reference, a `when` that
-  is false, a branch that does not apply. A branched rule owns the fields of
+  emptied: a blank sex, an age or length outside the reference, a saved date
+  that is not a date, a `when` that is false, a branch that does not apply. A branched rule owns the fields of
   every branch, so the active branch fills its own and empties the others'. A
   field that is blank is left alone, and a field holding the same number
   spelled another way (`7.80` for `7.8`) is not rewritten. Mark the fields
   `@READONLY`: a person who types there is overwritten at the next judgement.
 - **What is left as it is.** When an input is on a form the page may not show,
   on a survey page that does not carry the field, or past the page's table
-  cap, the page does not write and the save does. A date the server cannot
-  read is logged as a rule problem and the fields keep their value. A form
-  that has no data yet in that event or instance is filled once it has.
+  cap, the page does not write and the save does. A reference the page or
+  the save cannot check keeps its fields, while another reference on the same
+  field still fills its own. A form that has no data yet in that event or
+  instance is filled once it has.
 - **Turning the write on save off.** The project setting "@UVRANGE returned
   values" (`range-return-no-save`) keeps the page fill and writes nothing when
   a record is saved. The Validation scan never writes.
@@ -2858,7 +2887,8 @@ These are refused when the rule is saved:
 # refused: "decimals" must be a whole number from 0 to 6
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"return":{"z":"[wfa_z]"},"decimals":9}
 
-# A reference sets the unit itself.
+# A reference sets the unit itself. "unit" goes with a reference only
+# beside "measureScale", to name the unit the field holds.
 # refused: "unit" does not apply with a "reference"
 @UVRANGE={"reference":"who-wfa","sex":"[sex]","male":"1","female":"2","age":{"days":"[age_days]"},"hard":[-5,5],"unit":"kg"}
 

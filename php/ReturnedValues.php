@@ -11,9 +11,11 @@
  *     declare "returns" in php/modes.json, and carries the answer on its result
  *     as 'returns' (field => text; "" empties the field; a field that is not
  *     named keeps what it holds);
- *   - auditRule() queues each answer (queueReturns), and redcap_save_record
- *     writes the queue once (applyReturns), only where a field differs, so a
- *     save the browser already filled writes nothing;
+ *   - auditRule() queues each answer (queueReturns). redcap_save_record
+ *     judges the rules that return values first and writes the queue
+ *     (applyReturns) before it judges the others, one save per record
+ *     context and only where a field differs, so a save the browser already
+ *     filled writes nothing;
  *   - the write is itself a save, and redcap_save_record skips it
  *     (self::$returnWriting) rather than audit its own fill a second time.
  *
@@ -62,7 +64,8 @@ trait ReturnedValues
         $codes = (isset($meta['missingCodes']) && is_array($meta['missingCodes'])) ? $meta['missingCodes'] : [];
         $raw = (isset($values[$field]) && !is_array($values[$field])) ? (string) $values[$field] : '';
         if ($codes && self::isMissingCode($raw, $codes)) $raw = '';
-        $m = GrowthReference::measure($raw, !empty($rule['decimalComma']));
+        $scale = isset($rule['rangeMeasureScale']) ? (string) $rule['rangeMeasureScale'] : null;
+        $m = GrowthReference::measure($raw, !empty($rule['decimalComma']), $scale);
         $g = $this->growthInputs($rule, $values, $resolution, $project_id);
         if (isset($g['problem'])) return ['values' => null, 'problem' => $g['problem'], 'field' => $field];
         if ($g['state'] !== 'ok') {
@@ -76,7 +79,8 @@ trait ReturnedValues
         $decimals = isset($rule['rangeDecimals']) ? (int) $rule['rangeDecimals'] : 1;
         $marks = (isset($rule['rangeReturnComma']) && is_array($rule['rangeReturnComma'])) ? $rule['rangeReturnComma'] : [];
         $o = GrowthReference::outputs($g['entry'], $g['table'], $g['sex'], $g['x'], $m['state'] === 'ok' ? $m['y'] : null,
-            $limits, $decimals, !empty($marks['range']));
+            $limits, $decimals, !empty($marks['range']), $scale,
+            (isset($rule['rangeUnit']) && is_string($rule['rangeUnit']) && $rule['rangeUnit'] !== '') ? $rule['rangeUnit'] : null);
         $out = [];
         foreach ($targets as $k => $t) {
             $text = (isset($o[$k]) && $o[$k] !== null) ? (string) $o[$k] : '';
@@ -89,13 +93,16 @@ trait ReturnedValues
 
     /**
      * ruleFindings' result with what the rule returns added: 'returns' (field
-     * => text), and a rule problem as an 'unconfigurable' entry unless the
-     * evaluator reported the same one for the measurement.
+     * => text, with every other field the rule owns emptied, see
+     * ownedReturns), and a rule problem as an 'unconfigurable' entry unless
+     * the evaluator reported the same one for the measurement.
      */
-    private function withReturned(array $out, $ret)
+    private function withReturned(array $out, $ret, array $rule, array $meta)
     {
         if ($ret === null) return $out;
-        if (isset($ret['values']) && is_array($ret['values'])) $out['returns'] = $ret['values'];
+        if (isset($ret['values']) && is_array($ret['values'])) {
+            $out['returns'] = array_merge(self::ownedReturns($rule, $meta), $ret['values']);
+        }
         if (!empty($ret['problem'])) {
             foreach ($out['unconfigurable'] as $u) {
                 if ($u['why'] === $ret['problem']) return $out;
@@ -106,16 +113,23 @@ trait ReturnedValues
     }
 
     /**
-     * The rule is inert here (its "when" is false, or no branch applies) and
-     * returns nothing: the fields it owns are emptied. Only an audit that asks
-     * for returns ($meta['returns']) gets them.
+     * Every field the rule returns to, emptied (field => ""), less the fields
+     * of the branch groups that keep what they hold: those $held names and
+     * those $meta['returnKeep'] names. The rule is $meta['returnOwner'] when
+     * given: the event/instance audit judges a copy of the rule that carries
+     * only the branches it picked (TemporalIntegration::auditTemporalRules),
+     * and a branch it did not pick still owns its fields.
      */
-    private function withClearedReturns(array $out, array $rule, array $meta)
+    private static function ownedReturns(array $rule, array $meta, array $held = [])
     {
-        if (empty($meta['returns'])) return $out;
-        $fields = ModeRegistry::returnFields($rule);
-        if ($fields) $out['returns'] = array_fill_keys($fields, '');
-        return $out;
+        $owner = (isset($meta['returnOwner']) && is_array($meta['returnOwner'])) ? $meta['returnOwner'] : $rule;
+        $fields = array_fill_keys(ModeRegistry::returnFields($owner), '');
+        if (!$fields) return [];
+        $keep = array_merge((isset($meta['returnKeep']) && is_array($meta['returnKeep'])) ? $meta['returnKeep'] : [], $held);
+        foreach ($keep as $g) {
+            foreach (ModeRegistry::returnFields($owner, (string) $g) as $f) unset($fields[$f]);
+        }
+        return $fields;
     }
 
     /** Queue what one audited context returned (auditRule). */
@@ -140,17 +154,24 @@ trait ReturnedValues
     }
 
     /**
-     * Write the queued values where they differ from what the record holds,
-     * in one save. Returns whether anything was written (the caller then reads
-     * the record again). Never throws: a failure is logged and the audit goes
-     * on. The project setting "range-return-no-save" turns the write off.
+     * Write the queued values where they differ from what the record holds.
+     * Returns whether anything was written (the caller then reads the record
+     * again). Never throws: a failure is logged and the audit goes on. The
+     * project setting "range-return-no-save" turns the write off.
      *
      * Where a value goes is read from the record itself (the same contexts the
      * audit uses): the event's own row, the instance of a repeating form, or
      * the instance of a repeating event. A form that has no row yet in that
      * context is left until it has data.
+     *
+     * Each context is written by a save of its own, the saved one ($event,
+     * $instance) first. A rule with event or instance references is audited
+     * in every context of the record, so one save can refill the returned
+     * fields of other visits too (an input they read changed). A context that
+     * cannot be written (a locked form, a visit outside the user's rights) is
+     * logged on its own and the others are still written.
      */
-    private function applyReturns($logMode, $pid, $record, $instrument = null)
+    private function applyReturns($logMode, $pid, $record, $instrument = null, $event = null, $instance = null)
     {
         $queue = $this->returnQueue;
         $this->returnQueue = [];
@@ -180,7 +201,7 @@ trait ReturnedValues
             ]);
             if (!is_array($whole) || !isset($whole[$record]) || !is_array($whole[$record])) return false;
             $contexts = self::recordContexts($whole[$record]);
-            $data = [];
+            $writes = [];   // "event|repeatKey|instance" => ['event_id', 'instance', 'data']
             foreach ($queue as $q) {
                 $byForm = [];
                 foreach ($q['values'] as $f => $text) {
@@ -190,37 +211,58 @@ trait ReturnedValues
                 foreach ($byForm as $form => $vals) {
                     $ctx = $this->returnContext($contexts, $form, $q['event'], $q['instance'], $pid);
                     if ($ctx === null) continue;
+                    $key = (string) $ctx['event_id'] . '|' . (string) $ctx['repeatKey'] . '|' . (int) $ctx['instance'];
                     foreach ($vals as $f => $text) {
                         $cur = (isset($ctx['values'][$f]) && !is_array($ctx['values'][$f])) ? (string) $ctx['values'][$f] : '';
                         if ($cur === $text) continue;
                         if ($cur !== '' && $text !== '' && self::sameReturnedNumber($cur, $text)) continue;
+                        if (!isset($writes[$key])) {
+                            $writes[$key] = ['event_id' => $ctx['event_id'], 'instance' => (int) $ctx['instance'], 'data' => []];
+                        }
                         if ($ctx['repeatKey'] === null) {
-                            $data[$record][$ctx['event_id']][$f] = $text;
+                            $writes[$key]['data'][$record][$ctx['event_id']][$f] = $text;
                         } else {
-                            $data[$record]['repeat_instances'][$ctx['event_id']][$ctx['repeatKey']][$ctx['instance']][$f] = $text;
+                            $writes[$key]['data'][$record]['repeat_instances'][$ctx['event_id']][$ctx['repeatKey']][$ctx['instance']][$f] = $text;
                         }
                     }
                 }
             }
-            if (!$data) return false;
-            self::$returnWriting = true;
-            try {
-                $res = \REDCap::saveData($pid, 'array', $data, 'overwrite');
-            } finally {
-                self::$returnWriting = false;
+            if (!$writes) return false;
+            // The saved context first, the others in the order the record holds them.
+            $first = [];
+            foreach ($writes as $key => $w) {
+                if (($event === null || (string) $w['event_id'] === (string) $event) && $w['instance'] === (int) ($instance ?: 1)) {
+                    $first[$key] = $w;
+                }
             }
-            if (is_array($res) && !empty($res['errors'])) {
-                $msg = $res['errors'];
-                if (is_array($msg)) {
-                    $flat = [];
-                    array_walk_recursive($msg, function ($v) use (&$flat) { $flat[] = (string) $v; });
-                    $msg = implode('; ', $flat);
+            $wrote = false;
+            foreach ($first + $writes as $w) {
+                $why = null;
+                self::$returnWriting = true;
+                try {
+                    $res = \REDCap::saveData($pid, 'array', $w['data'], 'overwrite');
+                    if (is_array($res) && !empty($res['errors'])) {
+                        $why = $res['errors'];
+                        if (is_array($why)) {
+                            $flat = [];
+                            array_walk_recursive($why, function ($v) use (&$flat) { $flat[] = (string) $v; });
+                            $why = implode('; ', $flat);
+                        }
+                    }
+                } catch (\Throwable $e) {
+                    $why = $e->getMessage();
+                } finally {
+                    self::$returnWriting = false;
+                }
+                if ($why === null) {
+                    $wrote = true;
+                    continue;
                 }
                 $this->logAuditError($logMode, $pid, $record, $instrument,
-                    new \RuntimeException('the returned values could not be saved: ' . (string) $msg), 'return values');
-                return false;
+                    new \RuntimeException('the returned values could not be saved in event ' . (string) $w['event_id']
+                        . ', instance ' . $w['instance'] . ': ' . (string) $why), 'return values');
             }
-            return true;
+            return $wrote;
         } catch (\Throwable $e) {
             self::$returnWriting = false;
             $this->logAuditError($logMode, $pid, $record, $instrument, $e, 'return values');

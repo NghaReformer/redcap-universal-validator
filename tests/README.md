@@ -351,20 +351,29 @@ pass (`limitProblem`: the floor or ceiling of each row, checked against
   (folded inputs, tables in use, the cap), the audit and the scan.
 - `growth_return_dom_js.cjs` and `growth_return_module_php.php` cover what a
   rule with `"return"` writes into fields. The values themselves are pinned by
-  the `outputs`, `valueAt`, `boundUnits` and `unitsText` sections of
-  `growth_fixture.json`, through both twins. The DOM suite checks the fill on
-  opening (no change event, so the form is not marked as changed), the refill
-  after a judgement (an `input` and a `change` event), a blank input emptying
-  the fields, `returnLimits`, `decimals` and each field's decimal mark, the
-  fields of a branched rule, a rule the page cannot judge leaving its fields
-  alone, and REDCap's `calculate` and `doBranching` being told. The module
-  suite checks the one `saveData` call per save and that it writes only
-  differing fields, the number spelled another way, clearing, a problem kept
-  and logged once, the order (rules that return values go first, so a rule
-  that reads a returned field sees it), the project setting that turns the
-  write off, the scan reading only, repeating forms, a form saved for an input
-  on another form, an input in another event, and the dictionary hook's
-  refusals.
+  the `outputs`, `valueAt`, `bound` and `unitsText` sections of
+  `growth_fixture.json`, through both twins; `growth_php.php` and
+  `growth_js.cjs` also check on random rows that each bound is the edge the
+  verdict draws (the bound passes, one unit beyond it does not). The DOM suite
+  checks the fill on opening (no change event, so the form is not marked as
+  changed), the refill after a judgement (an `input` and a `change` event), a
+  blank input emptying the fields, `returnLimits`, `decimals` and each field's
+  decimal mark, the fields of a branched rule, two references on one field
+  each filling their own, `measureScale` with and without `unit`, a rule the
+  page cannot judge leaving its fields alone, and REDCap's `calculate` and
+  `doBranching` being told. The module suite checks that a save writes only
+  differing fields, one `saveData` call per record context with the saved one
+  first and a refused or failing context logged without stopping the others,
+  the number spelled another way, clearing, a problem kept and logged once,
+  the two phases (rules that return values are judged and written first, on
+  the event/instance path too, so a rule that reads a returned field sees it),
+  the fields a branch or a reference owns on the event/instance path, the
+  project setting that turns the write off, the scan reading only, repeating
+  forms, a form saved for an input on another form, an input in another event,
+  `measureScale` and `unit`, an integer bound field, the dictionary hook's
+  refusals (chains and two references sharing a field included), and the live
+  fixture `docs/testbed/uvrange_return_test_fields.csv` loaded as the data
+  dictionary.
 
 To refresh `who_golden.json`, see the header of `tools/who_golden.R`; the
 same seed gives the same file byte for byte.

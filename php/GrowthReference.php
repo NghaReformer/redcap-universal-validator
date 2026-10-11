@@ -42,10 +42,15 @@ final class GrowthReference
     const BOUND_LIMIT = 21;
     /** The most decimals a returned bound may be written with. */
     const MAX_DECIMALS = 6;
-    /** A bound within this (relative, in units of its last decimal) of a whole unit counts as on it. */
-    const BOUND_SLACK = 1e-12;
     /** A bound counted in more units than this is not written (both runtimes hold it exactly far below 2^53). */
     const MAX_BOUND_UNITS = 1e15;
+    /**
+     * How far from its limit, in z, a bound is looked for. A two-decimal
+     * z-score moves the edge of a limit by less than 0.01; the first offset
+     * that a measurement scores brackets it, the smaller ones serve a limit
+     * near a row's ceiling or floor.
+     */
+    const BOUND_BRACKETS = [0.02, 0.01, 0.006];
 
     const AXES = ['age' => ['days', 'months'], 'length' => ['cm'], 'height' => ['cm']];
     const LOOKUPS = ['round', 'floor', 'linear'];
@@ -764,30 +769,64 @@ final class GrowthReference
     }
 
     /**
-     * The measurement that scores $z for 'male' or 'female' at axis position
-     * $x, or null when the table has no row there or none scores it.
+     * The bound of one limit, as a count of units of 10^-$decimals of the
+     * measured field's own unit: the smallest measurement that the verdict
+     * passes for a low limit ($low), the largest for a high one; null when
+     * there is none to find. A measurement passes when its text, read the way
+     * a typed value is (measure(), times $scale), scores a two-decimal z-score
+     * (zText) inside the limit. So a value at the bound passes and one unit
+     * beyond it does not, whatever decimals the limit has: the edge of a
+     * limit is where the rounded z-score crosses it, not where the exact one
+     * does. Found by halving between two measurements that bracket the edge
+     * (BOUND_BRACKETS). Twin: QRID_growthBound.
      */
-    public static function valueFor(array $entry, array $table, $sex, $x, $z)
+    public static function bound(array $entry, array $table, $sex, $x, $lim, $decimals, $low, $scale = null)
     {
         $lms = self::lms($entry, $table, $sex, $x);
         if ($lms === null) return null;
-        return self::valueAt($z, $lms, $entry['adjust'] === 'who-restricted');
-    }
-
-    /**
-     * $y in whole units of 10^-$decimals, rounded INWARD: up for a low bound
-     * ($up), down for a high one, so that every value inside a written range
-     * passes the limit. A value within BOUND_SLACK of a unit counts as on it,
-     * because the arithmetic that produced it is not exact. Null when the
-     * count is beyond what both runtimes hold exactly.
-     */
-    public static function boundUnits($y, $decimals, $up)
-    {
-        $n = (float) $y * pow(10, (int) $decimals);
-        if (!is_finite($n) || abs($n) > self::MAX_BOUND_UNITS) return null;
-        $slack = self::BOUND_SLACK * max(1.0, abs($n));
-        $k = $up ? ceil($n - $slack) : floor($n + $slack);
-        return (int) $k;
+        $restricted = $entry['adjust'] === 'who-restricted';
+        $d = (int) $decimals;
+        $f = $scale === null ? 1.0 : (float) $scale;
+        $lim = (string) $lim;
+        $passes = function ($k) use ($lms, $restricted, $d, $scale, $lim, $low) {
+            if ($k < 1) return false;     // a measurement at or below 0 is none
+            $m = self::measure(self::unitsText($k, $d), false, $scale);
+            if ($m['state'] !== 'ok') return false;
+            $z = self::zRaw($m['y'], $lms, $restricted);
+            if ($z === null) $z = $m['y'] > $lms[1] ? self::MAX_Z_TEXT : -self::MAX_Z_TEXT;
+            $c = Logic::numCompare(self::zText($z), $lim);
+            return $low ? $c >= 0 : $c <= 0;
+        };
+        // the measurement scoring $z, in units, or null when none does or it is too many units
+        $units = function ($z) use ($lms, $restricted, $d, $f) {
+            $v = self::valueAt($z, $lms, $restricted);
+            if ($v === null) return null;
+            $n = $v / $f * pow(10, $d);
+            return (is_finite($n) && $n <= self::MAX_BOUND_UNITS) ? $n : null;
+        };
+        // inside: on the side of the limit that passes; outside: the side that does not
+        $inside = null;
+        $outside = null;
+        foreach (self::BOUND_BRACKETS as $dz) {
+            if ($inside === null) $inside = $units((float) $lim + ($low ? $dz : -$dz));
+            if ($outside === null) $outside = $units((float) $lim + ($low ? -$dz : $dz));
+        }
+        if ($low) {
+            if ($inside === null) return null;
+            $in = (int) ceil($inside) + 1;
+            $out = $outside === null ? 0 : max(0, (int) floor($outside) - 1);
+        } else {
+            if ($outside === null) return null;
+            $out = (int) ceil($outside) + 1;
+            $in = $inside === null ? 1 : max(1, (int) floor($inside) - 1);
+        }
+        if (max($in, $out) > self::MAX_BOUND_UNITS || !$passes($in) || $passes($out)) return null;
+        while (abs($in - $out) > 1) {
+            $mid = intdiv($in + $out, 2);
+            if ($passes($mid)) $in = $mid;
+            else $out = $mid;
+        }
+        return $in;
     }
 
     /** $units of 10^-$decimals as text, with all its decimals: (77, 1) is "7.7", (120, 1) "12.0", (8, 0) "8". */
@@ -806,21 +845,27 @@ final class GrowthReference
      * same inputs the verdict reads:
      *   z      the z-score of the measurement $y (null while there is none),
      *          written the way the verdict reads it, to two decimals;
-     *   lower  the measurement at the low z limit, rounded up to $decimals;
-     *   upper  the measurement at the high z limit, rounded down to $decimals;
-     *   range  "7.7 to 12.0 kg", "at least 7.7 kg" or "at most 12.0 kg" (the
-     *          reference's unit; $comma writes a decimal comma).
-     * $limits is ['lo' => z limit as text or null, 'hi' => same]. Every key
-     * is null when there is nothing to write: no measurement, no such limit,
-     * or no measurement that scores it. "range" is also null when the two
-     * rounded bounds cross: a band narrower than one unit of the last
-     * decimal holds no value at that precision (lower and upper are still
-     * written, and say so). The numbers of z, lower and upper use a decimal
-     * point; markText() gives a field its own mark. Twin: QRID_growthOutputs.
+     *   lower  the smallest measurement, to $decimals, that the low z limit
+     *          passes (bound());
+     *   upper  the largest one that the high z limit passes;
+     *   range  "7.7 to 12.0 kg", "at least 7.7 kg" or "at most 12.0 kg"
+     *          ($comma writes a decimal comma).
+     * $y is the measurement in the reference's unit (measure() applied the
+     * rule's $scale). The bounds are in the measured field's own unit, so with
+     * a $scale they are the reference's values divided by it. The range names
+     * $unit when given (the rule's "unit", which only goes with a
+     * "measureScale"), else the reference's unit when there is no $scale, else
+     * no unit. $limits is ['lo' => z limit as text or null, 'hi' => same].
+     * Every key is null when there is nothing to write: no measurement, no
+     * such limit, or no measurement that scores it. "range" is also null when
+     * the two bounds cross: a band narrower than one unit of the last decimal
+     * holds no value at that precision (lower and upper are still written, and
+     * say so). The numbers of z, lower and upper use a decimal point;
+     * markText() gives a field its own mark. Twin: QRID_growthOutputs.
      *
      * @return array ['z' => ?string, 'lower' => ?string, 'upper' => ?string, 'range' => ?string]
      */
-    public static function outputs(array $entry, array $table, $sex, $x, $y, array $limits, $decimals, $comma = false)
+    public static function outputs(array $entry, array $table, $sex, $x, $y, array $limits, $decimals, $comma = false, $scale = null, $unit = null)
     {
         $out = ['z' => null, 'lower' => null, 'upper' => null, 'range' => null];
         if ($y !== null) {
@@ -832,13 +877,11 @@ final class GrowthReference
             $lim = isset($limits[$side]) ? $limits[$side] : null;
             if ($lim === null || $lim === '') continue;
             $want[$side] = true;
-            $v = self::valueFor($entry, $table, $sex, $x, (float) $lim);
-            if ($v === null) continue;
-            $k = self::boundUnits($v, $decimals, $spec[1]);
+            $k = self::bound($entry, $table, $sex, $x, $lim, $decimals, $spec[1], $scale);
             if ($k !== null) $out[$spec[0]] = self::unitsText($k, $decimals);
         }
         if (($want['lo'] || $want['hi']) && (!$want['lo'] || $out['lower'] !== null) && (!$want['hi'] || $out['upper'] !== null)) {
-            $unit = ' ' . $entry['unit'];
+            $unit = ($unit !== null && $unit !== '') ? ' ' . $unit : ($scale === null ? ' ' . $entry['unit'] : '');
             if ($want['lo'] && $want['hi']) {
                 if (Logic::numCompare($out['lower'], $out['upper']) <= 0) {
                     $out['range'] = self::markText($out['lower'], $comma) . ' to ' . self::markText($out['upper'], $comma) . $unit;

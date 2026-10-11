@@ -64,22 +64,23 @@ for (const c of fx.zScore) {
 check('zText: never exponent notation, never "-0.00"', G.zText(-0) === '0.00' && G.zText(1e-300) === '0.00' && G.zText(-1e-300) === '0.00');
 
 // The values an @UVRANGE rule returns: tests/growth_php.php runs the same cases.
-check('fixture: return-value sections load', fx.valueAt.length > 10 && fx.boundUnits.length > 5
+check('fixture: return-value sections load', fx.valueAt.length > 10 && fx.bound.length > 5
   && fx.unitsText.length > 5 && fx.outputs.length > 10);
 for (const c of fx.valueAt) {
   const got = G.valueAt(c.z, c.lms, c.restricted);
   const ok = c.want === null ? got === null : (got !== null && Math.abs(got - c.want) <= 1e-9 * Math.max(1, Math.abs(c.want)));
   check('valueAt: ' + c.name + ' (got ' + JSON.stringify(got) + ')', ok);
 }
-for (const c of fx.boundUnits) {
-  const got = G.boundUnits(c.y, c.decimals, c.up);
-  check('boundUnits: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
+for (const c of fx.bound) {
+  const got = G.bound(R[c.ref], c.sex, c.x, c.lim, c.decimals, c.low, c.scale);
+  check('bound: ' + c.name + ' (got ' + JSON.stringify(got) + ')', got === c.want);
 }
 for (const [u, d, want] of fx.unitsText) {
   check('unitsText(' + u + ', ' + d + ') => ' + want + ' (got ' + G.unitsText(u, d) + ')', G.unitsText(u, d) === want);
 }
 for (const c of fx.outputs) {
-  const got = G.outputs(R[c.ref], c.sex, c.x, c.y, c.limits, c.decimals, c.comma);
+  const got = G.outputs(R[c.ref], c.sex, c.x, c.y, c.limits, c.decimals, c.comma,
+    c.scale === undefined ? null : c.scale, c.unit === undefined ? null : c.unit);
   check('outputs: ' + c.name + ' (got ' + JSON.stringify(got) + ')',
     ['z', 'lower', 'upper', 'range'].every((k) => got[k] === c.want[k]) && Object.keys(got).length === 4);
 }
@@ -130,6 +131,46 @@ for (const p of golden) {
   if (z !== p.z) { bad++; if (bad <= 10) console.log('golden mismatch: ' + JSON.stringify(p) + ' got ' + JSON.stringify(z)); }
 }
 check('golden: every point equals WHO\'s own code (' + bad + ' mismatches)', bad === 0);
+{
+  /* A bound is the edge the verdict draws: the measurement at it scores a
+     two-decimal z-score inside the limit, one unit beyond it does not
+     (tests/growth_php.php runs the same check). Limits have at most three
+     decimals, so comparing them as doubles is exact. */
+  let seed = 90210;
+  const next = () => { seed = (seed * 48271) % 2147483647; return seed; };
+  const pass = (ref, sex, x, k, d, lim, low, scale) => {
+    if (k < 1) return false;
+    const m = G.measure(G.unitsText(k, d), false, scale);
+    if (m.state !== 'ok') return false;
+    const z = G.zScore(ref, sex, x, m.y);
+    if (z.state !== 'ok') return false;
+    return low ? parseFloat(z.z) >= parseFloat(lim) : parseFloat(z.z) <= parseFloat(lim);
+  };
+  let n = 0, wrong = 0, ex = '';
+  for (const id of ids) {
+    const ref = refs[id];
+    const lo = parseFloat(ref.valid.min);
+    const hi = ref.valid.max !== undefined ? parseFloat(ref.valid.max) : parseFloat(ref.valid.below) - 1;
+    for (let i = 0; i < 60; i++) {
+      let x = lo + (next() % 10000) / 10000 * (hi - lo);
+      if (ref.axis === 'age') x = Math.floor(x);
+      const sex = next() % 2 ? 'male' : 'female';
+      const lim = next() % 2 ? ((next() % 7801 - 3900) / 1000).toFixed(3) : ((next() % 781 - 390) / 100).toFixed(2);
+      const scale = next() % 4 === 0 ? '0.001' : null;
+      const d = scale === null ? next() % 4 : next() % 2;
+      const low = next() % 2 === 1;
+      const k = G.bound(ref, sex, x, lim, d, low, scale);
+      if (k === null) continue;
+      n++;
+      if (!pass(ref, sex, x, k, d, lim, low, scale) || pass(ref, sex, x, low ? k - 1 : k + 1, d, lim, low, scale)) {
+        wrong++;
+        if (!ex) ex = ': ' + [id, sex, x, lim, d, low ? 'low' : 'high', k].join(' ');
+      }
+    }
+  }
+  check('bound: the verdict passes the bound and not one unit beyond, ' + n + ' random rows (' + wrong + ' wrong' + ex + ')',
+    n > 500 && wrong === 0);
+}
 
 // ---- 3. 5,000 random points: the hash growth_php.php also checks ------------------
 let s = fx.parity.seed;

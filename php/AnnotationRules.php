@@ -800,9 +800,10 @@ class AnnotationRules
      * "return" writes values worked out from the reference to Text fields of
      * the same form, and the rule then needs no limits when it returns only "z":
      *   "return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}
-     * z is the z-score of the measurement, lower and upper the measurements at
-     * the low and high z limit of the "soft" limits (or "hard", "returnLimits")
-     * rounded inward to "decimals", and range the two as "7.7 to 12.0 kg". The
+     * z is the z-score of the measurement, lower and upper the smallest and
+     * largest measurements, written with "decimals", that pass the low and high
+     * z limit of the "soft" limits (or "hard", "returnLimits"), and range the
+     * two as "7.7 to 12.0 kg" (GrowthReference::bound). The
      * keys become rangeReturn (value => field name), rangeReturnLimits and
      * rangeDecimals.
      */
@@ -2115,8 +2116,11 @@ class AnnotationRules
         if (!is_string($id) || !preg_match(GrowthReference::ID_RE, $id)) {
             $errors[] = '"reference" must be the id of a growth reference, such as "who-wfa" (lower-case letters, digits, ".", "_" or "-").';
         }
-        if (array_key_exists('rangeUnit', $frag)) {
-            $errors[] = '"unit" does not apply with a "reference" — the reference sets the unit of the measurement.';
+        // With "measureScale" the field holds another unit than the reference
+        // (grams for a table in kg): "unit" names it, for a returned "range".
+        if (array_key_exists('rangeUnit', $frag) && !array_key_exists('rangeMeasureScale', $frag)) {
+            $errors[] = '"unit" does not apply with a "reference" unless "measureScale" is set — the reference sets the unit '
+                . 'of the measurement, and "unit" names the unit the field holds when "measureScale" converts it.';
         }
         foreach ($limits as $k => $z) {
             if (Logic::numCompare($z, '-' . self::MAX_GROWTH_Z) < 0 || Logic::numCompare($z, (string) self::MAX_GROWTH_Z) > 0) {

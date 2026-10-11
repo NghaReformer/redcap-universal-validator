@@ -149,235 +149,242 @@ class UniversalValidator extends AbstractExternalModule
             // EVERY settings/dictionary read (SEC-002).
             $rules = $this->getRules($project_id);
             if (!$rules) return;
-            try {
-                $this->auditTemporalRules($rules, $project_id, $record, $instrument, $event_id, $repeat_instance, $logMode);
-            } catch (\Throwable $e) {
-                foreach ($rules as $i=>$rule) if (TemporalRules::extended($rule)) {
-                    $this->logUnconfigurable($i,$rule['fields'],'Extended audit incomplete: evaluation unavailable; run the validation scan.',$instrument,$event_id,$repeat_instance);
-                }
+            // Two phases when a rule returns values to fields (@UVRANGE
+            // "return"): those rules are judged first, on both paths (the
+            // event/instance audit too), and what they return is written before
+            // the other rules read the record, so a rule that reads a returned
+            // field judges the value this save wrote. Each phase reads the
+            // record for itself and fails alone: an error in one is logged and
+            // the other still runs.
+            $returning = [];
+            foreach ($rules as $i => $r) {
+                if (empty($r['configError']) && ModeRegistry::returnFields($r)) $returning[$i] = true;
             }
-            $rules = array_filter($rules, function ($rule) { return !TemporalRules::extended($rule); });
-            if (!$rules) return;
-
-            // A field claimed by more than one live rule has no well-defined
-            // verdict — the client refuses to attach a validator there, and the
-            // server must not pick one arbitrarily. Mirror the client: skip.
-            $dupes = [];
-            foreach (self::duplicateFields($rules) as $f) $dupes[$f] = true;
-
-            // Scope to the saved instrument when it is known (null = no filter).
-            $onForm = $this->fieldsOnInstrument($project_id, $instrument);
-
-            $fields = [];
-            foreach ($rules as $r) {
-                if (!empty($r['configError'])) continue;
-                foreach ($r['fields'] as $f) {
-                    if (isset($dupes[$f])) continue;
-                    if ($onForm !== null && !isset($onForm[$f])) continue;
-                    $fields[$f] = true;
-                }
-            }
-
-            // REVERSE DEPENDENCIES (H-02). A cross-form constraint lives on the
-            // instrument carrying the tag, so editing only the REFERENCED side
-            // used to change the relationship with nothing checking it: the
-            // referenced form installs no client validator, and the audit's
-            // instrument scope excluded the dependent rule. Silent corruption of
-            // a previously valid pair, findable only by re-saving the host form
-            // or running the manual scan.
-            //
-            // A rule is a dependant of this save when its own field is NOT on the
-            // saved instrument but its assert/when REFERENCES a field that is.
-            // Those rules — and only those — are added back, so PER-001 still
-            // holds: an unrelated instrument with no dependants reads no data and
-            // audits nothing, exactly as before.
-            $dependents = [];
-            if ($onForm !== null) {
-                foreach ($rules as $ruleIndex => $r) {
-                    if (!empty($r['configError'])) continue;
-                    $ownFieldOnForm = false;
-                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
-                        if (isset($onForm[$f])) { $ownFieldOnForm = true; break; }
-                    }
-                    if ($ownFieldOnForm) continue;      // already audited by the normal scope
-                    // Conditions, operands and field lists: saving the form that
-                    // holds a @UVWINDOW "from" date moves every window counted
-                    // from it, and saving a @UVEXISTS "match" field or a
-                    // @UVUNIQUE "with" field moves the lookup that reads it.
-                    $touches = false;
-                    // A @UVEXISTS "in" field is read in OTHER records, so saving
-                    // it here moves nothing in this record ('lookup' role).
-                    foreach (ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList'], ['lookup']) as $rf) {
-                        if (isset($onForm[$rf])) { $touches = true; break; }
-                    }
-                    if (!$touches) continue;
-                    $dependents[$ruleIndex] = true;
-                    foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
-                        if (isset($dupes[$f])) continue;
-                        $fields[$f] = true;
-                    }
-                }
-            }
-            if (!$fields) return;
-
-            // Parse each live rule's "when" condition ONCE (false sentinel for a
-            // string that does not parse — auditRule surfaces it) and widen the
-            // read set with every referenced field. Refs are deliberately NOT
-            // instrument-filtered: a condition may look at any field on the
-            // saved event, wherever it lives.
-            $whenAst = [];
-            $readSet = $fields;
-            foreach ($rules as $ruleIndex => $r) {
-                if (!empty($r['configError'])) continue;
-                // Branch rules: pre-parse EVERY branch's condition (null = the
-                // else branch, false = does not parse) — auditRule picks the
-                // active branch per save.
-                if (isset($r['branches']) && is_array($r['branches'])) {
-                    $asts = [];
-                    foreach ($r['branches'] as $bi => $b) {
-                        if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') {
-                            $asts[$bi] = null;
-                            continue;
-                        }
-                        $p = Logic::parse($b['when']);
-                        if (empty($p['ok'])) { $asts[$bi] = false; continue; }
-                        $asts[$bi] = $p['ast'];
-                        foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
-                    }
-                    $whenAst[$ruleIndex] = ['branches' => $asts];
-                    continue;
-                }
-                if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
-                $p = Logic::parse($r['when']);
-                if (empty($p['ok'])) { $whenAst[$ruleIndex] = false; continue; }
-                $whenAst[$ruleIndex] = $p['ast'];
-                foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
-            }
-
-            // Every other field a rule's configuration reads — the operands of
-            // an "assert", the composite "with" fields of a unique rule, and
-            // whatever a mode declares in php/modes.json — widens the read set
-            // the same way, so the audit can evaluate the rule (mirrors the
-            // "when" widening above).
-            foreach ($rules as $r) {
-                if (!empty($r['configError'])) continue;
-                foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
-            }
-
-            // Read every audited + condition-referenced field for this exact
-            // record/event/instance in ONE getData call instead of one call per
-            // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
-            $auditResolution = [];
-            $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true, $auditResolution);
-
-            // A FAILED read yields an empty value map, and an empty value map is
-            // indistinguishable from "every field is blank" to every rule kind —
-            // not just constraints. @UVREQUIRED would report a populated field as
-            // blank, and a check rule would silently pass an invalid ID. There is
-            // nothing to audit, so say so loudly and stop, rather than auditing
-            // data we do not have (H-04).
-            foreach ($auditResolution as $rstate) {
-                if ($rstate === 'unreadable') {
-                    $this->logAuditError($logMode, $project_id, $record, $instrument,
-                        new \RuntimeException('the saved values could not be read, so no rule was checked for this save'),
-                        'audit');
-                    return;
-                }
-            }
-
-            // HOST CONTEXTS for reverse dependencies (H-03). A dependant's field
-            // lives on a DIFFERENT instrument, which may repeat while the form
-            // being saved does not. Evaluating it in the trigger's single
-            // context checked at most one instance — with a repeating host, the
-            // real violations sat in instances nobody looked at, and the one
-            // context that WAS examined reported the host field as belonging to
-            // another repeating instrument.
-            // The whole record is read ONCE, and only when a dependant exists, so
-            // an unrelated instrument still reads nothing at all (PER-001).
-            $hostContexts = null;
-            $depResolution = [];    // host context key => resolution states, computed once
-            if ($dependents) {
-                $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
-            }
-
-            // Rules that return values to fields (@UVRANGE "return") go first and
-            // their values are written before the others are judged, so a rule
-            // that reads a returned field sees it in the same save.
-            $order = [[], []];
-            foreach ($rules as $ruleIndex => $rule) {
-                $order[ModeRegistry::returnFields($rule) ? 0 : 1][] = $ruleIndex;
-            }
-            $firstOther = count($order[0]);
-            foreach (array_merge($order[0], $order[1]) as $position => $ruleIndex) {
-                $rule = $rules[$ruleIndex];
-                if ($position === $firstOther && $firstOther > 0 && $this->applyReturns($logMode, $project_id, $record, $instrument)) {
-                    // Something was written: read the record again for the rules still to be judged.
-                    $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true, $auditResolution);
-                    foreach ($auditResolution as $rstate) {
-                        if ($rstate === 'unreadable') {
-                            $this->logAuditError($logMode, $project_id, $record, $instrument,
-                                new \RuntimeException('the saved values could not be read after the returned values were written, so no later rule was checked for this save'),
-                                'audit');
-                            return;
-                        }
-                    }
-                    $depResolution = [];
-                    if ($dependents) {
-                        $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
-                    }
-                }
-                if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
-                // Each rule is isolated: one rule blowing up must not silently
-                // abort the audit of every later rule (COR-002).
+            $phases = $returning ? [array_keys($returning), array_keys(array_diff_key($rules, $returning))] : [array_keys($rules)];
+            foreach ($phases as $p => $only) {
+                if ($p > 0) $this->applyReturns($logMode, $project_id, $record, $instrument, $event_id, $repeat_instance);
+                if (!$only) continue;
                 try {
-                    if (isset($dependents[$ruleIndex])) {
-                        if ($hostContexts === null) continue;   // could not enumerate; already logged
-                        // The dependant is evaluated where it LIVES, once per host
-                        // row. Running it over every same-event context instead
-                        // turned one base-form violation into one log per unrelated
-                        // repeat row of an unrelated instrument, each attributed to
-                        // a form the rule has nothing to do with, and added a
-                        // spurious "unconfigurable" for the trigger form's base row
-                        // whenever the host repeated (H-03).
-                        $h = $this->ruleHostForms($rule, $project_id);
-                        if ($h['unknown']) {
-                            $this->logUnconfigurable($ruleIndex, $h['unknown'],
-                                'the instrument that owns this rule\'s field(s) could not be determined, so the '
-                                . 'change on "' . (string) $instrument . '" could not be re-checked against it',
-                                $instrument, $event_id, $repeat_instance);
-                        }
-                        foreach ($h['forms'] as $hostForm => $ownList) {
-                            // Scope to the dependant's OWN fields, never the whole
-                            // project, and report the HOST's instrument/instance so
-                            // the log points at the field that is actually wrong
-                            // rather than at whichever form happened to be saved
-                            // (M-03).
-                            $ownFields = array_fill_keys($ownList, true);
-                            foreach ($this->hostContextsFor($hostContexts, $hostForm, $project_id) as $hk => $hctx) {
-                                if (!isset($depResolution[$hk])) {
-                                    $depResolution[$hk] = $this->contextResolution($hctx, array_keys($readSet), $project_id);
-                                }
-                                $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
-                                    $project_id, $record, $hostForm, $hctx['event_id'], $hctx['instance'],
-                                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
-                                    $depResolution[$hk], ['callerGroup' => $group_id]);
-                            }
-                        }
-                        continue;
-                    }
-                    $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
-                        isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
+                    $this->auditPhase($rules, $only, $project_id, $record, $instrument, $event_id, $group_id, $repeat_instance, $logMode);
                 } catch (\Throwable $e) {
-                    $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
+                    $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'audit');
                 }
             }
         } catch (\Throwable $e) {
             // Never let an audit failure abort the save or vanish without a trace.
             $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'audit');
         } finally {
-            // Whatever the audit returned and did not write yet (a lone phase,
-            // the extended rules, an early end): written here, once.
-            $this->applyReturns($logMode, $project_id, $record, $instrument);
+            // Whatever a phase returned and did not write yet (the last phase,
+            // an early end): written here, once.
+            $this->applyReturns($logMode, $project_id, $record, $instrument, $event_id, $repeat_instance);
+        }
+    }
+
+    /**
+     * One phase of the save audit: the rules whose indexes $only lists, out of
+     * the project's $rules (all of them decide which fields are claimed
+     * twice). The event/instance rules go first, then the others.
+     */
+    private function auditPhase(array $rules, array $only, $project_id, $record, $instrument, $event_id, $group_id, $repeat_instance, $logMode)
+    {
+        $only = array_fill_keys($only, true);
+        try {
+            $this->auditTemporalRules($rules, $project_id, $record, $instrument, $event_id, $repeat_instance, $logMode, array_keys($only));
+        } catch (\Throwable $e) {
+            foreach ($rules as $i => $rule) if (isset($only[$i]) && empty($rule['configError']) && TemporalRules::extended($rule)) {
+                $this->logUnconfigurable($i, $rule['fields'], 'Extended audit incomplete: evaluation unavailable; run the validation scan.', $instrument, $event_id, $repeat_instance);
+            }
+        }
+        $plain = array_filter($rules, function ($rule) { return !TemporalRules::extended($rule); });
+        $rules = array_intersect_key($plain, $only);
+        if (!$rules) return;
+
+        // A field claimed by more than one live rule has no well-defined
+        // verdict — the client refuses to attach a validator there, and the
+        // server must not pick one arbitrarily. Mirror the client: skip.
+        $dupes = [];
+        foreach (self::duplicateFields($plain) as $f) $dupes[$f] = true;
+
+        // Scope to the saved instrument when it is known (null = no filter).
+        $onForm = $this->fieldsOnInstrument($project_id, $instrument);
+
+        $fields = [];
+        foreach ($rules as $r) {
+            if (!empty($r['configError'])) continue;
+            foreach ($r['fields'] as $f) {
+                if (isset($dupes[$f])) continue;
+                if ($onForm !== null && !isset($onForm[$f])) continue;
+                $fields[$f] = true;
+            }
+        }
+
+        // REVERSE DEPENDENCIES (H-02). A cross-form constraint lives on the
+        // instrument carrying the tag, so editing only the REFERENCED side
+        // used to change the relationship with nothing checking it: the
+        // referenced form installs no client validator, and the audit's
+        // instrument scope excluded the dependent rule. Silent corruption of
+        // a previously valid pair, findable only by re-saving the host form
+        // or running the manual scan.
+        //
+        // A rule is a dependant of this save when its own field is NOT on the
+        // saved instrument but its assert/when REFERENCES a field that is.
+        // Those rules — and only those — are added back, so PER-001 still
+        // holds: an unrelated instrument with no dependants reads no data and
+        // audits nothing, exactly as before.
+        $dependents = [];
+        if ($onForm !== null) {
+            foreach ($rules as $ruleIndex => $r) {
+                if (!empty($r['configError'])) continue;
+                $ownFieldOnForm = false;
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                    if (isset($onForm[$f])) { $ownFieldOnForm = true; break; }
+                }
+                if ($ownFieldOnForm) continue;      // already audited by the normal scope
+                // Conditions, operands and field lists: saving the form that
+                // holds a @UVWINDOW "from" date moves every window counted
+                // from it, and saving a @UVEXISTS "match" field or a
+                // @UVUNIQUE "with" field moves the lookup that reads it.
+                $touches = false;
+                // A @UVEXISTS "in" field is read in OTHER records, so saving
+                // it here moves nothing in this record ('lookup' role).
+                foreach (ModeRegistry::refFields($r, ['cond', 'operand', 'fieldList'], ['lookup']) as $rf) {
+                    if (isset($onForm[$rf])) { $touches = true; break; }
+                }
+                if (!$touches) continue;
+                $dependents[$ruleIndex] = true;
+                foreach ((isset($r['fields']) && is_array($r['fields'])) ? $r['fields'] : [] as $f) {
+                    if (isset($dupes[$f])) continue;
+                    $fields[$f] = true;
+                }
+            }
+        }
+        if (!$fields) return;
+
+        // Parse each live rule's "when" condition ONCE (false sentinel for a
+        // string that does not parse — auditRule surfaces it) and widen the
+        // read set with every referenced field. Refs are deliberately NOT
+        // instrument-filtered: a condition may look at any field on the
+        // saved event, wherever it lives.
+        $whenAst = [];
+        $readSet = $fields;
+        foreach ($rules as $ruleIndex => $r) {
+            if (!empty($r['configError'])) continue;
+            // Branch rules: pre-parse EVERY branch's condition (null = the
+            // else branch, false = does not parse) — auditRule picks the
+            // active branch per save.
+            if (isset($r['branches']) && is_array($r['branches'])) {
+                $asts = [];
+                foreach ($r['branches'] as $bi => $b) {
+                    if (!isset($b['when']) || !is_string($b['when']) || $b['when'] === '') {
+                        $asts[$bi] = null;
+                        continue;
+                    }
+                    $p = Logic::parse($b['when']);
+                    if (empty($p['ok'])) { $asts[$bi] = false; continue; }
+                    $asts[$bi] = $p['ast'];
+                    foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+                }
+                $whenAst[$ruleIndex] = ['branches' => $asts];
+                continue;
+            }
+            if (!isset($r['when']) || !is_string($r['when']) || $r['when'] === '') continue;
+            $p = Logic::parse($r['when']);
+            if (empty($p['ok'])) { $whenAst[$ruleIndex] = false; continue; }
+            $whenAst[$ruleIndex] = $p['ast'];
+            foreach (Logic::referencedFields($p['ast']) as $ref) $readSet[$ref[0]] = true;
+        }
+
+        // Every other field a rule's configuration reads — the operands of
+        // an "assert", the composite "with" fields of a unique rule, and
+        // whatever a mode declares in php/modes.json — widens the read set
+        // the same way, so the audit can evaluate the rule (mirrors the
+        // "when" widening above).
+        foreach ($rules as $r) {
+            if (!empty($r['configError'])) continue;
+            foreach (ModeRegistry::refFields($r) as $f) $readSet[$f] = true;
+        }
+
+        // Read every audited + condition-referenced field for this exact
+        // record/event/instance in ONE getData call instead of one call per
+        // field (UV-007). keepArrays: checkbox refs arrive as code=>0/1 maps.
+        $auditResolution = [];
+        $values = $this->readValues($project_id, $record, array_keys($readSet), $event_id, $instrument, $repeat_instance, true, $auditResolution);
+
+        // A FAILED read yields an empty value map, and an empty value map is
+        // indistinguishable from "every field is blank" to every rule kind —
+        // not just constraints. @UVREQUIRED would report a populated field as
+        // blank, and a check rule would silently pass an invalid ID. There is
+        // nothing to audit, so say so loudly and stop, rather than auditing
+        // data we do not have (H-04).
+        foreach ($auditResolution as $rstate) {
+            if ($rstate === 'unreadable') {
+                $this->logAuditError($logMode, $project_id, $record, $instrument,
+                    new \RuntimeException('the saved values could not be read, so no rule was checked for this save'),
+                    'audit');
+                return;
+            }
+        }
+
+        // HOST CONTEXTS for reverse dependencies (H-03). A dependant's field
+        // lives on a DIFFERENT instrument, which may repeat while the form
+        // being saved does not. Evaluating it in the trigger's single
+        // context checked at most one instance — with a repeating host, the
+        // real violations sat in instances nobody looked at, and the one
+        // context that WAS examined reported the host field as belonging to
+        // another repeating instrument.
+        // The whole record is read ONCE, and only when a dependant exists, so
+        // an unrelated instrument still reads nothing at all (PER-001).
+        $hostContexts = null;
+        $depResolution = [];    // host context key => resolution states, computed once
+        if ($dependents) {
+            $hostContexts = $this->saveHostContexts($project_id, $record, array_keys($readSet), $event_id, $instrument, $logMode);
+        }
+
+        foreach ($rules as $ruleIndex => $rule) {
+            if (!empty($rule['configError'])) continue; // misconfigured -> client/dialog shows the error
+            // Each rule is isolated: one rule blowing up must not silently
+            // abort the audit of every later rule (COR-002).
+            try {
+                if (isset($dependents[$ruleIndex])) {
+                    if ($hostContexts === null) continue;   // could not enumerate; already logged
+                    // The dependant is evaluated where it LIVES, once per host
+                    // row. Running it over every same-event context instead
+                    // turned one base-form violation into one log per unrelated
+                    // repeat row of an unrelated instrument, each attributed to
+                    // a form the rule has nothing to do with, and added a
+                    // spurious "unconfigurable" for the trigger form's base row
+                    // whenever the host repeated (H-03).
+                    $h = $this->ruleHostForms($rule, $project_id);
+                    if ($h['unknown']) {
+                        $this->logUnconfigurable($ruleIndex, $h['unknown'],
+                            'the instrument that owns this rule\'s field(s) could not be determined, so the '
+                            . 'change on "' . (string) $instrument . '" could not be re-checked against it',
+                            $instrument, $event_id, $repeat_instance);
+                    }
+                    foreach ($h['forms'] as $hostForm => $ownList) {
+                        // Scope to the dependant's OWN fields, never the whole
+                        // project, and report the HOST's instrument/instance so
+                        // the log points at the field that is actually wrong
+                        // rather than at whichever form happened to be saved
+                        // (M-03).
+                        $ownFields = array_fill_keys($ownList, true);
+                        foreach ($this->hostContextsFor($hostContexts, $hostForm, $project_id) as $hk => $hctx) {
+                            if (!isset($depResolution[$hk])) {
+                                $depResolution[$hk] = $this->contextResolution($hctx, array_keys($readSet), $project_id);
+                            }
+                            $this->auditRule($rule, $ruleIndex, $hctx['values'], $dupes, $ownFields, $logMode,
+                                $project_id, $record, $hostForm, $hctx['event_id'], $hctx['instance'],
+                                isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null,
+                                $depResolution[$hk], ['callerGroup' => $group_id]);
+                        }
+                    }
+                    continue;
+                }
+                $this->auditRule($rule, $ruleIndex, $values, $dupes, $onForm, $logMode, $project_id, $record, $instrument, $event_id, $repeat_instance,
+                    isset($whenAst[$ruleIndex]) ? $whenAst[$ruleIndex] : null, $auditResolution, ['callerGroup' => $group_id]);
+            } catch (\Throwable $e) {
+                $this->logAuditError($logMode, $project_id, $record, $instrument, $e, 'rule ' . ($ruleIndex + 1));
+            }
         }
     }
 
@@ -570,26 +577,27 @@ class UniversalValidator extends AbstractExternalModule
             // identities of their own (Scan\Hmac::findingIdentity).
             $several = (isset($rule['_groups']) ? (int) $rule['_groups'] : count($groups)) > 1;
             // What the rule returns to fields (only when the audit asks): each
-            // group owns the fields of all its branches. A group set aside
-            // keeps its fields; one with no branch that applies empties them.
-            $returns = null;
+            // group owns the fields of all its branches. The picked branch
+            // fills its own and the group's other fields are emptied; so are
+            // a group's fields when no branch of it applies. A group set
+            // aside, or whose pick could not be judged (no 'returns': an input
+            // that could not be resolved), keeps what its fields hold.
+            $returns = [];
+            $held = array_keys($broken);
+            $sub = $meta;
+            unset($sub['returnOwner'], $sub['returnKeep']);
             foreach (array_keys($groups) as $g) {
                 if (isset($broken[$g])) continue;
-                $owned = empty($meta['returns']) ? [] : ModeRegistry::returnFields($rule, $g);
                 if (isset($active[$g])) $pick = $active[$g][0];
                 elseif (isset($else[$g])) $pick = $else[$g];
-                else {
-                    // no branch of this group applies to this context
-                    if ($owned) $returns = array_merge($returns === null ? [] : $returns, array_fill_keys($owned, ''));
-                    continue;
-                }
+                else continue;   // no branch of this group applies to this context
                 $branch = $rule['branches'][$pick];
                 unset($branch['when']);
                 $flat = array_merge([
                     'type'   => isset($rule['type']) ? $rule['type'] : 'single',
                     'fields' => $rule['fields'],
                 ], $branch);
-                $r = $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $meta);
+                $r = $this->ruleFindings($flat, $ruleIndex, $values, $dupes, $onForm, $project_id, $record, $event_id, null, $resolution, $sub);
                 // Each finding names the branch that judged it, so a report can show
                 // that branch's message and limits (ScanDimensions keeps one
                 // snapshot per branch), not the first branch's or none.
@@ -600,14 +608,13 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 foreach ($r['unconfigurable'] as $u) $out['unconfigurable'][] = $u;
                 foreach ((isset($r['unevaluated']) ? $r['unevaluated'] : []) as $u) $out['unevaluated'][] = $u + ['branch' => $pick];
-                // The picked branch fills its own fields and the group's other
-                // branches' are emptied. No 'returns' (an input that could not
-                // be resolved) keeps them.
-                if ($owned && isset($r['returns']) && is_array($r['returns'])) {
-                    $returns = array_merge($returns === null ? [] : $returns, array_fill_keys($owned, ''), $r['returns']);
-                }
+                if (isset($r['returns']) && is_array($r['returns'])) $returns = array_merge($returns, $r['returns']);
+                else $held[] = $g;
             }
-            if ($returns !== null) $out['returns'] = $returns;
+            if (!empty($meta['returns'])) {
+                $returns = array_merge(self::ownedReturns($rule, $meta, $held), $returns);
+                if ($returns) $out['returns'] = $returns;
+            }
             return $out;
         }
 
@@ -654,7 +661,9 @@ class UniversalValidator extends AbstractExternalModule
                 }
             }
             if (!Logic::evaluate($whenAst, $values, Logic::BLANK_INERT, !empty($rule['caseSensitive']))) {
-                return $this->withClearedReturns($out, $rule, $meta);   // inert here: nothing to report
+                // inert here: nothing to report, and the fields it returns to are emptied
+                if (!empty($meta['returns']) && ($blank = self::ownedReturns($rule, $meta))) $out['returns'] = $blank;
+                return $out;
             }
         }
 
@@ -679,14 +688,14 @@ class UniversalValidator extends AbstractExternalModule
             foreach ($rule['fields'] as $f) {
                 if (!self::isMissingCode(isset($values[$f]) ? $values[$f] : null, $codes)) $kept[] = $f;
             }
-            if (!$kept) return $this->withReturned($out, $ret);
+            if (!$kept) return $this->withReturned($out, $ret, $rule, $meta);
             $rule['fields'] = $kept;
         }
 
         // The mode's own verdict (php/modes.json "evaluator").
         $evaluator = ModeRegistry::evaluator($mode);
         return $this->withReturned(
-            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret);
+            $this->$evaluator($rule, $type, $values, $dupes, $onForm, $project_id, $record, $event_id, $resolution, $meta), $ret, $rule, $meta);
     }
 
     /**
@@ -3970,12 +3979,21 @@ class UniversalValidator extends AbstractExternalModule
      * A field takes the value of ONE rule. Two rules that return a value to the
      * same field would overwrite each other in whichever order the page and
      * the save run them, so both are refused, naming each other. Rules on one
-     * field (branches) share their fields on purpose: only one is active.
+     * field (branches) share their fields on purpose: only one is active. Two
+     * branch groups of one rule (@UVRANGE: two references) are active at the
+     * same time, so they may not share a field either.
+     *
+     * A rule that returns values may not read a field such a rule returns to
+     * (its own or another's): the save works out every returned value from the
+     * values saved before any is written, so a chain would write a value read
+     * one save late, and the page would follow it only a few steps. The rule
+     * that reads is refused, naming the rule that writes.
      */
     private static function markReturnClashes(array $rules)
     {
         $owner = [];    // target field => index of the rule that claimed it first
         $clash = [];    // rule index => [target field => the other rule's index]
+        $why = [];      // rule index => further reasons
         foreach ($rules as $i => $r) {
             if (!is_array($r) || !empty($r['configError'])) continue;
             foreach (ModeRegistry::returnFields($r) as $f) {
@@ -3986,6 +4004,34 @@ class UniversalValidator extends AbstractExternalModule
                     $owner[$f] = $i;
                 }
             }
+            if (!isset($r['branches']) || !is_array($r['branches'])) continue;
+            $mode = ModeRegistry::modeOfType(isset($r['type']) ? $r['type'] : '');
+            $key = ModeRegistry::branchGroup($mode);
+            if ($key === null) continue;
+            $groups = [];
+            foreach ($r['branches'] as $b) if (is_array($b)) $groups[Branching::groupOf($b, $key)] = true;
+            $seen = [];     // field => the group that returns to it
+            $name = ModeRegistry::branchGroupName($mode) ?: 'group';
+            $label = function ($x) use ($name) { return $x === '' ? 'the limits without a ' . $name : $name . ' "' . $x . '"'; };
+            foreach (array_keys($groups) as $g) {
+                foreach (ModeRegistry::returnFields($r, (string) $g) as $f) {
+                    if (isset($seen[$f]) && $seen[$f] !== (string) $g) {
+                        $why[$i][] = '"[' . $f . ']" is returned to by both ' . $label($seen[$f]) . ' and ' . $label((string) $g)
+                            . ', which are judged at the same time — give each its own fields.';
+                    } else {
+                        $seen[$f] = (string) $g;
+                    }
+                }
+            }
+        }
+        foreach ($rules as $i => $r) {
+            if (!is_array($r) || !empty($r['configError']) || !ModeRegistry::returnFields($r)) continue;
+            foreach (TemporalRules::fields($r) as $f) {
+                if (!isset($owner[$f])) continue;
+                $by = $owner[$f] === $i ? 'this rule' : 'the rule on "' . (isset($rules[$owner[$f]]['fields'][0]) ? $rules[$owner[$f]]['fields'][0] : '?') . '"';
+                $why[$i][] = 'it reads "[' . $f . ']", which ' . $by . ' returns a value to — a rule that returns values reads the '
+                    . 'measurement and its inputs, never a returned value.';
+            }
         }
         foreach ($clash as $i => $fields) {
             $parts = [];
@@ -3995,6 +4041,10 @@ class UniversalValidator extends AbstractExternalModule
             }
             $rules[$i]['configError'] = 'a field takes the value of one rule, and this rule\'s "return" shares '
                 . implode(', ', $parts) . ' — give each rule its own fields.';
+        }
+        foreach ($why as $i => $list) {
+            if (!empty($rules[$i]['configError'])) continue;
+            $rules[$i]['configError'] = '@UVRANGE "return": ' . implode(' ', array_values(array_unique($list)));
         }
         return $rules;
     }
@@ -5249,7 +5299,8 @@ class UniversalValidator extends AbstractExternalModule
      * ID. "range" is text ("7.7 to 12.0 kg") and needs a field without
      * validation; the numbers (z, lower, upper) need none or number validation,
      * with room for the decimals they are written with: two for z, "decimals"
-     * for a bound. A number goes in the field's own decimal mark; a field
+     * for a bound. A bound written with "decimals":0 may also go into an
+     * integer field. A number goes in the field's own decimal mark; a field
      * without validation takes the measured field's.
      */
     private function returnTargetsProblem(array $frag, $name, array $dd, array $inputs, array &$marks)
@@ -5284,6 +5335,15 @@ class UniversalValidator extends AbstractExternalModule
             }
             if ($v === '') {
                 $marks[$k] = $own;
+                continue;
+            }
+            // A bound written without decimals ("decimals":0) is a whole number.
+            if (($v === 'int' || $v === 'integer') && $k !== 'z') {
+                if ($decimals > 0) {
+                    return $label . ' has "' . $v . '" validation and this value is written with ' . $decimals . ' decimal place'
+                        . ($decimals === 1 ? '' : 's') . ' — set "decimals" to 0, or give it number validation.';
+                }
+                $marks[$k] = false;
                 continue;
             }
             if (!preg_match('/^(?:float|number)(?:_([1-9])dp)?(_comma_decimal)?$/', $v, $mm)) {

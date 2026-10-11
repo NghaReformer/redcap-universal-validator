@@ -70,6 +70,8 @@ namespace {
         public static $saves = [];
         /** non-empty: saveData answers with these errors and writes nothing */
         public static $saveErrors = [];
+        /** a callable given each save's data: errors to answer with for that save, [] to write it */
+        public static $saveErrorsFor = null;
         /** called after a save is applied, as the hook REDCap fires for it */
         public static $onSave = null;
         public static $getDataCalls = 0;
@@ -111,6 +113,10 @@ namespace {
         public static function saveData($pid, $format = 'array', $data = [], $overwrite = 'normal') {
             self::$saves[] = ['pid' => $pid, 'format' => $format, 'data' => $data, 'overwrite' => $overwrite];
             if (self::$saveErrors) return ['errors' => self::$saveErrors, 'warnings' => [], 'ids' => [], 'item_count' => 0];
+            if (self::$saveErrorsFor) {
+                $why = call_user_func(self::$saveErrorsFor, $data);
+                if ($why) return ['errors' => $why, 'warnings' => [], 'ids' => [], 'item_count' => 0];
+            }
             foreach ($data as $rec => $nodes) {
                 foreach ($nodes as $evt => $row) {
                     if ($evt === 'repeat_instances') {
@@ -201,6 +207,7 @@ namespace {
         \REDCap::$eventMappings = null;
         \REDCap::$saves = [];
         \REDCap::$saveErrors = [];
+        \REDCap::$saveErrorsFor = null;
         \REDCap::$onSave = null;
         \REDCap::$getDataCalls = 0;
         return $m;
@@ -514,6 +521,223 @@ NASK, Not asked";
     save($m, 'anthro_form', 1, '2', 2);
     check('an input read from another event: the fields are filled in the event of the measurement (got ' . json_encode(written()) . ')',
         written() === ['2' => [2 => $want]] && !logs($m, 'uvalidate-unconfigurable'));
+
+    /** A project with an enrolment event (1) and two visits (2 and 3) of anthro_form. */
+    function evMod($dict, $data) {
+        $m = mod($dict, $data, ['enable-event-instance-refs' => true]);
+        \REDCap::$eventMappings = [['event_id' => 1, 'form' => 'enrol_form'], ['event_id' => 2, 'form' => 'anthro_form'],
+            ['event_id' => 3, 'form' => 'anthro_form']];
+        $GLOBALS['Proj'] = (object) ['project_id' => PID, 'longitudinal' => true,
+            'eventInfo' => [1 => ['unique_event_name' => 'enrol_arm_1', 'arm_num' => 1], 2 => ['unique_event_name' => 'visit_arm_1', 'arm_num' => 1],
+                3 => ['unique_event_name' => 'visit2_arm_1', 'arm_num' => 1]],
+            'eventsForms' => [1 => ['enrol_form'], 2 => ['anthro_form'], 3 => ['anthro_form']]];
+        return $m;
+    }
+    /** tag() with the sex and the date of birth read from the enrolment event */
+    function evTag($extra) { return tag($extra, '[enrol_arm_1][sex]', '[enrol_arm_1][dob]'); }
+    function rulesOf($m) {
+        $g = new \ReflectionMethod($m, 'getRules');
+        $g->setAccessible(true);
+        return $g->invoke($m, PID);
+    }
+    /** an array with its keys in order, to compare two answers whatever order the groups were judged in */
+    function sorted(array $a) { ksort($a); return $a; }
+    function ruleOn($m, $field) {
+        foreach (rulesOf($m) as $r) if (in_array($field, $r['fields'], true)) return $r;
+        return null;
+    }
+    $enrol = ['record_id' => '2', 'sex' => '1', 'dob' => '2025-01-10'];
+    $visit = ['visit_date' => '2026-01-10', 'weight' => '9.6'];
+
+    // ---- 13) the extended path owns the fields of the rule as written ---------------------------------------------
+    $evBoth = evTag('"when":"[enrol_arm_1][sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' '
+        . evTag('"when":"[enrol_arm_1][sex]=\'2\'","return":{"range":"[wfa_rng]"}');
+    $m = evMod(dict([], $evBoth), ['2' => [1 => $enrol, 2 => $visit + ['wfa_rng' => '1.0 to 2.0 kg']]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('extended branches, a boy: the z-score is filled and the girl branch\'s range emptied (got ' . json_encode(written()) . ')',
+        written() === ['2' => [2 => ['wfa_z' => $want['wfa_z'], 'wfa_rng' => '']]] && !logs($m, 'uvalidate-unconfigurable'));
+    $m = evMod(dict([], $evBoth), ['2' => [1 => ['sex' => ''] + $enrol, 2 => $visit + ['wfa_z' => '1.50', 'wfa_rng' => '1.0 to 2.0 kg']]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('extended branches, no branch applies: both fields are emptied (got ' . json_encode(written()) . ')',
+        written() === ['2' => [2 => ['wfa_z' => '', 'wfa_rng' => '']]]);
+    $m = evMod(dict([], evTag('"when":"[enrol_arm_1][sex]=\'1\'",' . RET_ALL)), ['2' => [1 => ['sex' => '2'] + $enrol, 2 => $visit + $want]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('an extended rule whose "when" is false empties what it owns', written() === ['2' => [2 => array_fill_keys(TARGETS, '')]]);
+
+    // two references on one field: each group fills its own fields, a group with no branch empties its own
+    $wfl = '@UVRANGE={"reference":"who-wfl","sex":"[enrol_arm_1][sex]","male":"1","female":"2","by":"[length]",'
+        . '"soft":[-2,2],"hard":[-5,5],"when":"[length]<>\'\'","return":{"z":"[wfl_z]"}}';
+    $grp = dict(['length' => f('anthro_form', '', 'number_1dp'), 'wfl_z' => f('anthro_form')], evTag('"return":{"z":"[wfa_z]"}') . ' ' . $wfl);
+    $m = evMod($grp, ['2' => [1 => $enrol, 2 => $visit + ['length' => '75.0']]]);
+    $entryL = GrowthReference::entry('who-wfl', null);
+    $wantL = (string) GrowthReference::outputs($entryL, GrowthReference::table($entryL), 'male',
+        GrowthReference::axisValue($entryL, ['by' => '75.0'])['x'], 9.6, ['lo' => '-2', 'hi' => '2'], 1)['z'];
+    check('the rule has a group per reference', ($r = ruleOn($m, 'weight')) && count($r['branches']) === 2 && empty($r['configError']));
+    save($m, 'anthro_form', 1, '2', 2);
+    check('two references, extended: each fills its own z-score (got ' . json_encode(written()) . ')',
+        isset(written()['2'][2]) && sorted(written()['2'][2]) === ['wfa_z' => $want['wfa_z'], 'wfl_z' => $wantL] && $wantL !== '');
+    $m = evMod($grp, ['2' => [1 => $enrol, 2 => $visit + ['wfa_z' => $want['wfa_z'], 'wfl_z' => '0.50']]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('... no length: the weight-for-length branch applies nowhere and empties its field alone (got ' . json_encode(written()) . ')',
+        written() === ['2' => [2 => ['wfl_z' => '']]]);
+
+    // ruleFindings itself: the fields come from the rule as written; a group the audit could not judge keeps its own
+    $m = mod(dict(['length' => f('anthro_form', '', 'number_1dp'), 'wfl_z' => f('anthro_form')],
+        tag('"return":{"z":"[wfa_z]"}') . ' ' . str_replace('[enrol_arm_1][sex]', '[sex]', $wfl)), ['2' => [EVT => row()]]);
+    $orig = ruleOn($m, 'weight');
+    $vals = ['sex' => '1', 'dob' => '2025-01-10', 'visit_date' => '2026-01-10', 'weight' => '9.6', 'length' => ''];
+    $res = [];
+    $all = $rf->invoke($m, $orig, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true]);
+    check('ruleFindings, two groups: one fills, the other (no length) is emptied (got ' . json_encode($all['returns'] ?? null) . ')',
+        sorted($all['returns'] ?? []) === ['wfa_z' => $want['wfa_z'], 'wfl_z' => '']);
+    $kept = $rf->invoke($m, $orig, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true, 'returnKeep' => ['who-wfl']]);
+    check('... a group in "returnKeep" keeps its field (got ' . json_encode($kept['returns'] ?? null) . ')',
+        ($kept['returns'] ?? null) === ['wfa_z' => $want['wfa_z']]);
+    $copy = $orig;
+    $copy['branches'] = array_values(array_filter($orig['branches'], function ($b) { return $b['rangeReference'] === 'who-wfa'; }));
+    $own = $rf->invoke($m, $copy, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true, 'returnOwner' => $orig]);
+    check('... a copy without a group still empties that group\'s field, the rule as written owns it (got '
+        . json_encode($own['returns'] ?? null) . ')', sorted($own['returns'] ?? []) === ['wfa_z' => $want['wfa_z'], 'wfl_z' => '']);
+    $bare = $rf->invoke($m, $copy, 0, $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true]);
+    check('... and without the owner the copy says nothing of it', ($bare['returns'] ?? null) === ['wfa_z' => $want['wfa_z']]);
+    // a group whose branch applies but whose input this context could not read keeps its field
+    $m = mod(dict(['length' => f('anthro_form', '', 'number_1dp'), 'wfl_z' => f('anthro_form'),
+        'sex2' => f('anthro_form', '', '', 'radio', '1, Male | 2, Female')],
+        tag('"return":{"z":"[wfa_z]"}') . ' @UVRANGE={"reference":"who-wfl","sex":"[sex2]","male":"1","female":"2","by":"[length]",'
+        . '"hard":[-5,5],"return":{"z":"[wfl_z]"}}'), ['2' => [EVT => row()]]);
+    $unread = ['sex2' => 'unreadable'];
+    $held = $rf->invoke($m, ruleOn($m, 'weight'), 0, $vals + ['sex2' => '1'], [], null, PID, '2', EVT, null, $unread, ['returns' => true]);
+    check('... a group whose input could not be read keeps its field, the other fills (got ' . json_encode($held['returns'] ?? null) . ')',
+        ($held['returns'] ?? null) === ['wfa_z' => $want['wfa_z']] && $held['unconfigurable']);
+    // a branch conflict in one reference leaves the whole field unjudged: nothing is returned, as on the page
+    $wflWhen = function ($when) {
+        return '@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[length]","hard":[-5,5],"when":"' . $when
+            . '","return":{"z":"[wfl_z]"}}';
+    };
+    $m = mod(dict(['length' => f('anthro_form', '', 'number_1dp'), 'wfl_z' => f('anthro_form')],
+        tag('"return":{"z":"[wfa_z]"}') . ' ' . $wflWhen("[sex]='1'") . ' ' . $wflWhen("[length]<>''")), ['2' => [EVT => row()]]);
+    $cf = $rf->invoke($m, ruleOn($m, 'weight'), 0, ['length' => '75.0'] + $vals, [], null, PID, '2', EVT, null, $res, ['returns' => true]);
+    check('... a branch conflict in one reference: nothing is returned (got ' . json_encode($cf['returns'] ?? null) . ')',
+        !isset($cf['returns']) && strpos(json_encode($cf['unconfigurable']), 'branch conflict') !== false);
+
+    // ---- 14) the rules that return values are judged and written first, on both paths ----------------------------------
+    $evRet = evTag(RET_ALL);
+    $m = evMod(dict(['wfa_z' => f('anthro_form', '@UVREQUIRED')], $evRet), ['2' => [1 => $enrol, 2 => $visit]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('an extended rule fills the z-score before @UVREQUIRED reads it (got ' . json_encode(logs($m, 'invalid-id-saved')) . ')',
+        written() === ['2' => [2 => $want]] && !logs($m, 'invalid-id-saved'));
+    $m = evMod(dict(['wfa_z' => f('anthro_form', '@UVREQUIRED={"when":"[enrol_arm_1][sex]<>\'\'"}')], $evRet), ['2' => [1 => $enrol, 2 => $visit]]);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('... and before an extended @UVREQUIRED reads it (got ' . json_encode(logs($m, 'invalid-id-saved')) . ')',
+        written() === ['2' => [2 => $want]] && !logs($m, 'invalid-id-saved'));
+    $m = evMod(dict(['wfa_z' => f('anthro_form', '@UVREQUIRED')], $evRet), ['2' => [1 => $enrol, 2 => $visit]]);
+    $calls = 0;
+    \REDCap::$saveErrorsFor = function () use (&$calls) { $calls++; throw new \RuntimeException('disk full'); };
+    save($m, 'anthro_form', 1, '2', 2);
+    check('a write that throws is logged, and the other rules are still judged (got ' . json_encode(logs($m, 'uvalidate-audit-error')) . ')',
+        $calls === 1 && count(logs($m, 'uvalidate-audit-error')) === 1 && count(logs($m, 'invalid-id-saved')) === 1);
+
+    // ---- 15) each context is written by a save of its own, the saved one first ------------------------------------------
+    $two = ['2' => [1 => $enrol, 2 => $visit, 3 => ['visit_date' => '2026-01-10', 'weight' => '11.0']]];
+    $w11 = wantFields(expected(11.0));
+    $m = evMod(dict([], $evRet), $two);
+    save($m, 'anthro_form', 1, '2', 2);
+    check('visit 1 saved: both visits are filled, one save each, visit 1 first (got ' . json_encode(array_column(\REDCap::$saves, 'data')) . ')',
+        count(\REDCap::$saves) === 2 && written(0) === ['2' => [2 => $want]] && written(1) === ['2' => [3 => $w11]]);
+    $m = evMod(dict([], $evRet), $two);
+    save($m, 'anthro_form', 1, '2', 3);
+    check('visit 2 saved: visit 2 is written first', count(\REDCap::$saves) === 2 && written(0) === ['2' => [3 => $w11]]);
+    $m = evMod(dict([], $evRet), $two);
+    \REDCap::$saveErrorsFor = function ($data) { return isset($data['2'][3]) ? ['2' => 'the form is locked'] : []; };
+    save($m, 'anthro_form', 1, '2', 2);
+    $err = logs($m, 'uvalidate-audit-error');
+    check('a locked visit 2: visit 1 is written all the same, and the refusal is logged once (got ' . json_encode($err) . ')',
+        pick(store('2', 2), TARGETS) === $want && pick(store('2', 3), TARGETS) === [] && count($err) === 1
+        && $err[0]['stage'] === 'return values' && count(\REDCap::$saves) === 2);
+    $m = evMod(dict([], $evRet), $two);
+    \REDCap::$saveErrorsFor = function ($data) { if (isset($data['2'][2])) throw new \RuntimeException('disk full'); return []; };
+    save($m, 'anthro_form', 1, '2', 2);
+    check('a write of visit 1 that throws: visit 2 is still written (got ' . json_encode(pick(store('2', 3), TARGETS)) . ')',
+        pick(store('2', 2), TARGETS) === [] && pick(store('2', 3), TARGETS) === $w11 && count(logs($m, 'uvalidate-audit-error')) === 1);
+
+    // ---- 16) "measureScale" and "unit": the bounds in the unit the field holds ----------------------------------------------
+    $entry = GrowthReference::entry('who-wfa', null);
+    $a365 = GrowthReference::axisValue($entry, ['comma' => false, 'dobDays' => 0, 'atDays' => 365]);
+    $grams = GrowthReference::measure('9600', false, '0.001');
+    $gWant = GrowthReference::outputs($entry, GrowthReference::table($entry), 'male', $a365['x'], $grams['y'],
+        ['lo' => '-2', 'hi' => '2'], 0, false, '0.001', 'g');
+    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,"unit":"g",' . RET_ALL), 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
+    save($m);
+    check('grams typed into a table in kg: the bounds are whole grams and the range says g (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => wantFields($gWant)]] && preg_match('/^\d{4,5} to \d{4,5} g$/', $gWant['range']) === 1
+        // the kg bounds are rounded inward to 0.1 kg; the gram bounds lie within those 100 g
+        && $gWant['z'] === $want['wfa_z'] && (int) $gWant['lower'] <= 1000 * (float) $want['wfa_lo'] && (int) $gWant['lower'] > 1000 * (float) $want['wfa_lo'] - 100
+        && (int) $gWant['upper'] >= 1000 * (float) $want['wfa_hi'] && (int) $gWant['upper'] < 1000 * (float) $want['wfa_hi'] + 100);
+    $m = mod(dict(['weight' => f('anthro_form', tag('"measureScale":0.001,' . RET_ALL), 'integer')]), ['2' => [EVT => row(['weight' => '9600'])]]);
+    save($m);
+    check('... without "unit" the range names no unit (not the table\'s kg) (got ' . json_encode(written()['2'][EVT]['wfa_rng'] ?? null) . ')',
+        (written()['2'][EVT]['wfa_rng'] ?? null) === $gWant['lower'] . ' to ' . $gWant['upper']);
+    $p = AnnotationRules::parseAllTags(tag('"measureScale":0.001,"unit":"g",' . RET_ALL));
+    check('"unit" with a reference is taken beside "measureScale"', !isset($p[0]['error']) && $p[0]['rangeUnit'] === 'g');
+    $p = AnnotationRules::parseAllTags(tag('"unit":"g",' . RET_ALL));
+    check('... and refused without it', isset($p[0]['error']) && strpos($p[0]['error'], 'unless "measureScale" is set') !== false);
+
+    // ---- 17) a whole-number bound goes into an integer field --------------------------------------------------------------------
+    $intDict = dict(['wfa_lo' => f('anthro_form', '', 'integer'), 'wfa_hi' => f('anthro_form', '', 'integer')], tag('"decimals":0,' . RET_ALL));
+    $m = mod($intDict, ['2' => [EVT => row()]]);
+    check('integer bound fields with "decimals":0 are taken', ($r = ruleOn($m, 'weight')) && empty($r['configError']));
+    save($m);
+    $i0 = wantFields(expected(9.6, '-2', '2', 0));
+    check('... and get whole numbers (got ' . json_encode(written()) . ')', written() === ['2' => [EVT => $i0]]
+        && ctype_digit($i0['wfa_lo']) && ctype_digit($i0['wfa_hi']));
+    refused(dict(['wfa_lo' => f('anthro_form', '', 'integer')]), 'set "decimals" to 0', 'an integer bound field with decimals is refused');
+
+    // ---- 18) a rule that returns values reads no returned value; two references share no field -----------------------------------
+    $chain = dict(['height' => f('anthro_form', '@UVRANGE={"reference":"who-lhfa","sex":"[sex]","male":"1","female":"2",'
+        . '"age":{"dob":"[dob]","at":"[visit_date]"},"hard":[-5,5],"when":"[wfa_z]<>\'\'","return":{"z":"[lh_z]"}}', 'number_1dp'),
+        'lh_z' => f('anthro_form')]);
+    $m = mod($chain, ['2' => [EVT => row()]]);
+    $h = ruleOn($m, 'height');
+    check('a rule reading another rule\'s returned field is refused, naming it (got ' . json_encode($h['configError'] ?? null) . ')',
+        $h && strpos((string) ($h['configError'] ?? ''), 'it reads "[wfa_z]", which the rule on "weight" returns a value to') !== false);
+    check('... and the rule that writes is not', empty(ruleOn($m, 'weight')['configError']));
+    $m = mod(dict([], tag('"when":"[wfa_z]=\'\'",' . RET_ALL)), ['2' => [EVT => row()]]);
+    check('a rule reading its own returned field is refused (got ' . json_encode(ruleOn($m, 'weight')['configError'] ?? null) . ')',
+        strpos((string) (ruleOn($m, 'weight')['configError'] ?? ''), 'which this rule returns a value to') !== false);
+    $m = mod(dict(['length' => f('anthro_form', '', 'number_1dp')], tag('"return":{"z":"[wfa_z]"}') . ' '
+        . '@UVRANGE={"reference":"who-wfl","sex":"[sex]","male":"1","female":"2","by":"[length]","hard":[-5,5],"return":{"z":"[wfa_z]"}}'),
+        ['2' => [EVT => row()]]);
+    check('two references returning to one field are refused (got ' . json_encode(ruleOn($m, 'weight')['configError'] ?? null) . ')',
+        strpos((string) (ruleOn($m, 'weight')['configError'] ?? ''), '"[wfa_z]" is returned to by both reference "who-wfa" and reference "who-wfl"') !== false);
+    $m = mod(dict([], tag('"when":"[sex]=\'1\'","return":{"z":"[wfa_z]"}') . ' ' . tag('"when":"[sex]=\'2\'","return":{"z":"[wfa_z]"}')),
+        ['2' => [EVT => row()]]);
+    check('two branches of one reference may share a field (one is active)', empty(ruleOn($m, 'weight')['configError']));
+
+    // ---- 19) the live fixture: section J of docs/testbed/RANGE_LIVE_ACCEPTANCE.md expects these -------------------------------
+    $fx = fopen(__DIR__ . '/../docs/testbed/uvrange_return_test_fields.csv', 'r');
+    fgetcsv($fx, 0, ',', '"', '\\');
+    $live = ['record_id' => f('uv_growth_return')];
+    while (($c = fgetcsv($fx, 0, ',', '"', '\\')) !== false) {
+        if (count($c) < 18) continue;
+        $live[$c[0]] = f($c[1], $c[17], $c[7], $c[3], $c[5]);
+    }
+    fclose($fx);
+    $m = mod($live, ['2' => [EVT => ['record_id' => '2', 'ugr_sex' => '1', 'ugr_dob' => '2025-01-10', 'ugr_visit' => '2026-01-10',
+        'ugr_weight' => '9.6', 'ugr_weight_g' => '9600']]]);
+    $errs = [];
+    foreach (rulesOf($m) as $r) $errs[$r['fields'][0]] = isset($r['configError']) ? (string) $r['configError'] : '';
+    check('live fixture: the four good rules are taken (got ' . json_encode(array_intersect_key($errs,
+        array_flip(['ugr_weight', 'ugr_head', 'ugr_height', 'ugr_weight_g']))) . ')',
+        $errs['ugr_weight'] === '' && $errs['ugr_head'] === '' && $errs['ugr_height'] === '' && $errs['ugr_weight_g'] === '');
+    check('live fixture: the four bad rules are refused for their own reason (J1)',
+        strpos($errs['ugr_bad_notes'], 'a returned value goes into a Text field') !== false
+        && strpos($errs['ugr_bad_clash_a'], 'a field takes the value of one rule') !== false
+        && strpos($errs['ugr_bad_clash_b'], 'a field takes the value of one rule') !== false
+        && strpos($errs['ugr_bad_chain'], 'it reads "[ugr_z]", which the rule on "ugr_weight" returns a value to') !== false);
+    save($m, 'uv_growth_return');
+    check('live fixture: a boy of 365 days, 9.6 kg and 9600 g (J2, J3, J15) (got ' . json_encode(written()) . ')',
+        written() === ['2' => [EVT => ['ugr_z' => '-0.04', 'ugr_low' => '7.8', 'ugr_high' => '11.9', 'ugr_range' => '7.8 to 11.9 kg',
+            'ugr_height_range' => '64 to 87 cm', 'ugr_range_g' => '7737 to 11989 g']]]);
 
     echo "growth_return_module_php: $n checks, $fail failure(s)\n";
     exit($fail ? 1 : 0);

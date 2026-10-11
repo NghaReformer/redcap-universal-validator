@@ -1055,18 +1055,27 @@ true.
 Yes. Add `return` to a growth rule and name the Text fields that get the
 values, all on the same form as the measurement:
 `"return":{"z":"[wfa_z]","lower":"[wfa_low]","upper":"[wfa_high]","range":"[wfa_range]"}`.
-`z` is the z-score, `lower` and `upper` are the measurements at the low and high
-`soft` limit (`"returnLimits":"hard"` uses the hard ones), and `range` is the
-two as text, such as `7.8 to 11.9 kg`. The bounds are rounded inward, to the
-decimals of the measured field unless `decimals` says otherwise, so the range
-never reaches past a limit. The page fills the fields while the form is
-used, and the save fills them again, for an import or the API as well, writing
-only what differs. When there is nothing to report (the sex is blank, the age
-is outside the reference) the fields are emptied, so make them `@READONLY`:
-a value typed there is replaced. A `range` field takes no validation; `z`,
-`lower` and `upper` take none or number validation with room for the
-decimals (two for `z`). The project setting "@UVRANGE returned values" keeps
-the page fill and turns off the write on save.
+`z` is the z-score, `lower` and `upper` are the smallest and largest
+measurements that pass the low and high `soft` limit (`"returnLimits":"hard"`
+uses the hard ones), and `range` is the two as text, such as `7.8 to 11.9 kg`.
+The bounds have the decimals of the measured field unless `decimals` says
+otherwise, and each is the last value the check accepts: one unit of the last
+decimal beyond it is flagged. With `"measureScale":0.001` (grams typed into a
+table in kg) the bounds are in grams; add `"unit":"g"` to name the unit in
+`range`. The page fills the fields while the form is used, and the save fills
+them again, for an import or the API as well, writing only what differs. The
+save writes these values before it checks the other rules, so a rule on
+`wfa_z` checks the new value. When there is nothing to report (the sex is
+blank, the age is outside the reference) the fields are emptied, so make them
+`@READONLY`, since a value typed there is replaced. A `range` field takes no
+validation; `z`, `lower` and `upper` take none or number validation with room
+for the decimals (two for `z`), and a bound with `"decimals":0` may go into an
+integer field. Two references on one field each fill their own fields, and
+cannot share one. A rule that returns values cannot read a returned field,
+its own or another rule's. When the date of birth or another input sits in
+another event, saving that event refills the fields in every visit that reads
+it. The project setting "@UVRANGE returned values" keeps the page fill and
+turns off the write on save.
 
 **What happens to a field marked with a missing data code?**
 A field marked with one of the project's missing data codes (REDCap's "M"

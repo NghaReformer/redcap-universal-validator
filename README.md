@@ -789,16 +789,20 @@ slip:
 
   For a boy of one year weighing 9.6 kg the fields read `-0.04`, `7.8`,
   `11.9` and `7.8 to 11.9 kg`. `z` is the z-score, `lower` and `upper` the
-  measurements at the low and high limit of `soft` (`"returnLimits":"hard"`
-  takes the hard limits), rounded inward to `decimals` (default: the decimals
-  of the measured field) so the range never reaches past a limit, and `range`
-  the two as text with the reference's unit. Give any of the four, each its
-  own field. A rule that returns only `z` needs no limits. The page fills the
-  fields as it opens and after each change; the save fills them again, also
-  for an API or import save, and writes only the fields that differ. A field
-  with nothing to report (sex blank, age outside the reference) is emptied:
-  the rule owns its fields, so mark them `@READONLY`. The project setting
-  "@UVRANGE returned values" turns the save-time write off.
+  smallest and largest measurements, written with `decimals` (default: the
+  decimals of the measured field), that pass the low and high limit of `soft`
+  (`"returnLimits":"hard"` takes the hard limits), and `range` the two as text
+  with the reference's unit. With `"measureScale":0.001` (grams typed into a
+  table in kg) the bounds are in grams, and `"unit":"g"` names the unit in
+  `range`. Give any of the four, each its own field. A rule that returns only
+  `z` needs no limits. The page fills the fields as it opens and after each
+  change; the save fills them again, also for an API or import save, writes
+  only the fields that differ, and judges every other rule after that write.
+  A field with nothing to report (sex blank, age outside the reference) is
+  emptied. The rule owns its fields, so mark them `@READONLY`. Two references
+  on one field each fill their own fields, and a rule that returns values may
+  not read a returned field. The project setting "@UVRANGE returned values"
+  turns the save-time write off.
 
 ## The Validation scan — checking data that is already saved
 

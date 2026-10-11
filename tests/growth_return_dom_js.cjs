@@ -318,6 +318,65 @@ function asText(o) { return JSON.stringify(o); }
     /higher than usual/.test(nMsg(env, 'weight').innerHTML) && by(els, 'wfa_z').value === '');
 }
 
+// ---- 6b) two references on one field: each fills its own fields at the same time ----------
+/* a second table: for a boy, z is (y/11 - 1)/0.1 (11 kg is z 0) */
+const T2 = Object.assign({}, T_DAYS, { title: 'Test 2', male: ROWS_M.map(() => [1, 11, 0.1]) });
+{
+  const els = form('1', '11', ['wfa_z', 'z2']);
+  els.push(el('grp', 'a'));
+  const A = rule({ rangeReturn: { z: 'wfa_z' } });
+  const B = rule({ rangeReference: 't2', when: "[grp]='a'", rangeReturn: { z: 'z2' } });
+  boot(els, { growth: { 't-days': T_DAYS, t2: T2 }, rules: [{ type: 'range', fields: ['weight'], branches: [A, B] }] });
+  check('two references: both z-scores are filled (got ' + by(els, 'wfa_z').value + ', ' + by(els, 'z2').value + ')',
+    by(els, 'wfa_z').value === '1.00' && by(els, 'z2').value === '0.00');
+  by(els, 'grp').value = 'b'; by(els, 'grp').fire('change');
+  check('the second reference applies nowhere: its field is emptied, the first keeps its own',
+    by(els, 'z2').value === '' && by(els, 'wfa_z').value === '1.00');
+  by(els, 'weight').value = '13'; by(els, 'weight').fire('change');
+  check('weight 13: the first refills, the second stays empty', by(els, 'wfa_z').value === '3.00' && by(els, 'z2').value === '');
+  by(els, 'grp').value = 'a'; by(els, 'grp').fire('change');
+  check('the second applies again and fills (got ' + by(els, 'z2').value + ')', by(els, 'z2').value === '1.82');
+}
+{
+  // a reference the page cannot judge (deferred) keeps its field; the other reference still fills its own
+  const els = form('1', '11', ['wfa_z', 'z2']);
+  by(els, 'z2').value = 'kept';
+  const A = rule({ rangeReturn: { z: 'wfa_z' } });
+  const B = rule({ rangeReference: 't2', deferred: true, rangeReturn: { z: 'z2' } });
+  boot(els, { growth: { 't-days': T_DAYS, t2: T2 }, rules: [{ type: 'range', fields: ['weight'], branches: [A, B] }] });
+  check('a deferred reference keeps its field, the other fills (got ' + by(els, 'wfa_z').value + ', ' + by(els, 'z2').value + ')',
+    by(els, 'wfa_z').value === '1.00' && by(els, 'z2').value === 'kept');
+}
+{
+  // two branches of the second reference apply at once: a branch conflict leaves the whole field unjudged,
+  // so neither reference writes (the save skips the field and keeps them too)
+  const els = form('1', '11', ['wfa_z', 'z2']);
+  by(els, 'wfa_z').value = 'kept'; by(els, 'z2').value = 'kept';
+  const A = rule({ rangeReturn: { z: 'wfa_z' } });
+  const B1 = rule({ rangeReference: 't2', when: "[sex]='1'", rangeReturn: { z: 'z2' } });
+  const B2 = rule({ rangeReference: 't2', when: "[weight]<>''", rangeReturn: { z: 'z2' } });
+  boot(els, { growth: { 't-days': T_DAYS, t2: T2 }, rules: [{ type: 'range', fields: ['weight'], branches: [A, B1, B2] }] });
+  check('a conflict in one reference: both references keep their fields (got ' + by(els, 'wfa_z').value + ', ' + by(els, 'z2').value + ')',
+    by(els, 'wfa_z').value === 'kept' && by(els, 'z2').value === 'kept');
+}
+
+// ---- 6c) "measureScale" and "unit": the bounds in the unit the field holds -----------------
+{
+  const els = form('1', '11000');
+  const env = boot(els, { growth: GROWTH, rules: [rule({ rangeMeasureScale: '0.001', rangeUnit: 'g', rangeDecimals: 0 })] });
+  const o = env.NS.growthLogic.outputs(T_DAYS, 'male', 2, 11, { lo: '-2', hi: '2' }, 0, false, '0.001', 'g');
+  const v = vals(els);
+  check('grams into a table in kg: z, whole-gram bounds and a range in g (got ' + asText(v) + ')',
+    v.wfa_z === '1.00' && v.wfa_lo === o.lower && v.wfa_hi === o.upper && v.wfa_rng === o.range
+    && /^\d+ to \d+ g$/.test(v.wfa_rng) && +v.wfa_lo > 7990 && +v.wfa_lo <= 8000 && +v.wfa_hi >= 12000 && +v.wfa_hi < 12010);
+}
+{
+  const els = form('1', '11000');
+  boot(els, { growth: GROWTH, rules: [rule({ rangeMeasureScale: '0.001', rangeDecimals: 0 })] });
+  check('... without "unit" the range names no unit, not the table\'s kg (got ' + by(els, 'wfa_rng').value + ')',
+    /^\d+ to \d+$/.test(by(els, 'wfa_rng').value));
+}
+
 // ---- 7) what the page cannot judge leaves the fields as they are -------------------------
 /* a page whose fields already hold a value: every box says "kept". Each page of a test is
    built from fresh elements: a field a page has bound is not bound a second time. */

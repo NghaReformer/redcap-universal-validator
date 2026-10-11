@@ -142,7 +142,8 @@ trait TemporalIntegration
                 // "_groups" keeps the rule's group count, which decides whether findings carry their group.
                 // A group that cannot be prepared is named in groupProblems, and the other groups go on.
                 $flatOut=['type'=>$rule['type']??'single','fields'=>$rule['fields'],'branches'=>[],'_groups'=>count(array_unique($group))];
-                $groupProblems=[];
+                // groupKeep: the groups not judged here, whose returned fields keep what they hold (ruleFindings).
+                $groupProblems=[];$groupKeep=array_map('strval',array_keys($unknownGroup));
                 foreach(array_keys($unknownGroup) as $gk)$groupProblems[]=$label($gk).': unresolved branch selector';
                 foreach($picks as $gk=>$p){
                     if(isset($unknownGroup[$gk]))continue;
@@ -151,15 +152,15 @@ trait TemporalIntegration
                     if($pick===null)continue;
                     $flat=array_merge($rule,$rule['branches'][$pick]);unset($flat['branches']);
                     $res=$this->temporalPrepared($flat,$shape,$node,$ctx,false,null);
-                    if($res['problems']){$groupProblems[]=$label($gk).': '.implode(', ',$res['problems']);continue;}
+                    if($res['problems']){$groupProblems[]=$label($gk).': '.implode(', ',$res['problems']);$groupKeep[]=(string)$gk;continue;}
                     $b=$res['rule'];unset($b['type'],$b['fields']);if(($b['when']??null)!=='1=0')unset($b['when']);
                     $flatOut['branches'][$pick]=$b;
                 }
                 // Every group named a problem: no part of the field is judged, so the problems are the
                 // rule's, as when every selector is unresolved.
                 if($groupProblems&&count($groupProblems)===count(array_unique($group)))return ['rule'=>$out,'problems'=>[implode('; ',$groupProblems)]];
-                if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[],'groupProblems'=>$groupProblems];}
-                return ['rule'=>$flatOut,'problems'=>[],'groupProblems'=>$groupProblems];
+                if(!$flatOut['branches']){unset($out['branches']);$out['when']='1=0';return ['rule'=>$out,'problems'=>[],'groupProblems'=>$groupProblems,'groupKeep'=>$groupKeep];}
+                return ['rule'=>$flatOut,'problems'=>[],'groupProblems'=>$groupProblems,'groupKeep'=>$groupKeep];
             }
             if(count($active)>1)return ['rule'=>$out,'problems'=>['multiple active branches']];
             $pick=$active?$active[0]:$fallback;
@@ -323,10 +324,11 @@ trait TemporalIntegration
         ksort($out);return array_values($out);
     }
 
-    private function auditTemporalRules(array $rules,$pid,$record,$instrument,$event,$instance,$logMode)
+    /** $only: the indexes of the rules this pass audits (null = all); $rules as a whole decides the fields claimed twice. */
+    private function auditTemporalRules(array $rules,$pid,$record,$instrument,$event,$instance,$logMode,?array $only=null)
     {
-        $extended=[];$dd=$this->dataDictionary($pid)?:[];
-        foreach($rules as $i=>$r){if(!empty($r['configError'])||!TemporalRules::extended($r))continue;
+        $extended=[];$dd=$this->dataDictionary($pid)?:[];$only=$only===null?null:array_fill_keys($only,true);
+        foreach($rules as $i=>$r){if(!empty($r['configError'])||!TemporalRules::extended($r)||($only!==null&&!isset($only[$i])))continue;
             // A field the rule only searches ("also") does not re-check it when saved.
             foreach(TemporalRules::fields($r,false) as $f)if($instrument===null||($dd[$f]['form_name']??null)===$instrument){$extended[$i]=$r;break;}}
         if(!$extended)return;
@@ -350,7 +352,10 @@ trait TemporalIntegration
                 if($prepared['problems']){$this->logUnconfigurable($i,$fields,'Extended validation unavailable: '.implode(', ',$prepared['problems']),$form,$ctx['event_id'],$ctx['instance']);continue;}
                 // One branch group's problem: logged, and the rest of the field is still judged.
                 if(!empty($prepared['groupProblems']))$this->logUnconfigurable($i,$fields,'Extended validation unavailable for part of this field: '.implode('; ',$prepared['groupProblems']),$form,$ctx['event_id'],$ctx['instance']);
-                $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance']);
+                // The prepared rule carries only the branches picked here: the rule as written says
+                // which fields it returns to, so a branch not picked empties its own (ruleFindings).
+                $this->auditRule($prepared['rule'],$i,$ctx['values'],$dupes,array_fill_keys($fields,true),$logMode,$pid,$record,$form,$ctx['event_id'],$ctx['instance'],
+                    null,[],['returnOwner'=>$rule,'returnKeep'=>$prepared['groupKeep']??[]]);
             }
         }
     }

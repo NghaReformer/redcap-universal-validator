@@ -87,23 +87,24 @@ check('zText: never exponent notation, never "-0.00"', G::zText(-0.0) === '0.00'
     && G::zText(-1e-300) === '0.00');
 
 // The values an @UVRANGE rule returns: the inverse of the z-score, the bounds
-// rounded inward, the texts. tests/growth_js.cjs runs the same cases.
-check('fixture: return-value sections load', count($fx['valueAt']) > 10 && count($fx['boundUnits']) > 5
+// the verdict passes, the texts. tests/growth_js.cjs runs the same cases.
+check('fixture: return-value sections load', count($fx['valueAt']) > 10 && count($fx['bound']) > 5
     && count($fx['unitsText']) > 5 && count($fx['outputs']) > 10);
 foreach ($fx['valueAt'] as $c) {
     $got = G::valueAt($c['z'], $c['lms'], $c['restricted']);
     $ok = $c['want'] === null ? $got === null : ($got !== null && abs($got - $c['want']) <= 1e-9 * max(1.0, abs($c['want'])));
     check('valueAt: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $ok);
 }
-foreach ($fx['boundUnits'] as $c) {
-    $got = G::boundUnits($c['y'], $c['decimals'], $c['up']);
-    check('boundUnits: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
+foreach ($fx['bound'] as $c) {
+    $got = G::bound($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['lim'], $c['decimals'], $c['low'], $c['scale']);
+    check('bound: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
 }
 foreach ($fx['unitsText'] as $c) {
     check('unitsText(' . $c[0] . ', ' . $c[1] . ') => ' . $c[2] . ' (got ' . G::unitsText($c[0], $c[1]) . ')', G::unitsText($c[0], $c[1]) === $c[2]);
 }
 foreach ($fx['outputs'] as $c) {
-    $got = G::outputs($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y'], $c['limits'], $c['decimals'], $c['comma']);
+    $got = G::outputs($R[$c['ref']], $R[$c['ref']], $c['sex'], $c['x'], $c['y'], $c['limits'], $c['decimals'], $c['comma'],
+        isset($c['scale']) ? $c['scale'] : null, isset($c['unit']) ? $c['unit'] : null);
     check('outputs: ' . $c['name'] . ' (got ' . json_encode($got) . ')', $got === $c['want']);
 }
 check('markText: a comma only when asked', G::markText('7.7', true) === '7,7' && G::markText('7.7', false) === '7.7'
@@ -182,6 +183,50 @@ foreach ($golden['points'] as $p) {
 }
 check('golden: every point equals WHO\'s own code (' . $bad . ' mismatches)', $bad === 0);
 check('golden: every bundled reference is covered', count($seen) === 12);
+
+// A bound is the edge the verdict draws: the measurement at it scores a
+// two-decimal z-score inside the limit, one unit beyond it does not. Random
+// rows of every bundled reference, limits with two and three decimals, grams.
+{
+    $seed = 90210;
+    $pass = function ($e, $t, $sex, $x, $k, $d, $lim, $low, $scale) {
+        if ($k < 1) return false;
+        $m = G::measure(G::unitsText($k, $d), false, $scale);
+        if ($m['state'] !== 'ok') return false;
+        $z = G::zScore($e, $t, $sex, $x, $m['y']);
+        if ($z['state'] !== 'ok') return false;
+        $c = \INSPIRE\UniversalValidator\Logic::numCompare($z['z'], $lim);
+        return $low ? $c >= 0 : $c <= 0;
+    };
+    $n = 0;
+    $badEdge = 0;
+    $ex = '';
+    foreach ($cat['references'] as $id => $e) {
+        $t = G::table($e);
+        $lo = (float) $e['valid']['min'];
+        $hi = isset($e['valid']['max']) ? (float) $e['valid']['max'] : (float) $e['valid']['below'] - 1;
+        for ($i = 0; $i < 60; $i++) {
+            $x = $lo + (minstd($seed) % 10000) / 10000 * ($hi - $lo);
+            if ($e['axis'] === 'age') $x = floor($x);
+            $sex = minstd($seed) % 2 ? 'male' : 'female';
+            $lim = minstd($seed) % 2 ? sprintf('%.3f', (minstd($seed) % 7801 - 3900) / 1000)
+                : sprintf('%.2f', (minstd($seed) % 781 - 390) / 100);
+            $scale = minstd($seed) % 4 === 0 ? '0.001' : null;
+            $d = $scale === null ? minstd($seed) % 4 : minstd($seed) % 2;
+            $low = minstd($seed) % 2 === 1;
+            $k = G::bound($e, $t, $sex, $x, $lim, $d, $low, $scale);
+            if ($k === null) continue;
+            $n++;
+            $beyond = $low ? $k - 1 : $k + 1;
+            if (!$pass($e, $t, $sex, $x, $k, $d, $lim, $low, $scale) || $pass($e, $t, $sex, $x, $beyond, $d, $lim, $low, $scale)) {
+                $badEdge++;
+                if ($ex === '') $ex = ': ' . $id . ' ' . $sex . ' ' . $x . ' ' . $lim . ' ' . $d . ' ' . ($low ? 'low' : 'high') . ' ' . $k;
+            }
+        }
+    }
+    check('bound: the verdict passes the bound and not one unit beyond, ' . $n . ' random rows (' . $badEdge . ' wrong' . $ex . ')',
+        $n > 500 && $badEdge === 0);
+}
 
 // ---- 3. 5,000 random points --------------------------------------------------------
 
