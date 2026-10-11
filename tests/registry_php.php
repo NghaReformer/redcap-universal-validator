@@ -78,6 +78,8 @@ check('branch keys equal the old Branching::BRANCH_KEYS, in order, then the new 
     'existsIn', 'existsEvent', 'existsScope', 'existsMatch', 'existsSurveys', 'existsLocal', 'existsTargets',
     // 2.4.0 @UVEXISTS in another project
     'existsProject', 'existsPid', 'existsRemoteTargets',
+    // @UVEXISTS "return": the map, the fields it writes, the ones that hold numbers
+    'existsReturn', 'existsReturnFields', 'existsReturnNumbers',
     // 2.5.0 @UVRANGE
     'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
@@ -108,6 +110,8 @@ check('client keys equal the old engine DEFAULT_KEYS, in order, then the new mod
     'snapshotGate', 'windowNotFutureOff',
     // 2.3.0 @UVEXISTS (where it looks stays on the server)
     'existsLocal', 'existsSurveys',
+    // @UVEXISTS "return": the page learns the fields it fills, never where the values come from
+    'existsReturnFields', 'existsReturnNumbers',
     // 2.5.0 @UVRANGE
     'rangeSoftLo', 'rangeSoftHi', 'rangeHardLo', 'rangeHardHi', 'rangeSoftBlock', 'rangeHardBlock',
     'rangeUnit', 'rangeSoftText', 'rangeHardText', 'decimalComma', 'rangeComputed',
@@ -233,17 +237,28 @@ check('no uniform branch keys elsewhere', ModeRegistry::uniformBranchKeys('check
 check('range returns values through returnsRange, from rangeReturn',
     ModeRegistry::returns('range') === ['method' => 'returnsRange', 'targets' => 'rangeReturn',
                                         'noSave' => 'range-return-no-save', 'sameNumber' => 'always']);
+// @UVEXISTS "return": values of the entry found. A Text field holding "007"
+// is not "7", so only fields that hold numbers compare as numbers.
+check('exists returns values through returnsExists, from existsReturn',
+    ModeRegistry::returns('exists') === ['method' => 'returnsExists', 'targets' => 'existsReturn', 'noSave' => 'exists-return-no-save']);
 $cfgKeys = [];
 foreach (json_decode(file_get_contents($root . '/config.json'), true)['project-settings'] as $s) $cfgKeys[$s['key']] = $s['type'];
-foreach (['range'] as $rm) {
+foreach (['range', 'exists'] as $rm) {
     $ns = ModeRegistry::returns($rm)['noSave'];
     check($rm . ': its "noSave" is a checkbox project setting', isset($cfgKeys[$ns]) && $cfgKeys[$ns] === 'checkbox');
 }
 check('no other mode returns values', ModeRegistry::returns('check') === null && ModeRegistry::returns('unique') === null
-    && ModeRegistry::returns('window') === null && ModeRegistry::returns('exists') === null);
+    && ModeRegistry::returns('window') === null && ModeRegistry::returns('choices') === null);
 check('rangeReturn is a branch key and a client key, not a server-only one',
     in_array('rangeReturn', ModeRegistry::branchKeys('range'), true) && in_array('rangeReturn', ModeRegistry::clientKeys(), true)
     && !in_array('rangeReturn', ModeRegistry::serverKeys(), true));
+check('existsReturn (where the values come from) stays on the server; the page gets the fields it fills',
+    in_array('existsReturn', ModeRegistry::serverKeys(), true) && !in_array('existsReturn', ModeRegistry::clientKeys(), true)
+    && in_array('existsReturnFields', ModeRegistry::clientKeys(), true) && in_array('existsReturnNumbers', ModeRegistry::clientKeys(), true)
+    && in_array('existsReturn', ModeRegistry::branchKeys('exists'), true));
+check('returnFields: an exists rule owns the fields here, not the fields searched',
+    ModeRegistry::returnFields(['type' => 'exists', 'fields' => ['x'], 'existsReturn' => ['lab_site' => 'site_here', 'record' => 'rec_here']])
+    === ['site_here', 'rec_here']);
 $rr = ['type' => 'range', 'fields' => ['w'], 'rangeReturn' => ['z' => 'a_z', 'range' => 'a_rng'],
        'branches' => [['when' => "[s]='1'", 'rangeReturn' => ['z' => 'a_z', 'lower' => 'a_lo']], ['when' => null, 'rangeReturn' => ['upper' => 'a_hi']]]];
 check('returnFields: the fields of the rule and of every branch, once', ModeRegistry::returnFields($rr) === ['a_z', 'a_rng', 'a_lo', 'a_hi']);

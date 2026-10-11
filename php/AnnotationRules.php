@@ -66,6 +66,9 @@ class AnnotationRules
     /** Cap on @UVEXISTS "match" pairs, so a lookup stays one narrow read. */
     const MAX_EXISTS_MATCH = 5;
 
+    /** Cap on @UVEXISTS "return" pairs: the fields one lookup writes into this form. */
+    const MAX_EXISTS_RETURN = 10;
+
     /**
      * An @UVEXISTS "project": a project id, or an alias the project's own
      * settings map to one (so a data dictionary moves between servers unchanged).
@@ -679,6 +682,12 @@ class AnnotationRules
      * "project" (a project id or alias) looks in another project instead. The
      * searched fields are then that project's ("existsRemoteTargets"), so they
      * never enter this project's field checks, read set or reverse dependencies.
+     * "return" writes fields of the entry found into fields of this form
+     * (field there => [field here], "record" for the record ID found):
+     *   "return":{"lab_site":"[result_site]","record":"[lab_record]"}
+     * It becomes existsReturn (the map, kept on the server: the page never
+     * learns where the values come from) and existsReturnFields (the fields
+     * here, which the page fills).
      */
     private static function parseExistsValue($val, array $opts = [])
     {
@@ -704,7 +713,7 @@ class AnnotationRules
             return ['error' => self::TAG_EXISTS . ' JSON does not parse ('
                 . json_last_error_msg() . ') — use double quotes around keys and string values.'];
         }
-        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive'];
+        $allowed = ['in', 'project', 'event', 'scope', 'match', 'when', 'message', 'blockSave', 'surveys', 'caseSensitive', 'return'];
         $unknown = array_diff(array_keys($cfg), $allowed);
         if ($unknown) {
             return ['error' => 'unknown ' . self::TAG_EXISTS . ' option(s): ' . implode(', ', $unknown)
@@ -754,6 +763,31 @@ class AnnotationRules
                 $match[$t] = $l;
             }
             $out['existsMatch'] = $match;
+        }
+        if (array_key_exists('return', $cfg)) {
+            $r = $cfg['return'];
+            if (!is_array($r) || !$r || array_keys($r) === range(0, count($r) - 1)) {
+                return ['error' => '"return" must be an object of field there to field of this form, e.g. '
+                    . '{"lab_site":"[result_site]"} ("record" there for the record ID found).'];
+            }
+            $ret = [];
+            $seen = [];     // field here => the field there written to it
+            foreach ($r as $source => $target) {
+                $s = strtolower(trim((string) $source));
+                $t = is_string($target) ? self::existsSource($target) : null;
+                if ($t === false) return ['error' => self::EXISTS_RECORD_FIELD];
+                if ($t === null || $t === 'record') {
+                    return ['error' => '"return" value for "' . $s . '" must be one field reference of this form, such as "[result_site]".'];
+                }
+                if (isset($ret[$s])) return ['error' => '"return" names "' . $s . '" twice.'];
+                if (isset($seen[$t])) {
+                    return ['error' => '"return" writes "' . $seen[$t] . '" and "' . $s . '" to the same field "[' . $t . ']" — give each its own.'];
+                }
+                $ret[$s] = $t;
+                $seen[$t] = $s;
+            }
+            $out['existsReturn'] = $ret;
+            $out['existsReturnFields'] = array_values($ret);
         }
         if (isset($cfg['surveys'])) {
             if (!is_bool($cfg['surveys'])) return ['error' => '"surveys" must be true or false (unquoted).'];
@@ -1933,7 +1967,11 @@ class AnnotationRules
                 . '"scope":"event" means the event of the entry being checked.';
         }
         if ($in === 'record') {
-            if (isset($frag['existsEvent'])) $errors[] = '"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            // With "return", "event" names the event whose values are copied
+            // from the record found; the record ID is still looked up as a whole.
+            if (isset($frag['existsEvent']) && !isset($frag['existsReturn'])) {
+                $errors[] = '"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
+            }
             if ($scope === 'event') $errors[] = '"scope":"event" does not apply to "in":"record" — a record ID belongs to the whole record.';
             if (isset($frag['existsMatch'])) $errors[] = '"match" needs "in" to name a field; a record ID has nothing to match.';
         }
@@ -1979,6 +2017,9 @@ class AnnotationRules
                     . 'are not shared between projects. Use "event" to name one event of the other project.';
             }
         }
+        if (isset($frag['existsReturn'])) {
+            $errors = array_merge($errors, self::existsReturnErrors($frag, $in));
+        }
         // The lookup reads saved values of one project through one read; an
         // event/instance reference in "when" would need the extended pipeline,
         // which this tag does not run yet.
@@ -1988,6 +2029,54 @@ class AnnotationRules
                 . 'fields of this entry.';
         }
         return array_merge($errors, self::checkCommon($frag, $opts));
+    }
+
+    /**
+     * The "return" part of an exists rule: pairs of field names under the cap,
+     * one field here per value, and none of them a field the rule reads or
+     * searches here. A survey never gets the values: a respondent holds no
+     * rights that could be checked, so "return" and "surveys" cannot go
+     * together. Whether the fields exist, are on this form and can hold the
+     * values is checked with the dictionaries in hand
+     * (UniversalValidator::existsReturnProblem).
+     */
+    private static function existsReturnErrors(array $frag, $in)
+    {
+        $ret = $frag['existsReturn'];
+        if (!is_array($ret) || !$ret) return ['"return" must name at least one field.'];
+        if (count($ret) > self::MAX_EXISTS_RETURN) return ['"return" is limited to ' . self::MAX_EXISTS_RETURN . ' fields.'];
+        $errors = [];
+        $local = isset($frag['existsProject']) ? [] : [(string) $in => true];
+        foreach ((isset($frag['existsMatch']) && is_array($frag['existsMatch'])) ? $frag['existsMatch'] : [] as $t => $l) {
+            $local[(string) $l] = true;
+            if (!isset($frag['existsProject'])) $local[(string) $t] = true;
+        }
+        $seen = [];
+        foreach ($ret as $s => $t) {
+            if (!is_string($s) || ($s !== 'record' && !preg_match('/^[a-z][a-z0-9_]*$/', $s))) {
+                $errors[] = '"return" names ' . json_encode($s) . ', which is not a field name (or "record" for the record ID found).';
+                break;
+            }
+            if (!is_string($t) || !preg_match('/^[a-z][a-z0-9_]*$/', $t) || $t === 'record') {
+                $errors[] = '"return" value for "' . $s . '" must be one field reference of this form, such as "[result_site]".';
+                break;
+            }
+            if (isset($seen[$t])) {
+                $errors[] = '"return" writes "' . $seen[$t] . '" and "' . $s . '" to the same field "[' . $t . ']" — give each its own.';
+                break;
+            }
+            $seen[$t] = $s;
+            if (isset($local[$t])) {
+                $errors[] = '"return" writes to "[' . $t . ']", which this lookup reads or searches — write the value to a field of its own.';
+                break;
+            }
+        }
+        if (!empty($frag['existsSurveys'])) {
+            $errors[] = '"return" cannot be used with "surveys": a survey respondent has no rights the module could check '
+                . 'before showing values of another record. Drop "surveys" (the save still fills the fields when a person '
+                . 'with rights saves the record).';
+        }
+        return $errors;
     }
 
     /**

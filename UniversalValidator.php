@@ -142,6 +142,9 @@ class UniversalValidator extends AbstractExternalModule
         // entered, so it is not audited a second time.
         if (self::$returnWriting) return;
         $this->returnQueue = [];
+        // One import saves many records in one request: a lookup answered for
+        // an earlier one may no longer be true.
+        $this->existsLookupMemo = [];
         try {
             // $project_id comes straight from the hook and is reliable in every
             // save context (form, survey, API, import, cron); $this->getProjectId()
@@ -682,7 +685,9 @@ class UniversalValidator extends AbstractExternalModule
         $ret = null;
         if (!empty($meta['returns'])) {
             $rt = ModeRegistry::returns($mode);
-            if ($rt !== null) $ret = $this->{$rt['method']}($rule, $values, $dupes, $onForm, $project_id, $resolution, $meta);
+            // The record and event go last: a lookup ("returnsExists") needs
+            // them, a growth rule ("returnsRange") does not take them.
+            if ($rt !== null) $ret = $this->{$rt['method']}($rule, $values, $dupes, $onForm, $project_id, $resolution, $meta, $record, $event_id);
         }
 
         if ($codes && ModeRegistry::missingCodes($mode) === 'skip') {
@@ -794,6 +799,79 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         return $out;
+    }
+
+    /**
+     * What an exists rule with "return" copies into this record's fields in
+     * one context, for the save (ReturnedValues): 'values' is field here =>
+     * the value REDCap stores, "" emptying the field; null keeps what every
+     * field holds, with the reason in 'problem' when it is one to log. Null
+     * when the tagged field is not on the form audited. The browser twin is
+     * QRIDExistsInit, fed by existsCheck.
+     *
+     * The rule owns its fields: a blank value (or a Missing Data Code) and a
+     * value that is not found empty them. Values of another record go only to
+     * a person who may read them, so nothing is copied when the save has no
+     * signed-in user (a survey, a job, an API call REDCap runs without one),
+     * nor when the person who saved may not open the form of every field
+     * copied (in another project, crossLookup asks the same). Nothing is
+     * copied when the entries found disagree on the values, or are all in
+     * other Data Access Groups than the saver's, or when the lookup could not
+     * be made (findingsExists logs that one).
+     */
+    private function returnsExists(array $rule, array $values, array $dupes, $onForm, $project_id, array $resolution, array $meta, $record = null, $event_id = null)
+    {
+        $ret = (isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [];
+        if (!$ret) return ['values' => [], 'problem' => null, 'field' => null];
+        $field = null;
+        foreach ((isset($rule['fields']) && is_array($rule['fields'])) ? $rule['fields'] : [] as $f) {
+            if (isset($dupes[$f])) continue;
+            if ($onForm !== null && !isset($onForm[$f])) continue;
+            $field = $f;
+            break;
+        }
+        if ($field === null) return null;
+        $keep = function ($why = null) use ($field) { return ['values' => null, 'problem' => $why, 'field' => $field]; };
+        $targets = '"[' . implode(']", "[', array_values($ret)) . ']"';
+        $codes = (isset($meta['missingCodes']) && is_array($meta['missingCodes'])) ? $meta['missingCodes'] : [];
+        $raw = (isset($values[$field]) && !is_array($values[$field])) ? (string) $values[$field] : '';
+        if (Logic::lookupTrim($raw) === '' || ($codes && self::isMissingCode($raw, $codes))) {
+            return ['values' => array_fill_keys(array_values($ret), ''), 'problem' => null, 'field' => $field];
+        }
+        $user = $this->currentUsername();
+        if ($user === null) return $keep();
+        if (empty($rule['existsPid'])) {
+            $sources = array_values(array_diff(array_map('strval', array_keys($ret)), ['record']));
+            if ($sources && $this->firstUnreadableField($project_id, $user, $sources) !== null) {
+                return $keep('the person who saved may not open every form "return" copies from, so ' . $targets
+                    . ' keep their values — the next save by someone who may fills them');
+            }
+        }
+        $lv = [];
+        foreach ((isset($rule['existsLocal']) && is_array($rule['existsLocal'])) ? $rule['existsLocal'] : [] as $lf) {
+            $state = isset($resolution[$lf]) ? $resolution[$lf] : 'ok';
+            $v = isset($values[$lf]) ? $values[$lf] : '';
+            // unresolved: findingsExists reports it; blank: nothing to narrow by yet
+            if ($state !== 'ok' || is_array($v) || Logic::lookupTrim($v) === '' || ($codes && self::isMissingCode($v, $codes))) return $keep();
+            $lv[$lf] = Logic::lookupTrim($v);
+        }
+        $r = $this->existsLookup($project_id, $rule, Logic::lookupTrim($raw), $lv, $event_id, $record, $meta);
+        if ($r['state'] === 'not-found') return ['values' => array_fill_keys(array_values($ret), ''), 'problem' => null, 'field' => $field];
+        if ($r['state'] !== 'found') return $keep();
+        if (isset($r['returned']) && is_array($r['returned'])) {
+            $out = [];
+            foreach ($ret as $s => $t) $out[$t] = isset($r['returned'][$s]) ? (string) $r['returned'][$s] : '';
+            return ['values' => $out, 'problem' => null, 'field' => $field];
+        }
+        if (isset($r['returnConflict'])) {
+            return $keep((int) $r['returnConflict'] . ' saved entries hold this value with different values to copy, so ' . $targets
+                . ' keep their values — narrow the lookup with "match"');
+        }
+        if (!empty($r['returnWithheld'])) {
+            return $keep('the value is saved only outside the Data Access Group of the person who saved, so ' . $targets
+                . ' keep their values');
+        }
+        return $keep();
     }
 
     /**
@@ -922,6 +1000,34 @@ class UniversalValidator extends AbstractExternalModule
      */
     private function existsLookup($pid, array $rule, $value, array $locals, $eventId, $record, array $meta = [])
     {
+        // A save asks once per rule and value: the verdict (findingsExists) and
+        // the values copied (returnsExists) share the answer, so another
+        // project is read, counted and logged once. The scan answers from its
+        // own index and would only fill the memo record by record.
+        if (!empty($meta['existsIndex'])) return $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
+        $mk = json_encode([(int) $pid, self::existsRuleKey($rule), (string) $value, $locals, (string) $eventId, (string) $record,
+            array_key_exists('dag', $meta) ? $meta['dag'] : '~', isset($meta['callerGroup']) ? $meta['callerGroup'] : null]);
+        if (!isset($this->existsLookupMemo[$mk])) {
+            $this->existsLookupMemo[$mk] = $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
+        }
+        return $this->existsLookupMemo[$mk];
+    }
+
+    /** @var array existsLookup answers, per save (redcap_save_record clears it) */
+    private $existsLookupMemo = [];
+
+    /** What makes two exists rules ask the same question. */
+    private static function existsRuleKey(array $rule)
+    {
+        $k = [];
+        foreach (['existsIn', 'existsPid', 'existsEvent', 'existsScope', 'existsMatch', 'existsReturn', 'caseSensitive'] as $f) {
+            $k[$f] = isset($rule[$f]) ? $rule[$f] : null;
+        }
+        return $k;
+    }
+
+    private function existsLookupOnce($pid, array $rule, $value, array $locals, $eventId, $record, array $meta)
+    {
         if (!empty($rule['existsPid'])) {
             return $this->crossLookup($pid, $rule, $value, $locals, !empty($meta['existsIndex']) ? 'scan' : 'audit');
         }
@@ -1010,7 +1116,7 @@ class UniversalValidator extends AbstractExternalModule
                 }
                 $mark = $spec['recordMark'];
                 $hit = self::recordIdMatch($ids, $value, $spec['fold'], $scope, $dag, $self, $mark);
-                if ($hit !== null) return ['state' => 'found'] + $hit;
+                if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 // REDCap finds a record by its exact name only, so a value that
                 // differs from a record ID in letter case, or a number written
                 // another way ("007" for record 7), needs every record ID.
@@ -1019,14 +1125,19 @@ class UniversalValidator extends AbstractExternalModule
                     $all = $this->recordIdsOf($pid, $this->fullReadGate($pid, $opts));
                     if ($all === null) return $unknown + ['why' => 'the record IDs could not be read just now'];
                     $hit = self::recordIdMatch($all, $value, $spec['fold'], $scope, $dag, $self, $mark);
-                    if ($hit !== null) return ['state' => 'found'] + $hit;
+                    if ($hit !== null) return $this->recordFoundWithReturns($pid, $spec, $hit, $prefer);
                 }
                 return $this->existsMiss($pid, $scope, $opts, $dag);
             }
-            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => array_keys($spec['target']),
+            $fields = array_keys($spec['target']);
+            foreach ($spec['returns'] as $f) if ($f !== 'record') $fields[] = $f;
+            $params = ['project_id' => $pid, 'return_format' => 'array', 'fields' => array_values(array_unique($fields)),
                        'exportDataAccessGroups' => true];
             if ($spec['event'] !== null) $params['events'] = [$spec['event']];
-            if ($narrow) {
+            // A rule that copies values ("return") must see every entry that
+            // holds the value, to tell one answer from several: the narrowed
+            // read can miss one (collisionFilterLogic), so it reads in full.
+            if ($narrow && !$spec['returns']) {
                 $fl = self::collisionFilterLogic(array_keys($spec['target']), $spec['target'], $spec['fold'], $spec['marks']);
                 if ($fl !== null) {
                     try {
@@ -1043,8 +1154,17 @@ class UniversalValidator extends AbstractExternalModule
             }
             $data = \REDCap::getData($params);
             if (!is_array($data)) return $unknown;
-            $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer);
-            if ($hit !== null) return ['state' => 'found'] + $hit;
+            if ($spec['returns']) {
+                $hits = self::existsHitsIn($data, $spec, $scope, $dag);
+                if ($hits) {
+                    $best = self::bestExistsHit($hits, $prefer);
+                    return ['state' => 'found', 'record' => $best['record'], 'dag' => $best['dag']]
+                        + self::existsReturnOutcome($hits, $spec['returns'], $prefer);
+                }
+            } else {
+                $hit = self::existsMatchIn($data, $spec, $scope, $dag, $prefer);
+                if ($hit !== null) return ['state' => 'found'] + $hit;
+            }
             // The read just made is the evidence of what this request can see
             // there; it spares existsMiss a second read of that project.
             if (!empty($opts['foreign'])) $this->noteGroupsSeen($pid, $data, false);
@@ -1199,9 +1319,11 @@ class UniversalValidator extends AbstractExternalModule
      * searched field plus the "match" targets, trimmed), each target's
      * Logic::lookupKey ('keys'), how they were made ('fold': letter case is
      * ignored unless the rule is caseSensitive; 'marks': numberMarkOf of each
-     * searched field of project $pid), and the one event id to search
-     * ('event', null = every event). Null when the event cannot be resolved or
-     * a "match" value is blank.
+     * searched field of project $pid), the one event id to search ('event',
+     * null = every event), and the fields whose values the rule copies
+     * ('returns', "return": fields of project $pid, "record" for the record ID
+     * found; [] when it copies nothing). Null when the event cannot be
+     * resolved or a "match" value is blank.
      */
     private function existsSpec($pid, array $rule, $value, array $locals, $eventId)
     {
@@ -1234,8 +1356,31 @@ class UniversalValidator extends AbstractExternalModule
         }
         // A saved Missing Data Code is no value: "NA" saved there is not found
         // by "na" typed here, letter case ignored or not.
+        $returns = [];
+        foreach ((isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [] as $s => $_) {
+            $returns[] = (string) $s;
+        }
         return ['in' => $in, 'target' => $target, 'keys' => $keys, 'fold' => $fold, 'marks' => $marks,
-                'recordMark' => $recordMark, 'codes' => $this->missingDataCodes($pid), 'event' => $event];
+                'recordMark' => $recordMark, 'codes' => $this->missingDataCodes($pid), 'event' => $event,
+                'returns' => $returns];
+    }
+
+    /**
+     * Whether one row of an exported data set holds every target value (by
+     * existsSpec's keys): null when it does not, else whether it holds each
+     * spelled exactly as looked up. A saved Missing Data Code matches nothing.
+     */
+    private static function existsRowMatch(array $row, array $spec)
+    {
+        $exact = true;
+        foreach ($spec['target'] as $f => $tv) {
+            $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
+            if ($spec['codes'] && self::isMissingCode($rv, $spec['codes'])) return null;
+            if ($rv === $tv) continue;
+            $exact = false;
+            if (Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) return null;
+        }
+        return $exact;
     }
 
     /**
@@ -1256,15 +1401,8 @@ class UniversalValidator extends AbstractExternalModule
             if ($scope === 'dag' && $rdag !== $dag) continue;
             foreach (self::recordContexts($node) as $ctx) {
                 if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
-                $row = $ctx['values'];
-                $exact = true;
-                foreach ($spec['target'] as $f => $tv) {
-                    $rv = (isset($row[$f]) && !is_array($row[$f])) ? Logic::lookupTrim($row[$f]) : '';
-                    if ($spec['codes'] && self::isMissingCode($rv, $spec['codes'])) continue 2;
-                    if ($rv === $tv) continue;
-                    $exact = false;
-                    if (Logic::lookupKey($rv, $spec['fold'], $spec['marks'][$f]) !== $spec['keys'][$f]) continue 2;
-                }
+                $exact = self::existsRowMatch($ctx['values'], $spec);
+                if ($exact === null) continue;
                 $score = ($prefer !== null && $rdag === $prefer ? 2 : 0) + ($exact ? 1 : 0);
                 if ($score > $bestScore) {
                     $best = ['record' => (string) $rec, 'dag' => $rdag];
@@ -1274,6 +1412,123 @@ class UniversalValidator extends AbstractExternalModule
             }
         }
         return $best;
+    }
+
+    /**
+     * Every entry of an exported data set that holds every target value, for a
+     * rule that copies values ("return"): ['record','dag','exact','values'],
+     * 'values' being field => the value saved in that entry's row ("record":
+     * the record ID). A row of a repeating instance carries the values of its
+     * event's row too (recordContexts), so a value copied from a form that
+     * does not repeat is the same in each. A saved Missing Data Code is no
+     * value to copy: it is copied as "".
+     */
+    private static function existsHitsIn(array $data, array $spec, $scope, $dag)
+    {
+        $hits = [];
+        foreach ($data as $rec => $node) {
+            if (!is_array($node)) continue;
+            $rdag = self::dagOfRecordNode($node);
+            if ($scope === 'dag' && $rdag !== $dag) continue;
+            foreach (self::recordContexts($node) as $ctx) {
+                if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                $exact = self::existsRowMatch($ctx['values'], $spec);
+                if ($exact === null) continue;
+                $hits[] = ['record' => (string) $rec, 'dag' => $rdag, 'exact' => $exact,
+                           'values' => self::copiedValues($ctx['values'], (string) $rec, $spec)];
+            }
+        }
+        return $hits;
+    }
+
+    /** The values a rule copies out of one row of record $rec (existsHitsIn). */
+    private static function copiedValues(array $row, $rec, array $spec)
+    {
+        $out = [];
+        foreach ($spec['returns'] as $f) {
+            if ($f === 'record') {
+                $out[$f] = (string) $rec;
+                continue;
+            }
+            $v = (isset($row[$f]) && !is_array($row[$f])) ? (string) $row[$f] : '';
+            if ($spec['codes'] && self::isMissingCode($v, $spec['codes'])) $v = '';
+            $out[$f] = $v;
+        }
+        return $out;
+    }
+
+    /**
+     * The hit staff are shown, as existsMatchIn picks it: in Data Access Group
+     * $prefer first, then spelled exactly as looked up, then the first.
+     */
+    private static function bestExistsHit(array $hits, $prefer)
+    {
+        $best = null;
+        $bestScore = -1;
+        foreach ($hits as $h) {
+            $score = ($prefer !== null && $h['dag'] === $prefer ? 2 : 0) + ($h['exact'] ? 1 : 0);
+            if ($score > $bestScore) {
+                $best = $h;
+                $bestScore = $score;
+            }
+        }
+        return $best;
+    }
+
+    /**
+     * What a rule that copies values ("return") copies, from the entries the
+     * lookup found:
+     *   ['returned' => field => value]  every visible entry holds the same values;
+     *   ['returnConflict' => n]          n visible entries hold different ones:
+     *                                    nothing is copied;
+     *   ['returnWithheld' => true]       the value is saved only outside group
+     *                                    $visible: nothing is copied.
+     * $visible is the Data Access Group of the person the lookup runs for
+     * (null: no group, every entry is visible). A person in a group sees the
+     * values of their own group's entries only, as REDCap shows them records.
+     */
+    private static function existsReturnOutcome(array $hits, array $returns, $visible)
+    {
+        $tuples = [];
+        foreach ($hits as $h) {
+            if ($visible !== null && $h['dag'] !== $visible) continue;
+            $vals = [];
+            foreach ($returns as $f) $vals[$f] = isset($h['values'][$f]) ? (string) $h['values'][$f] : '';
+            $tuples[json_encode($vals)] = $vals;
+        }
+        if (!$tuples) return ['returnWithheld' => true];
+        if (count($tuples) > 1) return ['returnConflict' => count($tuples)];
+        return ['returned' => reset($tuples)];
+    }
+
+    /**
+     * A record-ID lookup that found $hit, with what the rule copies from that
+     * record: the row of "event" in a longitudinal project, else its one row
+     * (existsReturnProblem keeps the copied fields off repeating forms and
+     * asks for "event" in a longitudinal project). A record without a row
+     * there gives "" for each field. A read that fails answers unknown.
+     */
+    private function recordFoundWithReturns($pid, array $spec, array $hit, $prefer)
+    {
+        $out = ['state' => 'found'] + $hit;
+        if (!$spec['returns']) return $out;
+        $row = [];
+        $fields = array_values(array_diff($spec['returns'], ['record']));
+        if ($fields) {
+            $p = ['project_id' => $pid, 'return_format' => 'array', 'records' => [$hit['record']], 'fields' => $fields];
+            if ($spec['event'] !== null) $p['events'] = [$spec['event']];
+            $d = \REDCap::getData($p);
+            if (!is_array($d)) return ['state' => 'unknown', 'record' => null, 'dag' => null, 'why' => 'the values to copy could not be read just now'];
+            $node = isset($d[$hit['record']]) && is_array($d[$hit['record']]) ? $d[$hit['record']] : [];
+            foreach (self::recordContexts($node) as $ctx) {
+                if ($ctx['repeatKey'] !== null) continue;
+                if ($spec['event'] !== null && (string) $ctx['event_id'] !== (string) $spec['event']) continue;
+                $row = $ctx['values'];
+                break;
+            }
+        }
+        $h = $hit + ['exact' => true, 'values' => self::copiedValues($row, $hit['record'], $spec)];
+        return $out + self::existsReturnOutcome([$h], $spec['returns'], $prefer);
     }
 
     /**
@@ -1302,8 +1557,10 @@ class UniversalValidator extends AbstractExternalModule
                 $this->existsIndexes[$key] = false;
                 if ($over === 'log') $this->logCrossIndexRead($pid, $fields, 'throttled');
             } else {
+                // With "in":"record", "event" is where "return" copies from; the
+                // record ID itself belongs to the whole record.
                 $this->existsIndexes[$key] = $this->buildExistsIndex($pid, $spec['in'], $fields,
-                    !empty($rule['existsEvent']) ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks'],
+                    (!empty($rule['existsEvent']) && $spec['in'] !== 'record') ? $spec['event'] : null, $foreign, $spec['fold'], $spec['marks'],
                     $spec['recordMark'], $spec['codes']);
                 if ($foreign) $this->logCrossIndexRead($pid, $fields, $this->existsIndexes[$key] === false ? 'failed' : 'read');
             }
@@ -1586,7 +1843,10 @@ class UniversalValidator extends AbstractExternalModule
     /**
      * One "exists-consumers" row read strictly, or null when it is incomplete:
      * a project id, at least one field, a known mode (blank = rights). Survey
-     * answers count only with the "answer" mode.
+     * answers count only with the "answer" mode. 'returns' are the fields
+     * whose values the asking project may copy (@UVEXISTS "return"): none
+     * under the "answer" mode, and none when the list holds a name that is not
+     * a field name (read strictly, as the searched fields are).
      */
     private static function consumerRow($row)
     {
@@ -1599,7 +1859,10 @@ class UniversalValidator extends AbstractExternalModule
         if ($mode === '') $mode = 'rights';
         if ($mode !== 'rights' && $mode !== 'answer') return null;
         $surveys = in_array(isset($row['exists-consumer-surveys']) ? $row['exists-consumer-surveys'] : false, [true, 1, '1', 'true'], true);
-        return ['project' => (int) $p, 'mode' => $mode, 'targets' => $targets, 'surveys' => $surveys && $mode === 'answer'];
+        $returns = $mode === 'rights'
+            ? self::consumerTargets(isset($row['exists-consumer-returns']) ? $row['exists-consumer-returns'] : '') : [];
+        return ['project' => (int) $p, 'mode' => $mode, 'targets' => $targets, 'surveys' => $surveys && $mode === 'answer',
+                'returns' => $returns];
     }
 
     /** "a, b record" as [a => true, b => true, record => true]; [] when any name is not a field name. */
@@ -1623,7 +1886,9 @@ class UniversalValidator extends AbstractExternalModule
 
     /**
      * The other project's agreement when it covers every field the rule
-     * searches, or null (one answer for every reason).
+     * searches and every field it copies ("return", listed apart: a project
+     * may let others search a field it does not let them copy), or null (one
+     * answer for every reason).
      */
     private function crossGate($pid, array $rule)
     {
@@ -1632,7 +1897,29 @@ class UniversalValidator extends AbstractExternalModule
         foreach (self::crossFields($rule) as $f) {
             if (!isset($c['targets'][$f])) return null;
         }
+        foreach (self::returnSources($rule) as $f) {
+            if (!isset($c['returns'][$f])) return null;
+        }
         return $c;
+    }
+
+    /**
+     * The fields of the project searched whose values an exists rule copies
+     * ("return"; "record" for the record ID found), on the rule and on each
+     * branch. [] for a rule without "return".
+     */
+    private static function returnSources(array $rule)
+    {
+        $out = [];
+        $nodes = [$rule];
+        if (isset($rule['branches']) && is_array($rule['branches'])) {
+            foreach ($rule['branches'] as $b) if (is_array($b)) $nodes[] = $b;
+        }
+        foreach ($nodes as $n) {
+            if (!isset($n['existsReturn']) || !is_array($n['existsReturn'])) continue;
+            foreach (array_keys($n['existsReturn']) as $s) $out[(string) $s] = true;
+        }
+        return array_keys($out);
     }
 
     /**
@@ -1798,14 +2085,15 @@ class UniversalValidator extends AbstractExternalModule
     }
 
     /**
-     * The first field the rule searches whose form, in the other project, the
-     * user may not open; null when they may open them all. A record-ID lookup
-     * needs no form. Fields the dictionary cannot place count as closed.
+     * The first field the rule searches or copies ("return") whose form, in
+     * the other project, the user may not open; null when they may open them
+     * all. A record ID needs no form. Fields the dictionary cannot place count
+     * as closed.
      */
     private function crossUnreadable($b, array $rule, $forms)
     {
         $dd = $this->dataDictionary($b);
-        foreach (self::crossFields($rule) as $f) {
+        foreach (array_unique(array_merge(self::crossFields($rule), self::returnSources($rule))) as $f) {
             if ($f === 'record') continue;
             $form = (is_array($dd) && isset($dd[$f]['form_name'])) ? (string) $dd[$f]['form_name'] : '';
             if ($form === '' || !self::mayReadForm($forms, $form)) return $f;
@@ -1897,8 +2185,14 @@ class UniversalValidator extends AbstractExternalModule
      * "off"), and the result. When the lookup also read that project's record
      * IDs to make sure a "not found" was real, "extra_read" says so. A
      * cross-project value is never logged raw.
+     *
+     * A rule that copies values ("return") adds the fields it copies
+     * ("returned"), and, when values were handed over, the record of that
+     * project they came from ($copiedFrom): as a keyed hash when that project
+     * logs no values ("none"), not at all when its log is "off". The values
+     * themselves are never logged.
      */
-    private function logCrossProbe($b, $a, $channel, array $rule, $value, $result)
+    private function logCrossProbe($b, $a, $channel, array $rule, $value, $result, $copiedFrom = null)
     {
         $extra = !empty($this->crossExtraRead[(int) $b]);
         unset($this->crossExtraRead[(int) $b]);
@@ -1914,6 +2208,16 @@ class UniversalValidator extends AbstractExternalModule
                 'result'         => (string) $result,
             ];
             if ($extra) $entry['extra_read'] = 'record ids';
+            $copies = self::returnSources($rule);
+            if ($copies) $entry['returned'] = implode(',', $copies);
+            if ($copiedFrom !== null && $copiedFrom !== '' && $mode !== 'off') {
+                if ($mode === 'none') {
+                    $h = $this->hashedIdentifier($b, (string) $copiedFrom);
+                    if ($h !== null) $entry['copied_from_hmac'] = $h;
+                } else {
+                    $entry['copied_from'] = (string) $copiedFrom;
+                }
+            }
             // A lookup that ignores letter case logs the hash of the value in
             // lower case, so "SP-1" and "sp-1" leave the same hash there.
             $fold = empty($rule['caseSensitive']);
@@ -2053,7 +2357,8 @@ class UniversalValidator extends AbstractExternalModule
             unset($opts['self']);
             $r = $this->findExisting($b, $ruleB, $value, $locals, null, $dag, true,
                 ['foreign' => true, 'callerDag' => $callerDag] + $opts);
-            $this->logCrossProbe($b, $pid, $channel, $rule, $value, $r['state']);
+            $this->logCrossProbe($b, $pid, $channel, $rule, $value, $r['state'],
+                isset($r['returned']) ? $r['record'] : null);
         }
         $r['record'] = null;
         $r['dag'] = null;
@@ -4046,7 +4351,8 @@ class UniversalValidator extends AbstractExternalModule
         }
         foreach ($why as $i => $list) {
             if (!empty($rules[$i]['configError'])) continue;
-            $rules[$i]['configError'] = '@UVRANGE "return": ' . implode(' ', array_values(array_unique($list)));
+            $rules[$i]['configError'] = ModeRegistry::tagOfType(isset($rules[$i]['type']) ? $rules[$i]['type'] : '')
+                . ' "return": ' . implode(' ', array_values(array_unique($list)));
         }
         return $rules;
     }
@@ -4542,10 +4848,11 @@ class UniversalValidator extends AbstractExternalModule
         }
         $projects = $col('exists-consumer-project');
         $targets = $col('exists-consumer-targets');
+        $returns = $col('exists-consumer-returns');
         $modes = $col('exists-consumer-mode');
         $surveys = $col('exists-consumer-surveys');
         $seen = [];
-        for ($i = 0, $n = $rows('exists-consumer-project', 'exists-consumer-targets', 'exists-consumer-mode', 'exists-consumer-surveys'); $i < $n; $i++) {
+        for ($i = 0, $n = $rows('exists-consumer-project', 'exists-consumer-targets', 'exists-consumer-returns', 'exists-consumer-mode', 'exists-consumer-surveys'); $i < $n; $i++) {
             $p = isset($projects[$i]) ? trim((string) $projects[$i]) : '';
             $t = isset($targets[$i]) ? trim((string) $targets[$i]) : '';
             if ($p === '' && $t === '') continue;
@@ -4583,6 +4890,24 @@ class UniversalValidator extends AbstractExternalModule
                             . 'this project — choose "Only users who have rights" or remove the field.';
                     }
                 }
+            }
+            // Values copied out ("return") are answered only to a user who may
+            // read them here: never under "any signed-in user".
+            $r = isset($returns[$i]) ? trim((string) $returns[$i]) : '';
+            if ($r === '') continue;
+            $rf = self::consumerTargets($r);
+            if (!$rf) {
+                $errors[] = $where . 'the fields it may copy must be field names separated by commas ("record" for the record ID).';
+                continue;
+            }
+            foreach (array_keys($rf) as $f) {
+                if ($f !== 'record' && is_array($known) && !in_array($f, $known, true)) {
+                    $errors[] = $where . '"' . $f . '" (a field it may copy) is not a field in this project — check the spelling.';
+                }
+            }
+            if ($mode === 'answer') {
+                $errors[] = $where . 'values can be copied only by users with rights in this project — choose "Only users who '
+                    . 'have rights", or leave the fields it may copy empty.';
             }
         }
         return $errors;
@@ -4849,7 +5174,230 @@ class UniversalValidator extends AbstractExternalModule
                 return $refuse('"event" "' . $frag['existsEvent'] . '" is not an event of this project — use its unique event name.');
             }
         }
+        if (isset($frag['existsReturn'])) {
+            $why = $this->existsReturnProblem($frag, $name, $dd, $dd, $pid, $pid, '', $this->projectIdentifierFields($pid));
+            if ($why !== null) return $refuse($why);
+        }
         return $frag;
+    }
+
+    /**
+     * Why the "return" of an exists rule on $name cannot work, or null; on
+     * success $frag gains existsReturnNumbers (the fields here that hold
+     * numbers, where "7.80" and "7.8" are one value). $ddThere is the
+     * dictionary of the project searched ($pidThere; $there names it in a
+     * message, '' for this one), $ddHere this project's; $idsThere its
+     * Identifier flags (null: unreadable, every field counts as one).
+     *
+     * Each field there exists and holds one value, and is read from the entry
+     * the lookup found: the form of "in" or a form that does not repeat (an
+     * entry of another repeating form would be any of its instances). With
+     * "in":"record" every field must be on a form that does not repeat, and a
+     * longitudinal project needs "event", the event the values are read from.
+     * Each field here passes returnTargetBasics (on this form, not this field,
+     * not a field the lookup reads, not the record ID, not filled by REDCap)
+     * and can hold the value (existsReturnPairProblem). A field flagged
+     * Identifier there may go only into a field flagged Identifier here, so a
+     * de-identified export does not carry it.
+     */
+    private function existsReturnProblem(array &$frag, $name, array $ddThere, array $ddHere, $pidThere, $pidHere, $there, $idsThere)
+    {
+        $in = isset($frag['existsIn']) ? (string) $frag['existsIn'] : '';
+        $pkThere = $ddThere ? (string) array_keys($ddThere)[0] : null;
+        $inForm = ($in !== 'record' && isset($ddThere[$in]['form_name'])) ? (string) $ddThere[$in]['form_name'] : null;
+        $layout = $this->repeatingLayout($pidThere);
+        if ($layout === null) {
+            return 'which forms repeat in ' . ($there === '' ? 'this project' : 'project ' . (int) $pidThere)
+                . ' could not be read, so "return" cannot be checked.';
+        }
+        $repeating = $layout['forms'];
+        if ($in === 'record' && !isset($frag['existsEvent'])) {
+            $long = $this->projectLongitudinal($pidThere);
+            if ($long !== false) {
+                return '"return" with "in":"record" needs "event" in a longitudinal project: the event whose values are copied.';
+            }
+        }
+        if ($in === 'record' && isset($frag['existsEvent'])) {
+            $ev = $there === '' ? $this->eventIdOf($pidThere, $frag['existsEvent']) : $this->eventIdIn($pidThere, $frag['existsEvent']);
+            if ($ev !== null && isset($layout['events'][(int) $ev])) {
+                return '"return" with "in":"record" reads one entry of "event" "' . $frag['existsEvent'] . '"' . $there
+                    . ', and that event repeats — name an event that does not repeat.';
+            }
+        }
+        $idsHere = $this->projectIdentifierFields($pidHere);
+        $inputs = [];
+        foreach ((isset($frag['existsLocal']) && is_array($frag['existsLocal'])) ? $frag['existsLocal'] : [] as $l) $inputs[(string) $l] = true;
+        if ($there === '') {
+            foreach ((isset($frag['existsTargets']) && is_array($frag['existsTargets'])) ? $frag['existsTargets'] : [] as $t) $inputs[(string) $t] = true;
+        }
+        $numbers = [];
+        foreach ($frag['existsReturn'] as $s => $t) {
+            $s = (string) $s;
+            $src = $s === 'record' ? $pkThere : $s;
+            $short = '"return" "' . $s . '"';
+            if ($src === null || !isset($ddThere[$src])) return $short . ' is not a field' . ($there === '' ? ' in this project' : $there) . ' — check the spelling.';
+            $ms = $ddThere[$src];
+            $ts = isset($ms['field_type']) ? (string) $ms['field_type'] : '';
+            if (!in_array($ts, self::EXISTS_SCALAR_TYPES, true)) {
+                return $short . $there . ' is a ' . $ts . ' field — "return" copies one value per field.';
+            }
+            $form = isset($ms['form_name']) ? (string) $ms['form_name'] : '';
+            if (isset($repeating[$form]) && ($in === 'record' || $form !== $inForm)) {
+                return $short . $there . ' is on the repeating form "' . $form . '"'
+                    . ($in === 'record' ? '' : ', not on "' . (string) $inForm . '" with "' . $in . '"')
+                    . ' — the lookup finds one entry, and that form holds many. Copy fields of the form the lookup searches, or of a form that does not repeat.';
+            }
+            $label = $short . ' field "' . $t . '"';
+            $why = self::returnTargetBasics((string) $t, $short, $label, $name, 'this field', $ddHere, $inputs,
+                function (array $mt) use ($ms, $label, $s, $there) {
+                    return self::existsReturnPairProblem($ms, $mt, $label, $s, $there);
+                });
+            if ($why !== null) return $why;
+            $idThere = $idsThere === null || self::isIdentifier($idsThere, $src);
+            if ($idThere && ($idsHere === null || !self::isIdentifier($idsHere, (string) $t))) {
+                return $short . $there . ' is an Identifier' . ($idsThere === null ? ' (the Identifier flags could not be read)' : '')
+                    . ', so "[' . $t . ']" must be flagged Identifier too — otherwise a de-identified export would carry it.';
+            }
+            if (self::numberMarkOf($ddHere[(string) $t]) !== null) $numbers[] = (string) $t;
+        }
+        $frag['existsReturnNumbers'] = $numbers;
+        return null;
+    }
+
+    /**
+     * Why field $mt here cannot hold every value field $ms there may hold, or
+     * null. A choice (dropdown, radio, yes/no, true/false) goes into a choice
+     * field that has every one of its codes, or into a Text field without
+     * validation, which gets the code. A Text field with validation takes a
+     * value of the same kind: the same kind of date or time (the order the
+     * date is shown in may differ: REDCap stores Y-M-D), a number with the
+     * same decimal mark and no more decimal places than the field allows (an
+     * integer only from an integer), or any other validation only from the
+     * same one. A Notes field and a Text field without validation take any
+     * value. Nothing goes into a calc, slider, SQL, checkbox, file or
+     * descriptive field.
+     */
+    private static function existsReturnPairProblem(array $ms, array $mt, $label, $s, $there)
+    {
+        $choice = ['dropdown', 'radio', 'yesno', 'truefalse'];
+        $ts = isset($ms['field_type']) ? (string) $ms['field_type'] : '';
+        $tt = isset($mt['field_type']) ? (string) $mt['field_type'] : '';
+        if (!in_array($tt, array_merge(['text', 'notes'], $choice), true)) {
+            return $label . ' is a ' . $tt . ' field — a copied value goes into a Text, Notes, dropdown, radio, yes/no or true/false field.';
+        }
+        $vs = strtolower(self::validationOf($ms));
+        $vt = strtolower(self::validationOf($mt));
+        if (in_array($tt, $choice, true)) {
+            if (!in_array($ts, $choice, true)) {
+                return $label . ' is a ' . $tt . ' field, and "' . $s . '"' . $there . ' is a ' . $ts
+                    . ' field — a choice field takes the code of a choice field.';
+            }
+            $missing = array_diff(self::choiceCodesOf($ms), self::choiceCodesOf($mt));
+            if ($missing) {
+                return $label . ' has no choice ' . implode(', ', array_map(function ($c) { return '"' . $c . '"'; }, array_slice(array_values($missing), 0, 5)))
+                    . ' that "' . $s . '"' . $there . ' can hold — give it every code of that field.';
+            }
+            return null;
+        }
+        if ($tt === 'notes' || $vt === '') return null;
+        if (in_array($ts, $choice, true) || $ts === 'sql') {
+            return $label . ' has "' . $vt . '" validation, and "' . $s . '"' . $there . ' holds choice codes — copy it into a '
+                . 'Text field without validation, or into a choice field.';
+        }
+        $kindS = self::storedKindOf($vs);
+        $kindT = self::storedKindOf($vt);
+        if ($kindS !== 'no date or time' || $kindT !== 'no date or time') {
+            if ($kindS !== $kindT) {
+                return $label . ' holds ' . $kindT . ' and "' . $s . '"' . $there . ' holds ' . $kindS . ' — the value is copied as '
+                    . 'REDCap stores it, so both must be the same kind.';
+            }
+            return null;
+        }
+        $markT = self::numberMarkOf($mt);
+        if ($markT !== null) {
+            $markS = self::numberMarkOf($ms);
+            if ($markS === null) {
+                return $label . ' holds numbers and "' . $s . '"' . $there . ' does not — give "' . $s . '" number validation, or '
+                    . 'copy it into a Text field without validation.';
+            }
+            $why = self::markMismatch($s, $markS, (string) ($mt['field_name'] ?? 'the field here'), $markT, $there);
+            if ($why !== null) return $label . ': ' . $why;
+            $placesS = self::numberPlaces($ms);
+            $placesT = self::numberPlaces($mt);
+            if ($placesT !== null && ($placesS === null || $placesS > $placesT)) {
+                return $label . ' takes ' . ($placesT === 0 ? 'whole numbers' : 'at most ' . $placesT . ' decimal place' . ($placesT === 1 ? '' : 's'))
+                    . ' and "' . $s . '"' . $there . ' may hold ' . ($placesS === null ? 'any number of decimals' : $placesS . ' decimal place' . ($placesS === 1 ? '' : 's'))
+                    . ' — give it number validation with room for them.';
+            }
+            return null;
+        }
+        if ($vs !== $vt) {
+            return $label . ' has "' . $vt . '" validation and "' . $s . '"' . $there . ' has ' . ($vs === '' ? 'none' : '"' . $vs . '"')
+                . ' — a copied value must pass the field\'s validation, so both need the same one (or none here).';
+        }
+        return null;
+    }
+
+    /**
+     * The decimal places a number field allows: 0 for an integer, N for
+     * number_Ndp (comma or point), null for any (number, float, a calc, a
+     * slider: whole numbers, but REDCap stores what it is given). Only asked
+     * of fields numberMarkOf says hold numbers.
+     */
+    private static function numberPlaces(array $meta)
+    {
+        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
+        if ($type !== 'text') return null;
+        $v = strtolower(self::validationOf($meta));
+        if ($v === 'int' || $v === 'integer') return 0;
+        if (preg_match('/^number_([1-9])dp(?:_comma_decimal)?$/', $v, $m)) return (int) $m[1];
+        return null;
+    }
+
+    /** The choice codes of a dropdown or radio row; yes/no and true/false hold 1 and 0. */
+    private static function choiceCodesOf(array $meta)
+    {
+        $type = isset($meta['field_type']) ? (string) $meta['field_type'] : '';
+        if ($type === 'yesno' || $type === 'truefalse') return ['1', '0'];
+        return Logic::parseChoiceCodes(isset($meta['select_choices_or_calculations']) ? $meta['select_choices_or_calculations'] : '');
+    }
+
+    /**
+     * What repeats in project $pid, or null when that cannot be read:
+     * 'forms' => the instruments that repeat on their own in any event
+     * (form => true), 'events' => the events that repeat as a whole
+     * (event_id => true). REDCap lists a repeating event as "WHOLE", as a
+     * node keyed '' or as a bare list; every form of its instance belongs to
+     * that one instance, so its forms are not listed.
+     */
+    private function repeatingLayout($pid)
+    {
+        try {
+            if (!is_callable(['\REDCap', 'getRepeatingFormsEvents'])) return null;
+            $map = \REDCap::getRepeatingFormsEvents($pid);
+            if ($map === null || $map === false) return ['forms' => [], 'events' => []];
+            if (!is_array($map)) return null;
+            $out = ['forms' => [], 'events' => []];
+            foreach ($map as $event => $node) {
+                $whole = !is_array($node);
+                foreach (is_array($node) ? $node : [] as $form => $_) {
+                    if (is_string($form) && $form !== '') $out['forms'][$form] = true;
+                    else $whole = true;
+                }
+                if ($whole) $out['events'][(int) $event] = true;
+            }
+            return $out;
+        } catch (\Throwable $e) {
+            return null;
+        }
+    }
+
+    /** Whether project $pid is longitudinal, or null when that cannot be read. */
+    private function projectLongitudinal($pid)
+    {
+        $p = $this->projectObject($pid);
+        if ($p && isset($p->longitudinal)) return (bool) $p->longitudinal;
+        return null;
     }
 
     /**
@@ -4951,6 +5499,12 @@ class UniversalValidator extends AbstractExternalModule
                     . 'signed-in user of this project, so its identifying fields cannot be searched; it can answer only '
                     . 'users with rights there instead ("Who gets an answer").');
             }
+        }
+        // crossGate already required every copied field to be on the agreement's
+        // "return" list, which the "answer" mode never has.
+        if (isset($frag['existsReturn'])) {
+            $why = $this->existsReturnProblem($frag, $name, $ddB, $ddA, $b, $pid, ' of project ' . $b, $this->projectIdentifierFields($b));
+            if ($why !== null) return $refuse($why);
         }
         return $frag;
     }
@@ -5574,6 +6128,27 @@ class UniversalValidator extends AbstractExternalModule
             if ($tv === null) continue;
             $p = TemporalValue::parse(trim((string) $v), $tv['type'], $tv['format']);
             if ($p['state'] === 'ok') $values[$f] = TemporalValue::format($p['value'], $tv['type'], 'ymd');
+        }
+        return $values;
+    }
+
+    /**
+     * The inverse of storedFormOf: stored values (field => value) rewritten
+     * the way each field of project $pid shows them on a page, so a date
+     * copied by @UVEXISTS "return" lands in a D-M-Y field as 31-12-2024. A
+     * value that is not a complete stored date stays as it is, and so does
+     * every value when the dictionary cannot be read.
+     */
+    private function displayFormOf($pid, array $values)
+    {
+        $dd = $this->dataDictionary($pid);
+        if (!$dd) return $values;
+        foreach ($values as $f => $v) {
+            if (!isset($dd[$f]) || !is_array($dd[$f])) continue;
+            $tv = TemporalValue::fromValidation(self::validationOf($dd[$f]));
+            if ($tv === null) continue;
+            $p = TemporalValue::parse(trim((string) $v), $tv['type'], 'ymd');
+            if ($p['state'] === 'ok') $values[$f] = TemporalValue::format($p['value'], $tv['type'], $tv['format']);
         }
         return $values;
     }
@@ -8560,8 +9135,10 @@ class UniversalValidator extends AbstractExternalModule
             } else {
                 if ($this->signedInRateLimited($project_id)) return $unknown('too many checks in the last minute — wait a moment');
                 // Generic on purpose: naming the field would tell the page where
-                // the rule looks.
-                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $locals, $targets)) !== null) {
+                // the rule looks. The fields a rule copies ("return") are read
+                // too; another project's are checked there (crossCaller).
+                $copied = empty($rule['existsPid']) ? array_values(array_diff(self::returnSources($rule), ['record'])) : [];
+                if ($this->firstUnreadableField($project_id, $user_id, array_merge([$field], $locals, $targets, $copied)) !== null) {
                     return $unknown('you do not have access to every form this lookup reads');
                 }
                 if ($this->recordBeyondCallerGroup($project_id, $record, $group_id)) {
@@ -8645,7 +9222,25 @@ class UniversalValidator extends AbstractExternalModule
                     if ($userDag === null || $r['dag'] !== $userDag) $recOut = null;
                 }
             }
-            return ['state' => $r['state'], 'record' => $recOut];
+            $resp = ['state' => $r['state'], 'record' => $recOut];
+            // "return": the values for the fields here, as the page shows them,
+            // only to a signed-in person on a data-entry form (a survey never
+            // gets them; the rule refuses "surveys" anyway). Keyed by the field
+            // here: the page never learns which fields they came from.
+            $ret = (isset($rule['existsReturn']) && is_array($rule['existsReturn'])) ? $rule['existsReturn'] : [];
+            if ($ret && $r['state'] === 'found' && $isAuthenticated && !$isSurvey) {
+                if (isset($r['returned']) && is_array($r['returned'])) {
+                    $vals = [];
+                    foreach ($ret as $s => $t) $vals[$t] = isset($r['returned'][$s]) ? (string) $r['returned'][$s] : '';
+                    $resp['values'] = $this->displayFormOf($project_id, $vals);
+                } elseif (isset($r['returnConflict'])) {
+                    $resp['fill'] = 'conflict';
+                    $resp['count'] = (int) $r['returnConflict'];
+                } elseif (!empty($r['returnWithheld'])) {
+                    $resp['fill'] = 'withheld';
+                }
+            }
+            return $resp;
         } catch (\Throwable $e) {
             return ['error' => 'lookup failed'];   // the client shows "could not check"; no detail leaks
         }

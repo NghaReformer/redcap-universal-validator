@@ -173,6 +173,11 @@
       "type": "checkbox"
     },
     {
+      "key": "exists-return-no-save",
+      "name": "<b>@UVEXISTS returned values</b> — do not write them when a record is saved. A lookup with \"return\" fills its fields on the data-entry page and writes them again, where they differ, when the record is saved by a person who may read the fields they come from (also by the API and the Data Import Tool). Check this to keep the page fill only.",
+      "type": "checkbox"
+    },
+    {
       "key": "exists-project-aliases",
       "name": "<b>@UVEXISTS project aliases</b> — a name a lookup can use for another project (\"project\":\"lab\"), so the data dictionary stays the same on a test and a production server; only this setting differs.",
       "type": "sub_settings",
@@ -204,6 +209,11 @@
         {
           "key": "exists-consumer-targets",
           "name": "Fields of this project it may search, separated by commas (\"record\" for the record ID)",
+          "type": "text"
+        },
+        {
+          "key": "exists-consumer-returns",
+          "name": "Fields of this project whose values it may copy into its own fields (@UVEXISTS \"return\"), separated by commas (\"record\" for the record ID). Leave empty to allow none. Needs \"Only users who have rights\": a user is answered only when they may read every one of these fields here.",
           "type": "text"
         },
         {
