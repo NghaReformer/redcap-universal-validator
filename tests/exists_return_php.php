@@ -666,6 +666,8 @@ namespace {
     save($m);
     check('a saver who may search but not read a copied field\'s form: nothing written for it, a rule problem',
         !isset(written()['r_meta_note']) && strpos(implode(' ', unconfigurable($m)), 'may not open every form this lookup reads') !== false);
+    check('...and the field it may not read is not read for the verdict either',
+        !array_filter(\REDCap::$calls, function ($c) { return in_array('site_note', $c['fields'] ?? [], true); }));
     $m = mod('nolab');
     row9(['r_ronly' => 'SP-1', 'r_ronly_from' => '']);
     save($m);
@@ -783,8 +785,12 @@ namespace {
     $u2 = $el->invoke($m, 149, $rule2, "SP-\xE92", [], 351, '9', ['callerGroup' => null, 'returns' => true]);
     check('...also two values that are not valid UTF-8',
         ($u1['returned']['lab_site'] ?? null) === '1' && ($u2['returned']['lab_site'] ?? null) === '2');
-    $a3 = $el->invoke($m, 149, $rule2, 'SP-1', [], 351, '9', ['callerGroup' => null]);
+    $asked = new \ReflectionMethod($m, 'existsAskedOnSave');
+    $asked->setAccessible(true);
+    $a3 = $el->invoke($m, 149, $asked->invoke($m, 149, $rule2, 'r_spec', ['callerGroup' => null]), 'SP-1', [], 351, '9', ['callerGroup' => null]);
     check('a lookup for a save that writes nothing asks for no values', ($a3['state'] ?? null) === 'found' && !isset($a3['returned']));
+    check('...and one for a save that writes them asks with the rule as it is',
+        $asked->invoke($m, 149, $rule2, 'r_spec', ['returns' => true]) === $rule2);
     $sc = $rf->invoke($m, $rule, 0, ['r_rec_ev' => '1'], [], null, 149, '9', 351, null, $res, ['existsIndex' => true]);
     check('the scan: "in":"record" with "event" finds a record that has no row in that event (got ' . json_encode($sc) . ')',
         !$sc['invalid'] && !$sc['unconfigurable']);
@@ -946,6 +952,9 @@ namespace {
     save($m);
     check('another project: a saver who may not open the form of a "match" field here: nothing written, a rule problem (got ' . json_encode(written()) . ')',
         !isset(written()['x_m_date']) && strpos(implode(' ', unconfigurable($m)), 'may not open every form this lookup reads') !== false);
+    $probe = array_values(array_filter($m->logCalls, function ($c) { return $c[0] === 'uv-exists-probe'; }));
+    check('...and the probe line there hands nothing over, once (got ' . json_encode($probe) . ')',
+        count($probe) === 1 && !isset($probe[0][1]['returned']) && !isset($probe[0][1]['copied_from']));
     $m = xmod('nurse', $XM);
     row9(['x_m' => 'LS-1', 'home' => 'North', 'x_m_date' => '']);
     save($m);

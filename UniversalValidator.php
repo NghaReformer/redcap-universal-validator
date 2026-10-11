@@ -794,7 +794,8 @@ class UniversalValidator extends AbstractExternalModule
                 if (is_array($v) || Logic::lookupTrim($v) === '' || self::isMissingCode($v, isset($meta['missingCodes']) ? $meta['missingCodes'] : [])) continue 2;
                 $lv[$lf] = Logic::lookupTrim($v);
             }
-            $r = $this->existsLookup($project_id, $rule, Logic::lookupTrim($value), $lv, $event_id, $record, $meta);
+            $r = $this->existsLookup($project_id, $this->existsAskedOnSave($project_id, $rule, $field, $meta),
+                Logic::lookupTrim($value), $lv, $event_id, $record, $meta);
             if ($r['state'] === 'not-found') {
                 $out['invalid'][] = ['field' => $field, 'value' => $value, 'algo' => 'exists', 'type' => 'exists', 'reason' => 'not-found'];
             } elseif ($r['state'] !== 'found') {
@@ -864,7 +865,8 @@ class UniversalValidator extends AbstractExternalModule
             if ($state !== 'ok' || is_array($v) || Logic::lookupTrim($v) === '' || ($codes && self::isMissingCode($v, $codes))) return $keep();
             $lv[$lf] = Logic::lookupTrim($v);
         }
-        $r = $this->existsLookup($project_id, $rule, Logic::lookupTrim($raw), $lv, $event_id, $record, $meta);
+        $r = $this->existsLookup($project_id, $this->existsAskedOnSave($project_id, $rule, $field, $meta),
+            Logic::lookupTrim($raw), $lv, $event_id, $record, $meta);
         if ($r['state'] === 'not-found') return ['values' => array_fill_keys(array_values($ret), ''), 'problem' => null, 'field' => $field];
         if ($r['state'] !== 'found') return $keep();
         if (isset($r['returned']) && is_array($r['returned'])) {
@@ -1012,12 +1014,9 @@ class UniversalValidator extends AbstractExternalModule
         // A save asks once per rule and value: the verdict (findingsExists) and
         // the values copied (returnsExists) share the answer, so another
         // project is read, counted and logged once. The scan answers from its
-        // own index and would only fill the memo record by record.
-        // A save that writes nothing the rule copies (returnsWrittenOnSave)
-        // asks for no values: none are read, and none is logged as handed
-        // over in another project (logCrossProbe).
-        // A save with no signed-in user copies nothing either (returnsExists).
-        if (empty($meta['returns']) || $this->currentUsername() === null) $rule = self::withoutReturn($rule);
+        // own index and would only fill the memo record by record. Both
+        // callers pass the rule existsAskedOnSave gives, without "return"
+        // when the save copies nothing.
         if (!empty($meta['existsIndex'])) return $this->existsLookupOnce($pid, $rule, $value, $locals, $eventId, $record, $meta);
         // serialize, not json_encode: a value that is not valid UTF-8 would
         // make json_encode fail, and every such lookup share one answer.
@@ -2029,6 +2028,26 @@ class UniversalValidator extends AbstractExternalModule
         $targets = (isset($rule['existsTargets']) && is_array($rule['existsTargets'])) ? $rule['existsTargets'] : [];
         $copied = array_values(array_diff(self::returnSources($rule), ['record']));
         return array_values(array_unique(array_merge([(string) $field], $locals, $targets, $copied)));
+    }
+
+    /**
+     * The rule a save's lookup for $field asks with: the rule itself when the
+     * save copies its values, else the rule without "return" (withoutReturn),
+     * so no copied field is read and none is logged as handed over in another
+     * project (logCrossProbe). A save copies nothing the rule copies when it
+     * does not write the mode's values (returnsWrittenOnSave: $meta['returns']),
+     * when nobody is signed in, or when the person who saved may not open
+     * every form the lookup reads here (existsReadFields). findingsExists and
+     * returnsExists both ask through it, so they share one answer (existsLookup).
+     */
+    private function existsAskedOnSave($pid, array $rule, $field, array $meta)
+    {
+        if (empty($meta['returns'])) return self::withoutReturn($rule);
+        $user = $this->currentUsername();
+        if ($user === null || $this->firstUnreadableField($pid, $user, self::existsReadFields($rule, $field)) !== null) {
+            return self::withoutReturn($rule);
+        }
+        return $rule;
     }
 
     /**

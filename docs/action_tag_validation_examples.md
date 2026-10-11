@@ -1809,11 +1809,13 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
 `result_site` and, for a `result_coll_date` shown as D-M-Y, `01-03-2026`.
 
 - **The rule owns its fields.** A found value fills them. *Not found*, a blank
-  value, a Missing Data Code, a `when` that is false and a branch that does not
-  apply empty them. *Could not check* leaves them as they are. A branched rule
-  owns the fields of every branch, so the active branch fills its own and
-  empties the others'. Mark the fields `@READONLY`, since a person who types
-  there is overwritten at the next judgement.
+  value, a Missing Data Code, a `when` that is false and a value no branch
+  applies to empty them. *Could not check* leaves them as they are. A branched
+  rule owns the fields of every branch: the branch that applies fills its own
+  and empties the others', and when it leaves its own as they are (*could not
+  check*, entries that disagree) it leaves the others' too. Mark the fields
+  `@READONLY`, since a person who types there is overwritten at the next
+  judgement.
 - **Several entries.** When more than one saved entry holds the value, the
   values are copied only when every entry holds the same ones. Otherwise
   nothing is copied, the page adds an amber line under the green *Found* ("3
@@ -1871,7 +1873,9 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
   fills nor empties the fields, even when the form is also a survey. A save
   REDCap runs without a signed-in user (a scheduled job, for example) copies
   no value and asks for none. A blank value, a Missing Data Code, a `when`
-  that is false or a branch that does not apply still empties the fields.
+  that is false, a value no branch applies to, or a branch without `return`
+  still empties the fields; any other value leaves every field the rule owns
+  as it is.
 - **When the values are written.** The page fills the fields as it opens and
   after each answer. The fill made as the page opens does not mark the form as
   changed, though calculations and branching logic that read the fields still
@@ -1893,11 +1897,15 @@ entry found. Up to 10 pairs. For `SP-1`, registered in record 12 with
 - **A copy, not a link.** The values are copied when this record is judged. A
   later change to the entry found shows on the page when this form is opened,
   and reaches the saved record when this record is saved again.
-- **The cost.** A rule with `return` reads every saved value of the searched
-  field and of the copied fields, the read a *not found* makes for any other
-  rule, because a narrowed read can miss an entry spelled another way. The
-  read is kept for the rest of the request: an import of many records reads
-  the searched project once, and each record saved during it is read back in.
+- **The cost.** A lookup that copies values reads every saved value of the
+  searched field and of the copied fields, the read a *not found* makes for
+  any other rule, because a narrowed read can miss an entry spelled another
+  way. The read is kept for the rest of the request and the signed-in user:
+  an import of many records by one user reads the searched project once, and
+  each record saved during it is read back in. A lookup that copies nothing
+  (a survey save, a save with no signed-in user or by someone without the
+  rights, the save switch below) looks the value up as a rule without
+  `return` does.
 - **No chains.** A rule that copies values cannot read a field that a rule
   copies or returns to: not as its own field, nor in `in`, `match` or `when`.
   The save works out every value before it writes any, so a chain would lag
